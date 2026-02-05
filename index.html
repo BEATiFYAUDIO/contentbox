@@ -1,407 +1,335 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="description" content="ContentBox — local-first, P2P-ready creator infrastructure. Play first. Pay optionally. Download intentionally." />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="ContentBox is creator-owned, local-first infrastructure for publishing, sharing, and collaboration. No platforms. No gatekeepers." />
   <title>ContentBox — Creator-owned infrastructure</title>
+
   <style>
-    :root{
-      --bg:#0b0d12; --card:#121626; --card2:#0f1320;
-      --text:#e9ecf1; --muted:#aab3c2;
-      --brand:#7c5cff; --brand2:#23d5ab; --warn:#ffcc66;
-      --border:rgba(255,255,255,.10);
-      --shadow:0 14px 40px rgba(0,0,0,.35);
-      --r:18px; --max:1120px;
-      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono","Courier New", monospace;
-      --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    :root {
+      --bg: #0b0f1a;
+      --panel: #11172a;
+      --text: #e7ebf3;
+      --muted: #9aa4bf;
+      --accent: #7aa2ff;
+      --border: #1d2542;
     }
-    *{box-sizing:border-box}
-    body{
-      margin:0; color:var(--text); font-family:var(--sans); line-height:1.45;
-      background:
-        radial-gradient(900px 500px at 15% 10%, rgba(124,92,255,.22), transparent 60%),
-        radial-gradient(900px 500px at 85% 15%, rgba(35,213,171,.16), transparent 60%),
-        radial-gradient(800px 500px at 50% 90%, rgba(255,204,102,.10), transparent 55%),
-        var(--bg);
+
+    * {
+      box-sizing: border-box;
     }
-    a{color:inherit}
-    .wrap{max-width:var(--max); margin:0 auto; padding:26px 18px 70px}
-    header{
-      position:sticky; top:0; z-index:50;
-      backdrop-filter: blur(10px);
-      background: linear-gradient(to bottom, rgba(11,13,18,.88), rgba(11,13,18,.45));
-      border-bottom:1px solid var(--border);
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(1200px 600px at 10% -10%, #16204a 0%, var(--bg) 60%);
+      color: var(--text);
+      line-height: 1.6;
     }
-    .top{max-width:var(--max); margin:0 auto; padding:14px 18px; display:flex; align-items:center; justify-content:space-between; gap:12px}
-    .brand{display:flex; align-items:center; gap:10px; text-decoration:none; font-weight:900; letter-spacing:.3px}
-    .logo{width:34px; height:34px; border-radius:10px; background:linear-gradient(135deg,var(--brand),var(--brand2)); box-shadow:0 10px 30px rgba(124,92,255,.18)}
-    nav{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
-    nav a{text-decoration:none; color:var(--muted); font-weight:700; padding:8px 10px; border-radius:12px}
-    nav a:hover{background:rgba(255,255,255,.06); color:var(--text)}
-    .btn{border:1px solid var(--border); background:rgba(255,255,255,.06); padding:10px 14px; border-radius:14px; text-decoration:none; font-weight:900}
-    .btn.primary{border:0; background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#081019}
-    .btn.primary:hover{filter:brightness(1.05)}
-    .grid{display:grid; gap:16px}
-    .hero{margin-top:24px; grid-template-columns: 1.15fr .85fr; align-items:stretch}
-    @media (max-width: 920px){.hero{grid-template-columns:1fr}}
-    .card{
-      border:1px solid var(--border);
-      background: linear-gradient(180deg, rgba(18,22,38,.92), rgba(15,19,32,.92));
-      border-radius:var(--r);
-      box-shadow:var(--shadow);
-      overflow:hidden;
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
     }
-    .pad{padding:24px}
-    .kicker{display:flex; gap:8px; flex-wrap:wrap; align-items:center; color:var(--muted); font-weight:900; font-size:12px; text-transform:uppercase; letter-spacing:.35px}
-    .pill{border:1px solid var(--border); background:rgba(255,255,255,.06); padding:4px 10px; border-radius:999px; color:var(--text)}
-    h1{margin:12px 0 10px; font-size:44px; line-height:1.06}
-    @media (max-width:520px){h1{font-size:36px}}
-    .sub{margin:0 0 16px; color:var(--muted); font-size:18px; max-width:70ch}
-    .cta{display:flex; gap:12px; flex-wrap:wrap; margin-top:14px}
-    .mono{font-family:var(--mono)}
-    .term{font-family:var(--mono); background:#070914; border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:14px; overflow:auto; box-shadow:0 10px 30px rgba(0,0,0,.35)}
-    .dim{color:#96a3bd}
-    .ok{color:#61f5c8}
-    .warn{color:var(--warn)}
-    .section{margin-top:34px}
-    .section h2{margin:0 0 12px; font-size:22px; letter-spacing:.2px}
-    .section p{margin:0 0 14px; color:var(--muted); max-width:90ch}
-    .cards{display:grid; gap:14px; grid-template-columns:repeat(3,1fr)}
-    @media (max-width: 920px){.cards{grid-template-columns:1fr}}
-    .feature{padding:18px}
-    .feature h3{margin:0 0 8px; font-size:16px}
-    .feature ul{margin:0; padding-left:18px; color:var(--muted)}
-    .feature li{margin:8px 0}
-    .tabs{display:flex; gap:10px; flex-wrap:wrap; margin-top:12px}
-    .tabbtn{
-      cursor:pointer; border:1px solid var(--border); background:rgba(255,255,255,.05);
-      padding:8px 12px; border-radius:999px; color:var(--muted); font-weight:900;
+
+    a:hover {
+      text-decoration: underline;
     }
-    .tabbtn[aria-selected="true"]{background:rgba(255,255,255,.10); color:var(--text)}
-    .notice{border:1px dashed rgba(255,255,255,.22); background:rgba(255,255,255,.04); border-radius:16px; padding:14px 16px; color:var(--muted)}
-    details{border:1px solid var(--border); background:rgba(255,255,255,.04); border-radius:16px; padding:14px 16px}
-    details + details{margin-top:10px}
-    summary{cursor:pointer; font-weight:900}
-    summary::marker{color:var(--brand2)}
-    footer{margin-top:44px; padding-top:18px; border-top:1px solid var(--border); color:var(--muted); display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap}
-    .small{font-size:13px}
-    .inlinecode{font-family:var(--mono); font-size:.95em; padding:1px 6px; border:1px solid var(--border); background:rgba(255,255,255,.05); border-radius:10px}
-    .two{display:grid; gap:14px; grid-template-columns:1fr 1fr}
-    @media (max-width: 920px){.two{grid-template-columns:1fr}}
+
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 72px 24px;
+    }
+
+    header {
+      margin-bottom: 96px;
+    }
+
+    h1 {
+      font-size: 3rem;
+      margin-bottom: 16px;
+      letter-spacing: -0.02em;
+    }
+
+    h2 {
+      font-size: 1.75rem;
+      margin-top: 72px;
+      margin-bottom: 24px;
+      letter-spacing: -0.01em;
+    }
+
+    h3 {
+      font-size: 1.15rem;
+      margin-bottom: 8px;
+    }
+
+    p {
+      margin-bottom: 16px;
+      color: var(--text);
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .hero p {
+      font-size: 1.15rem;
+      max-width: 720px;
+    }
+
+    .section {
+      margin-top: 64px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 24px;
+      margin-top: 32px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, var(--panel), #0d1222);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+    }
+
+    footer {
+      margin-top: 120px;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .cta {
+      margin-top: 40px;
+      font-weight: 500;
+    }
   </style>
 </head>
 <body>
-<header>
-  <div class="top">
-    <a class="brand" href="#top">
-      <span class="logo" aria-hidden="true"></span>
-      <span>ContentBox</span>
-    </a>
-    <nav aria-label="Primary">
-      <a href="#mission">Mission</a>
-      <a href="#why">Why</a>
-      <a href="#how">How it works</a>
-      <a href="#roadmap">Roadmap</a>
-      <a href="#faq">FAQ</a>
-      <a class="btn" href="https://github.com/BEATiFYAUDIO/contentbox" id="repoNav">GitHub</a>
-      <a class="btn primary" href="#cta">Get started</a>
-    </nav>
-  </div>
-</header>
+  <main class="container">
 
-<main class="wrap" id="top">
-  <section class="grid hero">
-    <div class="card pad">
-      <div class="kicker">
-        <span class="pill">Local-first</span>
-        <span class="pill">Direct links</span>
-        <span class="pill">No gatekeepers</span>
-        <span class="pill">Sound money (optional)</span>
-      </div>
+    <header class="hero">
+      <h1>ContentBox</h1>
+      <p class="muted">Creator-owned infrastructure for publishing, sharing, and collaboration.</p>
 
-      <h1>Creator-owned infrastructure for sharing, streaming, and collaboration.</h1>
-
-      <p class="sub">
-        ContentBox is not a platform. It’s software you run.
-        Publish directly, share with a link, and play instantly — with optional unlock and intentional downloads.
+      <p>
+        ContentBox is not a platform.<br />
+        It is software you run.
       </p>
 
-      <div class="notice" id="cta">
-        <strong style="color:var(--text)">North Star:</strong>
-        I hit Play → it plays → optional unlock/pay.
-      </div>
+      <p>
+        Creators publish directly from their own machine.<br />
+        Access is granted deliberately.<br />
+        Settlement is explicit.
+      </p>
 
-      <div class="cta">
-        <a class="btn primary" href="https://github.com/BEATiFYAUDIO/contentbox">Open the repo</a>
-        <a class="btn" href="#mission">Read the mission</a>
-        <a class="btn" href="#how">See how it works</a>
-      </div>
+      <p class="muted">
+        No feeds. No algorithms. No gatekeepers.
+      </p>
+    </header>
 
-      <div style="margin-top:16px" class="small">
-        <span class="inlinecode">No global index required</span>
-        <span class="inlinecode">No on-chain media</span>
-        <span class="inlinecode">No forced marketplace</span>
-        <span class="inlinecode">No heavy DRM</span>
-      </div>
-    </div>
+    <section class="section">
+      <h2>Why ContentBox exists</h2>
 
-  </section>
+      <p>
+        The modern internet centralized creation.
+      </p>
 
-  <section class="section" id="mission">
-    <h2>Mission</h2>
+      <p>
+        Platforms decide who is visible.<br />
+        Terms change quietly.<br />
+        Access can disappear overnight.
+      </p>
 
-    <div class="tabs" role="tablist" aria-label="Mission versions">
-      <button class="tabbtn" id="tab-short" role="tab" aria-selected="true" aria-controls="panel-short">Short</button>
-      <button class="tabbtn" id="tab-creator" role="tab" aria-selected="false" aria-controls="panel-creator">Creators</button>
-      <button class="tabbtn" id="tab-investor" role="tab" aria-selected="false" aria-controls="panel-investor">Builders</button>
-    </div>
+      <p>
+        Creators are asked to trust systems they do not control,
+        while audiences are trained to expect access before consent.
+      </p>
 
-    <div class="card pad" style="margin-top:12px">
-      <div id="panel-short" role="tabpanel" aria-labelledby="tab-short">
-        <p style="margin:0; color:var(--muted)">
-          <strong style="color:var(--text)">ContentBox exists to make platforms optional.</strong>
-          We build creator-owned infrastructure so publishing, sharing, and getting paid can happen without gatekeepers,
-          opaque rule changes, or lock-in.
-        </p>
-      </div>
+      <p>
+        ContentBox exists to reverse that pattern.
+      </p>
 
-      <div id="panel-creator" role="tabpanel" aria-labelledby="tab-creator" hidden>
-        <p style="margin:0 0 12px; color:var(--muted)">
-          <strong style="color:var(--text)">Creators should own their work and distribute without asking permission.</strong>
-          The modern internet centralized creation. Terms change quietly, reach is throttled by algorithms, and payment flows through layers of middlemen.
-        </p>
-        <ul style="margin:0; padding-left:18px; color:var(--muted)">
-          <li><strong style="color:var(--text)">Own the source</strong> — content lives with the creator, not a platform.</li>
-          <li><strong style="color:var(--text)">Share directly</strong> — links over feeds, relationships over ranking.</li>
-          <li><strong style="color:var(--text)">Get paid cleanly</strong> — designed for Bitcoin/Lightning receipts (optional).</li>
-          <li><strong style="color:var(--text)">Stay inspectable</strong> — integrity, auditability, exportability.</li>
-        </ul>
-        <p style="margin:12px 0 0; color:var(--muted)">
-          In one sentence: <strong style="color:var(--text)">ContentBox is infrastructure for creators who don’t want gatekeepers.</strong>
-        </p>
-      </div>
+      <p>
+        We believe infrastructure is a moral choice.<br />
+        How systems are designed determines who holds power,
+        who carries risk,
+        and who benefits when something breaks.
+      </p>
 
-      <div id="panel-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
-        <p style="margin:0 0 12px; color:var(--muted)">
-          ContentBox focuses on a single loop: <strong style="color:var(--text)">play instantly</strong>, then <strong style="color:var(--text)">unlock optionally</strong>.
-          Delivery stays on standard web plumbing so it’s fast and predictable. Payments and receipts are modular.
-        </p>
-        <ul style="margin:0; padding-left:18px; color:var(--muted)">
-          <li>Browser-first listening: no install required for buyers.</li>
-          <li>Local-first creation: creators keep control of hosting.</li>
-          <li>Optional payments: Bitcoin/Lightning receipts for entitlements.</li>
-          <li>Auditability: proofs and events that can be exported and verified.</li>
-        </ul>
-        <div class="notice" style="margin-top:12px">
-          <strong style="color:var(--text)">Technical details:</strong>
-          full documentation and architecture live on GitHub.
-          <a href="https://github.com/BEATiFYAUDIO/contentbox" style="text-decoration:underline;">View the repository</a>.
+      <p>
+        ContentBox is built for creators who want:
+      </p>
+
+      <ul class="muted">
+        <li>ownership without intermediaries</li>
+        <li>collaboration without permission</li>
+        <li>distribution without dependency</li>
+        <li>settlement without manipulation</li>
+      </ul>
+    </section>
+
+    <section class="section">
+      <h2>What makes ContentBox different</h2>
+
+      <div class="grid">
+        <div class="card">
+          <h3>It’s a tool, not a destination</h3>
+          <p class="muted">
+            You don’t “join” ContentBox. There is no feed, no mandatory marketplace,
+            and no audience you must rent.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Local-first by design</h3>
+          <p class="muted">
+            Content lives with the creator. There is no required central host
+            and no mandatory cloud.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Direct access, clear terms</h3>
+          <p class="muted">
+            Creators define access rules explicitly.
+            There are no forced previews, trials, or engagement tricks.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Payment without dark patterns</h3>
+          <p class="muted">
+            Payments are intentional, transparent, and auditable.
+            No bait. No surprise paywalls. No manipulation.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>No heavy DRM</h3>
+          <p class="muted">
+            ContentBox favors integrity, permission, and verification
+            over fragile copy-protection schemes.
+          </p>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="section" id="why">
-    <h2>Why build this way</h2>
-    <p>
-      These are not just technical choices. They are choices about who holds power, who bears risk, and who gets paid.
-      ContentBox is built to reduce chokepoints and keep creators closer to their audience.
-    </p>
+    <section class="section">
+      <h2>How ContentBox works</h2>
 
-    <div class="two">
-      <div class="card feature">
-        <h3>No gatekeepers</h3>
-        <ul>
-          <li>Publishing and sharing should not require permission.</li>
-          <li>Links should keep working even if other systems change rules.</li>
-          <li>Discovery can be optional; distribution stays direct.</li>
-        </ul>
-      </div>
+      <div class="grid">
+        <div class="card">
+          <h3>Publish</h3>
+          <p class="muted">
+            Creators package content locally.
+            Each publish produces verifiable integrity data.
+          </p>
+        </div>
 
-      <div class="card feature">
-        <h3>Harder to capture</h3>
-        <ul>
-          <li>Fewer centralized “switches” that can be flipped quietly.</li>
-          <li>More transparency in access, splits, and approvals.</li>
-          <li>Local-first audit trails you can export and verify.</li>
-        </ul>
-      </div>
-    </div>
+        <div class="card">
+          <h3>Resolve</h3>
+          <p class="muted">
+            When a link is opened, ContentBox locates the creator directly,
+            without a global index or central router.
+          </p>
+        </div>
 
-    <div class="cards" style="margin-top:14px">
-      <div class="card feature">
-        <h3>Play first</h3>
-        <ul>
-          <li>Listening shouldn’t require an account or wallet.</li>
-          <li>Trust starts with playback, not paperwork.</li>
-          <li>Payments come after value is demonstrated.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Sound money ready</h3>
-        <ul>
-          <li>Designed for Bitcoin/Lightning receipts and entitlements.</li>
-          <li>Payment is optional to playback, not a dependency.</li>
-          <li>Cleaner settlement paths that reduce rent-seeking.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Tool, not platform</h3>
-        <ul>
-          <li>You run ContentBox; you don’t “join” it.</li>
-          <li>No global index required for purchases.</li>
-          <li>One node works; peers are a bonus.</li>
-        </ul>
-      </div>
-    </div>
-  </section>
+        <div class="card">
+          <h3>Deliver</h3>
+          <p class="muted">
+            Once access is permitted, content is delivered immediately
+            and behaves like a modern media application.
+          </p>
+        </div>
 
-  <section class="section" id="how">
-    <h2>How it works</h2>
-    <p>
-      ContentBox replaces platforms with direct links. Creators publish locally, listeners open a link, and playback starts immediately.
-      Payments and downloads are optional and intentional.
-    </p>
+        <div class="card">
+          <h3>Settle (optional)</h3>
+          <p class="muted">
+            If payment is required, settlement is explicit
+            and recorded for both parties.
+          </p>
+        </div>
+      </div>
+    </section>
 
-    <div class="cards">
-      <div class="card feature">
-        <h3>Publish</h3>
-        <ul>
-          <li>Creators package content locally.</li>
-          <li>Built-in integrity checks make content verifiable and cacheable.</li>
-          <li>Pricing and access rules attach to each release.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Open</h3>
-        <ul>
-          <li>Listeners open a direct link.</li>
-          <li>ContentBox finds the creator automatically on trusted networks.</li>
-          <li>Remote access is supported without requiring a platform.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Play</h3>
-        <ul>
-          <li>Playback starts instantly and supports seeking.</li>
-          <li>Optional preview and entitlements can gate continued access.</li>
-          <li>Downloads are explicit and intentional.</li>
-        </ul>
-      </div>
-    </div>
+    <section class="section">
+      <h2>Built for collaboration, not extraction</h2>
 
-    <div class="notice" style="margin-top:14px">
-      <strong style="color:var(--text)">Built on open, inspectable infrastructure.</strong>
-      ContentBox uses standard web technologies and local-first networking.
-      Full technical documentation lives on GitHub:
-      <a href="https://github.com/BEATiFYAUDIO/contentbox" style="text-decoration:underline;">BEATiFYAUDIO/contentbox</a>.
-    </div>
-  </section>
-
-  <section class="section" id="roadmap">
-    <h2>Roadmap</h2>
-    <div class="cards">
-      <div class="card feature">
-        <h3>Now</h3>
-        <ul>
-          <li>Hardening playback and link-based buying.</li>
-          <li>Improving peer discovery and remote reliability.</li>
-          <li>Clear, safe entitlement and preview mechanics.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Next</h3>
-        <ul>
-          <li>Better “try with a friend” UX.</li>
-          <li>Local caching and multi-source fetching.</li>
-          <li>Clearance UX for derivatives and private previews.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Later</h3>
-        <ul>
-          <li>Bitcoin/Lightning receipts and settlement.</li>
-          <li>Optional rendezvous/relay helpers (opt-in).</li>
-          <li>Desktop player and installers.</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-  <section class="section" id="faq">
-    <h2>FAQ</h2>
-
-    <details>
-      <summary>Do buyers need to install ContentBox?</summary>
-      <p class="small" style="color:var(--muted); margin:10px 0 0">
-        No. Buyers can listen from a direct link in a browser. Installing ContentBox is for creators and power users.
+      <p>
+        ContentBox supports real collaboration:
       </p>
-    </details>
 
-    <details>
-      <summary>Is media stored on-chain?</summary>
-      <p class="small" style="color:var(--muted); margin:10px 0 0">
-        No. Blockchain is for payments and receipts only. Playback uses standard networking.
+      <ul class="muted">
+        <li>multiple contributors</li>
+        <li>explicit ownership splits</li>
+        <li>verifiable acceptance</li>
+        <li>auditable proofs of agreement</li>
+      </ul>
+
+      <p>
+        Invites are deliberate.<br />
+        Acceptances can be verified.<br />
+        Nothing is implied or silently changed later.
       </p>
-    </details>
+    </section>
 
-    <details>
-      <summary>Is this DRM?</summary>
-      <p class="small" style="color:var(--muted); margin:10px 0 0">
-        No heavy DRM. ContentBox focuses on permission, integrity, and auditability.
+    <section class="section">
+      <h2>What ContentBox is not</h2>
+
+      <ul class="muted">
+        <li>Not a streaming platform</li>
+        <li>Not a forced marketplace</li>
+        <li>Not a custody service</li>
+        <li>Not a token project</li>
+        <li>Not a growth funnel</li>
+      </ul>
+
+      <p>
+        ContentBox does not optimize for engagement.<br />
+        It optimizes for clarity, consent, and control.
       </p>
-    </details>
+    </section>
 
-    <details>
-      <summary>What about derivatives and clearance?</summary>
-      <p class="small" style="color:var(--muted); margin:10px 0 0">
-        Derivatives can be previewed privately by authorized stakeholders but require clearance before public release.
+    <section class="section">
+      <h2>Open and inspectable by design</h2>
+
+      <p>
+        ContentBox is built on standard, well-understood technologies
+        and local-first networking.
       </p>
-    </details>
-  </section>
 
-  <section class="section" id="repo">
-    <h2>GitHub</h2>
-    <p>
-      Source code and technical documentation:
-      <a class="btn primary" href="https://github.com/BEATiFYAUDIO/contentbox">github.com/BEATiFYAUDIO/contentbox</a>
-    </p>
-    <div class="notice">
-      <strong style="color:var(--text)">GitHub Pages:</strong>
-      place this file as <span class="mono">index.html</span> and enable Pages (main / root).
-    </div>
-  </section>
+      <p>
+        The full technical design, documentation, and source code
+        are available publicly.
+      </p>
 
-  <footer>
-    <div>
-      <div style="font-weight:900; color:var(--text)">ContentBox</div>
-      <div class="small">Creator-owned infrastructure. Play first, pay optionally.</div>
-    </div>
-    <div class="small"><span id="year"></span> · No trackers · No cookies</div>
-  </footer>
-</main>
+      <p class="cta">
+        <a href="https://github.com/BEATiFYAUDIO/contentbox" target="_blank" rel="noopener">
+          View the documentation on GitHub →
+        </a>
+      </p>
+    </section>
 
-<script>
-  document.getElementById("year").textContent = new Date().getFullYear();
+    <footer>
+      <p>
+        ContentBox is built on a simple belief:
+      </p>
 
-  const tabs = [
-    {btn:"tab-short", panel:"panel-short"},
-    {btn:"tab-creator", panel:"panel-creator"},
-    {btn:"tab-investor", panel:"panel-investor"},
-  ];
-  function selectTab(btnId){
-    for (const t of tabs){
-      const b = document.getElementById(t.btn);
-      const p = document.getElementById(t.panel);
-      const on = (t.btn === btnId);
-      b.setAttribute("aria-selected", on ? "true" : "false");
-      p.hidden = !on;
-    }
-  }
-  for (const t of tabs){
-    document.getElementById(t.btn).addEventListener("click", () => selectTab(t.btn));
-  }
-</script>
+      <p class="muted">
+        Creators should not need permission to publish.<br />
+        Access should be explicit and respected.<br />
+        Settlement should be honest.<br />
+        Infrastructure should be inspectable.
+      </p>
+    </footer>
+
+  </main>
 </body>
 </html>
