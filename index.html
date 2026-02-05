@@ -14,21 +14,20 @@
     :root{
       --bg:#070a10;
       --panel:rgba(255,255,255,0.06);
+      --panel2:rgba(255,255,255,0.08);
       --border:rgba(255,255,255,0.14);
+      --border2:rgba(255,255,255,0.18);
       --text:rgba(255,255,255,0.96);
       --muted:rgba(255,255,255,0.72);
       --focus:#00e1ff;
       --radius:18px;
       --wrap:1200px;
-      --gutter:22px;
-
-      /* ✅ Align nav with the “ContentBox” wordmark (skip the heart) */
-      --nav-align-offset: 190px; /* tweak this if you ever change the logo art */
+      --pad:22px;
+      --shadow:0 30px 90px rgba(0,0,0,0.65);
     }
 
     *{ box-sizing:border-box; }
     html{ font-size:clamp(16px,1.1vw,18px); }
-
     body{
       margin:0;
       font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
@@ -51,10 +50,11 @@
       border-radius:10px;
     }
 
+    /* ✅ One container rule everywhere = no asymmetry */
     .wrap{
       max-width:var(--wrap);
       margin:0 auto;
-      padding:0 var(--gutter);
+      padding:0 var(--pad);
     }
 
     /* ---------- Accessibility ---------- */
@@ -77,56 +77,50 @@
       position:sticky;
       top:0;
       z-index:50;
-      background:rgba(7,10,16,0.85);
-      backdrop-filter:blur(14px);
+      background:rgba(7,10,16,0.78);
+      backdrop-filter:blur(16px);
       border-bottom:1px solid var(--border);
     }
 
-    .site-header::after{
-      content:"";
-      display:block;
-      height:1px;
-      background:linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
-      opacity:0.6;
+    /* ✅ “symmetry rail”: forces equal left/right edges even on mobile */
+    .header-rail{
+      border-bottom:0px solid rgba(255,255,255,0.10);
+      background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.00));
     }
 
     .header-inner{
       display:grid;
-      grid-template-columns:auto 1fr auto; /* logo | nav space | mobile menu */
+      grid-template-columns:auto 1fr auto; /* brand | nav | menu */
       align-items:center;
-      gap:16px;
-      min-height:114px;
-      padding:10px 0;
+      gap:10px;
+      min-height:100px;
+      padding:6px 0;
     }
 
-    /* Logo viewport */
+    /* Brand */
     .brand{
       display:flex;
       align-items:center;
-      justify-content:flex-start;
       height:120px;
       overflow:hidden;
       min-width:0;
     }
-
     .brand img{
-      height:240px;
+      height:220px;        /* big on purpose */
       width:auto;
-      max-width:none;
+      max-width:100%;
       object-fit:contain;
       transform:translateY(-10px);
+      filter:drop-shadow(0 12px 28px rgba(0,0,0,0.45));
     }
 
-    /* ✅ Desktop nav aligned to wordmark */
+    /* Desktop nav */
     .nav-desktop{
-      justify-self:stretch;
+      justify-self:end;
       display:flex;
-      align-items:center;
-      justify-content:flex-start;          /* left-align inside the middle column */
       gap:6px;
+      align-items:center;
       white-space:nowrap;
-      padding-left:var(--nav-align-offset); /* pushes nav start to align w/ wordmark */
-      overflow:hidden;                      /* prevents weird edge clipping */
     }
     .nav-desktop a{
       padding:10px 14px;
@@ -135,8 +129,12 @@
       min-height:44px;
       display:flex;
       align-items:center;
+      border:1px solid transparent;
     }
-    .nav-desktop a:hover{ background:var(--panel); }
+    .nav-desktop a:hover{
+      background:rgba(255,255,255,0.06);
+      border-color:rgba(255,255,255,0.08);
+    }
 
     /* Mobile menu */
     .nav-mobile{
@@ -144,40 +142,26 @@
       position:relative;
       justify-self:end;
     }
-
     .nav-mobile summary{
       list-style:none;
       cursor:pointer;
+      padding:10px 12px;
+      border-radius:14px;
+      border:1px solid var(--border2);
+      background:rgba(255,255,255,0.06);
+      min-height:44px;
       width:56px;
-      height:56px;
-      display:grid;
-      place-items:center;
-
-      background: rgba(255,255,255,0.10);
-      border: 1px solid rgba(255,255,255,0.28);
-      border-radius: 16px;
-
-      box-shadow:
-        0 18px 50px rgba(0,0,0,0.55),
-        inset 0 1px 0 rgba(255,255,255,0.10);
-
-      -webkit-tap-highlight-color: transparent;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      box-shadow:0 14px 40px rgba(0,0,0,0.25);
     }
     .nav-mobile summary::-webkit-details-marker{ display:none; }
 
-    .nav-mobile summary:hover{
-      background: rgba(255,255,255,0.14);
-      border-color: rgba(255,255,255,0.36);
-    }
-
-    .nav-mobile[open] summary{
-      background: rgba(255,255,255,0.16);
-      border-color: rgba(255,255,255,0.42);
-    }
-
     .burger{
-      width:24px;
-      height:16px;
+      display:inline-block;
+      width:22px;
+      height:14px;
       position:relative;
     }
     .burger::before,
@@ -188,44 +172,36 @@
       left:0;
       right:0;
       height:2px;
-      background: rgba(255,255,255,0.92);
+      background:rgba(255,255,255,0.88);
       border-radius:999px;
     }
     .burger::before{ top:0; }
-    .burger span{ top:7px; }
     .burger::after{ bottom:0; }
+    .burger span{ top:6px; }
 
     .nav-drawer{
       position:absolute;
       right:0;
-      top:calc(100% + 10px);
+      top:calc(100% + 12px);
       min-width:260px;
       padding:10px;
-      border-radius:16px;
-      border:1px solid rgba(255,255,255,0.18);
-      background:rgba(7,10,16,0.96);
-      backdrop-filter:blur(14px);
+      border-radius:18px;
+      border:1px solid rgba(255,255,255,0.16);
+      background:rgba(7,10,16,0.92);
+      backdrop-filter:blur(16px);
       display:grid;
       gap:6px;
-      box-shadow:0 30px 90px rgba(0,0,0,0.65);
+      box-shadow:var(--shadow);
       z-index:100;
     }
     .nav-drawer a{
       padding:12px 12px;
-      border-radius:12px;
+      border-radius:14px;
       min-height:44px;
       display:flex;
       align-items:center;
     }
-    .nav-drawer a:hover{ background:var(--panel); }
-
-    @media (max-width: 1060px){
-      :root{ --nav-align-offset: 165px; } /* keeps alignment sane on narrower desktop */
-    }
-
-    @media (max-width: 930px){
-      :root{ --nav-align-offset: 140px; }
-    }
+    .nav-drawer a:hover{ background:rgba(255,255,255,0.06); }
 
     @media (max-width: 860px){
       .nav-desktop{ display:none; }
@@ -236,16 +212,35 @@
       }
     }
 
+    /* ✅ FIXED: mobile header looks “weird” because the brand and menu don’t share a baseline.
+       This makes the header a clean two-column row and centers everything visually. */
     @media (max-width: 520px){
-      :root{ --gutter:18px; }
+      :root{ --pad:18px; } /* slightly tighter, keeps symmetry */
       .header-inner{
-        min-height:126px;
-        padding:10px 0;
+        grid-template-columns: minmax(0,1fr) auto;
+        align-items:center;
+        min-height:140px;
+        padding:8px 0;
       }
-      .brand{ height:122px; }
+      .brand{
+        width:100%;
+        height:132px;
+        justify-content:flex-start;
+      }
       .brand img{
-        height:280px;
-        transform:translateY(-12px);
+        width:100%;
+        height:auto;
+        max-width:100%;
+        max-height:340px;
+        object-fit:contain;
+        transform:translateY(-14px);
+      }
+      .nav-mobile{
+        align-self:center;
+      }
+      .nav-drawer{
+        right:0;
+        min-width:min(320px, calc(100vw - (var(--pad) * 2)));
       }
     }
 
@@ -258,16 +253,11 @@
       margin:0 0 20px;
       letter-spacing:-0.02em;
     }
-
     h2{
       font-size:clamp(1.5rem, 3vw, 2rem);
       margin:0 0 14px;
     }
-
-    h3{
-      margin:0 0 8px;
-      font-size:1.05rem;
-    }
+    h3{ margin:0 0 8px; font-size:1.05rem; }
 
     p{
       max-width:72ch;
@@ -275,7 +265,6 @@
       margin:0;
       font-size:1rem;
     }
-
     ul{
       margin:12px 0 0;
       padding-left:20px;
@@ -295,11 +284,11 @@
     }
 
     .panel{
-      background:var(--panel);
-      border:1px solid rgba(255,255,255,0.16);
+      background:rgba(255,255,255,0.06);
+      border:1px solid rgba(255,255,255,0.14);
       border-radius:var(--radius);
       padding:22px;
-      box-shadow:0 18px 60px rgba(0,0,0,0.35);
+      box-shadow:0 26px 80px rgba(0,0,0,0.25);
     }
 
     .hero-actions{
@@ -313,17 +302,17 @@
       padding:14px 20px;
       border-radius:16px;
       border:1px solid rgba(255,255,255,0.16);
-      background:var(--panel);
+      background:rgba(255,255,255,0.06);
       font-weight:700;
       min-height:44px;
       font-size:0.95rem;
       display:inline-flex;
       align-items:center;
       justify-content:center;
-      box-shadow:0 16px 40px rgba(0,0,0,0.22);
+      box-shadow:0 18px 60px rgba(0,0,0,0.18);
     }
-
     .btn.primary{
+      border-color:rgba(255,255,255,0.18);
       background:linear-gradient(135deg, rgba(138,77,255,0.45), rgba(0,225,255,0.22));
     }
 
@@ -332,26 +321,21 @@
     .grid-3{ grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }
 
     .card{
-      background:var(--panel);
-      border:1px solid rgba(255,255,255,0.16);
+      background:rgba(255,255,255,0.06);
+      border:1px solid rgba(255,255,255,0.14);
       border-radius:var(--radius);
       padding:22px;
-      box-shadow:0 16px 55px rgba(0,0,0,0.28);
+      box-shadow:0 22px 70px rgba(0,0,0,0.22);
     }
 
     /* ---------- Screenshots ---------- */
     .shot{ cursor:zoom-in; display:block; }
-
     .shot img{
       border-radius:14px;
-      border:1px solid rgba(255,255,255,0.16);
+      border:1px solid rgba(255,255,255,0.14);
       transition:transform 140ms ease, filter 140ms ease;
     }
-
-    .shot:hover img{
-      transform:translateY(-1px);
-      filter:brightness(1.05);
-    }
+    .shot:hover img{ transform:translateY(-1px); filter:brightness(1.05); }
 
     /* ---------- Lightbox ---------- */
     .lightbox{
@@ -365,7 +349,6 @@
       z-index:1000;
     }
     .lightbox:target{ display:flex; }
-
     .lightbox img{
       position:relative;
       z-index:2;
@@ -376,12 +359,10 @@
       border:1px solid rgba(255,255,255,0.12);
       background:rgba(0,0,0,0.12);
     }
-
     .lightbox-bg{ position:absolute; inset:0; z-index:1; }
 
     .lightbox-close{
       position:absolute;
-      z-index:3;
       top:calc(18px + env(safe-area-inset-top, 0px));
       right:calc(18px + env(safe-area-inset-right, 0px));
       width:56px;
@@ -391,25 +372,16 @@
       font-size:34px;
       line-height:1;
       color:#fff;
-      background:rgba(0,0,0,0.45);
-      border:1px solid rgba(255,255,255,0.22);
-      border-radius:16px;
+      background:rgba(0,0,0,0.35);
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:14px;
       text-decoration:none;
       cursor:pointer;
       padding:0;
+      z-index:3;
     }
     .lightbox-close:hover,
     .lightbox-close:focus-visible{ background:rgba(255,255,255,0.12); }
-
-    @media (max-width: 520px){
-      .lightbox-close{
-        top:calc(12px + env(safe-area-inset-top, 0px));
-        right:calc(12px + env(safe-area-inset-right, 0px));
-        width:60px;
-        height:60px;
-        font-size:36px;
-      }
-    }
 
     /* ---------- Footer ---------- */
     footer{
@@ -424,26 +396,13 @@
   <a class="skip-link" href="#main">Skip to main content</a>
 
   <header class="site-header" role="banner">
-    <div class="wrap header-inner">
-      <a class="brand" href="#top" aria-label="ContentBox home">
-        <img src="docs/screenshots/logo.png" alt="ContentBox logo" />
-      </a>
+    <div class="header-rail">
+      <div class="wrap header-inner">
+        <a class="brand" href="#top" aria-label="ContentBox home">
+          <img src="docs/screenshots/logo.png" alt="ContentBox logo" />
+        </a>
 
-      <nav class="nav-desktop" aria-label="Primary navigation">
-        <a href="#why">Why</a>
-        <a href="#freedom">Built for freedom</a>
-        <a href="#how">How it works</a>
-        <a href="#product">Product</a>
-        <a href="#flows">Flows</a>
-        <a href="#next">What ships first</a>
-      </nav>
-
-      <details class="nav-mobile" id="mobileMenu">
-        <summary aria-label="Open menu">
-          <span class="burger" aria-hidden="true"><span></span></span>
-        </summary>
-
-        <nav class="nav-drawer" aria-label="Mobile navigation">
+        <nav class="nav-desktop" aria-label="Primary navigation">
           <a href="#why">Why</a>
           <a href="#freedom">Built for freedom</a>
           <a href="#how">How it works</a>
@@ -451,11 +410,27 @@
           <a href="#flows">Flows</a>
           <a href="#next">What ships first</a>
         </nav>
-      </details>
+
+        <details class="nav-mobile">
+          <summary aria-label="Open menu">
+            <span class="burger" aria-hidden="true"><span></span></span>
+          </summary>
+
+          <nav class="nav-drawer" aria-label="Mobile navigation">
+            <a href="#why">Why</a>
+            <a href="#freedom">Built for freedom</a>
+            <a href="#how">How it works</a>
+            <a href="#product">Product</a>
+            <a href="#flows">Flows</a>
+            <a href="#next">What ships first</a>
+          </nav>
+        </details>
+      </div>
     </div>
   </header>
 
   <main id="main">
+    <!-- HERO -->
     <section class="wrap" id="top">
       <div class="hero-grid">
         <div>
@@ -491,6 +466,7 @@
       </div>
     </section>
 
+    <!-- WHY -->
     <section id="why" class="wrap">
       <h2>Why ContentBox</h2>
       <p>
@@ -524,6 +500,7 @@
       </div>
     </section>
 
+    <!-- BUILT FOR FREEDOM -->
     <section id="freedom" class="wrap">
       <h2>Built for freedom</h2>
       <p>
@@ -558,6 +535,7 @@
       </div>
     </section>
 
+    <!-- HOW -->
     <section id="how" class="wrap">
       <h2>How it works</h2>
       <p>
@@ -590,6 +568,7 @@
       </div>
     </section>
 
+    <!-- PRODUCT -->
     <section id="product" class="wrap">
       <h2>Product screenshots</h2>
       <p>
@@ -610,6 +589,7 @@
       </div>
     </section>
 
+    <!-- FLOWS -->
     <section id="flows" class="wrap">
       <h2>Core flows</h2>
       <p>
@@ -644,6 +624,7 @@
       </div>
     </section>
 
+    <!-- WHAT SHIPS FIRST -->
     <section id="next" class="wrap">
       <h2>What ships first</h2>
       <p>
@@ -678,6 +659,7 @@
       </div>
     </section>
 
+    <!-- Lightboxes -->
     <div id="shot1" class="lightbox" role="dialog" aria-modal="true" aria-label="Library view">
       <a class="lightbox-bg" href="#product" aria-label="Close"></a>
       <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
@@ -704,10 +686,12 @@
   </footer>
 
   <script>
+    // Footer year
     document.getElementById("year").textContent = new Date().getFullYear();
 
+    // Mobile menu auto-close (link click, outside click, Escape)
     (function () {
-      const menu = document.getElementById("mobileMenu");
+      const menu = document.querySelector(".nav-mobile");
       if (!menu) return;
 
       menu.querySelectorAll("a").forEach((a) => {
