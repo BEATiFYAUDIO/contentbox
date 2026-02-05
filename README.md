@@ -1,349 +1,346 @@
-# Contentbox — Local-first sharing & invites
+# ContentBox — Local-first sharing, invites, and P2P collaboration
 
-This README explains how to run Contentbox locally, create invites, and accept them across machines on a LAN. It covers a quick Docker-based setup and a developer flow (run API + dashboard from source). It also explains the stronger P2P acceptance flow where invitees run their own node and cryptographically sign acceptance.
+ContentBox is a **local-first content collaboration system** designed to work on a single machine or across trusted peers (for example, on a LAN). It allows creators to define ownership splits, invite collaborators, and record verifiable proofs of participation — without requiring a centralized platform.
 
-Contents
-- Overview
-- Quick (Docker) start
-- Developer/local start (owner)
-- Developer/local start (invitee)
-- Create invites (owner)
-- Accept invites (invitee)
-- P2P / signed acceptance
-- Proofs (split lock) and proof.json
-- Payments V1 (Lightning credits + receipts + spend)
-- Derivatives (remix/mashup) + settlement
-- .env examples
-- Troubleshooting
-- Next steps and recommended installer approach
+This repository contains **development tooling and reference implementations**. It is intended for **local use, experimentation, and architectural exploration**, not as a hardened production service exposed directly to the public internet.
+
+---
+
+## What this README is (and is not)
+
+**This README covers:**
+
+* Running ContentBox locally for development or testing
+* Creating and accepting collaboration invites on a trusted network
+* The architecture and data model behind invites, proofs, and settlement
+* Optional payment and entitlement designs (documented, not required)
+
+**This README does NOT imply:**
+
+* Production readiness
+* Internet-facing security hardening
+* Custodial responsibility for funds
+* A hosted service or platform offering
+
+If you only want to **try ContentBox locally**, you can safely ignore the sections on cryptographic proofs, payments, and settlement.
+
+---
+
+## Contents
+
+* Overview
+* Local development setup (Docker)
+* Running the owner node (local)
+* Running an invitee node (optional)
+* Creating invites
+* Accepting invites (quick flow)
+* Signed P2P acceptance (design + optional flow)
+* Proofs and split locking
+* Payments (design overview, optional)
+* Derivatives and settlement (design overview)
+* Environment configuration (examples)
+* Troubleshooting
+* Next steps
 
 ---
 
 ## Overview
 
-Contentbox is a local-first content sharing system. Owners create content and "split" definitions (who gets what share). The owner can generate invite links for participants. Invite links are secret tokens shown once at creation; the server stores only a hash of the token for security.
+ContentBox is a **local-first content collaboration system**.
 
-There are two acceptance modes:
-- Quick accept: invitee opens the owner's invite URL in a browser and clicks Accept. This works without the invitee running a local node.
-- P2P signed accept: the invitee runs their own Contentbox node, signs an acceptance payload locally, and sends the signed payload to the owner API. The owner verifies the signature by fetching the invitee node's public key and records cryptographic proof.
+An owner:
 
+* Creates content
+* Defines a split (participants + percentages)
+* Generates invite links for collaborators
 
-## Quick (Docker) start — recommended for testing on both Linux & Windows (via Docker Desktop)
+Invite links are **single-use secret tokens**. Only a hash of each token is stored server-side; the raw token is shown once and is not recoverable later.
 
-This will start Postgres and MinIO used by Contentbox. It does not yet start the API/dashboard in containers (the repo contains dev scripts). Use the Docker services as a shared backend and run API + dashboard from source.
+### Invite acceptance modes
 
-From the repo root:
+There are two supported acceptance modes:
+
+1. **Quick accept (default)**
+   The invitee opens the invite URL in a browser and clicks **Accept**.
+   This does not require the invitee to run their own node.
+
+2. **Signed P2P accept (optional, advanced)**
+   The invitee runs their own ContentBox node, signs an acceptance payload locally, and submits the signed payload to the owner.
+   This produces cryptographic proof of acceptance.
+
+---
+
+## Local development setup (Docker)
+
+Docker is used to start shared infrastructure services for local development.
+
+This setup starts:
+
+* PostgreSQL
+* MinIO (object storage)
+
+It does **not** expose a hosted service or run containers intended for public use.
+
+From the repository root:
 
 ```bash
 cd infra
 docker compose up -d
 ```
 
-Verify containers:
+Verify services:
 
 ```bash
 docker compose ps
 ```
 
-This starts Postgres on `localhost:5432` and MinIO on `localhost:9000`.
+Default local services:
 
+* PostgreSQL: `localhost:5432`
+* MinIO: `localhost:9000`
 
-## Developer/local start (owner)
+---
 
-These steps run the API and dashboard from source on the owner machine. We'll assume:
-- Owner machine LAN IP: `192.168.1.10` (replace with your actual IP)
-- API port: `4000`
-- Dashboard (Vite) port: `5173`
+## Running the owner node (local)
 
-1) Create API .env at `apps/api/.env` (see example below).
+These steps run the ContentBox API and dashboard from source on a local machine.
 
-2) Install dependencies and prepare Prisma (run once):
+Assumptions (example values only):
+
+* API port: `4000`
+* Dashboard port: `5173`
+* LAN access only
+
+### 1. API setup
+
+Create an environment file at:
+
+```
+apps/api/.env
+```
+
+(see **Environment configuration** below)
+
+Install dependencies and prepare Prisma (run once):
 
 ```bash
-cd /home/Darryl/Projects/contentbox/apps/api
+cd /path/to/contentbox/apps/api
 npm install
 npm run prisma:generate
-# apply migrations (dev)
 npx prisma migrate dev --name init
 ```
 
-3) Start the API (dev mode):
+Start the API:
 
 ```bash
 npm run dev
 ```
 
-The API listens on 0.0.0.0:4000. Ensure your firewall allows inbound connections to the API from the invitee machine if they will connect directly.
-
-4) Start the dashboard and point it to the owner API (so invite pages and accept calls work):
-
-```bash
-cd /home/Darryl/Projects/contentbox/apps/dashboard
-# ensure VITE_API_URL points to owner API and Vite serves on the network
-VITE_API_URL="http://192.168.1.10:4000" npm run dev -- --host 0.0.0.0 --port 5173
-```
-
-Open the owner dashboard in a browser at `http://192.168.1.10:5173`.
-
-
-## Developer/local start (invitee)
-
-For the quick accept flow the invitee does NOT need to run their own node — they simply open the invite URL served by the owner and accept. To test the stronger P2P signed flow, the invitee should run their own local API + dashboard as well.
-
-Invitee API `/apps/api` .env should set `APP_BASE_URL` to the invitee dashboard origin (e.g., `http://192.168.1.20:5173`). The invitee dashboard must be started with `VITE_API_URL` pointing at the owner API (so the invite page sends the signed acceptance to the owner API):
-
-```bash
-cd /path/to/contentbox/apps/dashboard
-# replace 192.168.1.10 with owner API host
-VITE_API_URL="http://192.168.1.10:4000" npm run dev -- --host 0.0.0.0 --port 5173
-```
-
-On Windows PowerShell:
-
-```powershell
-cd C:\path\to\contentbox\apps\dashboard
-$env:VITE_API_URL = "http://192.168.1.10:4000"
-npm run dev -- --host 0.0.0.0 --port 5173
-```
-
-
-## Create invites (owner)
-
-1. Sign up and log in to the owner dashboard.
-2. Create a content item (Content Library).
-3. Open the Splits page for that content, set participants and percentages (total must equal 100).
-4. Click **Create invites**. The Splits UI will create Invitation rows and immediately show the invite URLs (one-time token value) under **Created invites**.
-
-Important: copy the invite URL immediately — the server stores only a hash, so the raw token is not recoverable later. You can still view pending invites under `Invite` => "Your outgoing invites" when signed in, but that view does not include token values.
-
-
-## Accept invites (invitee) — quick flow
-
-- Open the invite URL (example `http://192.168.1.10:5173/invite/<token>`) in your browser and click Accept. This posts to the owner API and marks the invitation accepted.
-
-This quick option is the easiest for local testing and for collaborators who do not run their own node.
-
-
-## P2P / signed acceptance (strong verification)
-
-This is recommended if you want cryptographic proof of acceptance:
-
-- Invitee runs their own Contentbox API + dashboard (as described above).
-- The invitee signs acceptance locally via the endpoint `/local/sign-acceptance` (the dashboard does this automatically when you are signed in) and then submits the signed payload+signature to the owner API `/invites/:token/accept`.
-- The owner verifies the signature by fetching `/.well-known/contentbox` from the invitee node to obtain its public key and records verification metadata in audit events.
-
-Network notes:
-- Invitee node must be reachable by the owner API at the `nodeUrl` the invitee includes in the signed payload (the dashboard sets `nodeUrl` to the invitee dashboard origin by default).
-
-## Proofs (split lock) and proof.json
-
-When a split version is **locked**, Contentbox generates a canonical `proof.json` and a stable `proofHash`. The proof anchors later payments and receipts.
-
-What happens on lock:
-- The API builds a canonical payload (stable key order, stable numeric strings) that excludes local-only fields.
-- It writes `proofs/v{N}/proof.json` into the content repo and commits it.
-- It returns `proofHash`, `manifestHash`, and `splitsHash`.
-
-Proof fields include:
-- `proofVersion`
-- `contentId`
-- `splitVersion` (e.g. "v1")
-- `lockedAt` (ISO)
-- `manifestHash`
-- `primaryFileSha256`
-- `splits` (participants)
-- `creatorId`
-
-Where proof lives in the repo:
-```
-<CONTENTBOX_ROOT>/<type>s/<repo>/
-  proofs/v1/proof.json
-```
-
-UI surfacing:
-- Splits page (locked version) shows proof hash / manifest hash / splits hash with copy actions.
-- "View proof.json" opens a modal; "Export proof.json" downloads it.
-
-API endpoints:
-- Lock by version: `POST /content/:contentId/splits/:version/lock`
-- Read proof: `GET /content/:contentId/splits/:version/proof`
-
-## Payments V1 (Lightning credits + receipts + spend)
-
-V1 payments are **credits-based** and anchored to a `proofHash`:
-- Buyer purchases time units (30s each).
-- Node verifies Lightning payment and issues a receipt.
-- Playback spends units to keep access.
-
-### Payment providers
-Configured via env:
-- `PAYMENT_PROVIDER=lnd|btcpay|none` (default: `lnd`)
-
-LND (REST):
-- `LND_REST_URL`
-- `LND_MACAROON_HEX` (or path to macaroon file)
-- `LND_TLS_CERT_PATH` (or PEM string)
-
-BTCPay (optional):
-- `BTCPAY_URL`
-- `BTCPAY_API_KEY`
-- `BTCPAY_STORE_ID`
-
-If `PAYMENT_PROVIDER=none`, UI still renders but invoice creation fails with a clear message.
-
-### Credit purchase flow
-1. User locks a split and gets a `proofHash`.
-2. User generates an invoice for `units` (30s per unit).
-3. User pays BOLT11.
-4. On paid, the node issues `receipts/<receiptId>.json` and commits it.
-
-Receipt location in repo:
-```
-<CONTENTBOX_ROOT>/<type>s/<repo>/
-  receipts/<receiptId>.json
-```
-
-## Payments V1 (content purchase unlocks manifest)
-
-This flow is the simplest “get paid” for content downloads/streaming. It is **separate** from the credit system above.
-
-Flow:
-1. Client requests a payment intent for a specific `contentId` + `manifestSha256`.
-2. API returns an on-chain BTC address (always) and an optional Lightning invoice (LNbits).
-3. Client polls `refresh` until the intent becomes `paid`.
-4. On paid, the API creates an `Entitlement(contentId, manifestSha256)` and runs settlement.
-5. Client calls `/api/content/:id/access?manifestSha256=...` to retrieve manifest + file list.
-
-Endpoints:
-- `POST /api/payments/intents` → creates intent + returns on-chain address (and LN invoice if configured)
-- `GET /api/payments/intents/:id` → status check
-- `POST /api/payments/intents/:id/refresh` → checks payment, marks paid, finalizes purchase
-- `GET /api/content/:id/access?manifestSha256=...` → entitlement gate
-
-Lightning (optional, LNbits):
-- `LNBITS_URL`
-- `LNBITS_INVOICE_KEY`
-
-On-chain (required):
-- Prefer RPC wallet (bitcoind): `BITCOIND_RPC_URL`, `BITCOIND_RPC_USER`, `BITCOIND_RPC_PASS`, `BITCOIND_WALLET` (optional)
-- Fallback XPUB: `ONCHAIN_RECEIVE_XPUB` (stores derivation index on the intent)
-
-### Playback gating (credits spend)
-The client calls `POST /v1/stream/spend` with a `receiptId` and `unitIndex`.
-- If valid, a spend row is recorded and a short-lived `streamPermitToken` is returned.
-- If out of credits or already spent, the request is rejected.
-
-### Payments API (auth required)
-- `GET /v1/payments/price?proofHash=...`
-- `POST /v1/payments/quote` `{ proofHash, units }`
-- `POST /v1/payments/invoice` `{ proofHash, units }`
-- `GET /v1/payments/status/:purchaseId`
-- `GET /v1/payments/receipt/:purchaseId`
-- `POST /v1/stream/spend` `{ receiptId, unitIndex, sessionId? }`
-
-### Minimal UI
-On locked splits:
-- "Buy playback credits" with units input
-- Generate invoice
-- Copy BOLT11
-- Poll status until paid
-- Show receiptId
-
-## Derivatives (remix/mashup) + settlement
-
-Derivative works are **new content records** with their own files, manifest, and split. Parents are linked via `ContentLink`.
-
-Flow overview:
-1) Create derivative (child):
-   - `POST /api/content/:parentId/derivative`
-   - Creates child content + repo + draft split.
-2) Upload files to the child content (same upload endpoint).
-3) Create manifest:
-   - `POST /api/content/:contentId/manifest`
-4) Publish:
-   - `POST /api/content/:contentId/publish`
-   - Validates split sum == 10000 and upstream sum <= 10000.
-
-Upstream semantics (Option 1):
-- Each parent link has `upstreamBps` which is a **direct** share of the child’s net revenue routed to that parent.
-- Sum of upstreamBps across parents must be <= 10000.
-
-2-stage settlement (when PaymentIntent is PAID):
-- Stage 1: allocate upstream pools per parent (basis points of child net).
-- Stage 2: allocate remaining sats by child split bps.
-- Parent pools are distributed by each parent’s locked split.
-All math is BigInt sats with deterministic rounding (leftover to largest bps).
-
-
-## .env examples
-
-Owner `apps/api/.env` (Linux example)
-
-```
-DATABASE_URL="postgres://contentbox:contentbox_dev_password@127.0.0.1:5432/contentbox"
-JWT_SECRET="dev-secret-change-me"
-CONTENTBOX_ROOT="/home/youruser/.contentbox"
-APP_BASE_URL="http://192.168.1.10:5173"
-PORT=4000
-PAYMENT_PROVIDER="lnd"
-RATE_SATS_PER_UNIT=100
-LND_REST_URL="https://127.0.0.1:8080"
-LND_MACAROON_HEX="..."
-LND_TLS_CERT_PATH="/path/to/tls.cert"
-```
-
-Invitee `apps/api/.env` (Windows example)
-
-```
-DATABASE_URL="postgres://contentbox:contentbox_dev_password@127.0.0.1:5432/contentbox"
-JWT_SECRET="dev-secret-invitee"
-CONTENTBOX_ROOT="C:\\Users\\Invitee\\.contentbox"
-APP_BASE_URL="http://192.168.1.20:5173"
-PORT=4000
-PAYMENT_PROVIDER="lnd"
-RATE_SATS_PER_UNIT=100
-LND_REST_URL="https://127.0.0.1:8080"
-LND_MACAROON_HEX="..."
-LND_TLS_CERT_PATH="C:\\path\\to\\tls.cert"
-```
-
-
-## Troubleshooting
-
-- Invite page empty / no token shown:
-  - Make sure the owner clicked **Create invites** and copied the invite URL immediately.
-  - If you are the owner and you don't see created invite URLs, after clicking the button check the Splits page area labeled **Created invites**.
-  - If you see a pending invite under **Invite** (outgoing invites) but no token, that is expected — tokens are intentionally not stored in recoverable form.
-
-- `npx tsc` or other CLI errors in this environment:
-  - Ensure dev dependencies are installed (`npm install`) and run `npm run dev` which uses `tsx` for the API and `vite` for the dashboard.
-
-- Network connectivity:
-  - When testing across machines ensure the API port (4000) and dashboard port (5173) are reachable across the LAN and not blocked by a firewall.
-- Payments returning "Payments are disabled":
-  - Ensure `PAYMENT_PROVIDER` is not `none` and LND/BTCPay env vars are set.
-- Receipt not issued after paid:
-  - Call `GET /v1/payments/receipt/:purchaseId` after status is `paid`. Receipt issuance is idempotent and happens on-demand.
-
-
-## Next steps / Installer recommendation
-
-For a simple cross-platform installer experience, I recommend using Docker Compose plus a tiny wrapper script that:
-- Ensures Docker (or Docker Desktop) is present,
-- Starts the infra stack (Postgres & MinIO),
-- Optionally starts the API & dashboard in containers or instructs the user to run the dev commands.
-
-If you'd like, I can:
-- Add a `docker-compose` service for the API and dashboard for a single `docker compose up -d` dev environment.
-- Add a short `install.sh` and `install.ps1` that automate Node/npm install + env creation + run steps for native installs.
-
-Tell me which next step you'd like (Docker-run everything or native installer scripts), and I will implement it.
+The API listens on `0.0.0.0:4000`.
+Only expose this port on **trusted networks**.
 
 ---
 
-If you want a concise one-line checklist to pass to your collaborator for the fast path, here it is:
+### 2. Dashboard setup
 
-1. Owner: open Splits → Create invites → copy the invite URL.
-2. Invitee: open the invite URL in browser → click Accept.
+Start the dashboard and point it at the owner API:
 
-If you want the stronger P2P flow, reply and I will add scripts and a packaged Docker compose that runs API + dashboard containers so you can install the same image on both machines and test the signed acceptance flow.
+```bash
+cd /path/to/contentbox/apps/dashboard
+VITE_API_URL="http://<owner-host>:4000" npm run dev -- --host 0.0.0.0 --port 5173
+```
+
+Open in a browser:
+
+```
+http://<owner-host>:5173
+```
+
+---
+
+## Running an invitee node (optional)
+
+For the **quick accept** flow, the invitee does **not** need to run ContentBox locally.
+
+To test the **signed P2P acceptance** flow, the invitee runs their own local API + dashboard.
+
+Key points:
+
+* The invitee node is still local-first
+* The owner must be able to reach the invitee node on a trusted network
+* No public internet exposure is assumed or required
+
+---
+
+## Creating invites (owner)
+
+1. Log in to the owner dashboard
+2. Create a content item
+3. Open the **Splits** page
+4. Define participants and percentages (must total 100)
+5. Click **Create invites**
+
+Invite URLs are shown **once** at creation time.
+
+Important:
+
+* Copy invite URLs immediately
+* Only a hash of each token is stored
+* Tokens cannot be recovered later
+
+---
+
+## Accepting invites (quick flow)
+
+Invitees can accept without running their own node:
+
+1. Open the invite URL in a browser
+2. Click **Accept**
+
+The owner API records the acceptance.
+
+This is the recommended flow for most collaborators.
+
+---
+
+## Signed P2P acceptance (advanced, optional)
+
+For stronger verification:
+
+* Invitee runs a local ContentBox node
+* Invitee signs acceptance locally
+* Signed payload is sent to the owner
+* Owner verifies the signature using the invitee’s published public key
+* Verification metadata is recorded as an audit event
+
+This flow is optional and intended for cases where cryptographic proof of acceptance is required.
+
+---
+
+## Proofs and split locking
+
+When a split version is **locked**, ContentBox generates a canonical `proof.json` and a stable `proofHash`.
+
+Proofs are:
+
+* Deterministic
+* Human-readable
+* Commit-tracked
+* Used as anchors for downstream processes
+
+Example location:
+
+```
+<CONTENTBOX_ROOT>/<type>s/<repo>/proofs/v1/proof.json
+```
+
+Proofs include:
+
+* content identifier
+* split version
+* participant shares
+* manifest hash
+* timestamps
+
+---
+
+## Payments (design overview — optional)
+
+⚠️ **Payments are optional and NOT required to run or test ContentBox.**
+This section documents architecture and interfaces only.
+
+Playback and collaboration **do not depend on blockchain or payment systems**.
+
+Payment modules are designed to:
+
+* Issue receipts
+* Record entitlements
+* Anchor settlement to proofs
+
+Default and recommended setting for development:
+
+```env
+PAYMENT_PROVIDER=none
+```
+
+No real credentials should ever be committed to this repository.
+
+---
+
+## Derivatives and settlement (design overview)
+
+Derivative works are modeled as new content records linked to parent content.
+
+Key principles:
+
+* Derivatives have their own manifests and splits
+* Parents may receive upstream revenue shares
+* Settlement math is deterministic and auditable
+
+This section describes the model and data flow, not a production deployment.
+
+---
+
+## Environment configuration (examples)
+
+All examples below are **non-production** and intentionally incomplete.
+
+Owner API example:
+
+```env
+DATABASE_URL="postgres://contentbox:contentbox_dev_password@127.0.0.1:5432/contentbox"
+JWT_SECRET="dev-secret-change-me"
+CONTENTBOX_ROOT="~/.contentbox"
+APP_BASE_URL="http://<owner-host>:5173"
+PORT=4000
+PAYMENT_PROVIDER=none
+```
+
+Invitee API example:
+
+```env
+DATABASE_URL="postgres://contentbox:contentbox_dev_password@127.0.0.1:5432/contentbox"
+JWT_SECRET="dev-secret-invitee"
+CONTENTBOX_ROOT="~/.contentbox-invitee"
+APP_BASE_URL="http://<invitee-host>:5173"
+PORT=4000
+PAYMENT_PROVIDER=none
+```
+
+Never commit real secrets.
+
+---
+
+## Troubleshooting
+
+* Invite token missing
+  Tokens are shown once by design. Pending invites do not reveal tokens.
+
+* Network connectivity issues
+  Ensure API and dashboard ports are reachable on the trusted network.
+
+* Payments unavailable
+  Expected if `PAYMENT_PROVIDER=none`.
+
+---
+
+## Next steps
+
+Planned improvements include:
+
+* Simplified installers
+* Optional containerized API/dashboard
+* Improved P2P discovery
+* Desktop-first packaging
+
+ContentBox is intentionally built as **software you run**, not a platform you join.
+
+---
+
+### Fast path for collaborators
+
+1. Owner: create invite and copy URL
+2. Invitee: open URL and click **Accept**
+
+That’s it.
+
