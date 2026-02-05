@@ -11,423 +11,406 @@
   />
 
   <style>
-    :root {
-      --bg: #070a10;
-      --panel: rgba(255,255,255,0.06);
-      --border: rgba(255,255,255,0.14);
-      --text: rgba(255,255,255,0.96);
-      --muted: rgba(255,255,255,0.72);
-      --focus: #00e1ff;
-      --radius: 18px;
+    :root{
+      --bg:#070a10;
+      --panel:rgba(255,255,255,0.06);
+      --border:rgba(255,255,255,0.14);
+      --text:rgba(255,255,255,0.96);
+      --muted:rgba(255,255,255,0.72);
+      --focus:#00e1ff;
+      --radius:18px;
     }
 
-    * { box-sizing: border-box; }
-    html { font-size: clamp(16px, 1.1vw, 18px); }
+    *{ box-sizing:border-box; }
+    html{ font-size:clamp(16px,1.1vw,18px); }
 
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
       background:
         radial-gradient(900px 600px at 10% -10%, rgba(0,225,255,0.12), transparent 55%),
         radial-gradient(800px 500px at 90% 10%, rgba(138,77,255,0.18), transparent 55%),
         var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-      overflow-x: hidden;
-      text-rendering: optimizeLegibility;
+      color:var(--text);
+      line-height:1.6;
+      overflow-x:hidden;
+      text-rendering:optimizeLegibility;
     }
 
-    a { color: inherit; text-decoration: none; }
-    img { max-width: 100%; display: block; }
+    a{ color:inherit; text-decoration:none; }
+    img{ max-width:100%; display:block; }
 
-    :focus-visible {
-      outline: 3px solid var(--focus);
-      outline-offset: 3px;
-      border-radius: 10px;
+    :focus-visible{
+      outline:3px solid var(--focus);
+      outline-offset:3px;
+      border-radius:10px;
     }
 
-    .wrap {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 0 22px;
+    .wrap{
+      max-width:1200px;
+      margin:0 auto;
+      padding:0 22px;
     }
+
+    /* ---------- Accessibility ---------- */
+    .skip-link{
+      position:absolute;
+      left:12px;
+      top:12px;
+      padding:12px 14px;
+      background:#000;
+      color:#fff;
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:12px;
+      transform:translateY(-220%);
+      z-index:2000;
+    }
+    .skip-link:focus{ transform:translateY(0); }
 
     /* ---------- Header ---------- */
-    .site-header {
-      position: sticky;
-      top: 0;
-      z-index: 50;
-      background: rgba(7,10,16,0.85);
-      backdrop-filter: blur(14px);
-      border-bottom: 1px solid var(--border);
+    .site-header{
+      position:sticky;
+      top:0;
+      z-index:50;
+      background:rgba(7,10,16,0.85);
+      backdrop-filter:blur(14px);
+      border-bottom:1px solid var(--border);
     }
 
-    .header-inner {
-      display: grid;
-      grid-template-columns: auto 1fr auto; /* logo | spacer | menu */
-      align-items: center;
-      gap: 16px;
-      min-height: 114px; /* matched to logo so it never feels cramped */
-      padding: 10px 0;
+    .header-inner{
+      display:grid;
+      grid-template-columns:auto 1fr auto; /* logo | spacer | nav/menu */
+      align-items:center;
+      gap:16px;
+      min-height:114px;
+      padding:10px 0;
     }
 
-     /* A fixed “window” for the logo */
-/* Logo container: acts like a viewport */
-.brand {
-  display: flex;
-  align-items: center;
-  height: 120px;        /* controls header height */
-  overflow: hidden;    /* trims transparent padding */
-}
+    /* Logo “viewport” (so we can visually trim padding inside the PNG) */
+    .brand{
+      display:flex;
+      align-items:center;
+      height:120px;
+      overflow:hidden;
+      min-width:0;
+    }
 
-/* Logo itself: deliberately oversized */
-.brand img {
-  height: 240px;        /* BIG on purpose */
-  width: auto;
-  max-width: none;      /* do NOT cap width */
-  object-fit: contain;
-  transform: translateY(-10px); /* pull art into center */
-}
-
+    .brand img{
+      height:240px;        /* BIG on purpose */
+      width:auto;
+      max-width:none;      /* no cap, let it breathe */
+      object-fit:contain;
+      transform:translateY(-10px);
+    }
 
     /* Desktop nav */
-    .nav-desktop {
-      justify-self: end;
-      display: flex;
-      gap: 6px;
-      align-items: center;
-      white-space: nowrap;
+    .nav-desktop{
+      justify-self:end;
+      display:flex;
+      gap:6px;
+      align-items:center;
+      white-space:nowrap;
     }
-
-    .nav-desktop a {
-      padding: 10px 14px;
-      font-size: 0.95rem;
-      border-radius: 12px;
+    .nav-desktop a{
+      padding:10px 14px;
+      font-size:0.95rem;
+      border-radius:12px;
+      min-height:44px;
+      display:flex;
+      align-items:center;
     }
-
-    .nav-desktop a:hover {
-      background: var(--panel);
-    }
+    .nav-desktop a:hover{ background:var(--panel); }
 
     /* Mobile menu */
-    .nav-mobile { display: none; position: relative; justify-self: end; }
-
-    .nav-mobile summary {
-      list-style: none;
-      cursor: pointer;
-      padding: 10px 12px;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      background: var(--panel);
-      min-height: 44px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+    .nav-mobile{
+      display:none;
+      position:relative;
+      justify-self:end;
     }
-    .nav-mobile summary::-webkit-details-marker { display: none; }
 
-    .burger {
-      display: inline-block;
-      width: 22px;
-      height: 14px;
-      position: relative;
+    .nav-mobile summary{
+      list-style:none;
+      cursor:pointer;
+      padding:10px 12px;
+      border-radius:12px;
+      border:1px solid var(--border);
+      background:var(--panel);
+      min-height:44px;
+      width:54px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .nav-mobile summary::-webkit-details-marker{ display:none; }
+
+    .burger{
+      display:inline-block;
+      width:22px;
+      height:14px;
+      position:relative;
     }
     .burger::before,
     .burger::after,
-    .burger span {
-      content: "";
-      position: absolute;
-      left: 0;
-      right: 0;
-      height: 2px;
-      background: rgba(255,255,255,0.88);
-      border-radius: 999px;
+    .burger span{
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      height:2px;
+      background:rgba(255,255,255,0.88);
+      border-radius:999px;
     }
-    .burger::before { top: 0; }
-    .burger::after  { bottom: 0; }
-    .burger span    { top: 6px; }
+    .burger::before{ top:0; }
+    .burger::after{ bottom:0; }
+    .burger span{ top:6px; }
 
-    .nav-drawer {
-      position: absolute;
-      right: 0;
-      top: calc(100% + 10px);
-      min-width: 250px;
-      padding: 10px;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: rgba(7,10,16,0.96);
-      backdrop-filter: blur(14px);
-      display: grid;
-      gap: 6px;
-      box-shadow: 0 30px 90px rgba(0,0,0,0.65);
+    .nav-drawer{
+      position:absolute;
+      right:0;
+      top:calc(100% + 10px);
+      min-width:260px;
+      padding:10px;
+      border-radius:16px;
+      border:1px solid var(--border);
+      background:rgba(7,10,16,0.96);
+      backdrop-filter:blur(14px);
+      display:grid;
+      gap:6px;
+      box-shadow:0 30px 90px rgba(0,0,0,0.65);
+      z-index:100;
+    }
+    .nav-drawer a{
+      padding:12px 12px;
+      border-radius:12px;
+      min-height:44px;
+      display:flex;
+      align-items:center;
+    }
+    .nav-drawer a:hover{ background:var(--panel); }
+
+    @media (max-width: 860px){
+      .nav-desktop{ display:none; }
+      .nav-mobile{ display:block; }
+      .header-inner{
+        min-height:112px;
+        padding:8px 0;
+      }
     }
 
-    .nav-drawer a {
-      padding: 12px 12px;
-      border-radius: 12px;
-    }
-    .nav-drawer a:hover {
-      background: var(--panel);
-    }
-
-    @media (max-width: 860px) {
-      .nav-desktop { display: none; }
-      .nav-mobile { display: block; }
-      .header-inner {
-  min-height: 120px;
-  padding: 6px 0;
-}
-
-      .brand img {
-        height: 88px;
-        max-width: 340px;
+    /* Mobile logo sizing: keep it big */
+    @media (max-width: 520px){
+      .header-inner{
+        min-height:108px;
+        padding:6px 0;
+      }
+      .brand{
+        height:104px;
+      }
+      .brand img{
+        height:240px;
+        transform:translateY(-6px);
       }
     }
 
     /* ---------- Sections ---------- */
-    section {
-      padding: clamp(56px, 8vw, 96px) 0;
+    section{
+      padding:clamp(56px, 8vw, 96px) 0;
     }
 
-    h1 {
-      font-size: clamp(2.4rem, 6vw, 3.6rem);
-      line-height: 1.05;
-      margin: 0 0 20px;
-      letter-spacing: -0.02em;
+    h1{
+      font-size:clamp(2.4rem, 6vw, 3.6rem);
+      line-height:1.05;
+      margin:0 0 20px;
+      letter-spacing:-0.02em;
     }
 
-    h2 {
-      font-size: clamp(1.5rem, 3vw, 2rem);
-      margin: 0 0 14px;
+    h2{
+      font-size:clamp(1.5rem, 3vw, 2rem);
+      margin:0 0 14px;
     }
 
-    h3 {
-      margin: 0 0 8px;
-      font-size: 1.05rem;
+    h3{
+      margin:0 0 8px;
+      font-size:1.05rem;
     }
 
-    p {
-      max-width: 72ch;
-      color: var(--muted);
-      margin: 0;
-      font-size: 1rem;
+    p{
+      max-width:72ch;
+      color:var(--muted);
+      margin:0;
+      font-size:1rem;
     }
 
-    ul {
-      margin: 12px 0 0;
-      padding-left: 20px;
-      color: var(--muted);
+    ul{
+      margin:12px 0 0;
+      padding-left:20px;
+      color:var(--muted);
     }
-
-    li { margin: 8px 0; }
+    li{ margin:8px 0; }
 
     /* ---------- Hero ---------- */
-    .hero-grid {
-      display: grid;
-      grid-template-columns: 1.2fr 0.8fr;
-      gap: 28px;
-      align-items: start;
+    .hero-grid{
+      display:grid;
+      grid-template-columns:1.2fr 0.8fr;
+      gap:28px;
+      align-items:start;
+    }
+    @media (max-width: 900px){
+      .hero-grid{ grid-template-columns:1fr; }
     }
 
-    @media (max-width: 900px) {
-      .hero-grid { grid-template-columns: 1fr; }
+    .panel{
+      background:var(--panel);
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      padding:22px;
     }
 
-    .panel {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 22px;
+    .hero-actions{
+      display:flex;
+      gap:14px;
+      margin-top:24px;
+      flex-wrap:wrap;
     }
 
-    .hero-actions {
-      display: flex;
-      gap: 14px;
-      margin-top: 24px;
-      flex-wrap: wrap;
+    .btn{
+      padding:14px 20px;
+      border-radius:16px;
+      border:1px solid var(--border);
+      background:var(--panel);
+      font-weight:700;
+      min-height:44px;
+      font-size:0.95rem;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
     }
 
-    .btn {
-      padding: 14px 20px;
-      border-radius: 16px;
-      border: 1px solid var(--border);
-      background: var(--panel);
-      font-weight: 700;
-      min-height: 44px;
-      font-size: 0.95rem;
-    }
-
-    .btn.primary {
-      background: linear-gradient(
-        135deg,
-        rgba(138,77,255,0.45),
-        rgba(0,225,255,0.22)
-      );
+    .btn.primary{
+      background:linear-gradient(135deg, rgba(138,77,255,0.45), rgba(0,225,255,0.22));
     }
 
     /* ---------- Cards ---------- */
-    .grid {
-      display: grid;
-      gap: 22px;
+    .grid{
+      display:grid;
+      gap:22px;
     }
 
-    .grid-3 {
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    .grid-3{
+      grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
     }
 
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 22px;
+    .card{
+      background:var(--panel);
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      padding:22px;
     }
 
     /* ---------- Screenshots (clickable) ---------- */
-    .shot {
-      cursor: zoom-in;
-      display: block;
+    .shot{
+      cursor:zoom-in;
+      display:block;
     }
 
-    .shot img {
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      transition: transform 140ms ease, filter 140ms ease;
+    .shot img{
+      border-radius:14px;
+      border:1px solid var(--border);
+      transition:transform 140ms ease, filter 140ms ease;
     }
 
-    .shot:hover img {
-      transform: translateY(-1px);
-      filter: brightness(1.05);
+    .shot:hover img{
+      transform:translateY(-1px);
+      filter:brightness(1.05);
     }
 
-    /* Lightbox */
-    .lightbox {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.88);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 18px;
-      z-index: 1000;
+    /* ---------- Lightbox ---------- */
+    .lightbox{
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,0.88);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      z-index:1000;
+    }
+    .lightbox:target{ display:flex; }
+
+    .lightbox img{
+      position:relative;
+      z-index:2;
+      max-width:min(1280px, 96vw);
+      max-height:92vh;
+      border-radius:16px;
+      box-shadow:0 40px 120px rgba(0,0,0,0.8);
+      border:1px solid rgba(255,255,255,0.12);
+      background:rgba(0,0,0,0.12);
     }
 
-    .lightbox:target { display: flex; }
-
-    .lightbox img {
-      max-width: min(1280px, 96vw);
-      max-height: 92vh;
-      border-radius: 16px;
-      box-shadow: 0 40px 120px rgba(0,0,0,0.8);
-      border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(0,0,0,0.12);
+    /* Click outside to close */
+    .lightbox-bg{
+      position:absolute;
+      inset:0;
+      z-index:1;
     }
 
-    /* ✅ Real close button */
+    /* Close button (safe-area aware, never clipped) */
     .lightbox-close{
-  position: absolute;
-  top: calc(18px + env(safe-area-inset-top, 0px));
-  right: calc(18px + env(safe-area-inset-right, 0px));
-  width: 52px;
-  height: 52px;
-  display: grid;
-  place-items: center;
-  font-size: 30px;
-  line-height: 1;
-  color: #fff;
-  background: rgba(0,0,0,0.35);
-  border: 1px solid rgba(255,255,255,0.18);
-  border-radius: 14px;
-  text-decoration: none;
-  cursor: pointer;
-  padding: 0;           /* prevents text clipping */
-}
- @media (max-width: 520px){
-  .lightbox-close{
-    top: calc(12px + env(safe-area-inset-top, 0px));
-    right: calc(12px + env(safe-area-inset-right, 0px));
-    width: 56px;
-    height: 56px;
-    font-size: 32px;
-  }
-}
-
-
+      position:absolute;
+      top:calc(18px + env(safe-area-inset-top, 0px));
+      right:calc(18px + env(safe-area-inset-right, 0px));
+      width:56px;
+      height:56px;
+      display:grid;
+      place-items:center;
+      font-size:34px;
+      line-height:1;
+      color:#fff;
+      background:rgba(0,0,0,0.40);
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:14px;
+      text-decoration:none;
+      cursor:pointer;
+      padding:0;
+      z-index:3;
+      -webkit-tap-highlight-color:transparent;
+    }
     .lightbox-close:hover,
-    .lightbox-close:focus-visible {
-      background: rgba(255,255,255,0.12);
+    .lightbox-close:focus-visible{
+      background:rgba(255,255,255,0.12);
     }
 
-    /* Close by clicking outside image */
-    .lightbox-bg {
-      position: absolute;
-      inset: 0;
+    @media (max-width: 520px){
+      .lightbox-close{
+        top:calc(14px + env(safe-area-inset-top, 0px));
+        right:calc(14px + env(safe-area-inset-right, 0px));
+        width:60px;
+        height:60px;
+        font-size:36px;
+      }
     }
 
     /* ---------- Footer ---------- */
-    footer {
-      border-top: 1px solid var(--border);
-      padding: 48px 0;
-      color: var(--muted);
+    footer{
+      border-top:1px solid var(--border);
+      padding:48px 0;
+      color:var(--muted);
     }
-    <style>
-  /* existing CSS above */
-
-  footer {
-    border-top: 1px solid var(--border);
-    padding: 48px 0;
-    color: var(--muted);
-  }
-
-  /* ===============================
-     Mobile logo sizing override
-     =============================== */
-  @media (max-width: 520px) {
-    .header-inner {
-      min-height: 108px;
-      padding: 6px 0;
-    }
-
-    .brand {
-      height: 104px;
-      overflow: hidden;
-    }
-
-    .brand img {
-      height: 240px;
-      width: auto;
-      max-width: none;
-      object-fit: contain;
-      transform: translateY(-6px);
-    }
-  }
-</style>
+  </style>
 </head>
 
 <body>
+  <a class="skip-link" href="#main">Skip to main content</a>
 
-<header class="site-header" role="banner">
-  <div class="wrap header-inner">
-    <a class="brand" href="#top" aria-label="ContentBox home">
-      <img src="docs/screenshots/logo.png" alt="ContentBox logo" />
-    </a>
+  <header class="site-header" role="banner">
+    <div class="wrap header-inner">
+      <a class="brand" href="#top" aria-label="ContentBox home">
+        <img src="docs/screenshots/logo.png" alt="ContentBox logo" />
+      </a>
 
-    <!-- Desktop nav -->
-    <nav class="nav-desktop" aria-label="Primary navigation">
-      <a href="#why">Why</a>
-      <a href="#freedom">Built for freedom</a>
-      <a href="#how">How it works</a>
-      <a href="#product">Product</a>
-      <a href="#flows">Flows</a>
-      <a href="#next">What ships first</a>
-    </nav>
-
-    <!-- Mobile menu -->
-    <details class="nav-mobile">
-      <summary aria-label="Open menu">
-        <span class="burger" aria-hidden="true"><span></span></span>
-      </summary>
-
-      <nav class="nav-drawer" aria-label="Mobile navigation">
+      <!-- Desktop nav -->
+      <nav class="nav-desktop" aria-label="Primary navigation">
         <a href="#why">Why</a>
         <a href="#freedom">Built for freedom</a>
         <a href="#how">How it works</a>
@@ -435,291 +418,303 @@
         <a href="#flows">Flows</a>
         <a href="#next">What ships first</a>
       </nav>
-    </details>
-  </div>
-</header>
 
-<main id="top">
+      <!-- Mobile menu -->
+      <details class="nav-mobile">
+        <summary aria-label="Open menu">
+          <span class="burger" aria-hidden="true"><span></span></span>
+        </summary>
 
-  <!-- HERO -->
-  <section class="wrap">
-    <div class="hero-grid">
-      <div>
-        <h1>
-          Publish with control.<br />
-          Share without surrendering custody.<br />
-          Access is never implied.
-        </h1>
+        <nav class="nav-drawer" aria-label="Mobile navigation">
+          <a href="#why">Why</a>
+          <a href="#freedom">Built for freedom</a>
+          <a href="#how">How it works</a>
+          <a href="#product">Product</a>
+          <a href="#flows">Flows</a>
+          <a href="#next">What ships first</a>
+        </nav>
+      </details>
+    </div>
+  </header>
 
-        <p>
-          ContentBox is a local-first tool for freedom-loving creators.
-          It’s built for people who want modern distribution without platform capture,
-          fake “free” flows, or forced lock-in.
-        </p>
+  <main id="main">
+    <!-- HERO -->
+    <section class="wrap" id="top">
+      <div class="hero-grid">
+        <div>
+          <h1>
+            Publish with control.<br />
+            Share without surrendering custody.<br />
+            Access is never implied.
+          </h1>
 
-        <div class="hero-actions">
-          <a class="btn primary" href="#product">View screenshots</a>
-          <a class="btn" href="#freedom">Built for freedom</a>
-          <a class="btn" href="#flows">Core flows</a>
+          <p>
+            ContentBox is a local-first tool for freedom-loving creators.
+            It’s built for people who want modern distribution without platform capture,
+            fake “free” flows, or forced lock-in.
+          </p>
+
+          <div class="hero-actions">
+            <a class="btn primary" href="#product">View screenshots</a>
+            <a class="btn" href="#freedom">Built for freedom</a>
+            <a class="btn" href="#flows">Core flows</a>
+          </div>
+        </div>
+
+        <aside class="panel" aria-label="North Star">
+          <h2>North Star</h2>
+          <p><strong>I create → I share → entitlement decides → it plays.</strong></p>
+          <ul>
+            <li><strong>Freedom from platforms:</strong> share without giving up custody.</li>
+            <li><strong>Freedom from “fake free”:</strong> access is explicit, always.</li>
+            <li><strong>Freedom to leave:</strong> no lock-in penalties.</li>
+            <li><strong>Freedom with usability:</strong> modern experience, creator-first control.</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <!-- WHY -->
+    <section id="why" class="wrap">
+      <h2>Why ContentBox</h2>
+      <p>
+        Platforms optimize for capture. ContentBox optimizes for creators.
+        It exists for people who want to distribute work without surrendering control,
+        identity, or economic agency.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Ownership stays yours</h3>
+          <p>
+            You don’t have to upload your work into someone else’s platform just to share it.
+            Distribution doesn’t require custody.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Links respect rights</h3>
+          <p>
+            A link can feel effortless without implying “free content.”
+            Access follows clear rules, not dark patterns.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Exit is first-class</h3>
+          <p>
+            You can walk away without breaking your catalog or audience.
+            No forced marketplace. No algorithm dependency.
+          </p>
         </div>
       </div>
+    </section>
 
-      <aside class="panel">
-        <h2>North Star</h2>
-        <p><strong>I create → I share → entitlement decides → it plays.</strong></p>
-        <ul>
-          <li><strong>Freedom from platforms:</strong> share without giving up custody.</li>
-          <li><strong>Freedom from “fake free”:</strong> access is explicit, always.</li>
-          <li><strong>Freedom to leave:</strong> no lock-in penalties.</li>
-          <li><strong>Freedom with usability:</strong> modern experience, creator-first control.</li>
-        </ul>
-      </aside>
+    <!-- BUILT FOR FREEDOM -->
+    <section id="freedom" class="wrap">
+      <h2>Built for freedom</h2>
+      <p>
+        Freedom isn’t a feature. It’s what happens when the system refuses to trap you.
+        ContentBox is designed to keep creators in control without making the experience feel “manual.”
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Freedom from platforms</h3>
+          <p>
+            Share without moving your work into someone else’s custody.
+            You stay the point of origin.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Freedom from “fake free”</h3>
+          <p>
+            Nothing is treated as free unless you decide it is.
+            Access is explicit and enforceable.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Freedom to leave</h3>
+          <p>
+            No lock-in traps. No penalties for independence.
+            If you stop using ContentBox, you still own your world.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- HOW -->
+    <section id="how" class="wrap">
+      <h2>How it works</h2>
+      <p>
+        The experience stays simple. The guarantees stay strong.
+        We keep the hood closed on purpose — you’ll hear the engine without being forced into the details.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Publish</h3>
+          <p>
+            Package your work with proof of origin and a clear access policy —
+            so it can travel without losing integrity or control.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Share</h3>
+          <p>
+            Share access in a way that feels modern and instant —
+            without requiring a platform intermediary to hold your identity or audience.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Access</h3>
+          <p>
+            Entitlement decides what happens next.
+            Playback is smooth, but rights and policy remain non-negotiable.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- PRODUCT -->
+    <section id="product" class="wrap">
+      <h2>Product screenshots</h2>
+      <p>
+        Real product. Real workflows. No platform theater.
+        Click any image to expand.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <a class="shot" href="#shot1" aria-label="Open Library view screenshot">
+          <img src="docs/screenshots/library.png" alt="Library view: owned and invited content" />
+        </a>
+        <a class="shot" href="#shot2" aria-label="Open Content management screenshot">
+          <img src="docs/screenshots/content_lib.png" alt="Content management: create, package, and manage work" />
+        </a>
+        <a class="shot" href="#shot3" aria-label="Open Link access screenshot">
+          <img src="docs/screenshots/store.png" alt="Link access: policy-governed access and entitlement" />
+        </a>
+      </div>
+    </section>
+
+    <!-- FLOWS -->
+    <section id="flows" class="wrap">
+      <h2>Core flows</h2>
+      <p>
+        ContentBox is designed to feel simple while staying honest.
+        These flows describe what you can do — without exposing trade secrets.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Create and publish</h3>
+          <p>
+            Build your catalog locally. Attach clear rules for access and sharing.
+            Your work stays under your control.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Share access</h3>
+          <p>
+            Share a link that behaves like it should: modern, fast, and rights-respecting.
+            Nothing is implied as free.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Collaborate and split</h3>
+          <p>
+            Collaborations don’t need spreadsheets.
+            Splits and participation are handled as part of the workflow.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- WHAT SHIPS FIRST -->
+    <section id="next" class="wrap">
+      <h2>What ships first</h2>
+      <p>
+        We ship in the order that protects creators and removes friction.
+        Early versions prioritize “it works and it’s honest” over “it’s loud.”
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Installer and reliability</h3>
+          <p>
+            Clean installs, stable updates, and predictable behavior on real creator machines.
+            Usability is not negotiable.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Link-to-access flow</h3>
+          <p>
+            Sharing access should be simple and rights-respecting.
+            The flow must feel modern without implying “free.”
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Payments (when ready)</h3>
+          <p>
+            Modern creator rails, integrated cleanly.
+            We don’t bolt this on until the core flows are rock-solid.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Lightboxes -->
+    <div id="shot1" class="lightbox" role="dialog" aria-modal="true" aria-label="Library view">
+      <a class="lightbox-bg" href="#product" aria-label="Close"></a>
+      <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="docs/screenshots/library.png" alt="Library view: owned and invited content" />
     </div>
-  </section>
 
-  <!-- WHY -->
-  <section id="why" class="wrap">
-    <h2>Why ContentBox</h2>
-    <p>
-      Platforms optimize for capture. ContentBox optimizes for creators.
-      It exists for people who want to distribute work without surrendering control,
-      identity, or economic agency.
-    </p>
-
-    <div class="grid grid-3" style="margin-top:22px">
-      <div class="card">
-        <h3>Ownership stays yours</h3>
-        <p>
-          You don’t have to upload your work into someone else’s platform just to share it.
-          Distribution doesn’t require custody.
-        </p>
-      </div>
-      <div class="card">
-        <h3>Links respect rights</h3>
-        <p>
-          A link can feel effortless without implying “free content.”
-          Access follows clear rules, not dark patterns.
-        </p>
-      </div>
-      <div class="card">
-        <h3>Exit is first-class</h3>
-        <p>
-          You can walk away without breaking your catalog or audience.
-          No forced marketplace. No algorithm dependency.
-        </p>
-      </div>
+    <div id="shot2" class="lightbox" role="dialog" aria-modal="true" aria-label="Content management">
+      <a class="lightbox-bg" href="#product" aria-label="Close"></a>
+      <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="docs/screenshots/content_lib.png" alt="Content management: create, package, and manage work" />
     </div>
-  </section>
 
-  <!-- BUILT FOR FREEDOM -->
-  <section id="freedom" class="wrap">
-    <h2>Built for freedom</h2>
-    <p>
-      Freedom isn’t a feature. It’s what happens when the system refuses to trap you.
-      ContentBox is designed to keep creators in control without making the experience feel “manual.”
-    </p>
-
-    <div class="grid grid-3" style="margin-top:22px">
-      <div class="card">
-        <h3>Freedom from platforms</h3>
-        <p>
-          Share without moving your work into someone else’s custody.
-          You stay the point of origin.
-        </p>
-      </div>
-
-      <div class="card">
-        <h3>Freedom from “fake free”</h3>
-        <p>
-          Nothing is treated as free unless you decide it is.
-          Access is explicit and enforceable.
-        </p>
-      </div>
-
-      <div class="card">
-        <h3>Freedom to leave</h3>
-        <p>
-          No lock-in traps. No penalties for independence.
-          If you stop using ContentBox, you still own your world.
-        </p>
-      </div>
+    <div id="shot3" class="lightbox" role="dialog" aria-modal="true" aria-label="Link access">
+      <a class="lightbox-bg" href="#product" aria-label="Close"></a>
+      <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="docs/screenshots/store.png" alt="Link access: policy-governed access and entitlement" />
     </div>
-  </section>
+  </main>
 
-  <!-- HOW -->
-  <section id="how" class="wrap">
-    <h2>How it works</h2>
-    <p>
-      The experience stays simple. The guarantees stay strong.
-      We keep the hood closed on purpose — you’ll hear the engine without being forced into the details.
-    </p>
-
-    <div class="grid grid-3" style="margin-top:22px">
-      <div class="card">
-        <h3>Publish</h3>
-        <p>
-          Package your work with proof of origin and a clear access policy —
-          so it can travel without losing integrity or control.
-        </p>
-      </div>
-      <div class="card">
-        <h3>Share</h3>
-        <p>
-          Share access in a way that feels modern and instant —
-          without requiring a platform intermediary to hold your identity or audience.
-        </p>
-      </div>
-      <div class="card">
-        <h3>Access</h3>
-        <p>
-          Entitlement decides what happens next.
-          Playback is smooth, but rights and policy remain non-negotiable.
-        </p>
-      </div>
+  <footer>
+    <div class="wrap">
+      © <span id="year"></span> ContentBox — tools for creators who value freedom.
     </div>
-  </section>
+  </footer>
 
-  <!-- PRODUCT -->
-  <section id="product" class="wrap">
-    <h2>Product screenshots</h2>
-    <p>
-      Real product. Real workflows. No platform theater.
-      Click any image to expand.
-    </p>
+  <script>
+    // Footer year
+    document.getElementById("year").textContent = new Date().getFullYear();
 
-    <div class="grid grid-3" style="margin-top:22px">
-      <a class="shot" href="#shot1" aria-label="Open Library view screenshot">
-        <img src="docs/screenshots/library.png" alt="Library view: owned and invited content" />
-      </a>
-      <a class="shot" href="#shot2" aria-label="Open Content management screenshot">
-        <img src="docs/screenshots/content_lib.png" alt="Content management: create, package, and manage work" />
-      </a>
-      <a class="shot" href="#shot3" aria-label="Open Link access screenshot">
-        <img src="docs/screenshots/store.png" alt="Link access: policy-governed access and entitlement" />
-      </a>
-    </div>
-  </section>
+    // Mobile menu auto-close (link click, outside click, Escape)
+    (function () {
+      const menu = document.querySelector(".nav-mobile");
+      if (!menu) return;
 
-  <!-- FLOWS -->
-  <section id="flows" class="wrap">
-    <h2>Core flows</h2>
-    <p>
-      ContentBox is designed to feel simple while staying honest.
-      These flows describe what you can do — without exposing trade secrets.
-    </p>
+      menu.querySelectorAll("a").forEach((a) => {
+        a.addEventListener("click", () => { menu.open = false; });
+      });
 
-    <div class="grid grid-3" style="margin-top:22px">
-      <div class="card">
-        <h3>Create and publish</h3>
-        <p>
-          Build your catalog locally. Attach clear rules for access and sharing.
-          Your work stays under your control.
-        </p>
-      </div>
+      document.addEventListener("click", (e) => {
+        if (!menu.open) return;
+        if (!menu.contains(e.target)) menu.open = false;
+      });
 
-      <div class="card">
-        <h3>Share access</h3>
-        <p>
-          Share a link that behaves like it should: modern, fast, and rights-respecting.
-          Nothing is implied as free.
-        </p>
-      </div>
-
-      <div class="card">
-        <h3>Collaborate and split</h3>
-        <p>
-          Collaborations don’t need spreadsheets.
-          Splits and participation are handled as part of the workflow.
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- WHAT SHIPS FIRST -->
-  <section id="next" class="wrap">
-    <h2>What ships first</h2>
-    <p>
-      We ship in the order that protects creators and removes friction.
-      Early versions prioritize “it works and it’s honest” over “it’s loud.”
-    </p>
-
-    <div class="grid grid-3" style="margin-top:22px">
-      <div class="card">
-        <h3>Installer and reliability</h3>
-        <p>
-          Clean installs, stable updates, and predictable behavior on real creator machines.
-          Usability is not negotiable.
-        </p>
-      </div>
-
-      <div class="card">
-        <h3>Link-to-access flow</h3>
-        <p>
-          Sharing access should be simple and rights-respecting.
-          The flow must feel modern without implying “free.”
-        </p>
-      </div>
-
-      <div class="card">
-        <h3>Payments (when ready)</h3>
-        <p>
-          Modern creator rails, integrated cleanly.
-          We don’t bolt this on until the core flows are rock-solid.
-        </p>
-      </div>
-    </div>
-  </section>
-
-  <!-- Lightboxes -->
-  <div id="shot1" class="lightbox" role="dialog" aria-modal="true" aria-label="Library view">
-    <a class="lightbox-bg" href="#" aria-label="Close"></a>
-    <a href="#" class="lightbox-close" aria-label="Close image">×</a>
-    <img src="docs/screenshots/library.png" alt="Library view: owned and invited content" />
-  </div>
-
-  <div id="shot2" class="lightbox" role="dialog" aria-modal="true" aria-label="Content management">
-    <a class="lightbox-bg" href="#" aria-label="Close"></a>
-    <a href="#" class="lightbox-close" aria-label="Close image">×</a>
-    <img src="docs/screenshots/content_lib.png" alt="Content management: create, package, and manage work" />
-  </div>
-
-  <div id="shot3" class="lightbox" role="dialog" aria-modal="true" aria-label="Link access">
-    <a class="lightbox-bg" href="#" aria-label="Close"></a>
-    <a href="#" class="lightbox-close" aria-label="Close image">×</a>
-    <img src="docs/screenshots/store.png" alt="Link access: policy-governed access and entitlement" />
-  </div>
-
-</main>
-
-<footer>
-  <div class="wrap">
-    © <span id="year"></span> ContentBox — tools for creators who value freedom.
-  </div>
-</footer>
-
-<script>
-  // Footer year
-  document.getElementById("year").textContent = new Date().getFullYear();
-
-  // Mobile menu auto-close (link click, outside click, Escape)
-  (function () {
-    const menu = document.querySelector(".nav-mobile");
-    if (!menu) return;
-
-    menu.querySelectorAll("a").forEach((a) => {
-      a.addEventListener("click", () => { menu.open = false; });
-    });
-
-    document.addEventListener("click", (e) => {
-      if (!menu.open) return;
-      if (!menu.contains(e.target)) menu.open = false;
-    });
-
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") menu.open = false;
-    });
-  })();
-</script>
-
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") menu.open = false;
+      });
+    })();
+  </script>
 </body>
 </html>
