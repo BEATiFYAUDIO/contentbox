@@ -23,7 +23,7 @@
 
     * { box-sizing: border-box; }
     html {
-      font-size: clamp(16px, 1.1vw, 18px); /* 🔑 base font increase */
+      font-size: clamp(16px, 1.1vw, 18px);
     }
     body {
       margin: 0;
@@ -93,14 +93,18 @@
       display: flex;
       align-items: center;
       gap: 16px;
+      min-width: 0;
     }
 
+    /* ✅ Logo: bigger, transparent, no frame, no skew */
     .brand img {
-      width: 52px;              /* 🔑 bigger logo */
-      height: 52px;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: var(--panel);
+      width: clamp(96px, 10vw, 148px);
+      height: auto;
+      border: none;
+      background: transparent;
+      border-radius: 0;
+      box-shadow: none;
+      object-fit: contain;
       flex-shrink: 0;
     }
 
@@ -111,19 +115,19 @@
     }
 
     .brand-text strong {
-      font-size: 1.15rem;       /* 🔑 larger brand name */
+      font-size: clamp(1.2rem, 1.6vw, 1.35rem);
       font-weight: 800;
       letter-spacing: 0.2px;
     }
 
     .brand-text span {
-      font-size: 0.9rem;
+      font-size: 0.95rem;
       color: var(--muted);
     }
 
     nav a {
       font-size: 0.95rem;
-      padding: 10px 14px;       /* 🔑 better tap targets */
+      padding: 10px 14px;
       border-radius: 12px;
     }
 
@@ -133,35 +137,43 @@
 
     /* Sections */
     section {
-      padding: clamp(48px, 7vw, 72px) 0;
+      padding: clamp(48px, 7vw, 78px) 0;
     }
 
     h1 {
-      font-size: clamp(2.1rem, 5vw, 3.3rem); /* 🔑 hero scale */
+      font-size: clamp(2.1rem, 5vw, 3.3rem);
       line-height: 1.08;
       margin: 0 0 20px;
       letter-spacing: -0.02em;
     }
 
     h2 {
-      font-size: clamp(1.4rem, 2.8vw, 1.8rem);
+      font-size: clamp(1.45rem, 2.8vw, 1.9rem);
       margin: 0 0 14px;
     }
 
     h3 {
-      font-size: 1.05rem;
+      font-size: 1.07rem;
       margin: 0 0 8px;
     }
 
     p {
       color: var(--muted);
-      max-width: 65ch;
+      max-width: 70ch;
       font-size: 1rem;
+      margin: 0;
     }
 
     /* Hero */
     .hero {
       padding-top: clamp(56px, 8vw, 96px);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 22px;
+      align-items: start;
     }
 
     .hero-actions {
@@ -178,6 +190,10 @@
       background: var(--panel);
       font-weight: 700;
       font-size: 0.95rem;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px; /* tap target */
     }
 
     .btn.primary {
@@ -205,14 +221,52 @@
       padding: 20px;
     }
 
+    .card p { margin-top: 6px; }
+
+    /* Panels / callouts */
+    .panel {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin-bottom: 12px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--focus);
+      box-shadow: 0 0 22px rgba(0, 225, 255, 0.35);
+    }
+
+    ul.bullets {
+      margin: 12px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+    ul.bullets li { margin: 10px 0; }
+    ul.bullets b { color: var(--text); }
+
     /* Screenshots */
-    figure {
-      margin: 0;
+    figure { margin: 0; }
+    figure img {
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,0.15);
     }
 
     figcaption {
       padding-top: 12px;
-      font-size: 0.9rem;
+      font-size: 0.95rem;
       color: var(--muted);
     }
 
@@ -220,8 +274,12 @@
     footer {
       border-top: 1px solid var(--border);
       padding: 48px 0;
-      font-size: 0.9rem;
+      font-size: 0.95rem;
       color: var(--muted);
+    }
+
+    @media (max-width: 900px) {
+      .hero-grid { grid-template-columns: 1fr; }
     }
 
     @media (max-width: 640px) {
@@ -231,144 +289,304 @@
         flex-wrap: wrap;
         gap: 6px;
       }
+      .brand-text span { font-size: 0.9rem; }
+      .brand img { width: clamp(92px, 18vw, 140px); }
     }
   </style>
 </head>
 
 <body>
+  <a href="#main" class="skip-link">Skip to main content</a>
 
-<a href="#main" class="skip-link">Skip to main content</a>
+  <header role="banner">
+    <div class="wrap nav">
+      <a href="#top" class="brand" aria-label="ContentBox home">
+        <img
+          src="docs/screenshots/logo.png"
+          alt="ContentBox logo"
+          loading="eager"
+          decoding="async"
+        />
+        <div class="brand-text">
+          <strong>ContentBox</strong>
+          <span>Desktop-first · Local-first · P2P</span>
+        </div>
+      </a>
 
-<header role="banner">
-  <div class="wrap nav">
-    <a href="#top" class="brand" aria-label="ContentBox home">
-      <img
-        src="docs/screenshots/logo.png"
-        alt="ContentBox logo"
-        width="52"
-        height="52"
-        loading="eager"
-        decoding="async"
-      />
-      <div class="brand-text">
-        <strong>ContentBox</strong>
-        <span>Desktop-first · Local-first · P2P</span>
-      </div>
-    </a>
-
-    <nav aria-label="Primary navigation">
-      <a href="#why">Why</a>
-      <a href="#how">How it works</a>
-      <a href="#product">Product</a>
-    </nav>
-  </div>
-</header>
-
-<main id="main">
-
-  <section class="hero wrap" id="top">
-    <h1>
-      Publish verifiable content.<br />
-      Share a link that plays instantly.<br />
-      Unlock with entitlement.
-    </h1>
-
-    <p>
-      ContentBox is not a platform. It’s a local-first, peer-to-peer tool for creators
-      who want control over origin, playback, and payouts — without sacrificing usability.
-    </p>
-
-    <div class="hero-actions">
-      <a class="btn primary" href="#product">View screenshots</a>
-      <a class="btn" href="#how">How it works</a>
+      <nav aria-label="Primary navigation">
+        <a href="#why">Why</a>
+        <a href="#how">How it works</a>
+        <a href="#product">Product</a>
+        <a href="#flows">Flows</a>
+        <a href="#next">What ships first</a>
+      </nav>
     </div>
-  </section>
+  </header>
 
-  <section id="why" class="wrap">
-    <h2>Why ContentBox</h2>
+  <main id="main">
+    <!-- HERO -->
+    <section class="hero wrap" id="top">
+      <div class="hero-grid">
+        <div>
+          <div class="kicker"><span class="dot" aria-hidden="true"></span> Not a platform. A tool.</div>
 
-    <div class="grid grid-3">
-      <div class="card">
-        <h3>Control the origin</h3>
-        <p>Content is published locally with hash-addressed manifests for verifiable delivery.</p>
+          <h1>
+            Publish verifiable content.<br />
+            Share a link that plays instantly.<br />
+            Unlock with entitlement.
+          </h1>
+
+          <p>
+            ContentBox is a local-first, peer-to-peer tool for creators and independent entrepreneurs who want control
+            over origin, playback, and payouts. The goal stays simple: a link should feel effortless, but rights should
+            still be respected.
+          </p>
+
+          <div class="hero-actions">
+            <a class="btn primary" href="#product">View screenshots</a>
+            <a class="btn" href="#how">How it works</a>
+            <a class="btn" href="#flows">Core flows</a>
+          </div>
+        </div>
+
+        <aside class="panel" aria-label="North Star and principles">
+          <h2 style="margin:0 0 8px;">North Star</h2>
+          <p style="margin:0;">
+            <b style="color:var(--text);">I hit play → it plays → optional unlock.</b>
+            The experience is modern, but the content remains verifiable and governed by policy.
+          </p>
+
+          <ul class="bullets">
+            <li><b>Local-first:</b> your library and source content live with you.</li>
+            <li><b>P2P-ready:</b> resolve creators on LAN first; remote options later.</li>
+            <li><b>Verifiable delivery:</b> hash-addressed manifests enable integrity checks and caching.</li>
+            <li><b>Splits built-in:</b> invite stakeholders, lock agreements, then publish to storefront.</li>
+          </ul>
+        </aside>
       </div>
-      <div class="card">
-        <h3>No fake “free” flow</h3>
-        <p>Playback feels instant, but access is gated by entitlement — not dark patterns.</p>
+    </section>
+
+    <!-- WHY -->
+    <section id="why" class="wrap">
+      <h2>Why ContentBox</h2>
+      <p>
+        Creators shouldn’t have to trade ownership, provenance, or payout routing to get instant playback and simple
+        sharing. ContentBox is designed for creators who want control, and robust enough for teams that need a path
+        without forcing a full platform migration.
+      </p>
+
+      <div class="grid grid-3" style="margin-top: 22px;">
+        <div class="card">
+          <h3>Control the origin</h3>
+          <p>
+            Content is packaged locally into a manifest with hashes so delivery can be verified, cached, and trusted
+            without central custody.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Links that respect rights</h3>
+          <p>
+            Links feel effortless, but access is gated by entitlement. The default message is not “free content”.
+            It’s “verified content with optional unlock”.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Splits and royalties, native</h3>
+          <p>
+            Invite stakeholders, lock a split version, and keep royalties visible as Owned vs Invited participation.
+            This is not a bolt-on spreadsheet.
+          </p>
+        </div>
       </div>
-      <div class="card">
-        <h3>Splits are native</h3>
-        <p>Invites, approvals, and royalties are built in — not bolted on later.</p>
+    </section>
+
+    <!-- HOW -->
+    <section id="how" class="wrap">
+      <h2>How it works</h2>
+      <p>
+        The user story stays simple. Under the hood, ContentBox is built for verifiable delivery and frictionless
+        playback so “link → plays” works the way people expect — without losing control of the origin.
+      </p>
+
+      <div class="grid grid-3" style="margin-top: 22px;">
+        <div class="card">
+          <h3>Publish</h3>
+          <p>
+            Local content becomes a hash-addressed manifest. Policy and pricing attach to the manifest, and integrity
+            checks support caching and verifiable delivery.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Resolve</h3>
+          <p>
+            Buyers resolve the creator LAN-first when possible. Remote resolution can be configured later.
+            Cached host and manual entry serve as fallbacks.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Play</h3>
+          <p>
+            Playback streams with HTTP Range for instant start and seeking. Previews are optional.
+            Entitlement tokens gate access for paid content.
+          </p>
+        </div>
       </div>
+
+      <div class="grid" style="margin-top: 22px;">
+        <div class="card">
+          <h3>Settle</h3>
+          <p>
+            Splits route value to the right people. Payments are sats/zaps oriented. During early P2P and playback
+            hardening, a payment stub can keep the user journey intact while settlement plumbing matures.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- PRODUCT SCREENSHOTS -->
+    <section id="product" class="wrap">
+      <h2>Product screenshots</h2>
+      <p>
+        These screenshots map directly to the flows above: library, publishing, store links, splits, royalties, and payments.
+        They’re placed to support the story without turning the page into a gallery dump.
+      </p>
+
+      <div class="grid grid-3" style="margin-top: 22px;">
+        <figure>
+          <img src="docs/screenshots/library.png" alt="ContentBox library showing owned and invited content" />
+          <figcaption>Library: owned and invited content</figcaption>
+        </figure>
+
+        <figure>
+          <img src="docs/screenshots/content_lib.png" alt="Content management screen for creating and preparing content" />
+          <figcaption>Content: creation and management</figcaption>
+        </figure>
+
+        <figure>
+          <img src="docs/screenshots/store.png" alt="Store view showing a listing and access flow" />
+          <figcaption>Store links: shareable access with entitlement gating</figcaption>
+        </figure>
+
+        <figure>
+          <img src="docs/screenshots/splits.png" alt="Splits screen showing stakeholders and split configuration" />
+          <figcaption>Splits: invite stakeholders and lock agreements</figcaption>
+        </figure>
+
+        <figure>
+          <img src="docs/screenshots/royalties.png" alt="Royalties dashboard showing participations" />
+          <figcaption>Royalties: owned vs invited participation</figcaption>
+        </figure>
+
+        <figure>
+          <img src="docs/screenshots/payment.png" alt="Payments screen showing settlement-related UI" />
+          <figcaption>Payments: sats and zaps oriented flows</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- FLOWS (pairs screenshots + narrative) -->
+    <section id="flows" class="wrap">
+      <h2>Core flows</h2>
+      <p>
+        ContentBox is designed to make the “rights reality” obvious. Owners see what they own. Invitees see what they
+        were granted. Store exposure follows locked agreements.
+      </p>
+
+      <div class="grid grid-3" style="margin-top: 22px;">
+        <div class="card">
+          <h3>Library → choose what to play</h3>
+          <p>
+            The library stays fast and local. Networking should enhance it, not replace it.
+            Your content remains available even when you’re offline.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Publish → verifiable manifest</h3>
+          <p>
+            Publishing produces a manifest with hashes so files can be verified at rest and in transit.
+            This unlocks durable caching and trust.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Link → plays → unlock</h3>
+          <p>
+            Buyers open a link and playback starts quickly. Seeking works. If content is gated, entitlement unlocks access
+            without making the creator surrender control to a platform.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid grid-3" style="margin-top: 22px;">
+        <div class="card">
+          <h3>Splits → invite → lock</h3>
+          <p>
+            Stakeholders are invited and approvals are collected before a split version is locked.
+            This reduces disputes and keeps expectations aligned.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Royalties → owned vs invited</h3>
+          <p>
+            Participation is visible and auditable. Settlement follows the locked agreement, and later can be automated
+            through sats/zaps.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Payments → sats/zaps</h3>
+          <p>
+            Payments are built for sats and zaps. Early on, the interface can be present with a stub so the
+            product story stays consistent while infrastructure hardens.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- WHAT SHIPS FIRST -->
+    <section id="next" class="wrap">
+      <h2>What ships first</h2>
+      <p>
+        The sequencing stays aligned with the North Star. Playback and link-based consumption land first.
+        A public marketplace and deeper traversal come after persistence is proven.
+      </p>
+
+      <div class="grid grid-3" style="margin-top: 22px;">
+        <div class="card">
+          <h3>LAN-first playback MVP</h3>
+          <p>
+            Link opens, seller resolves, playback starts fast, seeking works. This is the foundation before adding
+            complex networking.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Installer and onboarding</h3>
+          <p>
+            A frictionless install for Windows and Linux so “two nodes to network” becomes real in minutes.
+          </p>
+        </div>
+
+        <div class="card">
+          <h3>Payments plug-in</h3>
+          <p>
+            Add sats and zaps once the flow is durable. Keep the user story consistent from the start.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      © <span id="year"></span> ContentBox — Built for creators who want control.
     </div>
-  </section>
+  </footer>
 
-  <section id="how" class="wrap">
-    <h2>How it works</h2>
-
-    <div class="grid grid-3">
-      <div class="card">
-        <h3>Publish</h3>
-        <p>Create a manifest with hashes, policy, and pricing.</p>
-      </div>
-      <div class="card">
-        <h3>Resolve</h3>
-        <p>LAN-first seller discovery with remote fallback.</p>
-      </div>
-      <div class="card">
-        <h3>Play</h3>
-        <p>HTTP Range streaming for instant start and seeking.</p>
-      </div>
-    </div>
-  </section>
-
-  <section id="product" class="wrap">
-    <h2>Product screenshots</h2>
-
-    <div class="grid grid-3">
-      <figure>
-        <img src="docs/screenshots/library.png" alt="ContentBox library view" />
-        <figcaption>Library: owned and invited content</figcaption>
-      </figure>
-
-      <figure>
-        <img src="docs/screenshots/content_lib.png" alt="Content management screen" />
-        <figcaption>Content creation and management</figcaption>
-      </figure>
-
-      <figure>
-        <img src="docs/screenshots/store.png" alt="Store and playback screen" />
-        <figcaption>Store links with entitlement gating</figcaption>
-      </figure>
-
-      <figure>
-        <img src="docs/screenshots/splits.png" alt="Splits configuration screen" />
-        <figcaption>Split invites and approvals</figcaption>
-      </figure>
-
-      <figure>
-        <img src="docs/screenshots/royalties.png" alt="Royalties dashboard" />
-        <figcaption>Owned vs invited royalties</figcaption>
-      </figure>
-
-      <figure>
-        <img src="docs/screenshots/payment.png" alt="Payments and settlement screen" />
-        <figcaption>Sats and zaps oriented payments</figcaption>
-      </figure>
-    </div>
-  </section>
-
-</main>
-
-<footer>
-  <div class="wrap">
-    © <span id="year"></span> ContentBox — Built for creators who want control.
-  </div>
-</footer>
-
-<script>
-  document.getElementById("year").textContent = new Date().getFullYear();
-</script>
-
+  <script>
+    document.getElementById("year").textContent = new Date().getFullYear();
+  </script>
 </body>
 </html>
