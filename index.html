@@ -86,7 +86,7 @@
       padding:10px 0;
     }
 
-    /* Logo “viewport” (so we can visually trim padding inside the PNG) */
+    /* Logo “viewport” (trims transparent padding inside the PNG) */
     .brand{
       display:flex;
       align-items:center;
@@ -95,10 +95,11 @@
       min-width:0;
     }
 
+    /* Desktop logo behavior (big, trimmed, no frame) */
     .brand img{
-      height:240px;        /* BIG on purpose */
+      height:240px;        /* big on purpose */
       width:auto;
-      max-width:none;      /* no cap, let it breathe */
+      max-width:100%;      /* IMPORTANT: prevents overflow in some layouts */
       object-fit:contain;
       transform:translateY(-10px);
     }
@@ -197,18 +198,28 @@
       }
     }
 
-    /* Mobile logo sizing: keep it big */
+    /* ✅ FIX: On phone, brand must get real width or the logo will stay "small" (auto column) */
     @media (max-width: 520px){
       .header-inner{
-        min-height:108px;
+        grid-template-columns: minmax(0,1fr) auto; /* brand gets the width, burger stays fixed */
+        min-height:140px;
         padding:6px 0;
       }
+
       .brand{
-        height:104px;
+        width:100%;
+        height:132px;       /* big logo window */
+        overflow:hidden;    /* trims transparent padding */
       }
+
+      /* ✅ FIX: width-driven logo prevents right-side chop and actually becomes big */
       .brand img{
-        height:240px;
-        transform:translateY(-6px);
+        width:100%;
+        height:auto;
+        max-width:100%;
+        max-height:320px;   /* still huge */
+        object-fit:contain;
+        transform:translateY(-14px);
       }
     }
 
@@ -357,39 +368,29 @@
 
     /* Close button (safe-area aware, never clipped) */
     .lightbox-close{
-  position: absolute;
-  top: calc(18px + env(safe-area-inset-top, 0px));
-  right: calc(18px + env(safe-area-inset-right, 0px));
-  width: 52px;
-  height: 52px;
-  display: grid;
-  place-items: center;
-  font-size: 30px;
-  line-height: 1;
-  color: #fff;
-  background: rgba(0,0,0,0.35);
-  border: 1px solid rgba(255,255,255,0.18);
-  border-radius: 14px;
-  text-decoration: none;
-  cursor: pointer;
-  padding: 0;           /* prevents text clipping */
-}
+      position:absolute;
+      top:calc(18px + env(safe-area-inset-top, 0px));
+      right:calc(18px + env(safe-area-inset-right, 0px));
+      width:56px;
+      height:56px;
+      display:grid;
+      place-items:center;
+      font-size:34px;
+      line-height:1;
+      color:#fff;
+      background:rgba(0,0,0,0.35);
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:14px;
+      text-decoration:none;
+      cursor:pointer;
+      padding:0;
+      z-index:3;
+    }
 
     .lightbox-close:hover,
     .lightbox-close:focus-visible{
       background:rgba(255,255,255,0.12);
     }
-
-    @media (max-width: 520px){
-  .lightbox-close{
-    top: calc(12px + env(safe-area-inset-top, 0px));
-    right: calc(12px + env(safe-area-inset-right, 0px));
-    width: 56px;
-    height: 56px;
-    font-size: 32px;
-  }
-}
-
 
     /* ---------- Footer ---------- */
     footer{
