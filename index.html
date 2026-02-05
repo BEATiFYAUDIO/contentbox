@@ -14,20 +14,18 @@
     :root{
       --bg:#070a10;
       --panel:rgba(255,255,255,0.06);
-      --panel2:rgba(255,255,255,0.08);
       --border:rgba(255,255,255,0.14);
-      --border2:rgba(255,255,255,0.18);
       --text:rgba(255,255,255,0.96);
       --muted:rgba(255,255,255,0.72);
       --focus:#00e1ff;
       --radius:18px;
       --wrap:1200px;
-      --pad:22px;
-      --shadow:0 30px 90px rgba(0,0,0,0.65);
+      --gutter:22px;
     }
 
     *{ box-sizing:border-box; }
     html{ font-size:clamp(16px,1.1vw,18px); }
+
     body{
       margin:0;
       font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
@@ -50,11 +48,10 @@
       border-radius:10px;
     }
 
-    /* ✅ One container rule everywhere = no asymmetry */
     .wrap{
       max-width:var(--wrap);
       margin:0 auto;
-      padding:0 var(--pad);
+      padding:0 var(--gutter);
     }
 
     /* ---------- Accessibility ---------- */
@@ -77,41 +74,46 @@
       position:sticky;
       top:0;
       z-index:50;
-      background:rgba(7,10,16,0.78);
-      backdrop-filter:blur(16px);
+      background:rgba(7,10,16,0.85);
+      backdrop-filter:blur(14px);
       border-bottom:1px solid var(--border);
     }
 
-    /* ✅ “symmetry rail”: forces equal left/right edges even on mobile */
-    .header-rail{
-      border-bottom:1px solid rgba(255,255,255,0.10);
-      background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.00));
+    /* subtle “straightness” / symmetry line */
+    .site-header::after{
+      content:"";
+      display:block;
+      height:1px;
+      background:linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+      opacity:0.6;
     }
 
     .header-inner{
       display:grid;
-      grid-template-columns:auto 1fr auto; /* brand | nav | menu */
+      grid-template-columns:auto 1fr auto; /* logo | spacer | nav/menu */
       align-items:center;
       gap:16px;
       min-height:114px;
       padding:10px 0;
     }
 
-    /* Brand */
+    /* Logo viewport: trims transparent padding inside PNG and keeps it centered */
     .brand{
       display:flex;
       align-items:center;
+      justify-content:flex-start;
       height:120px;
       overflow:hidden;
       min-width:0;
     }
+
+    /* Desktop/logo baseline: BIG */
     .brand img{
-      height:240px;        /* big on purpose */
+      height:240px;          /* big on purpose */
       width:auto;
-      max-width:100%;
+      max-width:none;        /* no cap */
       object-fit:contain;
       transform:translateY(-10px);
-      filter:drop-shadow(0 12px 28px rgba(0,0,0,0.45));
     }
 
     /* Desktop nav */
@@ -129,12 +131,8 @@
       min-height:44px;
       display:flex;
       align-items:center;
-      border:1px solid transparent;
     }
-    .nav-desktop a:hover{
-      background:rgba(255,255,255,0.06);
-      border-color:rgba(255,255,255,0.08);
-    }
+    .nav-desktop a:hover{ background:var(--panel); }
 
     /* Mobile menu */
     .nav-mobile{
@@ -142,26 +140,41 @@
       position:relative;
       justify-self:end;
     }
+
+    /* ===== Mobile hamburger: always visible in dark mode ===== */
     .nav-mobile summary{
       list-style:none;
       cursor:pointer;
-      padding:10px 12px;
-      border-radius:14px;
-      border:1px solid var(--border2);
-      background:rgba(255,255,255,0.06);
-      min-height:44px;
       width:56px;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      box-shadow:0 14px 40px rgba(0,0,0,0.25);
+      height:56px;
+      display:grid;
+      place-items:center;
+
+      background: rgba(255,255,255,0.10);
+      border: 1px solid rgba(255,255,255,0.28);
+      border-radius: 16px;
+
+      box-shadow:
+        0 18px 50px rgba(0,0,0,0.55),
+        inset 0 1px 0 rgba(255,255,255,0.10);
+
+      -webkit-tap-highlight-color: transparent;
     }
     .nav-mobile summary::-webkit-details-marker{ display:none; }
 
+    .nav-mobile summary:hover{
+      background: rgba(255,255,255,0.14);
+      border-color: rgba(255,255,255,0.36);
+    }
+
+    .nav-mobile[open] summary{
+      background: rgba(255,255,255,0.16);
+      border-color: rgba(255,255,255,0.42);
+    }
+
     .burger{
-      display:inline-block;
-      width:22px;
-      height:14px;
+      width:24px;
+      height:16px;
       position:relative;
     }
     .burger::before,
@@ -172,36 +185,48 @@
       left:0;
       right:0;
       height:2px;
-      background:rgba(255,255,255,0.88);
+      background: rgba(255,255,255,0.92);
       border-radius:999px;
     }
     .burger::before{ top:0; }
+    .burger span{ top:7px; }
     .burger::after{ bottom:0; }
-    .burger span{ top:6px; }
+
+    @media (prefers-color-scheme: dark){
+      .nav-mobile summary{
+        background: rgba(255,255,255,0.10);
+        border-color: rgba(255,255,255,0.30);
+      }
+      .burger::before,
+      .burger::after,
+      .burger span{
+        background: rgba(255,255,255,0.95);
+      }
+    }
 
     .nav-drawer{
       position:absolute;
       right:0;
-      top:calc(100% + 12px);
+      top:calc(100% + 10px);
       min-width:260px;
       padding:10px;
-      border-radius:18px;
-      border:1px solid rgba(255,255,255,0.16);
-      background:rgba(7,10,16,0.92);
-      backdrop-filter:blur(16px);
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,0.18);
+      background:rgba(7,10,16,0.96);
+      backdrop-filter:blur(14px);
       display:grid;
       gap:6px;
-      box-shadow:var(--shadow);
+      box-shadow:0 30px 90px rgba(0,0,0,0.65);
       z-index:100;
     }
     .nav-drawer a{
       padding:12px 12px;
-      border-radius:14px;
+      border-radius:12px;
       min-height:44px;
       display:flex;
       align-items:center;
     }
-    .nav-drawer a:hover{ background:rgba(255,255,255,0.06); }
+    .nav-drawer a:hover{ background:var(--panel); }
 
     @media (max-width: 860px){
       .nav-desktop{ display:none; }
@@ -212,40 +237,27 @@
       }
     }
 
-    /* ✅ FIXED: mobile header looks “weird” because the brand and menu don’t share a baseline.
-       This makes the header a clean two-column row and centers everything visually. */
+    /* Mobile logo sizing: keep it BIG on phones */
     @media (max-width: 520px){
-      :root{ --pad:18px; } /* slightly tighter, keeps symmetry */
+      :root{ --gutter:18px; } /* fixes asymmetry on tight screens */
+
       .header-inner{
-        grid-template-columns: minmax(0,1fr) auto;
-        align-items:center;
-        min-height:140px;
-        padding:8px 0;
+        min-height:126px;     /* give the logo room so it reads big */
+        padding:10px 0;
       }
       .brand{
-        width:100%;
-        height:132px;
-        justify-content:flex-start;
+        height:122px;         /* bigger viewport */
       }
       .brand img{
-        width:100%;
-        height:auto;
-        max-width:100%;
-        max-height:320px;
-        object-fit:contain;
-        transform:translateY(-14px);
-      }
-      .nav-mobile{
-        align-self:center;
-      }
-      .nav-drawer{
-        right:0;
-        min-width:min(320px, calc(100vw - (var(--pad) * 2)));
+        height:280px;         /* bigger art */
+        transform:translateY(-12px);
       }
     }
 
     /* ---------- Sections ---------- */
-    section{ padding:clamp(56px, 8vw, 96px) 0; }
+    section{
+      padding:clamp(56px, 8vw, 96px) 0;
+    }
 
     h1{
       font-size:clamp(2.4rem, 6vw, 3.6rem);
@@ -253,11 +265,16 @@
       margin:0 0 20px;
       letter-spacing:-0.02em;
     }
+
     h2{
       font-size:clamp(1.5rem, 3vw, 2rem);
       margin:0 0 14px;
     }
-    h3{ margin:0 0 8px; font-size:1.05rem; }
+
+    h3{
+      margin:0 0 8px;
+      font-size:1.05rem;
+    }
 
     p{
       max-width:72ch;
@@ -265,6 +282,7 @@
       margin:0;
       font-size:1rem;
     }
+
     ul{
       margin:12px 0 0;
       padding-left:20px;
@@ -284,11 +302,11 @@
     }
 
     .panel{
-      background:rgba(255,255,255,0.06);
-      border:1px solid rgba(255,255,255,0.14);
+      background:var(--panel);
+      border:1px solid rgba(255,255,255,0.16);
       border-radius:var(--radius);
       padding:22px;
-      box-shadow:0 26px 80px rgba(0,0,0,0.25);
+      box-shadow:0 18px 60px rgba(0,0,0,0.35);
     }
 
     .hero-actions{
@@ -302,40 +320,54 @@
       padding:14px 20px;
       border-radius:16px;
       border:1px solid rgba(255,255,255,0.16);
-      background:rgba(255,255,255,0.06);
+      background:var(--panel);
       font-weight:700;
       min-height:44px;
       font-size:0.95rem;
       display:inline-flex;
       align-items:center;
       justify-content:center;
-      box-shadow:0 18px 60px rgba(0,0,0,0.18);
+      box-shadow:0 16px 40px rgba(0,0,0,0.22);
     }
+
     .btn.primary{
-      border-color:rgba(255,255,255,0.18);
       background:linear-gradient(135deg, rgba(138,77,255,0.45), rgba(0,225,255,0.22));
     }
 
     /* ---------- Cards ---------- */
-    .grid{ display:grid; gap:22px; }
-    .grid-3{ grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }
+    .grid{
+      display:grid;
+      gap:22px;
+    }
+
+    .grid-3{
+      grid-template-columns:repeat(auto-fit, minmax(280px, 1fr));
+    }
 
     .card{
-      background:rgba(255,255,255,0.06);
-      border:1px solid rgba(255,255,255,0.14);
+      background:var(--panel);
+      border:1px solid rgba(255,255,255,0.16);
       border-radius:var(--radius);
       padding:22px;
-      box-shadow:0 22px 70px rgba(0,0,0,0.22);
+      box-shadow:0 16px 55px rgba(0,0,0,0.28);
     }
 
-    /* ---------- Screenshots ---------- */
-    .shot{ cursor:zoom-in; display:block; }
+    /* ---------- Screenshots (clickable) ---------- */
+    .shot{
+      cursor:zoom-in;
+      display:block;
+    }
+
     .shot img{
       border-radius:14px;
-      border:1px solid rgba(255,255,255,0.14);
+      border:1px solid rgba(255,255,255,0.16);
       transition:transform 140ms ease, filter 140ms ease;
     }
-    .shot:hover img{ transform:translateY(-1px); filter:brightness(1.05); }
+
+    .shot:hover img{
+      transform:translateY(-1px);
+      filter:brightness(1.05);
+    }
 
     /* ---------- Lightbox ---------- */
     .lightbox{
@@ -349,6 +381,7 @@
       z-index:1000;
     }
     .lightbox:target{ display:flex; }
+
     .lightbox img{
       position:relative;
       z-index:2;
@@ -359,10 +392,16 @@
       border:1px solid rgba(255,255,255,0.12);
       background:rgba(0,0,0,0.12);
     }
-    .lightbox-bg{ position:absolute; inset:0; z-index:1; }
+
+    .lightbox-bg{
+      position:absolute;
+      inset:0;
+      z-index:1;
+    }
 
     .lightbox-close{
       position:absolute;
+      z-index:3;
       top:calc(18px + env(safe-area-inset-top, 0px));
       right:calc(18px + env(safe-area-inset-right, 0px));
       width:56px;
@@ -372,16 +411,27 @@
       font-size:34px;
       line-height:1;
       color:#fff;
-      background:rgba(0,0,0,0.35);
-      border:1px solid rgba(255,255,255,0.18);
-      border-radius:14px;
+      background:rgba(0,0,0,0.45);
+      border:1px solid rgba(255,255,255,0.22);
+      border-radius:16px;
       text-decoration:none;
       cursor:pointer;
       padding:0;
-      z-index:3;
     }
     .lightbox-close:hover,
-    .lightbox-close:focus-visible{ background:rgba(255,255,255,0.12); }
+    .lightbox-close:focus-visible{
+      background:rgba(255,255,255,0.12);
+    }
+
+    @media (max-width: 520px){
+      .lightbox-close{
+        top:calc(12px + env(safe-area-inset-top, 0px));
+        right:calc(12px + env(safe-area-inset-right, 0px));
+        width:60px;
+        height:60px;
+        font-size:36px;
+      }
+    }
 
     /* ---------- Footer ---------- */
     footer{
@@ -396,13 +446,28 @@
   <a class="skip-link" href="#main">Skip to main content</a>
 
   <header class="site-header" role="banner">
-    <div class="header-rail">
-      <div class="wrap header-inner">
-        <a class="brand" href="#top" aria-label="ContentBox home">
-          <img src="docs/screenshots/logo.png" alt="ContentBox logo" />
-        </a>
+    <div class="wrap header-inner">
+      <a class="brand" href="#top" aria-label="ContentBox home">
+        <img src="docs/screenshots/logo.png" alt="ContentBox logo" />
+      </a>
 
-        <nav class="nav-desktop" aria-label="Primary navigation">
+      <!-- Desktop nav -->
+      <nav class="nav-desktop" aria-label="Primary navigation">
+        <a href="#why">Why</a>
+        <a href="#freedom">Built for freedom</a>
+        <a href="#how">How it works</a>
+        <a href="#product">Product</a>
+        <a href="#flows">Flows</a>
+        <a href="#next">What ships first</a>
+      </nav>
+
+      <!-- Mobile menu -->
+      <details class="nav-mobile" id="mobileMenu">
+        <summary aria-label="Open menu">
+          <span class="burger" aria-hidden="true"><span></span></span>
+        </summary>
+
+        <nav class="nav-drawer" aria-label="Mobile navigation">
           <a href="#why">Why</a>
           <a href="#freedom">Built for freedom</a>
           <a href="#how">How it works</a>
@@ -410,22 +475,7 @@
           <a href="#flows">Flows</a>
           <a href="#next">What ships first</a>
         </nav>
-
-        <details class="nav-mobile">
-          <summary aria-label="Open menu">
-            <span class="burger" aria-hidden="true"><span></span></span>
-          </summary>
-
-          <nav class="nav-drawer" aria-label="Mobile navigation">
-            <a href="#why">Why</a>
-            <a href="#freedom">Built for freedom</a>
-            <a href="#how">How it works</a>
-            <a href="#product">Product</a>
-            <a href="#flows">Flows</a>
-            <a href="#next">What ships first</a>
-          </nav>
-        </details>
-      </div>
+      </details>
     </div>
   </header>
 
@@ -691,7 +741,7 @@
 
     // Mobile menu auto-close (link click, outside click, Escape)
     (function () {
-      const menu = document.querySelector(".nav-mobile");
+      const menu = document.getElementById("mobileMenu");
       if (!menu) return;
 
       menu.querySelectorAll("a").forEach((a) => {
