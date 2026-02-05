@@ -7,7 +7,7 @@
 
   <meta
     name="description"
-    content="ContentBox is a desktop-first, local-first P2P tool for creators and independent entrepreneurs. Publish verifiable content, share a link that plays instantly, and unlock with entitlement."
+    content="ContentBox is a local-first, peer-to-peer content tool for creators who value ownership, provenance, and control. Verifiable playback. Entitlement-gated access. No platforms."
   />
 
   <style>
@@ -16,32 +16,27 @@
       --panel: rgba(255,255,255,0.06);
       --border: rgba(255,255,255,0.14);
       --text: rgba(255,255,255,0.96);
-      --muted: rgba(255,255,255,0.74);
+      --muted: rgba(255,255,255,0.72);
       --focus: #00e1ff;
       --radius: 18px;
     }
 
     * { box-sizing: border-box; }
-    html {
-      font-size: clamp(16px, 1.1vw, 18px);
-    }
+    html { font-size: clamp(16px, 1.1vw, 18px); }
+
     body {
       margin: 0;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: var(--bg);
+      background: radial-gradient(900px 600px at 10% -10%, rgba(0,225,255,0.12), transparent 55%),
+                  radial-gradient(800px 500px at 90% 10%, rgba(138,77,255,0.18), transparent 55%),
+                  var(--bg);
       color: var(--text);
       line-height: 1.6;
       overflow-x: hidden;
-      text-rendering: optimizeLegibility;
-    }
-
-    img {
-      max-width: 100%;
-      height: auto;
-      display: block;
     }
 
     a { color: inherit; text-decoration: none; }
+    img { max-width: 100%; display: block; }
 
     :focus-visible {
       outline: 3px solid var(--focus);
@@ -50,33 +45,19 @@
     }
 
     .wrap {
-      max-width: 1120px;
+      max-width: 1200px;
       margin: 0 auto;
       padding: 0 22px;
     }
 
-    /* Accessibility */
-    .skip-link {
-      position: absolute;
-      left: 12px;
-      top: 12px;
-      background: #000;
-      color: #fff;
-      padding: 12px 16px;
-      border-radius: 12px;
-      transform: translateY(-200%);
-      z-index: 1000;
-      font-size: 0.95rem;
-    }
-    .skip-link:focus { transform: translateY(0); }
+    /* ---------- Header ---------- */
 
-    /* Header */
     header {
       position: sticky;
       top: 0;
       z-index: 50;
       background: rgba(7,10,16,0.85);
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(14px);
       border-bottom: 1px solid var(--border);
     }
 
@@ -84,106 +65,104 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 20px;
-      padding: 18px 0;
-      flex-wrap: wrap;
+      min-height: 84px;
+      gap: 16px;
     }
 
     .brand {
       display: flex;
       align-items: center;
-      gap: 16px;
-      min-width: 0;
+      gap: 14px;
     }
 
-    /* ✅ Logo: bigger, transparent, no frame, no skew */
     .brand img {
-  height: 70px;              /* 🔑 hard cap: trims tall logo */
-  width: auto;               /* preserve aspect ratio */
-  max-width: 200px;          /* still reads as a brand */
-  border: none;
-  background: transparent;
-  border-radius: 0;
-  box-shadow: none;
-  object-fit: contain;       /* no crop, no skew */
-  flex-shrink: 0;
-}
+      height: 88px;
+      width: auto;
+      max-width: 260px;
+      object-fit: contain;
+    }
 
-
-
-    .brand-text {
+    nav {
       display: flex;
-      flex-direction: column;
-      line-height: 1.15;
-    }
-
-    .brand-text strong {
-      font-size: clamp(1.2rem, 1.6vw, 1.35rem);
-      font-weight: 800;
-      letter-spacing: 0.2px;
-    }
-
-    .brand-text span {
-      font-size: 0.95rem;
-      color: var(--muted);
+      gap: 6px;
     }
 
     nav a {
-      font-size: 0.95rem;
       padding: 10px 14px;
+      font-size: 0.95rem;
       border-radius: 12px;
+      white-space: nowrap;
     }
 
     nav a:hover {
       background: var(--panel);
     }
 
-    /* Sections */
+    /* Mobile nav */
+    @media (max-width: 820px) {
+      .nav {
+        flex-wrap: wrap;
+      }
+      nav {
+        width: 100%;
+        justify-content: space-between;
+        flex-wrap: wrap;
+      }
+    }
+
+    /* ---------- Sections ---------- */
+
     section {
-      padding: clamp(48px, 7vw, 78px) 0;
+      padding: clamp(56px, 8vw, 96px) 0;
     }
 
     h1 {
-      font-size: clamp(2.1rem, 5vw, 3.3rem);
-      line-height: 1.08;
+      font-size: clamp(2.4rem, 6vw, 3.6rem);
+      line-height: 1.05;
       margin: 0 0 20px;
       letter-spacing: -0.02em;
     }
 
     h2 {
-      font-size: clamp(1.45rem, 2.8vw, 1.9rem);
-      margin: 0 0 14px;
+      font-size: clamp(1.5rem, 3vw, 2rem);
+      margin-bottom: 14px;
     }
 
     h3 {
-      font-size: 1.07rem;
-      margin: 0 0 8px;
+      margin: 0 0 6px;
     }
 
     p {
-      color: var(--muted);
       max-width: 70ch;
-      font-size: 1rem;
-      margin: 0;
+      color: var(--muted);
     }
 
-    /* Hero */
-    .hero {
-      padding-top: clamp(56px, 8vw, 96px);
-    }
+    /* ---------- Hero ---------- */
 
     .hero-grid {
       display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 22px;
-      align-items: start;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 28px;
+    }
+
+    @media (max-width: 900px) {
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px;
     }
 
     .hero-actions {
       display: flex;
-      flex-wrap: wrap;
       gap: 14px;
       margin-top: 24px;
+      flex-wrap: wrap;
     }
 
     .btn {
@@ -192,11 +171,7 @@
       border: 1px solid var(--border);
       background: var(--panel);
       font-weight: 700;
-      font-size: 0.95rem;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 44px; /* tap target */
+      min-height: 44px;
     }
 
     .btn.primary {
@@ -207,7 +182,8 @@
       );
     }
 
-    /* Grid + cards */
+    /* ---------- Cards ---------- */
+
     .grid {
       display: grid;
       gap: 22px;
@@ -218,378 +194,192 @@
     }
 
     .card {
-      border: 1px solid var(--border);
       background: var(--panel);
-      border-radius: var(--radius);
-      padding: 20px;
-    }
-
-    .card p { margin-top: 6px; }
-
-    /* Panels / callouts */
-    .panel {
       border: 1px solid var(--border);
-      background: var(--panel);
       border-radius: var(--radius);
-      padding: 20px;
+      padding: 22px;
     }
 
-    .kicker {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--muted);
-      font-size: 0.95rem;
-      margin-bottom: 12px;
+    /* ---------- Screenshots ---------- */
+
+    .shot {
+      cursor: zoom-in;
     }
 
-    .dot {
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: var(--focus);
-      box-shadow: 0 0 22px rgba(0, 225, 255, 0.35);
-    }
-
-    ul.bullets {
-      margin: 12px 0 0;
-      padding-left: 18px;
-      color: var(--muted);
-    }
-    ul.bullets li { margin: 10px 0; }
-    ul.bullets b { color: var(--text); }
-
-    /* Screenshots */
-    figure { margin: 0; }
-    figure img {
+    .shot img {
       border-radius: 14px;
       border: 1px solid var(--border);
-      background: rgba(0,0,0,0.15);
     }
 
-    figcaption {
-      padding-top: 12px;
-      font-size: 0.95rem;
-      color: var(--muted);
+    /* Lightbox (pure CSS) */
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      z-index: 1000;
     }
 
-    /* Footer */
+    .lightbox:target {
+      display: flex;
+    }
+
+    .lightbox img {
+      max-width: 95vw;
+      max-height: 95vh;
+      border-radius: 16px;
+      box-shadow: 0 40px 120px rgba(0,0,0,0.8);
+    }
+
+    .lightbox::after {
+      content: "×";
+      position: absolute;
+      top: 20px;
+      right: 24px;
+      font-size: 2.2rem;
+      color: #fff;
+    }
+
+    /* ---------- Footer ---------- */
+
     footer {
       border-top: 1px solid var(--border);
       padding: 48px 0;
-      font-size: 0.95rem;
       color: var(--muted);
-    }
-
-    @media (max-width: 900px) {
-      .hero-grid { grid-template-columns: 1fr; }
-    }
-
-    @media (max-width: 640px) {
-      nav {
-        width: 100%;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-      .brand-text span { font-size: 0.9rem; }
-      .brand img { width: clamp(92px, 18vw, 140px); }
     }
   </style>
 </head>
 
 <body>
-  <a href="#main" class="skip-link">Skip to main content</a>
 
-  <header role="banner">
-    <div class="wrap nav">
-      <a href="#top" class="brand" aria-label="ContentBox home">
-        <img
-          src="docs/screenshots/logo.png"
-          alt="ContentBox logo"
-          loading="eager"
-          decoding="async"
-        />
-        <div class="brand-text">
-          <strong>ContentBox</strong>
-          <span>Desktop-first · Local-first · P2P</span>
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top" aria-label="ContentBox home">
+      <img src="docs/screenshots/logo.png" alt="ContentBox logo" />
+    </a>
+
+    <nav aria-label="Primary navigation">
+      <a href="#why">Why</a>
+      <a href="#how">How it works</a>
+      <a href="#product">Product</a>
+      <a href="#flows">Flows</a>
+      <a href="#next">What ships first</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="wrap">
+    <div class="hero-grid">
+      <div>
+        <h1>
+          Publish verifiable content.<br />
+          Share a link that plays by policy.<br />
+          Unlock only by entitlement.
+        </h1>
+
+        <p>
+          ContentBox is a local-first, peer-to-peer content tool for creators who refuse
+          to trade ownership, provenance, or payout routing for convenience.
+          Playback is modern — control is non-negotiable.
+        </p>
+
+        <div class="hero-actions">
+          <a class="btn primary" href="#product">View screenshots</a>
+          <a class="btn" href="#how">How it works</a>
+          <a class="btn" href="#flows">Core flows</a>
         </div>
-      </a>
+      </div>
 
-      <nav aria-label="Primary navigation">
-        <a href="#why">Why</a>
-        <a href="#how">How it works</a>
-        <a href="#product">Product</a>
-        <a href="#flows">Flows</a>
-        <a href="#next">What ships first</a>
-      </nav>
+      <aside class="panel">
+        <h2>North Star</h2>
+        <p><strong>I hit play → it plays → entitlement decides access.</strong></p>
+        <ul>
+          <li><strong>Local-first:</strong> content lives with the creator.</li>
+          <li><strong>P2P-ready:</strong> resolve creators without a platform intermediary.</li>
+          <li><strong>Verifiable delivery:</strong> hash-addressed manifests enforce integrity.</li>
+          <li><strong>No lock-in:</strong> no marketplace dependency, no custody capture.</li>
+        </ul>
+      </aside>
     </div>
-  </header>
+  </section>
 
-  <main id="main">
-    <!-- HERO -->
-    <section class="hero wrap" id="top">
-      <div class="hero-grid">
-        <div>
-          <div class="kicker"><span class="dot" aria-hidden="true"></span> Not a platform. A tool.</div>
+  <!-- WHY -->
+  <section id="why" class="wrap">
+    <h2>Why ContentBox</h2>
+    <p>
+      Platforms optimize for capture. ContentBox optimizes for exit.
+      It exists for creators who want to distribute work without surrendering control,
+      identity, or economic agency.
+    </p>
 
-          <h1>
-            Publish verifiable content.<br />
-            Share a link that plays instantly.<br />
-            Unlock with entitlement.
-          </h1>
-
-          <p>
-            ContentBox is a local-first, peer-to-peer tool for creators and independent entrepreneurs who want control
-            over origin, playback, and payouts. The goal stays simple: a link should feel effortless, but rights should
-            still be respected.
-          </p>
-
-          <div class="hero-actions">
-            <a class="btn primary" href="#product">View screenshots</a>
-            <a class="btn" href="#how">How it works</a>
-            <a class="btn" href="#flows">Core flows</a>
-          </div>
-        </div>
-
-        <aside class="panel" aria-label="North Star and principles">
-          <h2 style="margin:0 0 8px;">North Star</h2>
-          <p style="margin:0;">
-            <b style="color:var(--text);">I hit play → it plays → optional unlock.</b>
-            The experience is modern, but the content remains verifiable and governed by policy.
-          </p>
-
-          <ul class="bullets">
-            <li><b>Local-first:</b> your library and source content live with you.</li>
-            <li><b>P2P-ready:</b> resolve creators on LAN first; remote options later.</li>
-            <li><b>Verifiable delivery:</b> hash-addressed manifests enable integrity checks and caching.</li>
-            <li><b>Splits built-in:</b> invite stakeholders, lock agreements, then publish to storefront.</li>
-          </ul>
-        </aside>
+    <div class="grid grid-3" style="margin-top:22px">
+      <div class="card">
+        <h3>Ownership stays local</h3>
+        <p>Your files, your machine, your keys. Distribution does not imply custody.</p>
       </div>
-    </section>
-
-    <!-- WHY -->
-    <section id="why" class="wrap">
-      <h2>Why ContentBox</h2>
-      <p>
-        Creators shouldn’t have to trade ownership, provenance, or payout routing to get instant playback and simple
-        sharing. ContentBox is designed for creators who want control, and robust enough for teams that need a path
-        without forcing a full platform migration.
-      </p>
-
-      <div class="grid grid-3" style="margin-top: 22px;">
-        <div class="card">
-          <h3>Control the origin</h3>
-          <p>
-            Content is packaged locally into a manifest with hashes so delivery can be verified, cached, and trusted
-            without central custody.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Links that respect rights</h3>
-          <p>
-            Links feel effortless, but access is gated by entitlement. The default message is not “free content”.
-            It’s “verified content with optional unlock”.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Splits and royalties, native</h3>
-          <p>
-            Invite stakeholders, lock a split version, and keep royalties visible as Owned vs Invited participation.
-            This is not a bolt-on spreadsheet.
-          </p>
-        </div>
+      <div class="card">
+        <h3>Links respect rights</h3>
+        <p>Playback follows policy. Access follows entitlement. Nothing is implied as free.</p>
       </div>
-    </section>
-
-    <!-- HOW -->
-    <section id="how" class="wrap">
-      <h2>How it works</h2>
-      <p>
-        The user story stays simple. Under the hood, ContentBox is built for verifiable delivery and frictionless
-        playback so “link → plays” works the way people expect — without losing control of the origin.
-      </p>
-
-      <div class="grid grid-3" style="margin-top: 22px;">
-        <div class="card">
-          <h3>Publish</h3>
-          <p>
-            Local content becomes a hash-addressed manifest. Policy and pricing attach to the manifest, and integrity
-            checks support caching and verifiable delivery.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Resolve</h3>
-          <p>
-            Buyers resolve the creator LAN-first when possible. Remote resolution can be configured later.
-            Cached host and manual entry serve as fallbacks.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Play</h3>
-          <p>
-            Playback streams with HTTP Range for instant start and seeking. Previews are optional.
-            Entitlement tokens gate access for paid content.
-          </p>
-        </div>
+      <div class="card">
+        <h3>Built for sovereign creators</h3>
+        <p>No algorithmic dependency. No forced marketplace. No extractive middle layer.</p>
       </div>
-
-      <div class="grid" style="margin-top: 22px;">
-        <div class="card">
-          <h3>Settle</h3>
-          <p>
-            Splits route value to the right people. Payments are sats/zaps oriented. During early P2P and playback
-            hardening, a payment stub can keep the user journey intact while settlement plumbing matures.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- PRODUCT SCREENSHOTS -->
-    <section id="product" class="wrap">
-      <h2>Product screenshots</h2>
-      <p>
-        These screenshots map directly to the flows above: library, publishing, store links, splits, royalties, and payments.
-        They’re placed to support the story without turning the page into a gallery dump.
-      </p>
-
-      <div class="grid grid-3" style="margin-top: 22px;">
-        <figure>
-          <img src="docs/screenshots/library.png" alt="ContentBox library showing owned and invited content" />
-          <figcaption>Library: owned and invited content</figcaption>
-        </figure>
-
-        <figure>
-          <img src="docs/screenshots/content_lib.png" alt="Content management screen for creating and preparing content" />
-          <figcaption>Content: creation and management</figcaption>
-        </figure>
-
-        <figure>
-          <img src="docs/screenshots/store.png" alt="Store view showing a listing and access flow" />
-          <figcaption>Store links: shareable access with entitlement gating</figcaption>
-        </figure>
-
-        <figure>
-          <img src="docs/screenshots/splits.png" alt="Splits screen showing stakeholders and split configuration" />
-          <figcaption>Splits: invite stakeholders and lock agreements</figcaption>
-        </figure>
-
-        <figure>
-          <img src="docs/screenshots/royalties.png" alt="Royalties dashboard showing participations" />
-          <figcaption>Royalties: owned vs invited participation</figcaption>
-        </figure>
-
-        <figure>
-          <img src="docs/screenshots/payment.png" alt="Payments screen showing settlement-related UI" />
-          <figcaption>Payments: sats and zaps oriented flows</figcaption>
-        </figure>
-      </div>
-    </section>
-
-    <!-- FLOWS (pairs screenshots + narrative) -->
-    <section id="flows" class="wrap">
-      <h2>Core flows</h2>
-      <p>
-        ContentBox is designed to make the “rights reality” obvious. Owners see what they own. Invitees see what they
-        were granted. Store exposure follows locked agreements.
-      </p>
-
-      <div class="grid grid-3" style="margin-top: 22px;">
-        <div class="card">
-          <h3>Library → choose what to play</h3>
-          <p>
-            The library stays fast and local. Networking should enhance it, not replace it.
-            Your content remains available even when you’re offline.
-          </p>
-        </div>
-
-        <div class="card">
-          <h3>Publish → verifiable manifest</h3>
-          <p>
-            Publishing produces a manifest with hashes so files can be verified at rest and in transit.
-            This unlocks durable caching and trust.
-          </p>
-        </div>
-
-        <div class="card">
-          <h3>Link → plays → unlock</h3>
-          <p>
-            Buyers open a link and playback starts quickly. Seeking works. If content is gated, entitlement unlocks access
-            without making the creator surrender control to a platform.
-          </p>
-        </div>
-      </div>
-
-      <div class="grid grid-3" style="margin-top: 22px;">
-        <div class="card">
-          <h3>Splits → invite → lock</h3>
-          <p>
-            Stakeholders are invited and approvals are collected before a split version is locked.
-            This reduces disputes and keeps expectations aligned.
-          </p>
-        </div>
-
-        <div class="card">
-          <h3>Royalties → owned vs invited</h3>
-          <p>
-            Participation is visible and auditable. Settlement follows the locked agreement, and later can be automated
-            through sats/zaps.
-          </p>
-        </div>
-
-        <div class="card">
-          <h3>Payments → sats/zaps</h3>
-          <p>
-            Payments are built for sats and zaps. Early on, the interface can be present with a stub so the
-            product story stays consistent while infrastructure hardens.
-          </p>
-        </div>
-      </div>
-    </section>
-
-    <!-- WHAT SHIPS FIRST -->
-    <section id="next" class="wrap">
-      <h2>What ships first</h2>
-      <p>
-        The sequencing stays aligned with the North Star. Playback and link-based consumption land first.
-        A public marketplace and deeper traversal come after persistence is proven.
-      </p>
-
-      <div class="grid grid-3" style="margin-top: 22px;">
-        <div class="card">
-          <h3>LAN-first playback MVP</h3>
-          <p>
-            Link opens, seller resolves, playback starts fast, seeking works. This is the foundation before adding
-            complex networking.
-          </p>
-        </div>
-
-        <div class="card">
-          <h3>Installer and onboarding</h3>
-          <p>
-            A frictionless install for Windows and Linux so “two nodes to network” becomes real in minutes.
-          </p>
-        </div>
-
-        <div class="card">
-          <h3>Payments plug-in</h3>
-          <p>
-            Add sats and zaps once the flow is durable. Keep the user story consistent from the start.
-          </p>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <footer>
-    <div class="wrap">
-      © <span id="year"></span> ContentBox — Built for creators who want control.
     </div>
-  </footer>
+  </section>
 
-  <script>
-    document.getElementById("year").textContent = new Date().getFullYear();
-  </script>
+  <!-- HOW -->
+  <section id="how" class="wrap">
+    <h2>How it works</h2>
+    <div class="grid grid-3">
+      <div class="card">
+        <h3>Publish</h3>
+        <p>Local content is packaged into a hash-addressed manifest with explicit policy.</p>
+      </div>
+      <div class="card">
+        <h3>Resolve</h3>
+        <p>Buyers resolve the creator directly — LAN-first, without platform mediation.</p>
+      </div>
+      <div class="card">
+        <h3>Play</h3>
+        <p>Playback streams efficiently, but access is enforced by entitlement — not assumption.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCREENSHOTS -->
+  <section id="product" class="wrap">
+    <h2>Product screenshots</h2>
+
+    <div class="grid grid-3" style="margin-top:22px">
+      <a class="shot" href="#shot1"><img src="docs/screenshots/library.png" alt="Library view" /></a>
+      <a class="shot" href="#shot2"><img src="docs/screenshots/content_lib.png" alt="Content management" /></a>
+      <a class="shot" href="#shot3"><img src="docs/screenshots/store.png" alt="Entitlement-gated link" /></a>
+    </div>
+  </section>
+
+  <!-- Lightboxes -->
+  <div id="shot1" class="lightbox"><a href="#"><img src="docs/screenshots/library.png" /></a></div>
+  <div id="shot2" class="lightbox"><a href="#"><img src="docs/screenshots/content_lib.png" /></a></div>
+  <div id="shot3" class="lightbox"><a href="#"><img src="docs/screenshots/store.png" /></a></div>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    © <span id="year"></span> ContentBox — tools for creators who value freedom.
+  </div>
+</footer>
+
+<script>
+  document.getElementById("year").textContent = new Date().getFullYear();
+</script>
+
 </body>
 </html>
