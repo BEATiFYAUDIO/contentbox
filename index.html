@@ -98,16 +98,17 @@
 
     /* ✅ Logo: bigger, transparent, no frame, no skew */
     .brand img {
-  width: auto;                              /* let width be natural */
-  height: clamp(56px, 6vw, 72px);           /* 🔑 TRIM HEIGHT */
-  max-width: clamp(140px, 22vw, 200px);     /* keep it visually big */
+  height: 48px;              /* 🔑 hard cap: trims tall logo */
+  width: auto;               /* preserve aspect ratio */
+  max-width: 200px;          /* still reads as a brand */
   border: none;
   background: transparent;
   border-radius: 0;
   box-shadow: none;
-  object-fit: contain;                      /* no skew, no crop */
+  object-fit: contain;       /* no crop, no skew */
   flex-shrink: 0;
 }
+
 
 
     .brand-text {
