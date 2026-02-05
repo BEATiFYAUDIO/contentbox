@@ -57,7 +57,7 @@
     .pill{border:1px solid var(--border); background:rgba(255,255,255,.06); padding:4px 10px; border-radius:999px; color:var(--text)}
     h1{margin:12px 0 10px; font-size:44px; line-height:1.06}
     @media (max-width:520px){h1{font-size:36px}}
-    .sub{margin:0 0 16px; color:var(--muted); font-size:18px; max-width:62ch}
+    .sub{margin:0 0 16px; color:var(--muted); font-size:18px; max-width:70ch}
     .cta{display:flex; gap:12px; flex-wrap:wrap; margin-top:14px}
     .mono{font-family:var(--mono)}
     .term{font-family:var(--mono); background:#070914; border:1px solid rgba(255,255,255,.12); border-radius:16px; padding:14px; overflow:auto; box-shadow:0 10px 30px rgba(0,0,0,.35)}
@@ -66,7 +66,7 @@
     .warn{color:var(--warn)}
     .section{margin-top:34px}
     .section h2{margin:0 0 12px; font-size:22px; letter-spacing:.2px}
-    .section p{margin:0 0 14px; color:var(--muted); max-width:85ch}
+    .section p{margin:0 0 14px; color:var(--muted); max-width:90ch}
     .cards{display:grid; gap:14px; grid-template-columns:repeat(3,1fr)}
     @media (max-width: 920px){.cards{grid-template-columns:1fr}}
     .feature{padding:18px}
@@ -100,9 +100,8 @@
     </a>
     <nav aria-label="Primary">
       <a href="#mission">Mission</a>
-      <a href="#why">Why this</a>
+      <a href="#why">Why</a>
       <a href="#how">How it works</a>
-      <a href="#p2p">P2P</a>
       <a href="#roadmap">Roadmap</a>
       <a href="#faq">FAQ</a>
       <a class="btn" href="https://github.com/BEATiFYAUDIO/contentbox" id="repoNav">GitHub</a>
@@ -116,29 +115,31 @@
     <div class="card pad">
       <div class="kicker">
         <span class="pill">Local-first</span>
-        <span class="pill">P2P-ready</span>
+        <span class="pill">Direct links</span>
         <span class="pill">No gatekeepers</span>
         <span class="pill">Sound money (optional)</span>
       </div>
-      <h1>Infrastructure for creators who don’t want permission.</h1>
+
+      <h1>Creator-owned infrastructure for sharing, streaming, and collaboration.</h1>
+
       <p class="sub">
-        ContentBox is a local-first creator tool that publishes content as hash-addressed manifests and streams over standard networking.
-        It scales from one node to many peers without becoming a platform.
+        ContentBox is not a platform. It’s software you run.
+        Publish directly, share with a link, and play instantly — with optional unlock and intentional downloads.
       </p>
 
       <div class="notice" id="cta">
         <strong style="color:var(--text)">North Star:</strong>
-        Play starts immediately. Payment is optional. Downloads are intentional.
+        I hit Play → it plays → optional unlock/pay.
       </div>
 
       <div class="cta">
         <a class="btn primary" href="https://github.com/BEATiFYAUDIO/contentbox">Open the repo</a>
         <a class="btn" href="#mission">Read the mission</a>
-        <a class="btn" href="#how">See the flow</a>
+        <a class="btn" href="#how">See how it works</a>
       </div>
 
       <div style="margin-top:16px" class="small">
-        <span class="inlinecode">No global index</span>
+        <span class="inlinecode">No global index required</span>
         <span class="inlinecode">No on-chain media</span>
         <span class="inlinecode">No forced marketplace</span>
         <span class="inlinecode">No heavy DRM</span>
@@ -147,17 +148,15 @@
 
     <div class="card pad">
       <div class="term" role="region" aria-label="Example flow">
-        <div class="mono dim">$ contentbox publish ./song.wav</div>
-        <div class="mono"><span class="ok">✓</span> manifest: <span style="color:#bbaaff">sha256:…</span></div>
-        <div class="mono"><span class="ok">✓</span> link: <span style="color:#bbaaff">/buy?v=1&manifestHash=…</span></div>
-        <div class="mono dim" style="margin-top:10px">Buyer opens link → streams immediately</div>
-        <div class="mono"><span class="ok">✓</span> GET <span style="color:#bbaaff">/content/&lt;manifest&gt;/&lt;file&gt;</span> <span class="dim">206</span></div>
-        <div class="mono"><span class="ok">✓</span> Seek: <span style="color:#bbaaff">Range: bytes=…</span></div>
-        <div class="mono"><span class="warn">⚡</span> Optional unlock later: <span style="color:#bbaaff">BTC/LN receipt</span></div>
+        <div class="mono dim">Publish → Share → Play</div>
+        <div class="mono"><span class="ok">✓</span> Create content locally</div>
+        <div class="mono"><span class="ok">✓</span> Share a direct link</div>
+        <div class="mono"><span class="ok">✓</span> Playback starts immediately</div>
+        <div class="mono"><span class="warn">⚡</span> Optional unlock later (Bitcoin/Lightning)</div>
       </div>
 
       <p class="small" style="margin-top:12px; color:var(--muted)">
-        The playback path stays boring and fast (HTTP Range). Payments, receipts, and settlement plug in later.
+        ContentBox keeps delivery fast and boring. Payments and receipts plug in later without slowing playback.
       </p>
     </div>
   </section>
@@ -168,69 +167,66 @@
     <div class="tabs" role="tablist" aria-label="Mission versions">
       <button class="tabbtn" id="tab-short" role="tab" aria-selected="true" aria-controls="panel-short">Short</button>
       <button class="tabbtn" id="tab-creator" role="tab" aria-selected="false" aria-controls="panel-creator">Creators</button>
-      <button class="tabbtn" id="tab-investor" role="tab" aria-selected="false" aria-controls="panel-investor">Investors</button>
+      <button class="tabbtn" id="tab-investor" role="tab" aria-selected="false" aria-controls="panel-investor">Builders</button>
     </div>
 
     <div class="card pad" style="margin-top:12px">
       <div id="panel-short" role="tabpanel" aria-labelledby="tab-short">
         <p style="margin:0; color:var(--muted)">
           <strong style="color:var(--text)">ContentBox exists to make platforms optional.</strong>
-          We build creator-owned infrastructure so publishing, distribution, and payment can happen without gatekeepers,
-          opaque rule changes, or insider capture. If you have the link, it should work.
+          We build creator-owned infrastructure so publishing, sharing, and getting paid can happen without gatekeepers,
+          opaque rule changes, or lock-in.
         </p>
       </div>
 
       <div id="panel-creator" role="tabpanel" aria-labelledby="tab-creator" hidden>
         <p style="margin:0 0 12px; color:var(--muted)">
-          <strong style="color:var(--text)">ContentBox exists to restore dignity, agency, and trust to digital creation.</strong>
-          The modern internet concentrated power in intermediaries. They can shadowban, demonetize, de-rank, de-platform,
-          or rewrite terms without meaningful recourse. Creators become inventory. Audiences become data.
-        </p>
-        <p style="margin:0 0 12px; color:var(--muted)">
-          We reject that model. Infrastructure is moral. The way systems are designed determines who holds power,
-          who bears risk, and who benefits when things go wrong.
+          <strong style="color:var(--text)">Creators should own their work and distribute without asking permission.</strong>
+          The modern internet centralized creation. Terms change quietly, reach is throttled by algorithms, and payment flows through layers of middlemen.
         </p>
         <ul style="margin:0; padding-left:18px; color:var(--muted)">
-          <li><strong style="color:var(--text)">Creators should own their work</strong> — local-first by design.</li>
-          <li><strong style="color:var(--text)">Distribution should not require permission</strong> — direct links, no gatekeepers.</li>
-          <li><strong style="color:var(--text)">Payments should be honest and hard to manipulate</strong> — designed for Bitcoin/Lightning receipts (optional).</li>
-          <li><strong style="color:var(--text)">Systems should be inspectable</strong> — standard protocols, visible failure modes.</li>
-          <li><strong style="color:var(--text)">Audits should be possible without coercion</strong> — local-first logs, exportable and mergeable.</li>
+          <li><strong style="color:var(--text)">Own the source</strong> — content lives with the creator, not a platform.</li>
+          <li><strong style="color:var(--text)">Share directly</strong> — links over feeds, relationships over ranking.</li>
+          <li><strong style="color:var(--text)">Get paid cleanly</strong> — designed for Bitcoin/Lightning receipts (optional).</li>
+          <li><strong style="color:var(--text)">Stay inspectable</strong> — integrity, auditability, exportability.</li>
         </ul>
         <p style="margin:12px 0 0; color:var(--muted)">
-          In one sentence: <strong style="color:var(--text)">ContentBox is infrastructure for creators who believe the internet should work for people, not gatekeepers.</strong>
+          In one sentence: <strong style="color:var(--text)">ContentBox is infrastructure for creators who don’t want gatekeepers.</strong>
         </p>
       </div>
 
       <div id="panel-investor" role="tabpanel" aria-labelledby="tab-investor" hidden>
         <p style="margin:0 0 12px; color:var(--muted)">
-          ContentBox is creator-owned distribution and monetization infrastructure designed around one loop:
-          <strong style="color:var(--text)">play instantly</strong>, then <strong style="color:var(--text)">unlock optionally</strong>.
-          Delivery stays on proven web primitives (HTTP Range). Payments/receipts are isolated as pluggable modules.
+          ContentBox focuses on a single loop: <strong style="color:var(--text)">play instantly</strong>, then <strong style="color:var(--text)">unlock optionally</strong>.
+          Delivery stays on standard web plumbing so it’s fast and predictable. Payments and receipts are modular.
         </p>
         <ul style="margin:0; padding-left:18px; color:var(--muted)">
-          <li>Lower friction: browser buyers can listen without installing an app.</li>
-          <li>Higher creator control: local-first hosting + explicit entitlements.</li>
-          <li>Resilient architecture: works with one node and scales P2P.</li>
-          <li>Monetization-ready: Bitcoin/Lightning receipts, with clear enforcement hooks.</li>
-          <li>Compliance-friendly posture: no on-chain media storage required, no forced marketplace, no heavy DRM.</li>
+          <li>Browser-first listening: no install required for buyers.</li>
+          <li>Local-first creation: creators keep control of hosting.</li>
+          <li>Optional payments: Bitcoin/Lightning receipts for entitlements.</li>
+          <li>Auditability: proofs and events that can be exported and verified.</li>
         </ul>
+        <div class="notice" style="margin-top:12px">
+          <strong style="color:var(--text)">Technical details:</strong>
+          full documentation and architecture live on GitHub.
+          <a href="https://github.com/BEATiFYAUDIO/contentbox" style="text-decoration:underline;">View the repository</a>.
+        </div>
       </div>
     </div>
   </section>
 
   <section class="section" id="why">
-    <h2>Why build this kind of infrastructure</h2>
+    <h2>Why build this way</h2>
     <p>
-      These aren’t just technical choices. They are choices about who holds power, who gets to speak, and who gets paid.
-      ContentBox is built to reduce choke points and keep creators closer to their audience.
+      These are not just technical choices. They are choices about who holds power, who bears risk, and who gets paid.
+      ContentBox is built to reduce chokepoints and keep creators closer to their audience.
     </p>
 
     <div class="two">
       <div class="card feature">
         <h3>No gatekeepers</h3>
         <ul>
-          <li>Publishing and sharing should not require approval.</li>
+          <li>Publishing and sharing should not require permission.</li>
           <li>Links should keep working even if other systems change rules.</li>
           <li>Discovery can be optional; distribution stays direct.</li>
         </ul>
@@ -240,7 +236,7 @@
         <h3>Harder to capture</h3>
         <ul>
           <li>Fewer centralized “switches” that can be flipped quietly.</li>
-          <li>More transparency in how access and splits are granted.</li>
+          <li>More transparency in access, splits, and approvals.</li>
           <li>Local-first audit trails you can export and verify.</li>
         </ul>
       </div>
@@ -248,11 +244,11 @@
 
     <div class="cards" style="margin-top:14px">
       <div class="card feature">
-        <h3>Reality-based enforcement</h3>
+        <h3>Play first</h3>
         <ul>
-          <li>No heavy DRM. People can always record.</li>
-          <li>Instead: clear permissions, integrity checks, and audits.</li>
-          <li>Designed for musicians, not protocol engineers.</li>
+          <li>Listening shouldn’t require an account or wallet.</li>
+          <li>Trust starts with playback, not paperwork.</li>
+          <li>Payments come after value is demonstrated.</li>
         </ul>
       </div>
       <div class="card feature">
@@ -260,15 +256,15 @@
         <ul>
           <li>Designed for Bitcoin/Lightning receipts and entitlements.</li>
           <li>Payment is optional to playback, not a dependency.</li>
-          <li>Honest settlement paths that reduce rent-seeking.</li>
+          <li>Cleaner settlement paths that reduce rent-seeking.</li>
         </ul>
       </div>
       <div class="card feature">
         <h3>Tool, not platform</h3>
         <ul>
-          <li>ContentBox is software you run, not a place you “join”.</li>
+          <li>You run ContentBox; you don’t “join” it.</li>
           <li>No global index required for purchases.</li>
-          <li>You can distribute with one node; peers are a bonus.</li>
+          <li>One node works; peers are a bonus.</li>
         </ul>
       </div>
     </div>
@@ -277,70 +273,42 @@
   <section class="section" id="how">
     <h2>How it works</h2>
     <p>
-      ContentBox publishes a hash-addressed manifest. Buyers open a link. The seller is resolved (LAN first; remote via host/port),
-      and playback streams over HTTP Range for instant start and seeking.
+      ContentBox replaces platforms with direct links. Creators publish locally, listeners open a link, and playback starts immediately.
+      Payments and downloads are optional and intentional.
     </p>
 
     <div class="cards">
       <div class="card feature">
         <h3>Publish</h3>
         <ul>
-          <li>Local content → manifest with hashes.</li>
-          <li>Integrity checks enable caching and verifiable delivery.</li>
-          <li>Price and policy attach to the manifest.</li>
+          <li>Creators package content locally.</li>
+          <li>Built-in integrity checks make content verifiable and cacheable.</li>
+          <li>Pricing and access rules attach to each release.</li>
         </ul>
       </div>
       <div class="card feature">
-        <h3>Resolve</h3>
+        <h3>Open</h3>
         <ul>
-          <li>LAN: mDNS/Bonjour (<span class="mono">contentbox._tcp</span>).</li>
-          <li>Remote: DDNS + port forward (optional).</li>
-          <li>Fallback: cached host or manual entry.</li>
+          <li>Listeners open a direct link.</li>
+          <li>ContentBox finds the creator automatically on trusted networks.</li>
+          <li>Remote access is supported without requiring a platform.</li>
         </ul>
       </div>
       <div class="card feature">
         <h3>Play</h3>
         <ul>
-          <li>HTTP Range streaming (instant start).</li>
-          <li>Seek works via <span class="mono">206 Partial Content</span>.</li>
-          <li>Preview + entitlement tokens gate access.</li>
+          <li>Playback starts instantly and supports seeking.</li>
+          <li>Optional preview and entitlements can gate continued access.</li>
+          <li>Downloads are explicit and intentional.</li>
         </ul>
       </div>
     </div>
-  </section>
 
-  <section class="section" id="p2p">
-    <h2>P2P principles</h2>
-    <p>
-      Bytes move peer-to-peer. Control stays with the creator. Optional helpers can improve WAN reliability later.
-      Playback never depends on blockchain.
-    </p>
-
-    <div class="cards">
-      <div class="card feature">
-        <h3>Discovery</h3>
-        <ul>
-          <li>LAN-first discovery for zero-config at home.</li>
-          <li>Remote sharing via host/port when needed.</li>
-          <li>Optional rendezvous/relay later for NAT pain.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Trust</h3>
-        <ul>
-          <li>Integrity by hashes, not platform promises.</li>
-          <li>Identity-aware peers (email now; web3 later).</li>
-          <li>Auditable actions: publish, splits, clearance, settlement.</li>
-        </ul>
-      </div>
-      <div class="card feature">
-        <h3>Access</h3>
-        <ul>
-          <li>Preview tokens for “play first”.</li>
-          <li>Payment slugs/receipts for unlock later.</li>
-          <li>No heavy DRM; permission + audit.</li>
-        </ul>
-      </div>
+    <div class="notice" style="margin-top:14px">
+      <strong style="color:var(--text)">Built on open, inspectable infrastructure.</strong>
+      ContentBox uses standard web technologies and local-first networking.
+      Full technical documentation lives on GitHub:
+      <a href="https://github.com/BEATiFYAUDIO/contentbox" style="text-decoration:underline;">BEATiFYAUDIO/contentbox</a>.
     </div>
   </section>
 
@@ -350,25 +318,25 @@
       <div class="card feature">
         <h3>Now</h3>
         <ul>
-          <li>Streaming hardening (Range + CORS).</li>
-          <li>LAN discovery + resolver debug UI.</li>
-          <li>Preview + entitlement hooks.</li>
+          <li>Hardening playback and link-based buying.</li>
+          <li>Improving peer discovery and remote reliability.</li>
+          <li>Clear, safe entitlement and preview mechanics.</li>
         </ul>
       </div>
       <div class="card feature">
         <h3>Next</h3>
         <ul>
-          <li>Remote reliability (DDNS defaults, status).</li>
-          <li>Cache tuning + multi-source fetch.</li>
-          <li>Clearance UX for derivatives + private previews.</li>
+          <li>Better “try with a friend” UX.</li>
+          <li>Local caching and multi-source fetching.</li>
+          <li>Clearance UX for derivatives and private previews.</li>
         </ul>
       </div>
       <div class="card feature">
         <h3>Later</h3>
         <ul>
-          <li>Bitcoin/Lightning receipts + settlement.</li>
-          <li>Optional rendezvous + relay.</li>
-          <li>Desktop player + installer bundle.</li>
+          <li>Bitcoin/Lightning receipts and settlement.</li>
+          <li>Optional rendezvous/relay helpers (opt-in).</li>
+          <li>Desktop player and installers.</li>
         </ul>
       </div>
     </div>
@@ -380,28 +348,28 @@
     <details>
       <summary>Do buyers need to install ContentBox?</summary>
       <p class="small" style="color:var(--muted); margin:10px 0 0">
-        No. Buyers can stream in a browser from a direct link. Installing ContentBox is for creators and power users.
+        No. Buyers can listen from a direct link in a browser. Installing ContentBox is for creators and power users.
       </p>
     </details>
 
     <details>
       <summary>Is media stored on-chain?</summary>
       <p class="small" style="color:var(--muted); margin:10px 0 0">
-        No. Playback uses HTTP Range. Blockchain is only for payments/receipts and optional audit anchoring later.
+        No. Blockchain is for payments and receipts only. Playback uses standard networking.
       </p>
     </details>
 
     <details>
       <summary>Is this DRM?</summary>
       <p class="small" style="color:var(--muted); margin:10px 0 0">
-        No heavy DRM. The goal is permission + integrity + auditability. Enforcement hooks exist, but reality is respected.
+        No heavy DRM. ContentBox focuses on permission, integrity, and auditability.
       </p>
     </details>
 
     <details>
       <summary>What about derivatives and clearance?</summary>
       <p class="small" style="color:var(--muted); margin:10px 0 0">
-        Derivatives can be previewed privately by authorized stakeholders, but require OG clearance before public release.
+        Derivatives can be previewed privately by authorized stakeholders but require clearance before public release.
       </p>
     </details>
   </section>
@@ -409,12 +377,12 @@
   <section class="section" id="repo">
     <h2>GitHub</h2>
     <p>
-      Source code lives here:
-      <a class="btn primary" href="https://github.com/BEATiFYAUDIO/contentbox">https://github.com/BEATiFYAUDIO/contentbox</a>
+      Source code and technical documentation:
+      <a class="btn primary" href="https://github.com/BEATiFYAUDIO/contentbox">github.com/BEATiFYAUDIO/contentbox</a>
     </p>
     <div class="notice">
       <strong style="color:var(--text)">GitHub Pages:</strong>
-      add this file as <span class="mono">index.html</span>, then enable Pages in the repo settings.
+      place this file as <span class="mono">index.html</span> and enable Pages (main / root).
     </div>
   </section>
 
@@ -430,7 +398,6 @@
 <script>
   document.getElementById("year").textContent = new Date().getFullYear();
 
-  // Mission tabs
   const tabs = [
     {btn:"tab-short", panel:"panel-short"},
     {btn:"tab-creator", panel:"panel-creator"},
