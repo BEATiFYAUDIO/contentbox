@@ -363,7 +363,11 @@
   </section>
 
   <!-- Lightboxes -->
-  <div id="shot1" class="lightbox"><a href="#"><img src="docs/screenshots/library.png" /></a></div>
+  <div id="shot1" class="lightbox" role="dialog" aria-modal="true">
+  <a href="#" class="lightbox-close" aria-label="Close image">×</a>
+  <img src="docs/screenshots/library.png" alt="Library view" />
+</div>
+
   <div id="shot2" class="lightbox"><a href="#"><img src="docs/screenshots/content_lib.png" /></a></div>
   <div id="shot3" class="lightbox"><a href="#"><img src="docs/screenshots/store.png" /></a></div>
 
