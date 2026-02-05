@@ -1,0 +1,550 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ContentType {
+  song
+  book
+  video
+  file
+  remix
+  mashup
+  derivative
+}
+
+enum ContentStatus {
+  draft
+  published
+}
+
+enum StorefrontStatus {
+  DISABLED
+  LISTED
+  UNLISTED
+}
+
+enum SplitStatus {
+  draft
+  locked
+}
+
+enum ContentLinkRelation {
+  remix
+  mashup
+  derivative
+}
+
+enum SplitRole {
+  writer
+  producer
+  publisher
+  performer
+  other
+}
+
+enum PaymentRail {
+  lightning
+  onchain
+}
+
+enum PaymentIntentStatus {
+  pending
+  paid
+  failed
+  expired
+}
+
+enum PaymentPurpose {
+  CONTENT_PURCHASE
+  STREAM_SESSION
+  TIP
+}
+
+enum PaymentSubjectType {
+  CONTENT
+  STREAM_SESSION
+}
+
+enum PayoutMethodCode {
+  manual
+  lightning_address
+  lnurl
+  btc_onchain
+  stripe_connect
+  paypal
+}
+
+enum PaymentProvider {
+  lnd
+  btcpay
+  none
+}
+
+enum PaymentStatus {
+  unpaid
+  paid
+  expired
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  displayName  String?
+  bio          String?
+  avatarUrl    String?
+  passwordHash String?
+  createdAt    DateTime @default(now())
+
+  identities           Identity[]
+  content              ContentItem[]  @relation("OwnerContent")
+  auditEvents          AuditEvent[]
+  splitVersionsCreated SplitVersion[] @relation("SplitVersionCreatedBy")
+  creditPurchases      CreditPurchase[]
+  approvedContentLinks ContentLink[] @relation("ContentLinkApprovedBy")
+  paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
+  entitlements         Entitlement[] @relation("EntitlementBuyer")
+
+  @@index([email])
+}
+
+model PayoutMethod {
+  id          String           @id @default(cuid())
+  code        PayoutMethodCode @unique
+  displayName String
+  isEnabled   Boolean          @default(false)
+  isVisible   Boolean          @default(true)
+  sortOrder   Int              @default(0)
+  createdAt   DateTime         @default(now())
+
+  identities Identity[]
+}
+
+model Identity {
+  id             String   @id @default(cuid())
+  userId         String
+  payoutMethodId String
+  value          String
+  label          String?
+  verifiedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payoutMethod PayoutMethod @relation(fields: [payoutMethodId], references: [id], onDelete: Cascade)
+
+  splitParticipants SplitParticipant[]
+
+  @@index([userId])
+  @@index([payoutMethodId])
+}
+
+model ContentItem {
+  id            String        @id @default(cuid())
+  ownerUserId   String
+  title         String
+  description   String?
+  type          ContentType
+  status        ContentStatus @default(draft)
+  storefrontStatus StorefrontStatus @default(DISABLED)
+  priceSats     BigInt?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  manifestId     String? @unique
+  currentSplitId String?
+
+  repoPath       String?
+  deletedAt      DateTime?
+  deletedReason  String?
+
+  owner         User         @relation("OwnerContent", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  files         ContentFile[]
+  credits       ContentCredit[]
+  splitVersions SplitVersion[]
+  manifest      Manifest?    @relation("ContentItemManifest", fields: [manifestId], references: [id])
+  currentSplit  SplitVersion? @relation("CurrentSplit", fields: [currentSplitId], references: [id])
+  parentLinks   ContentLink[] @relation("ParentContent")
+  childLinks    ContentLink[] @relation("ChildContent")
+  paymentIntents PaymentIntent[] @relation("PaymentIntentContent")
+  entitlements   Entitlement[] @relation("EntitlementContent")
+  settlements    Settlement[] @relation("SettlementContent")
+
+  @@index([ownerUserId])
+  @@index([repoPath])
+  @@index([deletedAt])
+}
+
+model ContentCredit {
+  id        String   @id @default(cuid())
+  contentId String
+  name      String
+  role      String
+  userId    String?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  content ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([contentId, sortOrder])
+}
+
+model ContentFile {
+  id           String   @id @default(cuid())
+  contentId    String
+  objectKey    String
+  originalName String
+  mime         String
+  sizeBytes    BigInt
+  sha256       String
+  cipherSha256 String?
+
+  // base64 of encrypted per-file key (DEK wrapped by KEK/recipient later)
+  encDek       String
+
+  // e.g. xchacha20poly1305
+  encAlg       String
+
+  // nonce used to wrap the DEK (base64) when wrapping uses XChaCha20-Poly1305
+  dekNonce     String?
+
+  // optional nonce for file encryption (base64) if you store it separately
+  fileNonce    String?
+
+  createdAt    DateTime @default(now())
+
+  content ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@index([contentId])
+  @@unique([contentId, objectKey])
+  @@index([sha256])
+}
+
+model Manifest {
+  id        String   @id @default(cuid())
+  contentId String   @unique
+  json      Json
+  sha256    String   @unique
+  parentManifestSha256 String?
+  lineageRelation ContentLinkRelation?
+  encAlg    String?
+  keyId     String?
+  createdAt DateTime @default(now())
+
+  contentItem ContentItem? @relation("ContentItemManifest")
+
+  @@index([parentManifestSha256])
+}
+
+model ContentLink {
+  id               String              @id @default(cuid())
+  parentContentId  String
+  childContentId   String
+  relation         ContentLinkRelation
+  upstreamBps      Int
+  requiresApproval Boolean             @default(false)
+  approvedAt       DateTime?
+  approvedByUserId String?
+
+  parentContent ContentItem @relation("ParentContent", fields: [parentContentId], references: [id], onDelete: Cascade)
+  childContent  ContentItem @relation("ChildContent", fields: [childContentId], references: [id], onDelete: Cascade)
+  approvedBy    User?       @relation("ContentLinkApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  derivativeAuthorizations DerivativeAuthorization[]
+  clearanceRequests ClearanceRequest[]
+  approvalTokens    ApprovalToken[]
+
+  @@index([parentContentId])
+  @@index([childContentId])
+}
+
+model ClearanceRequest {
+  id               String   @id @default(cuid())
+  contentLinkId    String
+  requestedByUserId String
+  status           String
+  reviewGrantedAt  DateTime?
+  reviewGrantedByUserId String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  contentLink ContentLink @relation(fields: [contentLinkId], references: [id], onDelete: Cascade)
+
+  @@index([contentLinkId])
+  @@index([requestedByUserId])
+  @@index([status])
+}
+
+model ApprovalToken {
+  id              String   @id @default(cuid())
+  contentLinkId   String
+  tokenHash       String   @unique
+  approverEmail   String
+  weightBps       Int      @default(0)
+  expiresAt       DateTime
+  usedAt          DateTime?
+  decision        String?
+  upstreamRatePercent Decimal? @db.Decimal(10, 3)
+  createdAt       DateTime @default(now())
+
+  contentLink ContentLink @relation(fields: [contentLinkId], references: [id], onDelete: Cascade)
+
+  @@index([contentLinkId])
+  @@index([approverEmail])
+  @@index([expiresAt])
+}
+
+model DerivativeAuthorization {
+  id                String   @id @default(cuid())
+  derivativeLinkId  String
+  parentContentId   String
+  requiredApprovers Int
+  approvedApprovers Int      @default(0)
+  approveWeightBps  Int      @default(0)
+  rejectWeightBps   Int      @default(0)
+  approvalPolicy    String
+  approvalBpsTarget Int?
+  status            String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  derivativeLink ContentLink @relation(fields: [derivativeLinkId], references: [id], onDelete: Cascade)
+  votes          DerivativeApprovalVote[]
+
+  @@index([derivativeLinkId])
+  @@index([parentContentId])
+  @@index([status])
+}
+
+model DerivativeApprovalVote {
+  id                      String   @id @default(cuid())
+  authorizationId         String
+  approverUserId          String
+  approverSplitParticipantId String?
+  decision                String
+  createdAt               DateTime @default(now())
+
+  authorization DerivativeAuthorization @relation(fields: [authorizationId], references: [id], onDelete: Cascade)
+
+  @@unique([authorizationId, approverUserId])
+  @@index([authorizationId])
+  @@index([approverUserId])
+}
+
+model SplitVersion {
+  id             String       @id @default(cuid())
+  contentId       String
+  versionNumber   Int
+  status          SplitStatus @default(draft)
+  createdByUserId String
+  createdAt       DateTime    @default(now())
+  lockedAt        DateTime?
+  lockedManifestSha256 String?
+
+  // 🔐 Immutable proof of what bytes this split applies to
+  lockedFileObjectKey String?
+  lockedFileSha256    String?
+
+  content      ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  createdBy    User        @relation("SplitVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  participants SplitParticipant[]
+  currentFor   ContentItem[] @relation("CurrentSplit")
+  settlements  Settlement[] @relation("SettlementSplit")
+
+  @@unique([contentId, versionNumber])
+  @@index([contentId])
+  @@index([createdByUserId])
+  @@index([lockedFileSha256])
+}
+
+model SplitParticipant {
+  id                String   @id @default(cuid())
+  splitVersionId    String
+  participantEmail  String?
+  participantUserId String?
+  role              String
+  roleCode          SplitRole @default(writer)
+  percent           Decimal  @db.Decimal(10, 3)
+  bps               Int       @default(0)
+
+  payoutIdentityId String?
+  payoutIdentity   Identity? @relation(fields: [payoutIdentityId], references: [id], onDelete: SetNull)
+
+  acceptedAt DateTime?
+  verifiedAt DateTime? // ← ADD THIS
+  createdAt  DateTime @default(now())
+
+  splitVersion  SplitVersion  @relation(fields: [splitVersionId], references: [id], onDelete: Cascade)
+  invitations   Invitation[]
+
+  @@index([splitVersionId])
+  @@index([participantEmail])
+  @@index([payoutIdentityId])
+  @@unique([splitVersionId, participantEmail])
+}
+
+model Invitation {
+  id                 String   @id @default(cuid())
+  splitParticipantId String
+  tokenHash          String
+  expiresAt          DateTime
+  acceptedAt         DateTime?
+  createdAt          DateTime @default(now())
+
+  splitParticipant SplitParticipant @relation(fields: [splitParticipantId], references: [id], onDelete: Cascade)
+
+  @@index([splitParticipantId])
+  @@index([tokenHash])
+}
+
+model AuditEvent {
+  id          String   @id @default(cuid())
+  userId      String
+  action      String
+  entityType  String
+  entityId    String
+  payloadJson Json?
+  createdAt   DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([entityType, entityId])
+}
+
+model CreditPurchase {
+  id              String         @id @default(cuid())
+  userId          String
+  proofHash       String
+  contentId       String
+  splitVersion    Int
+  rateSatsPerUnit Int
+  unitsPurchased  Int
+  amountSats      Int
+  invoiceId       String
+  paymentHash     String
+  provider        PaymentProvider
+  status          PaymentStatus  @default(unpaid)
+  expiresAt       DateTime
+  paidAt          DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  receiptRef  CreditReceiptRef?
+
+  @@index([userId])
+  @@index([proofHash])
+  @@index([contentId])
+}
+
+model CreditReceiptRef {
+  id         String   @id @default(cuid())
+  purchaseId String   @unique
+  receiptId  String   @unique
+  receiptPath String
+  issuedAt   DateTime
+
+  purchase CreditPurchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+
+  @@index([purchaseId])
+  @@index([receiptId])
+}
+
+model CreditSpend {
+  id        String   @id @default(cuid())
+  receiptId String
+  unitIndex Int
+  spentAt   DateTime @default(now())
+  sessionId String?
+
+  @@unique([receiptId, unitIndex])
+  @@index([receiptId])
+}
+
+model PaymentIntent {
+  id              String             @id @default(cuid())
+  buyerUserId     String?
+  contentId       String
+  manifestSha256  String?
+  amountSats      BigInt
+  status          PaymentIntentStatus @default(pending)
+  purpose         PaymentPurpose
+  subjectType     PaymentSubjectType
+  subjectId       String
+  memo            String?
+  paidVia         PaymentRail?
+  bolt11          String?
+  providerId      String?
+  lightningExpiresAt DateTime?
+  onchainAddress  String?
+  onchainDerivationIndex Int?
+  onchainTxid     String?
+  onchainVout     Int?
+  confirmations   Int?
+  receiptToken    String?
+  receiptTokenExpiresAt DateTime?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  paidAt          DateTime?
+
+  buyer    User?       @relation("PaymentIntentBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
+  content  ContentItem @relation("PaymentIntentContent", fields: [contentId], references: [id], onDelete: Cascade)
+  settlement Settlement? @relation("SettlementPayment")
+  entitlements Entitlement[] @relation("EntitlementPayment")
+
+  @@index([contentId])
+  @@index([buyerUserId])
+  @@index([manifestSha256])
+  @@index([status])
+  @@index([receiptToken])
+  @@index([purpose, subjectType, subjectId])
+}
+
+model Entitlement {
+  id              String   @id @default(cuid())
+  buyerUserId     String?
+  contentId       String
+  manifestSha256  String
+  paymentIntentId String?
+  grantedAt       DateTime @default(now())
+
+  buyer    User?       @relation("EntitlementBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
+  content  ContentItem @relation("EntitlementContent", fields: [contentId], references: [id], onDelete: Cascade)
+  payment  PaymentIntent? @relation("EntitlementPayment", fields: [paymentIntentId], references: [id], onDelete: SetNull)
+
+  @@unique([buyerUserId, contentId, manifestSha256])
+}
+
+model Settlement {
+  id              String   @id @default(cuid())
+  contentId       String
+  splitVersionId  String
+  netAmountSats   BigInt
+  paymentIntentId String   @unique
+  createdAt       DateTime @default(now())
+
+  content  ContentItem  @relation("SettlementContent", fields: [contentId], references: [id], onDelete: Cascade)
+  split    SplitVersion @relation("SettlementSplit", fields: [splitVersionId], references: [id], onDelete: Cascade)
+  payment  PaymentIntent @relation("SettlementPayment", fields: [paymentIntentId], references: [id], onDelete: Cascade)
+  lines    SettlementLine[]
+
+  @@index([contentId])
+  @@index([splitVersionId])
+}
+
+model SettlementLine {
+  id            String   @id @default(cuid())
+  settlementId  String
+  participantId String?
+  participantEmail String?
+  role          String?
+  amountSats    BigInt
+
+  settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+
+  @@index([settlementId])
+}
