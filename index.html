@@ -27,9 +27,10 @@
     body {
       margin: 0;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-      background: radial-gradient(900px 600px at 10% -10%, rgba(0,225,255,0.12), transparent 55%),
-                  radial-gradient(800px 500px at 90% 10%, rgba(138,77,255,0.18), transparent 55%),
-                  var(--bg);
+      background:
+        radial-gradient(900px 600px at 10% -10%, rgba(0,225,255,0.12), transparent 55%),
+        radial-gradient(800px 500px at 90% 10%, rgba(138,77,255,0.18), transparent 55%),
+        var(--bg);
       color: var(--text);
       line-height: 1.6;
       overflow-x: hidden;
@@ -41,7 +42,7 @@
     :focus-visible {
       outline: 3px solid var(--focus);
       outline-offset: 3px;
-      border-radius: 8px;
+      border-radius: 10px;
     }
 
     .wrap {
@@ -50,125 +51,122 @@
       padding: 0 22px;
     }
 
-    /* ---------- Header (fixed) ---------- */
-.site-header {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  background: rgba(7,10,16,0.85);
-  backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--border);
-}
+    /* ---------- Header ---------- */
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: rgba(7,10,16,0.85);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid var(--border);
+    }
 
-.header-inner {
-  display: grid;
-  grid-template-columns: auto 1fr auto; /* logo | nav | mobile button */
-  align-items: center;                 /* fixes the “floating high” look */
-  gap: 16px;
-  min-height: 76px;                    /* tighter rhythm */
-  padding: 10px 0;                     /* removes the “too tall” feeling */
-}
+    .header-inner {
+      display: grid;
+      grid-template-columns: auto 1fr auto; /* logo | nav | mobile button */
+      align-items: center;
+      gap: 16px;
+      min-height: 90px;  /* a touch taller so logo can breathe */
+      padding: 10px 0;
+    }
 
-/* Logo: big enough, but capped so header stays sane */
-.brand {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-}
-.brand img {
-  height: 64px;          /* IMPORTANT: keeps header from ballooning */
-  width: auto;
-  max-width: 240px;
-  object-fit: contain;
-}
+    .brand {
+      display: flex;
+      align-items: center;
+      min-width: 0;
+    }
 
-/* Desktop nav: never wrap */
-.nav-desktop {
-  justify-self: end;
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  white-space: nowrap;
-}
-.nav-desktop a {
-  padding: 10px 14px;
-  font-size: 0.95rem;
-  border-radius: 12px;
-}
-.nav-desktop a:hover {
-  background: var(--panel);
-}
+    /* ✅ BIGGER LOGO (but still caps height so header doesn't explode) */
+    .brand img {
+      height: 82px;
+      width: auto;
+      max-width: 320px;
+      object-fit: contain;
+    }
 
-/* Mobile menu: hidden on desktop */
-.nav-mobile { display: none; }
+    /* Desktop nav */
+    .nav-desktop {
+      justify-self: end;
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      white-space: nowrap;
+    }
 
-/* Burger button */
-.nav-mobile summary {
-  list-style: none;
-  cursor: pointer;
-  padding: 10px 12px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: var(--panel);
-}
-.nav-mobile summary::-webkit-details-marker { display: none; }
+    .nav-desktop a {
+      padding: 10px 14px;
+      font-size: 0.95rem;
+      border-radius: 12px;
+    }
 
-.burger {
-  display: inline-block;
-  width: 22px;
-  height: 14px;
-  position: relative;
-}
-.burger::before,
-.burger::after,
-.burger span {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: rgba(255,255,255,0.88);
-  border-radius: 999px;
-}
-.burger::before { top: 0; }
-.burger::after  { bottom: 0; }
-.burger span    { top: 6px; }
+    .nav-desktop a:hover {
+      background: var(--panel);
+    }
 
-/* Drawer */
-.nav-drawer {
-  position: absolute;
-  right: 22px;
-  top: calc(100% + 10px);
-  min-width: 220px;
-  padding: 10px;
-  border-radius: 16px;
-  border: 1px solid var(--border);
-  background: rgba(7,10,16,0.96);
-  backdrop-filter: blur(14px);
-  display: grid;
-  gap: 6px;
-}
-.nav-drawer a {
-  padding: 12px 12px;
-  border-radius: 12px;
-}
-.nav-drawer a:hover {
-  background: var(--panel);
-}
+    /* Mobile menu: hidden on desktop */
+    .nav-mobile { display: none; position: relative; justify-self: end; }
 
-/* Responsive: swap desktop nav for burger */
-@media (max-width: 860px) {
-  .header-inner {
-    grid-template-columns: auto 1fr auto; /* keep structure */
-  }
-  .nav-desktop { display: none; }
-  .nav-mobile  { display: block; justify-self: end; position: relative; }
-  .brand img { height: 56px; max-width: 210px; } /* slightly smaller on mobile */
-}
+    .nav-mobile summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel);
+    }
+    .nav-mobile summary::-webkit-details-marker { display: none; }
 
+    .burger {
+      display: inline-block;
+      width: 22px;
+      height: 14px;
+      position: relative;
+    }
+    .burger::before,
+    .burger::after,
+    .burger span {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: rgba(255,255,255,0.88);
+      border-radius: 999px;
+    }
+    .burger::before { top: 0; }
+    .burger::after  { bottom: 0; }
+    .burger span    { top: 6px; }
+
+    .nav-drawer {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 10px);
+      min-width: 240px;
+      padding: 10px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: rgba(7,10,16,0.96);
+      backdrop-filter: blur(14px);
+      display: grid;
+      gap: 6px;
+    }
+
+    .nav-drawer a {
+      padding: 12px 12px;
+      border-radius: 12px;
+    }
+    .nav-drawer a:hover {
+      background: var(--panel);
+    }
+
+    @media (max-width: 860px) {
+      .nav-desktop { display: none; }
+      .nav-mobile { display: block; }
+      .header-inner { grid-template-columns: auto 1fr auto; }
+      .brand img { height: 70px; max-width: 260px; } /* still big on mobile */
+    }
 
     /* ---------- Sections ---------- */
-
     section {
       padding: clamp(56px, 8vw, 96px) 0;
     }
@@ -192,18 +190,19 @@
     p {
       max-width: 70ch;
       color: var(--muted);
+      margin: 0;
     }
 
     /* ---------- Hero ---------- */
-
     .hero-grid {
       display: grid;
       grid-template-columns: 1.2fr 0.8fr;
       gap: 28px;
+      align-items: start;
     }
 
     @media (max-width: 900px) {
-      .hero-grid {Share a link that plays by policy.
+      .hero-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -240,7 +239,6 @@
     }
 
     /* ---------- Cards ---------- */
-
     .grid {
       display: grid;
       gap: 22px;
@@ -257,10 +255,10 @@
       padding: 22px;
     }
 
-    /* ---------- Screenshots ---------- */
-
+    /* ---------- Screenshots (clickable) ---------- */
     .shot {
       cursor: zoom-in;
+      display: block;
     }
 
     .shot img {
@@ -268,15 +266,15 @@
       border: 1px solid var(--border);
     }
 
-    /* Lightbox (pure CSS) */
+    /* Lightbox */
     .lightbox {
       position: fixed;
       inset: 0;
-      background: rgba(0,0,0,0.85);
+      background: rgba(0,0,0,0.88);
       display: none;
       align-items: center;
       justify-content: center;
-      padding: 20px;
+      padding: 18px;
       z-index: 1000;
     }
 
@@ -285,23 +283,45 @@
     }
 
     .lightbox img {
-      max-width: 95vw;
-      max-height: 95vh;
+      max-width: min(1200px, 96vw);
+      max-height: 92vh;
       border-radius: 16px;
       box-shadow: 0 40px 120px rgba(0,0,0,0.8);
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(0,0,0,0.12);
     }
 
-    .lightbox::after {
-      content: "×";
+    /* ✅ REAL close button (clickable + accessible) */
+    .lightbox-close {
       position: absolute;
-      top: 20px;
-      right: 24px;
-      font-size: 2.2rem;
+      top: 18px;
+      right: 18px;
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      font-size: 28px;
+      line-height: 1;
       color: #fff;
+      background: rgba(0,0,0,0.35);
+      border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 14px;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .lightbox-close:hover,
+    .lightbox-close:focus-visible {
+      background: rgba(255,255,255,0.12);
+    }
+
+    /* Close also when clicking outside the image */
+    .lightbox-bg {
+      position: absolute;
+      inset: 0;
     }
 
     /* ---------- Footer ---------- */
-
     footer {
       border-top: 1px solid var(--border);
       padding: 48px 0;
@@ -330,7 +350,7 @@
     <!-- Mobile menu -->
     <details class="nav-mobile">
       <summary aria-label="Open menu">
-        <span class="burger" aria-hidden="true"></span>
+        <span class="burger" aria-hidden="true"><span></span></span>
       </summary>
 
       <nav class="nav-drawer" aria-label="Mobile navigation">
@@ -344,7 +364,6 @@
   </div>
 </header>
 
-
 <main id="top">
 
   <!-- HERO -->
@@ -353,6 +372,8 @@
       <div>
         <h1>
           Publish verifiable content.<br />
+          Share access by policy.<br />
+          Unlock only by entitlement.
         </h1>
 
         <p>
@@ -437,13 +458,23 @@
   </section>
 
   <!-- Lightboxes -->
-  <div id="shot1" class="lightbox" role="dialog" aria-modal="true">
-  <a href="#" class="lightbox-close" aria-label="Close image">×</a>
-  <img src="docs/screenshots/library.png" alt="Library view" />
-</div>
+  <div id="shot1" class="lightbox" role="dialog" aria-modal="true" aria-label="Library view">
+    <a class="lightbox-bg" href="#" aria-label="Close"></a>
+    <a href="#" class="lightbox-close" aria-label="Close image">×</a>
+    <img src="docs/screenshots/library.png" alt="Library view" />
+  </div>
 
-  <div id="shot2" class="lightbox"><a href="#"><img src="docs/screenshots/content_lib.png" /></a></div>
-  <div id="shot3" class="lightbox"><a href="#"><img src="docs/screenshots/store.png" /></a></div>
+  <div id="shot2" class="lightbox" role="dialog" aria-modal="true" aria-label="Content management">
+    <a class="lightbox-bg" href="#" aria-label="Close"></a>
+    <a href="#" class="lightbox-close" aria-label="Close image">×</a>
+    <img src="docs/screenshots/content_lib.png" alt="Content management" />
+  </div>
+
+  <div id="shot3" class="lightbox" role="dialog" aria-modal="true" aria-label="Entitlement-gated link">
+    <a class="lightbox-bg" href="#" aria-label="Close"></a>
+    <a href="#" class="lightbox-close" aria-label="Close image">×</a>
+    <img src="docs/screenshots/store.png" alt="Entitlement-gated link" />
+  </div>
 
 </main>
 
