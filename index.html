@@ -11,6 +11,31 @@
   />
 
   <style>
+
+    /* ===== Anchor jump offset (so header doesn't cover section titles) ===== */
+:root{
+  --header-offset: 132px; /* desktop default */
+}
+
+/* Tell the browser how much space to leave when scrolling to #anchors */
+html{
+  scroll-padding-top: var(--header-offset);
+  scroll-behavior: smooth;
+}
+
+/* Also apply per-section so it works even if some browsers ignore scroll-padding */
+section[id]{
+  scroll-margin-top: var(--header-offset);
+}
+
+/* Match your header sizing on smaller screens */
+@media (max-width: 860px){
+  :root{ --header-offset: 128px; }
+}
+@media (max-width: 520px){
+  :root{ --header-offset: 148px; } /* your mobile header is taller because of the big logo */
+}
+
     :root{
       --bg:#070a10;
       --panel:rgba(255,255,255,0.06);
