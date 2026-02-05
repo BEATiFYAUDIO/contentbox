@@ -358,6 +358,38 @@
       padding: 48px 0;
       color: var(--muted);
     }
+    <style>
+  /* existing CSS above */
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 48px 0;
+    color: var(--muted);
+  }
+
+  /* ===============================
+     Mobile logo sizing override
+     =============================== */
+  @media (max-width: 520px) {
+    .header-inner {
+      min-height: 108px;
+      padding: 6px 0;
+    }
+
+    .brand {
+      height: 104px;
+      overflow: hidden;
+    }
+
+    .brand img {
+      height: 240px;
+      width: auto;
+      max-width: none;
+      object-fit: contain;
+      transform: translateY(-6px);
+    }
+  }
+</style>
 
     /* Reduced motion */
     @media (prefers-reduced-motion: reduce) {
