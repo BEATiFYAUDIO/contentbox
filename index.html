@@ -71,19 +71,23 @@
       padding: 10px 0;
     }
 
-    .brand {
-      display: flex;
-      align-items: center;
-      min-width: 0;
-    }
+     /* A fixed “window” for the logo */
+.brand{
+  display: flex;
+  align-items: center;
+  height: 92px;        /* header-friendly */
+  overflow: hidden;    /* trims the PNG’s empty space */
+}
 
-    /* ✅ BIG logo (generated logo needs height to read) */
-    .brand img {
-      height: 110px;
-      width: auto;
-      max-width: 460px;
-      object-fit: contain;
-    }
+/* Scale the logo inside the window */
+.brand img{
+  height: 150px;       /* oversized on purpose */
+  width: auto;
+  max-width: 700px;
+  object-fit: contain;
+  transform: translateY(-18px); /* adjust to center the art */
+}
+
 
     /* Desktop nav */
     .nav-desktop {
@@ -169,7 +173,7 @@
       .nav-desktop { display: none; }
       .nav-mobile { display: block; }
       .header-inner {
-        min-height: 96px;
+        min-height: 104px;
       }
       .brand img {
         height: 88px;
