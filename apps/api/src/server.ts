@@ -14,6 +14,7 @@ import { ethers } from "ethers";
 import * as cheerio from "cheerio";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { initContentRepo, addFileToContentRepo, commitAll } from "./lib/repo.js";
+import { LocalCasCache } from "./lib/cas.js";
 import {
   computeManifestHash,
   computeProofHash,
@@ -49,6 +50,41 @@ function normalizeEmail(x: unknown): string {
   return asString(x).trim().toLowerCase();
 }
 
+function isPrivateIp(ip: string | null | undefined): boolean {
+  if (!ip) return false;
+  const raw = ip.replace(/^::ffff:/, "");
+  if (raw === "127.0.0.1" || raw === "::1") return true;
+  if (raw.startsWith("10.")) return true;
+  if (raw.startsWith("192.168.")) return true;
+  const parts = raw.split(".").map((p) => Number(p));
+  if (parts.length === 4 && parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
+async function auditEventSafe(payload: {
+  userId: string;
+  action: string;
+  entityType: string;
+  entityId: string;
+  payloadJson?: any;
+}) {
+  try {
+    await prisma.auditEvent.create({ data: payload as any });
+  } catch {}
+}
+
+function nodePeerIdFromPem(pem: string): { peerId: string; fingerprint: string } {
+  const fingerprint = crypto.createHash("sha256").update(pem).digest("hex");
+  return { peerId: fingerprint, fingerprint };
+}
+
+async function loadNodePeerId(): Promise<{ peerId: string; fingerprint: string }> {
+  const nodeDir = path.join(CONTENTBOX_ROOT, ".node");
+  const pubPath = path.join(nodeDir, "node_public.pem");
+  const pem = await fs.readFile(pubPath, "utf8");
+  return nodePeerIdFromPem(pem);
+}
+
 function num(x: unknown): number {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
@@ -62,6 +98,149 @@ function parseSats(x: unknown): bigint {
   if (/^\d+$/.test(s)) return BigInt(s);
   const n = Number(s);
   return Number.isFinite(n) ? BigInt(Math.floor(n)) : 0n;
+}
+
+type RangeRequest =
+  | { kind: "ok"; start: number; end: number }
+  | { kind: "invalid" }
+  | { kind: "none" };
+
+function parseRangeHeader(range: string | undefined, size: number): RangeRequest {
+  if (!range) return { kind: "none" };
+  const trimmed = range.trim();
+  if (!trimmed.startsWith("bytes=")) return { kind: "invalid" };
+  const spec = trimmed.slice(6);
+  if (!spec || spec.includes(",")) return { kind: "invalid" };
+
+  const match = spec.match(/^(\d*)-(\d*)$/);
+  if (!match) return { kind: "invalid" };
+
+  const startRaw = match[1];
+  const endRaw = match[2];
+
+  if (!startRaw && !endRaw) return { kind: "invalid" };
+
+  if (!startRaw && endRaw) {
+    const suffix = Number(endRaw);
+    if (!Number.isFinite(suffix) || suffix <= 0) return { kind: "invalid" };
+    const end = Math.max(0, size - 1);
+    const start = Math.max(0, size - suffix);
+    if (start > end) return { kind: "invalid" };
+    return { kind: "ok", start, end };
+  }
+
+  const start = Number(startRaw);
+  if (!Number.isFinite(start) || start < 0) return { kind: "invalid" };
+
+  if (!endRaw) {
+    const end = Math.max(0, size - 1);
+    if (start > end) return { kind: "invalid" };
+    return { kind: "ok", start, end };
+  }
+
+  const end = Number(endRaw);
+  if (!Number.isFinite(end) || end < start) return { kind: "invalid" };
+  if (start >= size) return { kind: "invalid" };
+  return { kind: "ok", start, end: Math.min(end, size - 1) };
+}
+
+function previewMaxBytesFor(mime: string | null | undefined, contentType: string | null | undefined): number {
+  const mt = (mime || "").toLowerCase();
+  const ct = (contentType || "").toLowerCase();
+  if (mt.startsWith("audio/") || ct === "song") return 1_000_000;
+  if (mt.startsWith("video/") || ct === "video") return 2_500_000;
+  if (ct === "book") return 256_000;
+  return 0;
+}
+
+function canPreview(mime: string | null | undefined, contentType: string | null | undefined): boolean {
+  const ct = (contentType || "").toLowerCase();
+  if (ct === "file") return false;
+  const mt = (mime || "").toLowerCase();
+  if (mt.startsWith("audio/") || mt.startsWith("video/")) return true;
+  if (ct === "book") return true;
+  return false;
+}
+
+function isPreviewToken(token: string | null | undefined): boolean {
+  return Boolean(token && token.startsWith("preview_"));
+}
+
+function issuePreviewToken(input: { manifestHash: string; fileId: string; maxBytes: number; ttlMs: number }) {
+  const token = `preview_${crypto.randomBytes(18).toString("hex")}`;
+  const expiresAt = Date.now() + input.ttlMs;
+  previewTokens.set(token, {
+    manifestHash: input.manifestHash,
+    fileId: input.fileId,
+    maxBytes: input.maxBytes,
+    expiresAt
+  });
+  return { token, expiresAt };
+}
+
+function allowPreviewIssue(ip: string, limit = 6, windowMs = 5 * 60 * 1000): boolean {
+  const now = Date.now();
+  const entry = previewRate.get(ip);
+  if (!entry || now > entry.resetAt) {
+    previewRate.set(ip, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
+
+function base64UrlEncode(input: Buffer | string): string {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlDecode(input: string): Buffer {
+  const pad = input.length % 4 === 0 ? "" : "=".repeat(4 - (input.length % 4));
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/") + pad;
+  return Buffer.from(normalized, "base64");
+}
+
+type PermitClaims = {
+  manifestHash: string;
+  fileId: string;
+  buyerId: string;
+  scopes: string[];
+  iat: number;
+  exp: number;
+  nonce: string;
+};
+
+function signPermit(claims: PermitClaims): string {
+  const header = { alg: "HS256", typ: "CBP1" };
+  const headerB64 = base64UrlEncode(JSON.stringify(header));
+  const payloadB64 = base64UrlEncode(JSON.stringify(claims));
+  const data = `${headerB64}.${payloadB64}`;
+  const sig = crypto.createHmac("sha256", PERMIT_SECRET).update(data).digest();
+  const sigB64 = base64UrlEncode(sig);
+  return `permit_${data}.${sigB64}`;
+}
+
+function verifyPermit(token: string): { ok: boolean; expired?: boolean; claims?: PermitClaims } {
+  if (!token.startsWith("permit_")) return { ok: false };
+  const raw = token.slice("permit_".length);
+  const parts = raw.split(".");
+  if (parts.length !== 3) return { ok: false };
+  const [headerB64, payloadB64, sigB64] = parts;
+  try {
+    const header = JSON.parse(base64UrlDecode(headerB64).toString("utf8"));
+    if (header?.alg !== "HS256") return { ok: false };
+    const data = `${headerB64}.${payloadB64}`;
+    const expected = crypto.createHmac("sha256", PERMIT_SECRET).update(data).digest();
+    const actual = base64UrlDecode(sigB64);
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return { ok: false };
+    const claims = JSON.parse(base64UrlDecode(payloadB64).toString("utf8")) as PermitClaims;
+    if (!claims?.manifestHash || !claims?.fileId || !claims?.exp || !claims?.iat) return { ok: false };
+    if (Date.now() > Number(claims.exp)) return { ok: false, expired: true, claims };
+    return { ok: true, claims };
+  } catch {
+    return { ok: false };
+  }
 }
 
 // Try to return a URL string that is safe to pass to fetch. If the input
@@ -210,16 +389,35 @@ const prisma = new PrismaClient({ adapter });
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const CONTENTBOX_ROOT = mustEnv("CONTENTBOX_ROOT");
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
-const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
+const allowedOrigins = (process.env.CORS_ALLOW_ORIGINS || process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
   .filter(Boolean);
+const allowAllOrigins = allowedOrigins.includes("*");
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
 const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+const CAS_MAX_BYTES = Math.max(0, Math.floor(Number(process.env.CAS_MAX_BYTES || "2147483648")));
+const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
+const cas = new LocalCasCache({ root: CONTENTBOX_ROOT, maxBytes: CAS_MAX_BYTES });
+
+const LAN_SERVICE_TYPE = "contentbox";
+const LAN_SERVICE_VERSION = "1";
+const lanPeers = new Map<
+  string,
+  { peerId: string; host: string; port: number; fingerprint: string | null; version: string | null; lastSeenAt: number }
+>();
+let nodeIdentity: { peerId: string; fingerprint: string } | null = null;
+let nodeHttpPort = Number(process.env.PORT || 4000);
+const previewTokens = new Map<
+  string,
+  { manifestHash: string; fileId: string; expiresAt: number; maxBytes: number }
+>();
+const previewRate = new Map<string, { count: number; resetAt: number }>();
+const PERMIT_SECRET = (process.env.PERMIT_SECRET || process.env.JWT_SECRET || "").toString();
 
 function isPublicCorsPath(url?: string) {
   if (!url) return false;
@@ -228,14 +426,17 @@ function isPublicCorsPath(url?: string) {
     url.startsWith("/auth/register") ||
     url.startsWith("/embed.js") ||
     url.startsWith("/buy/") ||
+    url.startsWith("/content/") ||
     url.startsWith("/p2p/content/") ||
     url.startsWith("/p2p/payments/intents") ||
-    url.startsWith("/public/receipts/")
+    url.startsWith("/public/receipts/") ||
+    url.startsWith("/health")
   );
 }
 
 app.register(cors, {
   origin: (origin, cb) => {
+    if (allowAllOrigins) return cb(null, true);
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
     if (process.env.NODE_ENV !== "production") {
@@ -249,7 +450,8 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "Range"],
+  exposedHeaders: ["Content-Range", "Accept-Ranges", "Content-Length"],
   credentials: false,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -620,7 +822,6 @@ function hashApprovalToken(token: string): string {
 
 /** ---------- routes ---------- */
 
-app.get("/health", async () => ({ ok: true }));
 
 // Public node discovery endpoint to support basic P2P verification
 app.get("/.well-known/contentbox", async (req: any, reply: any) => {
@@ -1716,11 +1917,9 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     const childContent = await prisma.contentItem.findUnique({ where: { id: childContentId } });
     if (!parentContent || !childContent) continue;
 
-    const parentSplit = await getLockedSplitForContent(parentContent.id);
-    const parentParticipant =
-      parentSplit?.participants.find((p) => p.participantUserId === userId) ||
-      (email ? parentSplit?.participants.find((p) => (p.participantEmail || "").toLowerCase() === email) : null);
-    const parentBps = parentParticipant ? toBps(parentParticipant) : 0;
+    const resolved = await resolveApproverForParent(parentContent.id, userId, email);
+    const parentParticipant = resolved.approver;
+    const parentBps = parentParticipant ? parentParticipant.weightBps : 0;
 
     const key = `${parentContent.id}:${childContent.id}`;
     const existing = upstreamIncomeMap.get(key);
@@ -1745,22 +1944,12 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
 
   // Also include cleared upstream links even if no earnings yet
   const clearedLinks = await prisma.contentLink.findMany({
-    where: { approvedAt: { not: null }, upstreamBps: { gt: 0 } },
+    where: { approvedAt: { not: null } },
     include: { parentContent: true, childContent: true }
   });
-  const parentSplits = new Map<string, any>();
   for (const link of clearedLinks) {
-    if (!parentSplits.has(link.parentContentId)) {
-      const ps = await getLockedSplitForContent(link.parentContentId);
-      parentSplits.set(link.parentContentId, ps);
-    }
-  }
-  for (const link of clearedLinks) {
-    const ps = parentSplits.get(link.parentContentId);
-    if (!ps) continue;
-    const parentParticipant =
-      ps.participants.find((p: any) => p.participantUserId === userId) ||
-      (email ? ps.participants.find((p: any) => (p.participantEmail || "").toLowerCase() === email) : null);
+    const resolved = await resolveApproverForParent(link.parentContentId, userId, email);
+    const parentParticipant = resolved.approver;
     if (!parentParticipant) continue;
     const key = `${link.parentContentId}::${link.childContentId}`;
     if (!upstreamIncomeMap.has(key)) {
@@ -1770,7 +1959,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
         childContentId: link.childContentId,
         childTitle: link.childContent?.title || null,
         upstreamBps: link.upstreamBps || 0,
-        myEffectiveBps: Math.round((link.upstreamBps || 0) * (toBps(parentParticipant) || 0) / 10000),
+        myEffectiveBps: Math.round((link.upstreamBps || 0) * (parentParticipant.weightBps || 0) / 10000),
         earnedSatsToDate: 0n,
         approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null
       });
@@ -1974,19 +2163,46 @@ app.get("/me/purchases/payment-intents", { preHandler: requireAuth }, async (req
 // Update current user (partial update). Currently supports updating displayName.
 app.patch("/me", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const body = (req.body ?? {}) as { displayName?: string | null; bio?: string | null; avatarUrl?: string | null };
+  const body = (req.body ?? {}) as { email?: string | null; displayName?: string | null; bio?: string | null; avatarUrl?: string | null };
 
+  const emailRaw = body.email === undefined ? undefined : normalizeEmail(body.email);
   const displayName = body.displayName === undefined ? undefined : (String(body.displayName).trim() || null);
   const bio = body.bio === undefined ? undefined : (String(body.bio).trim() || null);
   const avatarUrl = body.avatarUrl === undefined ? undefined : (String(body.avatarUrl).trim() || null);
 
   const data: any = {};
+  if (emailRaw !== undefined) {
+    if (!emailRaw) return badRequest(reply, "email required");
+    data.email = emailRaw;
+  }
   if (displayName !== undefined) data.displayName = displayName;
   if (bio !== undefined) data.bio = bio;
   if (avatarUrl !== undefined) data.avatarUrl = avatarUrl;
 
-  const updated = await prisma.user.update({ where: { id: userId }, data, select: { id: true, email: true, displayName: true, createdAt: true, bio: true, avatarUrl: true } });
-  return reply.send(updated);
+  try {
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data,
+      select: { id: true, email: true, displayName: true, createdAt: true, bio: true, avatarUrl: true }
+    });
+    if (emailRaw) {
+      try {
+        await prisma.splitParticipant.updateMany({
+          where: {
+            participantEmail: { equals: emailRaw, mode: "insensitive" },
+            OR: [{ participantUserId: null }, { participantUserId: userId }]
+          },
+          data: { participantUserId: userId, acceptedAt: new Date() }
+        });
+      } catch {}
+    }
+    return reply.send(updated);
+  } catch (e: any) {
+    if (String(e?.code) === "P2002") {
+      return reply.code(409).send({ code: "EMAIL_TAKEN", message: "Email already in use." });
+    }
+    throw e;
+  }
 });
 
 // (external/profile/import) route: enhanced implementation later in the file (Lens, ENS, HTML parsing).
@@ -3030,22 +3246,78 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     if (!ok) return forbidden(reply);
   }
 
-  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  if (!manifest) return badRequest(reply, "Manifest missing");
+  const reasons: Array<{ code: string; message: string; action?: string }> = [];
+
+  const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+  if (!files.length) {
+    reasons.push({ code: "PRIMARY_FILE_MISSING", message: "Add a primary file", action: "upload" });
+  }
 
   const parents = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   const upstreamSum = sumBps(parents.map((p) => ({ bps: p.upstreamBps })));
-  if (upstreamSum > 10000) return badRequest(reply, "upstreamBps sum must be <= 10000");
+  if (upstreamSum > 10000) {
+    reasons.push({ code: "UPSTREAM_TOO_HIGH", message: "Upstream bps sum must be <= 10000", action: "edit_lineage" });
+  }
 
-  const sv = await prisma.splitVersion.findFirst({
+  let sv = await prisma.splitVersion.findFirst({
     where: { contentId },
     orderBy: { versionNumber: "desc" },
     include: { participants: true }
   });
-  if (!sv) return badRequest(reply, "Split version missing");
+  if (!sv) {
+    sv = await prisma.splitVersion.create({
+      data: { contentId, versionNumber: 1, createdByUserId: userId, status: "draft" },
+      include: { participants: true }
+    });
+  }
 
-  const totalBps = sumBps(sv.participants.map((p) => ({ bps: toBps(p) })));
-  if (totalBps !== 10000) return badRequest(reply, "Split bps must total 10000 to publish");
+  if (sv.participants.length === 0) {
+    await prisma.splitParticipant.create({
+      data: {
+        splitVersionId: sv.id,
+        participantUserId: content.ownerUserId,
+        participantEmail: null,
+        role: "writer",
+        roleCode: "writer" as any,
+        percent: "100",
+        bps: 10000
+      }
+    });
+    sv = await prisma.splitVersion.findUnique({
+      where: { id: sv.id },
+      include: { participants: true }
+    });
+  }
+
+  const totalBps = sumBps((sv?.participants || []).map((p) => ({ bps: toBps(p) })));
+  if (totalBps !== 10000) {
+    reasons.push({ code: "SPLIT_INVALID", message: "Split bps must total 10000 to publish", action: "edit_splits" });
+  }
+
+  if (reasons.length) {
+    return reply.code(409).send({
+      ok: false,
+      code: "PUBLISH_VALIDATION_FAILED",
+      message: "Publish failed",
+      reasons
+    });
+  }
+
+  const manifestJson = await buildManifestJson(content, files);
+  const manifestSha256 = hashManifestJson(manifestJson);
+  const manifest = await prisma.manifest.upsert({
+    where: { contentId },
+    update: { json: manifestJson as any, sha256: manifestSha256 },
+    create: { contentId, json: manifestJson as any, sha256: manifestSha256 }
+  });
+
+  if (content.status === "published") {
+    return reply.send({
+      ok: true,
+      content: { id: content.id, status: content.status, manifestHash: manifest.sha256, publishedAt: content.updatedAt.toISOString() },
+      links: {}
+    });
+  }
 
   const now = new Date();
   await prisma.$transaction(async (tx) => {
@@ -3059,7 +3331,11 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     });
   });
 
-  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256 });
+  return reply.send({
+    ok: true,
+    content: { id: content.id, status: "published", manifestHash: manifest.sha256, publishedAt: now.toISOString() },
+    links: {}
+  });
 });
 
 // Update storefront status (owner only)
@@ -4208,6 +4484,16 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
   return reply.send("Thanks — your clearance response has been recorded.");
 });
 
+app.get("/buy", async (req: any, reply) => {
+  const manifestHash = asString((req.query as any)?.manifestHash || "").trim();
+  if (!manifestHash) return badRequest(reply, "manifestHash required");
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+
+  return reply.redirect(`/buy/${manifest.contentId}`);
+});
+
 app.get("/buy/:contentId", async (req: any, reply) => {
   const contentId = asString((req.params as any).contentId || "").trim();
   if (!contentId) return notFound(reply, "Not found");
@@ -4245,12 +4531,44 @@ app.get("/buy/:contentId", async (req: any, reply) => {
   const app = document.getElementById("app");
   const apiBase = location.origin;
   let receiptToken = null;
+  let paymentSlug = null;
   let pollTimer = null;
   let refreshTimer = null;
+  let currentOffer = null;
+  let creatingPayment = false;
+  let previewSeconds = null;
+  const DEBUG = location.search.includes("cbDebug=1");
+  const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
 
   function qs(v){ return encodeURIComponent(v); }
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
+  function entKey(manifestHash){ return "cb:entitlement:" + manifestHash; }
+
+  function getEntitlement(manifestHash){
+    try {
+      const raw = localStorage.getItem(entKey(manifestHash));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.canStream) return null;
+      if (parsed.expiresAt && Date.now() > Number(parsed.expiresAt)) return null;
+      return parsed;
+    } catch { return null; }
+  }
+
+  function setEntitlement(manifestHash, token, status, expiresAt){
+    const now = Date.now();
+    const payload = {
+      canStream: true,
+      canDownload: false,
+      token,
+      status: status || "paid",
+      issuedAt: now,
+      expiresAt: expiresAt || now + ENTITLE_TTL_MS
+    };
+    try { localStorage.setItem(entKey(manifestHash), JSON.stringify(payload)); } catch {}
+    return payload;
+  }
 
   async function fetchJson(path, opts){
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
@@ -4259,20 +4577,143 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     return data;
   }
 
-  function renderOffer(offer){
+  function streamUrl(offer, token){
+    if (!offer?.primaryFileId) return null;
+    let url = apiBase + "/content/" + offer.manifestSha256 + "/" + encodeURIComponent(offer.primaryFileId);
+    if (token) url += "?t=" + encodeURIComponent(token);
+    return url;
+  }
+
+  function clearEntitlement(manifestHash){
+    try { localStorage.removeItem(entKey(manifestHash)); } catch {}
+  }
+
+  function renderOffer(offer, entitlement){
     const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
+    const isPaid = Number(offer.priceSats || 0) > 0;
+    const token = entitlement?.token || null;
+    const mediaSrc = streamUrl(offer, token);
+    const mime = String(offer.primaryFileMime || "");
+    const isVideo = offer.type === "video" || mime.startsWith("video/");
+    const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const canStream = !isPaid || Boolean(token);
+    const hidePay = !isPaid || entitlement?.status === "stream" || entitlement?.status === "paid" || entitlement?.status === "bypassed";
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
+        \${entitlement?.status === "bypassed" ? \`<div class="muted" style="margin-top:8px;">Payments unavailable (dev)</div>\` : ""}
+        \${mediaSrc && canStream ? \`
+          <div style="margin-top:14px;position:relative;">
+            \${entitlement?.status === "preview" ? \`<div style="position:absolute;top:10px;left:10px;padding:4px 8px;border-radius:999px;background:#111;border:1px solid #333;color:#fbbf24;font-size:12px;">Preview</div>\` : ""}
+            \${isVideo ? \`<video id="player" controls preload="metadata" style="width:100%;max-width:820px;border-radius:12px;background:#000;" src="\${mediaSrc}"></video>\` : ""}
+            \${isAudio ? \`<audio id="player" controls preload="metadata" style="width:100%;margin-top:6px;" src="\${mediaSrc}"></audio>\` : ""}
+            \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
+          </div>
+        \` : ""}
+        \${!canStream && isPaid ? \`<div class="muted" style="margin-top:10px;">Unlock to play.</div>\` : ""}
         <div style="margin-top:8px;font-size:18px;">\${price}</div>
-        <button id="buyBtn" class="btn" style="margin-top:12px;">Pay</button>
+        <button id="buyBtn" class="btn" style="margin-top:12px; \${hidePay ? "display:none;" : ""}">Pay</button>
         <div id="status" class="muted" style="margin-top:8px;"></div>
+        \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
+        \${entitlement?.token ? \`<button id="resetEnt" class="copy" style="margin-top:8px;">Reset entitlement</button>\` : ""}
+        \${entitlement?.token && entitlement?.status !== "preview" ? \`
+          <div style="margin-top:12px;">
+            <div class="muted" style="margin-bottom:6px;">Save to Library (email)</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <input id="libEmail" placeholder="you@email.com" style="flex:1 1 220px;padding:8px;border-radius:8px;border:1px solid #333;background:#0f0f10;color:#fff;font-size:12px;" />
+              <button id="libSave" class="copy">Save</button>
+            </div>
+            <div id="libMsg" class="muted" style="margin-top:6px;"></div>
+          </div>
+        \` : ""}
         <div id="rails" style="margin-top:16px;"></div>
         <div id="downloads" style="margin-top:16px;"></div>
+        \${DEBUG ? \`<div id="debug" class="muted" style="margin-top:16px;font-size:12px;"></div>\` : ""}
       </div>
     \`;
-    document.getElementById("buyBtn").onclick = async () => startPurchase(offer);
+    const btn = document.getElementById("buyBtn");
+    if (btn) btn.onclick = async () => startPurchase(offer);
+    if (entitlement?.token && isPaid) {
+      document.getElementById("status").textContent = "Unlocked. You can play now.";
+    }
+    if (entitlement?.status === "preview" && isPaid) {
+      document.getElementById("status").textContent = "Preview playing…";
+      const player = document.getElementById("player");
+      if (player && previewSeconds && !Number.isNaN(Number(previewSeconds))) {
+        window.setTimeout(() => {
+          if (player && typeof player.pause === "function") player.pause();
+          document.getElementById("status").textContent = "Preview ended. Pay to unlock.";
+        }, Math.max(1, Number(previewSeconds)) * 1000);
+      }
+      if (player) {
+        player.addEventListener(
+          "ended",
+          () => {
+            document.getElementById("status").textContent = "Preview ended. Pay to unlock.";
+          },
+          { once: true }
+        );
+      }
+    }
+    const resetBtn = document.getElementById("resetEnt");
+    if (resetBtn) {
+      resetBtn.onclick = () => {
+        clearEntitlement(offer.manifestSha256);
+        receiptToken = null;
+        renderOffer(offer, null);
+      };
+    }
+    const libBtn = document.getElementById("libSave");
+    if (libBtn) {
+      const emailInput = document.getElementById("libEmail");
+      if (emailInput && !emailInput.value) {
+        try {
+          const savedEmail = localStorage.getItem("cb:library:email");
+          if (savedEmail) emailInput.value = savedEmail;
+        } catch {}
+      }
+      libBtn.onclick = async () => {
+        const msgEl = document.getElementById("libMsg");
+        const email = emailInput?.value || "";
+        if (!email) {
+          if (msgEl) msgEl.textContent = "Enter your email.";
+          return;
+        }
+        try {
+          if (msgEl) msgEl.textContent = "Saving…";
+          await fetchJson("/p2p/library/save", {
+            method: "POST",
+            body: {
+              manifestHash: offer.manifestSha256,
+              fileId: offer.primaryFileId,
+              buyerEmail: email,
+              permit: entitlement?.token
+            }
+          });
+          try { localStorage.setItem("cb:library:email", email); } catch {}
+          if (msgEl) msgEl.textContent = "Saved to Library.";
+        } catch {
+          if (msgEl) msgEl.textContent = "Save failed.";
+        }
+      };
+    }
+    if (DEBUG) updateDebug(offer, entitlement);
+  }
+
+  async function updateDebug(offer, entitlement){
+    const el = document.getElementById("debug");
+    if (!el) return;
+    const stream = streamUrl(offer, entitlement?.token || null);
+    let access = "unknown";
+    try {
+      const res = await fetch(stream, { method: "HEAD" });
+      access = res.headers.get("x-contentbox-access") || "unknown";
+    } catch {}
+    el.innerHTML =
+      "<div>Host: " + location.host + "</div>" +
+      "<div>Permit: " + ((entitlement && entitlement.status) || "none") + "</div>" +
+      "<div>Access header: " + access + "</div>";
   }
 
   function renderRails(intent){
@@ -4326,6 +4767,10 @@ app.get("/buy/:contentId", async (req: any, reply) => {
       clearInterval(pollTimer);
       const payload = await fetchJson("/public/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
+      if (currentOffer?.manifestSha256) {
+        const ent = setEntitlement(currentOffer.manifestSha256, paymentSlug || receiptToken, "paid");
+        renderOffer(currentOffer, ent);
+      }
       document.getElementById("status").textContent = "Payment received. Download is ready.";
     } else {
       document.getElementById("status").textContent = "Waiting for payment…";
@@ -4333,17 +4778,75 @@ app.get("/buy/:contentId", async (req: any, reply) => {
   }
 
   async function startPurchase(offer){
+    if (creatingPayment) return;
+    creatingPayment = true;
     document.getElementById("status").textContent = "Creating payment…";
-    const amount = offer.priceSats != null ? offer.priceSats : 1000;
-    const intent = await fetchJson("/p2p/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
-    receiptToken = intent.receiptToken;
-    renderRails(intent);
-    pollTimer = setInterval(pollStatus, 2000);
-    pollStatus().catch(()=>{});
+    try {
+      const amount = offer.priceSats != null ? offer.priceSats : 1000;
+      const res = await fetch(apiBase + "/p2p/payments/intents", {
+        method:"POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ contentId, manifestSha256: offer.manifestSha256, amountSats: amount })
+      });
+      if (res.status === 503) {
+        try {
+          const p = await fetchJson("/p2p/permits", {
+            method: "POST",
+            body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "stream" }
+          });
+          const ent = setEntitlement(offer.manifestSha256, p.permit, "bypassed", Date.parse(p.expiresAt));
+          previewSeconds = p.previewSeconds || null;
+          renderOffer(offer, ent);
+          document.getElementById("status").textContent = "Dev payments unavailable. Unlocked.";
+        } catch {}
+        return;
+      }
+      const intent = await res.json();
+      paymentSlug = intent.paymentSlug || null;
+      if (intent.status === "bypassed") {
+        try {
+          const p = await fetchJson("/p2p/permits", {
+            method: "POST",
+            body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "stream" }
+          });
+        const ent = setEntitlement(offer.manifestSha256, p.permit, "bypassed", Date.parse(p.expiresAt));
+          previewSeconds = p.previewSeconds || null;
+          renderOffer(offer, ent);
+          document.getElementById("status").textContent = "Dev payments unavailable. Unlocked.";
+        } catch {}
+        return;
+      }
+      receiptToken = intent.receiptToken;
+      renderRails(intent);
+      pollTimer = setInterval(pollStatus, 2000);
+      pollStatus().catch(()=>{});
+    } finally {
+      creatingPayment = false;
+    }
   }
 
   fetchJson("/p2p/content/" + contentId + "/offer")
-    .then(renderOffer)
+    .then(async (offer)=> {
+      currentOffer = offer;
+      const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
+      if (ent && ent.token) {
+        renderOffer(offer, ent);
+        return;
+      }
+      if (Number(offer.priceSats || 0) > 0) {
+        try {
+          const p = await fetchJson("/p2p/permits", {
+            method: "POST",
+            body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
+          });
+          previewSeconds = p.previewSeconds || null;
+          const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
+          renderOffer(offer, next);
+          return;
+        } catch {}
+      }
+      renderOffer(offer, null);
+    })
     .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
 })();
 </script>
@@ -4412,6 +4915,196 @@ app.get("/embed.js", async (req: any, reply) => {
   return reply.send(js);
 });
 
+app.get("/health", async (_req: any, reply) => {
+  if (!nodeIdentity) nodeIdentity = await loadNodePeerId();
+  return reply.send({
+    ok: true,
+    peerId: nodeIdentity.peerId,
+    fingerprint: nodeIdentity.fingerprint,
+    httpPort: nodeHttpPort,
+    ts: new Date().toISOString()
+  });
+});
+
+app.get("/p2p/identity", async (_req: any, reply) => {
+  if (!nodeIdentity) nodeIdentity = await loadNodePeerId();
+  return reply.send({
+    peerId: nodeIdentity.peerId,
+    fingerprint: nodeIdentity.fingerprint,
+    httpPort: nodeHttpPort,
+    version: LAN_SERVICE_VERSION
+  });
+});
+
+app.get("/p2p/peers", async (_req: any, reply) => {
+  const now = Date.now();
+  const peers = Array.from(lanPeers.values()).map((p) => ({
+    ...p,
+    ageMs: Math.max(0, now - p.lastSeenAt)
+  }));
+  return reply.send({ peers });
+});
+
+app.post("/p2p/previews", async (req: any, reply) => {
+  const body = (req.body ?? {}) as {
+    manifestHash?: string;
+    fileId?: string;
+    contentId?: string;
+    sellerPeerId?: string;
+  };
+
+  const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
+  const fileId = asString(body.fileId || "").trim();
+  if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
+
+  const requesterIp =
+    (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ||
+    (req.ip as string | undefined) ||
+    "unknown";
+  if (!allowPreviewIssue(requesterIp)) {
+    return reply.code(429).send({ error: "Too many preview requests" });
+  }
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content) return notFound(reply, "Content not found");
+
+  const manifestJson = manifest.json as any;
+  const files = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
+  let fileEntry =
+    files.find(
+      (f: any) =>
+        f.objectKey === fileId ||
+        f.path === fileId ||
+        f.filename === fileId ||
+        f.sha256 === fileId ||
+        f.originalName === fileId
+    ) || null;
+  if (!fileEntry) {
+    const fallback = await prisma.contentFile.findFirst({
+      where: { contentId: content.id, OR: [{ objectKey: fileId }, { sha256: fileId }] }
+    });
+    if (fallback) {
+      fileEntry = {
+        objectKey: fallback.objectKey,
+        sha256: fallback.sha256,
+        mime: fallback.mime,
+        sizeBytes: fallback.sizeBytes?.toString()
+      };
+    }
+  }
+
+  const mime = (fileEntry?.mime as string) || null;
+  if (!canPreview(mime, content.type)) {
+    return reply.code(400).send({ previewUnsupported: true });
+  }
+
+  const sizeBytes = Number(fileEntry?.sizeBytes || 0);
+  const maxBytes = Math.max(1, Math.min(sizeBytes || 0, previewMaxBytesFor(mime, content.type)) || previewMaxBytesFor(mime, content.type));
+  const previewSeconds = content.type === "video" ? 25 : content.type === "song" ? 15 : 0;
+  const ttlMs = 2 * 60 * 1000;
+
+  const { token, expiresAt } = issuePreviewToken({ manifestHash, fileId, maxBytes, ttlMs });
+  return reply.send({
+    previewToken: token,
+    expiresAt: new Date(expiresAt).toISOString(),
+    maxBytes,
+    previewSeconds
+  });
+});
+
+app.post("/p2p/permits", async (req: any, reply) => {
+  if (!PERMIT_SECRET) return reply.code(500).send({ error: "permit secret missing" });
+  const body = (req.body ?? {}) as {
+    manifestHash?: string;
+    fileId?: string;
+    buyerId?: string;
+    requestedScope?: "preview" | "stream";
+  };
+
+  const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
+  const fileId = asString(body.fileId || "").trim();
+  const buyerId = asString(body.buyerId || "").trim() || "guest";
+  const requestedScope = body.requestedScope === "stream" ? "stream" : "preview";
+
+  if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content) return notFound(reply, "Content not found");
+
+  const devUnlock = String(process.env.DEV_P2P_UNLOCK || "").trim() === "1" || PAYMENT_PROVIDER === "none";
+  const accessMode = devUnlock ? "stream" : requestedScope;
+  const scopes = accessMode === "stream" ? ["stream"] : ["preview"];
+  const now = Date.now();
+  const ttlMs = accessMode === "stream" ? 24 * 60 * 60 * 1000 : 30 * 60 * 1000;
+  const claims: PermitClaims = {
+    manifestHash,
+    fileId: fileId || "*",
+    buyerId,
+    scopes,
+    iat: now,
+    exp: now + ttlMs,
+    nonce: crypto.randomBytes(8).toString("hex")
+  };
+
+  const permit = signPermit(claims);
+  const previewSeconds = content.type === "video" ? 25 : content.type === "song" ? 15 : 0;
+
+  return reply.send({
+    permit,
+    scopes,
+    expiresAt: new Date(claims.exp).toISOString(),
+    accessMode,
+    previewSeconds
+  });
+});
+
+app.post("/p2p/library/save", async (req: any, reply) => {
+  const body = (req.body ?? {}) as {
+    manifestHash?: string;
+    fileId?: string;
+    buyerEmail?: string;
+    permit?: string;
+  };
+  const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
+  const fileId = asString(body.fileId || "").trim();
+  const buyerEmail = normalizeEmail(body.buyerEmail || "");
+  const permit = asString(body.permit || "").trim();
+  if (!manifestHash || !fileId || !buyerEmail || !permit) {
+    return badRequest(reply, "manifestHash, fileId, buyerEmail, permit required");
+  }
+
+  const verify = verifyPermit(permit);
+  if (!verify.ok || !verify.claims) return reply.code(403).send({ error: "Invalid permit" });
+  const claims = verify.claims;
+  const fileOk = claims.fileId === "*" || claims.fileId === fileId;
+  if (claims.manifestHash !== manifestHash || !fileOk) {
+    return reply.code(403).send({ error: "Permit does not match content" });
+  }
+  if (!Array.isArray(claims.scopes) || !claims.scopes.includes("stream")) {
+    return reply.code(403).send({ error: "Stream permit required" });
+  }
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content) return notFound(reply, "Content not found");
+
+  const user = await prisma.user.findFirst({ where: { email: buyerEmail } });
+  if (!user) return reply.code(404).send({ error: "User not found" });
+
+  await prisma.entitlement.upsert({
+    where: { buyerUserId_contentId_manifestSha256: { buyerUserId: user.id, contentId: content.id, manifestSha256: manifestHash } },
+    update: { grantedAt: new Date() },
+    create: { buyerUserId: user.id, contentId: content.id, manifestSha256: manifestHash }
+  });
+
+  return reply.send({ ok: true, contentId: content.id, buyerUserId: user.id });
+});
+
 /**
  * P2P OFFER + RECEIPT TOKEN FLOWS (no marketplace required)
  */
@@ -4430,6 +5123,27 @@ app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (re
   if (!manifest) return notFound(reply, "Manifest not found");
   if (manifestShaQuery && manifest.sha256 !== manifestShaQuery) return badRequest(reply, "manifestSha256 does not match content manifest");
 
+  const manifestJson = manifest.json as any;
+  const manifestFiles = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
+  let primaryFile: any = null;
+  const primary = manifestJson?.primaryFile;
+  if (primary) {
+    const primaryKey =
+      typeof primary === "string"
+        ? primary
+        : typeof primary === "object"
+          ? primary.path || primary.filename || primary.objectKey
+          : null;
+    if (primaryKey) {
+      primaryFile = manifestFiles.find((f: any) => f.objectKey === primaryKey || f.path === primaryKey || f.filename === primaryKey) || null;
+    }
+  }
+  if (!primaryFile) primaryFile = manifestFiles[0] || null;
+
+  const primaryFileId = primaryFile?.sha256 || primaryFile?.objectKey || primaryFile?.path || primaryFile?.filename || null;
+  const primaryMime = primaryFile?.mime || null;
+  const primaryName = primaryFile?.originalName || primaryFile?.filename || primaryFile?.path || null;
+
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const baseUrl = host ? `${proto}://${host}` : null;
@@ -4444,7 +5158,11 @@ app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (re
     contentId: content.id,
     title: content.title,
     description: content.description || null,
+    type: content.type,
     manifestSha256: manifest.sha256,
+    primaryFileId,
+    primaryFileName: primaryName,
+    primaryFileMime: primaryMime,
     priceSats: priceSats.toString(),
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
@@ -4496,6 +5214,7 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
       receiptTokenExpiresAt
     }
   });
+  const paymentSlug = `pay_${intent.id}`;
 
   let onchain: { address: string; derivationIndex?: number | null } | null = null;
   let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
@@ -4546,11 +5265,37 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
   }
 
   if (!onchain && !lightning) {
-    await prisma.paymentIntent.delete({ where: { id: intent.id } }).catch(() => {});
-    return reply.code(503).send({
-      code: "NO_PAYMENT_RAILS_AVAILABLE",
-      message: "No payment rails are available right now.",
-      details: { lightningReason, onchainReason }
+    await prisma.paymentIntent.update({
+      where: { id: intent.id },
+      data: {
+        status: "paid" as any,
+        paidAt: new Date(),
+        memo: "bypassed"
+      }
+    });
+    await prisma.auditEvent.create({
+      data: {
+        userId: "external",
+        action: "payment_slug_created",
+        entityType: "PaymentIntent",
+        entityId: intent.id,
+        payloadJson: { paymentSlug, status: "bypassed" } as any
+      }
+    }).catch(() => {});
+    await prisma.auditEvent.create({
+      data: {
+        userId: "external",
+        action: "payment_bypassed_dev",
+        entityType: "PaymentIntent",
+        entityId: intent.id,
+        payloadJson: { paymentSlug, reason: "payments_unavailable_dev" } as any
+      }
+    }).catch(() => {});
+    return reply.send({
+      ok: true,
+      paymentSlug,
+      status: "bypassed",
+      reason: "payments_unavailable_dev"
     });
   }
 
@@ -4561,14 +5306,25 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
       onchainDerivationIndex: onchain?.derivationIndex ?? null,
       bolt11: lightning?.bolt11 || null,
       providerId: lightning?.providerId || null,
-      lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null
+      lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null,
+      memo: "payment"
     }
   });
+  await prisma.auditEvent.create({
+    data: {
+      userId: "external",
+      action: "payment_slug_created",
+      entityType: "PaymentIntent",
+      entityId: intent.id,
+      payloadJson: { paymentSlug, status: "unpaid" } as any
+    }
+  }).catch(() => {});
 
   return reply.send({
     ok: true,
+    paymentSlug,
+    status: "unpaid",
     paymentIntentId: intent.id,
-    status: intent.status,
     amountSats: intent.amountSats.toString(),
     bolt11: lightning?.bolt11 || null,
     lightningExpiresAt: lightning?.expiresAt || null,
@@ -5180,6 +5936,262 @@ app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: a
   reply.code(200);
   reply.header("Content-Length", String(fileSize));
   return reply.send(fsSync.createReadStream(absPath));
+});
+
+app.get("/content/:manifestHash/:fileId", async (req: any, reply: any) => {
+  const manifestHash = asString((req.params as any).manifestHash || "").trim().toLowerCase();
+  const fileId = asString((req.params as any).fileId || "").trim();
+  if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
+
+  const tokenHeader = asString(req.headers.authorization || "");
+  const tokenQuery = asString((req.query as any)?.t || (req.query as any)?.token || "");
+  const token = tokenHeader.toLowerCase().startsWith("bearer ") ? tokenHeader.slice(7).trim() : tokenQuery.trim();
+  if (STREAM_TOKEN_MODE === "require" && !token) {
+    reply.code(401);
+    return reply.send({ error: "Unauthorized" });
+  }
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content || content.deletedAt) return notFound(reply, "Content not found");
+  const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
+  const devBypass = String(process.env.DEV_BYPASS_PAYMENTS || "").trim() === "true";
+  const requesterIp =
+    (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ||
+    (req.ip as string | undefined) ||
+    "";
+
+  let entitlementOk = false;
+  let bypassOk = false;
+  let paymentStatus: string | null = null;
+  let paymentSlug: string | null = null;
+  let preview: { maxBytes: number } | null = null;
+  let permitInvalid = false;
+  let permitExpired = false;
+  let accessMode: "preview" | "stream" = "stream";
+  const previewEnabled = String(process.env.PREVIEW_ENABLED || "1") !== "0";
+  const previewMaxBytes = Math.max(1, Math.floor(Number(process.env.PREVIEW_MAX_BYTES || "5000000")));
+
+  if (priceSats > 0n) {
+    if (token) {
+      if (token.startsWith("permit_")) {
+        const res = verifyPermit(token);
+        if (!res.ok) {
+          permitInvalid = true;
+          permitExpired = Boolean(res.expired);
+        } else if (res.claims) {
+          const scopes = Array.isArray(res.claims.scopes) ? res.claims.scopes : [];
+          const fileOk = res.claims.fileId === "*" || res.claims.fileId === fileId;
+          const manifestOk = res.claims.manifestHash === manifestHash;
+          if (manifestOk && fileOk) {
+            if (scopes.includes("stream")) {
+              accessMode = "stream";
+              entitlementOk = true;
+            } else if (scopes.includes("preview")) {
+              accessMode = "preview";
+              preview = { maxBytes: previewMaxBytes };
+            }
+          } else {
+            permitInvalid = true;
+          }
+        }
+      } else if (isPreviewToken(token)) {
+        const meta = previewTokens.get(token);
+        if (!meta || meta.expiresAt < Date.now()) {
+          permitInvalid = true;
+          permitExpired = true;
+        } else if (meta.manifestHash === manifestHash && meta.fileId === fileId) {
+          preview = { maxBytes: meta.maxBytes };
+          accessMode = "preview";
+        } else {
+          permitInvalid = true;
+        }
+      } else if (token.startsWith("pay_")) {
+        const paymentIntentId = token.slice(4);
+        const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
+        if (intent && intent.contentId === content.id) {
+          paymentStatus = intent.status;
+          paymentSlug = token;
+          if (intent.status === "paid" && intent.memo !== "bypassed") {
+            entitlementOk = true;
+          }
+          if (intent.memo === "bypassed" && (devBypass || isPrivateIp(requesterIp))) {
+            bypassOk = true;
+          }
+        }
+      } else {
+        const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken: token } });
+        if (intent && intent.contentId === content.id) {
+          paymentStatus = intent.status;
+          if (intent.status === "paid") entitlementOk = true;
+        }
+      }
+    }
+
+    if (!entitlementOk && !bypassOk) {
+      if (previewEnabled) {
+        accessMode = "preview";
+        if (!preview) preview = { maxBytes: previewMaxBytes };
+      } else {
+        if (!token) {
+          await auditEventSafe({
+            userId: "external",
+            action: "stream_access_denied",
+            entityType: "ContentItem",
+            entityId: content.id,
+            payloadJson: {
+              manifestHash,
+              reason: "payment_required",
+              paymentSlug,
+              paymentStatus,
+              requesterIp
+            } as any
+          });
+          reply.code(402);
+          return reply.send({ error: "Payment required", code: "PAYMENT_REQUIRED" });
+        }
+        if (permitInvalid || permitExpired) {
+          await auditEventSafe({
+            userId: "external",
+            action: "stream_access_denied",
+            entityType: "ContentItem",
+            entityId: content.id,
+            payloadJson: {
+              manifestHash,
+              reason: permitExpired ? "permit_expired" : "permit_invalid",
+              paymentSlug,
+              paymentStatus,
+              requesterIp
+            } as any
+          });
+          reply.code(403);
+          return reply.send({ error: "Forbidden", code: permitExpired ? "PERMIT_EXPIRED" : "PERMIT_INVALID" });
+        }
+      }
+    }
+  }
+
+  await auditEventSafe({
+    userId: "external",
+    action: "stream_access_granted",
+    entityType: "ContentItem",
+    entityId: content.id,
+    payloadJson: {
+      manifestHash,
+      paymentSlug,
+      paymentStatus,
+      requesterIp,
+      bypass: bypassOk || false,
+      preview: accessMode === "preview"
+    } as any
+  });
+
+  const manifestJson = manifest.json as any;
+  const files = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
+  let fileEntry: any = null;
+
+  if (fileId === "primary" || fileId === "main") {
+    const primary = manifestJson?.primaryFile;
+    const primaryKey =
+      typeof primary === "string"
+        ? primary
+        : primary && typeof primary === "object"
+          ? primary.path || primary.filename || primary.objectKey
+          : null;
+    if (primaryKey) {
+      fileEntry = files.find((f: any) => f.objectKey === primaryKey || f.path === primaryKey || f.filename === primaryKey) || null;
+    }
+  }
+
+  if (!fileEntry) {
+    fileEntry =
+      files.find(
+        (f: any) =>
+          f.objectKey === fileId ||
+          f.path === fileId ||
+          f.filename === fileId ||
+          f.sha256 === fileId ||
+          f.originalName === fileId
+      ) || null;
+  }
+
+  let objectKey: string | null =
+    (fileEntry?.objectKey as string) || (fileEntry?.path as string) || (fileEntry?.filename as string) || null;
+  let fileSha: string | null = (fileEntry?.sha256 as string) || null;
+  let mime: string | null = (fileEntry?.mime as string) || null;
+
+  if (!fileEntry) {
+    const fallback = await prisma.contentFile.findFirst({
+      where: { contentId: content.id, OR: [{ objectKey: fileId }, { sha256: fileId }] }
+    });
+    if (fallback) {
+      objectKey = fallback.objectKey;
+      fileSha = fallback.sha256;
+      mime = fallback.mime;
+    }
+  }
+
+  let sourcePath: string | null = null;
+  let fileSize: number | null = null;
+
+  if (content.repoPath && objectKey) {
+    const repoRoot = path.resolve(content.repoPath);
+    const absPath = path.resolve(repoRoot, objectKey);
+    if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+    if (fsSync.existsSync(absPath)) {
+      const stat = await fs.stat(absPath);
+      sourcePath = absPath;
+      fileSize = stat.size;
+    }
+  }
+
+  if (!sourcePath && fileSha) {
+    const cached = await cas.getPath(fileSha);
+    if (cached) {
+      sourcePath = cached.filePath;
+      fileSize = cached.sizeBytes;
+    }
+  }
+
+  if (!sourcePath || fileSize == null) return notFound(reply, "File not found");
+
+  const range = req.headers.range as string | undefined;
+  reply.header("Accept-Ranges", "bytes");
+  reply.type(mime || "application/octet-stream");
+
+  reply.header("X-ContentBox-Access", accessMode);
+
+  if (req.method === "HEAD") {
+    const effectiveSize = preview ? Math.min(fileSize, preview.maxBytes) : fileSize;
+    if (preview) reply.header("X-ContentBox-Preview-Max-Bytes", String(effectiveSize));
+    reply.code(200);
+    reply.header("Content-Length", String(fileSize));
+    return reply.send();
+  }
+
+  const effectiveSize = preview ? Math.min(fileSize, preview.maxBytes) : fileSize;
+  if (preview) reply.header("X-ContentBox-Preview-Max-Bytes", String(effectiveSize));
+  const parsed = parseRangeHeader(range, effectiveSize);
+  if (parsed.kind === "invalid") {
+    reply.code(416);
+    reply.header("Content-Range", `bytes */${effectiveSize}`);
+    return reply.send();
+  }
+  if (parsed.kind === "ok") {
+    reply.code(206);
+    reply.header("Content-Range", `bytes ${parsed.start}-${parsed.end}/${effectiveSize}`);
+    reply.header("Content-Length", String(parsed.end - parsed.start + 1));
+    return reply.send(fsSync.createReadStream(sourcePath, { start: parsed.start, end: parsed.end }));
+  }
+
+  reply.code(200);
+  reply.header("Content-Length", String(effectiveSize));
+  if (preview && effectiveSize < fileSize) {
+    return reply.send(fsSync.createReadStream(sourcePath, { start: 0, end: Math.max(0, effectiveSize - 1) }));
+  }
+  return reply.send(fsSync.createReadStream(sourcePath));
 });
 
 // DJ grants OG read-only review access to a derivative submission.
@@ -5840,7 +6852,9 @@ type ApproverInfo = {
 
 function matchApproverToUser(approver: ApproverInfo, userId: string, userEmail: string): boolean {
   if (approver.participantUserId && approver.participantUserId === userId) return true;
-  if (approver.participantEmail && userEmail && approver.participantEmail.toLowerCase() === userEmail) return true;
+  const pe = approver.participantEmail ? normalizeEmail(approver.participantEmail) : "";
+  const ue = userEmail ? normalizeEmail(userEmail) : "";
+  if (pe && ue && pe === ue) return true;
   return false;
 }
 
@@ -5907,6 +6921,30 @@ async function getEligibleApproversForParent(parentContentId: string) {
     (a) => a.role === "owner" || a.accepted || a.participantUserId || a.participantEmail
   );
   return { split, approvers, eligible };
+}
+
+async function resolveApproverForParent(parentContentId: string, userId: string, userEmail: string) {
+  const { approvers, eligible } = await getEligibleApproversForParent(parentContentId);
+  const parent = await prisma.contentItem.findUnique({
+    where: { id: parentContentId },
+    select: { ownerUserId: true }
+  });
+  const emails = approvers
+    .map((a) => (a.participantEmail ? normalizeEmail(a.participantEmail) : ""))
+    .filter(Boolean);
+  const emailUsers = emails.length
+    ? await prisma.user.findMany({ where: { email: { in: emails, mode: "insensitive" } }, select: { email: true } })
+    : [];
+  const emailsWithUsers = new Set(emailUsers.map((u) => (u.email || "").toLowerCase()));
+  const direct = eligible.find((p) => matchApproverToUser(p, userId, userEmail));
+  if (direct) return { approver: direct, approvers, eligible };
+  if (parent?.ownerUserId === userId) {
+    const candidates = eligible.filter(
+      (p) => p.participantEmail && !emailsWithUsers.has(p.participantEmail.toLowerCase())
+    );
+    if (candidates.length === 1) return { approver: candidates[0], approvers, eligible };
+  }
+  return { approver: null, approvers, eligible };
 }
 
 async function settlePaymentIntent(paymentIntentId: string) {
@@ -7296,8 +8334,62 @@ async function start() {
   }
 
   await ensureNodeKeys();
-  const port = Number(process.env.PORT || 4000);
-  await app.listen({ port, host: "0.0.0.0" });
+  nodeHttpPort = Number(process.env.PORT || 4000);
+  nodeIdentity = await loadNodePeerId();
+
+  async function startLanDiscovery() {
+    try {
+      const mod = await import("bonjour-service");
+      const Bonjour = (mod as any).Bonjour || (mod as any).default || mod;
+      const bonjour = new Bonjour();
+
+      bonjour.publish({
+        name: `contentbox-${nodeIdentity?.peerId.slice(0, 8) || "node"}`,
+        type: LAN_SERVICE_TYPE,
+        port: nodeHttpPort,
+        txt: {
+          peerId: nodeIdentity?.peerId || "",
+          httpPort: String(nodeHttpPort),
+          fingerprint: nodeIdentity?.fingerprint || "",
+          version: LAN_SERVICE_VERSION
+        }
+      });
+
+      const browser = bonjour.find({ type: LAN_SERVICE_TYPE });
+      browser.on("up", (service: any) => {
+        const txt = service?.txt || {};
+        const peerId = String(txt.peerId || "").trim();
+        if (!peerId || peerId === nodeIdentity?.peerId) return;
+        const addresses: string[] = Array.isArray(service?.addresses) ? service.addresses : [];
+        const host =
+          addresses.find((a) => /^\d+\./.test(a)) ||
+          service?.referer?.address ||
+          service?.host ||
+          (addresses[0] || "");
+        if (!host) return;
+        const port = Number(service?.port || txt.httpPort || 0);
+        if (!Number.isFinite(port) || port <= 0) return;
+        lanPeers.set(peerId, {
+          peerId,
+          host,
+          port,
+          fingerprint: txt.fingerprint ? String(txt.fingerprint) : null,
+          version: txt.version ? String(txt.version) : null,
+          lastSeenAt: Date.now()
+        });
+      });
+      browser.on("down", (service: any) => {
+        const txt = service?.txt || {};
+        const peerId = String(txt.peerId || "").trim();
+        if (peerId) lanPeers.delete(peerId);
+      });
+    } catch (e) {
+      app.log.warn({ err: (e as any)?.message || String(e) }, "lan.discovery.disabled");
+    }
+  }
+
+  startLanDiscovery().catch(() => {});
+  await app.listen({ port: nodeHttpPort, host: "0.0.0.0" });
 }
 
 start().catch((err) => {

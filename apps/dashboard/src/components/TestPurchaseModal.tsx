@@ -54,6 +54,8 @@ export default function TestPurchaseModal({
   const [loading, setLoading] = React.useState(false);
   const [bolt11Qr, setBolt11Qr] = React.useState<string | null>(null);
   const [onchainQr, setOnchainQr] = React.useState<string | null>(null);
+  const [offer, setOffer] = React.useState<any | null>(null);
+  const [offerError, setOfferError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (open) {
@@ -70,8 +72,28 @@ export default function TestPurchaseModal({
       setLoading(false);
       setBolt11Qr(null);
       setOnchainQr(null);
+      setOffer(null);
+      setOfferError(null);
     }
   }, [open, defaultAmountSats]);
+
+  React.useEffect(() => {
+    if (!open || !contentId) return;
+    let alive = true;
+    const run = async () => {
+      try {
+        setOfferError(null);
+        const data = await fetchJson(`${API_BASE}/p2p/content/${encodeURIComponent(contentId)}/offer`);
+        if (alive) setOffer(data);
+      } catch (e: any) {
+        if (alive) setOfferError(e?.message || "Failed to load offer");
+      }
+    };
+    run();
+    return () => {
+      alive = false;
+    };
+  }, [open, contentId]);
 
   React.useEffect(() => {
     if (!intentId) return;
@@ -181,22 +203,62 @@ export default function TestPurchaseModal({
   const missingManifest = !manifestSha256;
   const isAuthed = Boolean(authToken);
   const modeLabel = isAuthed ? "Private (authenticated)" : "Public storefront";
+  const streamUrl =
+    offer?.manifestSha256 && offer?.primaryFileId
+      ? `${API_BASE}/content/${offer.manifestSha256}/${encodeURIComponent(offer.primaryFileId)}`
+      : null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
       <div className="w-full max-w-2xl rounded-xl border border-neutral-800 bg-neutral-950 p-4">
         <div className="flex items-center justify-between">
           <div className="text-sm font-semibold">Test public purchase</div>
-          <button className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900" onClick={onClose}>
-            Close
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              onClick={() => window.open(`${API_BASE}/buy/${contentId}`, "_blank", "noopener,noreferrer")}
+            >
+              Open Store
+            </button>
+            <button className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900" onClick={onClose}>
+              Close
+            </button>
+          </div>
         </div>
 
         <div className="mt-3 space-y-3 text-sm text-neutral-300">
           <div className="text-xs text-neutral-400">
             This tool validates the checkout plumbing. It prefers authenticated mode when you are signed in.
           </div>
-          <div className="text-xs text-neutral-500">Mode: {modeLabel}</div>
+          <div className="text-xs text-neutral-500 flex flex-wrap items-center gap-2">
+            <span>Mode: {modeLabel}</span>
+            <button
+              type="button"
+              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              onClick={() => window.open(`${API_BASE}/buy/${contentId}`, "_blank", "noopener,noreferrer")}
+            >
+              Open Store
+            </button>
+          </div>
+          <div className="text-xs text-neutral-500">
+            Stream URL:{" "}
+            {streamUrl ? (
+              <span className="text-neutral-300 break-all">{streamUrl}</span>
+            ) : offerError ? (
+              <span className="text-amber-300">{offerError}</span>
+            ) : (
+              <span className="text-neutral-600">Loading…</span>
+            )}
+            {streamUrl ? (
+              <button
+                type="button"
+                className="ml-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                onClick={() => navigator.clipboard.writeText(streamUrl)}
+              >
+                Copy
+              </button>
+            ) : null}
+          </div>
 
           <div className="grid gap-3 md:grid-cols-3">
             <div className="md:col-span-2">

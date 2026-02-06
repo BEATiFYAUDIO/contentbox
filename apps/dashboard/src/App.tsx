@@ -490,7 +490,28 @@ export default function App() {
                   <div className="text-xs text-neutral-400">User ID</div>
                   <div className="text-sm text-neutral-100 break-all">{me?.id}</div>
                   <div className="mt-2 text-xs text-neutral-400">Email</div>
-                  <div className="text-sm text-neutral-100 break-all">{me?.email}</div>
+                  <div className="mt-1 flex gap-2">
+                    <input
+                      value={me?.email || ""}
+                      onChange={(e) => setMe((m) => (m ? { ...m, email: e.target.value } : m))}
+                      className="flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100"
+                      type="email"
+                    />
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api(`/me`, "PATCH", { email: me?.email });
+                          const m = await api<any>(`/me`, "GET");
+                          setMe(m);
+                        } catch (e: any) {
+                          // ignore for now
+                        }
+                      }}
+                      className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                    >
+                      Save
+                    </button>
+                  </div>
                   <div className="mt-2 text-xs text-neutral-400">
                     <button
                       onClick={() => {
@@ -538,7 +559,12 @@ export default function App() {
                     onClick={async () => {
                       try {
                         const nextBio = applyBeatifyHandleToBio(me?.bio, beatifyHandle);
-                        await api(`/me`, "PATCH", { displayName: me?.displayName, bio: nextBio, avatarUrl: me?.avatarUrl ?? null });
+                        await api(`/me`, "PATCH", {
+                          email: me?.email,
+                          displayName: me?.displayName,
+                          bio: nextBio,
+                          avatarUrl: me?.avatarUrl ?? null
+                        });
                         // reload me
                         const m = await api<any>(`/me`, "GET");
                         setMe(m);

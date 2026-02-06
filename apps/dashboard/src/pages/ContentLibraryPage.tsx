@@ -76,6 +76,14 @@ type ParentLinkInfo = {
   upstreamBps: number;
   requiresApproval: boolean;
   approvedAt?: string | null;
+  clearance?: {
+    status?: string;
+    approveWeightBps?: number;
+    rejectWeightBps?: number;
+    approvalBpsTarget?: number;
+    approvedApprovers?: number;
+    approverCount?: number;
+  } | null;
   parent: {
     id: string;
     title: string;
@@ -190,7 +198,9 @@ export default function ContentLibraryPage({
 }: {
   onOpenSplits?: (contentId: string) => void;
 }) {
-  const apiBase = ((import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000");
+const apiBase = ((import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000");
+const defaultRemoteHost = ((import.meta as any).env?.VITE_PUBLIC_HOST || "").toString().trim();
+const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toString().trim();
   const [items, setItems] = React.useState<ContentItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -226,7 +236,6 @@ export default function ContentLibraryPage({
   const [clearanceScope, setClearanceScope] = React.useState<"pending" | "voted" | "cleared">("pending");
   const [pendingClearanceCount, setPendingClearanceCount] = React.useState(0);
   const [busyAction, setBusyAction] = React.useState<Record<string, boolean>>({});
-  const [clearanceLinksByContent, setClearanceLinksByContent] = React.useState<Record<string, Array<{ email: string; url: string }>>>({});
   const [requestParentId, setRequestParentId] = React.useState("");
   const [requestTitle, setRequestTitle] = React.useState("");
   const [requestType, setRequestType] = React.useState<ContentType>("remix");
@@ -238,6 +247,14 @@ export default function ContentLibraryPage({
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [priceDraft, setPriceDraft] = React.useState<Record<string, string>>({});
   const [priceMsg, setPriceMsg] = React.useState<Record<string, string>>({});
+  const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
+  const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
+  const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
+  const [publishBusy, setPublishBusy] = React.useState<Record<string, boolean>>({});
+  const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
+  const [publishReasons, setPublishReasons] = React.useState<Record<string, string[]>>({});
+  const [remoteHostDraft, setRemoteHostDraft] = React.useState<Record<string, string>>({});
+  const [remotePortDraft, setRemotePortDraft] = React.useState<Record<string, string>>({});
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [salesLoading, setSalesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
@@ -363,6 +380,62 @@ export default function ContentLibraryPage({
       setFilesByContent((m) => ({ ...m, [contentId]: files }));
     } finally {
       setFilesLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function buildP2PLink(contentId: string, manifestSha256: string | null, opts: { host?: string; port?: string } = {}) {
+    if (!manifestSha256) {
+      setShareMsg((m) => ({ ...m, [contentId]: "Publish to generate a manifest first." }));
+      return;
+    }
+    try {
+      setShareBusy((m) => ({ ...m, [contentId]: true }));
+      setShareMsg((m) => ({ ...m, [contentId]: "" }));
+      const identity = await api<any>("/p2p/identity", "GET");
+      const offer = await api<any>(`/p2p/content/${contentId}/offer`, "GET");
+      const sellerPeerId = String(identity?.peerId || "").trim();
+      const primaryFileId = String(offer?.primaryFileId || "").trim();
+      if (!sellerPeerId || !primaryFileId) {
+        setShareMsg((m) => ({ ...m, [contentId]: "Missing seller identity or primary file. Check publish + price." }));
+        return;
+      }
+      const params = new URLSearchParams({
+        v: "1",
+        manifestHash: manifestSha256,
+        primaryFileId,
+        sellerPeerId
+      });
+      if (opts.host) params.set("host", opts.host);
+      if (opts.port) params.set("port", opts.port);
+      const link = `${apiBase}/buy?${params.toString()}`;
+      await copyText(link);
+      setShareP2PLink((m) => ({ ...m, [contentId]: link }));
+      setShareMsg((m) => ({ ...m, [contentId]: "P2P link copied." }));
+    } catch (e: any) {
+      const msg = e?.message || "Failed to build P2P link.";
+      setShareMsg((m) => ({ ...m, [contentId]: msg }));
+    } finally {
+      setShareBusy((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function publishContent(contentId: string) {
+    setPublishBusy((m) => ({ ...m, [contentId]: true }));
+    setPublishMsg((m) => ({ ...m, [contentId]: "" }));
+    setPublishReasons((m) => ({ ...m, [contentId]: [] }));
+    try {
+      const res = await api<any>(`/api/content/${contentId}/publish`, "POST");
+      if (res?.ok) {
+        setPublishMsg((m) => ({ ...m, [contentId]: "Published — manifest ready" }));
+        await load(showTrash);
+      } else if (res?.reasons?.length) {
+        setPublishReasons((m) => ({ ...m, [contentId]: res.reasons.map((r: any) => r.message || "Publish blocked") }));
+        setPublishMsg((m) => ({ ...m, [contentId]: res.message || "Publish failed." }));
+      }
+    } catch (e: any) {
+      setPublishMsg((m) => ({ ...m, [contentId]: e?.message || "Publish failed." }));
+    } finally {
+      setPublishBusy((m) => ({ ...m, [contentId]: false }));
     }
   }
 
@@ -1221,6 +1294,17 @@ export default function ContentLibraryPage({
                         • Storefront: {(it.storefrontStatus || "DISABLED").toString()}
                         {showTrash && it.deletedAt ? ` • Deleted ${new Date(it.deletedAt).toLocaleString()}` : ""}
                       </div>
+                      <div className="mt-1">
+                        <span
+                          className={`text-[10px] px-2 py-1 rounded-full border ${
+                            it.status === "published"
+                              ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                              : "border-neutral-800 text-neutral-400 bg-neutral-950/60"
+                          }`}
+                        >
+                          {it.status === "published" ? "Published" : "Draft"}
+                        </span>
+                      </div>
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
                       {!isOwner ? (
                         <div className="text-xs text-amber-300 mt-1">Read-only • Owner: {ownerLabel}</div>
@@ -1232,6 +1316,14 @@ export default function ContentLibraryPage({
                         <>
                           {isOwner ? (
                             <>
+                              <button
+                                type="button"
+                                className="text-sm rounded-lg px-3 py-1 whitespace-nowrap border border-emerald-700 text-emerald-100 bg-emerald-950/30 hover:bg-emerald-900/30 disabled:opacity-60"
+                                onClick={() => publishContent(it.id)}
+                                disabled={publishBusy[it.id] || it.status === "published"}
+                              >
+                                {it.status === "published" ? "Published" : publishBusy[it.id] ? "Publishing…" : "Publish"}
+                              </button>
                               <button
                                 type="button"
                                 className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 whitespace-nowrap"
@@ -2006,21 +2098,141 @@ export default function ContentLibraryPage({
                         </div>
                       </div>
 
+                      {publishMsg[it.id] ? (
+                        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-xs text-amber-300">
+                          {publishMsg[it.id]}
+                          {publishReasons[it.id]?.length ? (
+                            <ul className="mt-2 list-disc pl-5 text-xs text-neutral-300 space-y-1">
+                              {publishReasons[it.id].map((r, idx) => (
+                                <li key={`${it.id}-reason-${idx}`}>{r}</li>
+                              ))}
+                            </ul>
+                          ) : null}
+                        </div>
+                      ) : null}
+
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="text-xs text-neutral-300 font-medium">Share</div>
+                        {!manifestSha256 ? (
+                          <div className="mt-2 text-xs text-amber-300">
+                            Publish this content to enable share links.
+                          </div>
+                        ) : null}
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
                           <div className="flex items-center justify-between gap-3">
                             <div className="min-w-0">
                               Buy link: <span className="text-neutral-300 break-all">{`${apiBase}/buy/${it.id}`}</span>
                             </div>
-                            <button
-                              type="button"
-                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={() => copyText(`${apiBase}/buy/${it.id}`)}
-                            >
-                              Copy link
-                            </button>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                onClick={() => window.open(`${apiBase}/buy/${it.id}`, "_blank", "noopener,noreferrer")}
+                              >
+                                Open
+                              </button>
+                              <button
+                                type="button"
+                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                onClick={() => copyText(`${apiBase}/buy/${it.id}`)}
+                              >
+                                Copy link
+                              </button>
+                              <button
+                                type="button"
+                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
+                                disabled={!!shareBusy[it.id]}
+                              >
+                                {shareBusy[it.id] ? "Building…" : "Copy P2P link"}
+                              </button>
+                            </div>
                           </div>
+                          {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
+                          {manifestSha256 ? (
+                            <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
+                              <div className="min-w-0 break-all">
+                                Manifest hash: <span className="text-neutral-300">{manifestSha256}</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                onClick={() => copyText(manifestSha256)}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                          ) : null}
+                          {shareP2PLink[it.id] ? (
+                            <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
+                              <div className="min-w-0 break-all">
+                                P2P link: <span className="text-neutral-300">{shareP2PLink[it.id]}</span>
+                              </div>
+                              <button
+                                type="button"
+                                className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                onClick={() => copyText(shareP2PLink[it.id])}
+                              >
+                                Copy
+                              </button>
+                            </div>
+                          ) : null}
+                          {manifestSha256 ? (
+                            <>
+                              <div className="mt-2 grid gap-2 sm:grid-cols-3 text-xs text-neutral-400">
+                                <div className="sm:col-span-2">
+                                  <div className="text-[11px] text-neutral-500">Remote host (DDNS / public IP)</div>
+                                  <input
+                                    className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                    placeholder="your-ddns-hostname"
+                                    value={remoteHostDraft[it.id] || defaultRemoteHost || ""}
+                                    onChange={(e) => setRemoteHostDraft((m) => ({ ...m, [it.id]: e.target.value }))}
+                                  />
+                                </div>
+                                <div>
+                                  <div className="text-[11px] text-neutral-500">Port</div>
+                                  <input
+                                    className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                    placeholder="4000"
+                                    value={remotePortDraft[it.id] || defaultRemotePort || ""}
+                                    onChange={(e) =>
+                                      setRemotePortDraft((m) => ({ ...m, [it.id]: e.target.value.replace(/[^\d]/g, "") }))
+                                    }
+                                  />
+                                </div>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                  onClick={() =>
+                                    buildP2PLink(it.id, manifestSha256 || null, {
+                                      host: (remoteHostDraft[it.id] || defaultRemoteHost || "").trim(),
+                                      port: (remotePortDraft[it.id] || defaultRemotePort || "4000").trim()
+                                    })
+                                  }
+                                  disabled={!!shareBusy[it.id]}
+                                >
+                                  Copy Remote P2P Link
+                                </button>
+                                <button
+                                  type="button"
+                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                  onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
+                                  disabled={!!shareBusy[it.id]}
+                                >
+                                  Copy LAN P2P Link
+                                </button>
+                              </div>
+                              <div className="mt-2 text-[11px] text-neutral-500">
+                                LAN link is for same Wi‑Fi. Remote link is for DDNS/port‑forward.
+                              </div>
+                            </>
+                          ) : (
+                            <div className="mt-2 text-xs text-neutral-500">
+                              Publish to generate a manifest before sharing P2P links.
+                            </div>
+                          )}
                           <details>
                             <summary className="cursor-pointer select-none text-neutral-500">Advanced</summary>
                             <div className="mt-2 flex items-center justify-between gap-3">
