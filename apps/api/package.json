@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "tunnel:start": "CONTENTBOX_TUNNEL_TARGET=${CONTENTBOX_TUNNEL_TARGET:-http://127.0.0.1:4000} bash scripts/cloudflared-tunnel.sh",
+    "tunnel:stop": "pkill -f \"cloudflared tunnel --url\" || true",
+    "serve:tailscale": "tailscale serve https / http://127.0.0.1:4000",
+    "serve:tailscale:stop": "tailscale serve reset",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:seed": "prisma db seed",

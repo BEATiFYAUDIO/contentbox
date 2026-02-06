@@ -8,7 +8,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, execSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
 import * as cheerio from "cheerio";
@@ -389,11 +389,12 @@ const prisma = new PrismaClient({ adapter });
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const CONTENTBOX_ROOT = mustEnv("CONTENTBOX_ROOT");
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
-const allowedOrigins = (process.env.CORS_ALLOW_ORIGINS || process.env.CONTENTBOX_CORS_ORIGINS || "")
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
-const allowAllOrigins = allowedOrigins.includes("*");
+const publicOrigin = (process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  publicOrigin || null
+].filter(Boolean) as string[];
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const PAYMENT_UNIT_SECONDS = 30;
@@ -410,6 +411,17 @@ const lanPeers = new Map<
   string,
   { peerId: string; host: string; port: number; fingerprint: string | null; version: string | null; lastSeenAt: number }
 >();
+const p2pMetrics = {
+  healthHits: 0,
+  lastHealthAt: null as string | null,
+  lastIdentityAt: null as string | null,
+  lastPeersAt: null as string | null
+};
+const p2pEvents: Array<{ ts: string; type: string; detail?: any }> = [];
+function recordP2pEvent(type: string, detail?: any) {
+  p2pEvents.push({ ts: new Date().toISOString(), type, detail });
+  if (p2pEvents.length > 200) p2pEvents.shift();
+}
 let nodeIdentity: { peerId: string; fingerprint: string } | null = null;
 let nodeHttpPort = Number(process.env.PORT || 4000);
 const previewTokens = new Map<
@@ -436,17 +448,8 @@ function isPublicCorsPath(url?: string) {
 
 app.register(cors, {
   origin: (origin, cb) => {
-    if (allowAllOrigins) return cb(null, true);
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
-    if (process.env.NODE_ENV !== "production") {
-      const devAllowed = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://192.168.100.109:5173"
-      ];
-      if (devAllowed.includes(origin)) return cb(null, true);
-    }
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -4517,12 +4520,16 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
     .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
     a { color:#93c5fd; }
+    .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <div id="app">Loading…</div>
+      <div class="footer">
+        <a href="https://beatifyaudio.github.io/contentbox/index.html#mission" target="_blank" rel="noreferrer">Mission</a>
+      </div>
     </div>
   </div>
 <script>
@@ -4917,17 +4924,21 @@ app.get("/embed.js", async (req: any, reply) => {
 
 app.get("/health", async (_req: any, reply) => {
   if (!nodeIdentity) nodeIdentity = await loadNodePeerId();
+  p2pMetrics.healthHits += 1;
+  p2pMetrics.lastHealthAt = new Date().toISOString();
   return reply.send({
     ok: true,
     peerId: nodeIdentity.peerId,
     fingerprint: nodeIdentity.fingerprint,
     httpPort: nodeHttpPort,
+    publicOrigin: (process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() || null,
     ts: new Date().toISOString()
   });
 });
 
 app.get("/p2p/identity", async (_req: any, reply) => {
   if (!nodeIdentity) nodeIdentity = await loadNodePeerId();
+  p2pMetrics.lastIdentityAt = new Date().toISOString();
   return reply.send({
     peerId: nodeIdentity.peerId,
     fingerprint: nodeIdentity.fingerprint,
@@ -4937,12 +4948,26 @@ app.get("/p2p/identity", async (_req: any, reply) => {
 });
 
 app.get("/p2p/peers", async (_req: any, reply) => {
+  p2pMetrics.lastPeersAt = new Date().toISOString();
   const now = Date.now();
   const peers = Array.from(lanPeers.values()).map((p) => ({
     ...p,
     ageMs: Math.max(0, now - p.lastSeenAt)
   }));
   return reply.send({ peers });
+});
+
+app.get("/p2p/metrics", async (_req: any, reply) => {
+  const now = Date.now();
+  const peers = Array.from(lanPeers.values()).map((p) => ({
+    ...p,
+    ageMs: Math.max(0, now - p.lastSeenAt)
+  }));
+  return reply.send({
+    ...p2pMetrics,
+    peers,
+    events: p2pEvents.slice(-50)
+  });
 });
 
 app.post("/p2p/previews", async (req: any, reply) => {
@@ -8377,11 +8402,15 @@ async function start() {
           version: txt.version ? String(txt.version) : null,
           lastSeenAt: Date.now()
         });
+        recordP2pEvent("lan.peer.up", { peerId, host, port });
       });
       browser.on("down", (service: any) => {
         const txt = service?.txt || {};
         const peerId = String(txt.peerId || "").trim();
-        if (peerId) lanPeers.delete(peerId);
+        if (peerId) {
+          lanPeers.delete(peerId);
+          recordP2pEvent("lan.peer.down", { peerId });
+        }
       });
     } catch (e) {
       app.log.warn({ err: (e as any)?.message || String(e) }, "lan.discovery.disabled");
@@ -8389,7 +8418,20 @@ async function start() {
   }
 
   startLanDiscovery().catch(() => {});
-  await app.listen({ port: nodeHttpPort, host: "0.0.0.0" });
+  const bindMode = String(process.env.CONTENTBOX_BIND || "local").toLowerCase();
+  const bindHost = bindMode === "public" ? "0.0.0.0" : "127.0.0.1";
+  if (bindMode === "public") {
+    app.log.warn(
+      "CONTENTBOX_BIND=public exposes the API on all interfaces. Use with caution and prefer Tailscale."
+    );
+  }
+  try {
+    execSync("tailscale status", { stdio: "ignore" });
+    app.log.info(
+      "To share with testers (tailnet-only): tailscale serve https / http://127.0.0.1:4000"
+    );
+  } catch {}
+  await app.listen({ port: nodeHttpPort, host: bindHost });
 }
 
 start().catch((err) => {

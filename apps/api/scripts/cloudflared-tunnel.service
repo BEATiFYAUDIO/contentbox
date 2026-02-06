@@ -1,0 +1,15 @@
+[Unit]
+Description=ContentBox Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CONTENTBOX_TUNNEL_TARGET=http://127.0.0.1:4000
+Environment=CONTENTBOX_TUNNEL_LOG=/var/log/contentbox-cloudflared.log
+ExecStart=/home/Darryl/Projects/contentbox/apps/api/scripts/cloudflared-tunnel.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

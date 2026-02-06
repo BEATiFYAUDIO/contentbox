@@ -27,6 +27,10 @@ There are two acceptance modes:
 - Quick accept: invitee opens the owner's invite URL in a browser and clicks Accept. This works without the invitee running a local node.
 - P2P signed accept: the invitee runs their own Contentbox node, signs an acceptance payload locally, and sends the signed payload to the owner API. The owner verifies the signature by fetching the invitee node's public key and records cryptographic proof.
 
+P2P sharing:
+- Publish content to generate a manifest hash.
+- Use the Share panel to copy a LAN P2P link (same Wi-Fi) or a Remote P2P link (DDNS / tunnel).
+
 
 ## Quick (Docker) start — recommended for testing on both Linux & Windows (via Docker Desktop)
 
@@ -73,14 +77,18 @@ npx prisma migrate dev --name init
 npm run dev
 ```
 
-The API listens on 0.0.0.0:4000. Ensure your firewall allows inbound connections to the API from the invitee machine if they will connect directly.
+By default the API listens on 127.0.0.1:4000 only. To expose it on all interfaces for LAN testing:
+
+```bash
+CONTENTBOX_BIND=public npm run dev
+```
 
 4) Start the dashboard and point it to the owner API (so invite pages and accept calls work):
 
 ```bash
 cd /home/Darryl/Projects/contentbox/apps/dashboard
-# ensure VITE_API_URL points to owner API and Vite serves on the network
-VITE_API_URL="http://192.168.1.10:4000" npm run dev -- --host 0.0.0.0 --port 5173
+# local dev (API on loopback)
+VITE_API_URL="http://127.0.0.1:4000" npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
 Open the owner dashboard in a browser at `http://192.168.1.10:5173`.
@@ -134,6 +142,32 @@ This is recommended if you want cryptographic proof of acceptance:
 
 Network notes:
 - Invitee node must be reachable by the owner API at the `nodeUrl` the invitee includes in the signed payload (the dashboard sets `nodeUrl` to the invitee dashboard origin by default).
+
+## Remote testing without port forwarding (Cloudflare Tunnel)
+
+If you want to share a P2P link with someone on another network without changing router settings:
+
+1) Install cloudflared
+```bash
+sudo apt install -y cloudflared
+```
+
+2) Start the tunnel (no systemd required)
+```bash
+cloudflared tunnel --url http://127.0.0.1:4000
+```
+
+3) Set CORS allowlist (so the remote origin can access the API)
+```bash
+# apps/api/.env
+CONTENTBOX_PUBLIC_ORIGIN=https://<your-subdomain>.trycloudflare.com
+```
+
+4) Use the Share panel
+- Publish the content
+- Click **Copy Remote P2P Link** (host + port will be prefilled)
+
+Keep the `cloudflared` process running while testing.
 
 ## Proofs (split lock) and proof.json
 

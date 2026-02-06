@@ -198,9 +198,10 @@ export default function ContentLibraryPage({
 }: {
   onOpenSplits?: (contentId: string) => void;
 }) {
-const apiBase = ((import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000");
-const defaultRemoteHost = ((import.meta as any).env?.VITE_PUBLIC_HOST || "").toString().trim();
-const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toString().trim();
+  const apiBase = ((import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000");
+  const envPublicHost = ((import.meta as any).env?.VITE_PUBLIC_HOST || "").toString().trim();
+  const envPublicPort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toString().trim();
+  const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const [items, setItems] = React.useState<ContentItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -250,6 +251,7 @@ const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toS
   const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
+  const [publicOrigin, setPublicOrigin] = React.useState<string>(envPublicOrigin);
   const [publishBusy, setPublishBusy] = React.useState<Record<string, boolean>>({});
   const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
   const [publishReasons, setPublishReasons] = React.useState<Record<string, string[]>>({});
@@ -362,6 +364,37 @@ const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toS
   }, []);
 
   React.useEffect(() => {
+    if (publicOrigin) return;
+    (async () => {
+      try {
+        const health = await api<any>("/health", "GET");
+        const origin = String(health?.publicOrigin || "").trim();
+        if (origin) setPublicOrigin(origin);
+      } catch {}
+    })();
+  }, [publicOrigin]);
+
+  function derivePublicHostPort(origin: string): { host?: string; port?: string } {
+    if (!origin) return {};
+    try {
+      const url = new URL(origin);
+      const port = url.port || (url.protocol === "https:" ? "443" : "80");
+      return { host: url.hostname, port };
+    } catch {
+      return { host: origin.replace(/^https?:\/\//i, ""), port: "" };
+    }
+  }
+
+  function baseFromHostPort(host?: string, port?: string): string {
+    const cleanHost = (host || "").trim().replace(/^https?:\/\//i, "");
+    if (!cleanHost) return "";
+    const useHttps = port === "443" || /trycloudflare\.com$/i.test(cleanHost) || /\.ts\.net$/i.test(cleanHost);
+    const scheme = useHttps ? "https" : "http";
+    const portPart = port ? `:${port}` : "";
+    return `${scheme}://${cleanHost}${portPart}`;
+  }
+
+  React.useEffect(() => {
     if (!showClearance || approvals.length === 0) return;
     approvals.forEach((a) => {
       const linkId = String(a?.linkId || "");
@@ -383,7 +416,11 @@ const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toS
     }
   }
 
-  async function buildP2PLink(contentId: string, manifestSha256: string | null, opts: { host?: string; port?: string } = {}) {
+  async function buildP2PLink(
+    contentId: string,
+    manifestSha256: string | null,
+    opts: { host?: string; port?: string; baseUrl?: string } = {}
+  ) {
     if (!manifestSha256) {
       setShareMsg((m) => ({ ...m, [contentId]: "Publish to generate a manifest first." }));
       return;
@@ -407,7 +444,8 @@ const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toS
       });
       if (opts.host) params.set("host", opts.host);
       if (opts.port) params.set("port", opts.port);
-      const link = `${apiBase}/buy?${params.toString()}`;
+      const linkBase = opts.baseUrl ? opts.baseUrl.replace(/\/$/, "") : apiBase;
+      const link = `${linkBase}/buy?${params.toString()}`;
       await copyText(link);
       setShareP2PLink((m) => ({ ...m, [contentId]: link }));
       setShareMsg((m) => ({ ...m, [contentId]: "P2P link copied." }));
@@ -853,6 +891,12 @@ const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toS
       </>
     );
   }
+
+  const derivedPublic = derivePublicHostPort(publicOrigin);
+  const defaultRemoteHost = envPublicHost || "";
+  const defaultRemotePort = envPublicPort || "";
+  const defaultTunnelHost = derivedPublic.host || "";
+  const defaultTunnelPort = derivedPublic.port || "";
 
   return (
     <div className="space-y-6">
@@ -2118,39 +2162,34 @@ const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toS
                             Publish this content to enable share links.
                           </div>
                         ) : null}
-                        <div className="mt-2 text-xs text-neutral-400 space-y-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              Buy link: <span className="text-neutral-300 break-all">{`${apiBase}/buy/${it.id}`}</span>
+                          <div className="mt-2 text-xs text-neutral-400 space-y-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="min-w-0">
+                                Buy link:{" "}
+                                <span className="text-neutral-300 break-all">
+                                  {apiBase.includes("127.0.0.1") ? "Local only (loopback)" : `${apiBase}/buy/${it.id}`}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  type="button"
+                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                  onClick={() => window.open(`${apiBase}/buy/${it.id}`, "_blank", "noopener,noreferrer")}
+                                >
+                                  Open
+                                </button>
+                                <button
+                                  type="button"
+                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                  onClick={() => copyText(`${apiBase}/buy/${it.id}`)}
+                                >
+                                  Copy link
+                                </button>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              <button
-                                type="button"
-                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                onClick={() => window.open(`${apiBase}/buy/${it.id}`, "_blank", "noopener,noreferrer")}
-                              >
-                                Open
-                              </button>
-                              <button
-                                type="button"
-                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                onClick={() => copyText(`${apiBase}/buy/${it.id}`)}
-                              >
-                                Copy link
-                              </button>
-                              <button
-                                type="button"
-                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
-                                disabled={!!shareBusy[it.id]}
-                              >
-                                {shareBusy[it.id] ? "Building…" : "Copy P2P link"}
-                              </button>
-                            </div>
-                          </div>
-                          {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
-                          {manifestSha256 ? (
-                            <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
+                            {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
+                            {manifestSha256 ? (
+                              <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
                               <div className="min-w-0 break-all">
                                 Manifest hash: <span className="text-neutral-300">{manifestSha256}</span>
                               </div>
@@ -2179,53 +2218,122 @@ const defaultRemotePort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toS
                           ) : null}
                           {manifestSha256 ? (
                             <>
-                              <div className="mt-2 grid gap-2 sm:grid-cols-3 text-xs text-neutral-400">
-                                <div className="sm:col-span-2">
-                                  <div className="text-[11px] text-neutral-500">Remote host (DDNS / public IP)</div>
-                                  <input
-                                    className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                    placeholder="your-ddns-hostname"
-                                    value={remoteHostDraft[it.id] || defaultRemoteHost || ""}
-                                    onChange={(e) => setRemoteHostDraft((m) => ({ ...m, [it.id]: e.target.value }))}
-                                  />
+                              <div className="mt-2 grid gap-3 sm:grid-cols-2 text-xs text-neutral-400">
+                                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                                  <div className="text-[11px] text-neutral-500">Direct (DDNS / port‑forward)</div>
+                                  <div className="text-[11px] text-neutral-600 mt-1">
+                                    Best performance. Requires router port‑forward.
+                                  </div>
+                                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                    <div className="sm:col-span-2">
+                                      <div className="text-[11px] text-neutral-500">Host</div>
+                                      <input
+                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                        placeholder="your-ddns-hostname"
+                                        value={remoteHostDraft[it.id] || defaultRemoteHost || ""}
+                                        onChange={(e) =>
+                                          setRemoteHostDraft((m) => ({
+                                            ...m,
+                                            [it.id]: e.target.value.replace(/^https?:\/\//i, "")
+                                          }))
+                                        }
+                                      />
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-neutral-500">Port</div>
+                                      <input
+                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                        placeholder="4000"
+                                        value={remotePortDraft[it.id] || defaultRemotePort || ""}
+                                        onChange={(e) =>
+                                          setRemotePortDraft((m) => ({
+                                            ...m,
+                                            [it.id]: e.target.value.replace(/[^\d]/g, "")
+                                          }))
+                                        }
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="mt-2">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => {
+                                        const host = (remoteHostDraft[it.id] || defaultRemoteHost || "").trim();
+                                        const port = (remotePortDraft[it.id] || defaultRemotePort || "4000").trim();
+                                        const baseUrl = baseFromHostPort(host, port);
+                                        return buildP2PLink(it.id, manifestSha256 || null, { host, port, baseUrl });
+                                      }}
+                                      disabled={!!shareBusy[it.id]}
+                                    >
+                                      Copy Direct P2P Link
+                                    </button>
+                                  </div>
                                 </div>
-                                <div>
-                                  <div className="text-[11px] text-neutral-500">Port</div>
-                                  <input
-                                    className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                    placeholder="4000"
-                                    value={remotePortDraft[it.id] || defaultRemotePort || ""}
-                                    onChange={(e) =>
-                                      setRemotePortDraft((m) => ({ ...m, [it.id]: e.target.value.replace(/[^\d]/g, "") }))
-                                    }
-                                  />
+                                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                                  <div className="text-[11px] text-neutral-500">Tunnel (Cloudflare / Tailscale)</div>
+                                  <div className="text-[11px] text-neutral-600 mt-1">
+                                    No router changes. Slower but easiest.
+                                  </div>
+                                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                    <div className="sm:col-span-2">
+                                      <div className="text-[11px] text-neutral-500">URL</div>
+                                      <input
+                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                        placeholder="your-tunnel-host"
+                                        value={publicOrigin || defaultTunnelHost || ""}
+                                        disabled
+                                      />
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-neutral-500">Port</div>
+                                      <input
+                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                        placeholder="443"
+                                        value={defaultTunnelPort || ""}
+                                        disabled
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="mt-2">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => {
+                                        if (!publicOrigin) return;
+                                        return buildP2PLink(it.id, manifestSha256 || null, {
+                                          host: defaultTunnelHost,
+                                          port: defaultTunnelPort,
+                                          baseUrl: publicOrigin
+                                        });
+                                      }}
+                                      disabled={!publicOrigin || !!shareBusy[it.id]}
+                                    >
+                                      Copy Tunnel P2P Link
+                                    </button>
+                                  </div>
+                                  {!publicOrigin ? (
+                                    <div className="mt-2 text-[11px] text-neutral-500">
+                                      Set CONTENTBOX_PUBLIC_ORIGIN to enable tunnel links.
+                                    </div>
+                                  ) : null}
                                 </div>
-                              </div>
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                  onClick={() =>
-                                    buildP2PLink(it.id, manifestSha256 || null, {
-                                      host: (remoteHostDraft[it.id] || defaultRemoteHost || "").trim(),
-                                      port: (remotePortDraft[it.id] || defaultRemotePort || "4000").trim()
-                                    })
-                                  }
-                                  disabled={!!shareBusy[it.id]}
-                                >
-                                  Copy Remote P2P Link
-                                </button>
-                                <button
-                                  type="button"
-                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                  onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
-                                  disabled={!!shareBusy[it.id]}
-                                >
-                                  Copy LAN P2P Link
-                                </button>
-                              </div>
-                              <div className="mt-2 text-[11px] text-neutral-500">
-                                LAN link is for same Wi‑Fi. Remote link is for DDNS/port‑forward.
+                                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                                  <div className="text-[11px] text-neutral-500">LAN (same Wi‑Fi)</div>
+                                  <div className="text-[11px] text-neutral-600 mt-1">
+                                    No host needed. Works only on the same network.
+                                  </div>
+                                  <div className="mt-2">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
+                                      disabled={!!shareBusy[it.id]}
+                                    >
+                                      Copy LAN P2P Link
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
                             </>
                           ) : (

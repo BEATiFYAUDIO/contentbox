@@ -56,6 +56,16 @@ function parseBuyLinkV1(input: string): BuyLinkV1 | null {
   }
 }
 
+function classifyLinkType(link: BuyLinkV1 | null): "Tunnel" | "Direct" | "LAN" | "—" {
+  if (!link) return "—";
+  if (link.host) {
+    const host = String(link.host || "").toLowerCase();
+    if (host.includes("trycloudflare.com") || host.endsWith(".ts.net")) return "Tunnel";
+    return "Direct";
+  }
+  return "LAN";
+}
+
 type PeerCacheEntry = {
   lastOkHost: string;
   lastOkPort: number;
@@ -248,6 +258,10 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [healthStatus, setHealthStatus] = React.useState<string | null>(null);
   const [lanPeers, setLanPeers] = React.useState<any[]>([]);
   const [connectionMode, setConnectionMode] = React.useState<"auto" | "lan" | "remote">("auto");
+  const [metrics, setMetrics] = React.useState<any | null>(null);
+  const debugEnabled =
+    typeof window !== "undefined" &&
+    (window.location.search.includes("cbDebug=1") || Boolean((import.meta as any).env?.DEV));
 
   React.useEffect(() => {
     if (!(import.meta as any).env?.DEV) return;
@@ -268,6 +282,26 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       window.clearInterval(timer);
     };
   }, []);
+
+  React.useEffect(() => {
+    if (!debugEnabled) return;
+    let alive = true;
+    const loadMetrics = async () => {
+      try {
+        const res = await fetch(`${guessApiBase()}/p2p/metrics`);
+        const data = await res.json();
+        if (alive) setMetrics(data);
+      } catch {
+        if (alive) setMetrics(null);
+      }
+    };
+    loadMetrics();
+    const timer = window.setInterval(loadMetrics, 5000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [debugEnabled]);
 
   function onOpen() {
     setMsg(null);
@@ -339,7 +373,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </div>
 
         <div className="mt-4 space-y-2">
-          <div className="text-sm">Buy from a link</div>
+          <div className="text-sm font-medium">Buy from a link</div>
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -347,12 +381,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
           />
           <div className="text-xs text-neutral-500">
-            Examples: https://seller.site/buy/CONTENT_ID · https://seller.site/public/receipts/TOKEN · TOKEN ·
-            https://link?manifestHash=...&primaryFileId=...&sellerPeerId=...
+            Paste any of these:
+            <div>• https://seller.site/buy/CONTENT_ID</div>
+            <div>• https://seller.site/public/receipts/TOKEN</div>
+            <div>• TOKEN (receipt)</div>
+            <div>• https://link?manifestHash=...&primaryFileId=...&sellerPeerId=...</div>
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
             <div>
-              <div className="text-xs text-neutral-500">Seller host (content ID or manual fallback)</div>
+              <div className="text-xs text-neutral-500">Manual host (only if you paste a content ID)</div>
+              <div className="text-[11px] text-neutral-600">If you pasted a full link, you can ignore this field.</div>
               <input
                 value={sellerHost}
                 onChange={(e) => setSellerHost(e.target.value)}
@@ -416,6 +454,10 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                   return "—";
                 })()}
               </span>
+              <span>
+                Link type: {classifyLinkType(parseBuyLinkV1(input || ""))}
+              </span>
+              <span className="text-neutral-600">Auto-detects LAN vs Remote from the link.</span>
             </div>
           ) : null}
           <div className="text-[11px] text-neutral-500">
@@ -427,15 +469,21 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </div>
       </div>
 
-      {Boolean((import.meta as any).env?.DEV) && (
+      {Boolean(debugEnabled) && (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-          <div className="text-lg font-semibold">P2P Test (Dev)</div>
+          <div className="text-lg font-semibold">P2P Diagnostics</div>
           <div className="text-xs text-neutral-500 mt-1">Resolver path: {resolverPath || "—"}</div>
           <div className="text-xs text-neutral-500 mt-1">
             Health: {healthOk === null ? "—" : healthOk ? "ok" : "fail"}{" "}
             {healthMs != null ? `(${healthMs}ms)` : ""}
             {healthStatus ? ` · ${healthStatus}` : ""}
             {lastError ? ` · ${lastError}` : ""}
+          </div>
+          <div className="mt-2 text-xs text-neutral-500">
+            Health hits: {metrics?.healthHits ?? "—"} · Last health: {metrics?.lastHealthAt || "—"}
+          </div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Last identity: {metrics?.lastIdentityAt || "—"} · Last peers: {metrics?.lastPeersAt || "—"}
           </div>
           <div className="mt-3 text-xs text-neutral-400">
             {(() => {
@@ -456,6 +504,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               ))
             )}
           </div>
+          {metrics?.events?.length ? (
+            <div className="mt-3 text-xs text-neutral-400">
+              Recent events:
+              <div className="mt-1 space-y-1 text-xs text-neutral-500">
+                {metrics.events.slice(-5).map((e: any, idx: number) => (
+                  <div key={`${e.ts}-${idx}`}>{e.ts} · {e.type}</div>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
 
