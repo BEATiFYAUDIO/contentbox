@@ -14,6 +14,8 @@ import PurchasesPage from "./pages/PurchasesPage";
 import CreatorToolsPage from "./pages/CreatorToolsPage";
 import ReceiptPage from "./pages/ReceiptPage";
 import SalesPage from "./pages/SalesPage";
+import ConfigPage from "./pages/ConfigPage";
+import DiagnosticsPage from "./pages/DiagnosticsPage";
 import { api } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
 import logo from "./assets/InShot_20260201_011901479.png";
@@ -34,6 +36,8 @@ type Me = {
 };
 
 type PageKey =
+  | "config"
+  | "diagnostics"
   | "library"
   | "store"
   | "downloads"
@@ -159,7 +163,7 @@ export default function App() {
   const [beatifyHandle, setBeatifyHandle] = useState<string>("");
 
   // Define 'page' and 'setPage' for routing
-  const [page, setPage] = useState<PageKey>("library");
+  const [page, setPage] = useState<PageKey>("config");
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
@@ -187,9 +191,9 @@ export default function App() {
       setPage("royalties-terms");
     }
     if (!tokenFromUrl && !receiptFromUrl && !splitFromUrl && !royaltiesFromUrl) {
-      // Always land on Library after refresh (ignore prior path)
+      // Always land on Config after refresh (ignore prior path)
       window.history.replaceState({}, "", "/");
-      setPage("library");
+      setPage("config");
     }
     loadMe();  // Load user data
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -237,6 +241,10 @@ export default function App() {
   }
 
   // Navigation options for the sidebar
+  const configNav = [
+    { key: "config" as const, label: "Config", hint: "Networking + system" },
+    { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" }
+  ];
   const accessNav = [
     { key: "store" as const, label: "Store (Link)", hint: "Buy from a link" },
     { key: "library" as const, label: "Library", hint: "What I own" },
@@ -261,6 +269,8 @@ export default function App() {
   ];
 
   const pageTitle =
+    page === "config" ? "Config" :
+    page === "diagnostics" ? "Diagnostics" :
     page === "library" ? "Library" :
     page === "store" ? "Store (Direct link)" :
     page === "participations" ? "Royalties" :
@@ -290,9 +300,9 @@ export default function App() {
 
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
             <div>
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Config</div>
               <div className="space-y-1">
-              {accessNav.map((item) => {
+              {configNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
@@ -313,17 +323,42 @@ export default function App() {
                 );
               })}
               </div>
-            </div>
-
-            <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
-              <div className="space-y-1">
+              <div className="mt-3 border-t border-neutral-900 pt-3">
+                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
+                <div className="space-y-1">
               {contentNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
                     key={item.key}
                     onClick={() => setPage(item.key)}
+                    className={[
+                      "w-full text-left rounded-lg px-3 py-2 transition border",
+                      active
+                        ? "border-white/30 bg-white/5"
+                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                    ].join(" ")}
+                  >
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                  </button>
+                );
+              })}
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
+              <div className="space-y-1">
+              {accessNav.map((item) => {
+                const active = item.key === page;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => {
+                      setPage(item.key);
+                    }}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
                       active
@@ -421,9 +456,21 @@ export default function App() {
         </header>
 
         <main className="p-6 max-w-5xl">
+          {page === "config" && <ConfigPage />}
+
           {page === "library" && <LibraryPage />}
 
-          {page === "store" && <StorePage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
+          {page === "store" && (
+            <StorePage
+              onOpenReceipt={(t) => {
+                setReceiptToken(t);
+                setPage("receipt");
+              }}
+              onOpenDiagnostics={() => setPage("diagnostics")}
+            />
+          )}
+
+          {page === "diagnostics" && <DiagnosticsPage />}
 
           {page === "participations" && <SplitParticipationsPage />}
 

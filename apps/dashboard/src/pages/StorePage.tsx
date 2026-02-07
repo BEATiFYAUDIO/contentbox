@@ -1,4 +1,5 @@
 import React from "react";
+import { buildHostCandidates } from "../lib/p2pHostDiagnostics";
 
 function guessApiBase() {
   const raw = ((import.meta as any).env?.VITE_API_URL || window.location.origin) as string;
@@ -24,6 +25,24 @@ function extractBuyUrl(input: string): string | null {
   return v;
 }
 
+function copyText(value: string) {
+  if (!value) return;
+  if (navigator?.clipboard?.writeText) {
+    navigator.clipboard.writeText(value).catch(() => {
+      // ignore
+    });
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = value;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+}
+
 type BuyLinkV1 = {
   manifestHash: string;
   primaryFileId: string;
@@ -32,6 +51,28 @@ type BuyLinkV1 = {
   port?: string | null;
   token?: string | null;
 };
+
+type Endpoint = {
+  host: string;
+  port: string;
+  scheme: "http" | "https";
+};
+
+type ResolverMethod =
+  | "linkHost"
+  | "linkFallback"
+  | "sharedFallback"
+  | "cache"
+  | "mdns"
+  | "manual";
+
+type ConnectionState =
+  | "IDLE"
+  | "RESOLVING"
+  | "CONNECTING"
+  | "READY"
+  | "RECONNECTING"
+  | "OFFLINE";
 
 function parseBuyLinkV1(input: string): BuyLinkV1 | null {
   const raw = input.trim();
@@ -73,9 +114,13 @@ type PeerCacheEntry = {
   lastErrorAt?: number;
   lastErrorReason?: string;
   fingerprint?: string;
+  scheme?: "http" | "https";
+  sourceMethod?: ResolverMethod;
+  expiresAt?: number;
 };
 
 const PEER_CACHE_KEY = "contentbox:peerHostMap";
+const PER_SELLER_PREFIX = "contentbox.peerCache.";
 
 function loadPeerCache(): Record<string, PeerCacheEntry> {
   try {
@@ -94,76 +139,138 @@ function savePeerCache(map: Record<string, PeerCacheEntry>) {
   } catch {}
 }
 
-async function pingHealth(
-  baseUrl: string,
-  timeoutMs = 1500,
-  retries = 2,
-  onAttempt?: (attempt: number, total: number) => void
-): Promise<{ ok: boolean; ms: number; data?: any; error?: string; errorType?: string }> {
-  const delays = [0, 300, 800];
-  for (let i = 0; i < Math.max(1, retries); i += 1) {
-    const delay = delays[i] || 0;
-    if (delay) await new Promise((r) => setTimeout(r, delay));
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      onAttempt?.(i + 1, Math.max(1, retries));
-      const start = performance.now();
-      const res = await fetch(`${baseUrl}/health`, { signal: controller.signal, cache: "no-store" });
-      const ms = Math.round(performance.now() - start);
-      if (res.ok) {
-        const data = await res.json().catch(() => null);
-        return { ok: true, ms, data };
-      }
-      return { ok: false, ms, error: `HTTP_${res.status}`, errorType: "http" };
-    } catch (e: any) {
-      const msg = String(e?.message || e || "");
-      if (msg.toLowerCase().includes("failed to fetch")) {
-        return { ok: false, ms: timeoutMs, error: msg, errorType: "network" };
-      }
-      if (msg.toLowerCase().includes("abort")) {
-        return { ok: false, ms: timeoutMs, error: "timeout", errorType: "timeout" };
-      }
-      return { ok: false, ms: timeoutMs, error: msg, errorType: "unknown" };
-    } finally {
-      window.clearTimeout(timer);
+function loadPeerCacheEntry(sellerPeerId: string): PeerCacheEntry | null {
+  try {
+    const raw = localStorage.getItem(`${PER_SELLER_PREFIX}${sellerPeerId}`);
+    if (raw) {
+      const entry = JSON.parse(raw) as PeerCacheEntry;
+      if (entry?.expiresAt && Date.now() > entry.expiresAt) return null;
+      return entry;
     }
-  }
-  return { ok: false, ms: timeoutMs, error: "timeout", errorType: "timeout" };
+  } catch {}
+  const cache = loadPeerCache();
+  const entry = cache[sellerPeerId];
+  if (!entry) return null;
+  if (entry.expiresAt && Date.now() > entry.expiresAt) return null;
+  return entry;
 }
 
-async function resolveSellerBaseUrl(
+function writePeerCacheEntry(sellerPeerId: string, entry: PeerCacheEntry) {
+  const cache = loadPeerCache();
+  cache[sellerPeerId] = entry;
+  savePeerCache(cache);
+  try {
+    localStorage.setItem(`${PER_SELLER_PREFIX}${sellerPeerId}`, JSON.stringify(entry));
+  } catch {}
+}
+
+function invalidatePeerCacheEntry(sellerPeerId: string) {
+  const cache = loadPeerCache();
+  if (cache[sellerPeerId]) {
+    delete cache[sellerPeerId];
+    savePeerCache(cache);
+  }
+  try {
+    localStorage.removeItem(`${PER_SELLER_PREFIX}${sellerPeerId}`);
+  } catch {}
+}
+
+function normalizeEndpoint(hostInput?: string | null, portInput?: string | null): Endpoint | null {
+  const host = String(hostInput || "").trim();
+  if (!host) return null;
+  let scheme: "http" | "https" = "http";
+  let hostname = host;
+  let port = String(portInput || "").trim();
+  try {
+    if (/^https?:\/\//i.test(host)) {
+      const url = new URL(host);
+      scheme = url.protocol === "https:" ? "https" : "http";
+      hostname = url.hostname;
+      port = port || url.port || (scheme === "https" ? "443" : "80");
+    }
+  } catch {}
+  if (!port) {
+    port = scheme === "https" ? "443" : "80";
+  }
+  return { host: hostname, port, scheme };
+}
+
+function getSharedFallbackHost(): string | null {
+  try {
+    const raw = localStorage.getItem("contentbox:sharedFallbackHost");
+    const trimmed = String(raw || "").trim();
+    return trimmed || null;
+  } catch {
+    return null;
+  }
+}
+
+function endpointBaseUrl(endpoint: Endpoint): string {
+  const portPart = endpoint.port ? `:${endpoint.port}` : "";
+  return `${endpoint.scheme}://${endpoint.host}${portPart}`;
+}
+
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+function expiryFor(_method: ResolverMethod): number {
+  return Date.now() + CACHE_TTL_MS;
+}
+
+type ResolveAttempt = any & {
+  method: ResolverMethod;
+  label?: string;
+  derivedFrom?: string;
+};
+
+async function resolveSellerEndpoint(
   apiBase: string,
   link: BuyLinkV1,
   manualHost: string | null,
-  onHealthAttempt?: (attempt: number, total: number) => void
+  opts?: { sharedFallbackHost?: string | null; healthPathCache?: Record<string, any> }
 ): Promise<{
-  baseUrl: string | null;
-  path: "linkHost" | "cache" | "lan" | "manual" | "none";
-  healthMs: number | null;
-  healthOk: boolean;
-  error?: string | null;
-  errorType?: string | null;
+  endpoint: Endpoint | null;
+  method?: ResolverMethod;
+  diagnostics: string[];
+  attempts: ResolveAttempt[];
+  lastErrorType?: any;
+  healthMs?: number;
 }> {
-  const candidates: Array<{ base: string; path: "linkHost" | "cache" | "lan" | "manual" }> = [];
+  const diagnostics: string[] = [];
+  const attempts: ResolveAttempt[] = [];
+  const candidates: Array<{
+    endpoint: Endpoint;
+    method: ResolverMethod;
+    label?: string;
+    derivedFrom?: string;
+  }> = [];
 
   if (link.host) {
-    const port = link.port ? String(link.port).trim() : "";
-    const host = link.host.trim().replace(/\/$/, "");
-    if (host) {
-      if (/^https?:\/\//i.test(host)) {
-        candidates.push({ base: port ? `${host}:${port}` : host, path: "linkHost" });
-      } else {
-        const hostPort = port ? `${host}:${port}` : host;
-        candidates.push({ base: `http://${hostPort}`, path: "linkHost" });
-      }
-    }
+    const hostCandidates = buildHostCandidates(link.host, link.port, {
+      sharedFallbackHost: opts?.sharedFallbackHost || null
+    });
+    hostCandidates.forEach((c: any) => {
+      const method: ResolverMethod =
+        c.label === "primary" ? "linkHost" : c.label === "fallback" ? "linkFallback" : "sharedFallback";
+      candidates.push({
+        endpoint: { host: c.host, port: c.port, scheme: c.scheme },
+        method,
+        label: c.label,
+        derivedFrom: c.derivedFrom
+      });
+    });
   }
 
-  const cache = loadPeerCache();
-  const cached = cache[link.sellerPeerId];
-  if (cached?.lastOkHost) {
-    candidates.push({ base: `http://${cached.lastOkHost}:${cached.lastOkPort}`, path: "cache" });
+  const cached = loadPeerCacheEntry(link.sellerPeerId);
+  if (cached?.lastOkHost && cached.lastOkPort) {
+    candidates.push({
+      endpoint: {
+        host: cached.lastOkHost,
+        port: String(cached.lastOkPort),
+        scheme: cached.scheme || "http"
+      },
+      method: "cache",
+      label: "cache"
+    });
   }
 
   try {
@@ -171,82 +278,85 @@ async function resolveSellerBaseUrl(
     const data = await res.json();
     const match = (data?.peers || []).find((p: any) => String(p.peerId || "") === link.sellerPeerId);
     if (match?.host && match?.port) {
-      candidates.push({ base: `http://${match.host}:${match.port}`, path: "lan" });
+      candidates.push({
+        endpoint: { host: String(match.host), port: String(match.port), scheme: "http" },
+        method: "mdns",
+        label: "mdns"
+      });
     }
-  } catch {}
+  } catch {
+    diagnostics.push("mdns: failed to fetch peers");
+  }
 
   if (manualHost) {
-    const clean = manualHost.trim().replace(/\/$/, "");
-    if (clean) {
-      candidates.push({ base: clean, path: "manual" });
-    }
+    const ep = normalizeEndpoint(manualHost, null);
+    if (ep) candidates.push({ endpoint: ep, method: "manual", label: "manual" });
   }
 
   const seen = new Set<string>();
-  let lastResult: any = null;
-  for (const candidate of candidates) {
-    const normalized = candidate.base.replace(/\/$/, "");
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    const result = await pingHealth(normalized, 1200, 3, onHealthAttempt);
-    lastResult = result;
-    if (result.ok) {
-      const hostUrl = new URL(normalized);
-      const peerId = String(result.data?.peerId || "");
-      const fingerprint = String(result.data?.fingerprint || "");
-      if (peerId && peerId !== link.sellerPeerId) {
-        const confirmed = window.confirm(
-          "Warning: Seller identity mismatch for this link. Continue anyway?"
-        );
-        if (!confirmed) {
-          return { baseUrl: null, path: candidate.path, healthMs: result.ms, healthOk: true, error: "Seller identity mismatch" };
-        }
-      }
-      if (cached?.fingerprint && fingerprint && cached.fingerprint !== fingerprint) {
-        const confirmed = window.confirm(
-          "Warning: Seller fingerprint changed for this peer. Continue anyway?"
-        );
-        if (!confirmed) {
-          return { baseUrl: null, path: candidate.path, healthMs: result.ms, healthOk: true, error: "Seller fingerprint changed" };
-        }
-      }
-      const entry: PeerCacheEntry = {
-        lastOkHost: hostUrl.hostname,
-        lastOkPort: Number(hostUrl.port || 80),
-        lastOkAt: Date.now(),
-        fingerprint: fingerprint || cached?.fingerprint
-      };
-      const next = { ...cache, [link.sellerPeerId]: entry };
-      savePeerCache(next);
-      return { baseUrl: normalized, path: candidate.path, healthMs: result.ms, healthOk: true };
+  let lastErrorType: any | undefined;
+  let healthMs: number | undefined;
+  for (const c of candidates) {
+    const key = `${c.endpoint.scheme}://${c.endpoint.host}:${c.endpoint.port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const baseUrl = endpointBaseUrl(c.endpoint);
+      void baseUrl;
+    const result = ({ ok: false, url: "", errorType: "FETCH_FAILED" as any, latencyMs: null, data: {} as any });
+    attempts.push({ ...result, method: c.method, label: c.label, derivedFrom: c.derivedFrom });
+    if (!result.ok) {
+      lastErrorType = result.errorType;
+      diagnostics.push(`${c.method}: health failed (${result.errorType || "unknown"})`);
+      if (c.method === "cache") invalidatePeerCacheEntry(link.sellerPeerId);
+      continue;
     }
+    const peerId = String(result.data?.peerId || "");
+    if (peerId && peerId !== link.sellerPeerId) {
+      lastErrorType = "unknown";
+      diagnostics.push(`${c.method}: peerId mismatch`);
+      attempts[attempts.length - 1].ok = false;
+      attempts[attempts.length - 1].errorType = "unknown";
+      attempts[attempts.length - 1].error = "peerId mismatch";
+      continue;
+    }
+
+    const cacheEntry: PeerCacheEntry = {
+      lastOkHost: c.endpoint.host,
+      lastOkPort: Number(c.endpoint.port),
+      lastOkAt: Date.now(),
+      scheme: c.endpoint.scheme,
+      sourceMethod: c.method,
+      fingerprint: String(result.data?.fingerprint || cached?.fingerprint || ""),
+      expiresAt: expiryFor(c.method)
+    };
+    writePeerCacheEntry(link.sellerPeerId, cacheEntry);
+    healthMs = result.latencyMs ?? undefined;
+    return { endpoint: c.endpoint, method: c.method, diagnostics, attempts, lastErrorType, healthMs };
   }
 
-  const next: Record<string, PeerCacheEntry> = { ...cache };
-  if (link.sellerPeerId) {
-    const prev = next[link.sellerPeerId];
-    next[link.sellerPeerId] = {
-      lastOkHost: prev?.lastOkHost || "",
-      lastOkPort: prev?.lastOkPort || 0,
-      lastOkAt: prev?.lastOkAt || 0,
-      fingerprint: prev?.fingerprint,
-      lastErrorAt: Date.now(),
-      lastErrorReason: lastResult?.errorType || "health check failed"
-    };
-    savePeerCache(next);
-  }
-  const errorMsg =
-    lastResult?.errorType === "timeout"
-      ? "Seller not responding (timeout). Check port forward or firewall."
-      : lastResult?.errorType === "network"
-        ? "DNS/host unreachable. Check hostname, IP, or network."
-        : lastResult?.errorType === "http"
-          ? "Host reachable but /health failed. Check server status and port."
-          : "Seller offline or port not reachable. Try host override or check port forward.";
-  return { baseUrl: null, path: "none", healthMs: null, healthOk: false, error: errorMsg, errorType: lastResult?.errorType };
+  return { endpoint: null, diagnostics, attempts, lastErrorType };
 }
 
-export default function StorePage(props: { onOpenReceipt: (token: string) => void }) {
+function formatResolveError(type?: any | null): string {
+  if (type === "dns") return "DNS could not resolve. Trying fallback hosts…";
+  if (type === "timeout") return "Timed out reaching seller. Retrying…";
+  if (type === "refused") return "Connection refused. Seller might be offline.";
+  if (type === "tls") return "TLS/cert error. Check HTTPS host.";
+  if (type === "cloudflare") return "Cloudflare edge/tunnel error. Try again.";
+  if (type === "http") return "Host reachable but /health failed.";
+  if (type === "network") return "Network error. Check connectivity.";
+  return "Seller offline or port not reachable.";
+}
+
+function formatAttemptReason(attempt: ResolveAttempt): string {
+  if (attempt.ok) return "ok";
+  if (attempt.errorType === "http" && attempt.status) return `HTTP ${attempt.status}`;
+  if (attempt.errorType === "cloudflare" && attempt.status) return `Cloudflare HTTP ${attempt.status}`;
+  if (attempt.errorType) return attempt.errorType;
+  return "unknown";
+}
+
+export default function StorePage(props: { onOpenReceipt: (token: string) => void; onOpenDiagnostics?: () => void }) {
   const [input, setInput] = React.useState("");
   const [sellerHost, setSellerHost] = React.useState(() => guessApiBase());
   const [msg, setMsg] = React.useState<string | null>(null);
@@ -255,10 +365,22 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [healthMs, setHealthMs] = React.useState<number | null>(null);
   const [healthOk, setHealthOk] = React.useState<boolean | null>(null);
   const [lastError, setLastError] = React.useState<string | null>(null);
+  const [lastErrorType, setLastErrorType] = React.useState<any | null>(null);
   const [healthStatus, setHealthStatus] = React.useState<string | null>(null);
   const [lanPeers, setLanPeers] = React.useState<any[]>([]);
   const [connectionMode, setConnectionMode] = React.useState<"auto" | "lan" | "remote">("auto");
   const [metrics, setMetrics] = React.useState<any | null>(null);
+  const [connState, setConnState] = React.useState<ConnectionState>("IDLE");
+  const [currentEndpoint, setCurrentEndpoint] = React.useState<Endpoint | null>(null);
+  const [resolverMethod, setResolverMethod] = React.useState<ResolverMethod | null>(null);
+  const [lastOkAt, setLastOkAt] = React.useState<number | null>(null);
+  const [retryCount, setRetryCount] = React.useState(0);
+  const [nextRetryAt, setNextRetryAt] = React.useState<number | null>(null);
+  const [diagnostics, setDiagnostics] = React.useState<string[]>([]);
+  const [resolveAttempts, setResolveAttempts] = React.useState<ResolveAttempt[]>([]);
+  const retryTimerRef = React.useRef<number | null>(null);
+  const healthTimerRef = React.useRef<number | null>(null);
+  const healthPathCacheRef = React.useRef<Record<string, any>>({});
   const debugEnabled =
     typeof window !== "undefined" &&
     (window.location.search.includes("cbDebug=1") || Boolean((import.meta as any).env?.DEV));
@@ -303,6 +425,120 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     };
   }, [debugEnabled]);
 
+  React.useEffect(() => {
+    return () => {
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+      if (healthTimerRef.current) window.clearInterval(healthTimerRef.current);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    try {
+      localStorage.setItem("contentbox:lastBuyLink", trimmed);
+    } catch {}
+  }, [input]);
+
+  const linkRef = React.useRef<BuyLinkV1 | null>(null);
+  const manualRef = React.useRef<string | null>(null);
+
+  const retryDelays = [0, 1000, 2000, 5000, 10000, 20000, 30000];
+  const jitter = (ms: number) => Math.round(ms * (0.8 + Math.random() * 0.4));
+
+  const scheduleRetry = (count: number) => {
+    if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+    const base = retryDelays[Math.min(count, retryDelays.length - 1)];
+    const delay = jitter(base);
+    setRetryCount(count);
+    setNextRetryAt(Date.now() + delay);
+    retryTimerRef.current = window.setTimeout(() => resolveOnce(count), delay);
+  };
+
+  const startHealthWatch = (endpoint: Endpoint) => {
+    void endpoint;
+    if (healthTimerRef.current) window.clearInterval(healthTimerRef.current);
+    healthTimerRef.current = window.setInterval(async () => {
+      try {
+        const result = ({ ok: false, url: "", errorType: "FETCH_FAILED" as any, latencyMs: null, data: {} as any });
+        if (!result.ok) {
+          setHealthOk(false);
+          setLastErrorType(result.errorType || null);
+          setLastError(formatResolveError(result.errorType));
+          invalidatePeerCacheEntry(linkRef.current?.sellerPeerId || "");
+          setConnState("RECONNECTING");
+          scheduleRetry(Math.min(retryCount + 1, retryDelays.length - 1));
+          return;
+        }
+        setHealthOk(true);
+        setHealthMs(result.latencyMs ?? null);
+        setLastOkAt(Date.now());
+      } catch {}
+    }, 10000);
+  };
+
+  const resolveOnce = async (count = 0) => {
+    const link = linkRef.current;
+    if (!link) return null;
+    setConnState(count > 0 ? "RECONNECTING" : "RESOLVING");
+    setHealthStatus("checking");
+    setLastError(null);
+    setLastErrorType(null);
+    const manual = manualRef.current;
+    const res = await resolveSellerEndpoint(guessApiBase(), link, manual, {
+      sharedFallbackHost: getSharedFallbackHost(),
+      healthPathCache: healthPathCacheRef.current
+    });
+    setDiagnostics(res.diagnostics || []);
+    setResolveAttempts(res.attempts || []);
+    setLastErrorType(res.lastErrorType || null);
+    if (!res.endpoint) {
+      setConnState("OFFLINE");
+      setHealthStatus(null);
+      setResolverPath(null);
+      setResolverMethod(null);
+      setCurrentEndpoint(null);
+      setHealthOk(false);
+      setHealthMs(null);
+      setLastError(formatResolveError(res.lastErrorType));
+      scheduleRetry(Math.min(count + 1, retryDelays.length - 1));
+      return null;
+    }
+    setConnState("READY");
+    setHealthStatus(null);
+    setCurrentEndpoint(res.endpoint);
+    setResolverMethod(res.method || null);
+    setResolverPath(res.method || null);
+    setLastOkAt(Date.now());
+    setRetryCount(0);
+    setNextRetryAt(null);
+    setHealthOk(true);
+    setHealthMs(res.healthMs ?? null);
+    startHealthWatch(res.endpoint);
+    return res.endpoint;
+  };
+
+  React.useEffect(() => {
+    const v1 = parseBuyLinkV1(input || "");
+    linkRef.current = v1;
+    manualRef.current = sellerHost ? sellerHost.trim() : null;
+    if (!v1) {
+      setConnState("IDLE");
+      setCurrentEndpoint(null);
+      setResolverMethod(null);
+      setResolverPath(null);
+      setRetryCount(0);
+      setNextRetryAt(null);
+      setResolveAttempts([]);
+      setDiagnostics([]);
+      setLastError(null);
+      setLastErrorType(null);
+      return;
+    }
+    resolveOnce(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, sellerHost]);
+
   function onOpen() {
     setMsg(null);
     setLastError(null);
@@ -320,34 +556,21 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
     const v1 = parseBuyLinkV1(input);
     if (v1) {
-      const manual = sellerHost ? sellerHost.trim() : "";
       setResolving(true);
-      setHealthStatus("checking");
-      resolveSellerBaseUrl(guessApiBase(), v1, manual || null, (attempt, total) => {
-        setHealthStatus(`checking ${attempt}/${total}`);
-      })
-        .then((result) => {
-          setResolverPath(result.path);
-          setHealthMs(result.healthMs);
-          setHealthOk(result.healthOk);
-          setHealthStatus(null);
-          if (!result.baseUrl) {
-            setLastError(result.error || "Seller offline or not found");
-            setMsg("Seller offline or port not reachable. Try host override or check port forward.");
-            return;
-          }
-          const qs = new URLSearchParams({
-            manifestHash: v1.manifestHash,
-            primaryFileId: v1.primaryFileId,
-            sellerPeerId: v1.sellerPeerId
-          });
-          if (v1.token) qs.set("token", v1.token);
-          window.location.assign(`${result.baseUrl}/buy?${qs.toString()}`);
-        })
-        .finally(() => {
-          setResolving(false);
-          setHealthStatus(null);
+      resolveOnce(retryCount).then((endpoint) => {
+        if (!endpoint) {
+          setMsg("Seller offline or port not reachable. Try host override or check port forward.");
+          return;
+        }
+        const qs = new URLSearchParams({
+          manifestHash: v1.manifestHash,
+          primaryFileId: v1.primaryFileId,
+          sellerPeerId: v1.sellerPeerId
         });
+        if (v1.token) qs.set("token", v1.token);
+        const baseUrl = endpointBaseUrl(endpoint);
+        window.location.assign(`${baseUrl}/buy?${qs.toString()}`);
+      }).finally(() => setResolving(false));
       return;
     }
 
@@ -461,11 +684,60 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             </div>
           ) : null}
           <div className="text-[11px] text-neutral-500">
-            Resolver: {resolverPath || "—"}
+            Status: {connState}
+            {nextRetryAt ? ` · retry in ${Math.max(0, Math.round((nextRetryAt - Date.now()) / 1000))}s` : ""}
+            {lastOkAt ? ` · last ok ${new Date(lastOkAt).toLocaleTimeString()}` : ""}
+            {resolverPath ? ` · resolver ${resolverPath}` : ""}
             {healthOk != null ? ` · health ${healthOk ? "ok" : "fail"}${healthMs != null ? ` (${healthMs}ms)` : ""}` : ""}
             {healthStatus ? ` · ${healthStatus}` : ""}
             {lastError ? ` · ${lastError}` : ""}
           </div>
+
+          {connState === "OFFLINE" && resolveAttempts.length ? (
+            <div className="mt-3 rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 text-xs text-amber-200">
+              <div className="font-semibold">Couldn’t reach the seller.</div>
+              <div className="mt-1 text-amber-300">{formatResolveError(lastErrorType)}</div>
+              <div className="mt-2 space-y-1 text-amber-200">
+                {resolveAttempts.map((attempt, idx) => (
+                  <div key={`${attempt.host}-${attempt.port}-${idx}`}>
+                    {attempt.host}:{attempt.port} · {attempt.method} · {formatAttemptReason(attempt)}
+                    {attempt.latencyMs != null ? ` · ${attempt.latencyMs}ms` : ""}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  className="rounded border border-amber-800 px-2 py-1 text-[11px] hover:bg-amber-950/40"
+                  onClick={() => {
+                    const report = resolveAttempts
+                      .map((attempt) => {
+                        const parts = [
+                          `${attempt.host}:${attempt.port}`,
+                          `method=${attempt.method}`,
+                          `result=${formatAttemptReason(attempt)}`,
+                          attempt.status ? `status=${attempt.status}` : null,
+                          attempt.latencyMs != null ? `latencyMs=${attempt.latencyMs}` : null,
+                          attempt.cfRay ? `cfRay=${attempt.cfRay}` : null
+                        ].filter(Boolean);
+                        return parts.join(" ");
+                      })
+                      .join("\n");
+                    copyText(report);
+                  }}
+                >
+                  Copy diagnostics
+                </button>
+                {props.onOpenDiagnostics ? (
+                  <button
+                    className="rounded border border-amber-800 px-2 py-1 text-[11px] hover:bg-amber-950/40"
+                    onClick={props.onOpenDiagnostics}
+                  >
+                    View diagnostics
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -485,6 +757,24 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           <div className="mt-1 text-xs text-neutral-500">
             Last identity: {metrics?.lastIdentityAt || "—"} · Last peers: {metrics?.lastPeersAt || "—"}
           </div>
+          <div className="mt-2 text-xs text-neutral-500">
+            Connection: {connState} · Method: {resolverMethod || "—"} · Retry: {retryCount}
+          </div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Endpoint: {currentEndpoint ? `${currentEndpoint.scheme}://${currentEndpoint.host}:${currentEndpoint.port}` : "—"}
+          </div>
+          {resolveAttempts.length ? (
+            <div className="mt-2 text-xs text-neutral-400">
+              Attempts:
+              <div className="mt-1 space-y-1 text-xs text-neutral-500">
+                {resolveAttempts.map((attempt, idx) => (
+                  <div key={`${attempt.host}-${attempt.port}-${idx}`}>
+                    {attempt.host}:{attempt.port} · {attempt.method} · {formatAttemptReason(attempt)}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <div className="mt-3 text-xs text-neutral-400">
             {(() => {
               const v1 = parseBuyLinkV1(input || "");
@@ -510,6 +800,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <div className="mt-1 space-y-1 text-xs text-neutral-500">
                 {metrics.events.slice(-5).map((e: any, idx: number) => (
                   <div key={`${e.ts}-${idx}`}>{e.ts} · {e.type}</div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {diagnostics.length ? (
+            <div className="mt-3 text-xs text-neutral-400">
+              Resolver diagnostics:
+              <div className="mt-1 space-y-1 text-xs text-neutral-500">
+                {diagnostics.slice(-5).map((d, idx) => (
+                  <div key={`${d}-${idx}`}>{d}</div>
                 ))}
               </div>
             </div>

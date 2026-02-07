@@ -11,7 +11,7 @@ type LibraryItem = {
   createdAt: string;
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
-  libraryAccess?: "owned" | "purchased" | "preview" | "local";
+  libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant" | "derivative";
   _count?: { files: number };
 };
 
@@ -46,7 +46,8 @@ export default function LibraryPage() {
   }, []);
 
   const groups = {
-    owned: items.filter((i) => i.libraryAccess === "owned"),
+    owned: items.filter((i) => i.libraryAccess === "owned" || i.libraryAccess === "participant"),
+    derivatives: items.filter((i) => i.libraryAccess === "derivative"),
     purchased: items.filter((i) => i.libraryAccess === "purchased"),
     preview: items.filter((i) => i.libraryAccess === "preview")
   };
@@ -90,10 +91,11 @@ export default function LibraryPage() {
         <div className="text-sm text-neutral-400">No items yet.</div>
       ) : (
         <div className="space-y-6">
-          {(["owned", "purchased", "preview"] as const).map((key) => {
+          {(["owned", "derivatives", "purchased", "preview"] as const).map((key) => {
             const list = groups[key];
             if (!list.length) return null;
-            const label = key === "owned" ? "Owned" : key === "purchased" ? "Purchased" : "Preview";
+            const label =
+              key === "owned" ? "Owned" : key === "derivatives" ? "Derivatives" : key === "purchased" ? "Purchased" : "Preview";
             return (
               <div key={key} className="space-y-2">
                 <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>

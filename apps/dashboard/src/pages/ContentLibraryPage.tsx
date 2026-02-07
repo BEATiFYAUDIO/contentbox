@@ -70,6 +70,16 @@ type ContentCredit = {
   createdAt?: string;
 };
 
+type TunnelHealthStatus = "unconfigured" | "checking" | "ok" | "fail";
+type TunnelHealthState = {
+  status: TunnelHealthStatus;
+  checkedAt?: number | null;
+  lastOkAt?: number | null;
+  latencyMs?: number | null;
+  error?: string | null;
+  usingFallback?: boolean;
+};
+
 type ParentLinkInfo = {
   linkId: string;
   relation: string;
@@ -174,6 +184,94 @@ function eqSha(a?: string | null, b?: string | null) {
   return aa === bb;
 }
 
+const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
+const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
+const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
+const STORAGE_PUBLIC_ORIGIN_FALLBACK = "contentbox.publicOriginFallback";
+const STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK = "contentbox.publicBuyOriginFallback";
+const STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK = "contentbox.publicStudioOriginFallback";
+const STORAGE_PUBLIC_BUY_OVERRIDE = "contentbox.publicBuyOriginOverride";
+const STORAGE_PUBLIC_STUDIO_OVERRIDE = "contentbox.publicStudioOriginOverride";
+const STORAGE_PUBLIC_ORIGIN_OVERRIDE = "contentbox.publicOriginOverride";
+const STORAGE_TUNNEL_HEALTH = "contentbox.tunnelHealth";
+const FALLBACK_TTL_MS = 6 * 60 * 60 * 1000;
+
+function readStoredValue(key: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+function readStoredHealth(): Partial<Record<"buy" | "studio" | "contentbox", TunnelHealthState>> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(STORAGE_TUNNEL_HEALTH);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function persistHealthCache(next: Record<"buy" | "studio" | "contentbox", TunnelHealthState>) {
+  if (typeof window === "undefined") return;
+  try {
+    const payload = {
+      buy: { lastOkAt: next.buy.lastOkAt || null },
+      studio: { lastOkAt: next.studio.lastOkAt || null },
+      contentbox: { lastOkAt: next.contentbox.lastOkAt || null }
+    };
+    window.localStorage.setItem(STORAGE_TUNNEL_HEALTH, JSON.stringify(payload));
+  } catch {}
+}
+
+function readStoredOverride(key: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return "";
+    const parsed = JSON.parse(raw);
+    if (!parsed?.value) return "";
+    if (parsed.expiresAt && Date.now() > parsed.expiresAt) {
+      window.localStorage.removeItem(key);
+      return "";
+    }
+    return String(parsed.value || "");
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredOverride(key: string, value: string, ttlMs: number) {
+  if (typeof window === "undefined") return;
+  try {
+    const payload = {
+      value,
+      expiresAt: Date.now() + ttlMs
+    };
+    window.localStorage.setItem(key, JSON.stringify(payload));
+  } catch {}
+}
+
+function clearStoredOverride(key: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(key);
+  } catch {}
+}
+
+function formatHealthTime(ts?: number | null) {
+  if (!ts) return "";
+  try {
+    return new Date(ts).toLocaleTimeString();
+  } catch {
+    return "";
+  }
+}
+
 function previewFileFor(previewUrl: string | null | undefined, files: any[] | null | undefined) {
   if (!previewUrl || !Array.isArray(files) || files.length === 0) return null;
   try {
@@ -202,6 +300,13 @@ export default function ContentLibraryPage({
   const envPublicHost = ((import.meta as any).env?.VITE_PUBLIC_HOST || "").toString().trim();
   const envPublicPort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toString().trim();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
+  const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
+  const envPublicStudioOrigin = ((import.meta as any).env?.VITE_PUBLIC_STUDIO_ORIGIN || "").toString().trim();
+  const envPublicOriginFallback = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN_FALLBACK || "").toString().trim();
+  const envPublicBuyOriginFallback = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN_FALLBACK || "").toString().trim();
+  const envPublicStudioOriginFallback = ((import.meta as any).env?.VITE_PUBLIC_STUDIO_ORIGIN_FALLBACK || "").toString().trim();
+  const enableDirectShare =
+    ((import.meta as any).env?.VITE_ENABLE_DIRECT_P2P || "").toString().trim().toLowerCase() === "true";
   const [items, setItems] = React.useState<ContentItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -215,7 +320,6 @@ export default function ContentLibraryPage({
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [filesByContent, setFilesByContent] = React.useState<Record<string, ContentFile[]>>({});
   const [filesLoading, setFilesLoading] = React.useState<Record<string, boolean>>({});
-
   // NEW: latest split (so we can show lock notarization when locked)
   const [splitByContent, setSplitByContent] = React.useState<Record<string, SplitVersion | null>>({});
   const [splitLoading, setSplitLoading] = React.useState<Record<string, boolean>>({});
@@ -251,14 +355,48 @@ export default function ContentLibraryPage({
   const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
-  const [publicOrigin, setPublicOrigin] = React.useState<string>(envPublicOrigin);
+  const [websiteBusy, setWebsiteBusy] = React.useState<Record<string, boolean>>({});
+  const [websiteMsg, setWebsiteMsg] = React.useState<Record<string, string>>({});
+  const [websiteLink, setWebsiteLink] = React.useState<Record<string, string>>({});
+  const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
+  const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(
+    () => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN)
+  );
+  const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(
+    () => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN)
+  );
+  const [publicOriginFallback, setPublicOriginFallback] = React.useState<string>(
+    () => envPublicOriginFallback || readStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK)
+  );
+  const [publicBuyOriginFallback, setPublicBuyOriginFallback] = React.useState<string>(
+    () => envPublicBuyOriginFallback || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK)
+  );
+  const [publicStudioOriginFallback, setPublicStudioOriginFallback] = React.useState<string>(
+    () => envPublicStudioOriginFallback || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK)
+  );
+  const [publicOriginOverride, setPublicOriginOverride] = React.useState<string>(
+    () => readStoredOverride(STORAGE_PUBLIC_ORIGIN_OVERRIDE)
+  );
+  const [publicBuyOriginOverride, setPublicBuyOriginOverride] = React.useState<string>(
+    () => readStoredOverride(STORAGE_PUBLIC_BUY_OVERRIDE)
+  );
+  const [publicStudioOriginOverride, setPublicStudioOriginOverride] = React.useState<string>(
+    () => readStoredOverride(STORAGE_PUBLIC_STUDIO_OVERRIDE)
+  );
+  const [tunnelHealth, setTunnelHealth] = React.useState<Record<"buy" | "studio" | "contentbox", TunnelHealthState>>(() => {
+    const cached = readStoredHealth();
+    return {
+      buy: { status: "unconfigured", lastOkAt: cached.buy?.lastOkAt || null },
+      studio: { status: "unconfigured", lastOkAt: cached.studio?.lastOkAt || null },
+      contentbox: { status: "unconfigured", lastOkAt: cached.contentbox?.lastOkAt || null }
+    };
+  });
   const [publishBusy, setPublishBusy] = React.useState<Record<string, boolean>>({});
   const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
   const [publishReasons, setPublishReasons] = React.useState<Record<string, string[]>>({});
   const [remoteHostDraft, setRemoteHostDraft] = React.useState<Record<string, string>>({});
   const [remotePortDraft, setRemotePortDraft] = React.useState<Record<string, string>>({});
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
-  const [salesLoading, setSalesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewByChild, setDerivativePreviewByChild] = React.useState<Record<string, any | null>>({});
@@ -364,15 +502,83 @@ export default function ContentLibraryPage({
   }, []);
 
   React.useEffect(() => {
-    if (publicOrigin) return;
+    if (publicOrigin && publicBuyOrigin && publicStudioOrigin) return;
     (async () => {
       try {
         const health = await api<any>("/health", "GET");
         const origin = String(health?.publicOrigin || "").trim();
-        if (origin) setPublicOrigin(origin);
+        const buyOrigin = String(health?.publicBuyOrigin || "").trim();
+        const studioOrigin = String(health?.publicStudioOrigin || "").trim();
+        const fallbackOrigin = String(health?.publicOriginFallback || "").trim();
+        const buyFallback = String(health?.publicBuyOriginFallback || "").trim();
+        const studioFallback = String(health?.publicStudioOriginFallback || "").trim();
+        if (!publicOrigin && origin) setPublicOrigin(origin);
+        if (!publicBuyOrigin && buyOrigin) setPublicBuyOrigin(buyOrigin);
+        if (!publicStudioOrigin && studioOrigin) setPublicStudioOrigin(studioOrigin);
+        if (!publicOriginFallback && fallbackOrigin) setPublicOriginFallback(fallbackOrigin);
+        if (!publicBuyOriginFallback && buyFallback) setPublicBuyOriginFallback(buyFallback);
+        if (!publicStudioOriginFallback && studioFallback) setPublicStudioOriginFallback(studioFallback);
       } catch {}
     })();
+  }, [
+    publicOrigin,
+    publicBuyOrigin,
+    publicStudioOrigin,
+    publicOriginFallback,
+    publicBuyOriginFallback,
+    publicStudioOriginFallback,
+    publicBuyOriginOverride,
+    publicStudioOriginOverride,
+    publicOriginOverride
+  ]);
+
+  React.useEffect(() => {
+    if (publicOrigin) {
+      try {
+        window.localStorage.setItem(STORAGE_PUBLIC_ORIGIN, publicOrigin);
+      } catch {}
+    }
   }, [publicOrigin]);
+
+  React.useEffect(() => {
+    if (publicBuyOrigin) {
+      try {
+        window.localStorage.setItem(STORAGE_PUBLIC_BUY_ORIGIN, publicBuyOrigin);
+      } catch {}
+    }
+  }, [publicBuyOrigin]);
+
+  React.useEffect(() => {
+    if (publicStudioOrigin) {
+      try {
+        window.localStorage.setItem(STORAGE_PUBLIC_STUDIO_ORIGIN, publicStudioOrigin);
+      } catch {}
+    }
+  }, [publicStudioOrigin]);
+
+  React.useEffect(() => {
+    if (publicOriginFallback) {
+      try {
+        window.localStorage.setItem(STORAGE_PUBLIC_ORIGIN_FALLBACK, publicOriginFallback);
+      } catch {}
+    }
+  }, [publicOriginFallback]);
+
+  React.useEffect(() => {
+    if (publicBuyOriginFallback) {
+      try {
+        window.localStorage.setItem(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, publicBuyOriginFallback);
+      } catch {}
+    }
+  }, [publicBuyOriginFallback]);
+
+  React.useEffect(() => {
+    if (publicStudioOriginFallback) {
+      try {
+        window.localStorage.setItem(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, publicStudioOriginFallback);
+      } catch {}
+    }
+  }, [publicStudioOriginFallback]);
 
   function derivePublicHostPort(origin: string): { host?: string; port?: string } {
     if (!origin) return {};
@@ -393,6 +599,206 @@ export default function ContentLibraryPage({
     const portPart = port ? `:${port}` : "";
     return `${scheme}://${cleanHost}${portPart}`;
   }
+
+  function renderTunnelHealthLine(state: TunnelHealthState, origin?: string, usingFallback?: boolean) {
+    const prefix = "health";
+    if (!origin) return `${prefix}: not configured`;
+    if (state.status === "checking") return `${prefix}: checking…`;
+    if (state.status === "ok") {
+      const latency = state.latencyMs ? `${Math.round(state.latencyMs)}ms` : "";
+      const last = state.lastOkAt ? `last ok ${formatHealthTime(state.lastOkAt)}` : "";
+      const fallback = usingFallback ? " • fallback" : "";
+      return `${prefix}: online${latency ? ` • ${latency}` : ""}${last ? ` • ${last}` : ""}${fallback}`;
+    }
+    if (state.status === "fail") {
+      const last = state.lastOkAt ? `last ok ${formatHealthTime(state.lastOkAt)}` : "no recent success";
+      return `${prefix}: offline • ${last}`;
+    }
+    return `${prefix}: unknown`;
+  }
+
+  React.useEffect(() => {
+    const buyOrigin = (publicBuyOrigin || publicOrigin || "").trim();
+    const studioOrigin = (publicStudioOrigin || publicOrigin || "").trim();
+    const contentOrigin = (publicOrigin || "").trim();
+    const buyFallback = (publicBuyOriginFallback || publicOriginFallback || "").trim();
+    const studioFallback = (publicStudioOriginFallback || publicOriginFallback || "").trim();
+    const contentFallback = (publicOriginFallback || "").trim();
+    let cancelled = false;
+
+    const freshBuyOverride = readStoredOverride(STORAGE_PUBLIC_BUY_OVERRIDE);
+    if (publicBuyOriginOverride && !freshBuyOverride) setPublicBuyOriginOverride("");
+    const freshStudioOverride = readStoredOverride(STORAGE_PUBLIC_STUDIO_OVERRIDE);
+    if (publicStudioOriginOverride && !freshStudioOverride) setPublicStudioOriginOverride("");
+    const freshOriginOverride = readStoredOverride(STORAGE_PUBLIC_ORIGIN_OVERRIDE);
+    if (publicOriginOverride && !freshOriginOverride) setPublicOriginOverride("");
+
+    async function probe(
+      label: "buy" | "studio" | "contentbox",
+      origin: string,
+      fallbackOrigin?: string,
+      onOverride?: (value: string | null) => void
+    ) {
+      if (!origin && !fallbackOrigin) {
+        setTunnelHealth((prev) => {
+          const next = { ...prev, [label]: { ...prev[label], status: "unconfigured", checkedAt: Date.now() } };
+          persistHealthCache(next);
+          return next;
+        });
+        return;
+      }
+
+      const testOrigin = async (target: string) => {
+        if (!target) return { ok: false as const };
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 2500);
+        const start = performance.now();
+        try {
+          const res = await fetch(`${target.replace(/\/$/, "")}/health`, {
+            method: "GET",
+            cache: "no-store",
+            signal: controller.signal
+          });
+          const latency = performance.now() - start;
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return { ok: true as const, latency };
+        } catch (err: any) {
+          return { ok: false as const, error: String(err?.message || "Health check failed") };
+        } finally {
+          clearTimeout(timeout);
+        }
+      };
+
+      try {
+        setTunnelHealth((prev) => ({ ...prev, [label]: { ...prev[label], status: "checking" } }));
+        const primaryResult = origin ? await testOrigin(origin) : { ok: false as const, error: "Primary not set" };
+
+        if (primaryResult.ok) {
+          if (onOverride) onOverride(null);
+          if (cancelled) return;
+          setTunnelHealth((prev) => {
+            const next = {
+              ...prev,
+              [label]: {
+                status: "ok",
+                checkedAt: Date.now(),
+                lastOkAt: Date.now(),
+                latencyMs: primaryResult.latency,
+                error: null,
+                usingFallback: false
+              }
+            };
+            persistHealthCache(next);
+            return next;
+          });
+          return;
+        }
+
+        if (fallbackOrigin) {
+          const fallbackResult = await testOrigin(fallbackOrigin);
+          if (fallbackResult.ok) {
+            if (onOverride) onOverride(fallbackOrigin);
+            if (cancelled) return;
+            setTunnelHealth((prev) => {
+              const next = {
+                ...prev,
+                [label]: {
+                  status: "ok",
+                  checkedAt: Date.now(),
+                  lastOkAt: Date.now(),
+                  latencyMs: fallbackResult.latency,
+                  error: null,
+                  usingFallback: true
+                }
+              };
+              persistHealthCache(next);
+              return next;
+            });
+            return;
+          }
+        }
+
+        if (cancelled) return;
+        setTunnelHealth((prev) => {
+          const next = {
+            ...prev,
+            [label]: {
+              status: "fail",
+              checkedAt: Date.now(),
+              lastOkAt: prev[label]?.lastOkAt || null,
+              latencyMs: null,
+              error: primaryResult.ok ? null : primaryResult.error,
+              usingFallback: false
+            }
+          };
+          persistHealthCache(next);
+          return next;
+        });
+      } catch (err: any) {
+        if (cancelled) return;
+        setTunnelHealth((prev) => {
+          const next = {
+            ...prev,
+            [label]: {
+              status: "fail",
+              checkedAt: Date.now(),
+              lastOkAt: prev[label]?.lastOkAt || null,
+              latencyMs: null,
+              error: String(err?.message || "Health check failed")
+            }
+          };
+          persistHealthCache(next);
+          return next;
+        });
+      } finally {}
+    }
+
+    async function runAll() {
+      const nextBuyOverride = readStoredOverride(STORAGE_PUBLIC_BUY_OVERRIDE);
+      if (nextBuyOverride !== publicBuyOriginOverride) setPublicBuyOriginOverride(nextBuyOverride);
+      const nextStudioOverride = readStoredOverride(STORAGE_PUBLIC_STUDIO_OVERRIDE);
+      if (nextStudioOverride !== publicStudioOriginOverride) setPublicStudioOriginOverride(nextStudioOverride);
+      const nextOriginOverride = readStoredOverride(STORAGE_PUBLIC_ORIGIN_OVERRIDE);
+      if (nextOriginOverride !== publicOriginOverride) setPublicOriginOverride(nextOriginOverride);
+
+      await Promise.all([
+        probe("buy", buyOrigin, buyFallback, (value) => {
+          if (!value) {
+            setPublicBuyOriginOverride("");
+            clearStoredOverride(STORAGE_PUBLIC_BUY_OVERRIDE);
+            return;
+          }
+          setPublicBuyOriginOverride(value);
+          writeStoredOverride(STORAGE_PUBLIC_BUY_OVERRIDE, value, FALLBACK_TTL_MS);
+        }),
+        probe("studio", studioOrigin, studioFallback, (value) => {
+          if (!value) {
+            setPublicStudioOriginOverride("");
+            clearStoredOverride(STORAGE_PUBLIC_STUDIO_OVERRIDE);
+            return;
+          }
+          setPublicStudioOriginOverride(value);
+          writeStoredOverride(STORAGE_PUBLIC_STUDIO_OVERRIDE, value, FALLBACK_TTL_MS);
+        }),
+        probe("contentbox", contentOrigin, contentFallback, (value) => {
+          if (!value) {
+            setPublicOriginOverride("");
+            clearStoredOverride(STORAGE_PUBLIC_ORIGIN_OVERRIDE);
+            return;
+          }
+          setPublicOriginOverride(value);
+          writeStoredOverride(STORAGE_PUBLIC_ORIGIN_OVERRIDE, value, FALLBACK_TTL_MS);
+        })
+      ]);
+    }
+
+    runAll();
+    const interval = setInterval(runAll, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [publicOrigin, publicBuyOrigin, publicStudioOrigin]);
 
   React.useEffect(() => {
     if (!showClearance || approvals.length === 0) return;
@@ -477,6 +883,42 @@ export default function ContentLibraryPage({
     }
   }
 
+  async function publishWebsite(contentId: string) {
+    const buyOrigin = (effectiveBuyOrigin || effectivePublicOrigin || "").trim();
+    if (!buyOrigin) {
+      setWebsiteMsg((m) => ({
+        ...m,
+        [contentId]: "Set a public Buy/Tunnel origin to generate website links."
+      }));
+      return;
+    }
+    setWebsiteBusy((m) => ({ ...m, [contentId]: true }));
+    setWebsiteMsg((m) => ({ ...m, [contentId]: "" }));
+    try {
+      const res = await api<any>(`/api/content/${contentId}/publish-website`, "POST", {
+        buyOrigin: buyOrigin.replace(/\/$/, "")
+      });
+      const siteBase = typeof res?.siteUrl === "string" ? res.siteUrl.replace(/\/$/, "") : "";
+      const htmlPath = typeof res?.htmlPath === "string" ? res.htmlPath.replace(/^\//, "") : "";
+      const publishedLink =
+        siteBase && htmlPath
+          ? `${siteBase}/${htmlPath}`
+          : typeof res?.github?.htmlUrl === "string"
+            ? res.github.htmlUrl
+            : typeof res?.github?.jsonUrl === "string"
+              ? res.github.jsonUrl
+              : "";
+      if (publishedLink) {
+        setWebsiteLink((m) => ({ ...m, [contentId]: publishedLink }));
+      }
+      setWebsiteMsg((m) => ({ ...m, [contentId]: "Published to website." }));
+    } catch (e: any) {
+      setWebsiteMsg((m) => ({ ...m, [contentId]: e?.message || "Website publish failed." }));
+    } finally {
+      setWebsiteBusy((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
   async function loadLatestSplit(contentId: string) {
     setSplitLoading((m) => ({ ...m, [contentId]: true }));
     try {
@@ -504,14 +946,14 @@ export default function ContentLibraryPage({
   }
 
   async function loadSales(contentId: string) {
-    setSalesLoading((m) => ({ ...m, [contentId]: true }));
+    setFilesLoading((m) => ({ ...m, [contentId]: true }));
     try {
       const data = await api<{ totalSats: string; recent: any[] }>(`/content/${contentId}/sales`, "GET");
       setSalesByContent((m) => ({ ...m, [contentId]: data }));
     } catch {
       setSalesByContent((m) => ({ ...m, [contentId]: null }));
     } finally {
-      setSalesLoading((m) => ({ ...m, [contentId]: false }));
+      setFilesLoading((m) => ({ ...m, [contentId]: false }));
     }
   }
 
@@ -892,11 +1334,51 @@ export default function ContentLibraryPage({
     );
   }
 
-  const derivedPublic = derivePublicHostPort(publicOrigin);
+  const effectivePublicOrigin = publicOriginOverride || publicOrigin || publicOriginFallback;
+  const effectiveBuyOrigin =
+    publicBuyOriginOverride || publicBuyOrigin || publicOrigin || publicBuyOriginFallback || publicOriginFallback;
+  const effectiveStudioOrigin =
+    publicStudioOriginOverride || publicStudioOrigin || publicOrigin || publicStudioOriginFallback || publicOriginFallback;
+
+  const derivedBuyPublic = derivePublicHostPort(effectiveBuyOrigin || "");
+  const derivedStudioPublic = derivePublicHostPort(effectiveStudioOrigin || "");
   const defaultRemoteHost = envPublicHost || "";
   const defaultRemotePort = envPublicPort || "";
-  const defaultTunnelHost = derivedPublic.host || "";
-  const defaultTunnelPort = derivedPublic.port || "";
+  const defaultTunnelBuyHost = derivedBuyPublic.host || "";
+  const defaultTunnelBuyPort = derivedBuyPublic.port || "";
+  const defaultTunnelStudioHost = derivedStudioPublic.host || "";
+  const defaultTunnelStudioPort = derivedStudioPublic.port || "";
+  const tunnelConfigured = !!(effectiveBuyOrigin || effectivePublicOrigin || effectiveStudioOrigin);
+  const tunnelStates = [tunnelHealth.buy, tunnelHealth.studio, tunnelHealth.contentbox].filter(
+    (s) => s.status !== "unconfigured"
+  );
+  const tunnelAnyFail = tunnelStates.some((s) => s.status === "fail");
+  const tunnelAnyChecking = tunnelStates.some((s) => s.status === "checking");
+  const tunnelAllOk = tunnelStates.length > 0 && tunnelStates.every((s) => s.status === "ok");
+  const tunnelBadge = (() => {
+    if (!tunnelConfigured) {
+      return {
+        label: "Tunnel links inactive",
+        className: "text-[10px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500"
+      };
+    }
+    if (tunnelAnyFail) {
+      return {
+        label: "Tunnel offline",
+        className: "text-[10px] rounded-full border border-red-900 bg-red-950/40 px-2 py-0.5 text-red-200"
+      };
+    }
+    if (tunnelAnyChecking || !tunnelAllOk) {
+      return {
+        label: "Tunnel checking",
+        className: "text-[10px] rounded-full border border-amber-900 bg-amber-950/40 px-2 py-0.5 text-amber-200"
+      };
+    }
+    return {
+      label: "Tunnel online",
+      className: "text-[10px] rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-200"
+    };
+  })();
 
   return (
     <div className="space-y-6">
@@ -936,7 +1418,7 @@ export default function ContentLibraryPage({
             }`}
             onClick={() => setContentScope("mine")}
           >
-            Authored
+            Owned
           </button>
         </div>
         <div className="text-xs text-neutral-500 mt-2">
@@ -944,7 +1426,7 @@ export default function ContentLibraryPage({
             ? "Access: everything you can open (owned, purchased, preview)."
             : contentScope === "local"
               ? "Local: items stored on this node."
-              : "Authored: your creator catalog only."}
+              : "Owned: items you own or share via splits."}
         </div>
       </div>
 
@@ -2156,52 +2638,107 @@ export default function ContentLibraryPage({
                       ) : null}
 
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">Share</div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs text-neutral-300 font-medium">Share</div>
+                          <div className={tunnelBadge.className}>{tunnelBadge.label}</div>
+                        </div>
                         {!manifestSha256 ? (
                           <div className="mt-2 text-xs text-amber-300">
                             Publish this content to enable share links.
                           </div>
                         ) : null}
                           <div className="mt-2 text-xs text-neutral-400 space-y-2">
-                            <div className="flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                Buy link:{" "}
-                                <span className="text-neutral-300 break-all">
-                                  {apiBase.includes("127.0.0.1") ? "Local only (loopback)" : `${apiBase}/buy/${it.id}`}
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2 shrink-0">
-                                <button
-                                  type="button"
-                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                  onClick={() => window.open(`${apiBase}/buy/${it.id}`, "_blank", "noopener,noreferrer")}
-                                >
-                                  Open
-                                </button>
-                                <button
-                                  type="button"
-                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                  onClick={() => copyText(`${apiBase}/buy/${it.id}`)}
-                                >
-                                  Copy link
-                                </button>
-                              </div>
-                            </div>
-                            {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
                             {manifestSha256 ? (
-                              <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
-                              <div className="min-w-0 break-all">
-                                Manifest hash: <span className="text-neutral-300">{manifestSha256}</span>
-                              </div>
-                              <button
-                                type="button"
-                                className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                onClick={() => copyText(manifestSha256)}
-                              >
-                                Copy
-                              </button>
-                            </div>
-                          ) : null}
+                              <>
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    {(() => {
+                                      const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || apiBase).replace(/\/$/, "");
+                                      const buyLink = `${buyBase}/buy/${it.id}`;
+                                      const isLocalOnly = !publicBuyOrigin && !publicOrigin && apiBase.includes("127.0.0.1");
+                                      return (
+                                        <>
+                                          Buy link:{" "}
+                                          <span className="text-neutral-300 break-all">
+                                            {isLocalOnly ? "Local only (loopback)" : buyLink}
+                                          </span>
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => {
+                                        const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || apiBase).replace(/\/$/, "");
+                                        window.open(`${buyBase}/buy/${it.id}`, "_blank", "noopener,noreferrer");
+                                      }}
+                                    >
+                                      Open
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => {
+                                        const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || apiBase).replace(/\/$/, "");
+                                        copyText(`${buyBase}/buy/${it.id}`);
+                                      }}
+                                    >
+                                      Copy link
+                                    </button>
+                                  </div>
+                                </div>
+                                {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
+                                <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
+                                  <div className="min-w-0 break-all">
+                                    Manifest hash: <span className="text-neutral-300">{manifestSha256}</span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                    onClick={() => copyText(manifestSha256)}
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+                                <div className="mt-2 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                                  <div className="text-[11px] text-neutral-500">Website</div>
+                                  <div className="text-[11px] text-neutral-600 mt-1">
+                                    Publish a simple listing to your website (GitHub Pages).
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => publishWebsite(it.id)}
+                                      disabled={websiteBusy[it.id]}
+                                    >
+                                      {websiteBusy[it.id] ? "Publishing…" : "Publish to website"}
+                                    </button>
+                                    {websiteLink[it.id] ? (
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={() => copyText(websiteLink[it.id])}
+                                      >
+                                        Copy page link
+                                      </button>
+                                    ) : null}
+                                  </div>
+                                  {websiteLink[it.id] ? (
+                                    <div className="mt-2 text-[11px] text-neutral-400 break-all">
+                                      Page: <span className="text-neutral-300">{websiteLink[it.id]}</span>
+                                    </div>
+                                  ) : null}
+                                  {websiteMsg[it.id] ? (
+                                    <div className="mt-2 text-[11px] text-amber-300">{websiteMsg[it.id]}</div>
+                                  ) : null}
+                                </div>
+                              </>
+                            ) : (
+                              <div className="text-xs text-amber-300">Publish to generate a buy link.</div>
+                            )}
                           {shareP2PLink[it.id] ? (
                             <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
                               <div className="min-w-0 break-all">
@@ -2220,68 +2757,17 @@ export default function ContentLibraryPage({
                             <>
                               <div className="mt-2 grid gap-3 sm:grid-cols-2 text-xs text-neutral-400">
                                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-                                  <div className="text-[11px] text-neutral-500">Direct (DDNS / port‑forward)</div>
-                                  <div className="text-[11px] text-neutral-600 mt-1">
-                                    Best performance. Requires router port‑forward.
-                                  </div>
-                                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                                    <div className="sm:col-span-2">
-                                      <div className="text-[11px] text-neutral-500">Host</div>
-                                      <input
-                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                        placeholder="your-ddns-hostname"
-                                        value={remoteHostDraft[it.id] || defaultRemoteHost || ""}
-                                        onChange={(e) =>
-                                          setRemoteHostDraft((m) => ({
-                                            ...m,
-                                            [it.id]: e.target.value.replace(/^https?:\/\//i, "")
-                                          }))
-                                        }
-                                      />
-                                    </div>
-                                    <div>
-                                      <div className="text-[11px] text-neutral-500">Port</div>
-                                      <input
-                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                        placeholder="4000"
-                                        value={remotePortDraft[it.id] || defaultRemotePort || ""}
-                                        onChange={(e) =>
-                                          setRemotePortDraft((m) => ({
-                                            ...m,
-                                            [it.id]: e.target.value.replace(/[^\d]/g, "")
-                                          }))
-                                        }
-                                      />
-                                    </div>
-                                  </div>
-                                  <div className="mt-2">
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                      onClick={() => {
-                                        const host = (remoteHostDraft[it.id] || defaultRemoteHost || "").trim();
-                                        const port = (remotePortDraft[it.id] || defaultRemotePort || "4000").trim();
-                                        const baseUrl = baseFromHostPort(host, port);
-                                        return buildP2PLink(it.id, manifestSha256 || null, { host, port, baseUrl });
-                                      }}
-                                      disabled={!!shareBusy[it.id]}
-                                    >
-                                      Copy Direct P2P Link
-                                    </button>
-                                  </div>
-                                </div>
-                                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
                                   <div className="text-[11px] text-neutral-500">Tunnel (Cloudflare / Tailscale)</div>
                                   <div className="text-[11px] text-neutral-600 mt-1">
                                     No router changes. Slower but easiest.
                                   </div>
                                   <div className="mt-2 grid gap-2 sm:grid-cols-3">
                                     <div className="sm:col-span-2">
-                                      <div className="text-[11px] text-neutral-500">URL</div>
+                                      <div className="text-[11px] text-neutral-500">Buy URL</div>
                                       <input
                                         className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                        placeholder="your-tunnel-host"
-                                        value={publicOrigin || defaultTunnelHost || ""}
+                                        placeholder="buy.yourdomain.com"
+                                        value={effectiveBuyOrigin || defaultTunnelBuyHost || ""}
                                         disabled
                                       />
                                     </div>
@@ -2290,31 +2776,92 @@ export default function ContentLibraryPage({
                                       <input
                                         className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
                                         placeholder="443"
-                                        value={defaultTunnelPort || ""}
+                                        value={defaultTunnelBuyPort || ""}
                                         disabled
                                       />
                                     </div>
                                   </div>
+                                  <div className="mt-1 text-[11px] text-neutral-500">
+                                    {renderTunnelHealthLine(
+                                      tunnelHealth.buy,
+                                      effectiveBuyOrigin || effectivePublicOrigin,
+                                      !!publicBuyOriginOverride
+                                    )}
+                                  </div>
+                                  {publicBuyOriginOverride ? (
+                                    <div className="text-[10px] text-amber-300">
+                                      Using fallback URL (carrier DNS). Will retry primary automatically.
+                                    </div>
+                                  ) : null}
+                                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                    <div className="sm:col-span-2">
+                                      <div className="text-[11px] text-neutral-500">Studio URL</div>
+                                      <input
+                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                        placeholder="studio.yourdomain.com"
+                                        value={effectiveStudioOrigin || defaultTunnelStudioHost || ""}
+                                        disabled
+                                      />
+                                    </div>
+                                    <div>
+                                      <div className="text-[11px] text-neutral-500">Port</div>
+                                      <input
+                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                        placeholder="443"
+                                        value={defaultTunnelStudioPort || ""}
+                                        disabled
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="mt-1 text-[11px] text-neutral-500">
+                                    {renderTunnelHealthLine(
+                                      tunnelHealth.studio,
+                                      effectiveStudioOrigin || effectivePublicOrigin,
+                                      !!publicStudioOriginOverride
+                                    )}
+                                  </div>
+                                  {publicStudioOriginOverride ? (
+                                    <div className="text-[10px] text-amber-300">
+                                      Using fallback URL (carrier DNS). Will retry primary automatically.
+                                    </div>
+                                  ) : null}
                                   <div className="mt-2">
                                     <button
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
                                       onClick={() => {
-                                        if (!publicOrigin) return;
+                                        const baseUrl = effectiveBuyOrigin || effectivePublicOrigin;
+                                        if (!baseUrl) return;
                                         return buildP2PLink(it.id, manifestSha256 || null, {
-                                          host: defaultTunnelHost,
-                                          port: defaultTunnelPort,
-                                          baseUrl: publicOrigin
+                                          host: defaultTunnelBuyHost,
+                                          port: defaultTunnelBuyPort,
+                                          baseUrl
                                         });
                                       }}
-                                      disabled={!publicOrigin || !!shareBusy[it.id]}
+                                      disabled={!(effectiveBuyOrigin || effectivePublicOrigin) || !!shareBusy[it.id]}
                                     >
-                                      Copy Tunnel P2P Link
+                                      Copy Buy P2P Link
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="ml-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => {
+                                        const baseUrl = effectiveStudioOrigin || effectivePublicOrigin;
+                                        if (!baseUrl) return;
+                                        return buildP2PLink(it.id, manifestSha256 || null, {
+                                          host: defaultTunnelStudioHost,
+                                          port: defaultTunnelStudioPort,
+                                          baseUrl
+                                        });
+                                      }}
+                                      disabled={!(effectiveStudioOrigin || effectivePublicOrigin) || !!shareBusy[it.id]}
+                                    >
+                                      Copy Studio P2P Link
                                     </button>
                                   </div>
-                                  {!publicOrigin ? (
+                                  {!effectivePublicOrigin && !effectiveBuyOrigin && !effectiveStudioOrigin ? (
                                     <div className="mt-2 text-[11px] text-neutral-500">
-                                      Set CONTENTBOX_PUBLIC_ORIGIN to enable tunnel links.
+                                      Set CONTENTBOX_PUBLIC_ORIGIN (or PUBLIC_BUY / PUBLIC_STUDIO) to enable tunnel links.
                                     </div>
                                   ) : null}
                                 </div>
@@ -2334,6 +2881,112 @@ export default function ContentLibraryPage({
                                     </button>
                                   </div>
                                 </div>
+                                {enableDirectShare ? (
+                                  <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                                    <div className="text-[11px] text-neutral-500">Direct (DDNS / port‑forward)</div>
+                                    <div className="text-[11px] text-neutral-600 mt-1">
+                                      Best performance. Use your own domain if you have one.
+                                    </div>
+                                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                      <div className="sm:col-span-2">
+                                        <div className="text-[11px] text-neutral-500">Host</div>
+                                        <input
+                                          className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                          placeholder="your-domain.com or ddns-hostname"
+                                          value={remoteHostDraft[it.id] || defaultRemoteHost || ""}
+                                          onChange={(e) =>
+                                            setRemoteHostDraft((m) => ({
+                                              ...m,
+                                              [it.id]: e.target.value.replace(/^https?:\/\//i, "")
+                                            }))
+                                          }
+                                        />
+                                      </div>
+                                      <div>
+                                        <div className="text-[11px] text-neutral-500">Port</div>
+                                        <input
+                                          className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                          placeholder="4000"
+                                          value={remotePortDraft[it.id] || defaultRemotePort || ""}
+                                          onChange={(e) =>
+                                            setRemotePortDraft((m) => ({
+                                              ...m,
+                                              [it.id]: e.target.value.replace(/[^\d]/g, "")
+                                            }))
+                                          }
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className="mt-2">
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                        onClick={() => {
+                                          const host = (remoteHostDraft[it.id] || defaultRemoteHost || "").trim();
+                                          const port = (remotePortDraft[it.id] || defaultRemotePort || "4000").trim();
+                                          const baseUrl = baseFromHostPort(host, port);
+                                          return buildP2PLink(it.id, manifestSha256 || null, { host, port, baseUrl });
+                                        }}
+                                        disabled={!!shareBusy[it.id]}
+                                      >
+                                        Copy Direct P2P Link
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 opacity-60">
+                                    <div className="flex items-center justify-between">
+                                      <div className="text-[11px] text-neutral-500">Direct (DDNS / port‑forward)</div>
+                                      <span className="text-[10px] uppercase tracking-wide text-amber-400">
+                                        Coming soon
+                                      </span>
+                                    </div>
+                                    <div className="text-[11px] text-neutral-600 mt-1">
+                                      Direct sharing is disabled for now. Use Tunnel or LAN links.
+                                    </div>
+                                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                                      <div className="sm:col-span-2">
+                                        <div className="text-[11px] text-neutral-500">Host</div>
+                                        <input
+                                          className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                          placeholder="your-domain.com or ddns-hostname"
+                                          value={remoteHostDraft[it.id] || defaultRemoteHost || ""}
+                                          disabled
+                                          onChange={(e) =>
+                                            setRemoteHostDraft((m) => ({
+                                              ...m,
+                                              [it.id]: e.target.value.replace(/^https?:\/\//i, "")
+                                            }))
+                                          }
+                                        />
+                                      </div>
+                                      <div>
+                                        <div className="text-[11px] text-neutral-500">Port</div>
+                                        <input
+                                          className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                          placeholder="4000"
+                                          value={remotePortDraft[it.id] || defaultRemotePort || ""}
+                                          disabled
+                                          onChange={(e) =>
+                                            setRemotePortDraft((m) => ({
+                                              ...m,
+                                              [it.id]: e.target.value.replace(/[^\d]/g, "")
+                                            }))
+                                          }
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className="mt-2">
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 disabled:opacity-60"
+                                        disabled
+                                      >
+                                        Copy Direct P2P Link
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             </>
                           ) : (

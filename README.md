@@ -169,6 +169,25 @@ CONTENTBOX_PUBLIC_ORIGIN=https://<your-subdomain>.trycloudflare.com
 
 Keep the `cloudflared` process running while testing.
 
+## Networking / Tunnel setup (token connector)
+
+For the production-style, **tunnel-only** setup on MX Linux (no systemd, cron + watchdog, and stable public hostnames),
+see:
+
+`docs/networking/cloudflare-tunnel.md`
+
+Diagnostics and buy-link troubleshooting:
+
+`docs/networking/diagnostics.md`
+
+## Using your own domain (recommended)
+
+If you have a domain, you don’t need DDNS. Point a subdomain to your server’s public IP and use that hostname in the **Direct** host field.
+
+Example:
+- DNS A record: `contentbox.yourdomain.com` → your public IP
+- Direct host field: `contentbox.yourdomain.com`
+
 ## Proofs (split lock) and proof.json
 
 When a split version is **locked**, Contentbox generates a canonical `proof.json` and a stable `proofHash`. The proof anchors later payments and receipts.

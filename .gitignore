@@ -2,3 +2,4 @@
 # local media artifacts
 /videos/
 /remixs/
+.node/

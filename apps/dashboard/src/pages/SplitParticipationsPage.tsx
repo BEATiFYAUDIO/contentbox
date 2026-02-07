@@ -163,6 +163,7 @@ export default function SplitParticipationsPage() {
         </div>
       )}
 
+
       <HistoryFeed
         title="Royalties history"
         items={historyItems}

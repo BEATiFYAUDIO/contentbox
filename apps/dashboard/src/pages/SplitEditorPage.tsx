@@ -95,11 +95,6 @@ function titleCase(s?: string | null) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function formatDateSafe(value: any) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "Unknown time";
-  return d.toLocaleString();
-}
 
 async function copyToClipboard(text: string) {
   try {
@@ -142,8 +137,15 @@ export default function SplitEditorPage(props: { contentId: string | null; onGoT
     canVote?: boolean;
   } | null>(null);
   const [upstreamError, setUpstreamError] = React.useState<string | null>(null);
-  const [upstreamMultiParent, setUpstreamMultiParent] = React.useState(false);
-  const [showLinkModal, setShowLinkModal] = React.useState(false);
+  const [upstreamMultiParent, setUpstreamMultiParent] = 
+React.useState(false);
+
+  const [auditEventsList, setAuditEventsList] = React.useState<any[]>([]);
+  const [showAuditEvents, setShowAuditEvents] = React.useState(false);
+  void auditEventsList;
+  void showAuditEvents;
+  void setShowAuditEvents;
+    const [showLinkModal, setShowLinkModal] = React.useState(false);
   const [linkParentId, setLinkParentId] = React.useState("");
   const [linkRelation, setLinkRelation] = React.useState("derivative");
   const [linkSaving, setLinkSaving] = React.useState(false);
@@ -162,8 +164,6 @@ export default function SplitEditorPage(props: { contentId: string | null; onGoT
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState<string | null>(null);
   const [auditByParticipant, setAuditByParticipant] = React.useState<Record<string, { remoteVerified: boolean; remoteNodeUrl?: string | null; remoteUserId?: string | null }>>({});
-  const [auditEventsList, setAuditEventsList] = React.useState<any[]>([]);
-  const [showAuditEvents, setShowAuditEvents] = React.useState(false);
   const [historyItems, setHistoryItems] = React.useState<HistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = React.useState(false);
   const [proofByVersionId, setProofByVersionId] = React.useState<Record<string, ProofData | null>>({});
@@ -705,13 +705,13 @@ export default function SplitEditorPage(props: { contentId: string | null; onGoT
                       ) : null}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span>SHA-256:</span>
-                      <span className="text-neutral-200">{shortHash(selectedVersion.lockedFileSha256)}</span>
+                      <span className="text-neutral-200 break-all">{shortHash(selectedVersion.lockedFileSha256)}</span>
                       {selectedVersion.lockedFileSha256 ? (
                         <button
                           onClick={() => copyToClipboard(selectedVersion.lockedFileSha256!)}
-                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 shrink-0"
                         >
                           Copy
                         </button>
@@ -722,36 +722,42 @@ export default function SplitEditorPage(props: { contentId: string | null; onGoT
                       <div className="text-xs text-neutral-500">Proof</div>
                       {proofByVersionId[selectedVersion.id] ? (
                         <div className="mt-1 space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span>Proof hash:</span>
-                            <span className="text-neutral-200">{shortHash(proofByVersionId[selectedVersion.id]?.proofHash)}</span>
-                            <button
-                              onClick={() => copyToClipboard(proofByVersionId[selectedVersion.id]?.proofHash || "")}
-                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            >
-                              Copy
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span>Manifest hash:</span>
-                            <span className="text-neutral-200">{shortHash(proofByVersionId[selectedVersion.id]?.manifestHash)}</span>
-                            <button
-                              onClick={() => copyToClipboard(proofByVersionId[selectedVersion.id]?.manifestHash || "")}
-                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            >
-                              Copy
-                            </button>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span>Splits hash:</span>
-                            <span className="text-neutral-200">{shortHash(proofByVersionId[selectedVersion.id]?.splitsHash)}</span>
-                            <button
-                              onClick={() => copyToClipboard(proofByVersionId[selectedVersion.id]?.splitsHash || "")}
-                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            >
-                              Copy
-                            </button>
-                          </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>Proof hash:</span>
+                          <span className="text-neutral-200 break-all">
+                            {shortHash(proofByVersionId[selectedVersion.id]?.proofHash)}
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(proofByVersionId[selectedVersion.id]?.proofHash || "")}
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 shrink-0"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>Manifest hash:</span>
+                          <span className="text-neutral-200 break-all">
+                            {shortHash(proofByVersionId[selectedVersion.id]?.manifestHash)}
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(proofByVersionId[selectedVersion.id]?.manifestHash || "")}
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 shrink-0"
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>Splits hash:</span>
+                          <span className="text-neutral-200 break-all">
+                            {shortHash(proofByVersionId[selectedVersion.id]?.splitsHash)}
+                          </span>
+                          <button
+                            onClick={() => copyToClipboard(proofByVersionId[selectedVersion.id]?.splitsHash || "")}
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 shrink-0"
+                          >
+                            Copy
+                          </button>
+                        </div>
 
                           <div className="mt-2 flex items-center gap-2">
                             <button

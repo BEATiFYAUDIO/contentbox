@@ -89,6 +89,47 @@ CONTENTBOX_PUBLIC_ORIGIN=https://<your-subdomain>.trycloudflare.com
 ```
 Then restart the API so the Share panel can prefill the Remote host/port.
 
+If you split public buy vs creator studio hosts, you can set:
+```
+CONTENTBOX_PUBLIC_BUY_ORIGIN=https://buy.<your-domain>
+CONTENTBOX_PUBLIC_STUDIO_ORIGIN=https://studio.<your-domain>
+```
+
+## Using your own domain (preferred over DDNS)
+If you already control a domain, point a subdomain to your public IP and use it in the **Direct** host field. This is more stable and professional than DDNS.
+
+## Porkbun DDNS auto-update (optional)
+If your public IP changes, use Porkbun's API to keep `contentbox.<your-domain>` updated.
+
+1) Create a local config file (do not commit keys):
+```bash
+mkdir -p ~/.contentbox
+cat > ~/.contentbox/porkbun-ddns.env <<'EOF'
+PB_API_KEY=YOUR_PORKBUN_KEY
+PB_API_SECRET=YOUR_PORKBUN_SECRET
+PB_DOMAIN=darrylhillock.com
+PB_HOST=contentbox
+PB_TTL=600
+EOF
+```
+
+2) Run the updater:
+```bash
+cd apps/api
+npm run ddns:porkbun
+```
+
+3) (Optional) Cron every 10 minutes:
+```bash
+(crontab -l 2>/dev/null; echo "*/10 * * * * /home/Darryl/Projects/contentbox/apps/api/scripts/porkbun-ddns.sh >/tmp/porkbun-ddns.log 2>&1") | crontab -
+```
+
+## Shipping & security notes (important)
+- DDNS is **optional and opt-in**. Do not enable by default in distributed builds.
+- API keys must live in user-owned files (e.g. `~/.contentbox/porkbun-ddns.env`) and must never be committed.
+- If a GUI helper is added, it should only **generate** local config and **run on demand**, not auto-run silently.
+- Exposing port 4000 publicly is for testing only. Production should use a reverse proxy + TLS + auth.
+
 ## Cloudflare Tunnel (systemd)
 Install service (for packaged builds):
 ```bash
