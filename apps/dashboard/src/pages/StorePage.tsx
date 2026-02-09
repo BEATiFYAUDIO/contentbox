@@ -378,6 +378,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [nextRetryAt, setNextRetryAt] = React.useState<number | null>(null);
   const [diagnostics, setDiagnostics] = React.useState<string[]>([]);
   const [resolveAttempts, setResolveAttempts] = React.useState<ResolveAttempt[]>([]);
+  const [showConnDetails, setShowConnDetails] = React.useState(false);
   const retryTimerRef = React.useRef<number | null>(null);
   const healthTimerRef = React.useRef<number | null>(null);
   const healthPathCacheRef = React.useRef<Record<string, any>>({});
@@ -454,6 +455,33 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     setNextRetryAt(Date.now() + delay);
     retryTimerRef.current = window.setTimeout(() => resolveOnce(count), delay);
   };
+
+  const methodLabel = classifyLinkType(parseBuyLinkV1(input || ""));
+  const endpointLabel = currentEndpoint
+    ? `${currentEndpoint.scheme}://${currentEndpoint.host}:${currentEndpoint.port}`
+    : "—";
+  const lastOkLabel = lastOkAt ? new Date(lastOkAt).toLocaleTimeString() : "—";
+  const healthLabel = healthOk == null ? "—" : healthOk ? "OK" : "Fail";
+  const discoveryLabel = lanPeers.length ? `${lanPeers.length} peer${lanPeers.length === 1 ? "" : "s"}` : "None";
+  const lastAttempt = resolveAttempts.length ? resolveAttempts[resolveAttempts.length - 1] : null;
+  const lastAttemptSummary = lastAttempt
+    ? `${lastAttempt.host}:${lastAttempt.port} • ${lastAttempt.method} • ${formatAttemptReason(lastAttempt)}`
+    : "—";
+  const scrubbedReport = [
+    `connectionState=${connState}`,
+    `method=${methodLabel}`,
+    `resolverPath=${resolverPath || "—"}`,
+    `endpoint=${endpointLabel}`,
+    `health=${healthLabel}`,
+    `healthMs=${healthMs ?? "—"}`,
+    `lastOkAt=${lastOkAt ? new Date(lastOkAt).toISOString() : "—"}`,
+    `retryCount=${retryCount}`,
+    `attempts=${resolveAttempts.length}`,
+    `lanPeers=${lanPeers.length}`,
+    lastError ? `lastError=${lastError}` : null,
+    lastErrorType ? `lastErrorType=${String(lastErrorType)}` : null,
+    diagnostics.length ? `notes=${diagnostics.slice(-3).join(" | ")}` : null
+  ].filter(Boolean).join("\n");
 
   const startHealthWatch = (endpoint: Endpoint) => {
     void endpoint;
@@ -683,56 +711,80 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <span className="text-neutral-600">Auto-detects LAN vs Remote from the link.</span>
             </div>
           ) : null}
-          <div className="text-[11px] text-neutral-500">
-            Status: {connState}
-            {nextRetryAt ? ` · retry in ${Math.max(0, Math.round((nextRetryAt - Date.now()) / 1000))}s` : ""}
-            {lastOkAt ? ` · last ok ${new Date(lastOkAt).toLocaleTimeString()}` : ""}
-            {resolverPath ? ` · resolver ${resolverPath}` : ""}
-            {healthOk != null ? ` · health ${healthOk ? "ok" : "fail"}${healthMs != null ? ` (${healthMs}ms)` : ""}` : ""}
-            {healthStatus ? ` · ${healthStatus}` : ""}
-            {lastError ? ` · ${lastError}` : ""}
+          <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 text-xs text-neutral-300">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-medium text-neutral-200">Connection status</div>
+              <div className="flex items-center gap-2">
+                {props.onOpenDiagnostics ? (
+                  <button
+                    className="rounded border border-neutral-800 px-2 py-1 text-[11px] hover:bg-neutral-900"
+                    onClick={props.onOpenDiagnostics}
+                  >
+                    Open full diagnostics
+                  </button>
+                ) : null}
+                <button
+                  className="rounded border border-neutral-800 px-2 py-1 text-[11px] hover:bg-neutral-900"
+                  onClick={() => setShowConnDetails((v) => !v)}
+                >
+                  {showConnDetails ? "Hide details" : "Details"}
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              <div>Connection: <span className="text-neutral-100">{connState}</span></div>
+              <div>Method: <span className="text-neutral-100">{methodLabel}</span></div>
+              <div>Endpoint: <span className="text-neutral-100">{endpointLabel}</span></div>
+              <div>
+                Health: <span className="text-neutral-100">{healthLabel}</span>
+                {healthMs != null ? ` • ${healthMs}ms` : ""}
+                {lastOkAt ? ` • last ok ${lastOkLabel}` : ""}
+              </div>
+              <div>Discovery: <span className="text-neutral-100">{discoveryLabel}</span></div>
+              {nextRetryAt ? (
+                <div>Retry: <span className="text-neutral-100">in {Math.max(0, Math.round((nextRetryAt - Date.now()) / 1000))}s</span></div>
+              ) : null}
+            </div>
+            {showConnDetails ? (
+              <div className="mt-3 border-t border-neutral-800 pt-2 text-[11px] text-neutral-400 space-y-1">
+                <div>Resolver path: {resolverPath || "—"}</div>
+                <div>Resolver method: {resolverMethod || "—"}</div>
+                <div>Health status: {healthStatus || "—"}</div>
+                <div>Retry count: {retryCount}</div>
+                <div>Attempts recorded: {resolveAttempts.length}</div>
+                <div>Last attempt: {lastAttemptSummary}</div>
+                <div>Last error: {lastError || "—"}</div>
+                {metrics?.lastHealthAt ? <div>Last health: {metrics.lastHealthAt}</div> : null}
+                {diagnostics.length ? <div>Notes: {diagnostics.slice(-3).join(" • ")}</div> : null}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    className="rounded border border-neutral-800 px-2 py-1 text-[11px] hover:bg-neutral-900"
+                    onClick={() => copyText(scrubbedReport)}
+                  >
+                    Copy debug info
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
-          {connState === "OFFLINE" && resolveAttempts.length ? (
+          {connState === "OFFLINE" ? (
             <div className="mt-3 rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 text-xs text-amber-200">
               <div className="font-semibold">Couldn’t reach the seller.</div>
               <div className="mt-1 text-amber-300">{formatResolveError(lastErrorType)}</div>
-              <div className="mt-2 space-y-1 text-amber-200">
-                {resolveAttempts.map((attempt, idx) => (
-                  <div key={`${attempt.host}-${attempt.port}-${idx}`}>
-                    {attempt.host}:{attempt.port} · {attempt.method} · {formatAttemptReason(attempt)}
-                    {attempt.latencyMs != null ? ` · ${attempt.latencyMs}ms` : ""}
-                  </div>
-                ))}
-              </div>
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   className="rounded border border-amber-800 px-2 py-1 text-[11px] hover:bg-amber-950/40"
-                  onClick={() => {
-                    const report = resolveAttempts
-                      .map((attempt) => {
-                        const parts = [
-                          `${attempt.host}:${attempt.port}`,
-                          `method=${attempt.method}`,
-                          `result=${formatAttemptReason(attempt)}`,
-                          attempt.status ? `status=${attempt.status}` : null,
-                          attempt.latencyMs != null ? `latencyMs=${attempt.latencyMs}` : null,
-                          attempt.cfRay ? `cfRay=${attempt.cfRay}` : null
-                        ].filter(Boolean);
-                        return parts.join(" ");
-                      })
-                      .join("\n");
-                    copyText(report);
-                  }}
+                  onClick={() => copyText(scrubbedReport)}
                 >
-                  Copy diagnostics
+                  Copy debug info
                 </button>
                 {props.onOpenDiagnostics ? (
                   <button
                     className="rounded border border-amber-800 px-2 py-1 text-[11px] hover:bg-amber-950/40"
                     onClick={props.onOpenDiagnostics}
                   >
-                    View diagnostics
+                    Open full diagnostics
                   </button>
                 ) : null}
               </div>
@@ -740,82 +792,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           ) : null}
         </div>
       </div>
-
-      {Boolean(debugEnabled) && (
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-          <div className="text-lg font-semibold">P2P Diagnostics</div>
-          <div className="text-xs text-neutral-500 mt-1">Resolver path: {resolverPath || "—"}</div>
-          <div className="text-xs text-neutral-500 mt-1">
-            Health: {healthOk === null ? "—" : healthOk ? "ok" : "fail"}{" "}
-            {healthMs != null ? `(${healthMs}ms)` : ""}
-            {healthStatus ? ` · ${healthStatus}` : ""}
-            {lastError ? ` · ${lastError}` : ""}
-          </div>
-          <div className="mt-2 text-xs text-neutral-500">
-            Health hits: {metrics?.healthHits ?? "—"} · Last health: {metrics?.lastHealthAt || "—"}
-          </div>
-          <div className="mt-1 text-xs text-neutral-500">
-            Last identity: {metrics?.lastIdentityAt || "—"} · Last peers: {metrics?.lastPeersAt || "—"}
-          </div>
-          <div className="mt-2 text-xs text-neutral-500">
-            Connection: {connState} · Method: {resolverMethod || "—"} · Retry: {retryCount}
-          </div>
-          <div className="mt-1 text-xs text-neutral-500">
-            Endpoint: {currentEndpoint ? `${currentEndpoint.scheme}://${currentEndpoint.host}:${currentEndpoint.port}` : "—"}
-          </div>
-          {resolveAttempts.length ? (
-            <div className="mt-2 text-xs text-neutral-400">
-              Attempts:
-              <div className="mt-1 space-y-1 text-xs text-neutral-500">
-                {resolveAttempts.map((attempt, idx) => (
-                  <div key={`${attempt.host}-${attempt.port}-${idx}`}>
-                    {attempt.host}:{attempt.port} · {attempt.method} · {formatAttemptReason(attempt)}
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          <div className="mt-3 text-xs text-neutral-400">
-            {(() => {
-              const v1 = parseBuyLinkV1(input || "");
-              if (!v1) return "Link fields: —";
-              return `Link fields: sellerPeerId=${v1.sellerPeerId} host=${v1.host || "—"} port=${v1.port || "—"}`;
-            })()}
-          </div>
-          <div className="mt-3 text-xs text-neutral-400">LAN peers:</div>
-          <div className="mt-1 space-y-1 text-xs text-neutral-500">
-            {lanPeers.length === 0 ? (
-              <div>No peers discovered.</div>
-            ) : (
-              lanPeers.map((p) => (
-                <div key={`${p.peerId}-${p.host}-${p.port}`}>
-                  {p.peerId} · {p.host}:{p.port} · {Math.round((p.ageMs || 0) / 1000)}s ago
-                </div>
-              ))
-            )}
-          </div>
-          {metrics?.events?.length ? (
-            <div className="mt-3 text-xs text-neutral-400">
-              Recent events:
-              <div className="mt-1 space-y-1 text-xs text-neutral-500">
-                {metrics.events.slice(-5).map((e: any, idx: number) => (
-                  <div key={`${e.ts}-${idx}`}>{e.ts} · {e.type}</div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-          {diagnostics.length ? (
-            <div className="mt-3 text-xs text-neutral-400">
-              Resolver diagnostics:
-              <div className="mt-1 space-y-1 text-xs text-neutral-500">
-                {diagnostics.slice(-5).map((d, idx) => (
-                  <div key={`${d}-${idx}`}>{d}</div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-        </div>
-      )}
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6 opacity-80">
         <div className="text-lg font-semibold">Discovery (Coming soon)</div>
