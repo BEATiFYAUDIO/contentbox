@@ -4,6 +4,11 @@ import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import { getToken } from "../lib/auth";
 
+function getNodePublicOrigin(): string {
+  const v = String((import.meta as any).env?.VITE_NODE_PUBLIC_ORIGIN || "").trim();
+  return v ? v.replace(/\/+$/, "") : window.location.origin;
+}
+
 type InvitePageProps = {
   token?: string;
   onAccepted: (contentId?: string | null) => void;
@@ -69,9 +74,36 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
   const [selectedContentId, setSelectedContentId] = useState<string>("");
   const [selectedSplitId, setSelectedSplitId] = useState<string | null>(null);
   const [createdInvites, setCreatedInvites] = useState<any[]>([]);
+  // Quick paste -> open /invite/<token>
+  const [pasteRaw, setPasteRaw] = useState<string>("");
+  const [pasteMsg, setPasteMsg] = useState<string | null>(null);
   const [createMsg, setCreateMsg] = useState<string | null>(null);
   const [historyItems, setHistoryItems] = useState<HistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+
+  function extractInviteTokenFromPaste(raw: string): string | null {
+    const v = String(raw || "").trim();
+    if (!v) return null;
+
+    const m1 = v.match(/\btoken=([^\s]+)/i);
+    if (m1 && m1[1]) return m1[1];
+
+    const m2 = v.match(/\/invite\/([^?#\s]+)/i);
+    if (m2 && m2[1]) return m2[1];
+
+    if (/^[A-Za-z0-9_-]{10,}$/.test(v)) return v;
+    return null;
+  }
+
+  function openPastedInvite() {
+    setPasteMsg(null);
+    const t = extractInviteTokenFromPaste(pasteRaw);
+    if (!t) {
+      setPasteMsg("Paste a token, a contentbox-invite bundle, or an /invite/<token> link.");
+      return;
+    }
+    window.location.href = `/invite/${encodeURIComponent(t)}`;
+  }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
   const tokenFromLocation = (() => {
@@ -245,11 +277,11 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
             acceptBody.remoteUserId = js.payload.remoteUserId;
           } else {
             // fallback
-            acceptBody.remoteNodeUrl = window.location.origin;
+            acceptBody.remoteNodeUrl = getNodePublicOrigin();
             acceptBody.remoteUserId = me.id;
           }
         } catch {
-          acceptBody.remoteNodeUrl = window.location.origin;
+          acceptBody.remoteNodeUrl = getNodePublicOrigin();
           acceptBody.remoteUserId = me.id;
         }
       }
@@ -300,6 +332,28 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Invite</div>
+        <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950/40 p-3">
+          <div className="text-sm font-medium text-neutral-100">Accept Invite</div>
+          <div className="text-xs text-neutral-400 mt-1">Paste a token / bundle / link, then open the invite.</div>
+          <div className="mt-3">
+            <input
+              value={pasteRaw}
+              onChange={(e) => setPasteRaw(e.target.value)}
+              placeholder="contentbox-invite token=...  OR  http(s)://<node>/invite/<token>  OR  <token>"
+              className="w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 placeholder:text-neutral-500"
+            />
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button
+              onClick={openPastedInvite}
+              type="button"
+              className="rounded-lg bg-emerald-700 px-3 py-2 text-xs text-white hover:bg-emerald-600"
+            >
+              Open Invite
+            </button>
+          </div>
+          {pasteMsg && <div className="mt-2 text-xs text-neutral-300">{pasteMsg}</div>}
+        </div>
         {tokenToUse ? (
           <div className="text-sm text-neutral-400 mt-1 break-all">token: {tokenToUse}</div>
         ) : null}
