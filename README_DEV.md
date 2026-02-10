@@ -6,6 +6,58 @@
 - `PREVIEW_ENABLED=1` (default) to allow preview clamp on priced content
 - `PREVIEW_MAX_BYTES=5000000` (default)
 
+## LND Lightning (LND REST)
+Required env vars (server-side only):
+```
+LND_REST_URL=https://127.0.0.1:8080
+LND_MACAROON_HEX=...
+LND_TLS_CERT_PATH=/path/to/tls.cert
+```
+Optional:
+```
+LND_TLS_CERT_PEM="-----BEGIN CERTIFICATE-----..."
+```
+
+Quick start (one command):
+```bash
+cd apps/api
+npm run lnd:setup
+npm run lnd:doctor
+```
+
+If you run the API via systemd/docker/pm2, set env there. The scripts will pick up process.env.
+If you prefer file-based env, create `apps/api/.env.local` with the LND_* values.
+
+Common LND file locations:
+- TLS cert: `~/.lnd/tls.cert`
+- Invoice macaroon:
+  - `~/.lnd/data/chain/bitcoin/mainnet/invoices.macaroon`
+  - `~/.lnd/data/chain/bitcoin/testnet/invoices.macaroon`
+  - `~/.lnd/data/chain/bitcoin/regtest/invoices.macaroon`
+
+Validation scripts (safe, no secrets printed):
+```bash
+cd apps/api
+npm run lnd:validate
+npm run lnd:doctor
+```
+
+## End-to-end smoke test (buy flow)
+```bash
+cd apps/api
+CONTENT_ID=<contentId> npm run smoke:buy
+```
+Optional auto-pay (requires lncli + funded wallet):
+```bash
+AUTO_PAY=true CONTENT_ID=<contentId> npm run smoke:buy
+```
+Notes:
+- For public (unauth) flow, the content must be **published** and storefront enabled.
+- To test as the owner, pass a token:
+  `AUTH_TOKEN=<jwt> CONTENT_ID=<contentId> npm run smoke:buy`
+  - Mint a dev token (prints to stdout):
+    `npm run auth:mint-dev-token`
+
 ## LAN test (two machines)
 1) Start seller API on Machine A.
 2) Ensure content is published and has price set.

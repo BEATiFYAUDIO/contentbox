@@ -12,7 +12,12 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
     "prisma:seed": "prisma db seed",
-    "test:storefront-gating": "API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 npx tsx src/scripts/storefront_gating_test.ts"
+    "test:storefront-gating": "API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 npx tsx src/scripts/storefront_gating_test.ts",
+    "lnd:setup": "tsx src/scripts/setup_lnd_env_local.ts",
+    "lnd:doctor": "tsx src/scripts/doctor_lnd.ts",
+    "lnd:validate": "tsx src/scripts/validate_lnd_buy_flow.ts",
+    "smoke:buy": "tsx src/scripts/smoke_buy_flow.ts",
+    "auth:mint-dev-token": "tsx src/scripts/mint_dev_token.ts"
   },
   "dependencies": {
     "ethers": "^6.9.0",

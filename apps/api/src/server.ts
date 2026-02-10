@@ -4551,7 +4551,7 @@ app.get("/buy/:contentId", async (req: any, reply) => {
   const app = document.getElementById("app");
   const apiBase = location.origin;
   let receiptToken = null;
-  let paymentSlug = null;
+  let intentId = null;
   let pollTimer = null;
   let refreshTimer = null;
   let currentOffer = null;
@@ -4738,14 +4738,14 @@ app.get("/buy/:contentId", async (req: any, reply) => {
 
   function renderRails(intent){
     const rails = document.getElementById("rails");
-    const lightning = intent.paymentOptions?.lightning || {};
-    const onchain = intent.paymentOptions?.onchain || {};
-    const receiptLink = apiBase + "/public/receipts/" + intent.receiptToken + "/status";
+    const lightning = intent?.lightning || {};
+    const onchain = intent?.onchain || {};
+    const receiptLink = receiptToken ? (apiBase + "/public/receipts/" + receiptToken + "/status") : null;
     rails.innerHTML = \`
       <div class="row">
         <div class="rail">
           <div style="font-weight:600;">Pay with Lightning (recommended)</div>
-          \${lightning.available ? \`
+          \${lightning.bolt11 ? \`
             <img alt="Lightning QR" src="\${qrUrl(lightning.bolt11)}" />
             <div class="code">\${lightning.bolt11}</div>
             <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
@@ -4753,7 +4753,7 @@ app.get("/buy/:contentId", async (req: any, reply) => {
         </div>
         <div class="rail">
           <div style="font-weight:600;">Pay with Bitcoin</div>
-          \${onchain.available ? \`
+          \${onchain.address ? \`
             <img alt="On-chain QR" src="\${qrUrl(onchain.address)}" />
             <div class="code">\${onchain.address}</div>
             <div class="muted">Min confirmations: \${onchain.minConfirmations || 1}</div>
@@ -4761,8 +4761,10 @@ app.get("/buy/:contentId", async (req: any, reply) => {
           \` : \`<div class="muted">Unavailable: \${onchain.reason || "Not available"}</div>\`}
         </div>
       </div>
-      <div class="muted" style="margin-top:10px;">Save your receipt link to download again:</div>
-      <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
+      \${receiptLink ? \`
+        <div class="muted" style="margin-top:10px;">Save your receipt link to download again:</div>
+        <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
+      \` : ""}
     \`;
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
   }
@@ -4780,18 +4782,21 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     \`;
   }
 
-  async function pollStatus(){
-    if (!receiptToken) return;
-    const status = await fetchJson("/public/receipts/" + receiptToken + "/status");
-    if (status.canFulfill) {
+  async function pollIntent(){
+    if (!intentId) return;
+    const status = await fetchJson("/api/payments/intents/" + intentId + "/refresh", { method: "POST", body: {} });
+    if (status.status === "paid" && status.receiptToken) {
       clearInterval(pollTimer);
+      receiptToken = status.receiptToken;
       const payload = await fetchJson("/public/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
       if (currentOffer?.manifestSha256) {
-        const ent = setEntitlement(currentOffer.manifestSha256, paymentSlug || receiptToken, "paid");
+        const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
         renderOffer(currentOffer, ent);
       }
       document.getElementById("status").textContent = "Payment received. Download is ready.";
+    } else if (status.status === "expired") {
+      document.getElementById("status").textContent = "Invoice expired. Create a new one.";
     } else {
       document.getElementById("status").textContent = "Waiting for payment…";
     }
@@ -4803,11 +4808,21 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     document.getElementById("status").textContent = "Creating payment…";
     try {
       const amount = offer.priceSats != null ? offer.priceSats : 1000;
-      const res = await fetch(apiBase + "/p2p/payments/intents", {
+      const res = await fetch(apiBase + "/api/payments/intents", {
         method:"POST",
         headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({ contentId, manifestSha256: offer.manifestSha256, amountSats: amount })
+        body: JSON.stringify({
+          purpose: "CONTENT_PURCHASE",
+          subjectType: "CONTENT",
+          subjectId: contentId,
+          manifestSha256: offer.manifestSha256,
+          amountSats: String(amount)
+        })
       });
+      if (res.status === 404) {
+        document.getElementById("status").textContent = "Not for sale / storefront disabled.";
+        return;
+      }
       if (res.status === 503) {
         try {
           const p = await fetchJson("/p2p/permits", {
@@ -4822,24 +4837,11 @@ app.get("/buy/:contentId", async (req: any, reply) => {
         return;
       }
       const intent = await res.json();
-      paymentSlug = intent.paymentSlug || null;
-      if (intent.status === "bypassed") {
-        try {
-          const p = await fetchJson("/p2p/permits", {
-            method: "POST",
-            body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "stream" }
-          });
-        const ent = setEntitlement(offer.manifestSha256, p.permit, "bypassed", Date.parse(p.expiresAt));
-          previewSeconds = p.previewSeconds || null;
-          renderOffer(offer, ent);
-          document.getElementById("status").textContent = "Dev payments unavailable. Unlocked.";
-        } catch {}
-        return;
-      }
-      receiptToken = intent.receiptToken;
+      intentId = intent.intentId || intent.id || null;
+      if (!intentId) throw new Error("Payment intent missing id.");
       renderRails(intent);
-      pollTimer = setInterval(pollStatus, 2000);
-      pollStatus().catch(()=>{});
+      pollTimer = setInterval(pollIntent, 2000);
+      pollIntent().catch(()=>{});
     } finally {
       creatingPayment = false;
     }
@@ -4953,7 +4955,7 @@ app.get("/public/diag/probe-health", async (req: any, reply) => {
   const host = url.hostname.toLowerCase();
   const isPrivateIp = (ip: string | undefined) => {
     if (!ip) return false;
-    const cleaned = ip.split(",")[0]?.trim() || ip;
+    const cleaned = (ip.split(",")[0]?.trim() || ip).replace(/^::ffff:/, "");
     if (cleaned === "127.0.0.1" || cleaned === "::1") return true;
     if (cleaned.startsWith("10.")) return true;
     if (cleaned.startsWith("192.168.")) return true;
@@ -4983,7 +4985,7 @@ app.get("/public/diag/probe-health", async (req: any, reply) => {
         }
       })
   );
-  const allowDevProbe = allowHosts.size === 0 && devProbeHeader && isPrivateIp(req.ip);
+  const allowDevProbe = devProbeHeader && isPrivateIp(req.ip);
   if (!allowHosts.has(host) && !allowDevProbe) {
     return reply.code(403).send({ ok: false, errorType: "FORBIDDEN", message: "Host not allowed" });
   }
@@ -7540,7 +7542,7 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
     if (!storefrontEnabled) return notFound(reply, "Not found");
     if (content.status !== "published") return notFound(reply, "Not found");
   } else {
-    if (content.status !== "published") return reply.code(403).send({ error: "Content not published" });
+    if (content.ownerUserId !== userId) return reply.code(403).send({ error: "Forbidden", reason: "OWNER_ONLY" });
   }
 
   const intent = await prisma.paymentIntent.create({
