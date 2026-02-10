@@ -8,6 +8,7 @@ type ContentItem = {
   type: "song" | "book" | "video" | "file";
   status: "draft" | "published";
   createdAt: string;
+  libraryAccess?: "owned" | "participant" | "purchased" | "preview" | "local";
 };
 
 type SplitVersion = {
@@ -34,8 +35,8 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
 
   async function loadContentList() {
-    const list = await api<ContentItem[]>("/content", "GET");
-    setContentList(list);
+    const owned = await api<ContentItem[]>("/content?scope=mine", "GET");
+    setContentList(owned);
   }
 
   async function loadSplitSummary(contentId: string) {

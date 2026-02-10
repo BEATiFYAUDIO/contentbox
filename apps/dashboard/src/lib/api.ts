@@ -47,11 +47,17 @@ export async function api<T>(path: string, methodOrOptions: string | ApiOptions 
 
   const url = `${API_BASE}${path}`;
   // Make the API request
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: requestBody,
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: requestBody,
+    });
+  } catch (error) {
+    console.error("Network error or server unreachable:", error);
+    throw new Error("Could not connect to the server. Please check if the backend is running.");
+  }
 
   // Parse the response
   const text = await res.text();

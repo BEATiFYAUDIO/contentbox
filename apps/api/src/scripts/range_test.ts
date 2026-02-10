@@ -22,8 +22,8 @@ async function main() {
   const head = await fetch(url, { method: "HEAD" });
   assert(head.ok, `HEAD failed: ${head.status}`);
   const lenHeader = head.headers.get("content-length");
-  assert(lenHeader, "HEAD missing Content-Length");
-  const size = Number(lenHeader);
+  assert(Boolean(lenHeader), "HEAD missing Content-Length");
+  const size = Number(lenHeader || 0);
   assert(Number.isFinite(size) && size > 0, "Invalid Content-Length");
   const acceptRanges = head.headers.get("accept-ranges");
   assert(acceptRanges === "bytes", "Accept-Ranges must be bytes");
@@ -40,7 +40,7 @@ async function main() {
     const { res, buf } = await fetchRange(url, r.start, r.end);
     assert(res.status === 206, `${r.label} range expected 206, got ${res.status}`);
     const cr = res.headers.get("content-range");
-    assert(cr, `${r.label} missing Content-Range`);
+    if (!cr) throw new Error(`${r.label} missing Content-Range`);
     assert(cr.startsWith(`bytes ${r.start}-`), `${r.label} Content-Range start mismatch: ${cr}`);
     const expectedLen = r.end - r.start + 1;
     assert(buf.length === expectedLen, `${r.label} bytes mismatch: ${buf.length} !== ${expectedLen}`);

@@ -351,9 +351,7 @@ function forbidden(reply: any) {
 /** ---------- app init ---------- */
 
 const app = Fastify({
-  logger: true,
-  // Ensure BigInt never crashes JSON serialization at the root.
-  stringify: (obj: any) => JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v))
+  logger: true
 });
 
 app.addHook("onRequest", async (req, reply) => {
@@ -363,7 +361,7 @@ app.addHook("onRequest", async (req, reply) => {
   reply.header("x-request-id", id);
 });
 
-app.setErrorHandler((error, req, reply) => {
+app.setErrorHandler((error: any, req, reply) => {
   const id = (req as any).requestId || null;
   try {
     app.log.error({ requestId: id, message: String((error as any)?.message || error) }, "Unhandled error");
@@ -442,7 +440,8 @@ function isPublicCorsPath(url?: string) {
     url.startsWith("/p2p/content/") ||
     url.startsWith("/p2p/payments/intents") ||
     url.startsWith("/public/receipts/") ||
-    url.startsWith("/health")
+    url.startsWith("/health") ||
+    url.startsWith("/public/diag/probe-health")
   );
 }
 
@@ -453,7 +452,7 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Range"],
+  allowedHeaders: ["Content-Type", "Authorization", "Range", "x-contentbox-dev-probe"],
   exposedHeaders: ["Content-Range", "Accept-Ranges", "Content-Length"],
   credentials: false,
   preflightContinue: false,
@@ -936,7 +935,10 @@ app.get("/content/:id/audit", { preHandler: requireAuth }, async (req: any, repl
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.deletedAt) return notFound(reply, "Not found");
-  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (content.ownerUserId !== userId) {
+    const ok = await isAcceptedParticipant(userId, contentId);
+    if (!ok) return forbidden(reply);
+  }
 
   const events = await prisma.auditEvent.findMany({
     where: { entityType: "ContentItem", entityId: contentId },
@@ -3291,6 +3293,13 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       include: { participants: true }
     });
   }
+  if (!sv) {
+    return reply.code(409).send({
+      ok: false,
+      code: "SPLIT_MISSING",
+      message: "Split version is missing for publish"
+    });
+  }
 
   const totalBps = sumBps((sv?.participants || []).map((p) => ({ bps: toBps(p) })));
   if (totalBps !== 10000) {
@@ -3414,11 +3423,14 @@ app.get("/api/content/:id/links", { preHandler: requireAuth }, async (req: any, 
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (content.ownerUserId !== userId) {
+    const ok = await isAcceptedParticipant(userId, contentId);
+    if (!ok) return forbidden(reply);
+  }
 
   const links = await prisma.contentLink.findMany({
     where: { childContentId: contentId, relation: { in: ["derivative", "remix", "mashup"] as any } },
-    orderBy: { createdAt: "asc" }
+    orderBy: { id: "asc" }
   });
 
   const parentLink = links[0] || null;
@@ -4029,8 +4041,9 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
     if (String(v.decision).toLowerCase() === "reject") rejectBps += bps;
   }
 
+  const approvalTarget = auth.approvalBpsTarget ?? 0;
   let status: string = "PENDING";
-  if (approveBps >= auth.approvalBpsTarget) status = "APPROVED";
+  if (approveBps >= approvalTarget) status = "APPROVED";
   // v1: keep rejections as PENDING
 
   await prisma.derivativeAuthorization.update({
@@ -4922,6 +4935,83 @@ app.get("/embed.js", async (req: any, reply) => {
   return reply.send(js);
 });
 
+app.get("/public/diag/probe-health", async (req: any, reply) => {
+  const raw = typeof req.query?.url === "string" ? req.query.url : "";
+  const target = raw.trim();
+  if (!target) return reply.code(400).send({ ok: false, errorType: "INVALID_URL", message: "Missing url" });
+  let url: URL;
+  try {
+    url = new URL(target);
+  } catch (e: any) {
+    return reply
+      .code(400)
+      .send({ ok: false, errorType: "INVALID_URL", message: e?.message || "Invalid URL" });
+  }
+  if (url.protocol !== "https:") {
+    return reply.code(400).send({ ok: false, errorType: "INVALID_URL", message: "HTTPS required" });
+  }
+  const host = url.hostname.toLowerCase();
+  const isPrivateIp = (ip: string | undefined) => {
+    if (!ip) return false;
+    const cleaned = ip.split(",")[0]?.trim() || ip;
+    if (cleaned === "127.0.0.1" || cleaned === "::1") return true;
+    if (cleaned.startsWith("10.")) return true;
+    if (cleaned.startsWith("192.168.")) return true;
+    const m = cleaned.match(/^172\.(\d+)\./);
+    if (m) {
+      const n = Number(m[1]);
+      return n >= 16 && n <= 31;
+    }
+    return false;
+  };
+  const devProbeHeader = String(req.headers["x-contentbox-dev-probe"] || "").trim() === "1";
+  const allowHosts = new Set(
+    [
+      (process.env.CONTENTBOX_PUBLIC_BUY_ORIGIN || "").trim(),
+      (process.env.CONTENTBOX_PUBLIC_STUDIO_ORIGIN || "").trim(),
+      (process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim(),
+      (process.env.CONTENTBOX_PUBLIC_ORIGIN_FALLBACK || "").trim(),
+      (process.env.CONTENTBOX_PUBLIC_BUY_ORIGIN_FALLBACK || "").trim(),
+      (process.env.CONTENTBOX_PUBLIC_STUDIO_ORIGIN_FALLBACK || "").trim()
+    ]
+      .filter(Boolean)
+      .map((origin) => {
+        try {
+          return new URL(origin).hostname.toLowerCase();
+        } catch {
+          return origin.replace(/^https?:\/\//i, "").replace(/\/+$/, "").toLowerCase();
+        }
+      })
+  );
+  const allowDevProbe = allowHosts.size === 0 && devProbeHeader && isPrivateIp(req.ip);
+  if (!allowHosts.has(host) && !allowDevProbe) {
+    return reply.code(403).send({ ok: false, errorType: "FORBIDDEN", message: "Host not allowed" });
+  }
+  const timeoutMs = Math.max(1000, Math.min(8000, Number(req.query?.timeoutMs || 3500)));
+  const t0 = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url.toString(), { method: "GET", signal: controller.signal } as any);
+    const latencyMs = Date.now() - t0;
+    clearTimeout(timer);
+    if (!res.ok) {
+      return reply.send({ ok: false, status: res.status, latencyMs, errorType: "BAD_STATUS" });
+    }
+    return reply.send({ ok: true, status: res.status, latencyMs });
+  } catch (e: any) {
+    clearTimeout(timer);
+    const msg = e?.message || String(e);
+    const isAbort = msg.toLowerCase().includes("abort");
+    return reply.send({
+      ok: false,
+      latencyMs: Date.now() - t0,
+      errorType: isAbort ? "TIMEOUT" : "FETCH_FAILED",
+      message: msg
+    });
+  }
+});
+
 app.get("/health", async (_req: any, reply) => {
   if (!nodeIdentity) nodeIdentity = await loadNodePeerId();
   p2pMetrics.healthHits += 1;
@@ -5060,7 +5150,7 @@ app.post("/p2p/permits", async (req: any, reply) => {
   const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
   if (!content) return notFound(reply, "Content not found");
 
-  const devUnlock = String(process.env.DEV_P2P_UNLOCK || "").trim() === "1" || PAYMENT_PROVIDER === "none";
+  const devUnlock = String(process.env.DEV_P2P_UNLOCK || "").trim() === "1" || PAYMENT_PROVIDER.kind === "none";
   const accessMode = devUnlock ? "stream" : requestedScope;
   const scopes = accessMode === "stream" ? ["stream"] : ["preview"];
   const now = Date.now();
@@ -7098,26 +7188,37 @@ async function settlePaymentIntent(paymentIntentId: string) {
     }
   });
 
-  if (intent.buyerUserId) {
-    await prisma.entitlement.upsert({
-      where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId: content.id, manifestSha256: intent.manifestSha256 } },
-      update: { paymentIntentId: intent.id },
-      create: {
-        buyerUserId: intent.buyerUserId,
-        contentId: content.id,
-        manifestSha256: intent.manifestSha256,
-        paymentIntentId: intent.id
-      }
-    }).catch(() => {});
+  const manifestSha = intent.manifestSha256;
+  if (manifestSha) {
+    if (intent.buyerUserId) {
+      await prisma.entitlement.upsert({
+        where: {
+          buyerUserId_contentId_manifestSha256: {
+            buyerUserId: intent.buyerUserId,
+            contentId: content.id,
+            manifestSha256: manifestSha
+          }
+        },
+        update: { paymentIntentId: intent.id },
+        create: {
+          buyerUserId: intent.buyerUserId,
+          contentId: content.id,
+          manifestSha256: manifestSha,
+          paymentIntentId: intent.id
+        }
+      }).catch(() => {});
+    } else {
+      await prisma.entitlement.create({
+        data: {
+          buyerUserId: null,
+          contentId: content.id,
+          manifestSha256: manifestSha,
+          paymentIntentId: intent.id
+        }
+      }).catch(() => {});
+    }
   } else {
-    await prisma.entitlement.create({
-      data: {
-        buyerUserId: null,
-        contentId: content.id,
-        manifestSha256: intent.manifestSha256,
-        paymentIntentId: intent.id
-      }
-    }).catch(() => {});
+    app.log.warn({ paymentIntentId: intent.id }, "entitlement skipped: missing manifestSha256");
   }
 
   return settlement;

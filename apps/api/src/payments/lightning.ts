@@ -9,7 +9,7 @@ export async function createLightningInvoice(amountSats: bigint, memo: string) {
     body: JSON.stringify({ out: false, amount: Number(amountSats), memo })
   });
 
-  const data = await res.json();
+  const data: any = await res.json();
   if (!res.ok) throw new Error(data?.detail || "LNbits invoice error");
 
   return {
@@ -28,7 +28,7 @@ export async function checkLightningInvoice(providerId: string) {
     method: "GET",
     headers: { "X-Api-Key": key }
   });
-  const data = await res.json();
+  const data: any = await res.json();
   if (!res.ok) throw new Error(data?.detail || "LNbits check error");
   return { paid: Boolean(data?.paid), paidAt: data?.paid_at ? new Date(Number(data.paid_at) * 1000).toISOString() : null };
 }

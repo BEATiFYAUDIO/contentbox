@@ -1,5 +1,7 @@
 export type HealthPath = "/health" | "/api/health" | "/public/health";
 
+export const DEFAULT_HEALTH_PATH: HealthPath = "/health";
+
 export type ProbeErrorType =
   | "FETCH_FAILED"
   | "TIMEOUT"
@@ -19,6 +21,26 @@ export type HostCandidate = {
   label: string;
   origin: string;
 };
+
+function isPrivateHostname(hostname: string): boolean {
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") return true;
+  if (hostname.startsWith("10.")) return true;
+  if (hostname.startsWith("192.168.")) return true;
+  const m = hostname.match(/^172\.(\d+)\./);
+  if (m) {
+    const n = Number(m[1]);
+    return n >= 16 && n <= 31;
+  }
+  return false;
+}
+
+export function shouldProxyHealthProbe(hostname?: string): boolean {
+  if (typeof window === "undefined") return false;
+  const h = (hostname || window.location.hostname || "").toLowerCase();
+  if (!h) return false;
+  return isPrivateHostname(h);
+}
 
 function normalizeHost(host: string): string {
   return (host || "").trim();
@@ -65,7 +87,7 @@ export async function probeHealth(args: {
   path?: HealthPath;
   timeoutMs?: number;
 }): Promise<ProbeResult> {
-  const path: HealthPath = args.path || "/health";
+  const path: HealthPath = args.path || DEFAULT_HEALTH_PATH;
   const timeoutMs = args.timeoutMs ?? 3500;
 
   let url: string;

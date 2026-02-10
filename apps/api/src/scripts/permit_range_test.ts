@@ -14,7 +14,7 @@ async function main() {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ manifestHash, fileId, buyerId: "test@example.com", requestedScope: "preview" })
   });
-  const permit = await permitRes.json();
+  const permit: any = await permitRes.json();
   if (!permit?.permit) throw new Error("Permit missing");
 
   const url = `${apiBase}/content/${manifestHash}/${encodeURIComponent(fileId)}?t=${encodeURIComponent(permit.permit)}`;
