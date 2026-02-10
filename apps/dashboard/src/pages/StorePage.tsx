@@ -1,9 +1,25 @@
 import React from "react";
-import { buildHostCandidates } from "../lib/p2pHostDiagnostics";
+import { DEFAULT_HEALTH_PATH, buildHostCandidates, probeHealth, shouldProxyHealthProbe } from "../lib/p2pHostDiagnostics";
 
 function guessApiBase() {
   const raw = ((import.meta as any).env?.VITE_API_URL || window.location.origin) as string;
   return raw.replace(/\/$/, "");
+}
+
+function isLocalApiBase(base: string): boolean {
+  try {
+    const h = new URL(base).hostname.toLowerCase();
+    if (h === "localhost" || h === "127.0.0.1" || h === "::1") return true;
+    if (h.startsWith("10.") || h.startsWith("192.168.")) return true;
+    const m = h.match(/^172\.(\d+)\./);
+    if (m) {
+      const n = Number(m[1]);
+      return n >= 16 && n <= 31;
+    }
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 function isLikelyUrl(s: string) {
@@ -210,6 +226,30 @@ function endpointBaseUrl(endpoint: Endpoint): string {
   return `${endpoint.scheme}://${endpoint.host}${portPart}`;
 }
 
+async function probeHealthMaybeProxy(apiBase: string, origin: string) {
+  const isHttps = origin.trim().toLowerCase().startsWith("https://");
+  if (isHttps && (shouldProxyHealthProbe() || isLocalApiBase(apiBase))) {
+    const url = `${apiBase.replace(/\/$/, "")}/public/diag/probe-health?url=${encodeURIComponent(
+      `${origin.replace(/\/$/, "")}${DEFAULT_HEALTH_PATH}`
+    )}`;
+    try {
+      const res = await fetch(url, { method: "GET", headers: { "x-contentbox-dev-probe": "1" } });
+      const json = await res.json();
+      return {
+        ok: Boolean(json?.ok),
+        url: origin,
+        status: typeof json?.status === "number" ? json.status : undefined,
+        latencyMs: typeof json?.latencyMs === "number" ? json.latencyMs : undefined,
+        errorType: json?.errorType || (json?.ok ? undefined : "FETCH_FAILED"),
+        errorMessage: json?.message
+      };
+    } catch (e: any) {
+      return { ok: false, url: origin, errorType: "FETCH_FAILED", errorMessage: e?.message || String(e) };
+    }
+  }
+  return probeHealth({ origin, path: DEFAULT_HEALTH_PATH, timeoutMs: 3500 });
+}
+
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 function expiryFor(_method: ResolverMethod): number {
@@ -249,14 +289,24 @@ async function resolveSellerEndpoint(
       sharedFallbackHost: opts?.sharedFallbackHost || null
     });
     hostCandidates.forEach((c: any) => {
+      const label = String(c.label || "").toLowerCase();
       const method: ResolverMethod =
-        c.label === "primary" ? "linkHost" : c.label === "fallback" ? "linkFallback" : "sharedFallback";
-      candidates.push({
-        endpoint: { host: c.host, port: c.port, scheme: c.scheme },
-        method,
-        label: c.label,
-        derivedFrom: c.derivedFrom
-      });
+        label === "primary" ? "linkHost" : label === "fallback" ? "linkFallback" : "sharedFallback";
+      try {
+        const url = new URL(c.origin);
+        candidates.push({
+          endpoint: {
+            host: url.hostname,
+            port: url.port || (url.protocol === "https:" ? "443" : "80"),
+            scheme: url.protocol === "https:" ? "https" : "http"
+          },
+          method,
+          label: c.label,
+          derivedFrom: c.derivedFrom
+        });
+      } catch {
+        // ignore invalid origin
+      }
     });
   }
 
@@ -301,8 +351,10 @@ async function resolveSellerEndpoint(
     if (seen.has(key)) continue;
     seen.add(key);
     const baseUrl = endpointBaseUrl(c.endpoint);
-      void baseUrl;
-    const result = ({ ok: false, url: "", errorType: "FETCH_FAILED" as any, latencyMs: null, data: {} as any });
+    const result = {
+      ...(await probeHealthMaybeProxy(apiBase, baseUrl)),
+      data: {} as any
+    };
     attempts.push({ ...result, method: c.method, label: c.label, derivedFrom: c.derivedFrom });
     if (!result.ok) {
       lastErrorType = result.errorType;
@@ -484,11 +536,11 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   ].filter(Boolean).join("\n");
 
   const startHealthWatch = (endpoint: Endpoint) => {
-    void endpoint;
     if (healthTimerRef.current) window.clearInterval(healthTimerRef.current);
     healthTimerRef.current = window.setInterval(async () => {
       try {
-        const result = ({ ok: false, url: "", errorType: "FETCH_FAILED" as any, latencyMs: null, data: {} as any });
+        const baseUrl = endpointBaseUrl(endpoint);
+        const result = await probeHealthMaybeProxy(guessApiBase(), baseUrl);
         if (!result.ok) {
           setHealthOk(false);
           setLastErrorType(result.errorType || null);

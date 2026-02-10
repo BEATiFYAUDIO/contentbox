@@ -1,6 +1,7 @@
 import React from "react";
 import api from "../lib/api";
 import { getToken } from "../lib/auth";
+import { DEFAULT_HEALTH_PATH, shouldProxyHealthProbe } from "../lib/p2pHostDiagnostics";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
@@ -297,6 +298,22 @@ export default function ContentLibraryPage({
   onOpenSplits?: (contentId: string) => void;
 }) {
   const apiBase = ((import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000");
+
+  const isLocalApiBase = React.useCallback((base: string) => {
+    try {
+      const h = new URL(base).hostname.toLowerCase();
+      if (h === "localhost" || h === "127.0.0.1" || h === "::1") return true;
+      if (h.startsWith("10.") || h.startsWith("192.168.")) return true;
+      const m = h.match(/^172\.(\d+)\./);
+      if (m) {
+        const n = Number(m[1]);
+        return n >= 16 && n <= 31;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }, []);
   const envPublicHost = ((import.meta as any).env?.VITE_PUBLIC_HOST || "").toString().trim();
   const envPublicPort = ((import.meta as any).env?.VITE_PUBLIC_PORT || "").toString().trim();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
@@ -650,11 +667,25 @@ export default function ContentLibraryPage({
 
       const testOrigin = async (target: string) => {
         if (!target) return { ok: false as const };
+        const url = `${target.replace(/\/$/, "")}${DEFAULT_HEALTH_PATH}`;
+        if ((shouldProxyHealthProbe() || isLocalApiBase(apiBase)) && url.startsWith("https://")) {
+          try {
+            const res = await fetch(
+              `${apiBase}/public/diag/probe-health?url=${encodeURIComponent(url)}`,
+              { method: "GET", cache: "no-store", headers: { "x-contentbox-dev-probe": "1" } }
+            );
+            const json = await res.json();
+            if (!json?.ok) throw new Error(json?.message || "Health check failed");
+            return { ok: true as const, latency: json?.latencyMs };
+          } catch (err: any) {
+            return { ok: false as const, error: String(err?.message || "Health check failed") };
+          }
+        }
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 2500);
         const start = performance.now();
         try {
-          const res = await fetch(`${target.replace(/\/$/, "")}/health`, {
+          const res = await fetch(url, {
             method: "GET",
             cache: "no-store",
             signal: controller.signal

@@ -1,0 +1,31 @@
+{
+  "manifestHash": "dafb4ba394fd993ff6d24e00e59775ccdb8618176de86f81810151f64a120b34",
+  "payload": {
+    "contentId": "cmlg22qin000k0bxwe7ip1ri6",
+    "creatorId": "cml7a4zdz000crbxwvye00622",
+    "lockedAt": "2026-02-10T03:43:35.748Z",
+    "manifestHash": "dafb4ba394fd993ff6d24e00e59775ccdb8618176de86f81810151f64a120b34",
+    "primaryFileObjectKey": "files/commodoreremix.mp4",
+    "primaryFileSha256": "cb7ba591a35d38736a8bd2b55ead51624c091361c8eca8e3224e552e53df75a0",
+    "proofVersion": 1,
+    "splitVersion": "v1",
+    "splits": [
+      {
+        "participantEmail": "happy@gmail.com",
+        "participantId": "cmlg23deo000r0bxw4vttcghb",
+        "percent": "100.000",
+        "role": "writer"
+      }
+    ]
+  },
+  "proofHash": "0fd7144c0603767068165581dbd9ef08532c4fbfc02ec2a371e14f1c6f678547",
+  "signatures": [
+    {
+      "createdAt": "2026-02-10T03:43:35.748Z",
+      "signature": null,
+      "type": "creator",
+      "userId": "cml7a4zdz000crbxwvye00622"
+    }
+  ],
+  "splitsHash": "9afc44c41eada5a47068b522c1abd4980f3545fc5dcf7d73499d39d6c104e065"
+}

@@ -1,0 +1,36 @@
+{
+  "contentId": "cmlg22qin000k0bxwe7ip1ri6",
+  "type": "derivative",
+  "title": "commodoreremix",
+  "status": "draft",
+  "createdAt": "2026-02-10T03:43:04.917Z",
+  "primaryFile": {
+    "path": "files/commodoreremix.mp4",
+    "filename": "commodoreremix.mp4",
+    "originalName": "YTDown.com_YouTube_SUPREMACY-OVERLORD-1990-C64-REMIX-LukHas_Media_3JQkW6BgUYU_001_480p.mp4",
+    "mime": "video/mp4",
+    "sizeBytes": 19950441,
+    "sha256": "cb7ba591a35d38736a8bd2b55ead51624c091361c8eca8e3224e552e53df75a0",
+    "committedAt": "2026-02-10T03:43:12.865Z"
+  },
+  "splits": {
+    "latestVersion": 1,
+    "lockedVersions": [],
+    "file": "splits/v1.json"
+  },
+  "files": [
+    {
+      "path": "files/commodoreremix.mp4",
+      "filename": "commodoreremix.mp4",
+      "originalName": "YTDown.com_YouTube_SUPREMACY-OVERLORD-1990-C64-REMIX-LukHas_Media_3JQkW6BgUYU_001_480p.mp4",
+      "mime": "video/mp4",
+      "sizeBytes": 19950441,
+      "sha256": "cb7ba591a35d38736a8bd2b55ead51624c091361c8eca8e3224e552e53df75a0",
+      "committedAt": "2026-02-10T03:43:12.865Z"
+    }
+  ],
+  "payments": {
+    "railsEnabled": [],
+    "receipts": []
+  }
+}
