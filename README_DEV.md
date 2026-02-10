@@ -42,6 +42,35 @@ npm run lnd:validate
 npm run lnd:doctor
 ```
 
+## Payments (LND) Quickstart
+```bash
+cd apps/api
+# set these in apps/api/.env.local (do NOT commit)
+CONTENTBOX_PUBLIC_ORIGIN=https://buy.<your-domain>
+LND_REST_URL=https://127.0.0.1:8080
+LND_TLS_CERT_PATH=/home/<user>/.lnd/tls.cert
+LND_MACAROON_HEX=<hex>
+
+# restart API and verify public origin
+npm run api:restart-health
+curl -s http://127.0.0.1:4000/health
+```
+
+Verify offer returns public first:
+```bash
+API_BASE=http://127.0.0.1:4000
+CONTENT_ID=<contentId>
+curl -s "$API_BASE/p2p/content/$CONTENT_ID/offer" | jq
+```
+
+Remote test:
+- Open buy link on LTE/5G, pay from phone wallet, verify settlement.
+
+Docs:
+- docs/payments/lnd-setup.md
+- docs/payments/buy-links-and-endpoints.md
+- docs/payments/splits-roadmap.md
+
 ## End-to-end smoke test (buy flow)
 ```bash
 cd apps/api

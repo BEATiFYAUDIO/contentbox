@@ -31,6 +31,9 @@ P2P sharing:
 - Publish content to generate a manifest hash.
 - Use the Share panel to copy a LAN P2P link (same Wi-Fi) or a Remote P2P link (DDNS / tunnel).
 
+## Docs index
+See `docs/README.md` for payments docs (LND setup, buy links, splits roadmap).
+
 
 ## Quick (Docker) start — recommended for testing on both Linux & Windows (via Docker Desktop)
 
