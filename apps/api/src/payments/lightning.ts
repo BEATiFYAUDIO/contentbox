@@ -1,4 +1,5 @@
 import fsSync from "node:fs";
+import crypto from "node:crypto";
 import { Agent } from "undici";
 import { base64ToHex, is32ByteHex, normalizeProviderIdFromLnd, providerIdToLndBase64 } from "./lndHash.js";
 
@@ -197,4 +198,36 @@ export async function createLightningInvoice(amountSats: bigint, memo: string): 
 export async function checkLightningInvoice(providerId: string): Promise<LightningStatus> {
   if (lndConfig()) return checkLndInvoice(providerId);
   return checkLnbitsInvoice(providerId);
+}
+
+export async function payLightningInvoice(bolt11: string): Promise<{ paymentHash: string; feeSats: number }> {
+  if (process.env.DEV_ALLOW_SIMULATE_PAYOUTS === "1") {
+    return { paymentHash: crypto.randomBytes(32).toString("hex"), feeSats: 0 };
+  }
+  const cfg = lndConfig();
+  if (!cfg) throw new Error("LND not configured");
+  const res = await fetchWithTimeout(
+    `${cfg.baseUrl}/v1/channels/transactions`,
+    {
+      method: "POST",
+      headers: {
+        "Grpc-Metadata-Macaroon": cfg.macaroon,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ payment_request: bolt11 }),
+      dispatcher: cfg.dispatcher
+    } as any,
+    15000,
+    0
+  );
+  const text = await res.text();
+  if (!res.ok) throw new Error(`LND pay error: ${text}`);
+  const data: any = text ? JSON.parse(text) : null;
+  if (data?.payment_error) throw new Error(`LND pay error: ${data.payment_error}`);
+  const feeMsat = Number(data?.payment_route?.total_fees_msat || 0);
+  const feeSats = Number.isFinite(feeMsat) ? Math.round(feeMsat / 1000) : 0;
+  return {
+    paymentHash: String(data?.payment_hash || ""),
+    feeSats
+  };
 }

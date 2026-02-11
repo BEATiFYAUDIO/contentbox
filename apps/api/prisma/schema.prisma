@@ -656,6 +656,7 @@ model Payout {
   userId         String?
   participantEmail String?
   method         PayoutMethodCode?
+  idempotencyKey String?      @unique
   amountSats     BigInt
   status         PayoutStatus @default(pending)
   settlementRecords Json?
@@ -668,6 +669,29 @@ model Payout {
   @@index([userId])
   @@index([participantEmail])
   @@index([status])
+}
+
+model PayoutAuthority {
+  id                 String   @id @default(cuid())
+  tokenHash          String   @unique
+  splitVersionId     String
+  splitParticipantId String
+  sellerUserId       String
+  collaboratorUserId String?
+  participantEmail   String?
+  minWithdrawSats    BigInt   @default(1)
+  issuedAt           DateTime @default(now())
+  revokedAt          DateTime?
+  lastUsedAt         DateTime?
+
+  splitVersion    SplitVersion    @relation(fields: [splitVersionId], references: [id], onDelete: Cascade)
+  splitParticipant SplitParticipant @relation(fields: [splitParticipantId], references: [id], onDelete: Cascade)
+  seller          User            @relation(fields: [sellerUserId], references: [id], onDelete: Cascade)
+
+  @@index([splitVersionId])
+  @@index([splitParticipantId])
+  @@index([sellerUserId])
+  @@unique([splitVersionId, splitParticipantId])
 }
 
 model TransactionHistory {

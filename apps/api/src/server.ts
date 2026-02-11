@@ -27,7 +27,7 @@ import { createPaymentProvider } from "./lib/payments.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
-import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
+import { createLightningInvoice, checkLightningInvoice, payLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 
@@ -1145,7 +1145,105 @@ function hashInviteToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
+/** ---------- payout authority helpers ---------- */
+
+function makePayoutToken(): string {
+  return crypto.randomBytes(24).toString("base64url");
+}
+
+function hashPayoutToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+async function issuePayoutAuthoritiesForSplit(splitVersionId: string, sellerUserId: string) {
+  const split = await prisma.splitVersion.findUnique({
+    where: { id: splitVersionId },
+    include: { participants: true }
+  });
+  if (!split) return [];
+
+  const existing = await prisma.payoutAuthority.findMany({
+    where: { splitVersionId }
+  });
+  const existingByParticipant = new Set(existing.map((e) => e.splitParticipantId));
+
+  const created: Array<{
+    splitParticipantId: string;
+    participantEmail: string | null;
+    collaboratorUserId: string | null;
+    token: string;
+    payoutUrl: string;
+  }> = [];
+
+  for (const p of split.participants || []) {
+    if (existingByParticipant.has(p.id)) continue;
+    const token = makePayoutToken();
+    const tokenHash = hashPayoutToken(token);
+    await prisma.payoutAuthority.create({
+      data: {
+        tokenHash,
+        splitVersionId,
+        splitParticipantId: p.id,
+        sellerUserId,
+        collaboratorUserId: p.participantUserId || null,
+        participantEmail: p.participantEmail || null,
+        minWithdrawSats: 1
+      }
+    });
+    created.push({
+      splitParticipantId: p.id,
+      participantEmail: p.participantEmail || null,
+      collaboratorUserId: p.participantUserId || null,
+      token,
+      payoutUrl: `${APP_BASE_URL}/payout/v1/${token}`
+    });
+  }
+
+  return created;
+}
+
 /** ---------- clearance helpers ---------- */
+
+function isLocalHostName(host: string) {
+  const h = host.toLowerCase();
+  return h === "localhost" || h === "127.0.0.1" || h.endsWith(".local");
+}
+
+function lnurlpUrlForLightningAddress(address: string): string {
+  const raw = address.trim();
+  const parts = raw.split("@");
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    throw new Error("Invalid lightning address");
+  }
+  const name = parts[0];
+  const host = parts[1];
+  const scheme = isLocalHostName(host) ? "http" : "https";
+  return `${scheme}://${host}/.well-known/lnurlp/${encodeURIComponent(name)}`;
+}
+
+async function fetchLnurlPayRequest(lightningAddress: string) {
+  const url = lnurlpUrlForLightningAddress(lightningAddress);
+  const res = await fetch(url, { method: "GET", headers: { Accept: "application/json" } as any } as any);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`LNURL pay request error: ${text}`);
+  const json: any = text ? JSON.parse(text) : null;
+  if (!json || json.tag !== "payRequest" || !json.callback) {
+    throw new Error("LNURL pay request invalid");
+  }
+  return json;
+}
+
+async function fetchLnurlInvoice(callback: string, amountMsats: number, comment?: string | null) {
+  const url = new URL(callback);
+  url.searchParams.set("amount", String(amountMsats));
+  if (comment) url.searchParams.set("comment", comment);
+  const res = await fetch(url.toString(), { method: "GET", headers: { Accept: "application/json" } as any } as any);
+  const text = await res.text();
+  if (!res.ok) throw new Error(`LNURL invoice error: ${text}`);
+  const json: any = text ? JSON.parse(text) : null;
+  if (!json || !json.pr) throw new Error("LNURL invoice missing pr");
+  return json;
+}
 
 function makeApprovalToken(): string {
   return crypto.randomBytes(24).toString("base64url");
@@ -3716,6 +3814,202 @@ app.get("/api/payout-methods", { preHandler: requireAuth }, async () => {
 });
 
 /**
+ * Payout Authority (public, token-based)
+ */
+app.get("/payout/v1/:token", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token);
+  if (!token) return notFound(reply, "Not found");
+  const tokenHash = hashPayoutToken(token);
+  const auth = await prisma.payoutAuthority.findUnique({
+    where: { tokenHash },
+    include: {
+      splitVersion: { include: { content: true } },
+      splitParticipant: true,
+      seller: { select: { id: true, displayName: true, email: true } }
+    }
+  });
+  if (!auth) return notFound(reply, "Not found");
+
+  const status = auth.revokedAt ? "revoked" : "active";
+  return reply.send({
+    status,
+    seller: {
+      id: auth.seller.id,
+      displayName: auth.seller.displayName || auth.seller.email || "Seller"
+    },
+    scope: {
+      splitId: auth.splitVersionId,
+      participantId: auth.splitParticipantId,
+      collaboratorId: auth.collaboratorUserId || null,
+      contentId: auth.splitVersion?.contentId || null,
+      contentTitle: auth.splitVersion?.content?.title || null
+    },
+    minWithdrawSats: auth.minWithdrawSats.toString()
+  });
+});
+
+app.post("/payout/v1/:token/withdraw", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token);
+  if (!token) return notFound(reply, "Not found");
+  const tokenHash = hashPayoutToken(token);
+
+  const auth = await prisma.payoutAuthority.findUnique({
+    where: { tokenHash },
+    include: {
+      splitVersion: true,
+      splitParticipant: true
+    }
+  });
+  if (!auth) return notFound(reply, "Not found");
+  if (auth.revokedAt) return reply.code(403).send({ error: "Token revoked" });
+
+  const body = (req.body ?? {}) as {
+    amountSats?: any;
+    payoutDestination?: { type?: string; value?: string };
+    memo?: string;
+    idempotencyKey?: string;
+  };
+
+  const idempotencyKey = asString(req.headers["idempotency-key"] || body.idempotencyKey || "").trim() || null;
+  if (idempotencyKey) {
+    const existing = await prisma.payout.findUnique({ where: { idempotencyKey } });
+    if (existing) {
+      return reply.send({
+        ok: existing.status === "completed",
+        payoutId: existing.id,
+        status: existing.status,
+        amountSats: existing.amountSats.toString()
+      });
+    }
+  }
+
+  const payoutType = asString(body?.payoutDestination?.type || "").trim().toLowerCase();
+  const payoutValue = asString(body?.payoutDestination?.value || "").trim();
+  if (payoutType !== "lightning_address") {
+    return badRequest(reply, "Only lightning_address is supported in MVP");
+  }
+  if (!payoutValue || !payoutValue.includes("@")) return badRequest(reply, "Invalid lightning address");
+
+  if (!auth.splitParticipant.acceptedAt) {
+    return reply.code(403).send({ error: "Invite not accepted" });
+  }
+
+  const amountSats = BigInt(Math.max(0, Math.floor(num(body.amountSats))));
+  if (amountSats <= 0n) return badRequest(reply, "amountSats must be > 0");
+  if (amountSats < BigInt(auth.minWithdrawSats || 0)) {
+    return badRequest(reply, `amountSats must be >= ${auth.minWithdrawSats.toString()}`);
+  }
+
+  const royalties = await prisma.royalty.findMany({
+    where: {
+      status: "pending",
+      settlement: { splitVersionId: auth.splitVersionId },
+      OR: [
+        { participantId: auth.splitParticipantId },
+        auth.participantEmail ? { participantEmail: { equals: auth.participantEmail, mode: "insensitive" } } : undefined
+      ].filter(Boolean) as any
+    },
+    orderBy: { earnedAt: "asc" }
+  });
+
+  const availableSats = royalties.reduce((sum, r) => sum + BigInt(r.amountSats as any), 0n);
+  if (amountSats > availableSats) {
+    return reply.code(409).send({ error: "Insufficient available royalties", availableSats: availableSats.toString() });
+  }
+
+  const selected: typeof royalties = [];
+  let remaining = amountSats;
+  for (const r of royalties) {
+    if (remaining <= 0n) break;
+    selected.push(r);
+    remaining -= BigInt(r.amountSats as any);
+  }
+
+  const payout = await prisma.payout.create({
+    data: {
+      userId: auth.collaboratorUserId || null,
+      participantEmail: auth.participantEmail || null,
+      method: "lightning_address",
+      idempotencyKey,
+      amountSats,
+      status: "pending",
+      settlementRecords: { royaltyIds: selected.map((r) => r.id), destination: payoutValue }
+    }
+  });
+
+  let receipt: { paymentHash?: string; feeSats?: number; bolt11?: string } = {};
+  try {
+    if (process.env.DEV_ALLOW_SIMULATE_PAYOUTS === "1") {
+      receipt = { paymentHash: crypto.randomBytes(32).toString("hex"), feeSats: 0 };
+    } else {
+      const payReq = await fetchLnurlPayRequest(payoutValue);
+      const minSendable = Number(payReq.minSendable || 0);
+      const maxSendable = Number(payReq.maxSendable || 0);
+      const msats = Number(amountSats) * 1000;
+      if (msats < minSendable || (maxSendable > 0 && msats > maxSendable)) {
+        throw new Error("Amount outside LNURL pay range");
+      }
+      const inv = await fetchLnurlInvoice(payReq.callback, msats, body.memo || null);
+      const bolt11 = String(inv.pr || "");
+      if (!bolt11) throw new Error("Invoice missing");
+      const paid = await payLightningInvoice(bolt11);
+      receipt = { paymentHash: paid.paymentHash, feeSats: paid.feeSats, bolt11 };
+    }
+  } catch (e: any) {
+    await prisma.payout.update({
+      where: { id: payout.id },
+      data: {
+        settlementRecords: {
+          ...(payout.settlementRecords as any),
+          error: String(e?.message || e)
+        }
+      }
+    });
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+
+  const paidAt = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.royalty.updateMany({
+      where: { id: { in: selected.map((r) => r.id) } },
+      data: { status: "paid", paidAt, payoutId: payout.id }
+    });
+    await tx.payout.update({
+      where: { id: payout.id },
+      data: {
+        status: "completed",
+        completedAt: paidAt,
+        settlementRecords: {
+          ...(payout.settlementRecords as any),
+          receipt
+        }
+      }
+    });
+    await tx.payoutAuthority.update({
+      where: { id: auth.id },
+      data: { lastUsedAt: paidAt }
+    });
+  });
+
+  await recordTransactionSafe({
+    kind: "payout",
+    refId: `payout:${payout.id}:sent`,
+    contentId: auth.splitVersion?.contentId || null,
+    amountSats: amountSats as any,
+    eventType: "payout.sent",
+    metadata: { payoutId: payout.id, method: "lightning_address" }
+  });
+
+  return reply.send({
+    ok: true,
+    payoutId: payout.id,
+    amountSats: amountSats.toString(),
+    paymentHash: receipt.paymentHash || null,
+    feeSats: receipt.feeSats ?? null
+  });
+});
+
+/**
  * CONTENT (auth)
  */
 app.get("/content", { preHandler: requireAuth }, async (req: any) => {
@@ -4160,10 +4454,13 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     });
   });
 
+  const payoutAuthorities = await issuePayoutAuthoritiesForSplit(sv.id, userId);
+
   return reply.send({
     ok: true,
     content: { id: content.id, status: "published", manifestHash: manifest.sha256, publishedAt: now.toISOString() },
-    links: {}
+    links: {},
+    payoutAuthorities
   });
 });
 
@@ -8215,11 +8512,14 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
     });
   } catch {}
 
+  const payoutAuthorities = await issuePayoutAuthoritiesForSplit(splitVersionId, userId);
+
   return reply.send({
     ok: true,
     proofHash: proofResult.proofHash,
     manifestHash: proofResult.manifestHash,
-    splitsHash: proofResult.splitsHash
+    splitsHash: proofResult.splitsHash,
+    payoutAuthorities
   });
 });
 
@@ -8971,11 +9271,14 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
     });
   } catch {}
 
+  const payoutAuthorities = await issuePayoutAuthoritiesForSplit(sv.id, userId);
+
   return reply.send({
     ok: true,
     proofHash: proofResult.proofHash,
     manifestHash: proofResult.manifestHash,
-    splitsHash: proofResult.splitsHash
+    splitsHash: proofResult.splitsHash,
+    payoutAuthorities
   });
 });
 
