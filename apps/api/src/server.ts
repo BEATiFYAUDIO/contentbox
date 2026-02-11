@@ -24,6 +24,7 @@ import {
   stableStringify
 } from "./lib/proof.js";
 import { createPaymentProvider } from "./lib/payments.js";
+import { LightningAddressRail, LndRail } from "./lib/paymentRails.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
@@ -1243,6 +1244,18 @@ async function fetchLnurlInvoice(callback: string, amountMsats: number, comment?
   const json: any = text ? JSON.parse(text) : null;
   if (!json || !json.pr) throw new Error("LNURL invoice missing pr");
   return json;
+}
+
+async function resolveLightningAddressForOwner(ownerUserId: string): Promise<string | null> {
+  const method = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+  if (!method) return null;
+  const identity = await prisma.identity.findFirst({
+    where: { payoutMethodId: method.id, userId: ownerUserId },
+    orderBy: { createdAt: "desc" }
+  });
+  const value = identity?.value ? String(identity.value).trim() : "";
+  if (!value || !value.includes("@")) return null;
+  return value;
 }
 
 function makeApprovalToken(): string {
@@ -6521,6 +6534,7 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
   let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
   let onchainReason: string | null = null;
   let lightningReason: string | null = null;
+  let lightningRail: "lightning_address" | "lnd" | null = null;
 
   try {
     onchain = await createOnchainAddress(intent.id);
@@ -6555,10 +6569,20 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
   }
 
   try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
-    if (invoice) lightning = invoice;
+    const address = await resolveLightningAddressForOwner(content.ownerUserId);
+    if (address) {
+      const rail = new LightningAddressRail(address);
+      const invoice = await rail.createInvoice({ amountSats, memo: `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}` });
+      lightning = { bolt11: invoice.paymentRequest, providerId: invoice.providerRef, expiresAt: invoice.expiresAt || null };
+      lightningRail = "lightning_address";
+    } else {
+      const rail = new LndRail();
+      const invoice = await rail.createInvoice({ amountSats, memo: `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}` });
+      lightning = { bolt11: invoice.paymentRequest, providerId: invoice.providerRef, expiresAt: invoice.expiresAt || null };
+      lightningRail = "lnd";
+    }
   } catch (e: any) {
-    app.log.warn({ err: e }, "lnbits invoice failed");
+    app.log.warn({ err: e }, "lightning invoice failed");
     lightningReason = "INVOICE_GENERATION_FAILED";
   }
   if (!lightning?.bolt11 && !lightningReason) {
@@ -6609,7 +6633,7 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
       bolt11: lightning?.bolt11 || null,
       providerId: lightning?.providerId || null,
       lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null,
-      memo: "payment"
+      memo: lightningRail ? `rail:${lightningRail}` : "payment"
     }
   });
   await syncFinanceForPaymentIntent(intent.id);
@@ -8789,11 +8813,22 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
   }
 
   let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
+  let lightningRail: "lightning_address" | "lnd" | null = null;
   try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${subjectId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
-    if (invoice) lightning = invoice;
+    const address = await resolveLightningAddressForOwner(content.ownerUserId);
+    if (address) {
+      const rail = new LightningAddressRail(address);
+      const invoice = await rail.createInvoice({ amountSats, memo: `Contentbox ${subjectId.slice(0, 8)} ${manifestSha256.slice(0, 8)}` });
+      lightning = { bolt11: invoice.paymentRequest, providerId: invoice.providerRef, expiresAt: invoice.expiresAt || null };
+      lightningRail = "lightning_address";
+    } else {
+      const rail = new LndRail();
+      const invoice = await rail.createInvoice({ amountSats, memo: `Contentbox ${subjectId.slice(0, 8)} ${manifestSha256.slice(0, 8)}` });
+      lightning = { bolt11: invoice.paymentRequest, providerId: invoice.providerRef, expiresAt: invoice.expiresAt || null };
+      lightningRail = "lnd";
+    }
   } catch (e: any) {
-    app.log.warn({ err: e }, "lnbits invoice failed; continuing with on-chain only");
+    app.log.warn({ err: e }, "lightning invoice failed; continuing with on-chain only");
   }
 
   if (onchain?.address || lightning?.bolt11) {
@@ -8804,7 +8839,8 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
         onchainDerivationIndex: onchain?.derivationIndex ?? null,
         bolt11: lightning?.bolt11 || null,
         providerId: lightning?.providerId || null,
-        lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null
+        lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null,
+        memo: lightningRail ? `rail:${lightningRail}` : intent.memo
       }
     });
   }
@@ -8824,7 +8860,11 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
   let lightningReady = false;
   let lightningReason: string | null = "NOT_CONFIGURED";
 
-  if (PAYMENT_PROVIDER.kind === "none") {
+  const lnaddr = await resolveLightningAddressForOwner(userId);
+  if (lnaddr) {
+    lightningReady = true;
+    lightningReason = null;
+  } else if (PAYMENT_PROVIDER.kind === "none") {
     lightningReason = "DISABLED";
   } else if (PAYMENT_PROVIDER.kind === "lnd") {
     const hasUrl = Boolean(String(process.env.LND_REST_URL || "").trim());
@@ -8907,6 +8947,18 @@ app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: a
   });
 });
 
+app.post("/api/payments/intents/:id/confirm", { preHandler: optionalAuth }, async (req: any, reply) => {
+  // Alias to refresh for idempotent confirmation
+  return app.inject({
+    method: "POST",
+    url: `/api/payments/intents/${encodeURIComponent(String((req.params as any).id || ""))}/refresh`,
+    headers: req.headers as any,
+    payload: req.body as any
+  }).then((res) => {
+    reply.code(res.statusCode).headers(res.headers).send(res.body);
+  });
+});
+
 app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser | undefined)?.sub || null;
   const id = asString((req.params as any).id || "").trim();
@@ -8971,10 +9023,24 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
 
   if (intent.providerId) {
     try {
-      const res = await checkLightningInvoice(intent.providerId);
-      if (res.paid) {
-        paidVia = "lightning";
-        paidAt = res.paidAt || new Date().toISOString();
+      if (String(intent.providerId).startsWith("lnaddr:")) {
+        const force = Boolean((req.body as any)?.force);
+        const addr = String(intent.providerId).slice("lnaddr:".length);
+        const rail = new LightningAddressRail(addr);
+        const res = await rail.confirmPayment({ providerRef: intent.providerId, paymentRequest: intent.bolt11 || null });
+        if (res.status === "paid") {
+          paidVia = "lightning";
+          paidAt = res.paidAt || new Date().toISOString();
+        } else if (force && process.env.DEV_ALLOW_SIMULATE_PAYMENTS === "1") {
+          paidVia = "lightning";
+          paidAt = new Date().toISOString();
+        }
+      } else {
+        const res = await checkLightningInvoice(intent.providerId);
+        if (res.paid) {
+          paidVia = "lightning";
+          paidAt = res.paidAt || new Date().toISOString();
+        }
       }
     } catch (e: any) {
       return reply.code(400).send({ error: String(e?.message || e) });
