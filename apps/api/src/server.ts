@@ -2888,6 +2888,30 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
   });
 });
 
+// Derived UI role for dashboard scoping (seller vs collaborator)
+app.get("/me/role", { preHandler: requireAuth }, async (req: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const [ownedCount, publishedCount] = await Promise.all([
+    prisma.contentItem.count({ where: { ownerUserId: userId, deletedAt: null } }),
+    prisma.contentItem.count({ where: { ownerUserId: userId, deletedAt: null, status: "published" } })
+  ]);
+  const railsConfigured = Boolean(
+    (process.env.LND_REST_URL || "").trim() ||
+    (process.env.LNBITS_URL || "").trim() ||
+    (process.env.ONCHAIN_RECEIVE_XPUB || "").trim() ||
+    (process.env.BITCOIND_RPC_URL || "").trim()
+  );
+  const role = ownedCount > 0 || publishedCount > 0 || railsConfigured ? "seller" : "collaborator";
+  return {
+    role,
+    signals: {
+      ownedCount,
+      publishedCount,
+      railsConfigured
+    }
+  };
+});
+
 // Buyer library (entitlements)
 app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
