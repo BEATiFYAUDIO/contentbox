@@ -30,6 +30,8 @@ enum StorefrontStatus {
 
 enum SplitStatus {
   draft
+  pending_acceptance
+  ready
   locked
 }
 

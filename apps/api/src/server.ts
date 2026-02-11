@@ -1102,6 +1102,12 @@ function participantsHash(participants: ParticipantNormalized[]): string {
   return crypto.createHash("sha256").update(JSON.stringify(canonicalParticipantsForHash(participants))).digest("hex");
 }
 
+function deriveSplitStatus(participants: Array<{ acceptedAt?: Date | null }>): "draft" | "pending_acceptance" | "ready" {
+  if (!participants.length) return "draft";
+  const pending = participants.some((p) => !p.acceptedAt);
+  return pending ? "pending_acceptance" : "ready";
+}
+
 function validateAndNormalizeParticipants(body: unknown):
   | { ok: true; participants: ParticipantNormalized[]; hash: string }
   | { ok: false; error: string } {
@@ -4083,7 +4089,8 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
         role: "writer",
         roleCode: "writer" as any,
         percent: "100",
-        bps: 10000
+        bps: 10000,
+        acceptedAt: new Date()
       }
     });
     sv = await prisma.splitVersion.findUnique({
@@ -4099,9 +4106,21 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     });
   }
 
+  const derivedStatus = deriveSplitStatus(sv.participants || []);
+  if (sv.status !== derivedStatus) {
+    await prisma.splitVersion.update({
+      where: { id: sv.id },
+      data: { status: derivedStatus as any }
+    });
+    sv.status = derivedStatus as any;
+  }
+
   const totalBps = sumBps((sv?.participants || []).map((p) => ({ bps: toBps(p) })));
   if (totalBps !== 10000) {
     reasons.push({ code: "SPLIT_INVALID", message: "Split bps must total 10000 to publish", action: "edit_splits" });
+  }
+  if (sv.status !== "ready") {
+    reasons.push({ code: "SPLIT_NOT_READY", message: "All collaborators must accept the split before publish", action: "invite_collaborators" });
   }
 
   if (reasons.length) {
@@ -7463,6 +7482,11 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
       });
     }
 
+    await tx.splitVersion.update({
+      where: { id: latest.id },
+      data: { status: "draft" }
+    });
+
     // bind/accept owner participant if present
     try {
       const owner = await tx.user.findUnique({ where: { id: userId }, select: { email: true } });
@@ -8108,7 +8132,8 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
   });
   if (!sv) return notFound(reply, "Split version not found");
   if (sv.content.ownerUserId !== userId) return forbidden(reply);
-  if (sv.status !== "draft") return badRequest(reply, "Split version already locked");
+  if (sv.status === "locked") return badRequest(reply, "Split version already locked");
+  if (sv.status !== "ready") return badRequest(reply, "Split version not ready to lock");
   if (!sv.content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
   if (!sv.participants?.length) return badRequest(reply, "Split version has no participants");
 
@@ -8882,7 +8907,8 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
     include: { content: true, participants: { orderBy: { createdAt: "asc" } } }
   });
   if (!sv) return notFound(reply, "Split version not found");
-  if (sv.status !== "draft") return badRequest(reply, "Split version already locked");
+  if (sv.status === "locked") return badRequest(reply, "Split version already locked");
+  if (sv.status !== "ready") return badRequest(reply, "Split version not ready to lock");
   if (!sv.participants?.length) return badRequest(reply, "Split version has no participants");
 
   const now = new Date();
@@ -8998,6 +9024,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
   });
   if (!split) return notFound(reply, "Split version not found");
   if (split.content.ownerUserId !== userId) return forbidden(reply);
+  if (split.status === "locked") return badRequest(reply, "Split version already locked");
 
   const pending = split.participants.filter((p) => !p.acceptedAt);
 
@@ -9055,6 +9082,12 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
         entityId: splitVersionId,
         payloadJson: { contentId: split.contentId, pendingCount: pending.length, expiresAt } as any
       }
+    });
+
+    const nextStatus = pending.length === 0 ? "ready" : "pending_acceptance";
+    await tx.splitVersion.update({
+      where: { id: splitVersionId },
+      data: { status: nextStatus as any }
     });
   });
 
@@ -9288,6 +9321,19 @@ app.post("/invites/:token/accept", async (req: any, reply) => {
     if (userId) spUpdate.participantUserId = userId;
 
     await tx.splitParticipant.update({ where: { id: inv.splitParticipantId }, data: spUpdate });
+
+    const splitVersionId = inv.splitParticipant.splitVersionId;
+    const sv = await tx.splitVersion.findUnique({ where: { id: splitVersionId }, select: { status: true } });
+    if (sv?.status !== "locked") {
+      const remaining = await tx.splitParticipant.count({
+        where: { splitVersionId, acceptedAt: null }
+      });
+      const nextStatus = remaining === 0 ? "ready" : "pending_acceptance";
+      await tx.splitVersion.update({
+        where: { id: splitVersionId },
+        data: { status: nextStatus as any }
+      });
+    }
 
     // create audit event: include remote node info when provided
     const ownerId = inv.splitParticipant?.splitVersion?.content?.ownerUserId || userId || "";

@@ -15,7 +15,7 @@ type SplitVersion = {
   id: string;
   contentId: string;
   versionNumber: number;
-  status: "draft" | "locked";
+  status: "draft" | "pending_acceptance" | "ready" | "locked";
   lockedAt?: string | null;
   createdAt: string;
 

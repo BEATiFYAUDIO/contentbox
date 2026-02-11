@@ -27,7 +27,7 @@ type SplitVersion = {
   id: string;
   contentId: string;
   versionNumber: number;
-  status: "draft" | "locked";
+  status: "draft" | "pending_acceptance" | "ready" | "locked";
   lockedAt?: string | null;
   createdAt: string;
   participants: SplitParticipant[];
@@ -319,7 +319,7 @@ React.useState(false);
   async function saveLatest() {
     if (!contentId) return;
     if (!latest || latest.status !== "draft") {
-      setMsg("Latest split is locked. Create a new version to edit.");
+      setMsg("Latest split is not editable. Create a new version to edit.");
       return;
     }
 
