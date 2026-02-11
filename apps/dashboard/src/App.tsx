@@ -262,8 +262,8 @@ export default function App() {
   ];
 
   const royaltiesNav = [
-    { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in" },
-    { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history" },
+    { key: "participations" as const, label: "My Royalties", hint: "My earnings + allocations" },
+    { key: "splits" as const, label: "My Splits", hint: "Define and lock split terms" },
     { key: "invite" as const, label: "Split Invites", hint: "Split requests" }
   ];
 
@@ -281,14 +281,14 @@ export default function App() {
     page === "diagnostics" ? "Diagnostics" :
     page === "library" ? "Library" :
     page === "store" ? "Store (Direct link)" :
-    page === "participations" ? "Royalties" :
+    page === "participations" ? "My Royalties" :
     page === "downloads" ? "Downloads" :
     page === "purchases" ? "Purchase history" :
     page === "creator" ? "Creator tools" :
     page === "sales" ? "Sales" :
     page === "finance" ? "Revenue" :
-    page === "splits" ? "Splits" :
-    page === "split-editor" ? "Splits" :
+    page === "splits" ? "My Splits" :
+    page === "split-editor" ? "Split Editor" :
     page === "profile" ? "Profile" :
     page === "royalties-terms" ? "Split terms" :
     page === "payouts" ? PAYOUT_DESTINATIONS_LABEL :
@@ -508,7 +508,11 @@ export default function App() {
 
           {page === "diagnostics" && <DiagnosticsPage />}
 
-          {page === "participations" && <SplitParticipationsPage />}
+          {page === "participations" && (
+            <ErrorBoundary>
+              <SplitParticipationsPage />
+            </ErrorBoundary>
+          )}
 
           {page === "royalties-terms" && <RoyaltiesTermsPage contentId={selectedContentId} />}
 
@@ -559,20 +563,26 @@ export default function App() {
           )}
 
           {page === "splits" && (
-            <SplitsPage
-              onEditContent={(id) => {
-                window.history.pushState({}, "", `/splits/${id}`);
-                setSelectedContentId(id);
-                setPage("split-editor");
-              }}
-            />
+            <ErrorBoundary>
+              <SplitsPage
+                onEditContent={(id) => {
+                  window.history.pushState({}, "", `/splits/${id}`);
+                  setSelectedContentId(id);
+                  setPage("split-editor");
+                }}
+                onOpenPaymentRails={() => {
+                  setFinanceTab("rails");
+                  setPage("finance");
+                }}
+              />
+            </ErrorBoundary>
           )}
 
           {page === "split-editor" && (
             <SplitEditorPage
               contentId={selectedContentId}
-              onGoToPayouts={() => {
-                setFinanceTab("payouts");
+              onGoToPaymentRails={() => {
+                setFinanceTab("rails");
                 setPage("finance");
               }}
             />

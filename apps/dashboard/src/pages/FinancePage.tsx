@@ -15,7 +15,14 @@ type FinancePageProps = {
 
 export default function FinancePage({ initialTab = "overview" }: FinancePageProps) {
   const [tab, setTab] = useState<FinanceTab>(initialTab);
-  const [refreshSeed, setRefreshSeed] = useState(0);
+  const [tabRefresh, setTabRefresh] = useState<Record<FinanceTab, number>>({
+    overview: 0,
+    ledger: 0,
+    royalties: 0,
+    payouts: 0,
+    rails: 0,
+    transactions: 0
+  });
   const [summaryRefresh, setSummaryRefresh] = useState(0);
   const [rails, setRails] = useState<Array<{ id: string; status: string; label: string; hint?: string | null }>>([]);
   const [railsError, setRailsError] = useState<string | null>(null);
@@ -28,11 +35,11 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setRefreshSeed((s) => s + 1);
       setSummaryRefresh((s) => s + 1);
+      setTabRefresh((prev) => ({ ...prev, [tab]: (prev[tab] || 0) + 1 }));
     }, 8000);
     return () => clearInterval(timer);
-  }, []);
+  }, [tab]);
 
   useEffect(() => {
     let active = true;
@@ -77,8 +84,8 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
           </div>
           <button
             onClick={() => {
-              setRefreshSeed((s) => s + 1);
               setSummaryRefresh((s) => s + 1);
+              setTabRefresh((prev) => ({ ...prev, [tab]: (prev[tab] || 0) + 1 }));
             }}
             className="rounded-lg border border-neutral-800 px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-900"
           >
@@ -145,18 +152,18 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
         })}
       </div>
 
-      {tab === "overview" && <FinanceOverviewPage refreshSignal={refreshSeed} />}
+      {tab === "overview" && <FinanceOverviewPage refreshSignal={tabRefresh.overview} />}
       {tab === "ledger" && (
         <SalesPage
           variant="ledger"
           titleOverride="Revenue Ledger"
-          refreshSignal={refreshSeed}
+          refreshSignal={tabRefresh.ledger}
         />
       )}
-      {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={refreshSeed} />}
+      {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} />}
       {tab === "payouts" && <PayoutRailsPage />}
-      {tab === "rails" && <PaymentRailsPage refreshSignal={refreshSeed} />}
-      {tab === "transactions" && <FinanceTransactionsPage refreshSignal={refreshSeed} />}
+      {tab === "rails" && <PaymentRailsPage refreshSignal={tabRefresh.rails} />}
+      {tab === "transactions" && <FinanceTransactionsPage refreshSignal={tabRefresh.transactions} />}
     </div>
   );
 }

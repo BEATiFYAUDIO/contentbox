@@ -24,7 +24,7 @@ export default function CreatorToolsPage(props: {
           onClick={props.onOpenSplits}
           className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 text-left hover:bg-neutral-900/40"
         >
-          <div className="text-sm font-medium">Splits</div>
+          <div className="text-sm font-medium">My Splits</div>
           <div className="text-xs text-neutral-400 mt-1">Draft, lock, and manage revenue splits.</div>
         </button>
         <button

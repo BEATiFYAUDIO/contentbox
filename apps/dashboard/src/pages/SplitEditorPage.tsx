@@ -120,8 +120,8 @@ function downloadJson(filename: string, data: any) {
   }
 }
 
-export default function SplitEditorPage(props: { contentId: string | null; onGoToPayouts?: () => void }) {
-  const { contentId, onGoToPayouts } = props;
+export default function SplitEditorPage(props: { contentId: string | null; onGoToPaymentRails?: () => void }) {
+  const { contentId, onGoToPaymentRails } = props;
 
   const [content, setContent] = React.useState<ContentItem | null>(null);
   const [versions, setVersions] = React.useState<SplitVersion[]>([]);
@@ -170,17 +170,8 @@ React.useState(false);
   const [proofLoadingId, setProofLoadingId] = React.useState<string | null>(null);
   const [proofView, setProofView] = React.useState<ProofData | null>(null);
   const [proofError, setProofError] = React.useState<string | null>(null);
-  const [payUnits, setPayUnits] = React.useState("2");
-  const [purchase, setPurchase] = React.useState<{ id: string; bolt11: string; status: "unpaid" | "paid" | "expired"; receiptId?: string | null } | null>(null);
-  const [payMsg, setPayMsg] = React.useState<string | null>(null);
-  const [paymentsReadiness, setPaymentsReadiness] = React.useState<{ lightning: { ready: boolean; reason?: string | null } } | null>(null);
-
   const total = round3(rows.reduce((s, r) => s + num(r.percent), 0));
   const totalOk = total === 100;
-  const readinessLoaded = paymentsReadiness !== null;
-  const lightningReady = paymentsReadiness?.lightning?.ready ?? true;
-  const lightningReason = paymentsReadiness?.lightning?.reason ?? "UNKNOWN";
-  const lightningBlocked = readinessLoaded && !lightningReady;
 
   async function loadAll(id: string) {
     setMsg(null);
@@ -243,20 +234,12 @@ React.useState(false);
   }
 
   React.useEffect(() => {
-    api<{ lightning: { ready: boolean; reason?: string | null } }>("/api/payments/readiness", "GET")
-      .then((r) => setPaymentsReadiness(r))
-      .catch(() => setPaymentsReadiness(null));
-  }, []);
-
-  React.useEffect(() => {
     if (!contentId) {
       setContent(null);
       setVersions([]);
       setSelectedVersionId(null);
       setRows([]);
       setProofByVersionId({});
-      setPurchase(null);
-      setPayMsg(null);
       setUpstreamInfo(null);
       return;
     }
@@ -319,38 +302,6 @@ React.useState(false);
   }, [contentId, selectedVersionId]);
 
   React.useEffect(() => {
-    if (!purchase || purchase.status !== "unpaid") return;
-    if (!contentId || !selectedVersion) return;
-
-    const id = purchase.id;
-    let cancelled = false;
-    const interval = setInterval(async () => {
-      try {
-        const res = await api<{ status: "unpaid" | "paid" | "expired"; paidAt?: string | null }>(`/v1/payments/status/${id}`, "GET");
-        if (cancelled) return;
-        if (res.status === "paid") {
-          setPurchase((p) => (p && p.id === id ? { ...p, status: "paid" } : p));
-          try {
-            const receiptRes = await api<{ receiptId: string }>(`/v1/payments/receipt/${id}`, "GET");
-            if (!cancelled) setPurchase((p) => (p && p.id === id ? { ...p, receiptId: receiptRes.receiptId } : p));
-          } catch {}
-          clearInterval(interval);
-        } else if (res.status === "expired") {
-          setPurchase((p) => (p && p.id === id ? { ...p, status: "expired" } : p));
-          clearInterval(interval);
-        }
-      } catch (e: any) {
-        if (!cancelled) setPayMsg(e?.message || "Payment status failed");
-      }
-    }, 3000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [purchase?.id, purchase?.status, contentId, selectedVersionId]);
-
-  React.useEffect(() => {
     if (!selectedVersion) return;
 
     const participants = selectedVersion.participants || [];
@@ -363,8 +314,6 @@ React.useState(false);
           }))
         : [{ participantEmail: "", role: "writer", percent: "100" }]
     );
-    setPurchase(null);
-    setPayMsg(null);
   }, [selectedVersionId]);
 
   async function saveLatest() {
@@ -789,87 +738,16 @@ React.useState(false);
                     </div>
 
                     <div className="mt-2 border-t border-neutral-800 pt-2">
-                      <div className="text-xs text-neutral-500">Sell playback credits</div>
-                      {proofByVersionId[selectedVersion.id] ? (
-                        <div className="mt-2 space-y-2">
-                          {lightningBlocked && (
-                            <div className="rounded-md border border-amber-700/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-                              <div className="font-medium">Lightning not configured</div>
-                              <div className="text-amber-200/90">
-                                Connect a Lightning provider to generate invoices.
-                              </div>
-                              <div className="mt-2">
-                                <button
-                                  onClick={() => onGoToPayouts?.()}
-                                  className="text-xs rounded-md border border-amber-700/60 px-2 py-1 hover:bg-amber-900/30"
-                                >
-                                  Configure payments
-                                </button>
-                              </div>
-                              <div className="mt-1 text-[11px] text-amber-200/70">Details: {lightningReason}</div>
-                            </div>
-                          )}
-                          <div className="flex items-center gap-2">
-                            <input
-                              value={payUnits}
-                              onChange={(e) => setPayUnits(e.target.value)}
-                              className="w-24 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs"
-                              inputMode="numeric"
-                              placeholder="units"
-                            />
-                            <button
-                              disabled={lightningBlocked}
-                              onClick={async () => {
-                                if (lightningBlocked) {
-                                  setPayMsg("Lightning is not configured. Configure payments to generate invoices.");
-                                  return;
-                                }
-                                const units = Math.max(1, Math.floor(Number(payUnits || "0")));
-                                setPayMsg(null);
-                                setPurchase(null);
-                                try {
-                                  const res = await api<{ purchaseId: string; bolt11: string }>(`/v1/payments/invoice`, "POST", {
-                                    proofHash: proofByVersionId[selectedVersion.id]?.proofHash,
-                                    units
-                                  });
-                                  setPurchase({ id: res.purchaseId, bolt11: res.bolt11, status: "unpaid" });
-                                } catch (e: any) {
-                                  const raw = e?.message || "Invoice failed";
-                                  if (/LND_|BTCPAY_|not configured/i.test(raw)) {
-                                    setPayMsg("Lightning is not configured. Configure payments to generate invoices.");
-                                  } else {
-                                    setPayMsg(raw);
-                                  }
-                                }
-                              }}
-                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
-                            >
-                              Generate invoice
-                            </button>
-                          </div>
-
-                          {purchase?.bolt11 && (
-                            <div className="space-y-1">
-                              <div className="text-xs text-neutral-400">BOLT11:</div>
-                              <div className="text-xs text-neutral-200 break-all">{purchase.bolt11}</div>
-                              <button
-                                onClick={() => copyToClipboard(purchase.bolt11)}
-                                className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              >
-                                Copy invoice
-                              </button>
-                              <div className="text-xs text-neutral-400">Status: {purchase.status}</div>
-                              {purchase.receiptId ? (
-                                <div className="text-xs text-emerald-300">Receipt: {purchase.receiptId}</div>
-                              ) : null}
-                            </div>
-                          )}
-
-                          {payMsg ? <div className="text-xs text-red-300">{payMsg}</div> : null}
-                        </div>
-                      ) : (
-                        <div className="text-xs text-neutral-500">Load proof to purchase credits.</div>
-                      )}
+                      <div className="text-xs text-neutral-500">Payments setup</div>
+                      <div className="mt-2 text-xs text-neutral-400">
+                        Buyer intake rails are configured under Revenue → Payment Rails.
+                      </div>
+                      <button
+                        onClick={() => onGoToPaymentRails?.()}
+                        className="mt-2 text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                      >
+                        Open Payment Rails
+                      </button>
                     </div>
                   </div>
                 ) : (
