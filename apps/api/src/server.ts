@@ -1,4 +1,4 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import jwt from "@fastify/jwt";
@@ -7,6 +7,7 @@ import multipart from "@fastify/multipart";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { execFile, execSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
@@ -28,6 +29,7 @@ import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js
 import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
+import { mapLightningErrorMessage } from "./lib/railHealth.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -35,6 +37,39 @@ import { finalizePurchase } from "./payments/finalizePurchase.js";
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
 };
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const apiRoot = path.resolve(__dirname, "..");
+const loadedEnvFiles: string[] = [];
+const envLocalPath = path.resolve(apiRoot, ".env.local");
+const envPath = path.resolve(apiRoot, ".env");
+if (fsSync.existsSync(envLocalPath)) {
+  dotenv.config({ path: envLocalPath, override: false });
+  loadedEnvFiles.push(".env.local");
+}
+if (fsSync.existsSync(envPath)) {
+  dotenv.config({ path: envPath, override: false });
+  loadedEnvFiles.push(".env");
+}
+if (loadedEnvFiles.length) {
+  console.info("[env] loaded", loadedEnvFiles.join(", "));
+} else {
+  console.info("[env] no local env files found (process.env only)");
+}
+if (process.env.CONTENTBOX_PUBLIC_ORIGIN) {
+  console.info("[env] CONTENTBOX_PUBLIC_ORIGIN =", process.env.CONTENTBOX_PUBLIC_ORIGIN);
+}
+console.info("[env] LND_REST_URL =", process.env.LND_REST_URL ? "set" : "missing");
+console.info(
+  "[env] LND_MACAROON_HEX length =",
+  process.env.LND_MACAROON_HEX ? String(process.env.LND_MACAROON_HEX.length) : "missing"
+);
+console.info("[env] LND_TLS_CERT_PATH =", process.env.LND_TLS_CERT_PATH ? "set" : "missing");
+console.info(
+  "[env] LND_TLS_CERT_PEM length =",
+  process.env.LND_TLS_CERT_PEM ? String(process.env.LND_TLS_CERT_PEM.length) : "missing"
+);
 
 function mustEnv(name: string): string {
   const v = process.env[name];
@@ -98,6 +133,298 @@ function parseSats(x: unknown): bigint {
   if (/^\d+$/.test(s)) return BigInt(s);
   const n = Number(s);
   return Number.isFinite(n) ? BigInt(Math.floor(n)) : 0n;
+}
+
+function readPemMaybeFile(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes("BEGIN")) return trimmed;
+  if (fsSync.existsSync(trimmed)) {
+    try {
+      return fsSync.readFileSync(trimmed, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+function readMacaroon(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (fsSync.existsSync(trimmed)) {
+    try {
+      const buf = fsSync.readFileSync(trimmed);
+      return buf.toString("hex");
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal } as any);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function lndHealthCheck() {
+  const baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
+  const macVal =
+    process.env.LND_MACAROON_PATH ||
+    process.env.LND_INVOICE_MACAROON_PATH ||
+    process.env.LND_MACAROON_HEX ||
+    process.env.LND_MACAROON ||
+    "";
+  const macaroon = readMacaroon(macVal);
+  const cert = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
+
+  if (!baseUrl || !macaroon) {
+    return { status: "missing", message: "LND env not configured", endpoint: baseUrl || null, hint: "Set LND_REST_URL and LND_MACAROON_PATH" };
+  }
+
+  try {
+    const dispatcher = cert ? new (await import("undici")).Agent({ connect: { ca: cert } }) : undefined;
+    const res = await fetchWithTimeout(
+      `${baseUrl}/v1/getinfo`,
+      {
+        method: "GET",
+        headers: { "Grpc-Metadata-Macaroon": macaroon },
+        dispatcher
+      } as any,
+      4000
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      const mapped = mapLightningErrorMessage(text || `LND error ${res.status}`);
+      return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+    }
+    return { status: "healthy", message: "LND reachable", endpoint: baseUrl, hint: null };
+  } catch (e: any) {
+    const mapped = mapLightningErrorMessage(String(e?.message || e));
+    return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+  }
+}
+
+async function bitcoindHealthCheck() {
+  const url = (process.env.BITCOIND_RPC_URL || "").trim();
+  if (!url) return { status: "missing", message: "BITCOIND_RPC_URL not configured", endpoint: null, hint: "Set BITCOIND_RPC_URL" };
+  const user = process.env.BITCOIND_RPC_USER || "";
+  const pass = process.env.BITCOIND_RPC_PASS || "";
+  if (!user || !pass) return { status: "degraded", message: "RPC user/pass missing", endpoint: url, hint: "Set BITCOIND_RPC_USER/BITCOIND_RPC_PASS" };
+  try {
+    const auth = Buffer.from(`${user}:${pass}`).toString("base64");
+    const body = JSON.stringify({ jsonrpc: "1.0", id: crypto.randomUUID(), method: "getblockchaininfo", params: [] });
+    const res = await fetchWithTimeout(
+      url,
+      { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` }, body },
+      4000
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { status: "degraded", message: `RPC error: ${text}`, endpoint: url, hint: "Check bitcoind RPC settings" };
+    }
+    return { status: "healthy", message: "bitcoind reachable", endpoint: url, hint: null };
+  } catch (e: any) {
+    return { status: "degraded", message: String(e?.message || e), endpoint: url, hint: "Check RPC connectivity" };
+  }
+}
+
+function saleStatusFromIntent(status: string | null | undefined): "pending" | "paid" | "failed" | "expired" {
+  if (status === "paid") return "paid";
+  if (status === "failed") return "failed";
+  if (status === "expired") return "expired";
+  return "pending";
+}
+
+function paymentRecordStatusFromIntent(status: string | null | undefined): "pending" | "completed" | "failed" {
+  if (status === "paid") return "completed";
+  if (status === "failed" || status === "expired") return "failed";
+  return "pending";
+}
+
+async function recordTransactionSafe(data: {
+  kind: "sale" | "payment" | "royalty" | "payout";
+  refId: string;
+  contentId?: string | null;
+  amountSats?: bigint | null;
+  eventType?: string | null;
+  metadata?: any;
+}) {
+  try {
+    const model: any = (prisma as any).transactionHistory;
+    if (!model?.create) return;
+    await model.create({
+      data: {
+        kind: data.kind as any,
+        refId: data.refId,
+        contentId: data.contentId || null,
+        amountSats: data.amountSats ?? null,
+        metadata: { ...(data.metadata ?? {}), ...(data.eventType ? { eventType: data.eventType } : {}) }
+      } as any
+    });
+  } catch {}
+}
+
+function financeModelsReady(): boolean {
+  const p: any = prisma as any;
+  return Boolean(p?.sale && p?.paymentRecord && p?.royalty && p?.payout && p?.transactionHistory);
+}
+
+async function syncSaleAndPaymentForIntent(paymentIntentId: string) {
+  const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
+  if (!intent) return null;
+  const p: any = prisma as any;
+  if (!p?.sale?.upsert || !p?.paymentRecord?.upsert) return null;
+
+  const sale = await p.sale.upsert({
+    where: { paymentIntentId: intent.id },
+    create: {
+      contentId: intent.contentId,
+      buyerUserId: intent.buyerUserId,
+      paymentIntentId: intent.id,
+      amountSats: intent.amountSats,
+      status: saleStatusFromIntent(intent.status),
+      paidAt: intent.paidAt || null
+    } as any,
+    update: {
+      buyerUserId: intent.buyerUserId,
+      amountSats: intent.amountSats,
+      status: saleStatusFromIntent(intent.status),
+      paidAt: intent.paidAt || null
+    } as any
+  });
+
+  const payment = await p.paymentRecord.upsert({
+    where: { paymentIntentId: intent.id },
+    create: {
+      saleId: sale.id,
+      paymentIntentId: intent.id,
+      rail: intent.paidVia as any,
+      providerId: intent.providerId || null,
+      amountSats: intent.amountSats,
+      status: paymentRecordStatusFromIntent(intent.status),
+      paidAt: intent.paidAt || null
+    } as any,
+    update: {
+      saleId: sale.id,
+      rail: intent.paidVia as any,
+      providerId: intent.providerId || null,
+      amountSats: intent.amountSats,
+      status: paymentRecordStatusFromIntent(intent.status),
+      paidAt: intent.paidAt || null
+    } as any
+  });
+
+  await recordTransactionSafe({
+    kind: "sale",
+    refId: `invoice:${sale.id}:created`,
+    contentId: sale.contentId,
+    amountSats: sale.amountSats as any,
+    eventType: "invoice.created",
+    metadata: { status: sale.status, paymentIntentId: intent.id }
+  });
+
+  if (sale.status === "paid") {
+    await recordTransactionSafe({
+      kind: "sale",
+      refId: `invoice:${sale.id}:paid`,
+      contentId: sale.contentId,
+      amountSats: sale.amountSats as any,
+      eventType: "invoice.paid",
+      metadata: { status: sale.status, paymentIntentId: intent.id, paidAt: sale.paidAt ? sale.paidAt.toISOString() : null }
+    });
+  }
+
+  if (payment.status === "completed") {
+    await recordTransactionSafe({
+      kind: "payment",
+      refId: `payment:${payment.id}:received`,
+      contentId: sale.contentId,
+      amountSats: payment.amountSats as any,
+      eventType: "payment.received",
+      metadata: { status: payment.status, rail: payment.rail, paymentIntentId: intent.id, paidAt: payment.paidAt ? payment.paidAt.toISOString() : null }
+    });
+  }
+
+  return { sale, payment };
+}
+
+async function ensureRoyaltiesForSettlement(settlementId: string, saleId: string) {
+  const p: any = prisma as any;
+  if (!p?.royalty?.upsert) return;
+  const settlement = await prisma.settlement.findUnique({
+    where: { id: settlementId },
+    include: { lines: true }
+  });
+  if (!settlement) return;
+
+  for (const line of settlement.lines) {
+    const royalty = await p.royalty.upsert({
+      where: { settlementLineId: line.id },
+      create: {
+        saleId,
+        settlementId: settlement.id,
+        settlementLineId: line.id,
+        contentId: settlement.contentId,
+        participantId: line.participantId || null,
+        participantEmail: line.participantEmail || null,
+        role: line.role || null,
+        amountSats: line.amountSats,
+        status: "pending"
+      } as any,
+      update: {
+        saleId,
+        settlementId: settlement.id,
+        contentId: settlement.contentId,
+        participantId: line.participantId || null,
+        participantEmail: line.participantEmail || null,
+        role: line.role || null,
+        amountSats: line.amountSats,
+        status: "pending"
+      } as any
+    });
+
+    await recordTransactionSafe({
+      kind: "royalty",
+      refId: `royalty:${royalty.id}:allocated`,
+      contentId: settlement.contentId,
+      amountSats: royalty.amountSats as any,
+      eventType: "royalty.allocated",
+      metadata: { settlementId: settlement.id, participantId: line.participantId || null, participantEmail: line.participantEmail || null }
+    });
+  }
+}
+
+async function syncFinanceForPaymentIntent(paymentIntentId: string) {
+  try {
+    if (!financeModelsReady()) return;
+    const sync = await syncSaleAndPaymentForIntent(paymentIntentId);
+    if (!sync) return;
+    const { sale } = sync;
+    const settlement = await prisma.settlement.findUnique({ where: { paymentIntentId } });
+    if (settlement) {
+      await ensureRoyaltiesForSettlement(settlement.id, sale.id);
+    }
+    const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
+    if (intent?.status === "paid") {
+      await recordTransactionSafe({
+        kind: "sale",
+        refId: `entitlement:${intent.id}`,
+        contentId: intent.contentId,
+        amountSats: intent.amountSats as any,
+        eventType: "entitlement.granted",
+        metadata: { paymentIntentId: intent.id }
+      });
+    }
+  } catch {}
 }
 
 type RangeRequest =
@@ -1142,6 +1469,453 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
 
   const out = [...settlementEvents, ...paymentEvents].sort((a, b) => (a.ts < b.ts ? 1 : -1));
   return reply.send(jsonSafe(out));
+});
+
+async function buildFinanceOverview(userId: string) {
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+  const lightning = await lndHealthCheck();
+  const onchain = await bitcoindHealthCheck();
+
+  const baseEmpty = {
+    totals: {
+      salesSats: "0",
+      salesSatsLast30d: "0",
+      invoicesTotal: 0,
+      invoicesPaid: 0,
+      invoicesPending: 0,
+      invoicesFailed: 0,
+      invoicesExpired: 0,
+      paymentsReceivedSats: "0",
+      paymentsPendingSats: "0",
+      paymentsReceivedCount: 0,
+      paymentsPendingCount: 0,
+      paymentsLast30d: 0
+    },
+    recentSales: [] as any[],
+    revenueSeries: [] as Array<{ date: string; amountSats: string }>,
+    health: { lightning, onchain },
+    lastUpdatedAt: new Date().toISOString()
+  };
+
+  if (!me) return baseEmpty;
+
+  try {
+    const contents = await prisma.contentItem.findMany({
+      where: { ownerUserId: userId },
+      select: { id: true, title: true }
+    });
+    const contentIds = contents.map((c) => c.id);
+    if (!contentIds.length) return baseEmpty;
+
+    if (!financeModelsReady()) return baseEmpty;
+
+    const p: any = prisma as any;
+    const sales = await p.sale.findMany({
+      where: { contentId: { in: contentIds } },
+      include: { payments: true },
+      orderBy: { createdAt: "desc" },
+      take: 25
+    });
+
+    const allSales = await p.sale.findMany({
+      where: { contentId: { in: contentIds } },
+      select: { amountSats: true, status: true, createdAt: true, paidAt: true }
+    });
+
+  let totalSales = 0n;
+  const invoiceCounts = { paid: 0, pending: 0, failed: 0, expired: 0 };
+  let receivedSats = 0n;
+  let pendingSats = 0n;
+  let receivedCount = 0;
+  let pendingCount = 0;
+
+  for (const s of allSales) {
+    if (s.status === "paid") totalSales += BigInt(s.amountSats as any);
+    if (s.status === "paid") invoiceCounts.paid += 1;
+    else if (s.status === "failed") invoiceCounts.failed += 1;
+    else if (s.status === "expired") invoiceCounts.expired += 1;
+    else invoiceCounts.pending += 1;
+  }
+
+  for (const s of sales) {
+    for (const pmt of s.payments) {
+      if (pmt.status === "completed") {
+        receivedSats += BigInt(pmt.amountSats as any);
+        receivedCount += 1;
+      } else {
+        pendingSats += BigInt(pmt.amountSats as any);
+        pendingCount += 1;
+      }
+    }
+  }
+
+  const now = new Date();
+  const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  let last30Sales = 0n;
+  let last30Invoices = 0;
+  let last30Payments = 0;
+  const seriesMap = new Map<string, bigint>();
+
+  for (const s of allSales) {
+    const stamp = s.paidAt || s.createdAt;
+    if (stamp >= since) {
+      if (s.status === "paid") last30Sales += BigInt(s.amountSats as any);
+      last30Invoices += 1;
+      const key = stamp.toISOString().slice(0, 10);
+      const prev = seriesMap.get(key) || 0n;
+      if (s.status === "paid") seriesMap.set(key, prev + BigInt(s.amountSats as any));
+    }
+  }
+
+  for (const s of sales) {
+    for (const pmt of s.payments) {
+      const stamp = pmt.paidAt || s.createdAt;
+      if (stamp && stamp >= since && pmt.status === "completed") {
+        last30Payments += 1;
+      }
+    }
+  }
+
+  const revenueSeries: Array<{ date: string; amountSats: string }> = [];
+  for (let i = 29; i >= 0; i -= 1) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const key = d.toISOString().slice(0, 10);
+    revenueSeries.push({ date: key, amountSats: (seriesMap.get(key) || 0n).toString() });
+  }
+
+  const titleMap = new Map(contents.map((c) => [c.id, c.title]));
+  const recentSales = sales.slice(0, 10).map((s) => {
+    const payment = s.payments[0] || null;
+    return {
+      id: s.id,
+      contentId: s.contentId,
+      contentTitle: titleMap.get(s.contentId) || "Content",
+      amountSats: BigInt(s.amountSats as any).toString(),
+      status: s.status,
+      createdAt: s.createdAt.toISOString(),
+      paidAt: s.paidAt ? s.paidAt.toISOString() : null,
+      paidVia: payment?.rail || null,
+      paymentIntentId: s.paymentIntentId || null
+    };
+  });
+
+    return {
+      totals: {
+        salesSats: totalSales.toString(),
+        salesSatsLast30d: last30Sales.toString(),
+        invoicesTotal: invoiceCounts.paid + invoiceCounts.pending + invoiceCounts.failed + invoiceCounts.expired,
+        invoicesPaid: invoiceCounts.paid,
+        invoicesPending: invoiceCounts.pending,
+        invoicesFailed: invoiceCounts.failed,
+        invoicesExpired: invoiceCounts.expired,
+        paymentsReceivedSats: receivedSats.toString(),
+        paymentsPendingSats: pendingSats.toString(),
+        paymentsReceivedCount: receivedCount,
+        paymentsPendingCount: pendingCount,
+        paymentsLast30d: last30Payments
+      },
+      recentSales,
+      revenueSeries,
+      health: { lightning, onchain },
+      lastUpdatedAt: new Date().toISOString()
+    };
+  } catch {
+    return baseEmpty;
+  }
+}
+
+// Finance dashboard overview (creator)
+app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const data = await buildFinanceOverview(userId);
+  return reply.send(data);
+});
+
+// Royalties summary per content (creator)
+app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const data = await buildFinanceRoyalties(userId);
+  return reply.send(data);
+});
+
+async function buildFinanceRoyalties(userId: string) {
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+  if (!me) return { items: [], totals: { earnedSats: "0", pendingSats: "0" }, cursor: null };
+
+  try {
+    const contents = await prisma.contentItem.findMany({
+      where: { ownerUserId: userId },
+      select: { id: true, title: true }
+    });
+    const contentIds = contents.map((c) => c.id);
+    if (!contentIds.length) return { items: [], totals: { earnedSats: "0", pendingSats: "0" }, cursor: null };
+
+    if (!financeModelsReady()) {
+      return { items: [], totals: { earnedSats: "0", pendingSats: "0" }, cursor: null };
+    }
+
+  const participantRows = await prisma.splitParticipant.findMany({
+    where: {
+      OR: [
+        { participantUserId: userId },
+        me.email ? { participantEmail: { equals: me.email, mode: "insensitive" } } : undefined
+      ].filter(Boolean) as any
+    },
+    select: { id: true, participantEmail: true }
+  });
+  const participantIds = new Set(participantRows.map((p) => p.id));
+  const participantEmails = new Set(
+    participantRows.map((p) => (p.participantEmail ? p.participantEmail.toLowerCase() : "")).filter(Boolean)
+  );
+
+  const royalties = await (prisma as any).royalty.findMany({
+    where: { contentId: { in: contentIds } }
+  });
+
+  const rows = new Map<
+    string,
+    {
+      contentId: string;
+      title: string;
+      total: bigint;
+      yourShare: bigint;
+      pending: bigint;
+      paid: bigint;
+    }
+  >();
+
+  for (const c of contents) {
+    rows.set(c.id, { contentId: c.id, title: c.title, total: 0n, yourShare: 0n, pending: 0n, paid: 0n });
+  }
+
+  for (const r of royalties) {
+    const row = rows.get(r.contentId);
+    if (!row) continue;
+    const amt = BigInt(r.amountSats as any);
+    row.total += amt;
+    if (r.status === "paid") row.paid += amt;
+    else row.pending += amt;
+    const email = (r.participantEmail || "").toLowerCase();
+    if ((r.participantId && participantIds.has(r.participantId)) || (email && participantEmails.has(email))) {
+      row.yourShare += amt;
+    }
+  }
+
+  let earnedTotal = 0n;
+  let pendingTotal = 0n;
+  const out = Array.from(rows.values()).map((r) => {
+    earnedTotal += r.paid;
+    pendingTotal += r.pending;
+    return {
+      contentId: r.contentId,
+      title: r.title,
+      totalSalesSats: r.total.toString(),
+      grossRevenueSats: r.total.toString(),
+      allocationSats: r.yourShare.toString(),
+      settledSats: r.paid.toString(),
+      withdrawnSats: r.paid.toString(),
+      pendingSats: r.pending.toString()
+    };
+  });
+
+    return {
+      items: out,
+      totals: { earnedSats: earnedTotal.toString(), pendingSats: pendingTotal.toString() },
+      cursor: null
+    };
+  } catch {
+    return { items: [], totals: { earnedSats: "0", pendingSats: "0" }, cursor: null };
+  }
+}
+
+// Payouts summary (creator)
+app.get("/finance/payouts", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const data = await buildFinancePayouts(userId);
+  return reply.send(data);
+});
+
+async function buildFinancePayouts(userId: string) {
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+  if (!me) return { items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null };
+
+  try {
+    if (!financeModelsReady()) {
+      return { items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null };
+    }
+
+    const payouts = await (prisma as any).payout.findMany({
+      where: {
+        OR: [
+          { userId },
+          me.email ? { participantEmail: { equals: me.email, mode: "insensitive" } } : undefined
+        ].filter(Boolean) as any
+      },
+      orderBy: { createdAt: "desc" }
+    });
+
+  let pendingTotal = 0n;
+  let completedTotal = 0n;
+  const items: any[] = [];
+
+  for (const p of payouts) {
+    const amt = BigInt(p.amountSats as any);
+    const row = {
+      id: p.id,
+      amountSats: amt.toString(),
+      status: p.status,
+      method: p.method,
+      createdAt: p.createdAt.toISOString(),
+      completedAt: p.completedAt ? p.completedAt.toISOString() : null,
+      settlementRecords: p.settlementRecords || null
+    };
+    if (p.status === "completed") {
+      completedTotal += amt;
+    } else {
+      pendingTotal += amt;
+    }
+    items.push(row);
+  }
+
+    return {
+      items,
+      totals: { pendingSats: pendingTotal.toString(), paidSats: completedTotal.toString() },
+      cursor: null
+    };
+  } catch {
+    return { items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null };
+  }
+}
+
+// Transaction history (creator)
+app.get("/finance/transactions", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const data = await buildFinanceTransactions(userId);
+  return reply.send(data);
+});
+
+async function buildFinanceTransactions(userId: string) {
+  try {
+    const contents = await prisma.contentItem.findMany({
+      where: { ownerUserId: userId },
+      select: { id: true, title: true }
+    });
+    const contentIds = contents.map((c) => c.id);
+
+    if (!financeModelsReady()) {
+      return { items: [], cursor: null };
+    }
+
+    const tx = await (prisma as any).transactionHistory.findMany({
+      where: {
+        OR: [
+          contentIds.length ? { contentId: { in: contentIds } } : undefined
+        ].filter(Boolean) as any
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200
+    });
+
+    const titleMap = new Map(contents.map((c) => [c.id, c.title]));
+    const out = tx.map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      refId: t.refId,
+      contentId: t.contentId || null,
+      contentTitle: t.contentId ? titleMap.get(t.contentId) || "Content" : null,
+      amountSats: t.amountSats != null ? BigInt(t.amountSats as any).toString() : null,
+      createdAt: t.createdAt.toISOString(),
+      metadata: t.metadata || null
+    }));
+
+    return { items: out, cursor: null };
+  } catch {
+    return { items: [], cursor: null };
+  }
+}
+
+// Revenue audit export (JSON)
+app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const [overview, royalties, payouts, transactions] = await Promise.all([
+    buildFinanceOverview(userId),
+    buildFinanceRoyalties(userId),
+    buildFinancePayouts(userId),
+    buildFinanceTransactions(userId)
+  ]);
+
+  return reply.send({
+    overview,
+    royalties,
+    payouts,
+    transactions,
+    exportedAt: new Date().toISOString()
+  });
+});
+
+// Payment rails (buyer intake) health/status
+app.get("/finance/payment-rails", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const rails: any[] = [];
+
+  const lnd = await lndHealthCheck();
+  const lnbitsUrl = (process.env.LNBITS_URL || "").trim();
+  const lnbitsKey = (process.env.LNBITS_INVOICE_KEY || "").trim();
+  const lightningConfigured = lnd.status !== "missing" || (lnbitsUrl && lnbitsKey);
+  rails.push({
+    id: "lightning",
+    type: "lightning",
+    label: "Lightning",
+    status: lnd.status === "healthy" ? "healthy" : lnd.status === "locked" ? "locked" : lightningConfigured ? "degraded" : "disconnected",
+    endpoint: lnd.endpoint || (lnbitsUrl || null),
+    details: lnd.message || (lnbitsUrl ? "LNbits configured" : "Not configured"),
+    hint: lnd.hint || null,
+    lastCheckedAt: new Date().toISOString()
+  });
+
+  const onchain = await bitcoindHealthCheck();
+  const xpub = (process.env.ONCHAIN_RECEIVE_XPUB || "").trim();
+  const onchainConfigured = onchain.status !== "missing" || Boolean(xpub);
+  rails.push({
+    id: "onchain",
+    type: "onchain",
+    label: "BTC On-chain",
+    status: onchain.status === "healthy" ? "healthy" : onchainConfigured ? "degraded" : "disconnected",
+    endpoint: onchain.endpoint || null,
+    details: onchain.status === "missing" && xpub ? "XPUB configured (no RPC)" : onchain.message,
+    hint: onchain.hint || null,
+    lastCheckedAt: new Date().toISOString()
+  });
+
+  if (process.env.LNURL_PAY_URL) {
+    rails.push({
+      id: "lnurl",
+      type: "lnurl",
+      label: "LNURL-Pay",
+      status: "degraded",
+      endpoint: process.env.LNURL_PAY_URL,
+      details: "Configured",
+      lastCheckedAt: new Date().toISOString()
+    });
+  }
+
+  return reply.send(rails);
+});
+
+app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = asString((req.params as any).id);
+  if (id === "lightning") {
+    const res = await lndHealthCheck();
+    return reply.send({ ok: res.status === "healthy", status: res.status, message: res.message, endpoint: res.endpoint, hint: res.hint || null });
+  }
+  if (id === "onchain") {
+    const res = await bitcoindHealthCheck();
+    return reply.send({ ok: res.status === "healthy", status: res.status, message: res.message, endpoint: res.endpoint, hint: res.hint || null });
+  }
+  if (id === "lnurl") {
+    const url = (process.env.LNURL_PAY_URL || "").trim();
+    return reply.send({ ok: Boolean(url), status: url ? "configured" : "missing", endpoint: url || null });
+  }
+  return reply.code(404).send({ error: "Unknown rail" });
 });
 
 // Scoped clearance history for a derivative link
@@ -4549,7 +5323,9 @@ app.get("/buy/:contentId", async (req: any, reply) => {
 (function(){
   const contentId = ${JSON.stringify(contentId)};
   const app = document.getElementById("app");
-  const apiBase = location.origin;
+  let apiBase = location.origin;
+  let streamBase = location.origin;
+  let lanBase = null;
   let receiptToken = null;
   let intentId = null;
   let pollTimer = null;
@@ -4599,7 +5375,7 @@ app.get("/buy/:contentId", async (req: any, reply) => {
 
   function streamUrl(offer, token){
     if (!offer?.primaryFileId) return null;
-    let url = apiBase + "/content/" + offer.manifestSha256 + "/" + encodeURIComponent(offer.primaryFileId);
+    let url = streamBase + "/content/" + offer.manifestSha256 + "/" + encodeURIComponent(offer.primaryFileId);
     if (token) url += "?t=" + encodeURIComponent(token);
     return url;
   }
@@ -4778,13 +5554,53 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     }
     downloads.innerHTML = \`
       <div style="font-weight:600;margin-bottom:6px;">Download</div>
-      <ul>\${list.map(f=>\`<li><a href="\${apiBase}/public/receipts/\${receiptToken}/file?objectKey=\${qs(f.objectKey)}">\${f.originalName || f.objectKey}</a> <span class="muted">(\${f.sizeBytes} bytes)</span></li>\`).join("")}</ul>
+      <ul>\${list.map(f=>\`<li><a href="\${streamBase}/public/receipts/\${receiptToken}/file?objectKey=\${qs(f.objectKey)}">\${f.originalName || f.objectKey}</a> <span class="muted">(\${f.sizeBytes} bytes)</span></li>\`).join("")}</ul>
     \`;
+  }
+
+  async function selectBases(offer){
+    const endpoints = Array.isArray(offer?.sellerEndpoints) ? offer.sellerEndpoints : [];
+    const publicBase = endpoints[0]?.baseUrl || offer?.seller?.hostOrigin || location.origin;
+    lanBase = endpoints[1]?.baseUrl || null;
+    apiBase = publicBase || location.origin;
+    streamBase = apiBase;
+    if (!lanBase) return;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 450);
+      const res = await fetch(lanBase + "/health", { method: "GET", signal: controller.signal });
+      clearTimeout(timer);
+      if (res && res.ok) streamBase = lanBase;
+    } catch {}
+  }
+
+  const payPrefixes = ["/api", "/p2p"];
+  let payPrefix = "/api";
+
+  function payUrl(path){
+    return apiBase + payPrefix + path;
+  }
+
+  async function fetchPayment(path, init){
+    let res = await fetch(payUrl(path), init);
+    if (res.status === 404) {
+      const alt = payPrefix === payPrefixes[0] ? payPrefixes[1] : payPrefixes[0];
+      if (alt !== payPrefix) {
+        payPrefix = alt;
+        res = await fetch(payUrl(path), init);
+      }
+    }
+    return res;
   }
 
   async function pollIntent(){
     if (!intentId) return;
-    const status = await fetchJson("/api/payments/intents/" + intentId + "/refresh", { method: "POST", body: {} });
+    const res = await fetchPayment("/payments/intents/" + intentId + "/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    });
+    const status = await res.json();
     if (status.status === "paid" && status.receiptToken) {
       clearInterval(pollTimer);
       receiptToken = status.receiptToken;
@@ -4794,7 +5610,22 @@ app.get("/buy/:contentId", async (req: any, reply) => {
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
         renderOffer(currentOffer, ent);
       }
-      document.getElementById("status").textContent = "Payment received. Download is ready.";
+      const statusEl = document.getElementById("status");
+      if (statusEl) {
+        let extra = "";
+        if (status.settlementId && status.totalAmountSats && Array.isArray(status.allocations)) {
+          const lines = status.allocations
+            .map((a) => "- " + (a.recipient || "unknown") + " : " + (a.amountSats || "0") + " sats")
+            .join("<br/>");
+          extra =
+            '<div style="margin-top:6px;">' +
+            '<div class="muted">Total paid: ' + status.totalAmountSats + ' sats</div>' +
+            '<div class="muted" style="margin-top:4px;">Allocations:</div>' +
+            '<div class="muted">' + lines + '</div>' +
+            '</div>';
+        }
+        statusEl.innerHTML = "Payment received. Download is ready." + extra;
+      }
     } else if (status.status === "expired") {
       document.getElementById("status").textContent = "Invoice expired. Create a new one.";
     } else {
@@ -4808,7 +5639,7 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     document.getElementById("status").textContent = "Creating payment…";
     try {
       const amount = offer.priceSats != null ? offer.priceSats : 1000;
-      const res = await fetch(apiBase + "/api/payments/intents", {
+      const res = await fetchPayment("/payments/intents", {
         method:"POST",
         headers: { "Content-Type":"application/json" },
         body: JSON.stringify({
@@ -4850,6 +5681,7 @@ app.get("/buy/:contentId", async (req: any, reply) => {
   fetchJson("/p2p/content/" + contentId + "/offer")
     .then(async (offer)=> {
       currentOffer = offer;
+      await selectBases(offer);
       const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
       if (ent && ent.token) {
         renderOffer(offer, ent);
@@ -5263,7 +6095,18 @@ app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (re
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
-  const baseUrl = host ? `${proto}://${host}` : null;
+  const rawBaseUrl = host ? `${proto}://${host}` : null;
+  const publicBaseUrl =
+    (process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() ||
+    (process.env.CONTENTBOX_PUBLIC_ORIGIN_FALLBACK || "").trim() ||
+    null;
+  const lanBaseUrl =
+    rawBaseUrl && !rawBaseUrl.includes("127.0.0.1") && !rawBaseUrl.includes("localhost") ? rawBaseUrl : null;
+  const sellerHostOrigin = publicBaseUrl || lanBaseUrl || null;
+  const sellerEndpoints = [
+    ...(publicBaseUrl ? [{ baseUrl: publicBaseUrl, p2p: `${publicBaseUrl}/p2p`, public: `${publicBaseUrl}/public` }] : []),
+    ...(lanBaseUrl ? [{ baseUrl: lanBaseUrl, p2p: `${lanBaseUrl}/p2p`, public: `${lanBaseUrl}/public` }] : [])
+  ];
   const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
 
   const priceSats = content.priceSats ?? null;
@@ -5281,8 +6124,8 @@ app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (re
     primaryFileName: primaryName,
     primaryFileMime: primaryMime,
     priceSats: priceSats.toString(),
-    seller: { hostOrigin: baseUrl },
-    sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
+    seller: { hostOrigin: sellerHostOrigin },
+    sellerEndpoints,
     fulfillment: { mode: "receiptToken", ttlSeconds }
   });
 });
@@ -5332,6 +6175,7 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
     }
   });
   const paymentSlug = `pay_${intent.id}`;
+  await syncFinanceForPaymentIntent(intent.id);
 
   let onchain: { address: string; derivationIndex?: number | null } | null = null;
   let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
@@ -5390,6 +6234,7 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
         memo: "bypassed"
       }
     });
+    await syncFinanceForPaymentIntent(intent.id);
     await prisma.auditEvent.create({
       data: {
         userId: "external",
@@ -5427,6 +6272,7 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
       memo: "payment"
     }
   });
+  await syncFinanceForPaymentIntent(intent.id);
   await prisma.auditEvent.create({
     data: {
       userId: "external",
@@ -5508,6 +6354,7 @@ app.get("/public/receipts/:receiptToken/fulfill", async (req: any, reply) => {
   try {
     await finalizePurchase(intent.id, prisma);
   } catch {}
+  await syncFinanceForPaymentIntent(intent.id);
 
   if (intent.buyerUserId) {
     await prisma.entitlement.upsert({
@@ -7719,6 +8566,30 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
   const intent = await prisma.paymentIntent.findUnique({ where: { id } });
   if (!intent) return notFound(reply, "PaymentIntent not found");
 
+  async function buildSettlementPayload(paymentIntentId: string) {
+    const settlement = await prisma.settlement.findUnique({
+      where: { paymentIntentId },
+      include: { lines: true, split: { include: { participants: true } } }
+    });
+    if (!settlement) return null;
+    const allocations = settlement.lines.map((line) => {
+      const match =
+        settlement.split?.participants?.find(
+          (p) => p.participantUserId === line.participantId || p.participantEmail === line.participantEmail
+        ) || null;
+      return {
+        recipient: line.participantEmail || line.participantId || line.role || "unknown",
+        bps: match?.bps ?? null,
+        amountSats: line.amountSats.toString()
+      };
+    });
+    return {
+      settlementId: settlement.id,
+      totalAmountSats: settlement.netAmountSats.toString(),
+      allocations
+    };
+  }
+
   if (userId && intent.buyerUserId !== userId) {
     const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
     if (!content || content.ownerUserId !== userId) return forbidden(reply);
@@ -7732,13 +8603,16 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     try {
       await finalizePurchase(intent.id, prisma);
     } catch {}
+    await syncFinanceForPaymentIntent(intent.id);
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+    const settlementPayload = await buildSettlementPayload(intent.id);
     return reply.send({
       ok: true,
       status: intent.status,
       paidAt: intent.paidAt?.toISOString() || null,
       receiptToken: updated?.receiptToken || null,
-      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
+      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null,
+      ...(settlementPayload || {})
     });
   }
 
@@ -7789,15 +8663,18 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     try {
       await finalizePurchase(intent.id, prisma);
     } catch {}
+    await syncFinanceForPaymentIntent(intent.id);
 
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+    const settlementPayload = await buildSettlementPayload(intent.id);
     return reply.send({
       ok: true,
       status: "paid",
       paidVia,
       paidAt,
       receiptToken: updated?.receiptToken || null,
-      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
+      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null,
+      ...(settlementPayload || {})
     });
   }
 
@@ -7848,6 +8725,7 @@ if (process.env.NODE_ENV !== "production") {
     });
 
     await finalizePurchase(paymentIntentId, prisma);
+    await syncFinanceForPaymentIntent(paymentIntentId);
 
     const afterSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId } });
     const afterEntitlement = await prisma.entitlement.findFirst({ where: { paymentIntentId } });
@@ -7923,6 +8801,7 @@ app.post("/api/payment-intents", { preHandler: requireAuth }, async (req: any, r
       onchainAddress: paidVia === "onchain" ? asString(body.onchainAddress || "") || null : null
     }
   });
+  await syncFinanceForPaymentIntent(intent.id);
 
   return reply.send({ ok: true, paymentIntentId: intent.id });
 });
@@ -7951,6 +8830,7 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
 
   try {
     const settlement = await settlePaymentIntent(id);
+    await syncFinanceForPaymentIntent(id);
     return reply.send({ ok: true, settlementId: settlement.id });
   } catch (e: any) {
     const status = Number(e?.statusCode) || 500;

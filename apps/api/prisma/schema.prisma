@@ -91,6 +91,37 @@ enum PaymentStatus {
   expired
 }
 
+enum SaleStatus {
+  pending
+  paid
+  failed
+  expired
+}
+
+enum PaymentRecordStatus {
+  pending
+  completed
+  failed
+}
+
+enum RoyaltyStatus {
+  pending
+  earned
+  paid
+}
+
+enum PayoutStatus {
+  pending
+  completed
+}
+
+enum TransactionKind {
+  sale
+  payment
+  royalty
+  payout
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -545,6 +576,108 @@ model SettlementLine {
   amountSats    BigInt
 
   settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  royalty    Royalty?
 
   @@index([settlementId])
+}
+
+model Sale {
+  id              String     @id @default(cuid())
+  contentId       String
+  buyerUserId     String?
+  paymentIntentId String?    @unique
+  amountSats      BigInt
+  status          SaleStatus @default(pending)
+  paidAt          DateTime?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  content       ContentItem   @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  buyer         User?         @relation(fields: [buyerUserId], references: [id], onDelete: SetNull)
+  paymentIntent PaymentIntent? @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
+  payments      PaymentRecord[]
+  royalties     Royalty[]
+
+  @@index([contentId])
+  @@index([buyerUserId])
+  @@index([status])
+}
+
+model PaymentRecord {
+  id              String              @id @default(cuid())
+  saleId          String
+  paymentIntentId String?             @unique
+  rail            PaymentRail?
+  providerId      String?
+  amountSats      BigInt
+  status          PaymentRecordStatus @default(pending)
+  paidAt          DateTime?
+  createdAt       DateTime            @default(now())
+
+  sale          Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  paymentIntent PaymentIntent? @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
+
+  @@index([saleId])
+  @@index([status])
+}
+
+model Royalty {
+  id              String        @id @default(cuid())
+  saleId          String
+  settlementId    String?
+  settlementLineId String?      @unique
+  contentId       String
+  participantId   String?
+  participantEmail String?
+  role            String?
+  amountSats      BigInt
+  status          RoyaltyStatus @default(pending)
+  earnedAt        DateTime      @default(now())
+  paidAt          DateTime?
+  payoutId        String?
+
+  sale        Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  settlement  Settlement?   @relation(fields: [settlementId], references: [id], onDelete: SetNull)
+  settlementLine SettlementLine? @relation(fields: [settlementLineId], references: [id], onDelete: SetNull)
+  content     ContentItem   @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  payout      Payout?       @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+
+  @@index([saleId])
+  @@index([contentId])
+  @@index([participantId])
+  @@index([participantEmail])
+  @@index([status])
+}
+
+model Payout {
+  id             String       @id @default(cuid())
+  userId         String?
+  participantEmail String?
+  method         PayoutMethodCode?
+  amountSats     BigInt
+  status         PayoutStatus @default(pending)
+  settlementRecords Json?
+  createdAt      DateTime     @default(now())
+  completedAt    DateTime?
+
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  royalties Royalty[]
+
+  @@index([userId])
+  @@index([participantEmail])
+  @@index([status])
+}
+
+model TransactionHistory {
+  id         String          @id @default(cuid())
+  kind       TransactionKind
+  refId      String
+  contentId  String?
+  amountSats BigInt?
+  createdAt  DateTime        @default(now())
+  metadata   Json?
+
+  @@unique([kind, refId])
+  @@index([contentId])
+  @@index([createdAt])
 }
