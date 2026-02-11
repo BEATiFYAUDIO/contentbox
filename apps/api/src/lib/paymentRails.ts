@@ -88,7 +88,7 @@ export class LightningAddressRail implements PaymentRail {
   }
 
   async confirmPayment(): Promise<RailConfirm> {
-    if (process.env.DEV_ALLOW_SIMULATE_PAYMENTS === "1") {
+    if (process.env.NODE_ENV !== "production" && process.env.DEV_ALLOW_SIMULATE_PAYMENTS === "1") {
       return { status: "paid", paidAt: new Date().toISOString(), paymentHash: crypto.randomBytes(32).toString("hex") };
     }
     return { status: "unpaid" };
@@ -116,4 +116,3 @@ export class LndRail implements PaymentRail {
     return { status: status.status === "expired" ? "expired" : "unpaid" };
   }
 }
-

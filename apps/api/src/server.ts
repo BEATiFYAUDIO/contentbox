@@ -410,12 +410,13 @@ async function syncFinanceForPaymentIntent(paymentIntentId: string) {
     const sync = await syncSaleAndPaymentForIntent(paymentIntentId);
     if (!sync) return;
     const { sale } = sync;
+    const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
+    if (intent?.status !== "paid") return;
     const settlement = await prisma.settlement.findUnique({ where: { paymentIntentId } });
     if (settlement) {
       await ensureRoyaltiesForSettlement(settlement.id, sale.id);
     }
-    const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
-    if (intent?.status === "paid") {
+    if (intent) {
       await recordTransactionSafe({
         kind: "sale",
         refId: `entitlement:${intent.id}`,
@@ -756,6 +757,9 @@ const previewTokens = new Map<
 >();
 const previewRate = new Map<string, { count: number; resetAt: number }>();
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || process.env.JWT_SECRET || "").toString();
+if (process.env.NODE_ENV !== "production" && process.env.DEV_ALLOW_SIMULATE_PAYMENTS === "1") {
+  app.log.warn("DEV_ALLOW_SIMULATE_PAYMENTS is enabled (non-production only).");
+}
 
 function isPublicCorsPath(url?: string) {
   if (!url) return false;
@@ -5764,6 +5768,7 @@ app.get("/buy/:contentId", async (req: any, reply) => {
         <div style="margin-top:8px;font-size:18px;">\${price}</div>
         <button id="buyBtn" class="btn" style="margin-top:12px; \${hidePay ? "display:none;" : ""}">Pay</button>
         <div id="status" class="muted" style="margin-top:8px;"></div>
+        <button id="manualConfirm" class="copy" style="margin-top:8px; display:none;">I’ve paid</button>
         \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
         \${entitlement?.token ? \`<button id="resetEnt" class="copy" style="margin-top:8px;">Reset entitlement</button>\` : ""}
         \${entitlement?.token && entitlement?.status !== "preview" ? \`
@@ -5783,6 +5788,10 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     \`;
     const btn = document.getElementById("buyBtn");
     if (btn) btn.onclick = async () => startPurchase(offer);
+    const manualBtn = document.getElementById("manualConfirm");
+    if (manualBtn) {
+      manualBtn.onclick = async () => pollIntent(true);
+    }
     if (entitlement?.token && isPaid) {
       document.getElementById("status").textContent = "Unlocked. You can play now.";
     }
@@ -5946,12 +5955,12 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     return res;
   }
 
-  async function pollIntent(){
+  async function pollIntent(force){
     if (!intentId) return;
     const res = await fetchPayment("/payments/intents/" + intentId + "/refresh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: "{}"
+      body: JSON.stringify(force ? { force: true } : {})
     });
     const status = await res.json();
     if (status.status === "paid" && status.receiptToken) {
@@ -5982,7 +5991,13 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     } else if (status.status === "expired") {
       document.getElementById("status").textContent = "Invoice expired. Create a new one.";
     } else {
-      document.getElementById("status").textContent = "Waiting for payment…";
+      const manualBtn = document.getElementById("manualConfirm");
+      if (status.nextAction === "manual_confirm" && manualBtn) {
+        manualBtn.style.display = "inline-block";
+      }
+      document.getElementById("status").textContent = status.nextAction === "manual_confirm"
+        ? "If you’ve paid, click “I’ve paid” to re-check."
+        : "Waiting for payment…";
     }
   }
 
@@ -6024,8 +6039,8 @@ app.get("/buy/:contentId", async (req: any, reply) => {
       intentId = intent.intentId || intent.id || null;
       if (!intentId) throw new Error("Payment intent missing id.");
       renderRails(intent);
-      pollTimer = setInterval(pollIntent, 2000);
-      pollIntent().catch(()=>{});
+      pollTimer = setInterval(() => pollIntent(false), 2000);
+      pollIntent(false).catch(()=>{});
     } finally {
       creatingPayment = false;
     }
@@ -9001,10 +9016,13 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
   }
 
   if (intent.status === "paid") {
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-    await syncFinanceForPaymentIntent(intent.id);
+    const existingSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId: intent.id } });
+    if (!existingSettlement) {
+      try {
+        await finalizePurchase(intent.id, prisma);
+      } catch {}
+      await syncFinanceForPaymentIntent(intent.id);
+    }
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     const settlementPayload = await buildSettlementPayload(intent.id);
     return reply.send({
@@ -9031,7 +9049,7 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
         if (res.status === "paid") {
           paidVia = "lightning";
           paidAt = res.paidAt || new Date().toISOString();
-        } else if (force && process.env.DEV_ALLOW_SIMULATE_PAYMENTS === "1") {
+        } else if (force && process.env.NODE_ENV !== "production" && process.env.DEV_ALLOW_SIMULATE_PAYMENTS === "1") {
           paidVia = "lightning";
           paidAt = new Date().toISOString();
         }
@@ -9075,10 +9093,13 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
       }
     });
 
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-    await syncFinanceForPaymentIntent(intent.id);
+    const existingSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId: intent.id } });
+    if (!existingSettlement) {
+      try {
+        await finalizePurchase(intent.id, prisma);
+      } catch {}
+      await syncFinanceForPaymentIntent(intent.id);
+    }
 
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     const settlementPayload = await buildSettlementPayload(intent.id);
@@ -9100,7 +9121,11 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     });
   }
 
-  return reply.send({ ok: true, status: intent.status, paidVia: intent.paidVia, confirmations: onchainUpdate.confirmations ?? intent.confirmations });
+  const pendingStatus = intent.providerId && String(intent.providerId).startsWith("lnaddr:")
+    ? "unknown"
+    : intent.status;
+  const nextAction = pendingStatus === "unknown" ? "manual_confirm" : null;
+  return reply.send({ ok: true, status: pendingStatus, nextAction, paidVia: intent.paidVia, confirmations: onchainUpdate.confirmations ?? intent.confirmations });
 });
 
 /**
@@ -9139,8 +9164,11 @@ if (process.env.NODE_ENV !== "production") {
       }
     });
 
-    await finalizePurchase(paymentIntentId, prisma);
-    await syncFinanceForPaymentIntent(paymentIntentId);
+    const existingSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId } });
+    if (!existingSettlement) {
+      await finalizePurchase(paymentIntentId, prisma);
+      await syncFinanceForPaymentIntent(paymentIntentId);
+    }
 
     const afterSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId } });
     const afterEntitlement = await prisma.entitlement.findFirst({ where: { paymentIntentId } });
@@ -9174,6 +9202,10 @@ if (process.env.NODE_ENV !== "production") {
       priceSats: null
     });
   });
+}
+if (process.env.NODE_ENV === "production") {
+  app.post("/api/dev/simulate-pay", async (_req: any, reply: any) => reply.code(404).send({ error: "Not found" }));
+  app.get("/api/dev/sample-content", async (_req: any, reply: any) => reply.code(404).send({ error: "Not found" }));
 }
 
 app.post("/api/payment-intents", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -9232,21 +9264,28 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content || content.ownerUserId !== userId) return forbidden(reply);
 
-  await prisma.paymentIntent.update({
-    where: { id },
-    data: {
-      status: "paid" as any,
-      paidAt: new Date(),
-      onchainTxid: body.onchainTxid ? asString(body.onchainTxid) : intent.onchainTxid,
-      onchainVout: Number.isFinite(Number(body.onchainVout)) ? Math.floor(Number(body.onchainVout)) : intent.onchainVout,
-      confirmations: Number.isFinite(Number(body.confirmations)) ? Math.floor(Number(body.confirmations)) : intent.confirmations
-    }
-  });
+  const alreadyPaid = intent.status === "paid";
+  if (!alreadyPaid) {
+    await prisma.paymentIntent.update({
+      where: { id },
+      data: {
+        status: "paid" as any,
+        paidAt: new Date(),
+        onchainTxid: body.onchainTxid ? asString(body.onchainTxid) : intent.onchainTxid,
+        onchainVout: Number.isFinite(Number(body.onchainVout)) ? Math.floor(Number(body.onchainVout)) : intent.onchainVout,
+        confirmations: Number.isFinite(Number(body.confirmations)) ? Math.floor(Number(body.confirmations)) : intent.confirmations
+      }
+    });
+  }
 
   try {
+    const existingSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId: id } });
+    if (existingSettlement) {
+      return reply.send({ ok: true, settlementId: existingSettlement.id, alreadyPaid });
+    }
     const settlement = await settlePaymentIntent(id);
     await syncFinanceForPaymentIntent(id);
-    return reply.send({ ok: true, settlementId: settlement.id });
+    return reply.send({ ok: true, settlementId: settlement.id, alreadyPaid });
   } catch (e: any) {
     const status = Number(e?.statusCode) || 500;
     const code = e?.code ? String(e.code) : undefined;

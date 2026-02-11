@@ -5,6 +5,7 @@ Adds a PaymentRail abstraction and a safe confirm hook for payment intents, enab
 - Lightning Address (LNURL‑Pay) intake for non‑technical musicians.
 - LND rail compatibility for publisher/seller nodes.
 - Idempotent payment confirmation via `/api/payments/intents/:id/confirm` (alias to refresh).
+- LNURL confirmation fallback UX: when status cannot be determined, the API returns `status: "unknown"` with `nextAction: "manual_confirm"` so the buyer can click “I’ve paid” to re-check without getting stuck.
 
 ## Key Changes
 - `PaymentRail` interface with `LightningAddressRail` + `LndRail`.
@@ -25,8 +26,11 @@ DEV_ALLOW_SIMULATE_PAYMENTS=1 tsx apps/api/src/scripts/northstar_mvp_test.ts
    - Payment intent created.
    - Simulated payment settles.
    - `/finance/royalties` shows 60/40 allocation.
+   - Idempotency: repeated refresh does not create duplicate settlements.
+   - Pending intent does not mint royalties.
 
 ## Notes
 - LNURL payment confirmation is provider‑dependent. Current confirm returns unpaid unless:
   - `DEV_ALLOW_SIMULATE_PAYMENTS=1` (dev mode), or
   - A future webhook/poller is implemented.
+- When LNURL confirmation is best‑effort only, the API returns `status: "unknown"` so buyers can manually re-check after paying.
