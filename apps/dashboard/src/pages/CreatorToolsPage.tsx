@@ -31,15 +31,15 @@ export default function CreatorToolsPage(props: {
           onClick={props.onOpenSales}
           className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 text-left hover:bg-neutral-900/40"
         >
-          <div className="text-sm font-medium">Sales</div>
-          <div className="text-xs text-neutral-400 mt-1">Orders and receipts (coming soon).</div>
+          <div className="text-sm font-medium">Revenue</div>
+          <div className="text-xs text-neutral-400 mt-1">Sales, royalties, payouts, and ledger.</div>
         </button>
         <button
           onClick={props.onOpenPayments}
           className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 text-left hover:bg-neutral-900/40"
         >
-          <div className="text-sm font-medium">Payment setup</div>
-          <div className="text-xs text-neutral-400 mt-1">Configure rails and payout destinations.</div>
+          <div className="text-sm font-medium">Payout setup</div>
+          <div className="text-xs text-neutral-400 mt-1">Configure payout destinations.</div>
         </button>
       </div>
     </div>
