@@ -5,7 +5,7 @@ import { base64ToHex, is32ByteHex, normalizeProviderIdFromLnd, providerIdToLndBa
 type LightningInvoice = { bolt11: string; providerId: string; expiresAt: string | null };
 type LightningStatus = { paid: boolean; paidAt?: string | null; status?: "pending" | "paid" | "expired" | "failed" };
 
-function readMaybeFile(value?: string | null): string | null {
+function readPemMaybeFile(value?: string | null): string | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -13,6 +13,20 @@ function readMaybeFile(value?: string | null): string | null {
   if (fsSync.existsSync(trimmed)) {
     try {
       return fsSync.readFileSync(trimmed, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+function readMacaroon(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (fsSync.existsSync(trimmed)) {
+    try {
+      return fsSync.readFileSync(trimmed).toString("hex");
     } catch {
       return null;
     }
@@ -45,9 +59,14 @@ async function fetchWithTimeout(
 
 function lndConfig() {
   const baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
-  const macVal = process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "";
-  const macaroon = readMaybeFile(macVal);
-  const cert = readMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
+  const macVal =
+    process.env.LND_MACAROON_PATH ||
+    process.env.LND_INVOICE_MACAROON_PATH ||
+    process.env.LND_MACAROON_HEX ||
+    process.env.LND_MACAROON ||
+    "";
+  const macaroon = readMacaroon(macVal);
+  const cert = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
   const dispatcher = cert ? new Agent({ connect: { ca: cert } }) : undefined;
   if (!baseUrl || !macaroon) return null;
   return { baseUrl, macaroon, dispatcher };
