@@ -14,6 +14,9 @@ import PurchasesPage from "./pages/PurchasesPage";
 import CreatorToolsPage from "./pages/CreatorToolsPage";
 import ReceiptPage from "./pages/ReceiptPage";
 import SalesPage from "./pages/SalesPage";
+import FinancePage from "./pages/FinancePage";
+import type { FinanceTab } from "./pages/FinancePage";
+import ErrorBoundary from "./components/ErrorBoundary";
 import ConfigPage from "./pages/ConfigPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
 import { api } from "./lib/api";
@@ -52,7 +55,8 @@ type PageKey =
   | "receipt"
   | "invite"
   | "profile"
-  | "royalties-terms";
+  | "royalties-terms"
+  | "finance";
 
 /* =======================
    Helpers
@@ -164,6 +168,7 @@ export default function App() {
 
   // Define 'page' and 'setPage' for routing
   const [page, setPage] = useState<PageKey>("config");
+  const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
@@ -259,13 +264,16 @@ export default function App() {
   const royaltiesNav = [
     { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in" },
     { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history" },
-    { key: "invite" as const, label: "Split Invites", hint: "Split requests" },
-    { key: "sales" as const, label: "Sales", hint: "Orders and receipts" }
+    { key: "invite" as const, label: "Split Invites", hint: "Split requests" }
+  ];
+
+  const financeNav = [
+    { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" }
   ];
 
   const identityNav = [
     { key: "profile" as const, label: "Profile", hint: "Identity" },
-    { key: "payouts" as const, label: "Payout", hint: "Rails + payout destinations" }
+    { key: "payouts" as const, label: "Payout", hint: "Legacy payouts" }
   ];
 
   const pageTitle =
@@ -278,6 +286,7 @@ export default function App() {
     page === "purchases" ? "Purchase history" :
     page === "creator" ? "Creator tools" :
     page === "sales" ? "Sales" :
+    page === "finance" ? "Revenue" :
     page === "splits" ? "Splits" :
     page === "split-editor" ? "Splits" :
     page === "profile" ? "Profile" :
@@ -399,6 +408,33 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Revenue</div>
+              <div className="space-y-1">
+              {financeNav.map((item) => {
+                const active = item.key === page;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => {
+                      setFinanceTab("overview");
+                      setPage(item.key);
+                    }}
+                    className={[
+                      "w-full text-left rounded-lg px-3 py-2 transition border",
+                      active
+                        ? "border-white/30 bg-white/5"
+                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                    ].join(" ")}
+                  >
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-neutral-900 pt-4">
               <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
               <div className="space-y-1">
               {identityNav.map((item) => {
@@ -484,9 +520,21 @@ export default function App() {
             <CreatorToolsPage
               onOpenContent={() => setPage("content")}
               onOpenSplits={() => setPage("splits")}
-              onOpenSales={() => setPage("sales")}
-              onOpenPayments={() => setPage("payouts")}
+              onOpenSales={() => {
+                setFinanceTab("ledger");
+                setPage("finance");
+              }}
+              onOpenPayments={() => {
+                setFinanceTab("payouts");
+                setPage("finance");
+              }}
             />
+          )}
+
+          {page === "finance" && (
+            <ErrorBoundary>
+              <FinancePage initialTab={financeTab} />
+            </ErrorBoundary>
           )}
 
           {page === "sales" && <SalesPage />}
@@ -523,7 +571,10 @@ export default function App() {
           {page === "split-editor" && (
             <SplitEditorPage
               contentId={selectedContentId}
-              onGoToPayouts={() => setPage("payouts")}
+              onGoToPayouts={() => {
+                setFinanceTab("payouts");
+                setPage("finance");
+              }}
             />
           )}
 

@@ -1,6 +1,6 @@
 import React from "react";
 import { api } from "../lib/api";
-import { PAYMENT_LABEL, PAYOUT_DESTINATIONS_LABEL, SETTLEMENTS_LABEL, PAYMENTS_EXPLAINER } from "../lib/terminology";
+import { PAYOUT_DESTINATIONS_LABEL, PAYMENTS_EXPLAINER } from "../lib/terminology";
 import AuditPanel from "../components/AuditPanel";
 
 type PayoutMethod = {
@@ -21,9 +21,15 @@ type Identity = {
   payoutMethod: PayoutMethod;
 };
 
+type PayoutsResponse = {
+  items: Array<{ id: string; amountSats: string; status: string; method: string | null; createdAt: string; completedAt: string | null }>;
+  totals: { pendingSats: string; paidSats: string };
+};
+
 export default function PayoutRailsPage() {
   const [methods, setMethods] = React.useState<PayoutMethod[]>([]);
   const [identities, setIdentities] = React.useState<Identity[]>([]);
+  const [payouts, setPayouts] = React.useState<PayoutsResponse | null>(null);
   const [selected, setSelected] = React.useState<PayoutMethod | null>(null);
   const [value, setValue] = React.useState("");
   const [label, setLabel] = React.useState("");
@@ -38,12 +44,14 @@ export default function PayoutRailsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [m, ids] = await Promise.all([
+      const [m, ids, p] = await Promise.all([
         api<PayoutMethod[]>("/payout-methods"),
         api<Identity[]>("/identities"),
+        api<PayoutsResponse>("/finance/payouts"),
       ]);
       setMethods(m);
       setIdentities(ids);
+      setPayouts(p);
     } catch (e: any) {
       setError(e.message || "Failed to load");
     } finally {
@@ -132,11 +140,37 @@ export default function PayoutRailsPage() {
 
   if (loading) return <div className="text-neutral-300">Loading payout destinations…</div>;
 
+  const formatSats = (raw?: string | null) => {
+    const n = Number(raw || 0);
+    if (!Number.isFinite(n)) return "0 sats";
+    return `${Math.round(n).toLocaleString()} sats`;
+  };
+
+  const payoutTotalsByMethod = new Map<string, { pending: bigint; completed: bigint; lastDate: string | null }>();
+  for (const m of methods) {
+    payoutTotalsByMethod.set(m.code, { pending: 0n, completed: 0n, lastDate: null });
+  }
+  for (const p of payouts?.items || []) {
+    const key = p.method || "manual";
+    const row = payoutTotalsByMethod.get(key) || { pending: 0n, completed: 0n, lastDate: null };
+    if (p.status === "completed") {
+      row.completed += BigInt(p.amountSats || "0");
+    } else {
+      row.pending += BigInt(p.amountSats || "0");
+    }
+    const date = p.completedAt || p.createdAt;
+    row.lastDate = row.lastDate && row.lastDate > date ? row.lastDate : date;
+    payoutTotalsByMethod.set(key, row);
+  }
+
   return (
     <div className="space-y-6">
       <div>
-        <div className="text-lg font-semibold">{PAYMENT_LABEL} & {PAYOUT_DESTINATIONS_LABEL}</div>
-        <div className="text-sm text-neutral-400">{PAYMENTS_EXPLAINER}</div>
+        <div className="text-lg font-semibold">{PAYOUT_DESTINATIONS_LABEL}</div>
+        <div className="text-sm text-neutral-400">
+          Configure where your settlements should be paid out. Buyer intake rails are managed separately.
+        </div>
+        <div className="text-xs text-neutral-500 mt-2">{PAYMENTS_EXPLAINER}</div>
       </div>
 
       {error && (
@@ -145,10 +179,40 @@ export default function PayoutRailsPage() {
         </div>
       )}
 
-      <div className="mt-2">
-        <div className="font-medium">{PAYMENT_LABEL} rails (buyer intake)</div>
-        <div className="text-sm text-neutral-400">
-          Buyer payments are accepted via Lightning invoices or on-chain Bitcoin addresses derived from your configured payout destinations.
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
+        <div className="font-medium mb-2">Destination summary</div>
+        <div className="text-sm text-neutral-400 mb-3">
+          Track which payout destinations are configured and their payout totals.
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-neutral-400">
+              <tr>
+                <th className="text-left font-medium py-2">Destination</th>
+                <th className="text-left font-medium py-2">Configured</th>
+                <th className="text-left font-medium py-2">Total paid</th>
+                <th className="text-left font-medium py-2">Total pending</th>
+                <th className="text-left font-medium py-2">Last payout</th>
+              </tr>
+            </thead>
+            <tbody>
+              {methods.map((m) => {
+                const configured = identities.some((i) => i.payoutMethod.id === m.id);
+                const totals = payoutTotalsByMethod.get(m.code) || { pending: 0n, completed: 0n, lastDate: null };
+                return (
+                  <tr key={m.id} className="border-t border-neutral-900">
+                    <td className="py-2 text-neutral-200">{m.displayName}</td>
+                    <td className="py-2 text-neutral-300">{configured ? "Yes" : "No"}</td>
+                    <td className="py-2">{formatSats(totals.completed.toString())}</td>
+                    <td className="py-2 text-neutral-300">{formatSats(totals.pending.toString())}</td>
+                    <td className="py-2 text-neutral-400">
+                      {totals.lastDate ? new Date(totals.lastDate).toLocaleString() : "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -408,13 +472,6 @@ export default function PayoutRailsPage() {
             ))}
           </div>
         )}
-      </div>
-
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
-        <div className="font-medium mb-2">{SETTLEMENTS_LABEL} / Revenue splits</div>
-        <div className="text-sm text-neutral-400">
-          Settlements are created after a payment is paid and show how revenue is split across participants.
-        </div>
       </div>
 
       <AuditPanel scopeType="identity" title="Audit" exportName="identity-audit.json" />
