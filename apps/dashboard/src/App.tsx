@@ -14,11 +14,15 @@ import PurchasesPage from "./pages/PurchasesPage";
 import CreatorToolsPage from "./pages/CreatorToolsPage";
 import ReceiptPage from "./pages/ReceiptPage";
 import SalesPage from "./pages/SalesPage";
+import ConfigPage from "./pages/ConfigPage";
+import DiagnosticsPage from "./pages/DiagnosticsPage";
+import FinancePage, { type FinanceTab } from "./pages/FinancePage";
 import { api } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
 import logo from "./assets/InShot_20260201_011901479.png";
 import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
 import AuditPanel from "./components/AuditPanel";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 /* =======================
    Types
@@ -31,6 +35,7 @@ type Me = {
   bio?: string | null;
   avatarUrl?: string | null;
   createdAt: string;
+  useNodeRails?: boolean | null;
 };
 
 type PageKey =
@@ -45,6 +50,9 @@ type PageKey =
   | "split-editor"
   | "payouts"
   | "sales"
+  | "config"
+  | "diagnostics"
+  | "finance"
   | "receipt"
   | "invite"
   | "profile"
@@ -163,6 +171,7 @@ export default function App() {
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
+  const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
 
   // Extract the invite token from the URL when the component mounts
   useEffect(() => {
@@ -186,10 +195,16 @@ export default function App() {
       setSelectedContentId(royaltiesFromUrl);
       setPage("royalties-terms");
     }
+    const parts = window.location.pathname.split("/").filter(Boolean);
     if (!tokenFromUrl && !receiptFromUrl && !splitFromUrl && !royaltiesFromUrl) {
-      // Always land on Library after refresh (ignore prior path)
-      window.history.replaceState({}, "", "/");
-      setPage("library");
+      if (parts[0] === "config") setPage("config");
+      else if (parts[0] === "diagnostics") setPage("diagnostics");
+      else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
+      else {
+        // Always land on Library after refresh (ignore prior path)
+        window.history.replaceState({}, "", "/");
+        setPage("library");
+      }
     }
     loadMe();  // Load user data
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -251,8 +266,7 @@ export default function App() {
   const royaltiesNav = [
     { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in" },
     { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history" },
-    { key: "invite" as const, label: "Split Invites", hint: "Split requests" },
-    { key: "sales" as const, label: "Sales", hint: "Orders and receipts" }
+    { key: "invite" as const, label: "Split Invites", hint: "Split requests" }
   ];
 
   const identityNav = [
@@ -260,7 +274,21 @@ export default function App() {
     { key: "payouts" as const, label: "Payout", hint: "Rails + payout destinations" }
   ];
 
+  const advancedNav = [
+    { key: "config" as const, label: "Config", hint: "Networking + system" },
+    { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" },
+    { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
+    { key: "sales" as const, label: "Sales", hint: "Orders and receipts" },
+    { key: "payouts" as const, label: "Payout Rails", hint: "Rails + destinations" },
+    { key: "splits" as const, label: "Splits", hint: "Draft, lock, history" },
+    { key: "participations" as const, label: "Royalties", hint: "My royalties" }
+  ];
+
+  const showAdvancedNav = (import.meta as any).env?.VITE_SHOW_ADVANCED_NAV === "1";
+
   const pageTitle =
+    page === "config" ? "Config" :
+    page === "diagnostics" ? "Diagnostics" :
     page === "library" ? "Library" :
     page === "store" ? "Store (Direct link)" :
     page === "participations" ? "Royalties" :
@@ -268,6 +296,7 @@ export default function App() {
     page === "purchases" ? "Purchase history" :
     page === "creator" ? "Creator tools" :
     page === "sales" ? "Sales" :
+    page === "finance" ? "Revenue" :
     page === "splits" ? "Splits" :
     page === "split-editor" ? "Splits" :
     page === "profile" ? "Profile" :
@@ -386,6 +415,31 @@ export default function App() {
               })}
               </div>
             </div>
+            {showAdvancedNav && (
+              <div className="mt-4 border-t border-neutral-900 pt-4">
+                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Advanced</div>
+                <div className="space-y-1">
+                {advancedNav.map((item) => {
+                  const active = item.key === page;
+                  return (
+                    <button
+                      key={item.key}
+                      onClick={() => setPage(item.key)}
+                      className={[
+                        "w-full text-left rounded-lg px-3 py-2 transition border",
+                        active
+                          ? "border-white/30 bg-white/5"
+                          : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                      ].join(" ")}
+                    >
+                      <div className="text-sm font-medium">{item.label}</div>
+                      <div className="text-xs text-neutral-400">{item.hint}</div>
+                    </button>
+                  );
+                })}
+                </div>
+              </div>
+            )}
           </div>
 
           {me && (
@@ -437,9 +491,18 @@ export default function App() {
             <CreatorToolsPage
               onOpenContent={() => setPage("content")}
               onOpenSplits={() => setPage("splits")}
-              onOpenSales={() => setPage("sales")}
-              onOpenPayments={() => setPage("payouts")}
+              onOpenSales={() => { setFinanceTab("ledger"); setPage("finance"); }}
+              onOpenPayments={() => { setFinanceTab("payouts"); setPage("finance"); }}
             />
+          )}
+
+          {page === "config" && <ConfigPage />}
+          {page === "diagnostics" && <DiagnosticsPage />}
+
+          {page === "finance" && (
+            <ErrorBoundary>
+              <FinancePage initialTab={financeTab} />
+            </ErrorBoundary>
           )}
 
           {page === "sales" && <SalesPage />}
