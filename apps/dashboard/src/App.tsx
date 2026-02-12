@@ -279,8 +279,7 @@ export default function App() {
     { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" }
   ];
 
-  const showAdvancedNav =
-    (import.meta as any).env?.VITE_SHOW_ADVANCED_NAV === "1" || Boolean(me?.useNodeRails);
+  const showAdvancedNav = true;
 
   const pageTitle =
     page === "config" ? "Config" :

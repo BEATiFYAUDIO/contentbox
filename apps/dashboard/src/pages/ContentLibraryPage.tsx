@@ -191,6 +191,12 @@ function previewFileFor(previewUrl: string | null | undefined, files: any[] | nu
   }
 }
 
+function formatDateLabel(value?: string | null) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
 async function copyText(text: string) {
   if (!text) return;
   try {
@@ -1335,10 +1341,10 @@ export default function ContentLibraryPage({
                     <div className="min-w-0">
                       <div className="text-sm font-medium truncate">{it.title}</div>
                       <div className="text-xs text-neutral-400">
-                        {it.type.toUpperCase()} • {it.status.toUpperCase()} • {new Date(it.createdAt).toLocaleString()} • {filesCount} file
+                        {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateLabel(it.createdAt)} • {filesCount} file
                         {filesCount === 1 ? "" : "s"}
                         • Storefront: {(it.storefrontStatus || "DISABLED").toString()}
-                        {showTrash && it.deletedAt ? ` • Deleted ${new Date(it.deletedAt).toLocaleString()}` : ""}
+                        {showTrash && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
                       </div>
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
                       {!isOwner ? (
@@ -1502,7 +1508,7 @@ export default function ContentLibraryPage({
 
                                       <div className="text-xs text-neutral-400 flex flex-wrap items-center gap-2">
                                         <span>
-                                          {formatBytes(f.sizeBytes)} • {new Date(f.createdAt).toLocaleString()} • {f.objectKey}
+                                          {formatBytes(f.sizeBytes)} • {formatDateLabel(f.createdAt)} • {f.objectKey}
                                         </span>
 
                                         <span
@@ -1581,7 +1587,7 @@ export default function ContentLibraryPage({
                                 <span className="font-medium">Split v{split.versionNumber}</span>{" "}
                                 <span className="text-neutral-400">• {String(split.status).toUpperCase()}</span>
                                 {split.status === "locked" && split.lockedAt ? (
-                                  <span className="text-neutral-500"> • Locked {new Date(split.lockedAt).toLocaleString()}</span>
+                                  <span className="text-neutral-500"> • Locked {formatDateLabel(split.lockedAt)}</span>
                                 ) : null}
                               </>
                             ) : (

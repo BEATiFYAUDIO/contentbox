@@ -27,6 +27,12 @@ function titleCase(s?: string | null) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+function formatDateLabel(value?: string | null) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
 export default function SplitsPage(props: { onEditContent?: (id: string) => void }) {
   const { onEditContent } = props;
 
@@ -81,7 +87,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">{c.title}</div>
                     <div className="text-xs text-neutral-400">
-                      {titleCase(c.type)} • {titleCase(c.status)} • {summary ? `v${summary.versionNumber}` : "v—"} • {summary?.status || "—"} • {new Date(updatedAt).toLocaleString()}
+                      {titleCase(c.type)} • {titleCase(c.status)} • {summary ? `v${summary.versionNumber}` : "v—"} • {summary?.status || "—"} • {formatDateLabel(updatedAt)}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
