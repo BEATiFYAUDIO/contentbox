@@ -1,5 +1,52 @@
 # ContentBox P2P Dev Runbook
 
+## Requirements
+- Node.js + npm (no root package.json; installs are per app)
+- Postgres (local or remote)
+
+## Fresh Clone Quickstart (API)
+```bash
+git clone <repo>
+cd contentbox
+git checkout fix/northstar-mvp-hardening
+
+cd apps/api
+bash scripts/bootstrap-dev.sh
+# then edit apps/api/.env and re-run if prompted
+```
+
+## Dashboard Quickstart
+```bash
+cd apps/dashboard
+bash scripts/bootstrap-dev.sh
+```
+
+## One-command install
+macOS/Linux:
+```bash
+./install.sh
+```
+Windows (PowerShell):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+After the first run, edit:
+- `apps/api/.env` (DATABASE_URL, JWT_SECRET, CONTENTBOX_ROOT)
+- `apps/dashboard/.env` if your API is not localhost
+
+## LAN sharing
+By default the API binds to loopback only. For LAN access:
+```bash
+CONTENTBOX_BIND=public
+```
+If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
+
+## Common errors and fixes
+- **Prisma config fails / DATABASE_URL missing**: set `DATABASE_URL` in `apps/api/.env`
+- **JWT_SECRET missing**: set `JWT_SECRET` in `apps/api/.env`
+- **CONTENTBOX_ROOT missing**: set it and ensure the directory exists
+- **@prisma/client errors**: run `npx prisma generate` from `apps/api`
+
 ## Environment flags
 - `DEV_P2P_UNLOCK=1` to allow stream permits without payment
 - `PAYMENT_PROVIDER=none` to bypass payment rails
