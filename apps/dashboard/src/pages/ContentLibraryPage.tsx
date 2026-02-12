@@ -267,6 +267,7 @@ export default function ContentLibraryPage({
   const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
+  const [capabilities, setCapabilities] = React.useState<{ cloudflaredInstalled?: boolean } | null>(null);
   const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
@@ -331,6 +332,17 @@ export default function ContentLibraryPage({
         setPublicStatus(res || null);
       } catch {
         setPublicStatus(null);
+      }
+    })();
+  }, []);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await api<any>("/api/capabilities", "GET");
+        setCapabilities(res || null);
+      } catch {
+        setCapabilities(null);
       }
     })();
   }, []);
@@ -1154,7 +1166,7 @@ export default function ContentLibraryPage({
                     setPublicBusy(false);
                   }
                 }}
-                disabled={publicBusy || publicStatus?.cloudflaredInstalled === false}
+                disabled={publicBusy || capabilities?.cloudflaredInstalled === false}
               >
                 Enable Public Link
               </button>
@@ -1176,7 +1188,7 @@ export default function ContentLibraryPage({
             </button>
           ) : null}
         </div>
-        {publicStatus?.cloudflaredInstalled === false ? (
+        {capabilities?.cloudflaredInstalled === false ? (
           <div className="mt-2 text-xs text-amber-300">
             ⚠ cloudflared not installed. Public sharing (LTE) requires Cloudflare Tunnel.
           </div>

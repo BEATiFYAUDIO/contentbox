@@ -57,6 +57,10 @@ If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
 ## LTE sharing (quick tunnel)
 Out-of-box LTE sharing requires `cloudflared` installed.
 Public tunnels start on Publish or when you click “Enable Public Link”.
+Check capabilities:
+```bash
+curl http://127.0.0.1:4000/api/capabilities
+```
 
 ## Common errors and fixes
 - **Prisma config fails / DATABASE_URL missing**: set `DATABASE_URL` in `apps/api/.env`

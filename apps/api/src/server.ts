@@ -1116,6 +1116,19 @@ function hashApprovalToken(token: string): string {
 
 app.get("/health", async () => ({ ok: true }));
 
+// Public capabilities (non-sensitive)
+app.get("/api/capabilities", async (_req: any, reply: any) => {
+  const provider = String(process.env.PUBLIC_TUNNEL_PROVIDER || "cloudflare").trim() || "cloudflare";
+  return reply.send({
+    ok: true,
+    cloudflaredInstalled: hasCloudflared(),
+    publicSharing: {
+      provider,
+      quickTunnelSupported: true
+    }
+  });
+});
+
 // Public node discovery endpoint to support basic P2P verification
 app.get("/.well-known/contentbox", async (req: any, reply: any) => {
   // include node public key for verification
