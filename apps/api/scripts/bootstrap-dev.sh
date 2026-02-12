@@ -110,7 +110,7 @@ if command -v psql >/dev/null 2>&1; then
 else
   if [ -d "$ROOT_DIR/node_modules/pg" ]; then
     echo "[bootstrap] Checking Postgres via node+pg..."
-    node - <<'NODE'
+    (cd "$ROOT_DIR" && node - <<'NODE')
 const { Client } = require('pg');
 const url = process.env.DATABASE_URL;
 const client = new Client({ connectionString: url });
