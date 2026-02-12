@@ -264,6 +264,9 @@ export default function ContentLibraryPage({
   const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
+  const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
+  const [publicBusy, setPublicBusy] = React.useState(false);
+  const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
   const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
@@ -320,6 +323,17 @@ export default function ContentLibraryPage({
     load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentScope]);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await api<any>("/api/public/status", "GET");
+        setPublicStatus(res || null);
+      } catch {
+        setPublicStatus(null);
+      }
+    })();
+  }, []);
 
   React.useEffect(() => {
     (async () => {
@@ -1093,6 +1107,76 @@ export default function ContentLibraryPage({
             ))}
           </div>
         ) : null}
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 mb-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="font-medium">Public sharing</div>
+            <div className="text-xs text-neutral-400">Enable a public link for LTE sharing.</div>
+          </div>
+          <div className="flex items-center gap-2">
+            {publicStatus?.publicOrigin ? (
+              <button
+                type="button"
+                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                onClick={async () => {
+                  try {
+                    setPublicBusy(true);
+                    await api("/api/public/stop", "POST");
+                    setPublicStatus(null);
+                    setPublicOrigin("");
+                    setPublicBuyOrigin("");
+                    setPublicStudioOrigin("");
+                  } catch (e: any) {
+                    setPublicMsg(e?.message || "Failed to stop public link.");
+                  } finally {
+                    setPublicBusy(false);
+                  }
+                }}
+                disabled={publicBusy}
+              >
+                Stop Public Link
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                onClick={async () => {
+                  try {
+                    setPublicBusy(true);
+                    const res = await api<any>("/api/public/go", "POST");
+                    setPublicStatus(res || null);
+                    if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
+                  } catch (e: any) {
+                    setPublicMsg(e?.message || "Public link unavailable.");
+                  } finally {
+                    setPublicBusy(false);
+                  }
+                }}
+                disabled={publicBusy}
+              >
+                Enable Public Link
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="mt-2 text-xs text-neutral-400">
+          Public link:{" "}
+          <span className="text-neutral-200 break-all">
+            {publicStatus?.publicOrigin || "—"}
+          </span>
+          {publicStatus?.publicOrigin ? (
+            <button
+              type="button"
+              className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 ml-2"
+              onClick={() => copyText(publicStatus.publicOrigin)}
+            >
+              Copy
+            </button>
+          ) : null}
+        </div>
+        {publicMsg ? <div className="mt-1 text-xs text-amber-300">{publicMsg}</div> : null}
       </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">

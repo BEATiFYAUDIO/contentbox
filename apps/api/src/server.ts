@@ -9,7 +9,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
 import * as cheerio from "cheerio";
@@ -28,7 +28,7 @@ import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js
 import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
-import { getPublicOrigin, setPublicOrigin, clearPublicOrigin, getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
+import { getPublicOrigin, setPublicOrigin, clearPublicOrigin, getPublicOriginConfig, setPublicOriginConfig, type PublicOriginRecord } from "./lib/publicOriginStore.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
@@ -244,6 +244,113 @@ function readMacaroon(value?: string | null): string | null {
     }
   }
   return trimmed;
+}
+
+type TunnelProcess = {
+  pid: number;
+  url: string;
+  startedAt: string;
+};
+
+const userTunnelProcs = new Map<string, TunnelProcess>();
+
+function isValidPublicOrigin(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return /^https?:\/\/[^/\s]+/i.test(url);
+}
+
+function parseQuickTunnelUrl(text: string): string | null {
+  const m = String(text || "").match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+  return m ? m[0] : null;
+}
+
+async function startQuickTunnel(userId: string): Promise<TunnelProcess> {
+  const targetUrl = `http://127.0.0.1:${NODE_HTTP_PORT}`;
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    const child = spawn("cloudflared", ["tunnel", "--url", targetUrl, "--no-autoupdate"], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const onData = (buf: Buffer) => {
+      const txt = buf.toString("utf8");
+      const url = parseQuickTunnelUrl(txt);
+      if (url && !resolved) {
+        resolved = true;
+        const proc: TunnelProcess = { pid: child.pid || 0, url, startedAt: new Date().toISOString() };
+        userTunnelProcs.set(userId, proc);
+        resolve(proc);
+      }
+    };
+
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
+
+    child.on("error", (err) => {
+      if (!resolved) {
+        resolved = true;
+        reject(err);
+      }
+    });
+    child.on("exit", () => {
+      userTunnelProcs.delete(userId);
+    });
+
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        reject(new Error("Timed out waiting for cloudflared quick tunnel URL"));
+      }
+    }, 15000);
+  });
+}
+
+async function ensurePublicOriginForUser(userId: string): Promise<PublicOriginRecord> {
+  const existing = getPublicOrigin(userId);
+  if (existing && isValidPublicOrigin(existing.publicOrigin)) {
+    return existing;
+  }
+
+  // Prefer external/shared tunnel if configured
+  const config = getPublicOriginConfig();
+  const provider = String(config.provider || process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
+  const domain = String(config.domain || process.env.CLOUDFLARE_TUNNEL_DOMAIN || "").trim();
+  const tunnelName = String(config.tunnelName || process.env.INSTANCE_TUNNEL_NAME || "").trim();
+  if (provider === "cloudflare" && domain && tunnelName) {
+    const me = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, displayName: true }
+    });
+    const base = me?.displayName || me?.email || me?.id || userId;
+    const hostname = `${slugify(base)}.${domain}`;
+    await execFileAsync("cloudflared", ["tunnel", "route", "dns", tunnelName, hostname]);
+    const publicOrigin = `https://${hostname}`;
+    const record: PublicOriginRecord = {
+      publicOrigin,
+      mode: "external",
+      hostname,
+      tunnelName,
+      updatedAt: new Date().toISOString()
+    };
+    setPublicOrigin(userId, record);
+    return record;
+  }
+
+  // Otherwise: quick tunnel (trycloudflare)
+  let proc = userTunnelProcs.get(userId);
+  if (!proc) {
+    proc = await startQuickTunnel(userId);
+  }
+  const hostname = new URL(proc.url).host;
+  const record: PublicOriginRecord = {
+    publicOrigin: proc.url,
+    mode: "temporary",
+    hostname,
+    tunnelName: null,
+    updatedAt: new Date().toISOString()
+  };
+  setPublicOrigin(userId, record);
+  return record;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000) {
@@ -487,6 +594,7 @@ const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString()
 const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
 const CONTENTBOX_ROOT = mustEnv("CONTENTBOX_ROOT");
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
+const NODE_HTTP_PORT = Number(process.env.PORT || 4000);
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
@@ -2340,6 +2448,8 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (req: any, repl
   const userId = (req.user as JwtUser).sub;
   const record = getPublicOrigin(userId);
   const config = getPublicOriginConfig();
+  const running = record?.mode === "temporary" ? userTunnelProcs.has(userId) : false;
+  const proc = userTunnelProcs.get(userId);
   return reply.send({
     ok: true,
     publicOrigin: record?.publicOrigin || null,
@@ -2347,6 +2457,9 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (req: any, repl
     hostname: record?.hostname || null,
     tunnelName: record?.tunnelName || null,
     updatedAt: record?.updatedAt || null,
+    running,
+    pid: proc?.pid || null,
+    startedAt: proc?.startedAt || null,
     config: {
       provider: config.provider || null,
       domain: config.domain || null,
@@ -2398,61 +2511,41 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
 
 app.post("/api/public/go", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const me = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, email: true, displayName: true }
-  });
-  if (!me) return notFound(reply, "User not found");
-
-  const config = getPublicOriginConfig();
-  const provider = String(config.provider || process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
-  if (provider !== "cloudflare") {
-    return reply.code(400).send({ error: "Public tunnel provider not enabled" });
-  }
-
-  const domain = String(config.domain || process.env.CLOUDFLARE_TUNNEL_DOMAIN || "").trim();
-  if (!domain) {
-    return reply.code(400).send({ error: "CLOUDFLARE_TUNNEL_DOMAIN is required" });
-  }
-
-  const tunnelName = String(config.tunnelName || process.env.INSTANCE_TUNNEL_NAME || "").trim();
-  if (!tunnelName) {
-    return reply.code(400).send({ error: "INSTANCE_TUNNEL_NAME is required for shared tunnel routing" });
-  }
-
-  const base = me.displayName || me.email || me.id;
-  const slug = slugify(base);
-  const hostname = `${slug}.${domain}`;
-
   try {
-    await execFileAsync("cloudflared", ["tunnel", "route", "dns", tunnelName, hostname]);
-  } catch (e: any) {
-    return reply.code(500).send({
-      error: "Failed to configure tunnel route",
-      details: e?.message || String(e)
+    const record = await ensurePublicOriginForUser(userId);
+    const proc = userTunnelProcs.get(userId);
+    return reply.send({
+      ok: true,
+      publicOrigin: record.publicOrigin,
+      hostname: record.hostname,
+      mode: record.mode,
+      tunnelName: record.tunnelName || null,
+      running: record.mode === "temporary" ? userTunnelProcs.has(userId) : false,
+      pid: proc?.pid || null,
+      startedAt: proc?.startedAt || null
     });
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    if (msg.toLowerCase().includes("cloudflared") || msg.toLowerCase().includes("enoent")) {
+      return reply.code(503).send({
+        error: "cloudflared not available",
+        hint: "Install cloudflared to enable out-of-box LTE sharing"
+      });
+    }
+    return reply.code(500).send({ error: "Failed to enable public sharing", details: msg });
   }
-
-  const publicOrigin = `https://${hostname}`;
-  setPublicOrigin(userId, {
-    publicOrigin,
-    mode: "external",
-    hostname,
-    tunnelName,
-    updatedAt: new Date().toISOString()
-  });
-
-  return reply.send({
-    ok: true,
-    publicOrigin,
-    hostname,
-    mode: "external",
-    tunnelName
-  });
 });
 
 app.post("/api/public/stop", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  const record = getPublicOrigin(userId);
+  if (record?.mode === "temporary") {
+    const proc = userTunnelProcs.get(userId);
+    if (proc?.pid) {
+      try { process.kill(proc.pid); } catch {}
+    }
+    userTunnelProcs.delete(userId);
+  }
   clearPublicOrigin(userId);
   return reply.send({ ok: true });
 });
@@ -3178,6 +3271,61 @@ app.post("/api/identities", { preHandler: requireAuth }, async (req: any, reply)
   return reply.send(identity);
 });
 
+// Basic payout settings (lightning address / lnurl / btc)
+app.get("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const methods = await prisma.payoutMethod.findMany({
+    where: { code: { in: ["lightning_address", "lnurl", "btc_onchain"] as any } }
+  });
+  const methodByCode = new Map(methods.map((m) => [m.code, m]));
+  const identities = await prisma.identity.findMany({
+    where: { userId, payoutMethodId: { in: methods.map((m) => m.id) } },
+    include: { payoutMethod: true }
+  });
+  const byCode = new Map(identities.map((i) => [i.payoutMethod.code, i]));
+  return reply.send({
+    lightningAddress: byCode.get("lightning_address")?.value || "",
+    lnurl: byCode.get("lnurl")?.value || "",
+    btcAddress: byCode.get("btc_onchain")?.value || ""
+  });
+});
+
+app.post("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body ?? {}) as { lightningAddress?: string; lnurl?: string; btcAddress?: string };
+
+  const methods = await prisma.payoutMethod.findMany({
+    where: { code: { in: ["lightning_address", "lnurl", "btc_onchain"] as any } }
+  });
+  const methodByCode = new Map(methods.map((m) => [m.code, m]));
+
+  async function upsert(code: "lightning_address" | "lnurl" | "btc_onchain", valueRaw: string | undefined) {
+    const method = methodByCode.get(code);
+    if (!method) return;
+    const value = String(valueRaw || "").trim();
+    const existing = await prisma.identity.findFirst({
+      where: { userId, payoutMethodId: method.id }
+    });
+    if (!value) {
+      if (existing) await prisma.identity.delete({ where: { id: existing.id } });
+      return;
+    }
+    if (existing) {
+      await prisma.identity.update({ where: { id: existing.id }, data: { value } });
+    } else {
+      await prisma.identity.create({
+        data: { userId, payoutMethodId: method.id, value, label: null }
+      });
+    }
+  }
+
+  await upsert("lightning_address", body.lightningAddress);
+  await upsert("lnurl", body.lnurl);
+  await upsert("btc_onchain", body.btcAddress);
+
+  return reply.send({ ok: true });
+});
+
 app.patch("/api/identities/:id", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const id = asString((req.params as any).id);
@@ -3600,7 +3748,16 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     });
   });
 
-  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256 });
+  // Best-effort: ensure public sharing on publish (for LTE)
+  let publicOrigin: string | null = null;
+  try {
+    const record = await ensurePublicOriginForUser(userId);
+    publicOrigin = record.publicOrigin;
+  } catch {
+    publicOrigin = null;
+  }
+
+  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256, publicOrigin });
 });
 
 // Update storefront status (owner only)

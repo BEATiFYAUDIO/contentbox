@@ -172,6 +172,21 @@ export default function App() {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
+  const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
+  const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("contentbox.showAdvancedNav", showAdvancedNav ? "1" : "0");
+    } catch {}
+  }, [showAdvancedNav]);
 
   // Extract the invite token from the URL when the component mounts
   useEffect(() => {
@@ -209,6 +224,19 @@ export default function App() {
     loadMe();  // Load user data
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (page !== "profile") return;
+    if (!me) return;
+    (async () => {
+      try {
+        const res = await api<{ lightningAddress: string; lnurl: string; btcAddress: string }>(`/api/me/payout`, "GET");
+        setPayoutSettings(res || { lightningAddress: "", lnurl: "", btcAddress: "" });
+      } catch {
+        setPayoutSettings({ lightningAddress: "", lnurl: "", btcAddress: "" });
+      }
+    })();
+  }, [page, me]);
 
   // Function to load user data
   async function loadMe() {
@@ -278,8 +306,6 @@ export default function App() {
     { key: "config" as const, label: "Config", hint: "Networking + system" },
     { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" }
   ];
-
-  const showAdvancedNav = true;
 
   const pageTitle =
     page === "config" ? "Config" :
@@ -439,6 +465,14 @@ export default function App() {
 
           {me && (
             <div className="pt-4 border-t border-neutral-900">
+              <div className="mb-3">
+                <button
+                  className="w-full text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                  onClick={() => setShowAdvancedNav((v) => !v)}
+                >
+                  {showAdvancedNav ? "Hide Advanced" : "Show Advanced"}
+                </button>
+              </div>
               <div className="text-xs text-neutral-400">Signed in as</div>
               <div className="flex items-center gap-2">
                 {me.avatarUrl ? (
@@ -631,6 +665,52 @@ export default function App() {
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={me.avatarUrl} alt="avatar" className="w-12 h-12 rounded-full object-cover" />
                     ) : null}
+                  </div>
+                </div>
+
+                <hr className="border-neutral-800" />
+
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                  <div className="text-sm font-medium">Payout settings</div>
+                  <div className="text-xs text-neutral-400 mt-1">Where should earnings be sent?</div>
+                  <div className="mt-3 space-y-2">
+                    <input
+                      placeholder="Lightning Address (name@domain.com)"
+                      value={payoutSettings?.lightningAddress || ""}
+                      onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: e.target.value, lnurl: s?.lnurl || "", btcAddress: s?.btcAddress || "" }))}
+                      className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                    />
+                    <input
+                      placeholder="LNURL (optional)"
+                      value={payoutSettings?.lnurl || ""}
+                      onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: s?.lightningAddress || "", lnurl: e.target.value, btcAddress: s?.btcAddress || "" }))}
+                      className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                    />
+                    <input
+                      placeholder="BTC Address (optional)"
+                      value={payoutSettings?.btcAddress || ""}
+                      onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: s?.lightningAddress || "", lnurl: s?.lnurl || "", btcAddress: e.target.value }))}
+                      className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                    />
+                    <button
+                      onClick={async () => {
+                        try {
+                          setPayoutMsg(null);
+                          await api(`/api/me/payout`, "POST", {
+                            lightningAddress: payoutSettings?.lightningAddress || "",
+                            lnurl: payoutSettings?.lnurl || "",
+                            btcAddress: payoutSettings?.btcAddress || ""
+                          });
+                          setPayoutMsg("Saved.");
+                        } catch (e: any) {
+                          setPayoutMsg(e?.message || "Failed to save payout settings.");
+                        }
+                      }}
+                      className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                    >
+                      Save payout settings
+                    </button>
+                    {payoutMsg ? <div className="text-xs text-amber-300">{payoutMsg}</div> : null}
                   </div>
                 </div>
 

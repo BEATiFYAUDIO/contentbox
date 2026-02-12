@@ -34,12 +34,29 @@ After the first run, edit:
 - `apps/api/.env` (DATABASE_URL)
 - `apps/dashboard/.env` if your API is not localhost
 
+## LTE quick demo (10 lines)
+```bash
+# 1) install
+./install.sh
+# 2) edit apps/api/.env (DATABASE_URL)
+# 3) start services
+cd apps/api && npm run dev
+cd ../dashboard && npm run dev
+# 4) optional: LAN/tunnel (if using public links)
+CONTENTBOX_BIND=public
+# 5) upload content, publish, copy buy link, test on LTE
+```
+
 ## LAN sharing
 By default the API binds to loopback only. For LAN access:
 ```bash
 CONTENTBOX_BIND=public
 ```
 If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
+
+## LTE sharing (quick tunnel)
+Out-of-box LTE sharing requires `cloudflared` installed.
+Public tunnels start on Publish or when you click “Enable Public Link”.
 
 ## Common errors and fixes
 - **Prisma config fails / DATABASE_URL missing**: set `DATABASE_URL` in `apps/api/.env`
