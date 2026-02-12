@@ -49,6 +49,19 @@ type Identity = {
   };
 };
 
+const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
+const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
+const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
+
+function readStoredValue(key: string): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(key) || "";
+  } catch {
+    return "";
+  }
+}
+
 type SplitVersion = {
   id: string;
   contentId: string;
@@ -191,6 +204,10 @@ export default function ContentLibraryPage({
   onOpenSplits?: (contentId: string) => void;
 }) {
   const apiBase = ((import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000");
+  const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
+  const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
+  const envPublicStudioOrigin = ((import.meta as any).env?.VITE_PUBLIC_STUDIO_ORIGIN || "").toString().trim();
+
   const [items, setItems] = React.useState<ContentItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -238,6 +255,12 @@ export default function ContentLibraryPage({
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [priceDraft, setPriceDraft] = React.useState<Record<string, string>>({});
   const [priceMsg, setPriceMsg] = React.useState<Record<string, string>>({});
+  const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
+  const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
+  const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
+  const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
+  const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
+  const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [salesLoading, setSalesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
@@ -316,6 +339,41 @@ export default function ContentLibraryPage({
     })();
   }, []);
 
+  async function refreshPublicStatus() {
+    try {
+      const res = await api<any>("/api/public/status", "GET");
+      if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
+    } catch {
+      // ignore
+    }
+  }
+
+  React.useEffect(() => {
+    refreshPublicStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  React.useEffect(() => {
+    if (!publicOrigin) return;
+    try {
+      window.localStorage.setItem(STORAGE_PUBLIC_ORIGIN, publicOrigin);
+    } catch {}
+  }, [publicOrigin]);
+
+  React.useEffect(() => {
+    if (!publicBuyOrigin) return;
+    try {
+      window.localStorage.setItem(STORAGE_PUBLIC_BUY_ORIGIN, publicBuyOrigin);
+    } catch {}
+  }, [publicBuyOrigin]);
+
+  React.useEffect(() => {
+    if (!publicStudioOrigin) return;
+    try {
+      window.localStorage.setItem(STORAGE_PUBLIC_STUDIO_ORIGIN, publicStudioOrigin);
+    } catch {}
+  }, [publicStudioOrigin]);
+
   React.useEffect(() => {
     const expandedIds = Object.keys(expanded).filter((id) => expanded[id]);
     if (expandedIds.length === 0) return;
@@ -363,6 +421,67 @@ export default function ContentLibraryPage({
       setFilesByContent((m) => ({ ...m, [contentId]: files }));
     } finally {
       setFilesLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  function baseFromHostPort(host?: string, port?: string): string {
+    const cleanHost = (host || "").trim().replace(/^https?:\/\//i, "");
+    if (!cleanHost) return "";
+    const useHttps = port === "443" || /trycloudflare\.com$/i.test(cleanHost) || /\.ts\.net$/i.test(cleanHost);
+    const scheme = useHttps ? "https" : "http";
+    const portPart = port ? `:${port}` : "";
+    return `${scheme}://${cleanHost}${portPart}`;
+  }
+
+  function hostPortFromOrigin(origin: string): { host: string; port: string } {
+    if (!origin) return { host: "", port: "" };
+    try {
+      const url = new URL(origin);
+      const port = url.port || (url.protocol === "https:" ? "443" : "80");
+      return { host: url.hostname, port };
+    } catch {
+      return { host: origin.replace(/^https?:\/\//i, ""), port: "" };
+    }
+  }
+
+  async function buildP2PLink(
+    contentId: string,
+    manifestSha256: string | null,
+    opts: { host?: string; port?: string; baseUrl?: string } = {}
+  ) {
+    if (!manifestSha256) {
+      setShareMsg((m) => ({ ...m, [contentId]: "Publish to generate a manifest first." }));
+      return;
+    }
+    try {
+      setShareBusy((m) => ({ ...m, [contentId]: true }));
+      setShareMsg((m) => ({ ...m, [contentId]: "" }));
+      const identity = await api<any>("/p2p/identity", "GET");
+      const offer = await api<any>(`/p2p/content/${contentId}/offer`, "GET");
+      const sellerPeerId = String(identity?.peerId || "").trim();
+      const primaryFileId = String(offer?.primaryFileId || "").trim();
+      if (!sellerPeerId || !primaryFileId) {
+        setShareMsg((m) => ({ ...m, [contentId]: "Missing seller identity or primary file. Check publish + price." }));
+        return;
+      }
+      const params = new URLSearchParams({
+        v: "1",
+        manifestHash: manifestSha256,
+        primaryFileId,
+        sellerPeerId
+      });
+      if (opts.host) params.set("host", opts.host);
+      if (opts.port) params.set("port", opts.port);
+      const linkBase = opts.baseUrl ? opts.baseUrl.replace(/\/$/, "") : apiBase;
+      const link = `${linkBase}/buy?${params.toString()}`;
+      await copyText(link);
+      setShareP2PLink((m) => ({ ...m, [contentId]: link }));
+      setShareMsg((m) => ({ ...m, [contentId]: "P2P link copied." }));
+    } catch (e: any) {
+      const msg = e?.message || "Failed to build P2P link.";
+      setShareMsg((m) => ({ ...m, [contentId]: msg }));
+    } finally {
+      setShareBusy((m) => ({ ...m, [contentId]: false }));
     }
   }
 
@@ -2007,35 +2126,145 @@ export default function ContentLibraryPage({
                       </div>
 
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">Share</div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs text-neutral-300 font-medium">Share</div>
+                        </div>
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="min-w-0">
-                              Buy link: <span className="text-neutral-300 break-all">{`${apiBase}/buy/${it.id}`}</span>
-                            </div>
-                            <button
-                              type="button"
-                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={() => copyText(`${apiBase}/buy/${it.id}`)}
-                            >
-                              Copy link
-                            </button>
-                          </div>
-                          <details>
-                            <summary className="cursor-pointer select-none text-neutral-500">Advanced</summary>
-                            <div className="mt-2 flex items-center justify-between gap-3">
-                              <div className="min-w-0">
-                                Content ID: <span className="text-neutral-300 break-all">{it.id}</span>
-                              </div>
-                              <button
-                                type="button"
-                                className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                onClick={() => copyText(it.id)}
-                              >
-                                Copy ID
-                              </button>
-                            </div>
-                          </details>
+                          {(() => {
+                            const effectivePublicOrigin = (publicOrigin || "").trim();
+                            const effectiveBuyOrigin = (publicBuyOrigin || publicOrigin || "").trim();
+                            const effectiveStudioOrigin = (publicStudioOrigin || publicOrigin || "").trim();
+                            const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || apiBase).replace(/\/$/, "");
+                            const buyLink = `${buyBase}/buy/${it.id}`;
+                            const isLocalOnly = !effectiveBuyOrigin && !effectivePublicOrigin && apiBase.includes("127.0.0.1");
+                            return (
+                              <>
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    Buy link:{" "}
+                                    <span className="text-neutral-300 break-all">
+                                      {isLocalOnly ? "Local only (loopback)" : buyLink}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => {
+                                        if (!isLocalOnly) window.open(buyLink, "_blank", "noopener,noreferrer");
+                                      }}
+                                    >
+                                      Open
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => copyText(buyLink)}
+                                    >
+                                      Copy link
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
+
+                                <div className="text-xs text-neutral-500">
+                                  Public origin: <span className="text-neutral-300">{effectivePublicOrigin || "—"}</span>
+                                </div>
+                                <div className="text-xs text-neutral-500">
+                                  Buy origin: <span className="text-neutral-300">{effectiveBuyOrigin || "—"}</span>
+                                </div>
+                                <div className="text-xs text-neutral-500">
+                                  Studio origin: <span className="text-neutral-300">{effectiveStudioOrigin || "—"}</span>
+                                </div>
+                                <div className="text-xs text-neutral-500">
+                                  Tunnel state:{" "}
+                                  <span className="text-neutral-300">
+                                    {effectivePublicOrigin || effectiveBuyOrigin || effectiveStudioOrigin ? "configured" : "not configured"}
+                                  </span>
+                                </div>
+                                <div className="mt-2 flex items-center gap-2">
+                                  {effectivePublicOrigin ? (
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={async () => {
+                                        try {
+                                          await api("/api/public/stop", "POST");
+                                          setPublicOrigin("");
+                                          setPublicBuyOrigin("");
+                                          setPublicStudioOrigin("");
+                                        } catch (e: any) {
+                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to disable public access." }));
+                                        }
+                                      }}
+                                    >
+                                      Go Private
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={async () => {
+                                        try {
+                                          const res = await api<any>("/api/public/go", "POST");
+                                          if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
+                                        } catch (e: any) {
+                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Go Public unavailable." }));
+                                        }
+                                      }}
+                                    >
+                                      Go Public
+                                    </button>
+                                  )}
+                                </div>
+
+                                {shareP2PLink[it.id] ? (
+                                  <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
+                                    <div className="min-w-0 break-all">
+                                      P2P link: <span className="text-neutral-300">{shareP2PLink[it.id]}</span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => copyText(shareP2PLink[it.id])}
+                                    >
+                                      Copy
+                                    </button>
+                                  </div>
+                                ) : null}
+
+                                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                                  <button
+                                    type="button"
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                    onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
+                                    disabled={!!shareBusy[it.id]}
+                                  >
+                                    Copy LAN P2P Link
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                    onClick={() => {
+                                      const { host, port } = hostPortFromOrigin(effectiveBuyOrigin);
+                                      const baseUrl = effectiveBuyOrigin ? effectiveBuyOrigin : "";
+                                      return buildP2PLink(it.id, manifestSha256 || null, { host, port, baseUrl });
+                                    }}
+                                    disabled={!effectiveBuyOrigin || !!shareBusy[it.id]}
+                                  >
+                                    Copy Buy P2P Link
+                                  </button>
+                                </div>
+
+                                {!manifestSha256 ? (
+                                  <div className="text-xs text-amber-300">
+                                    Publish to generate a manifest before sharing P2P links.
+                                  </div>
+                                ) : null}
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
 
