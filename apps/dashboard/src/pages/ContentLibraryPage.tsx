@@ -375,6 +375,27 @@ export default function ContentLibraryPage({
   }, [publicStudioOrigin]);
 
   React.useEffect(() => {
+    if (!publicOrigin) return;
+    try {
+      window.localStorage.setItem(STORAGE_PUBLIC_ORIGIN, publicOrigin);
+    } catch {}
+  }, [publicOrigin]);
+
+  React.useEffect(() => {
+    if (!publicBuyOrigin) return;
+    try {
+      window.localStorage.setItem(STORAGE_PUBLIC_BUY_ORIGIN, publicBuyOrigin);
+    } catch {}
+  }, [publicBuyOrigin]);
+
+  React.useEffect(() => {
+    if (!publicStudioOrigin) return;
+    try {
+      window.localStorage.setItem(STORAGE_PUBLIC_STUDIO_ORIGIN, publicStudioOrigin);
+    } catch {}
+  }, [publicStudioOrigin]);
+
+  React.useEffect(() => {
     const expandedIds = Object.keys(expanded).filter((id) => expanded[id]);
     if (expandedIds.length === 0) return;
 
