@@ -28,6 +28,13 @@ function titleCase(s?: string | null) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+function formatDateMaybe(value: any) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString();
+}
+
 type RailHealth = {
   id: string;
   type: string;
@@ -119,12 +126,14 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
               <span className={["text-xs rounded-full border px-2 py-1 bg-neutral-900/40", railStatus.tone].join(" ")}>
                 Buyer Intake Rails: {railStatus.label}
               </span>
-              <button
-                onClick={() => onOpenPaymentRails?.()}
-                className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-              >
-                Open Payment Rails
-              </button>
+              {onOpenPaymentRails ? (
+                <button
+                  onClick={() => onOpenPaymentRails()}
+                  className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                >
+                  Open Payment Rails
+                </button>
+              ) : null}
               {railsError ? <span className="text-xs text-neutral-500">{railsError}</span> : null}
             </div>
           </div>
@@ -141,7 +150,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">{c.title}</div>
                     <div className="text-xs text-neutral-400">
-                      {titleCase(c.type)} • {titleCase(c.status)} • {summary ? `v${summary.versionNumber}` : "v—"} • {summary?.status || "No split defined"} • {new Date(updatedAt).toLocaleString()}
+                      {titleCase(c.type)} • {titleCase(c.status)} • {summary ? `v${summary.versionNumber}` : "v—"} • {summary?.status || "No split defined"} • {formatDateMaybe(updatedAt)}
                     </div>
                     {!hasSplit ? (
                       <div className="text-xs text-amber-300 mt-1">No split defined — define split terms.</div>

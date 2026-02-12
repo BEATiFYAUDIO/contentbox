@@ -117,6 +117,13 @@ type UploadState =
   | { status: "done"; contentId: string; filename: string }
   | { status: "error"; contentId: string; message: string };
 
+function formatDateMaybe(value: any) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString();
+}
+
 async function uploadToRepo(contentId: string, file: File) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
@@ -375,6 +382,9 @@ export default function ContentLibraryPage({
   const [websiteBusy, setWebsiteBusy] = React.useState<Record<string, boolean>>({});
   const [websiteMsg, setWebsiteMsg] = React.useState<Record<string, string>>({});
   const [websiteLink, setWebsiteLink] = React.useState<Record<string, string>>({});
+  const [userPublicOrigin, setUserPublicOrigin] = React.useState<string>("");
+  const [goPublicBusy, setGoPublicBusy] = React.useState(false);
+  const [goPublicMsg, setGoPublicMsg] = React.useState<string | null>(null);
   const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(
     () => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN)
@@ -470,6 +480,8 @@ export default function ContentLibraryPage({
         const me = await api<any>("/me", "GET");
         // email currently unused in this page
         setMeId(String(me?.id || ""));
+        const origin = String(me?.publicOrigin || "").trim();
+        if (origin) setUserPublicOrigin(origin.replace(/\/$/, ""));
       } catch {
         setMeId("");
       }
@@ -520,9 +532,12 @@ export default function ContentLibraryPage({
 
   React.useEffect(() => {
     if (publicOrigin && publicBuyOrigin && publicStudioOrigin) return;
+    if (userPublicOrigin) return;
     (async () => {
       try {
         const health = await api<any>("/health", "GET");
+        const allowFallback = String(health?.devAllowPublicOriginFallback || "") === "1";
+        if (!allowFallback) return;
         const origin = String(health?.publicOrigin || "").trim();
         const buyOrigin = String(health?.publicBuyOrigin || "").trim();
         const studioOrigin = String(health?.publicStudioOrigin || "").trim();
@@ -546,7 +561,8 @@ export default function ContentLibraryPage({
     publicStudioOriginFallback,
     publicBuyOriginOverride,
     publicStudioOriginOverride,
-    publicOriginOverride
+    publicOriginOverride,
+    userPublicOrigin
   ]);
 
   React.useEffect(() => {
@@ -919,7 +935,7 @@ export default function ContentLibraryPage({
     if (!buyOrigin) {
       setWebsiteMsg((m) => ({
         ...m,
-        [contentId]: "Set a public Buy/Tunnel origin to generate website links."
+        [contentId]: "Set a public origin to generate website links."
       }));
       return;
     }
@@ -947,6 +963,39 @@ export default function ContentLibraryPage({
       setWebsiteMsg((m) => ({ ...m, [contentId]: e?.message || "Website publish failed." }));
     } finally {
       setWebsiteBusy((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function goPublic() {
+    setGoPublicBusy(true);
+    setGoPublicMsg(null);
+    try {
+      const res = await api<{ publicOrigin?: string }>("/api/public/go", "POST");
+      const origin = String(res?.publicOrigin || "").trim();
+      if (origin) {
+        setUserPublicOrigin(origin.replace(/\/$/, ""));
+        setGoPublicMsg("Public link enabled.");
+      } else {
+        setGoPublicMsg("Go Public did not return an origin.");
+      }
+    } catch (e: any) {
+      setGoPublicMsg(e?.message || "Go Public failed.");
+    } finally {
+      setGoPublicBusy(false);
+    }
+  }
+
+  async function goPrivate() {
+    setGoPublicBusy(true);
+    setGoPublicMsg(null);
+    try {
+      await api("/api/public/stop", "POST");
+      setUserPublicOrigin("");
+      setGoPublicMsg("Public link disabled.");
+    } catch (e: any) {
+      setGoPublicMsg(e?.message || "Go Private failed.");
+    } finally {
+      setGoPublicBusy(false);
     }
   }
 
@@ -1357,7 +1406,7 @@ export default function ContentLibraryPage({
           disabled={disabled || busy}
           className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60"
           onClick={() => inputRef.current?.click()}
-          title="Upload into this content repo and commit"
+          title="Upload a file for this content"
         >
           {busy ? "Uploading…" : "Upload"}
         </button>
@@ -1365,11 +1414,21 @@ export default function ContentLibraryPage({
     );
   }
 
-  const effectivePublicOrigin = publicOriginOverride || publicOrigin || publicOriginFallback;
+  const effectivePublicOrigin = publicOriginOverride || userPublicOrigin || publicOrigin || publicOriginFallback;
   const effectiveBuyOrigin =
-    publicBuyOriginOverride || publicBuyOrigin || publicOrigin || publicBuyOriginFallback || publicOriginFallback;
+    publicBuyOriginOverride ||
+    publicBuyOrigin ||
+    userPublicOrigin ||
+    publicOrigin ||
+    publicBuyOriginFallback ||
+    publicOriginFallback;
   const effectiveStudioOrigin =
-    publicStudioOriginOverride || publicStudioOrigin || publicOrigin || publicStudioOriginFallback || publicOriginFallback;
+    publicStudioOriginOverride ||
+    publicStudioOrigin ||
+    userPublicOrigin ||
+    publicOrigin ||
+    publicStudioOriginFallback ||
+    publicOriginFallback;
 
   const derivedBuyPublic = derivePublicHostPort(effectiveBuyOrigin || "");
   const derivedStudioPublic = derivePublicHostPort(effectiveStudioOrigin || "");
@@ -1386,27 +1445,28 @@ export default function ContentLibraryPage({
   const tunnelAnyFail = tunnelStates.some((s) => s.status === "fail");
   const tunnelAnyChecking = tunnelStates.some((s) => s.status === "checking");
   const tunnelAllOk = tunnelStates.length > 0 && tunnelStates.every((s) => s.status === "ok");
+  const isPublic = Boolean(userPublicOrigin);
   const tunnelBadge = (() => {
     if (!tunnelConfigured) {
       return {
-        label: "Tunnel links inactive",
+        label: "Public link inactive",
         className: "text-[10px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500"
       };
     }
     if (tunnelAnyFail) {
       return {
-        label: "Tunnel offline",
+        label: "Public link offline",
         className: "text-[10px] rounded-full border border-red-900 bg-red-950/40 px-2 py-0.5 text-red-200"
       };
     }
     if (tunnelAnyChecking || !tunnelAllOk) {
       return {
-        label: "Tunnel checking",
+        label: "Public link checking",
         className: "text-[10px] rounded-full border border-amber-900 bg-amber-950/40 px-2 py-0.5 text-amber-200"
       };
     }
     return {
-      label: "Tunnel online",
+      label: "Public link online",
       className: "text-[10px] rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-emerald-200"
     };
   })();
@@ -1415,7 +1475,7 @@ export default function ContentLibraryPage({
     <div className="space-y-6">
       <div>
         <div className="text-lg font-semibold">Content library</div>
-        <div className="text-sm text-neutral-400">Create an item, upload your master file, and the repo will track every version.</div>
+        <div className="text-sm text-neutral-400">Create an item, upload your file, and publish when ready.</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <span className="text-neutral-500">View:</span>
           <button
@@ -1473,12 +1533,12 @@ export default function ContentLibraryPage({
 
       {upload.status === "done" && (
         <div className="rounded-lg border border-emerald-900 bg-emerald-950/30 text-emerald-200 px-3 py-2 text-sm">
-          Uploaded + committed: {upload.filename}
+          Upload complete: {upload.filename}
         </div>
       )}
 
       <form onSubmit={createContent} className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
-        <div className="font-medium">New content item</div>
+        <div className="font-medium">New upload</div>
 
         <div className="grid gap-3 md:grid-cols-3">
           <div className="md:col-span-2">
@@ -1510,76 +1570,79 @@ export default function ContentLibraryPage({
           {creating ? "Creating…" : "Create"}
         </button>
 
-        <div className="text-xs text-neutral-500">Upload sets the master file and updates manifest.json.primaryFile automatically.</div>
+        <div className="text-xs text-neutral-500">After creating, upload your audio/video file to finish setup.</div>
       </form>
 
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
-        <div className="font-medium">Create derivative (from OG content ID)</div>
-        <div className="text-xs text-neutral-500">
-          Use this if the original isn’t publicly visible. You’ll create a private derivative, then request clearance from its page.
-        </div>
+      <details className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
+        <summary className="cursor-pointer select-none text-sm text-neutral-300">Advanced</summary>
+        <div className="mt-3 space-y-3">
+          <div className="font-medium">Create derivative (advanced)</div>
+          <div className="text-xs text-neutral-500">
+            Use this only if you are linking to an existing original content ID.
+          </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="md:col-span-2">
-            <label className="block text-sm mb-1 text-neutral-300">Original content ID</label>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="md:col-span-2">
+              <label className="block text-sm mb-1 text-neutral-300">Original content ID</label>
+              <input
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={requestParentId}
+                onChange={(e) => setRequestParentId(e.target.value)}
+                placeholder="e.g. cml7..."
+              />
+            </div>
+            <div>
+              <label className="block text-sm mb-1 text-neutral-300">Type</label>
+              <select
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={requestType}
+                onChange={(e) => setRequestType(e.target.value as ContentType)}
+              >
+                <option value="remix">Remix</option>
+                <option value="mashup">Mashup</option>
+                <option value="derivative">Derivative</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm mb-1 text-neutral-300">Derivative title</label>
             <input
               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-              value={requestParentId}
-              onChange={(e) => setRequestParentId(e.target.value)}
-              placeholder="e.g. cml7..."
+              value={requestTitle}
+              onChange={(e) => setRequestTitle(e.target.value)}
+              placeholder="e.g. OG Track (DJ Remix)"
             />
           </div>
-          <div>
-            <label className="block text-sm mb-1 text-neutral-300">Type</label>
-            <select
-              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-              value={requestType}
-              onChange={(e) => setRequestType(e.target.value as ContentType)}
-            >
-              <option value="remix">Remix</option>
-              <option value="mashup">Mashup</option>
-              <option value="derivative">Derivative</option>
-            </select>
-          </div>
+
+          <button
+            type="button"
+            className="rounded-lg border border-neutral-800 px-4 py-2 hover:bg-neutral-900"
+            onClick={requestDerivativeFromId}
+          >
+            Create derivative
+          </button>
+
+          {requestMsg ? <div className="text-xs text-neutral-400">{requestMsg}</div> : null}
+          {requestLinks?.length ? (
+            <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
+              <div className="text-neutral-500">Clearance links to share:</div>
+              {requestLinks.map((l, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <span className="truncate">{l.email}</span>
+                  <button
+                    type="button"
+                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                    onClick={() => navigator.clipboard.writeText(l.url)}
+                  >
+                    Copy link
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
-
-        <div>
-          <label className="block text-sm mb-1 text-neutral-300">Derivative title</label>
-          <input
-            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-            value={requestTitle}
-            onChange={(e) => setRequestTitle(e.target.value)}
-            placeholder="e.g. OG Track (DJ Remix)"
-          />
-        </div>
-
-        <button
-          type="button"
-          className="rounded-lg border border-neutral-800 px-4 py-2 hover:bg-neutral-900"
-          onClick={requestDerivativeFromId}
-        >
-          Create derivative
-        </button>
-
-        {requestMsg ? <div className="text-xs text-neutral-400">{requestMsg}</div> : null}
-        {requestLinks?.length ? (
-          <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
-            <div className="text-neutral-500">Clearance links to share:</div>
-            {requestLinks.map((l, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <span className="truncate">{l.email}</span>
-                <button
-                  type="button"
-                  className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                  onClick={() => navigator.clipboard.writeText(l.url)}
-                >
-                  Copy link
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
+      </details>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
         <div className="flex flex-wrap items-center justify-between mb-3 gap-3">
@@ -1846,10 +1909,10 @@ export default function ContentLibraryPage({
                     <div className="min-w-0">
                       <div className="text-sm font-medium truncate">{it.title}</div>
                       <div className="text-xs text-neutral-400">
-                        {it.type.toUpperCase()} • {it.status.toUpperCase()} • {new Date(it.createdAt).toLocaleString()} • {filesCount} file
+                        {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateMaybe(it.createdAt)} • {filesCount} file
                         {filesCount === 1 ? "" : "s"}
                         • Storefront: {(it.storefrontStatus || "DISABLED").toString()}
-                        {showTrash && it.deletedAt ? ` • Deleted ${new Date(it.deletedAt).toLocaleString()}` : ""}
+                        {showTrash && it.deletedAt ? ` • Deleted ${formatDateMaybe(it.deletedAt)}` : ""}
                       </div>
                       <div className="mt-1">
                         <span
@@ -2032,7 +2095,7 @@ export default function ContentLibraryPage({
 
                                       <div className="text-xs text-neutral-400 flex flex-wrap items-center gap-2">
                                         <span>
-                                          {formatBytes(f.sizeBytes)} • {new Date(f.createdAt).toLocaleString()} • {f.objectKey}
+                                          {formatBytes(f.sizeBytes)} • {formatDateMaybe(f.createdAt)} • {f.objectKey}
                                         </span>
 
                                         <span
@@ -2111,7 +2174,7 @@ export default function ContentLibraryPage({
                                 <span className="font-medium">Split v{split.versionNumber}</span>{" "}
                                 <span className="text-neutral-400">• {String(split.status).toUpperCase()}</span>
                                 {split.status === "locked" && split.lockedAt ? (
-                                  <span className="text-neutral-500"> • Locked {new Date(split.lockedAt).toLocaleString()}</span>
+                                  <span className="text-neutral-500"> • Locked {formatDateMaybe(split.lockedAt)}</span>
                                 ) : null}
                               </>
                             ) : (
@@ -2788,113 +2851,61 @@ export default function ContentLibraryPage({
                             <>
                               <div className="mt-2 grid gap-3 sm:grid-cols-2 text-xs text-neutral-400">
                                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-                                  <div className="text-[11px] text-neutral-500">Tunnel (Cloudflare / Tailscale)</div>
+                                  <div className="text-[11px] text-neutral-500">Go Public</div>
                                   <div className="text-[11px] text-neutral-600 mt-1">
-                                    No router changes. Slower but easiest.
+                                    Share a public buy link without extra setup.
                                   </div>
-                                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                                    <div className="sm:col-span-2">
-                                      <div className="text-[11px] text-neutral-500">Buy URL</div>
-                                      <input
-                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                        placeholder="buy.yourdomain.com"
-                                        value={effectiveBuyOrigin || defaultTunnelBuyHost || ""}
-                                        disabled
-                                      />
-                                    </div>
-                                    <div>
-                                      <div className="text-[11px] text-neutral-500">Port</div>
-                                      <input
-                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                        placeholder="443"
-                                        value={defaultTunnelBuyPort || ""}
-                                        disabled
-                                      />
-                                    </div>
-                                  </div>
-                                  <div className="mt-1 text-[11px] text-neutral-500">
-                                    {renderTunnelHealthLine(
-                                      tunnelHealth.buy,
-                                      effectiveBuyOrigin || effectivePublicOrigin,
-                                      !!publicBuyOriginOverride
-                                    )}
-                                  </div>
-                                  {publicBuyOriginOverride ? (
-                                    <div className="text-[10px] text-amber-300">
-                                      Using fallback URL (carrier DNS). Will retry primary automatically.
-                                    </div>
-                                  ) : null}
-                                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                                    <div className="sm:col-span-2">
-                                      <div className="text-[11px] text-neutral-500">Studio URL</div>
-                                      <input
-                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                        placeholder="studio.yourdomain.com"
-                                        value={effectiveStudioOrigin || defaultTunnelStudioHost || ""}
-                                        disabled
-                                      />
-                                    </div>
-                                    <div>
-                                      <div className="text-[11px] text-neutral-500">Port</div>
-                                      <input
-                                        className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
-                                        placeholder="443"
-                                        value={defaultTunnelStudioPort || ""}
-                                        disabled
-                                      />
-                                    </div>
-                                  </div>
-                                  <div className="mt-1 text-[11px] text-neutral-500">
-                                    {renderTunnelHealthLine(
-                                      tunnelHealth.studio,
-                                      effectiveStudioOrigin || effectivePublicOrigin,
-                                      !!publicStudioOriginOverride
-                                    )}
-                                  </div>
-                                  {publicStudioOriginOverride ? (
-                                    <div className="text-[10px] text-amber-300">
-                                      Using fallback URL (carrier DNS). Will retry primary automatically.
-                                    </div>
-                                  ) : null}
-                                  <div className="mt-2">
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                      onClick={() => {
-                                        const baseUrl = effectiveBuyOrigin || effectivePublicOrigin;
-                                        if (!baseUrl) return;
-                                        return buildP2PLink(it.id, manifestSha256 || null, {
-                                          host: defaultTunnelBuyHost,
-                                          port: defaultTunnelBuyPort,
-                                          baseUrl
-                                        });
-                                      }}
-                                      disabled={!(effectiveBuyOrigin || effectivePublicOrigin) || !!shareBusy[it.id]}
-                                    >
-                                      Copy Buy P2P Link
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="ml-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                      onClick={() => {
-                                        const baseUrl = effectiveStudioOrigin || effectivePublicOrigin;
-                                        if (!baseUrl) return;
-                                        return buildP2PLink(it.id, manifestSha256 || null, {
-                                          host: defaultTunnelStudioHost,
-                                          port: defaultTunnelStudioPort,
-                                          baseUrl
-                                        });
-                                      }}
-                                      disabled={!(effectiveStudioOrigin || effectivePublicOrigin) || !!shareBusy[it.id]}
-                                    >
-                                      Copy Studio P2P Link
-                                    </button>
-                                  </div>
-                                  {!effectivePublicOrigin && !effectiveBuyOrigin && !effectiveStudioOrigin ? (
-                                    <div className="mt-2 text-[11px] text-neutral-500">
-                                      Set CONTENTBOX_PUBLIC_ORIGIN (or PUBLIC_BUY / PUBLIC_STUDIO) to enable tunnel links.
-                                    </div>
-                                  ) : null}
+                                  {isPublic ? (
+                                    <>
+                                      <div className="mt-2">
+                                      <div className="text-[11px] text-neutral-500">Public URL</div>
+                                        <input
+                                          className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
+                                          value={userPublicOrigin}
+                                          disabled
+                                        />
+                                      </div>
+                                      <div className="mt-2 flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={() => {
+                                            const baseUrl = userPublicOrigin;
+                                            if (!baseUrl) return;
+                                            return buildP2PLink(it.id, manifestSha256 || null, { baseUrl });
+                                          }}
+                                          disabled={!userPublicOrigin || !!shareBusy[it.id]}
+                                        >
+                                          Copy Buy Link
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={goPrivate}
+                                          disabled={goPublicBusy}
+                                        >
+                                          Go Private
+                                        </button>
+                                      </div>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <div className="mt-2 text-[11px] text-neutral-500">
+                                        Local/LAN links only until you go public.
+                                      </div>
+                                      <div className="mt-2">
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={goPublic}
+                                          disabled={goPublicBusy}
+                                        >
+                                          {goPublicBusy ? "Working…" : "Go Public"}
+                                        </button>
+                                      </div>
+                                    </>
+                                  )}
+                                  {goPublicMsg ? <div className="mt-2 text-[11px] text-amber-300">{goPublicMsg}</div> : null}
                                 </div>
                                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
                                   <div className="text-[11px] text-neutral-500">LAN (same Wi‑Fi)</div>
@@ -2973,7 +2984,7 @@ export default function ContentLibraryPage({
                                       </span>
                                     </div>
                                     <div className="text-[11px] text-neutral-600 mt-1">
-                                      Direct sharing is disabled for now. Use Tunnel or LAN links.
+                                      Direct sharing is disabled for now. Use Public or LAN links.
                                     </div>
                                     <div className="mt-2 grid gap-2 sm:grid-cols-3">
                                       <div className="sm:col-span-2">

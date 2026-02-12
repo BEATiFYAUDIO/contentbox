@@ -175,6 +175,7 @@ export default function App() {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
   const [uiRole, setUiRole] = useState<"seller" | "collaborator">("collaborator");
+  const [useNodeRails, setUseNodeRails] = useState(false);
   const [roleLoaded, setRoleLoaded] = useState(false);
 
   // Extract the invite token from the URL when the component mounts
@@ -237,12 +238,14 @@ export default function App() {
     let active = true;
     (async () => {
       try {
-        const res = await api<{ role: "seller" | "collaborator" }>("/me/role", "GET");
+        const res = await api<{ role: "seller" | "collaborator"; signals?: { useNodeRails?: boolean } }>("/me/role", "GET");
         if (!active) return;
         setUiRole(res?.role === "seller" ? "seller" : "collaborator");
+        setUseNodeRails(Boolean(res?.signals?.useNodeRails));
       } catch {
         if (!active) return;
         setUiRole("seller");
+        setUseNodeRails(false);
       } finally {
         if (active) setRoleLoaded(true);
       }
@@ -261,10 +264,15 @@ export default function App() {
       "payouts",
       "withdrawals",
       "receipt",
-      "profile"
+      "profile",
+      "content",
+      "store",
+      "library",
+      "downloads",
+      "purchases"
     ]);
     if (!collaboratorAllowed.has(page)) {
-      setPage("participations");
+      setPage("content");
     }
   }, [uiRole, roleLoaded, page]);
 
@@ -321,6 +329,9 @@ export default function App() {
   ];
 
   const collaboratorNav = [
+    { key: "content" as const, label: "Content", hint: "Upload and publish" },
+    { key: "store" as const, label: "Store (Link)", hint: "Generate buy link" },
+    { key: "library" as const, label: "Library", hint: "What I own" },
     { key: "invite" as const, label: "Invites", hint: "Accept split invites" },
     { key: "participations" as const, label: "Earnings", hint: "My royalties" },
     { key: "payouts" as const, label: "Get Paid", hint: "Payout destination" },
@@ -617,7 +628,11 @@ export default function App() {
 
           {page === "finance" && (
             <ErrorBoundary>
-              <FinancePage initialTab={financeTab} />
+              <FinancePage
+                initialTab={financeTab}
+                useNodeRails={useNodeRails}
+                onGoToPayouts={() => setPage("payouts")}
+              />
             </ErrorBoundary>
           )}
 
@@ -656,22 +671,30 @@ export default function App() {
                   setSelectedContentId(id);
                   setPage("split-editor");
                 }}
-                onOpenPaymentRails={() => {
-                  setFinanceTab("rails");
-                  setPage("finance");
-                }}
+                onOpenPaymentRails={
+                  useNodeRails
+                    ? () => {
+                        setFinanceTab("rails");
+                        setPage("finance");
+                      }
+                    : undefined
+                }
               />
             </ErrorBoundary>
           )}
 
           {page === "split-editor" && (
-            <SplitEditorPage
-              contentId={selectedContentId}
-              onGoToPaymentRails={() => {
-                setFinanceTab("rails");
-                setPage("finance");
-              }}
-            />
+              <SplitEditorPage
+                contentId={selectedContentId}
+                onGoToPaymentRails={
+                  useNodeRails
+                    ? () => {
+                        setFinanceTab("rails");
+                        setPage("finance");
+                      }
+                    : undefined
+                }
+              />
           )}
 
           {page === "profile" && (

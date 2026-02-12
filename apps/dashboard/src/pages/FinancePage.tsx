@@ -11,9 +11,11 @@ export type FinanceTab = "overview" | "ledger" | "royalties" | "payouts" | "rail
 
 type FinancePageProps = {
   initialTab?: FinanceTab;
+  useNodeRails?: boolean;
+  onGoToPayouts?: () => void;
 };
 
-export default function FinancePage({ initialTab = "overview" }: FinancePageProps) {
+export default function FinancePage({ initialTab = "overview", useNodeRails = false, onGoToPayouts }: FinancePageProps) {
   const [tab, setTab] = useState<FinanceTab>(initialTab);
   const [tabRefresh, setTabRefresh] = useState<Record<FinanceTab, number>>({
     overview: 0,
@@ -46,6 +48,11 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
     (async () => {
       try {
         setRailsError(null);
+        if (!useNodeRails) {
+          setRails([]);
+          setLastUpdatedAt(new Date().toISOString());
+          return;
+        }
         const res = await api<Array<{ id: string; status: string; label: string; hint?: string | null }>>("/finance/payment-rails");
         if (!active) return;
         setRails(res || []);
@@ -60,17 +67,19 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
     };
   }, [summaryRefresh]);
 
-  const tabs = useMemo(
-    () => [
+  const tabs = useMemo(() => {
+    const base = [
       { key: "overview", label: "Revenue Overview" },
       { key: "ledger", label: "Revenue Ledger" },
       { key: "royalties", label: "Royalties" },
       { key: "payouts", label: "Payout Destinations" },
-      { key: "rails", label: "Payment Rails" },
       { key: "transactions", label: "Transactions" }
-    ],
-    []
-  );
+    ];
+    if (useNodeRails) {
+      return [...base.slice(0, 4), { key: "rails", label: "Payment Rails" }, base[4]];
+    }
+    return base;
+  }, [useNodeRails]);
 
   return (
     <div className="space-y-4">
@@ -103,32 +112,46 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
           </div>
         </div>
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 space-y-2">
-          <div className="flex items-center flex-wrap gap-2">
-            {rails.map((r) => (
-              <span key={r.id} className="text-xs rounded-full border border-neutral-800 px-2 py-1 text-neutral-200">
-                {r.label}: {r.status}
-              </span>
-            ))}
-            {rails.length === 0 && !railsError ? (
-              <span className="text-xs text-neutral-500">Rails health unavailable</span>
-            ) : null}
-            {railsError ? <span className="text-xs text-amber-300">{railsError}</span> : null}
-          </div>
-          <div className="text-xs text-neutral-500">
-            ThunderHub (SSH tunnel):
-            <code className="ml-2 text-[11px]">ssh -L 3000:127.0.0.1:3000 &lt;USER&gt;@&lt;NODE_HOST&gt;</code>
-          </div>
-          <div className="text-xs text-neutral-500">
-            Last updated: {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleString() : "—"}
-          </div>
-          {!railsHealthy ? (
-            <button
-              onClick={() => setTab("payouts")}
-              className="rounded-lg border border-neutral-800 px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-900"
-            >
-              Configure payout destinations
-            </button>
-          ) : null}
+          {useNodeRails ? (
+            <>
+              <div className="flex items-center flex-wrap gap-2">
+                {rails.map((r) => (
+                  <span key={r.id} className="text-xs rounded-full border border-neutral-800 px-2 py-1 text-neutral-200">
+                    {r.label}: {r.status}
+                  </span>
+                ))}
+                {rails.length === 0 && !railsError ? (
+                  <span className="text-xs text-neutral-500">Rails health unavailable</span>
+                ) : null}
+                {railsError ? <span className="text-xs text-amber-300">{railsError}</span> : null}
+              </div>
+              <div className="text-xs text-neutral-500">
+                ThunderHub (SSH tunnel):
+                <code className="ml-2 text-[11px]">ssh -L 3000:127.0.0.1:3000 &lt;USER&gt;@&lt;NODE_HOST&gt;</code>
+              </div>
+              <div className="text-xs text-neutral-500">
+                Last updated: {lastUpdatedAt ? new Date(lastUpdatedAt).toLocaleString() : "—"}
+              </div>
+              {!railsHealthy ? (
+                <button
+                  onClick={() => setTab("payouts")}
+                  className="rounded-lg border border-neutral-800 px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-900"
+                >
+                  Configure payout destinations
+                </button>
+              ) : null}
+            </>
+          ) : (
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm text-neutral-200">Get paid: add a Lightning Address</div>
+              <button
+                onClick={() => (onGoToPayouts ? onGoToPayouts() : setTab("payouts"))}
+                className="rounded-lg border border-neutral-800 px-3 py-2 text-xs text-neutral-200 hover:bg-neutral-900"
+              >
+                Open Get Paid
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -152,7 +175,13 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
         })}
       </div>
 
-      {tab === "overview" && <FinanceOverviewPage refreshSignal={tabRefresh.overview} />}
+      {tab === "overview" && (
+        <FinanceOverviewPage
+          refreshSignal={tabRefresh.overview}
+          useNodeRails={useNodeRails}
+          onGoToPayouts={onGoToPayouts}
+        />
+      )}
       {tab === "ledger" && (
         <SalesPage
           variant="ledger"

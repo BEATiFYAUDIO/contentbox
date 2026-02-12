@@ -742,12 +742,14 @@ React.useState(false);
                       <div className="mt-2 text-xs text-neutral-400">
                         Buyer intake rails are configured under Revenue → Payment Rails.
                       </div>
-                      <button
-                        onClick={() => onGoToPaymentRails?.()}
-                        className="mt-2 text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                      >
-                        Open Payment Rails
-                      </button>
+                      {onGoToPaymentRails ? (
+                        <button
+                          onClick={() => onGoToPaymentRails()}
+                          className="mt-2 text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                        >
+                          Open Payment Rails
+                        </button>
+                      ) : null}
                     </div>
                   </div>
                 ) : (

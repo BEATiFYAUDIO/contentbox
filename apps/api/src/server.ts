@@ -31,6 +31,12 @@ import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice, payLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
+import {
+  getUserPublicOrigin,
+  getUserPublicOriginRecord,
+  setUserPublicOrigin,
+  clearUserPublicOrigin
+} from "./lib/publicOriginStore.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -107,6 +113,104 @@ async function auditEventSafe(payload: {
   try {
     await prisma.auditEvent.create({ data: payload as any });
   } catch {}
+}
+
+async function getUserUseNodeRails(userId: string): Promise<boolean> {
+  try {
+    const rows = await prisma.$queryRawUnsafe<
+      Array<{ useNodeRails: boolean | null }>
+    >(`SELECT "useNodeRails" FROM "User" WHERE id = $1`, userId);
+    return Boolean(rows?.[0]?.useNodeRails);
+  } catch {
+    return false;
+  }
+}
+
+async function getUserPublicOriginSafe(userId: string): Promise<string | null> {
+  try {
+    return await getUserPublicOrigin(apiRoot, userId);
+  } catch {
+    return null;
+  }
+}
+
+async function ensureCloudflaredAvailable() {
+  return new Promise<void>((resolve, reject) => {
+    execFile("cloudflared", ["--version"], (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+}
+
+async function provisionCloudflareTunnel(opts: {
+  userId: string;
+  domain: string;
+  localPort: number;
+}) {
+  const subdomain = `cb-${opts.userId.slice(0, 8)}`;
+  const hostname = `${subdomain}.${opts.domain.replace(/^\\./, "")}`;
+  const publicOrigin = `https://${hostname}`;
+  const instanceTunnel = (process.env.INSTANCE_TUNNEL_NAME || "").trim();
+  if (instanceTunnel) {
+    await new Promise<void>((resolve, reject) => {
+      execFile("cloudflared", ["tunnel", "route", "dns", instanceTunnel, hostname], (err, _stdout, stderr) => {
+        if (err) return reject(new Error(String(stderr || err.message || err)));
+        resolve();
+      });
+    });
+    return {
+      publicOrigin,
+      mode: "external" as const,
+      hostname,
+      tunnelName: instanceTunnel
+    };
+  }
+
+  const name = `contentbox-${opts.userId.slice(0, 8)}`;
+  const cloudflaredDir = path.join(apiRoot, "tmp", "cloudflared", opts.userId);
+  await fs.mkdir(cloudflaredDir, { recursive: true });
+
+  const createOutput = await new Promise<string>((resolve, reject) => {
+    execFile("cloudflared", ["tunnel", "create", name], (err, stdout, stderr) => {
+      if (err) return reject(new Error(String(stderr || err.message || err)));
+      resolve(String(stdout || ""));
+    });
+  });
+  const match = createOutput.match(/id\\s+([a-f0-9-]{8,})/i);
+  const tunnelId = match?.[1];
+  if (!tunnelId) {
+    throw new Error("Could not determine tunnel id from cloudflared output.");
+  }
+
+  const credentialsPath = path.join(process.env.HOME || "", ".cloudflared", `${tunnelId}.json`);
+  const configPath = path.join(cloudflaredDir, "config.yml");
+  const configYaml = [
+    `tunnel: ${tunnelId}`,
+    `credentials-file: ${credentialsPath}`,
+    "ingress:",
+    `  - hostname: ${hostname}`,
+    `    service: http://127.0.0.1:${opts.localPort}`,
+    "  - service: http_status:404"
+  ].join("\n");
+  await fs.writeFile(configPath, configYaml, "utf8");
+
+  await new Promise<void>((resolve, reject) => {
+    execFile("cloudflared", ["tunnel", "route", "dns", name, hostname], (err, _stdout, stderr) => {
+      if (err) return reject(new Error(String(stderr || err.message || err)));
+      resolve();
+    });
+  });
+
+  const child = execFile("cloudflared", ["tunnel", "run", name, "--config", configPath]);
+  publicTunnelProcesses.set(opts.userId, { pid: child?.pid, startedAt: new Date().toISOString(), name, origin: publicOrigin });
+
+  return {
+    publicOrigin,
+    mode: "temporary" as const,
+    hostname,
+    tunnelName: name
+  };
 }
 
 function nodePeerIdFromPem(pem: string): { peerId: string; fingerprint: string } {
@@ -751,6 +855,7 @@ function recordP2pEvent(type: string, detail?: any) {
 }
 let nodeIdentity: { peerId: string; fingerprint: string } | null = null;
 let nodeHttpPort = Number(process.env.PORT || 4000);
+const publicTunnelProcesses = new Map<string, { pid?: number; startedAt: string; name: string; origin: string }>();
 const previewTokens = new Map<
   string,
   { manifestHash: string; fileId: string; expiresAt: number; maxBytes: number }
@@ -1107,10 +1212,34 @@ function participantsHash(participants: ParticipantNormalized[]): string {
   return crypto.createHash("sha256").update(JSON.stringify(canonicalParticipantsForHash(participants))).digest("hex");
 }
 
-function deriveSplitStatus(participants: Array<{ acceptedAt?: Date | null }>): "draft" | "pending_acceptance" | "ready" {
+function deriveSplitStatus(
+  participants: Array<{ acceptedAt?: Date | null; participantUserId?: string | null; percent?: any; bps?: number | null }>,
+  currentUserId?: string | null
+): "draft" | "pending_acceptance" | "ready" {
   if (!participants.length) return "draft";
+  if (participants.length === 1 && currentUserId) {
+    const p = participants[0];
+    const pct = Number(p?.percent ?? 0);
+    const bps = Number.isFinite(Number(p?.bps)) ? Number(p?.bps) : Math.round(pct * 100);
+    if (p?.participantUserId === currentUserId && (bps === 10000 || pct === 100)) {
+      return "ready";
+    }
+  }
   const pending = participants.some((p) => !p.acceptedAt);
   return pending ? "pending_acceptance" : "ready";
+}
+
+async function updateSplitStatusSafe(splitVersionId: string, status: "draft" | "pending_acceptance" | "ready" | "locked") {
+  try {
+    await prisma.splitVersion.update({
+      where: { id: splitVersionId },
+      data: { status: status as any }
+    });
+    return true;
+  } catch {
+    // If the generated Prisma client doesn't include the new enum values, ignore and proceed.
+    return false;
+  }
 }
 
 function validateAndNormalizeParticipants(body: unknown):
@@ -1161,13 +1290,15 @@ function hashPayoutToken(token: string): string {
 }
 
 async function issuePayoutAuthoritiesForSplit(splitVersionId: string, sellerUserId: string) {
+  const payoutModel: any = (prisma as any).payoutAuthority;
+  if (!payoutModel?.findMany || !payoutModel?.create) return [];
   const split = await prisma.splitVersion.findUnique({
     where: { id: splitVersionId },
     include: { participants: true }
   });
   if (!split) return [];
 
-  const existing = await prisma.payoutAuthority.findMany({
+  const existing = await payoutModel.findMany({
     where: { splitVersionId }
   });
   const existingByParticipant = new Set(existing.map((e) => e.splitParticipantId));
@@ -1184,7 +1315,7 @@ async function issuePayoutAuthoritiesForSplit(splitVersionId: string, sellerUser
     if (existingByParticipant.has(p.id)) continue;
     const token = makePayoutToken();
     const tokenHash = hashPayoutToken(token);
-    await prisma.payoutAuthority.create({
+    await payoutModel.create({
       data: {
         tokenHash,
         splitVersionId,
@@ -1594,8 +1725,9 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
 
 async function buildFinanceOverview(userId: string) {
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
-  const lightning = await lndHealthCheck();
-  const onchain = await bitcoindHealthCheck();
+  const useNodeRails = await getUserUseNodeRails(userId);
+  const lightning = useNodeRails ? await lndHealthCheck() : undefined;
+  const onchain = useNodeRails ? await bitcoindHealthCheck() : undefined;
 
   const baseEmpty = {
     totals: {
@@ -1614,7 +1746,7 @@ async function buildFinanceOverview(userId: string) {
     },
     recentSales: [] as any[],
     revenueSeries: [] as Array<{ date: string; amountSats: string }>,
-    health: { lightning, onchain },
+    health: useNodeRails ? { lightning, onchain } : {},
     lastUpdatedAt: new Date().toISOString()
   };
 
@@ -1976,6 +2108,9 @@ app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, r
 
 // Payment rails (buyer intake) health/status
 app.get("/finance/payment-rails", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const useNodeRails = await getUserUseNodeRails(userId);
+  if (!useNodeRails) return reply.send([]);
   const rails: any[] = [];
 
   const lnd = await lndHealthCheck();
@@ -3001,12 +3136,16 @@ app.post("/auth/login", async (req, reply) => {
   });
 });
 
-app.get("/me", { preHandler: requireAuth }, async (req: any) => {
+app.get("/me", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  return prisma.user.findUnique({
+  const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true, email: true, displayName: true, createdAt: true, bio: true, avatarUrl: true }
   });
+  if (!user) return notFound(reply, "User not found");
+  const publicOrigin = await getUserPublicOriginSafe(userId);
+  const useNodeRails = await getUserUseNodeRails(userId);
+  return { ...user, publicOrigin, useNodeRails };
 });
 
 // Derived UI role for dashboard scoping (seller vs collaborator)
@@ -3016,21 +3155,72 @@ app.get("/me/role", { preHandler: requireAuth }, async (req: any) => {
     prisma.contentItem.count({ where: { ownerUserId: userId, deletedAt: null } }),
     prisma.contentItem.count({ where: { ownerUserId: userId, deletedAt: null, status: "published" } })
   ]);
-  const railsConfigured = Boolean(
-    (process.env.LND_REST_URL || "").trim() ||
-    (process.env.LNBITS_URL || "").trim() ||
-    (process.env.ONCHAIN_RECEIVE_XPUB || "").trim() ||
-    (process.env.BITCOIND_RPC_URL || "").trim()
-  );
-  const role = ownedCount > 0 || publishedCount > 0 || railsConfigured ? "seller" : "collaborator";
+  const role = ownedCount > 0 || publishedCount > 0 ? "seller" : "collaborator";
+  const useNodeRails = await getUserUseNodeRails(userId);
+  const publicOrigin = await getUserPublicOriginSafe(userId);
   return {
     role,
     signals: {
       ownedCount,
       publishedCount,
-      railsConfigured
+      useNodeRails,
+      publicOrigin
     }
   };
+});
+
+app.post("/api/public/go", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const provider = (process.env.PUBLIC_TUNNEL_PROVIDER || "").trim().toLowerCase();
+  if (provider !== "cloudflare") {
+    return reply.code(409).send({ error: "Go Public unavailable", hint: "Set PUBLIC_TUNNEL_PROVIDER=cloudflare" });
+  }
+  if (!process.env.CLOUDFLARE_ACCOUNT || !process.env.CLOUDFLARE_TUNNEL_DOMAIN) {
+    return reply.code(503).send({
+      error: "Go Public unavailable",
+      hint: "Missing CLOUDFLARE_ACCOUNT or CLOUDFLARE_TUNNEL_DOMAIN in env"
+    });
+  }
+  try {
+    await ensureCloudflaredAvailable();
+  } catch {
+    return reply.code(503).send({
+      error: "Go Public unavailable",
+      hint: "cloudflared not installed or not in PATH"
+    });
+  }
+  try {
+    const provisioned = await provisionCloudflareTunnel({
+      userId,
+      domain: String(process.env.CLOUDFLARE_TUNNEL_DOMAIN || "").trim(),
+      localPort: nodeHttpPort
+    });
+    const stored = await setUserPublicOrigin(apiRoot, userId, {
+      publicOrigin: provisioned.publicOrigin,
+      mode: provisioned.mode,
+      hostname: provisioned.hostname,
+      tunnelName: provisioned.tunnelName
+    });
+    return reply.send({ ok: true, publicOrigin: stored.publicOrigin });
+  } catch (e: any) {
+    return reply.code(500).send({ error: "Go Public failed", message: String(e?.message || e) });
+  }
+});
+
+app.post("/api/public/stop", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const record = await getUserPublicOriginRecord(apiRoot, userId);
+  if (record?.mode === "temporary") {
+    const proc = publicTunnelProcesses.get(userId);
+    if (proc?.pid) {
+      try {
+        process.kill(proc.pid);
+      } catch {}
+    }
+    publicTunnelProcesses.delete(userId);
+  }
+  await clearUserPublicOrigin(apiRoot, userId);
+  return reply.send({ ok: true });
 });
 
 // Buyer library (entitlements)
@@ -4417,12 +4607,9 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     });
   }
 
-  const derivedStatus = deriveSplitStatus(sv.participants || []);
+  const derivedStatus = deriveSplitStatus(sv.participants || [], userId);
   if (sv.status !== derivedStatus) {
-    await prisma.splitVersion.update({
-      where: { id: sv.id },
-      data: { status: derivedStatus as any }
-    });
+    await updateSplitStatusSafe(sv.id, derivedStatus);
     sv.status = derivedStatus as any;
   }
 
@@ -6224,6 +6411,12 @@ app.get("/health", async (_req: any, reply) => {
     fingerprint: nodeIdentity.fingerprint,
     httpPort: nodeHttpPort,
     publicOrigin: (process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() || null,
+    publicBuyOrigin: (process.env.CONTENTBOX_PUBLIC_BUY_ORIGIN || "").trim() || null,
+    publicStudioOrigin: (process.env.CONTENTBOX_PUBLIC_STUDIO_ORIGIN || "").trim() || null,
+    publicOriginFallback: (process.env.CONTENTBOX_PUBLIC_ORIGIN_FALLBACK || "").trim() || null,
+    publicBuyOriginFallback: (process.env.CONTENTBOX_PUBLIC_BUY_ORIGIN_FALLBACK || "").trim() || null,
+    publicStudioOriginFallback: (process.env.CONTENTBOX_PUBLIC_STUDIO_ORIGIN_FALLBACK || "").trim() || null,
+    devAllowPublicOriginFallback: process.env.DEV_ALLOW_PUBLIC_ORIGIN_FALLBACK === "1" ? "1" : "0",
     ts: new Date().toISOString()
   });
 });
@@ -6464,9 +6657,13 @@ app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (re
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const rawBaseUrl = host ? `${proto}://${host}` : null;
+  const sellerPublicOrigin = await getUserPublicOriginSafe(content.ownerUserId);
+  const allowFallback = process.env.DEV_ALLOW_PUBLIC_ORIGIN_FALLBACK === "1";
   const publicBaseUrl =
-    (process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() ||
-    (process.env.CONTENTBOX_PUBLIC_ORIGIN_FALLBACK || "").trim() ||
+    sellerPublicOrigin ||
+    (allowFallback
+      ? (process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() || (process.env.CONTENTBOX_PUBLIC_ORIGIN_FALLBACK || "").trim()
+      : null) ||
     null;
   const lanBaseUrl =
     rawBaseUrl && !rawBaseUrl.includes("127.0.0.1") && !rawBaseUrl.includes("localhost") ? rawBaseUrl : null;
@@ -7793,21 +7990,30 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
 
   const latest = await prisma.splitVersion.findFirst({ where: { contentId }, orderBy: { versionNumber: "desc" } });
   if (!latest) return notFound(reply, "No split version found");
-  if (latest.status !== "draft") return reply.code(409).send({ error: "Latest split is not editable" });
+  if (latest.status !== "draft") {
+    const solo = validated.participants.length === 1 ? validated.participants[0] : null;
+    const soloPercent = solo ? Number(solo.percent || 0) : 0;
+    const isSolo100 = solo && soloPercent === 100;
+    if (!isSolo100) {
+      return reply.code(409).send({ error: "Latest split is not editable" });
+    }
+  }
 
   await prisma.$transaction(async (tx) => {
-    const before = await tx.splitParticipant.findMany({
+    const sp = (tx as any).splitParticipant || (prisma as any).splitParticipant;
+    if (!sp?.findMany) throw new Error("Split participants unavailable");
+    const before = await sp.findMany({
       where: { splitVersionId: latest.id },
       orderBy: { createdAt: "asc" },
       select: { participantEmail: true, role: true, percent: true, bps: true }
     });
 
     // remove existing participants
-    await tx.splitParticipant.deleteMany({ where: { splitVersionId: latest.id } });
+    await sp.deleteMany({ where: { splitVersionId: latest.id } });
 
     // create new participants
     for (const p of validated.participants) {
-      await tx.splitParticipant.create({
+      await sp.create({
         data: {
           splitVersionId: latest.id,
           participantEmail: p.participantEmail,
@@ -9312,6 +9518,11 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
     include: { content: true, participants: { orderBy: { createdAt: "asc" } } }
   });
   if (!sv) return notFound(reply, "Split version not found");
+  const derivedStatus = deriveSplitStatus(sv.participants || [], userId);
+  if (sv.status !== derivedStatus) {
+    await updateSplitStatusSafe(sv.id, derivedStatus);
+    sv.status = derivedStatus as any;
+  }
   if (sv.status === "locked") return badRequest(reply, "Split version already locked");
   if (sv.status !== "ready") return badRequest(reply, "Split version not ready to lock");
   if (!sv.participants?.length) return badRequest(reply, "Split version has no participants");
@@ -9493,10 +9704,12 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
     });
 
     const nextStatus = pending.length === 0 ? "ready" : "pending_acceptance";
-    await tx.splitVersion.update({
-      where: { id: splitVersionId },
-      data: { status: nextStatus as any }
-    });
+    try {
+      await tx.splitVersion.update({
+        where: { id: splitVersionId },
+        data: { status: nextStatus as any }
+      });
+    } catch {}
   });
 
   return reply.send({ ok: true, created: createdInvites.length, invites: createdInvites });
@@ -9737,10 +9950,12 @@ app.post("/invites/:token/accept", async (req: any, reply) => {
         where: { splitVersionId, acceptedAt: null }
       });
       const nextStatus = remaining === 0 ? "ready" : "pending_acceptance";
-      await tx.splitVersion.update({
-        where: { id: splitVersionId },
-        data: { status: nextStatus as any }
-      });
+      try {
+        await tx.splitVersion.update({
+          where: { id: splitVersionId },
+          data: { status: nextStatus as any }
+        });
+      } catch {}
     }
 
     // create audit event: include remote node info when provided

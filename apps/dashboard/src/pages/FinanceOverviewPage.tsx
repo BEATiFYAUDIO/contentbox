@@ -26,9 +26,11 @@ type Overview = {
 
 type FinanceOverviewPageProps = {
   refreshSignal?: number;
+  useNodeRails?: boolean;
+  onGoToPayouts?: () => void;
 };
 
-export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPageProps) {
+export default function FinanceOverviewPage({ refreshSignal, useNodeRails = false, onGoToPayouts }: FinanceOverviewPageProps) {
   const [data, setData] = useState<Overview | null>(null);
   const [royaltyTotals, setRoyaltyTotals] = useState<{ earnedSats: string; pendingSats: string }>({
     earnedSats: "0",
@@ -142,22 +144,36 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-base font-semibold">Revenue Overview</div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className={["rounded-full border px-2 py-1", healthTone(lightning?.status)].join(" ")}>
-              Lightning: {lightning?.status || "unknown"}
-            </span>
-            <span className={["rounded-full border px-2 py-1", healthTone(onchain?.status)].join(" ")}>
-              On-chain: {onchain?.status || "unknown"}
-            </span>
-            <span className="text-neutral-500">
-              Last updated: {data?.lastUpdatedAt ? new Date(data.lastUpdatedAt).toLocaleString() : "—"}
-            </span>
-          </div>
+          {useNodeRails ? (
+            <div className="flex items-center gap-2 text-xs">
+              <span className={["rounded-full border px-2 py-1", healthTone(lightning?.status)].join(" ")}>
+                Lightning: {lightning?.status || "unknown"}
+              </span>
+              <span className={["rounded-full border px-2 py-1", healthTone(onchain?.status)].join(" ")}>
+                On-chain: {onchain?.status || "unknown"}
+              </span>
+              <span className="text-neutral-500">
+                Last updated: {data?.lastUpdatedAt ? new Date(data.lastUpdatedAt).toLocaleString() : "—"}
+              </span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-neutral-400">Get paid: add a Lightning Address</span>
+              <button
+                onClick={() => onGoToPayouts?.()}
+                className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+              >
+                Open Get Paid
+              </button>
+            </div>
+          )}
         </div>
         {auxError ? (
           <div className="mt-2 text-xs text-amber-300">{auxError}</div>
         ) : null}
-        {lightning?.hint ? <div className="mt-1 text-xs text-neutral-500">Lightning hint: {lightning.hint}</div> : null}
+        {useNodeRails && lightning?.hint ? (
+          <div className="mt-1 text-xs text-neutral-500">Lightning hint: {lightning.hint}</div>
+        ) : null}
       </section>
 
       <section className="grid gap-4 md:grid-cols-3">
