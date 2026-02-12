@@ -27,6 +27,7 @@ import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js
 import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
+import { mapLightningErrorMessage } from "./lib/railHealth.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -64,6 +65,112 @@ function parseSats(x: unknown): bigint {
   return Number.isFinite(n) ? BigInt(Math.floor(n)) : 0n;
 }
 
+function readPemMaybeFile(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes("BEGIN")) return trimmed;
+  if (fsSync.existsSync(trimmed)) {
+    try {
+      return fsSync.readFileSync(trimmed, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+function readMacaroon(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (fsSync.existsSync(trimmed)) {
+    try {
+      const buf = fsSync.readFileSync(trimmed);
+      return buf.toString("hex");
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal } as any);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function lndHealthCheck() {
+  const baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
+  const macVal =
+    process.env.LND_MACAROON_PATH ||
+    process.env.LND_INVOICE_MACAROON_PATH ||
+    process.env.LND_MACAROON_HEX ||
+    process.env.LND_MACAROON ||
+    "";
+  const macaroon = readMacaroon(macVal);
+  const cert = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
+
+  if (!baseUrl || !macaroon) {
+    return {
+      status: "missing",
+      message: "LND env not configured",
+      endpoint: baseUrl || null,
+      hint: "Set LND_REST_URL and LND_MACAROON_PATH"
+    };
+  }
+
+  try {
+    const dispatcher = cert ? new (await import("undici")).Agent({ connect: { ca: cert } }) : undefined;
+    const res = await fetchWithTimeout(
+      `${baseUrl}/v1/getinfo`,
+      {
+        method: "GET",
+        headers: { "Grpc-Metadata-Macaroon": macaroon },
+        dispatcher
+      } as any,
+      4000
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      const mapped = mapLightningErrorMessage(text || `LND error ${res.status}`);
+      return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+    }
+    return { status: "healthy", message: "LND reachable", endpoint: baseUrl, hint: null };
+  } catch (e: any) {
+    const mapped = mapLightningErrorMessage(String(e?.message || e));
+    return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+  }
+}
+
+async function bitcoindHealthCheck() {
+  const url = (process.env.BITCOIND_RPC_URL || "").trim();
+  if (!url) return { status: "missing", message: "BITCOIND_RPC_URL not configured", endpoint: null, hint: "Set BITCOIND_RPC_URL" };
+  const user = process.env.BITCOIND_RPC_USER || "";
+  const pass = process.env.BITCOIND_RPC_PASS || "";
+  if (!user || !pass) return { status: "degraded", message: "RPC user/pass missing", endpoint: url, hint: "Set BITCOIND_RPC_USER/BITCOIND_RPC_PASS" };
+  try {
+    const auth = Buffer.from(`${user}:${pass}`).toString("base64");
+    const body = JSON.stringify({ jsonrpc: "1.0", id: crypto.randomUUID(), method: "getblockchaininfo", params: [] });
+    const res = await fetchWithTimeout(
+      url,
+      { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` }, body },
+      4000
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { status: "degraded", message: `RPC error: ${text}`, endpoint: url, hint: "Check bitcoind RPC settings" };
+    }
+    return { status: "healthy", message: "bitcoind reachable", endpoint: url, hint: null };
+  } catch (e: any) {
+    return { status: "degraded", message: String(e?.message || e), endpoint: url, hint: "Check RPC connectivity" };
+  }
+}
 // Try to return a URL string that is safe to pass to fetch. If the input
 // contains spaces or other characters that make it invalid, attempt to
 // encode it with encodeURI and re-validate. Returns null if still invalid.
@@ -6555,53 +6662,8 @@ app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply
   }
 
   // Reuse readiness logic
-  const readiness = await (async () => {
-    let lightningReady = false;
-    let lightningReason: string | null = "NOT_CONFIGURED";
-
-    if (PAYMENT_PROVIDER.kind === "none") {
-      lightningReason = "DISABLED";
-    } else if (PAYMENT_PROVIDER.kind === "lnd") {
-      const hasUrl = Boolean(String(process.env.LND_REST_URL || "").trim());
-      const mac = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
-      if (hasUrl && mac) {
-        lightningReady = true;
-        lightningReason = null;
-      } else {
-        lightningReason = "NOT_CONFIGURED";
-      }
-    } else if (PAYMENT_PROVIDER.kind === "btcpay") {
-      const hasUrl = Boolean(String(process.env.BTCPAY_URL || "").trim());
-      const hasKey = Boolean(String(process.env.BTCPAY_API_KEY || "").trim());
-      const hasStore = Boolean(String(process.env.BTCPAY_STORE_ID || "").trim());
-      if (hasUrl && hasKey && hasStore) {
-        lightningReady = true;
-        lightningReason = null;
-      } else {
-        lightningReason = "NOT_CONFIGURED";
-      }
-    }
-
-    let onchainReady = false;
-    let onchainReason: string | null = "NOT_CONFIGURED";
-    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
-    if (payoutMethod) {
-      const identity = await prisma.identity.findFirst({
-        where: { payoutMethodId: payoutMethod.id, userId }
-      });
-      if (identity?.value) {
-        onchainReady = true;
-        onchainReason = null;
-      }
-    }
-
-    return {
-      lightning: { ready: lightningReady, reason: lightningReason },
-      onchain: { ready: onchainReady, reason: onchainReason }
-    };
-  })();
-
-  const health = buildHealthFromReadiness(readiness);
+  const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
+  const health = { lightning: lnd, onchain };
 
   return reply.send({
     totals: {
@@ -6742,76 +6804,42 @@ app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, r
   });
 });
 
-app.get("/finance/payment-rails", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  const userId = (req.user as JwtUser).sub;
-  const readinessRes = await (async () => {
-    let lightningReady = false;
-    let lightningReason: string | null = "NOT_CONFIGURED";
-
-    if (PAYMENT_PROVIDER.kind === "none") {
-      lightningReason = "DISABLED";
-    } else if (PAYMENT_PROVIDER.kind === "lnd") {
-      const hasUrl = Boolean(String(process.env.LND_REST_URL || "").trim());
-      const mac = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
-      if (hasUrl && mac) {
-        lightningReady = true;
-        lightningReason = null;
-      } else {
-        lightningReason = "NOT_CONFIGURED";
-      }
-    } else if (PAYMENT_PROVIDER.kind === "btcpay") {
-      const hasUrl = Boolean(String(process.env.BTCPAY_URL || "").trim());
-      const hasKey = Boolean(String(process.env.BTCPAY_API_KEY || "").trim());
-      const hasStore = Boolean(String(process.env.BTCPAY_STORE_ID || "").trim());
-      if (hasUrl && hasKey && hasStore) {
-        lightningReady = true;
-        lightningReason = null;
-      } else {
-        lightningReason = "NOT_CONFIGURED";
-      }
-    }
-
-    let onchainReady = false;
-    let onchainReason: string | null = "NOT_CONFIGURED";
-    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
-    if (payoutMethod) {
-      const identity = await prisma.identity.findFirst({
-        where: { payoutMethodId: payoutMethod.id, userId }
-      });
-      if (identity?.value) {
-        onchainReady = true;
-        onchainReason = null;
-      }
-    }
-
-    return {
-      lightning: { ready: lightningReady, reason: lightningReason },
-      onchain: { ready: onchainReady, reason: onchainReason }
-    };
-  })();
+app.get("/finance/payment-rails", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
 
   const rails: any[] = [];
-  const health = buildHealthFromReadiness(readinessRes);
   rails.push({
     id: "lightning",
     type: "lightning",
     label: "Lightning",
-    status: health.lightning.status,
-    endpoint: health.lightning.endpoint || null,
-    details: health.lightning.message || null,
-    hint: health.lightning.hint || null,
+    status: lnd.status,
+    endpoint: lnd.endpoint || null,
+    details: lnd.message || null,
+    hint: lnd.hint || null,
     lastCheckedAt: new Date().toISOString()
   });
   rails.push({
     id: "onchain",
     type: "onchain",
     label: "BTC On-chain",
-    status: health.onchain.status,
-    endpoint: health.onchain.endpoint || null,
-    details: health.onchain.message || null,
-    hint: health.onchain.hint || null,
+    status: onchain.status,
+    endpoint: onchain.endpoint || null,
+    details: onchain.message || null,
+    hint: onchain.hint || null,
     lastCheckedAt: new Date().toISOString()
   });
+
+  if (process.env.LNURL_PAY_URL) {
+    rails.push({
+      id: "lnurl",
+      type: "lnurl",
+      label: "LNURL-Pay",
+      status: "degraded",
+      endpoint: process.env.LNURL_PAY_URL,
+      details: "Configured",
+      lastCheckedAt: new Date().toISOString()
+    });
+  }
 
   return reply.send(rails);
 });
@@ -6819,14 +6847,12 @@ app.get("/finance/payment-rails", { preHandler: requireAuth }, async (req: any, 
 app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const id = asString((req.params as any).id);
   if (id === "lightning") {
-    const readiness = await app.inject({ method: "GET", url: "/api/payments/readiness", headers: { authorization: req.headers.authorization || "" } });
-    const json = readiness.json();
-    return reply.send({ ok: json?.lightning?.ready, status: json?.lightning?.ready ? "healthy" : "missing" });
+    const res = await lndHealthCheck();
+    return reply.send({ ok: res.status === "healthy", status: res.status, message: res.message, endpoint: res.endpoint, hint: res.hint || null });
   }
   if (id === "onchain") {
-    const readiness = await app.inject({ method: "GET", url: "/api/payments/readiness", headers: { authorization: req.headers.authorization || "" } });
-    const json = readiness.json();
-    return reply.send({ ok: json?.onchain?.ready, status: json?.onchain?.ready ? "healthy" : "missing" });
+    const res = await bitcoindHealthCheck();
+    return reply.send({ ok: res.status === "healthy", status: res.status, message: res.message, endpoint: res.endpoint, hint: res.hint || null });
   }
   return reply.code(404).send({ error: "Unknown rail" });
 });
