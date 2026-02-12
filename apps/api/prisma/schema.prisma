@@ -131,16 +131,20 @@ model User {
   bio          String?
   avatarUrl    String?
   passwordHash String?
+  useNodeRails Boolean  @default(false)
   createdAt    DateTime @default(now())
 
-  identities           Identity[]
-  content              ContentItem[]  @relation("OwnerContent")
-  auditEvents          AuditEvent[]
-  splitVersionsCreated SplitVersion[] @relation("SplitVersionCreatedBy")
-  creditPurchases      CreditPurchase[]
-  approvedContentLinks ContentLink[] @relation("ContentLinkApprovedBy")
-  paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
-  entitlements         Entitlement[] @relation("EntitlementBuyer")
+  identities                Identity[]
+  content                   ContentItem[]     @relation("OwnerContent")
+  auditEvents               AuditEvent[]
+  splitVersionsCreated      SplitVersion[]    @relation("SplitVersionCreatedBy")
+  creditPurchases           CreditPurchase[]
+  approvedContentLinks      ContentLink[]     @relation("ContentLinkApprovedBy")
+  paymentIntents            PaymentIntent[]   @relation("PaymentIntentBuyer")
+  entitlements              Entitlement[]     @relation("EntitlementBuyer")
+  salesAsBuyer              Sale[]            @relation("Sale_Buyer")
+  payouts                   Payout[]          @relation("Payout_User")
+  payoutAuthoritiesAsSeller PayoutAuthority[] @relation("PayoutAuthority_Seller")
 
   @@index([email])
 }
@@ -158,13 +162,13 @@ model PayoutMethod {
 }
 
 model Identity {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   userId         String
   payoutMethodId String
   value          String
   label          String?
   verifiedAt     DateTime?
-  createdAt      DateTime @default(now())
+  createdAt      DateTime  @default(now())
 
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   payoutMethod PayoutMethod @relation(fields: [payoutMethodId], references: [id], onDelete: Cascade)
@@ -176,35 +180,37 @@ model Identity {
 }
 
 model ContentItem {
-  id            String        @id @default(cuid())
-  ownerUserId   String
-  title         String
-  description   String?
-  type          ContentType
-  status        ContentStatus @default(draft)
+  id               String           @id @default(cuid())
+  ownerUserId      String
+  title            String
+  description      String?
+  type             ContentType
+  status           ContentStatus    @default(draft)
   storefrontStatus StorefrontStatus @default(DISABLED)
-  priceSats     BigInt?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  priceSats        BigInt?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 
   manifestId     String? @unique
   currentSplitId String?
 
-  repoPath       String?
-  deletedAt      DateTime?
-  deletedReason  String?
+  repoPath      String?
+  deletedAt     DateTime?
+  deletedReason String?
 
-  owner         User         @relation("OwnerContent", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  files         ContentFile[]
-  credits       ContentCredit[]
-  splitVersions SplitVersion[]
-  manifest      Manifest?    @relation("ContentItemManifest", fields: [manifestId], references: [id])
-  currentSplit  SplitVersion? @relation("CurrentSplit", fields: [currentSplitId], references: [id])
-  parentLinks   ContentLink[] @relation("ParentContent")
-  childLinks    ContentLink[] @relation("ChildContent")
+  owner          User            @relation("OwnerContent", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  files          ContentFile[]
+  credits        ContentCredit[]
+  splitVersions  SplitVersion[]
+  manifest       Manifest?       @relation("ContentItemManifest", fields: [manifestId], references: [id])
+  currentSplit   SplitVersion?   @relation("CurrentSplit", fields: [currentSplitId], references: [id])
+  parentLinks    ContentLink[]   @relation("ParentContent")
+  childLinks     ContentLink[]   @relation("ChildContent")
   paymentIntents PaymentIntent[] @relation("PaymentIntentContent")
-  entitlements   Entitlement[] @relation("EntitlementContent")
-  settlements    Settlement[] @relation("SettlementContent")
+  entitlements   Entitlement[]   @relation("EntitlementContent")
+  settlements    Settlement[]    @relation("SettlementContent")
+  sales          Sale[]          @relation("Sale_Content")
+  royalties      Royalty[]       @relation("Royalty_Content")
 
   @@index([ownerUserId])
   @@index([repoPath])
@@ -227,7 +233,7 @@ model ContentCredit {
 }
 
 model ContentFile {
-  id           String   @id @default(cuid())
+  id           String  @id @default(cuid())
   contentId    String
   objectKey    String
   originalName String
@@ -237,36 +243,36 @@ model ContentFile {
   cipherSha256 String?
 
   // base64 of encrypted per-file key (DEK wrapped by KEK/recipient later)
-  encDek       String
+  encDek String
 
   // e.g. xchacha20poly1305
-  encAlg       String
+  encAlg String
 
   // nonce used to wrap the DEK (base64) when wrapping uses XChaCha20-Poly1305
-  dekNonce     String?
+  dekNonce String?
 
   // optional nonce for file encryption (base64) if you store it separately
-  fileNonce    String?
+  fileNonce String?
 
-  createdAt    DateTime @default(now())
+  createdAt DateTime @default(now())
 
   content ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
 
-  @@index([contentId])
   @@unique([contentId, objectKey])
+  @@index([contentId])
   @@index([sha256])
 }
 
 model Manifest {
-  id        String   @id @default(cuid())
-  contentId String   @unique
-  json      Json
-  sha256    String   @unique
+  id                   String               @id @default(cuid())
+  contentId            String               @unique
+  json                 Json
+  sha256               String               @unique
   parentManifestSha256 String?
-  lineageRelation ContentLinkRelation?
-  encAlg    String?
-  keyId     String?
-  createdAt DateTime @default(now())
+  lineageRelation      ContentLinkRelation?
+  encAlg               String?
+  keyId                String?
+  createdAt            DateTime             @default(now())
 
   contentItem ContentItem? @relation("ContentItemManifest")
 
@@ -283,26 +289,26 @@ model ContentLink {
   approvedAt       DateTime?
   approvedByUserId String?
 
-  parentContent ContentItem @relation("ParentContent", fields: [parentContentId], references: [id], onDelete: Cascade)
-  childContent  ContentItem @relation("ChildContent", fields: [childContentId], references: [id], onDelete: Cascade)
-  approvedBy    User?       @relation("ContentLinkApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  parentContent            ContentItem               @relation("ParentContent", fields: [parentContentId], references: [id], onDelete: Cascade)
+  childContent             ContentItem               @relation("ChildContent", fields: [childContentId], references: [id], onDelete: Cascade)
+  approvedBy               User?                     @relation("ContentLinkApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
   derivativeAuthorizations DerivativeAuthorization[]
-  clearanceRequests ClearanceRequest[]
-  approvalTokens    ApprovalToken[]
+  clearanceRequests        ClearanceRequest[]
+  approvalTokens           ApprovalToken[]
 
   @@index([parentContentId])
   @@index([childContentId])
 }
 
 model ClearanceRequest {
-  id               String   @id @default(cuid())
-  contentLinkId    String
-  requestedByUserId String
-  status           String
-  reviewGrantedAt  DateTime?
+  id                    String    @id @default(cuid())
+  contentLinkId         String
+  requestedByUserId     String
+  status                String
+  reviewGrantedAt       DateTime?
   reviewGrantedByUserId String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   contentLink ContentLink @relation(fields: [contentLinkId], references: [id], onDelete: Cascade)
 
@@ -312,16 +318,16 @@ model ClearanceRequest {
 }
 
 model ApprovalToken {
-  id              String   @id @default(cuid())
-  contentLinkId   String
-  tokenHash       String   @unique
-  approverEmail   String
-  weightBps       Int      @default(0)
-  expiresAt       DateTime
-  usedAt          DateTime?
-  decision        String?
-  upstreamRatePercent Decimal? @db.Decimal(10, 3)
-  createdAt       DateTime @default(now())
+  id                  String    @id @default(cuid())
+  contentLinkId       String
+  tokenHash           String    @unique
+  approverEmail       String
+  weightBps           Int       @default(0)
+  expiresAt           DateTime
+  usedAt              DateTime?
+  decision            String?
+  upstreamRatePercent Decimal?  @db.Decimal(10, 3)
+  createdAt           DateTime  @default(now())
 
   contentLink ContentLink @relation(fields: [contentLinkId], references: [id], onDelete: Cascade)
 
@@ -344,7 +350,7 @@ model DerivativeAuthorization {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
-  derivativeLink ContentLink @relation(fields: [derivativeLinkId], references: [id], onDelete: Cascade)
+  derivativeLink ContentLink              @relation(fields: [derivativeLinkId], references: [id], onDelete: Cascade)
   votes          DerivativeApprovalVote[]
 
   @@index([derivativeLinkId])
@@ -353,12 +359,12 @@ model DerivativeAuthorization {
 }
 
 model DerivativeApprovalVote {
-  id                      String   @id @default(cuid())
-  authorizationId         String
-  approverUserId          String
+  id                         String   @id @default(cuid())
+  authorizationId            String
+  approverUserId             String
   approverSplitParticipantId String?
-  decision                String
-  createdAt               DateTime @default(now())
+  decision                   String
+  createdAt                  DateTime @default(now())
 
   authorization DerivativeAuthorization @relation(fields: [authorizationId], references: [id], onDelete: Cascade)
 
@@ -368,24 +374,25 @@ model DerivativeApprovalVote {
 }
 
 model SplitVersion {
-  id             String       @id @default(cuid())
-  contentId       String
-  versionNumber   Int
-  status          SplitStatus @default(draft)
-  createdByUserId String
-  createdAt       DateTime    @default(now())
-  lockedAt        DateTime?
+  id                   String      @id @default(cuid())
+  contentId            String
+  versionNumber        Int
+  status               SplitStatus @default(draft)
+  createdByUserId      String
+  createdAt            DateTime    @default(now())
+  lockedAt             DateTime?
   lockedManifestSha256 String?
 
   // 🔐 Immutable proof of what bytes this split applies to
   lockedFileObjectKey String?
   lockedFileSha256    String?
 
-  content      ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
-  createdBy    User        @relation("SplitVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
-  participants SplitParticipant[]
-  currentFor   ContentItem[] @relation("CurrentSplit")
-  settlements  Settlement[] @relation("SettlementSplit")
+  content           ContentItem        @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  createdBy         User               @relation("SplitVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  participants      SplitParticipant[]
+  currentFor        ContentItem[]      @relation("CurrentSplit")
+  settlements       Settlement[]       @relation("SettlementSplit")
+  payoutAuthorities PayoutAuthority[]  @relation("PayoutAuthority_SplitVersion")
 
   @@unique([contentId, versionNumber])
   @@index([contentId])
@@ -394,13 +401,13 @@ model SplitVersion {
 }
 
 model SplitParticipant {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   splitVersionId    String
   participantEmail  String?
   participantUserId String?
   role              String
   roleCode          SplitRole @default(writer)
-  percent           Decimal  @db.Decimal(10, 3)
+  percent           Decimal   @db.Decimal(10, 3)
   bps               Int       @default(0)
 
   payoutIdentityId String?
@@ -408,24 +415,25 @@ model SplitParticipant {
 
   acceptedAt DateTime?
   verifiedAt DateTime? // ← ADD THIS
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
-  splitVersion  SplitVersion  @relation(fields: [splitVersionId], references: [id], onDelete: Cascade)
-  invitations   Invitation[]
+  splitVersion      SplitVersion      @relation(fields: [splitVersionId], references: [id], onDelete: Cascade)
+  payoutAuthorities PayoutAuthority[] @relation("PayoutAuthority_SplitParticipant")
+  invitations       Invitation[]
 
+  @@unique([splitVersionId, participantEmail])
   @@index([splitVersionId])
   @@index([participantEmail])
   @@index([payoutIdentityId])
-  @@unique([splitVersionId, participantEmail])
 }
 
 model Invitation {
-  id                 String   @id @default(cuid())
+  id                 String    @id @default(cuid())
   splitParticipantId String
   tokenHash          String
   expiresAt          DateTime
   acceptedAt         DateTime?
-  createdAt          DateTime @default(now())
+  createdAt          DateTime  @default(now())
 
   splitParticipant SplitParticipant @relation(fields: [splitParticipantId], references: [id], onDelete: Cascade)
 
@@ -449,7 +457,7 @@ model AuditEvent {
 }
 
 model CreditPurchase {
-  id              String         @id @default(cuid())
+  id              String          @id @default(cuid())
   userId          String
   proofHash       String
   contentId       String
@@ -460,14 +468,14 @@ model CreditPurchase {
   invoiceId       String
   paymentHash     String
   provider        PaymentProvider
-  status          PaymentStatus  @default(unpaid)
+  status          PaymentStatus   @default(unpaid)
   expiresAt       DateTime
   paidAt          DateTime?
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 
-  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
-  receiptRef  CreditReceiptRef?
+  user       User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  receiptRef CreditReceiptRef?
 
   @@index([userId])
   @@index([proofHash])
@@ -475,11 +483,11 @@ model CreditPurchase {
 }
 
 model CreditReceiptRef {
-  id         String   @id @default(cuid())
-  purchaseId String   @unique
-  receiptId  String   @unique
+  id          String   @id @default(cuid())
+  purchaseId  String   @unique
+  receiptId   String   @unique
   receiptPath String
-  issuedAt   DateTime
+  issuedAt    DateTime
 
   purchase CreditPurchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
 
@@ -499,35 +507,37 @@ model CreditSpend {
 }
 
 model PaymentIntent {
-  id              String             @id @default(cuid())
-  buyerUserId     String?
-  contentId       String
-  manifestSha256  String?
-  amountSats      BigInt
-  status          PaymentIntentStatus @default(pending)
-  purpose         PaymentPurpose
-  subjectType     PaymentSubjectType
-  subjectId       String
-  memo            String?
-  paidVia         PaymentRail?
-  bolt11          String?
-  providerId      String?
-  lightningExpiresAt DateTime?
-  onchainAddress  String?
+  id                     String              @id @default(cuid())
+  buyerUserId            String?
+  contentId              String
+  manifestSha256         String?
+  amountSats             BigInt
+  status                 PaymentIntentStatus @default(pending)
+  purpose                PaymentPurpose
+  subjectType            PaymentSubjectType
+  subjectId              String
+  memo                   String?
+  paidVia                PaymentRail?
+  bolt11                 String?
+  providerId             String?
+  lightningExpiresAt     DateTime?
+  onchainAddress         String?
   onchainDerivationIndex Int?
-  onchainTxid     String?
-  onchainVout     Int?
-  confirmations   Int?
-  receiptToken    String?
-  receiptTokenExpiresAt DateTime?
-  createdAt       DateTime            @default(now())
-  updatedAt       DateTime            @updatedAt
-  paidAt          DateTime?
+  onchainTxid            String?
+  onchainVout            Int?
+  confirmations          Int?
+  receiptToken           String?
+  receiptTokenExpiresAt  DateTime?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  paidAt                 DateTime?
 
-  buyer    User?       @relation("PaymentIntentBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
-  content  ContentItem @relation("PaymentIntentContent", fields: [contentId], references: [id], onDelete: Cascade)
-  settlement Settlement? @relation("SettlementPayment")
-  entitlements Entitlement[] @relation("EntitlementPayment")
+  buyer          User?           @relation("PaymentIntentBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
+  content        ContentItem     @relation("PaymentIntentContent", fields: [contentId], references: [id], onDelete: Cascade)
+  settlement     Settlement?     @relation("SettlementPayment")
+  entitlements   Entitlement[]   @relation("EntitlementPayment")
+  sale           Sale?           @relation("Sale_PaymentIntent")
+  paymentRecords PaymentRecord[] @relation("PaymentRecord_PaymentIntent")
 
   @@index([contentId])
   @@index([buyerUserId])
@@ -545,9 +555,9 @@ model Entitlement {
   paymentIntentId String?
   grantedAt       DateTime @default(now())
 
-  buyer    User?       @relation("EntitlementBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
-  content  ContentItem @relation("EntitlementContent", fields: [contentId], references: [id], onDelete: Cascade)
-  payment  PaymentIntent? @relation("EntitlementPayment", fields: [paymentIntentId], references: [id], onDelete: SetNull)
+  buyer   User?          @relation("EntitlementBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
+  content ContentItem    @relation("EntitlementContent", fields: [contentId], references: [id], onDelete: Cascade)
+  payment PaymentIntent? @relation("EntitlementPayment", fields: [paymentIntentId], references: [id], onDelete: SetNull)
 
   @@unique([buyerUserId, contentId, manifestSha256])
 }
@@ -560,22 +570,23 @@ model Settlement {
   paymentIntentId String   @unique
   createdAt       DateTime @default(now())
 
-  content  ContentItem  @relation("SettlementContent", fields: [contentId], references: [id], onDelete: Cascade)
-  split    SplitVersion @relation("SettlementSplit", fields: [splitVersionId], references: [id], onDelete: Cascade)
-  payment  PaymentIntent @relation("SettlementPayment", fields: [paymentIntentId], references: [id], onDelete: Cascade)
-  lines    SettlementLine[]
+  content   ContentItem      @relation("SettlementContent", fields: [contentId], references: [id], onDelete: Cascade)
+  split     SplitVersion     @relation("SettlementSplit", fields: [splitVersionId], references: [id], onDelete: Cascade)
+  payment   PaymentIntent    @relation("SettlementPayment", fields: [paymentIntentId], references: [id], onDelete: Cascade)
+  lines     SettlementLine[]
+  royalties Royalty[]        @relation("Royalty_Settlement")
 
   @@index([contentId])
   @@index([splitVersionId])
 }
 
 model SettlementLine {
-  id            String   @id @default(cuid())
-  settlementId  String
-  participantId String?
+  id               String  @id @default(cuid())
+  settlementId     String
+  participantId    String?
   participantEmail String?
-  role          String?
-  amountSats    BigInt
+  role             String?
+  amountSats       BigInt
 
   settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
   royalty    Royalty?
@@ -594,9 +605,9 @@ model Sale {
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
-  content       ContentItem   @relation(fields: [contentId], references: [id], onDelete: Cascade)
-  buyer         User?         @relation(fields: [buyerUserId], references: [id], onDelete: SetNull)
-  paymentIntent PaymentIntent? @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
+  content       ContentItem     @relation("Sale_Content", fields: [contentId], references: [id], onDelete: Cascade)
+  buyer         User?           @relation("Sale_Buyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
+  paymentIntent PaymentIntent?  @relation("Sale_PaymentIntent", fields: [paymentIntentId], references: [id], onDelete: SetNull)
   payments      PaymentRecord[]
   royalties     Royalty[]
 
@@ -616,33 +627,33 @@ model PaymentRecord {
   paidAt          DateTime?
   createdAt       DateTime            @default(now())
 
-  sale          Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  paymentIntent PaymentIntent? @relation(fields: [paymentIntentId], references: [id], onDelete: SetNull)
+  sale          Sale           @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  paymentIntent PaymentIntent? @relation("PaymentRecord_PaymentIntent", fields: [paymentIntentId], references: [id], onDelete: SetNull)
 
   @@index([saleId])
   @@index([status])
 }
 
 model Royalty {
-  id              String        @id @default(cuid())
-  saleId          String
-  settlementId    String?
-  settlementLineId String?      @unique
-  contentId       String
-  participantId   String?
+  id               String        @id @default(cuid())
+  saleId           String
+  settlementId     String?
+  settlementLineId String?       @unique
+  contentId        String
+  participantId    String?
   participantEmail String?
-  role            String?
-  amountSats      BigInt
-  status          RoyaltyStatus @default(pending)
-  earnedAt        DateTime      @default(now())
-  paidAt          DateTime?
-  payoutId        String?
+  role             String?
+  amountSats       BigInt
+  status           RoyaltyStatus @default(pending)
+  earnedAt         DateTime      @default(now())
+  paidAt           DateTime?
+  payoutId         String?
 
-  sale        Sale          @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  settlement  Settlement?   @relation(fields: [settlementId], references: [id], onDelete: SetNull)
+  sale           Sale            @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  settlement     Settlement?     @relation("Royalty_Settlement", fields: [settlementId], references: [id], onDelete: SetNull)
   settlementLine SettlementLine? @relation(fields: [settlementLineId], references: [id], onDelete: SetNull)
-  content     ContentItem   @relation(fields: [contentId], references: [id], onDelete: Cascade)
-  payout      Payout?       @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  content        ContentItem     @relation("Royalty_Content", fields: [contentId], references: [id], onDelete: Cascade)
+  payout         Payout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
 
   @@index([saleId])
   @@index([contentId])
@@ -652,18 +663,18 @@ model Royalty {
 }
 
 model Payout {
-  id             String       @id @default(cuid())
-  userId         String?
-  participantEmail String?
-  method         PayoutMethodCode?
-  idempotencyKey String?      @unique
-  amountSats     BigInt
-  status         PayoutStatus @default(pending)
+  id                String            @id @default(cuid())
+  userId            String?
+  participantEmail  String?
+  method            PayoutMethodCode?
+  idempotencyKey    String?           @unique
+  amountSats        BigInt
+  status            PayoutStatus      @default(pending)
   settlementRecords Json?
-  createdAt      DateTime     @default(now())
-  completedAt    DateTime?
+  createdAt         DateTime          @default(now())
+  completedAt       DateTime?
 
-  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user      User?     @relation("Payout_User", fields: [userId], references: [id], onDelete: SetNull)
   royalties Royalty[]
 
   @@index([userId])
@@ -672,26 +683,26 @@ model Payout {
 }
 
 model PayoutAuthority {
-  id                 String   @id @default(cuid())
-  tokenHash          String   @unique
+  id                 String    @id @default(cuid())
+  tokenHash          String    @unique
   splitVersionId     String
   splitParticipantId String
   sellerUserId       String
   collaboratorUserId String?
   participantEmail   String?
-  minWithdrawSats    BigInt   @default(1)
-  issuedAt           DateTime @default(now())
+  minWithdrawSats    BigInt    @default(1)
+  issuedAt           DateTime  @default(now())
   revokedAt          DateTime?
   lastUsedAt         DateTime?
 
-  splitVersion    SplitVersion    @relation(fields: [splitVersionId], references: [id], onDelete: Cascade)
-  splitParticipant SplitParticipant @relation(fields: [splitParticipantId], references: [id], onDelete: Cascade)
-  seller          User            @relation(fields: [sellerUserId], references: [id], onDelete: Cascade)
+  splitVersion     SplitVersion     @relation("PayoutAuthority_SplitVersion", fields: [splitVersionId], references: [id], onDelete: Cascade)
+  splitParticipant SplitParticipant @relation("PayoutAuthority_SplitParticipant", fields: [splitParticipantId], references: [id], onDelete: Cascade)
+  seller           User             @relation("PayoutAuthority_Seller", fields: [sellerUserId], references: [id], onDelete: Cascade)
 
+  @@unique([splitVersionId, splitParticipantId])
   @@index([splitVersionId])
   @@index([splitParticipantId])
   @@index([sellerUserId])
-  @@unique([splitVersionId, splitParticipantId])
 }
 
 model TransactionHistory {
