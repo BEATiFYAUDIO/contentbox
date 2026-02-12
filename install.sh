@@ -31,6 +31,13 @@ require_cmd npm
 echo "[install] Node: $(node -v)"
 echo "[install] npm:  $(npm -v)"
 
+if ! command -v cloudflared >/dev/null 2>&1; then
+  echo "⚠ cloudflared not installed. Public sharing (LTE) requires Cloudflare Tunnel."
+  echo "  Debian/Ubuntu: sudo apt update && sudo apt install cloudflared"
+  echo "  macOS: brew install cloudflared"
+  echo "  Docs: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/"
+fi
+
 API_ENV="$API_DIR/.env"
 API_ENV_EXAMPLE="$API_DIR/.env.example"
 DASH_ENV="$DASH_DIR/.env"

@@ -9,7 +9,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
-import { execFile, spawn } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
 import * as cheerio from "cheerio";
@@ -264,6 +264,15 @@ function parseQuickTunnelUrl(text: string): string | null {
   return m ? m[0] : null;
 }
 
+function hasCloudflared(): boolean {
+  try {
+    const res = spawnSync("cloudflared", ["--version"], { stdio: "ignore" });
+    return res.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 async function startQuickTunnel(userId: string): Promise<TunnelProcess> {
   const targetUrl = `http://127.0.0.1:${NODE_HTTP_PORT}`;
   return new Promise((resolve, reject) => {
@@ -309,6 +318,10 @@ async function ensurePublicOriginForUser(userId: string): Promise<PublicOriginRe
   const existing = getPublicOrigin(userId);
   if (existing && isValidPublicOrigin(existing.publicOrigin)) {
     return existing;
+  }
+
+  if (!hasCloudflared()) {
+    throw new Error("CLOUDFLARED_MISSING");
   }
 
   // Prefer external/shared tunnel if configured
@@ -2452,6 +2465,7 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (req: any, repl
   const proc = userTunnelProcs.get(userId);
   return reply.send({
     ok: true,
+    cloudflaredInstalled: hasCloudflared(),
     publicOrigin: record?.publicOrigin || null,
     mode: record?.mode || null,
     hostname: record?.hostname || null,
@@ -2512,10 +2526,14 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
 app.post("/api/public/go", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   try {
+    if (!hasCloudflared()) {
+      return reply.code(503).send({ error: "cloudflared not installed", message: "Public sharing requires cloudflared." });
+    }
     const record = await ensurePublicOriginForUser(userId);
     const proc = userTunnelProcs.get(userId);
     return reply.send({
       ok: true,
+      cloudflaredInstalled: true,
       publicOrigin: record.publicOrigin,
       hostname: record.hostname,
       mode: record.mode,
@@ -2526,6 +2544,9 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (req: any, reply: 
     });
   } catch (e: any) {
     const msg = String(e?.message || e);
+    if (msg.includes("CLOUDFLARED_MISSING")) {
+      return reply.code(503).send({ error: "cloudflared not installed", message: "Public sharing requires cloudflared." });
+    }
     if (msg.toLowerCase().includes("cloudflared") || msg.toLowerCase().includes("enoent")) {
       return reply.code(503).send({
         error: "cloudflared not available",

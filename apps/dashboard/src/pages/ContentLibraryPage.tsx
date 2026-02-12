@@ -1154,7 +1154,7 @@ export default function ContentLibraryPage({
                     setPublicBusy(false);
                   }
                 }}
-                disabled={publicBusy}
+                disabled={publicBusy || publicStatus?.cloudflaredInstalled === false}
               >
                 Enable Public Link
               </button>
@@ -1176,6 +1176,11 @@ export default function ContentLibraryPage({
             </button>
           ) : null}
         </div>
+        {publicStatus?.cloudflaredInstalled === false ? (
+          <div className="mt-2 text-xs text-amber-300">
+            ⚠ cloudflared not installed. Public sharing (LTE) requires Cloudflare Tunnel.
+          </div>
+        ) : null}
         {publicMsg ? <div className="mt-1 text-xs text-amber-300">{publicMsg}</div> : null}
       </div>
 

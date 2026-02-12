@@ -15,6 +15,12 @@ if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Fail "Missing requir
 Write-Host "[install] Node: $(node -v)"
 Write-Host "[install] npm:  $(npm -v)"
 
+if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
+  Write-Host "⚠ cloudflared not installed. Public sharing (LTE) requires Cloudflare Tunnel."
+  Write-Host "  winget install --id Cloudflare.cloudflared"
+  Write-Host "  Docs: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/"
+}
+
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $apiDir = Join-Path $root "apps/api"
 $dashDir = Join-Path $root "apps/dashboard"
