@@ -6504,6 +6504,333 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
   });
 });
 
+// ------------------------------
+// Finance endpoints (read-only)
+// ------------------------------
+
+function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reason: string | null }; onchain: { ready: boolean; reason: string | null } }) {
+  const lightning = readiness.lightning.ready
+    ? { status: "healthy", message: "Configured", endpoint: process.env.LND_REST_URL || null, hint: null }
+    : { status: "missing", message: readiness.lightning.reason || "Not configured", endpoint: process.env.LND_REST_URL || null, hint: null };
+  const onchain = readiness.onchain.ready
+    ? { status: "healthy", message: "Configured", endpoint: null, hint: null }
+    : { status: "missing", message: readiness.onchain.reason || "Not configured", endpoint: null, hint: null };
+  return { lightning, onchain };
+}
+
+app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+
+  const settlements = await prisma.settlement.findMany({
+    where: { contentId: { in: contentIds } }
+  });
+
+  const now = new Date();
+  const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  let salesSats = 0n;
+  let salesSatsLast30d = 0n;
+  const seriesMap = new Map<string, bigint>();
+
+  for (const s of settlements) {
+    const amt = BigInt(s.netAmountSats as any);
+    salesSats += amt;
+    if (s.createdAt >= since) {
+      salesSatsLast30d += amt;
+      const key = s.createdAt.toISOString().slice(0, 10);
+      const prev = seriesMap.get(key) || 0n;
+      seriesMap.set(key, prev + amt);
+    }
+  }
+
+  const revenueSeries: Array<{ date: string; amountSats: string }> = [];
+  for (let i = 29; i >= 0; i -= 1) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const key = d.toISOString().slice(0, 10);
+    revenueSeries.push({ date: key, amountSats: (seriesMap.get(key) || 0n).toString() });
+  }
+
+  // Reuse readiness logic
+  const readiness = await (async () => {
+    let lightningReady = false;
+    let lightningReason: string | null = "NOT_CONFIGURED";
+
+    if (PAYMENT_PROVIDER.kind === "none") {
+      lightningReason = "DISABLED";
+    } else if (PAYMENT_PROVIDER.kind === "lnd") {
+      const hasUrl = Boolean(String(process.env.LND_REST_URL || "").trim());
+      const mac = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
+      if (hasUrl && mac) {
+        lightningReady = true;
+        lightningReason = null;
+      } else {
+        lightningReason = "NOT_CONFIGURED";
+      }
+    } else if (PAYMENT_PROVIDER.kind === "btcpay") {
+      const hasUrl = Boolean(String(process.env.BTCPAY_URL || "").trim());
+      const hasKey = Boolean(String(process.env.BTCPAY_API_KEY || "").trim());
+      const hasStore = Boolean(String(process.env.BTCPAY_STORE_ID || "").trim());
+      if (hasUrl && hasKey && hasStore) {
+        lightningReady = true;
+        lightningReason = null;
+      } else {
+        lightningReason = "NOT_CONFIGURED";
+      }
+    }
+
+    let onchainReady = false;
+    let onchainReason: string | null = "NOT_CONFIGURED";
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId }
+      });
+      if (identity?.value) {
+        onchainReady = true;
+        onchainReason = null;
+      }
+    }
+
+    return {
+      lightning: { ready: lightningReady, reason: lightningReason },
+      onchain: { ready: onchainReady, reason: onchainReason }
+    };
+  })();
+
+  const health = buildHealthFromReadiness(readiness);
+
+  return reply.send({
+    totals: {
+      salesSats: salesSats.toString(),
+      salesSatsLast30d: salesSatsLast30d.toString(),
+      invoicesTotal: 0,
+      invoicesPaid: 0,
+      invoicesPending: 0,
+      invoicesFailed: 0,
+      invoicesExpired: 0,
+      paymentsReceivedSats: "0",
+      paymentsPendingSats: "0",
+      paymentsReceivedCount: 0,
+      paymentsPendingCount: 0,
+      paymentsLast30d: 0
+    },
+    revenueSeries,
+    health,
+    lastUpdatedAt: new Date().toISOString()
+  });
+});
+
+app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const email = (me?.email || "").toLowerCase();
+
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true, title: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+
+  const settlements = await prisma.settlement.findMany({
+    where: { contentId: { in: contentIds } }
+  });
+
+  const participantRows = await prisma.splitParticipant.findMany({
+    where: {
+      OR: [
+        { participantUserId: userId },
+        email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
+      ].filter(Boolean) as any
+    },
+    select: { id: true, participantEmail: true }
+  });
+  const participantIds = new Set(participantRows.map((p) => p.id));
+  const participantEmails = new Set(
+    participantRows.map((p) => (p.participantEmail ? p.participantEmail.toLowerCase() : "")).filter(Boolean)
+  );
+
+  const lines = await prisma.settlementLine.findMany({
+    where: {
+      OR: [
+        participantIds.size ? { participantId: { in: Array.from(participantIds) } } : undefined,
+        participantEmails.size ? { participantEmail: { in: Array.from(participantEmails) } } : undefined
+      ].filter(Boolean) as any
+    },
+    include: { settlement: true }
+  });
+
+  const rows = new Map<string, { contentId: string; title: string; total: bigint; yourShare: bigint }>();
+  for (const c of contents) {
+    rows.set(c.id, { contentId: c.id, title: c.title, total: 0n, yourShare: 0n });
+  }
+
+  for (const s of settlements) {
+    const row = rows.get(s.contentId);
+    if (!row) continue;
+    row.total += BigInt(s.netAmountSats as any);
+  }
+
+  for (const l of lines) {
+    if (!l.settlement?.contentId) continue;
+    const row = rows.get(l.settlement.contentId);
+    if (!row) continue;
+    row.yourShare += BigInt(l.amountSats as any);
+  }
+
+  let earnedTotal = 0n;
+  let pendingTotal = 0n;
+  const items = Array.from(rows.values()).map((r) => {
+    earnedTotal += r.yourShare;
+    return {
+      contentId: r.contentId,
+      title: r.title,
+      totalSalesSats: r.total.toString(),
+      grossRevenueSats: r.total.toString(),
+      allocationSats: r.yourShare.toString(),
+      settledSats: r.yourShare.toString(),
+      withdrawnSats: "0",
+      pendingSats: "0"
+    };
+  });
+
+  return reply.send({
+    items,
+    totals: { earnedSats: earnedTotal.toString(), pendingSats: pendingTotal.toString() },
+    cursor: null
+  });
+});
+
+app.get("/finance/payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null });
+});
+
+app.get("/finance/transactions", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: [], cursor: null });
+});
+
+app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const [overview, royalties, payouts, transactions] = await Promise.all([
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/overview", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any,
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/royalties", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any,
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/payouts", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any,
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/transactions", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any
+  ]);
+
+  return reply.send({
+    overview,
+    royalties,
+    payouts,
+    transactions,
+    exportedAt: new Date().toISOString()
+  });
+});
+
+app.get("/finance/payment-rails", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const readinessRes = await (async () => {
+    let lightningReady = false;
+    let lightningReason: string | null = "NOT_CONFIGURED";
+
+    if (PAYMENT_PROVIDER.kind === "none") {
+      lightningReason = "DISABLED";
+    } else if (PAYMENT_PROVIDER.kind === "lnd") {
+      const hasUrl = Boolean(String(process.env.LND_REST_URL || "").trim());
+      const mac = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
+      if (hasUrl && mac) {
+        lightningReady = true;
+        lightningReason = null;
+      } else {
+        lightningReason = "NOT_CONFIGURED";
+      }
+    } else if (PAYMENT_PROVIDER.kind === "btcpay") {
+      const hasUrl = Boolean(String(process.env.BTCPAY_URL || "").trim());
+      const hasKey = Boolean(String(process.env.BTCPAY_API_KEY || "").trim());
+      const hasStore = Boolean(String(process.env.BTCPAY_STORE_ID || "").trim());
+      if (hasUrl && hasKey && hasStore) {
+        lightningReady = true;
+        lightningReason = null;
+      } else {
+        lightningReason = "NOT_CONFIGURED";
+      }
+    }
+
+    let onchainReady = false;
+    let onchainReason: string | null = "NOT_CONFIGURED";
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId }
+      });
+      if (identity?.value) {
+        onchainReady = true;
+        onchainReason = null;
+      }
+    }
+
+    return {
+      lightning: { ready: lightningReady, reason: lightningReason },
+      onchain: { ready: onchainReady, reason: onchainReason }
+    };
+  })();
+
+  const rails: any[] = [];
+  const health = buildHealthFromReadiness(readinessRes);
+  rails.push({
+    id: "lightning",
+    type: "lightning",
+    label: "Lightning",
+    status: health.lightning.status,
+    endpoint: health.lightning.endpoint || null,
+    details: health.lightning.message || null,
+    hint: health.lightning.hint || null,
+    lastCheckedAt: new Date().toISOString()
+  });
+  rails.push({
+    id: "onchain",
+    type: "onchain",
+    label: "BTC On-chain",
+    status: health.onchain.status,
+    endpoint: health.onchain.endpoint || null,
+    details: health.onchain.message || null,
+    hint: health.onchain.hint || null,
+    lastCheckedAt: new Date().toISOString()
+  });
+
+  return reply.send(rails);
+});
+
+app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = asString((req.params as any).id);
+  if (id === "lightning") {
+    const readiness = await app.inject({ method: "GET", url: "/api/payments/readiness", headers: { authorization: req.headers.authorization || "" } });
+    const json = readiness.json();
+    return reply.send({ ok: json?.lightning?.ready, status: json?.lightning?.ready ? "healthy" : "missing" });
+  }
+  if (id === "onchain") {
+    const readiness = await app.inject({ method: "GET", url: "/api/payments/readiness", headers: { authorization: req.headers.authorization || "" } });
+    const json = readiness.json();
+    return reply.send({ ok: json?.onchain?.ready, status: json?.onchain?.ready ? "healthy" : "missing" });
+  }
+  return reply.code(404).send({ error: "Unknown rail" });
+});
+
 app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser | undefined)?.sub || null;
   const id = asString((req.params as any).id || "").trim();
