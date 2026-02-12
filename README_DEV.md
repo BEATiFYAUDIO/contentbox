@@ -31,7 +31,7 @@ Windows (PowerShell):
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 After the first run, edit:
-- `apps/api/.env` (DATABASE_URL, JWT_SECRET, CONTENTBOX_ROOT)
+- `apps/api/.env` (DATABASE_URL)
 - `apps/dashboard/.env` if your API is not localhost
 
 ## LAN sharing
@@ -43,8 +43,8 @@ If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
 
 ## Common errors and fixes
 - **Prisma config fails / DATABASE_URL missing**: set `DATABASE_URL` in `apps/api/.env`
-- **JWT_SECRET missing**: set `JWT_SECRET` in `apps/api/.env`
-- **CONTENTBOX_ROOT missing**: set it and ensure the directory exists
+- **JWT_SECRET missing**: the installer auto-generates it; re-run install if missing
+- **CONTENTBOX_ROOT missing**: installer auto-creates it under `~/contentbox-data`
 - **@prisma/client errors**: run `npx prisma generate` from `apps/api`
 
 ## Environment flags

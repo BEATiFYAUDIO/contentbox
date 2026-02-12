@@ -28,8 +28,7 @@ if (-not (Test-Path $apiEnv)) {
   if (-not (Test-Path $apiEnvExample)) { Fail "Missing $apiEnvExample" }
   Copy-Item $apiEnvExample $apiEnv
   Write-Host "[install] Created $apiEnv from example."
-  Write-Host "[install] Edit $apiEnv (DATABASE_URL, JWT_SECRET, CONTENTBOX_ROOT), then re-run."
-  exit 1
+  Write-Host "[install] Edit $apiEnv (DATABASE_URL) if needed."
 }
 
 if (-not (Test-Path $dashEnv)) {
@@ -49,6 +48,41 @@ if ($Lan) {
   }
   Write-Host "[install] LAN mode enabled (CONTENTBOX_BIND=public)."
   Write-Host "[install] If LAN access fails, allow tcp/4000 in your firewall."
+}
+
+function Set-EnvLine($path, $key, $value) {
+  $lines = Get-Content $path
+  if ($lines -match "^$key=") {
+    $lines = $lines -replace "^$key=.*", "$key=$value"
+    Set-Content -Path $path -Value $lines
+  } else {
+    Add-Content -Path $path -Value "$key=$value"
+  }
+}
+
+$envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
+if (-not ($envText -match "^DATABASE_URL=")) { Fail "DATABASE_URL is missing in $apiEnv" }
+
+if (-not ($envText -match "^JWT_SECRET=") -or ($envText -match "^JWT_SECRET=change-me")) {
+  $bytes = New-Object byte[] 32
+  [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+  $jwt = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
+  Set-EnvLine $apiEnv "JWT_SECRET" $jwt
+  Write-Host "[install] Generated JWT_SECRET."
+}
+
+if (-not ($envText -match "^CONTENTBOX_ROOT=")) {
+  $rootPath = Join-Path $HOME "contentbox-data"
+  Set-EnvLine $apiEnv "CONTENTBOX_ROOT" "`"$rootPath`""
+  Write-Host "[install] Set CONTENTBOX_ROOT to $rootPath"
+}
+
+$envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
+$rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
+if ($rootLine) {
+  $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
+  $rootVal = $rootVal.Trim('"')
+  if (-not (Test-Path $rootVal)) { New-Item -ItemType Directory -Force -Path $rootVal | Out-Null }
 }
 
 Push-Location $apiDir

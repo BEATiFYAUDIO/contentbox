@@ -38,9 +38,40 @@ if [ ! -f "$ENV_FILE" ]; then
   fi
   cp "$ENV_EXAMPLE" "$ENV_FILE"
   echo "[bootstrap] Created $ENV_FILE from example."
-  echo "[bootstrap] Edit $ENV_FILE (DATABASE_URL, JWT_SECRET, CONTENTBOX_ROOT) and re-run."
-  exit 1
+  echo "[bootstrap] Edit $ENV_FILE (DATABASE_URL) if needed."
 fi
+
+set_env() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" "$ENV_FILE"; then
+    # replace in place
+    sed -i.bak "s#^${key}=.*#${key}=${value}#" "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+  else
+    printf "\n%s=%s\n" "$key" "$value" >> "$ENV_FILE"
+  fi
+}
+
+normalize_content_root() {
+  local raw="$1"
+  local v="${raw%\"}"
+  v="${v#\"}"
+  if [ -z "$v" ]; then
+    echo "${HOME}/contentbox-data"
+    return
+  fi
+  case "$v" in
+    *"<user>"*|*"<USER>"*|*"<username>"*)
+      echo "${HOME}/contentbox-data"
+      return
+      ;;
+    "/home/<user>"*|"/home/<USER>"*)
+      echo "${HOME}/contentbox-data"
+      return
+      ;;
+  esac
+  echo "$v"
+}
 
 set -a
 # shellcheck source=/dev/null
@@ -52,12 +83,14 @@ if [ -z "${DATABASE_URL:-}" ]; then
 fi
 
 if [ -z "${JWT_SECRET:-}" ] || [ "${JWT_SECRET}" = "change-me" ]; then
-  fail "JWT_SECRET is missing or still set to 'change-me' in $ENV_FILE"
+  JWT_SECRET="$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("hex"))')"
+  set_env "JWT_SECRET" "$JWT_SECRET"
+  echo "[bootstrap] Generated JWT_SECRET."
 fi
 
-if [ -z "${CONTENTBOX_ROOT:-}" ]; then
-  fail "CONTENTBOX_ROOT is missing in $ENV_FILE"
-fi
+CONTENTBOX_ROOT="$(normalize_content_root "${CONTENTBOX_ROOT:-}")"
+set_env "CONTENTBOX_ROOT" "\"${CONTENTBOX_ROOT}\""
+echo "[bootstrap] CONTENTBOX_ROOT: ${CONTENTBOX_ROOT}"
 
 mkdir -p "$CONTENTBOX_ROOT"
 

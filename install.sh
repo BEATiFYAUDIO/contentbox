@@ -42,8 +42,7 @@ if [ ! -f "$API_ENV" ]; then
   fi
   cp "$API_ENV_EXAMPLE" "$API_ENV"
   echo "[install] Created $API_ENV from example."
-  echo "[install] Edit $API_ENV (DATABASE_URL, JWT_SECRET, CONTENTBOX_ROOT), then re-run."
-  exit 1
+  echo "[install] Edit $API_ENV (DATABASE_URL) if needed."
 fi
 
 if [ ! -f "$DASH_ENV" ]; then
