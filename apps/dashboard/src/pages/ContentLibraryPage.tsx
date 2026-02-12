@@ -280,6 +280,8 @@ export default function ContentLibraryPage({
   const [creditNameDraft, setCreditNameDraft] = React.useState<Record<string, string>>({});
   const [creditRoleDraft, setCreditRoleDraft] = React.useState<Record<string, string>>({});
   const [creditMsg, setCreditMsg] = React.useState<Record<string, string>>({});
+  const [publishBusy, setPublishBusy] = React.useState<Record<string, boolean>>({});
+  const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
   const [pendingOpenContentId, setPendingOpenContentId] = React.useState<string | null>(null);
   const [clearanceByLink, setClearanceByLink] = React.useState<Record<string, any | null>>({});
   const [clearanceLoadingByLink, setClearanceLoadingByLink] = React.useState<Record<string, boolean>>({});
@@ -526,6 +528,23 @@ export default function ContentLibraryPage({
       setSalesByContent((m) => ({ ...m, [contentId]: null }));
     } finally {
       setSalesLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function publishContent(contentId: string) {
+    if (publishBusy[contentId]) return;
+    setPublishBusy((m) => ({ ...m, [contentId]: true }));
+    setPublishMsg((m) => ({ ...m, [contentId]: "" }));
+    try {
+      await api(`/api/content/${contentId}/manifest`, "POST");
+      await api(`/api/content/${contentId}/publish`, "POST");
+      await load(false);
+      setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
+    } catch (e: any) {
+      const msg = e?.message || "Publish failed.";
+      setPublishMsg((m) => ({ ...m, [contentId]: msg }));
+    } finally {
+      setPublishBusy((m) => ({ ...m, [contentId]: false }));
     }
   }
 
@@ -1399,6 +1418,16 @@ export default function ContentLibraryPage({
                               <button
                                 type="button"
                                 className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                                onClick={() => publishContent(it.id)}
+                                disabled={publishBusy[it.id] || it.status === "published"}
+                                title={it.status === "published" ? "Already published" : "Publish this content"}
+                              >
+                                {it.status === "published" ? "Published" : publishBusy[it.id] ? "Publishing…" : "Publish"}
+                              </button>
+
+                              <button
+                                type="button"
+                                className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
                                 onClick={() => softDelete(it.id)}
                                 disabled={busy}
                                 title="Move to trash"
@@ -2175,18 +2204,23 @@ export default function ContentLibraryPage({
                                 {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
 
                                 <div className="text-xs text-neutral-500">
-                                  Public origin: <span className="text-neutral-300">{effectivePublicOrigin || "—"}</span>
+                                  Content ID: <span className="text-neutral-300">{it.id}</span>{" "}
+                                  <button
+                                    type="button"
+                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 ml-2"
+                                    onClick={() => copyText(it.id)}
+                                  >
+                                    Copy
+                                  </button>
+                                </div>
+
+                                <div className="text-xs text-neutral-500">
+                                  Public link: <span className="text-neutral-300">{effectivePublicOrigin || "—"}</span>
                                 </div>
                                 <div className="text-xs text-neutral-500">
-                                  Buy origin: <span className="text-neutral-300">{effectiveBuyOrigin || "—"}</span>
-                                </div>
-                                <div className="text-xs text-neutral-500">
-                                  Studio origin: <span className="text-neutral-300">{effectiveStudioOrigin || "—"}</span>
-                                </div>
-                                <div className="text-xs text-neutral-500">
-                                  Tunnel state:{" "}
+                                  Public status:{" "}
                                   <span className="text-neutral-300">
-                                    {effectivePublicOrigin || effectiveBuyOrigin || effectiveStudioOrigin ? "configured" : "not configured"}
+                                    {effectivePublicOrigin || effectiveBuyOrigin || effectiveStudioOrigin ? "enabled" : "disabled"}
                                   </span>
                                 </div>
                                 <div className="mt-2 flex items-center gap-2">
@@ -2205,7 +2239,7 @@ export default function ContentLibraryPage({
                                         }
                                       }}
                                     >
-                                      Go Private
+                                      Disable public sharing
                                     </button>
                                   ) : (
                                     <button
@@ -2216,11 +2250,11 @@ export default function ContentLibraryPage({
                                           const res = await api<any>("/api/public/go", "POST");
                                           if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
                                         } catch (e: any) {
-                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Go Public unavailable." }));
+                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Public sharing unavailable." }));
                                         }
                                       }}
                                     >
-                                      Go Public
+                                      Enable public sharing
                                     </button>
                                   )}
                                 </div>
@@ -2326,6 +2360,10 @@ export default function ContentLibraryPage({
                             ))
                           )}
                         </div>
+
+                        {publishMsg[it.id] ? (
+                          <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div>
+                        ) : null}
 
                         <div className="mt-3 grid gap-2 md:grid-cols-2">
                           <input

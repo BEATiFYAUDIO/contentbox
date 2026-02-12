@@ -40,7 +40,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
 
   async function loadContentList() {
-    const list = await api<ContentItem[]>("/content", "GET");
+    const list = await api<ContentItem[]>("/content?scope=mine", "GET");
     setContentList(list);
   }
 

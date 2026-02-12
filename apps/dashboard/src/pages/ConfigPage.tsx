@@ -285,9 +285,9 @@ export default function ConfigPage() {
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel configuration</div>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
         <div style={{ opacity: 0.7, marginBottom: 10 }}>
-          Manage Cloudflare tunnel routing used for public links.
+          Advanced routing for public links.
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input
@@ -299,7 +299,7 @@ export default function ConfigPage() {
               writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
             }}
           />
-          <span>Enable tunnel settings</span>
+          <span>Enable advanced routing settings</span>
         </label>
 
         {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
@@ -317,13 +317,16 @@ export default function ConfigPage() {
               />
             </label>
             <label>
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel domain</div>
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>Public domain (base)</div>
               <input
                 value={tunnelDomain}
                 onChange={(e) => setTunnelDomain(e.target.value)}
                 placeholder="contentbox.link"
                 className={inputClass}
               />
+              <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
+                Base domain for public links (e.g. <b>contentbox.link</b>). The tunnel list does not include domains.
+              </div>
             </label>
             <label>
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
@@ -353,11 +356,21 @@ export default function ConfigPage() {
             {tunnelList.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
-                <ul>
-                  {tunnelList.map((t, i) => (
-                    <li key={`${t?.id || t?.name || i}`}>{t?.name || t?.id}</li>
-                  ))}
-                </ul>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {tunnelList.map((t, i) => {
+                    const label = t?.name || t?.id || String(i + 1);
+                    return (
+                      <button
+                        key={`${t?.id || t?.name || i}`}
+                        type="button"
+                        onClick={() => setTunnelName(String(label))}
+                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>

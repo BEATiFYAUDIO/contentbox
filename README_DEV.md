@@ -94,6 +94,7 @@ npm run lnd:doctor
 cd apps/api
 # set these in apps/api/.env.local (do NOT commit)
 CONTENTBOX_PUBLIC_ORIGIN=https://buy.<your-domain>
+PUBLIC_INVITE_ORIGIN=https://invites.<your-domain>
 LND_REST_URL=https://127.0.0.1:8080
 LND_TLS_CERT_PATH=/home/<user>/.lnd/tls.cert
 LND_MACAROON_HEX=<hex>
@@ -109,6 +110,10 @@ API_BASE=http://127.0.0.1:4000
 CONTENT_ID=<contentId>
 curl -s "$API_BASE/p2p/content/$CONTENT_ID/offer" | jq
 ```
+
+Invite links:
+- `PUBLIC_INVITE_ORIGIN` sets a neutral shared host for all invite links (recommended for scale).
+- Buy links still use the content owner’s per-user public origin.
 
 Remote test:
 - Open buy link on LTE/5G, pay from phone wallet, verify settlement.
