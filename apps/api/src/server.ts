@@ -27,7 +27,7 @@ import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js
 import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
-import { getPublicOrigin, setPublicOrigin, clearPublicOrigin } from "./lib/publicOriginStore.js";
+import { getPublicOrigin, setPublicOrigin, clearPublicOrigin, getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
@@ -2051,14 +2051,61 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
 app.get("/api/public/status", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const record = getPublicOrigin(userId);
+  const config = getPublicOriginConfig();
   return reply.send({
     ok: true,
     publicOrigin: record?.publicOrigin || null,
     mode: record?.mode || null,
     hostname: record?.hostname || null,
     tunnelName: record?.tunnelName || null,
-    updatedAt: record?.updatedAt || null
+    updatedAt: record?.updatedAt || null,
+    config: {
+      provider: config.provider || null,
+      domain: config.domain || null,
+      tunnelName: config.tunnelName || null,
+      updatedAt: config.updatedAt || null
+    }
   });
+});
+
+app.get("/api/public/config", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const config = getPublicOriginConfig();
+  return reply.send({
+    ok: true,
+    provider: config.provider || null,
+    domain: config.domain || null,
+    tunnelName: config.tunnelName || null,
+    updatedAt: config.updatedAt || null
+  });
+});
+
+app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { provider?: string; domain?: string; tunnelName?: string };
+  const provider = String(body.provider || "").trim();
+  const domain = String(body.domain || "").trim();
+  const tunnelName = String(body.tunnelName || "").trim();
+  setPublicOriginConfig({
+    provider: provider || null,
+    domain: domain || null,
+    tunnelName: tunnelName || null
+  });
+  return reply.send({ ok: true, provider: provider || null, domain: domain || null, tunnelName: tunnelName || null });
+});
+
+app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const config = getPublicOriginConfig();
+  const provider = String(config.provider || process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
+  if (provider !== "cloudflare") {
+    return reply.code(400).send({ error: "Public tunnel provider not enabled" });
+  }
+
+  try {
+    const { stdout } = await execFileAsync("cloudflared", ["tunnel", "list", "--output", "json"]);
+    const list = JSON.parse(stdout || "[]");
+    return reply.send({ ok: true, tunnels: list });
+  } catch (e: any) {
+    return reply.code(500).send({ error: "Failed to list tunnels", details: e?.message || String(e) });
+  }
 });
 
 app.post("/api/public/go", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -2069,17 +2116,18 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (req: any, reply: 
   });
   if (!me) return notFound(reply, "User not found");
 
-  const provider = String(process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
+  const config = getPublicOriginConfig();
+  const provider = String(config.provider || process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
   if (provider !== "cloudflare") {
     return reply.code(400).send({ error: "Public tunnel provider not enabled" });
   }
 
-  const domain = String(process.env.CLOUDFLARE_TUNNEL_DOMAIN || "").trim();
+  const domain = String(config.domain || process.env.CLOUDFLARE_TUNNEL_DOMAIN || "").trim();
   if (!domain) {
     return reply.code(400).send({ error: "CLOUDFLARE_TUNNEL_DOMAIN is required" });
   }
 
-  const tunnelName = String(process.env.INSTANCE_TUNNEL_NAME || "").trim();
+  const tunnelName = String(config.tunnelName || process.env.INSTANCE_TUNNEL_NAME || "").trim();
   if (!tunnelName) {
     return reply.code(400).send({ error: "INSTANCE_TUNNEL_NAME is required for shared tunnel routing" });
   }

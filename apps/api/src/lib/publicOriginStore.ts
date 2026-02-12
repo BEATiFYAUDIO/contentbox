@@ -15,6 +15,7 @@ type StoreShape = Record<string, PublicOriginRecord>;
 
 const STORE_DIR = path.resolve(process.cwd(), "tmp");
 const STORE_PATH = path.join(STORE_DIR, "public-origins.json");
+const CONFIG_PATH = path.join(STORE_DIR, "public-origin-config.json");
 
 function readStore(): StoreShape {
   try {
@@ -49,4 +50,40 @@ export function clearPublicOrigin(userId: string) {
     delete store[userId];
     writeStore(store);
   }
+}
+
+export type PublicOriginConfig = {
+  provider?: string | null;
+  domain?: string | null;
+  tunnelName?: string | null;
+  updatedAt?: string | null;
+};
+
+function readConfig(): PublicOriginConfig {
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, "utf8");
+    const json = JSON.parse(raw);
+    if (json && typeof json === "object") return json as PublicOriginConfig;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function writeConfig(config: PublicOriginConfig) {
+  fs.mkdirSync(STORE_DIR, { recursive: true });
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+export function getPublicOriginConfig(): PublicOriginConfig {
+  return readConfig();
+}
+
+export function setPublicOriginConfig(config: PublicOriginConfig) {
+  writeConfig({
+    provider: config.provider || null,
+    domain: config.domain || null,
+    tunnelName: config.tunnelName || null,
+    updatedAt: new Date().toISOString()
+  });
 }

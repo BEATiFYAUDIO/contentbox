@@ -21,6 +21,7 @@ const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
 const STORAGE_PUBLIC_ORIGIN_FALLBACK = "contentbox.publicOriginFallback";
 const STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK = "contentbox.publicBuyOriginFallback";
 const STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK = "contentbox.publicStudioOriginFallback";
+const STORAGE_TUNNEL_CONFIG_ENABLED = "contentbox.tunnelConfig.enabled";
 
 function getApiBase(): string {
   const env = (import.meta as any).env || {};
@@ -65,6 +66,13 @@ export default function ConfigPage() {
   const [publicOriginFallback, setPublicOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK));
   const [publicBuyOriginFallback, setPublicBuyOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK));
   const [publicStudioOriginFallback, setPublicStudioOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK));
+  const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(() => readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED) === "1");
+  const [tunnelProvider, setTunnelProvider] = useState<string>("cloudflare");
+  const [tunnelDomain, setTunnelDomain] = useState<string>("");
+  const [tunnelName, setTunnelName] = useState<string>("");
+  const [tunnelError, setTunnelError] = useState<string | null>(null);
+  const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
+  const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +90,34 @@ export default function ConfigPage() {
       cancelled = true;
     };
   }, [apiBase]);
+
+  useEffect(() => {
+    if (!tunnelEnabled || !token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setTunnelError(null);
+        setTunnelLoading(true);
+        const res = await fetch(`${apiBase}/api/public/config`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json();
+        if (!cancelled) {
+          setTunnelProvider(json?.provider || "cloudflare");
+          setTunnelDomain(json?.domain || "");
+          setTunnelName(json?.tunnelName || "");
+        }
+      } catch (e: any) {
+        if (!cancelled) setTunnelError(e?.message || String(e));
+      } finally {
+        if (!cancelled) setTunnelLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token, tunnelEnabled]);
 
   const buildInfo = `${(import.meta as any).env?.MODE || "unknown"} • ${
     (import.meta as any).env?.VITE_APP_VERSION || "dev"
@@ -109,6 +145,51 @@ export default function ConfigPage() {
     writeStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, "");
+  };
+
+  const saveTunnelConfig = async () => {
+    if (!token) return;
+    setTunnelError(null);
+    setTunnelLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/public/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          provider: tunnelProvider,
+          domain: tunnelDomain,
+          tunnelName
+        })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to save tunnel config");
+      setTunnelProvider(json?.provider || "cloudflare");
+      setTunnelDomain(json?.domain || "");
+      setTunnelName(json?.tunnelName || "");
+    } catch (e: any) {
+      setTunnelError(e?.message || String(e));
+    } finally {
+      setTunnelLoading(false);
+    }
+  };
+
+  const discoverTunnels = async () => {
+    if (!token) return;
+    setTunnelError(null);
+    setTunnelLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/public/tunnels`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to list tunnels");
+      setTunnelList(Array.isArray(json?.tunnels) ? json.tunnels : []);
+    } catch (e: any) {
+      setTunnelError(e?.message || String(e));
+    } finally {
+      setTunnelLoading(false);
+    }
   };
 
   return (
@@ -201,6 +282,86 @@ export default function ConfigPage() {
         <div style={{ marginTop: 12, opacity: 0.7 }}>
           Health path used: <b>{DEFAULT_HEALTH_PATH}</b>
         </div>
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel configuration</div>
+        <div style={{ opacity: 0.7, marginBottom: 10 }}>
+          Manage Cloudflare tunnel routing used for public links.
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={tunnelEnabled}
+            onChange={(e) => {
+              const v = e.target.checked;
+              setTunnelEnabled(v);
+              writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
+            }}
+          />
+          <span>Enable tunnel settings</span>
+        </label>
+
+        {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
+
+        {tunnelEnabled && token && (
+          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
+            <label>
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
+              <input
+                value={tunnelProvider}
+                onChange={(e) => setTunnelProvider(e.target.value)}
+                placeholder="cloudflare"
+                className={inputClass}
+              />
+            </label>
+            <label>
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel domain</div>
+              <input
+                value={tunnelDomain}
+                onChange={(e) => setTunnelDomain(e.target.value)}
+                placeholder="contentbox.link"
+                className={inputClass}
+              />
+            </label>
+            <label>
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
+              <input
+                value={tunnelName}
+                onChange={(e) => setTunnelName(e.target.value)}
+                placeholder="contentbox"
+                className={inputClass}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={saveTunnelConfig}
+                disabled={tunnelLoading}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Save tunnel config
+              </button>
+              <button
+                onClick={discoverTunnels}
+                disabled={tunnelLoading}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Discover tunnels
+              </button>
+            </div>
+            {tunnelList.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
+                <ul>
+                  {tunnelList.map((t, i) => (
+                    <li key={`${t?.id || t?.name || i}`}>{t?.name || t?.id}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
