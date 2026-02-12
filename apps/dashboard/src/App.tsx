@@ -270,13 +270,11 @@ export default function App() {
   ];
 
   const identityNav = [
-    { key: "profile" as const, label: "Profile", hint: "Identity" },
-    { key: "payouts" as const, label: "Payout", hint: "Rails + payout destinations" }
+    { key: "profile" as const, label: "Profile", hint: "Identity" }
   ];
 
   const advancedNav = [
     { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
-    { key: "payouts" as const, label: "Payout Rails", hint: "Rails + destinations" },
     { key: "config" as const, label: "Config", hint: "Networking + system" },
     { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" }
   ];
@@ -341,14 +339,16 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
               <div className="space-y-1">
-              {royaltiesNav.map((item) => {
+              {accessNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
                     key={item.key}
-                    onClick={() => setPage(item.key)}
+                    onClick={() => {
+                      setPage(item.key);
+                    }}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
                       active
@@ -365,16 +365,14 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
               <div className="space-y-1">
-              {accessNav.map((item) => {
+              {royaltiesNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
                     key={item.key}
-                    onClick={() => {
-                      setPage(item.key);
-                    }}
+                    onClick={() => setPage(item.key)}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
                       active
