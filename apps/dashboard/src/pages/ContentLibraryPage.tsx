@@ -339,6 +339,20 @@ export default function ContentLibraryPage({
     })();
   }, []);
 
+  async function refreshPublicStatus() {
+    try {
+      const res = await api<any>("/api/public/status", "GET");
+      if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
+    } catch {
+      // ignore
+    }
+  }
+
+  React.useEffect(() => {
+    refreshPublicStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   React.useEffect(() => {
     if (!publicOrigin) return;
     try {
@@ -2168,6 +2182,41 @@ export default function ContentLibraryPage({
                                   <span className="text-neutral-300">
                                     {effectivePublicOrigin || effectiveBuyOrigin || effectiveStudioOrigin ? "configured" : "not configured"}
                                   </span>
+                                </div>
+                                <div className="mt-2 flex items-center gap-2">
+                                  {effectivePublicOrigin ? (
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={async () => {
+                                        try {
+                                          await api("/api/public/stop", "POST");
+                                          setPublicOrigin("");
+                                          setPublicBuyOrigin("");
+                                          setPublicStudioOrigin("");
+                                        } catch (e: any) {
+                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to disable public access." }));
+                                        }
+                                      }}
+                                    >
+                                      Go Private
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={async () => {
+                                        try {
+                                          const res = await api<any>("/api/public/go", "POST");
+                                          if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
+                                        } catch (e: any) {
+                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Go Public unavailable." }));
+                                        }
+                                      }}
+                                    >
+                                      Go Public
+                                    </button>
+                                  )}
                                 </div>
 
                                 {shareP2PLink[it.id] ? (

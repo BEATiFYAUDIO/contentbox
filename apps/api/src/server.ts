@@ -27,6 +27,7 @@ import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js
 import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
+import { getPublicOrigin, setPublicOrigin, clearPublicOrigin } from "./lib/publicOriginStore.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -112,6 +113,23 @@ function jsonSafe<T>(value: T): T {
 
 function jsonStringifySafe(value: unknown): string {
   return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "user";
+}
+
+function execFileAsync(cmd: string, args: string[]) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(cmd, args, (err, stdout, stderr) => {
+      if (err) return reject(Object.assign(err, { stdout, stderr }));
+      resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
+    });
+  });
 }
 
 type HistoryActor =
@@ -1914,10 +1932,86 @@ app.post("/auth/login", async (req, reply) => {
 
 app.get("/me", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
-  return prisma.user.findUnique({
+  const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true, email: true, displayName: true, createdAt: true, bio: true, avatarUrl: true }
   });
+  const publicOrigin = getPublicOrigin(userId);
+  return { ...user, publicOrigin: publicOrigin?.publicOrigin || null };
+});
+
+// Public origin / tunnel control (Cloudflare)
+app.get("/api/public/status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const record = getPublicOrigin(userId);
+  return reply.send({
+    ok: true,
+    publicOrigin: record?.publicOrigin || null,
+    mode: record?.mode || null,
+    hostname: record?.hostname || null,
+    tunnelName: record?.tunnelName || null,
+    updatedAt: record?.updatedAt || null
+  });
+});
+
+app.post("/api/public/go", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const me = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true, displayName: true }
+  });
+  if (!me) return notFound(reply, "User not found");
+
+  const provider = String(process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
+  if (provider !== "cloudflare") {
+    return reply.code(400).send({ error: "Public tunnel provider not enabled" });
+  }
+
+  const domain = String(process.env.CLOUDFLARE_TUNNEL_DOMAIN || "").trim();
+  if (!domain) {
+    return reply.code(400).send({ error: "CLOUDFLARE_TUNNEL_DOMAIN is required" });
+  }
+
+  const tunnelName = String(process.env.INSTANCE_TUNNEL_NAME || "").trim();
+  if (!tunnelName) {
+    return reply.code(400).send({ error: "INSTANCE_TUNNEL_NAME is required for shared tunnel routing" });
+  }
+
+  const base = me.displayName || me.email || me.id;
+  const slug = slugify(base);
+  const hostname = `${slug}.${domain}`;
+
+  try {
+    await execFileAsync("cloudflared", ["tunnel", "route", "dns", tunnelName, hostname]);
+  } catch (e: any) {
+    return reply.code(500).send({
+      error: "Failed to configure tunnel route",
+      details: e?.message || String(e)
+    });
+  }
+
+  const publicOrigin = `https://${hostname}`;
+  setPublicOrigin(userId, {
+    publicOrigin,
+    mode: "external",
+    hostname,
+    tunnelName,
+    updatedAt: new Date().toISOString()
+  });
+
+  return reply.send({
+    ok: true,
+    publicOrigin,
+    hostname,
+    mode: "external",
+    tunnelName
+  });
+});
+
+app.post("/api/public/stop", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  clearPublicOrigin(userId);
+  return reply.send({ ok: true });
 });
 
 // Buyer library (entitlements)
