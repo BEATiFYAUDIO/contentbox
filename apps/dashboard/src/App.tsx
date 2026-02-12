@@ -275,16 +275,14 @@ export default function App() {
   ];
 
   const advancedNav = [
-    { key: "config" as const, label: "Config", hint: "Networking + system" },
-    { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" },
     { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
-    { key: "sales" as const, label: "Sales", hint: "Orders and receipts" },
     { key: "payouts" as const, label: "Payout Rails", hint: "Rails + destinations" },
-    { key: "splits" as const, label: "Splits", hint: "Draft, lock, history" },
-    { key: "participations" as const, label: "Royalties", hint: "My royalties" }
+    { key: "config" as const, label: "Config", hint: "Networking + system" },
+    { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" }
   ];
 
-  const showAdvancedNav = (import.meta as any).env?.VITE_SHOW_ADVANCED_NAV === "1";
+  const showAdvancedNav =
+    (import.meta as any).env?.VITE_SHOW_ADVANCED_NAV === "1" || Boolean(me?.useNodeRails);
 
   const pageTitle =
     page === "config" ? "Config" :
@@ -319,32 +317,6 @@ export default function App() {
 
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
             <div>
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
-              <div className="space-y-1">
-              {accessNav.map((item) => {
-                const active = item.key === page;
-                return (
-                  <button
-                    key={item.key}
-                    onClick={() => {
-                      setPage(item.key);
-                    }}
-                    className={[
-                      "w-full text-left rounded-lg px-3 py-2 transition border",
-                      active
-                        ? "border-white/30 bg-white/5"
-                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
-                    ].join(" ")}
-                  >
-                    <div className="text-sm font-medium">{item.label}</div>
-                    <div className="text-xs text-neutral-400">{item.hint}</div>
-                  </button>
-                );
-              })}
-              </div>
-            </div>
-
-            <div className="mt-4 border-t border-neutral-900 pt-4">
               <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
               <div className="space-y-1">
               {contentNav.map((item) => {
@@ -377,6 +349,32 @@ export default function App() {
                   <button
                     key={item.key}
                     onClick={() => setPage(item.key)}
+                    className={[
+                      "w-full text-left rounded-lg px-3 py-2 transition border",
+                      active
+                        ? "border-white/30 bg-white/5"
+                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                    ].join(" ")}
+                  >
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-neutral-900 pt-4">
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
+              <div className="space-y-1">
+              {accessNav.map((item) => {
+                const active = item.key === page;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => {
+                      setPage(item.key);
+                    }}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
                       active
