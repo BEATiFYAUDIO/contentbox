@@ -92,10 +92,12 @@ function Prompt-InstallCloudflared {
   if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return }
 
   $rootLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
-  if (-not $rootLine) { return }
   $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
   $rootVal = $rootVal.Trim('"')
-  if (-not $rootVal) { return }
+  if (-not $rootVal -or $rootVal -match "<user>") {
+    $rootVal = Join-Path $HOME "contentbox-data"
+    Set-EnvLine $apiEnv "CONTENTBOX_ROOT" "`"$rootVal`""
+  }
 
   $binDir = Join-Path $rootVal ".bin"
   $dest = Join-Path $binDir "cloudflared.exe"

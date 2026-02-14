@@ -82,8 +82,13 @@ prompt_install_cloudflared() {
 
   local root_val
   root_val="$(grep '^CONTENTBOX_ROOT=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '"')"
-  if [ -z "$root_val" ]; then
-    return
+  if [ -z "$root_val" ] || echo "$root_val" | grep -q "<user>"; then
+    root_val="$HOME/contentbox-data"
+    if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
+      sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$root_val\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+    else
+      echo "CONTENTBOX_ROOT=\"$root_val\"" >> "$API_ENV"
+    fi
   fi
   local bin_dir="$root_val/.bin"
   local bin_name="cloudflared"
