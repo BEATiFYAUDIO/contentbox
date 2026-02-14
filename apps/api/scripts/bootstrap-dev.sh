@@ -103,8 +103,20 @@ fi
 
 # Verify Postgres reachability if possible
 if command -v psql >/dev/null 2>&1; then
+  DB_URL_PSQL="$(node - <<'NODE'
+const { URL } = require('url');
+const raw = process.env.DATABASE_URL || '';
+try {
+  const u = new URL(raw);
+  u.search = '';
+  console.log(u.toString());
+} catch {
+  console.log(raw);
+}
+NODE
+)"
   echo "[bootstrap] Checking Postgres via psql..."
-  if ! psql "$DATABASE_URL" -c "select 1" >/dev/null 2>&1; then
+  if ! psql "$DB_URL_PSQL" -c "select 1" >/dev/null 2>&1; then
     fail "Postgres unreachable using DATABASE_URL"
   fi
 else
