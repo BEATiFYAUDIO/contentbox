@@ -444,6 +444,14 @@ export default function ContentLibraryPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      refreshPublicStatus();
+    }, 10000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function confirmPublicConsent() {
     try {
       setPublicConsentBusy(true);
@@ -2320,6 +2328,24 @@ export default function ContentLibraryPage({
                             return (
                               <div className="rounded-md border border-neutral-800 bg-neutral-900/30 p-3 space-y-2">
                                 <div className="text-xs text-neutral-300 font-medium">Public Link</div>
+                                <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                                  <span
+                                    className={`rounded-full border px-2 py-0.5 ${
+                                      isOn
+                                        ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
+                                        : isStarting
+                                          ? "border-amber-900 bg-amber-950/30 text-amber-200"
+                                          : isError
+                                            ? "border-red-900 bg-red-950/30 text-red-200"
+                                            : "border-neutral-800 bg-neutral-950 text-neutral-400"
+                                    }`}
+                                  >
+                                    {status}
+                                  </span>
+                                  <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
+                                    DDNS disabled
+                                  </span>
+                                </div>
 
                                 {status === "STOPPED" ? (
                                   <>
@@ -2476,32 +2502,94 @@ export default function ContentLibraryPage({
                             const effectivePublicOrigin = (activeOrigin || "").trim();
                             const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
                             const effectiveStudioOrigin = (publicStudioOrigin || effectivePublicOrigin || "").trim();
-                            const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || apiBase).replace(/\/$/, "");
-                            const buyLink = `${buyBase}/buy/${it.id}`;
-                            const isLocalOnly = !effectiveBuyOrigin && !effectivePublicOrigin && apiBase.includes("127.0.0.1");
+                            const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
+                            const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
+                            const loopbackBase = "http://127.0.0.1:4000";
+                            const loopbackLink = `${loopbackBase}/buy/${it.id}`;
+                            const hasPublicBuy = Boolean(buyBase);
+                            const isLocalOnly = !hasPublicBuy;
+                            let lanBase = "";
+                            try {
+                              const u = new URL(apiBase);
+                              if (!["127.0.0.1", "localhost"].includes(u.hostname)) {
+                                lanBase = u.origin.replace(/\/$/, "");
+                              }
+                            } catch {}
+                            const lanLink = lanBase ? `${lanBase}/buy/${it.id}` : "";
                             return (
                               <>
+                                <div className="text-[11px] text-neutral-500">Buy links</div>
                                 <div className="flex items-center justify-between gap-3">
                                   <div className="min-w-0">
-                                    Buy link:{" "}
-                                    <span className="text-neutral-300 break-all">
-                                      {isLocalOnly ? "Local only (loopback)" : buyLink}
-                                    </span>
+                                    Public buy link:{" "}
+                                    <span className="text-neutral-300 break-all">{hasPublicBuy ? buyLink : "Not available"}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => {
+                                        if (hasPublicBuy) window.open(buyLink, "_blank", "noopener,noreferrer");
+                                      }}
+                                      disabled={!hasPublicBuy}
+                                    >
+                                      Open
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => copyText(buyLink)}
+                                      disabled={!hasPublicBuy}
+                                    >
+                                      Copy link
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {lanBase ? (
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                      LAN buy link:{" "}
+                                      <span className="text-neutral-300 break-all">{lanLink}</span>
+                                      <span className="text-neutral-500"> (same Wi‑Fi)</span>
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={() => window.open(lanLink, "_blank", "noopener,noreferrer")}
+                                      >
+                                        Open
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={() => copyText(lanLink)}
+                                      >
+                                        Copy link
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : null}
+
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    Local loopback:{" "}
+                                    <span className="text-neutral-300 break-all">{loopbackLink}</span>
+                                    {isLocalOnly ? <span className="text-neutral-500"> (local only)</span> : null}
                                   </div>
                                   <div className="flex items-center gap-2 shrink-0">
                                     <button
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={() => {
-                                        if (!isLocalOnly) window.open(buyLink, "_blank", "noopener,noreferrer");
-                                      }}
+                                      onClick={() => window.open(loopbackLink, "_blank", "noopener,noreferrer")}
                                     >
                                       Open
                                     </button>
                                     <button
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={() => copyText(buyLink)}
+                                      onClick={() => copyText(loopbackLink)}
                                     >
                                       Copy link
                                     </button>
@@ -2524,7 +2612,7 @@ export default function ContentLibraryPage({
                                 {shareP2PLink[it.id] ? (
                                   <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
                                     <div className="min-w-0 break-all">
-                                      P2P link: <span className="text-neutral-300">{shareP2PLink[it.id]}</span>
+                                      Last P2P link: <span className="text-neutral-300">{shareP2PLink[it.id]}</span>
                                     </div>
                                     <button
                                       type="button"
