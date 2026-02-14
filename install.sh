@@ -33,7 +33,7 @@ echo "[install] npm:  $(npm -v)"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
   echo "[install] cloudflared not found in PATH."
-  echo "[install] Public Link will auto-download a managed binary when first enabled."
+  echo "[install] Public Link can download a managed helper tool after you approve the prompt."
   echo "[install] (Optional) You can still install cloudflared system-wide if preferred."
 fi
 

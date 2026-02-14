@@ -237,6 +237,10 @@ export class TunnelManager {
     return { ...this.state };
   }
 
+  setError(message: string) {
+    this.state = { ...this.state, status: "ERROR", lastError: message };
+  }
+
   async ensureBinary(): Promise<{ ok: true } | { ok: false; error: string }> {
     try {
       const binPath = await resolveCloudflaredPath(this.opts.binDir, this.opts.logger);

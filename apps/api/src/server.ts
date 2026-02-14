@@ -500,6 +500,7 @@ const PUBLIC_HEALTH_INTERVAL_MS = Math.max(5000, Math.floor(Number(process.env.P
 const PUBLIC_HEALTH_FAILURE_THRESHOLD = Math.max(1, Math.floor(Number(process.env.PUBLIC_HEALTH_FAILURE_THRESHOLD || "2")));
 const CLOUDFLARED_BIN_DIR = String(process.env.CLOUDFLARED_BIN_DIR || "").trim() || path.join(CONTENTBOX_ROOT, ".bin");
 const PUBLIC_HTTP_PORT = Number(process.env.PUBLIC_PORT || 4010);
+const STATE_FILE = path.join(CONTENTBOX_ROOT, "state.json");
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
@@ -535,6 +536,80 @@ function resolveCloudflaredCmd(): string | null {
 
 function hasCloudflaredBinary(): boolean {
   return Boolean(resolveCloudflaredCmd());
+}
+
+function readCloudflaredVersionSync(binPath: string): string | null {
+  try {
+    const res = spawnSync(binPath, ["--version"], { encoding: "utf8" });
+    if (res.status === 0) return String(res.stdout || "").trim() || null;
+  } catch {}
+  return null;
+}
+
+function getCloudflaredStatus(): { available: boolean; managedPath: string | null; version: string | null } {
+  const resolved = resolveCloudflaredCmd();
+  if (!resolved) return { available: false, managedPath: null, version: null };
+  const managedPath = resolved === "cloudflared" ? null : resolved;
+  return {
+    available: true,
+    managedPath,
+    version: readCloudflaredVersionSync(resolved)
+  };
+}
+
+type LocalState = {
+  publicSharingConsent?: {
+    granted?: boolean;
+    grantedAt?: string | null;
+    dontAskAgain?: boolean;
+  };
+};
+
+function readLocalState(): LocalState {
+  try {
+    if (!fsSync.existsSync(STATE_FILE)) return {};
+    const raw = fsSync.readFileSync(STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed as LocalState;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalState(next: LocalState) {
+  try {
+    const tmp = `${STATE_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(next, null, 2));
+    fsSync.renameSync(tmp, STATE_FILE);
+  } catch {}
+}
+
+function getPublicSharingConsent() {
+  const s = readLocalState();
+  const c = s.publicSharingConsent || {};
+  return {
+    granted: Boolean(c.granted),
+    grantedAt: typeof c.grantedAt === "string" ? c.grantedAt : null,
+    dontAskAgain: Boolean(c.dontAskAgain)
+  };
+}
+
+function setPublicSharingConsent(granted: boolean, dontAskAgain: boolean) {
+  const s = readLocalState();
+  s.publicSharingConsent = {
+    granted,
+    dontAskAgain,
+    grantedAt: granted ? new Date().toISOString() : null
+  };
+  writeLocalState(s);
+  return s.publicSharingConsent;
+}
+
+function clearPublicSharingConsent() {
+  const s = readLocalState();
+  if (s.publicSharingConsent) delete s.publicSharingConsent;
+  writeLocalState(s);
 }
 
 type PublicMode = "off" | "quick" | "named" | "direct";
@@ -578,25 +653,37 @@ function toEpochMs(value: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-function getPublicStatus(): { mode: PublicMode; state: PublicState; publicOrigin: string | null; lastError: string | null; lastCheckedAt: number | null } {
+function getPublicStatus(): {
+  mode: PublicMode;
+  state: PublicState;
+  publicOrigin: string | null;
+  lastError: string | null;
+  lastCheckedAt: number | null;
+  cloudflared: { available: boolean; managedPath: string | null; version: string | null };
+  consentRequired: boolean;
+} {
   const mode = normalizePublicMode(PUBLIC_MODE);
+  const cloudflared = getCloudflaredStatus();
+  const consent = getPublicSharingConsent();
+  const consentGranted = consent.granted || consent.dontAskAgain;
+  const consentRequired = mode === "quick" && !cloudflared.available && !consentGranted;
   if (mode === "off") {
-    return { mode, state: "STOPPED", publicOrigin: null, lastError: null, lastCheckedAt: null };
+    return { mode, state: "STOPPED", publicOrigin: null, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false };
   }
 
   if (mode === "direct") {
     const origin = getDirectPublicOrigin();
     if (!origin) {
-      return { mode, state: "ERROR", publicOrigin: null, lastError: "direct_mode_not_public", lastCheckedAt: null };
+      return { mode, state: "ERROR", publicOrigin: null, lastError: "direct_mode_not_public", lastCheckedAt: null, cloudflared, consentRequired: false };
     }
-    return { mode, state: "ACTIVE", publicOrigin: origin, lastError: null, lastCheckedAt: null };
+    return { mode, state: "ACTIVE", publicOrigin: origin, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false };
   }
 
   if (mode === "named") {
     const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
     const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
     if (!tunnelName || !publicOrigin) {
-      return { mode, state: "ERROR", publicOrigin: null, lastError: "missing_named_tunnel_config", lastCheckedAt: null };
+      return { mode, state: "ERROR", publicOrigin: null, lastError: "missing_named_tunnel_config", lastCheckedAt: null, cloudflared, consentRequired: false };
     }
   }
 
@@ -606,7 +693,9 @@ function getPublicStatus(): { mode: PublicMode; state: PublicState; publicOrigin
     state: base.status as PublicState,
     publicOrigin: base.status === "ACTIVE" ? base.publicOrigin : null,
     lastError: base.lastError || null,
-    lastCheckedAt: toEpochMs(base.lastCheckedAt)
+    lastCheckedAt: toEpochMs(base.lastCheckedAt),
+    cloudflared,
+    consentRequired
   };
 }
 
@@ -2569,6 +2658,7 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
 
 app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const mode = normalizePublicMode(PUBLIC_MODE);
+  const body = (_req.body ?? {}) as { consent?: boolean; dontAskAgain?: boolean };
 
   if (mode === "off") {
     return reply.code(409).send({
@@ -2576,7 +2666,9 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       state: "ERROR",
       publicOrigin: null,
       lastError: "public_mode_disabled",
-      lastCheckedAt: null
+      lastCheckedAt: null,
+      cloudflared: getCloudflaredStatus(),
+      consentRequired: false
     });
   }
 
@@ -2588,7 +2680,9 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
         state: "ERROR",
         publicOrigin: null,
         lastError: "direct_mode_not_public",
-        lastCheckedAt: null
+        lastCheckedAt: null,
+        cloudflared: status.cloudflared,
+        consentRequired: false
       });
     }
     return reply.send(status);
@@ -2603,7 +2697,9 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
         state: "ERROR",
         publicOrigin: null,
         lastError: "missing_named_tunnel_config",
-        lastCheckedAt: null
+        lastCheckedAt: null,
+        cloudflared: getCloudflaredStatus(),
+        consentRequired: false
       });
     }
     const status = await tunnelManager.startNamed({
@@ -2617,7 +2713,9 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
         state: "ACTIVE",
         publicOrigin,
         lastError: null,
-        lastCheckedAt: toEpochMs(status.lastCheckedAt)
+        lastCheckedAt: toEpochMs(status.lastCheckedAt),
+        cloudflared: getCloudflaredStatus(),
+        consentRequired: false
       });
     }
     return reply.code(503).send({
@@ -2625,19 +2723,40 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       state: "ERROR",
       publicOrigin: null,
       lastError: status.lastError || "named_tunnel_failed",
-      lastCheckedAt: toEpochMs(status.lastCheckedAt)
+      lastCheckedAt: toEpochMs(status.lastCheckedAt),
+      cloudflared: getCloudflaredStatus(),
+      consentRequired: false
     });
   }
 
   // quick
+  const cloudflared = getCloudflaredStatus();
+  const consent = getPublicSharingConsent();
+  const consentGranted = consent.granted || consent.dontAskAgain;
+  if (!cloudflared.available && !consentGranted) {
+    if (body?.consent !== true) {
+      const status = getPublicStatus();
+      return reply.code(409).send({
+        ...status,
+        state: "ERROR",
+        publicOrigin: null,
+        lastError: "consent_required",
+        consentRequired: true
+      });
+    }
+    setPublicSharingConsent(true, body?.dontAskAgain === true);
+  }
+
   const prep = await tunnelManager.ensureBinary();
   if (!prep.ok) {
+    tunnelManager.setError("cloudflared_download_failed");
+    const status = getPublicStatus();
     return reply.code(503).send({
-      mode,
+      ...status,
       state: "ERROR",
       publicOrigin: null,
-      lastError: "cloudflared_unavailable",
-      lastCheckedAt: null
+      lastError: "cloudflared_download_failed",
+      consentRequired: false
     });
   }
   const status = getPublicStatus();
@@ -2648,19 +2767,26 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     state: "STARTING",
     publicOrigin: null,
     lastError: null,
-    lastCheckedAt: null
+    lastCheckedAt: null,
+    cloudflared: getCloudflaredStatus(),
+    consentRequired: false
   });
 });
 
 app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   await tunnelManager.stop();
+  const status = getPublicStatus();
   return reply.send({
-    mode: normalizePublicMode(PUBLIC_MODE),
+    ...status,
     state: "STOPPED",
     publicOrigin: null,
-    lastError: null,
-    lastCheckedAt: null
+    lastError: null
   });
+});
+
+app.post("/api/public/consent/reset", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  clearPublicSharingConsent();
+  return reply.send(getPublicStatus());
 });
 
 // Buyer library (entitlements)

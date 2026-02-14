@@ -17,7 +17,7 @@ Write-Host "[install] npm:  $(npm -v)"
 
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
   Write-Host "[install] cloudflared not found in PATH."
-  Write-Host "[install] Public Link will auto-download a managed binary when first enabled."
+  Write-Host "[install] Public Link can download a managed helper tool after you approve the prompt."
   Write-Host "[install] (Optional) You can still install cloudflared system-wide if preferred."
 }
 

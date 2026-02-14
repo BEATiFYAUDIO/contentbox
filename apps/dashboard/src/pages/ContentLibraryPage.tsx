@@ -268,6 +268,9 @@ export default function ContentLibraryPage({
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
   const [publicAdvancedOpen, setPublicAdvancedOpen] = React.useState(false);
+  const [publicConsentOpen, setPublicConsentOpen] = React.useState(false);
+  const [publicConsentDontAskAgain, setPublicConsentDontAskAgain] = React.useState(false);
+  const [publicConsentBusy, setPublicConsentBusy] = React.useState(false);
   const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
@@ -355,7 +358,7 @@ export default function ContentLibraryPage({
     try {
       const res = await api<any>("/api/public/status", "GET");
       setPublicStatus(res || null);
-      if (res?.status === "ACTIVE" && res?.publicOrigin) {
+      if (res?.state === "ACTIVE" && res?.publicOrigin) {
         setPublicOrigin(res.publicOrigin);
       }
     } catch {
@@ -363,19 +366,58 @@ export default function ContentLibraryPage({
     }
   }
 
+  function formatPublicError(code?: string | null) {
+    if (!code) return "We couldn’t start sharing from this device.";
+    if (code === "consent_required") return "Please approve the download to enable public link.";
+    if (code === "cloudflared_download_failed") return "Unable to download helper tool. Check your connection and try again.";
+    if (code === "cloudflared_unavailable") return "Helper tool unavailable. Try again.";
+    return "We couldn’t start sharing from this device.";
+  }
+
+  async function postPublicGo(consent?: boolean, dontAskAgain?: boolean) {
+    const token = getToken();
+    const body = consent ? { consent: true, dontAskAgain: Boolean(dontAskAgain) } : {};
+    const res = await fetch(`${apiBase}/api/public/go`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {})
+      },
+      body: JSON.stringify(body)
+    });
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text ? { error: text } : null;
+    }
+    return { ok: res.ok, data };
+  }
+
   async function startPublicLink() {
     try {
       setPublicBusy(true);
       setPublicMsg(null);
-      setPublicStatus({ status: "STARTING" });
-      const res = await api<any>("/api/public/go", "POST");
-      setPublicStatus(res || null);
-      if (res?.status === "ACTIVE" && res?.publicOrigin) {
-        setPublicOrigin(res.publicOrigin);
+      const status = await api<any>("/api/public/status", "GET");
+      setPublicStatus(status || null);
+      if (status?.consentRequired) {
+        setPublicConsentOpen(true);
+        setPublicBusy(false);
+        return;
+      }
+      setPublicStatus({ state: "STARTING" });
+      const res = await postPublicGo();
+      setPublicStatus(res.data || null);
+      if (!res.ok) {
+        setPublicMsg(formatPublicError(res.data?.lastError));
+      }
+      if (res.data?.state === "ACTIVE" && res.data?.publicOrigin) {
+        setPublicOrigin(res.data.publicOrigin);
       }
     } catch (e: any) {
-      setPublicStatus({ status: "ERROR" });
-      setPublicMsg("We couldn’t start sharing from this device.");
+      setPublicStatus({ state: "ERROR" });
+      setPublicMsg(formatPublicError(null));
     } finally {
       setPublicBusy(false);
     }
@@ -386,7 +428,7 @@ export default function ContentLibraryPage({
       setPublicBusy(true);
       setPublicMsg(null);
       await api("/api/public/stop", "POST");
-      setPublicStatus({ status: "STOPPED" });
+      setPublicStatus({ state: "STOPPED" });
       setPublicOrigin("");
       setPublicBuyOrigin("");
       setPublicStudioOrigin("");
@@ -401,6 +443,29 @@ export default function ContentLibraryPage({
     refreshPublicStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function confirmPublicConsent() {
+    try {
+      setPublicConsentBusy(true);
+      setPublicMsg(null);
+      setPublicStatus({ state: "STARTING" });
+      const res = await postPublicGo(true, publicConsentDontAskAgain);
+      setPublicStatus(res.data || null);
+      if (!res.ok) {
+        setPublicMsg(formatPublicError(res.data?.lastError));
+      }
+      if (res.data?.state === "ACTIVE" && res.data?.publicOrigin) {
+        setPublicOrigin(res.data.publicOrigin);
+      }
+    } catch {
+      setPublicStatus({ state: "ERROR" });
+      setPublicMsg(formatPublicError(null));
+    } finally {
+      setPublicConsentBusy(false);
+      setPublicConsentOpen(false);
+      setPublicBusy(false);
+    }
+  }
 
   React.useEffect(() => {
     if (!publicOrigin) return;
@@ -966,6 +1031,45 @@ export default function ContentLibraryPage({
 
   return (
     <div className="space-y-6">
+      {publicConsentOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+          <div className="w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-950 p-4">
+            <div className="text-sm font-medium">Enable Public Link</div>
+            <div className="mt-2 text-xs text-neutral-400 space-y-2">
+              <div>To create a public link, ContentBox needs to download a small helper tool to this device.</div>
+              <div>It will be stored inside your ContentBox data folder and can be removed anytime.</div>
+              <div>This link works while ContentBox is running and may change after restart.</div>
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-xs text-neutral-400">
+              <input
+                type="checkbox"
+                className="h-3 w-3"
+                checked={publicConsentDontAskAgain}
+                onChange={(e) => setPublicConsentDontAskAgain(e.target.checked)}
+              />
+              Don’t ask again on this device
+            </label>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                onClick={() => setPublicConsentOpen(false)}
+                disabled={publicConsentBusy}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="text-xs rounded-lg border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
+                onClick={confirmPublicConsent}
+                disabled={publicConsentBusy}
+              >
+                {publicConsentBusy ? "Starting…" : "Download & Enable"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div>
         <div className="text-lg font-semibold">Content library</div>
         <div className="text-sm text-neutral-400">Create an item, upload your master file, and the repo will track every version.</div>
@@ -2206,7 +2310,7 @@ export default function ContentLibraryPage({
                         </div>
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
                           {(() => {
-                            const status = String(publicStatus?.status || "STOPPED");
+                            const status = String(publicStatus?.state || "STOPPED");
                             const isStarting = status === "STARTING";
                             const isOn = status === "ACTIVE";
                             const isError = status === "ERROR";
@@ -2319,11 +2423,32 @@ export default function ContentLibraryPage({
                                 {publicAdvancedOpen ? (
                                   <div className="text-[11px] text-neutral-500 space-y-1">
                                     <div>Status: <span className="text-neutral-300">{status}</span></div>
-                                    <div>Last check: <span className="text-neutral-300">{publicStatus?.lastCheckedAt || "—"}</span></div>
+                                    <div>
+                                      Last check:{" "}
+                                      <span className="text-neutral-300">
+                                        {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
+                                      </span>
+                                    </div>
                                     <div>Public origin: <span className="text-neutral-300 break-all">{publicStatus?.publicOrigin || "—"}</span></div>
                                     <div>Last error: <span className="text-neutral-300 break-all">{publicStatus?.lastError || publicMsg || "—"}</span></div>
-                                    <div>cloudflared path: <span className="text-neutral-300 break-all">{publicStatus?.cloudflaredPath || "—"}</span></div>
-                                    <div>cloudflared version: <span className="text-neutral-300 break-all">{publicStatus?.cloudflaredVersion || "—"}</span></div>
+                                    <div>Consent required: <span className="text-neutral-300">{publicStatus?.consentRequired ? "yes" : "no"}</span></div>
+                                    <div>cloudflared available: <span className="text-neutral-300">{publicStatus?.cloudflared?.available ? "yes" : "no"}</span></div>
+                                    <div>cloudflared path: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.managedPath || "—"}</span></div>
+                                    <div>cloudflared version: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.version || "—"}</span></div>
+                                    <button
+                                      type="button"
+                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                      onClick={async () => {
+                                        try {
+                                          await api("/api/public/consent/reset", "POST");
+                                          await refreshPublicStatus();
+                                        } catch {
+                                          setPublicMsg("Failed to reset consent.");
+                                        }
+                                      }}
+                                    >
+                                      Reset Public Link consent
+                                    </button>
                                   </div>
                                 ) : null}
                               </div>
@@ -2331,7 +2456,7 @@ export default function ContentLibraryPage({
                           })()}
 
                           {(() => {
-                            const activeOrigin = publicStatus?.status === "ACTIVE" ? String(publicStatus?.publicOrigin || "") : "";
+                            const activeOrigin = publicStatus?.state === "ACTIVE" ? String(publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (activeOrigin || "").trim();
                             const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
                             const effectiveStudioOrigin = (publicStudioOrigin || effectivePublicOrigin || "").trim();
