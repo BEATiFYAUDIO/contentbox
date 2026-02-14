@@ -16,9 +16,9 @@ Write-Host "[install] Node: $(node -v)"
 Write-Host "[install] npm:  $(npm -v)"
 
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
-  Write-Host "⚠ cloudflared not installed. Public sharing (LTE) requires Cloudflare Tunnel."
-  Write-Host "  winget install --id Cloudflare.cloudflared"
-  Write-Host "  Docs: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/"
+  Write-Host "[install] cloudflared not found in PATH."
+  Write-Host "[install] Public Link will auto-download a managed binary when first enabled."
+  Write-Host "[install] (Optional) You can still install cloudflared system-wide if preferred."
 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -106,3 +106,4 @@ Write-Host "  Terminal 1: cd apps/api && npm run dev"
 Write-Host "  Terminal 2: cd apps/dashboard && npm run dev"
 Write-Host "  API: http://127.0.0.1:4000"
 Write-Host "  Dashboard: http://127.0.0.1:5173"
+Write-Host "  Public server: http://127.0.0.1:4010 (PUBLIC_PORT)"

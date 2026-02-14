@@ -267,7 +267,7 @@ export default function ContentLibraryPage({
   const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
-  const [capabilities, setCapabilities] = React.useState<{ cloudflaredInstalled?: boolean } | null>(null);
+  const [publicAdvancedOpen, setPublicAdvancedOpen] = React.useState(false);
   const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
@@ -328,28 +328,6 @@ export default function ContentLibraryPage({
   React.useEffect(() => {
     (async () => {
       try {
-        const res = await api<any>("/api/public/status", "GET");
-        setPublicStatus(res || null);
-      } catch {
-        setPublicStatus(null);
-      }
-    })();
-  }, []);
-
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const res = await api<any>("/api/capabilities", "GET");
-        setCapabilities(res || null);
-      } catch {
-        setCapabilities(null);
-      }
-    })();
-  }, []);
-
-  React.useEffect(() => {
-    (async () => {
-      try {
         const me = await api<any>("/me", "GET");
         // email currently unused in this page
         setMeId(String(me?.id || ""));
@@ -376,9 +354,46 @@ export default function ContentLibraryPage({
   async function refreshPublicStatus() {
     try {
       const res = await api<any>("/api/public/status", "GET");
-      if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
+      setPublicStatus(res || null);
+      if (res?.status === "ACTIVE" && res?.publicOrigin) {
+        setPublicOrigin(res.publicOrigin);
+      }
     } catch {
       // ignore
+    }
+  }
+
+  async function startPublicLink() {
+    try {
+      setPublicBusy(true);
+      setPublicMsg(null);
+      setPublicStatus({ status: "STARTING" });
+      const res = await api<any>("/api/public/go", "POST");
+      setPublicStatus(res || null);
+      if (res?.status === "ACTIVE" && res?.publicOrigin) {
+        setPublicOrigin(res.publicOrigin);
+      }
+    } catch (e: any) {
+      setPublicStatus({ status: "ERROR" });
+      setPublicMsg("We couldn’t start sharing from this device.");
+    } finally {
+      setPublicBusy(false);
+    }
+  }
+
+  async function stopPublicLink() {
+    try {
+      setPublicBusy(true);
+      setPublicMsg(null);
+      await api("/api/public/stop", "POST");
+      setPublicStatus({ status: "STOPPED" });
+      setPublicOrigin("");
+      setPublicBuyOrigin("");
+      setPublicStudioOrigin("");
+    } catch (e: any) {
+      setPublicMsg(e?.message || "Failed to stop public link.");
+    } finally {
+      setPublicBusy(false);
     }
   }
 
@@ -441,9 +456,7 @@ export default function ContentLibraryPage({
     approvals.forEach((a) => {
       const linkId = String(a?.linkId || "");
       if (!linkId) return;
-      if (clearanceByLink[linkId] === undefined && !clearanceLoadingByLink[linkId]) {
-        loadClearanceSummary(linkId);
-      }
+      if (!clearanceLoadingByLink[linkId]) loadClearanceSummary(linkId);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showClearance, approvals]);
@@ -1121,81 +1134,6 @@ export default function ContentLibraryPage({
         ) : null}
       </div>
 
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 mb-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="font-medium">Public sharing</div>
-            <div className="text-xs text-neutral-400">Enable a public link for LTE sharing.</div>
-          </div>
-          <div className="flex items-center gap-2">
-            {publicStatus?.publicOrigin ? (
-              <button
-                type="button"
-                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                onClick={async () => {
-                  try {
-                    setPublicBusy(true);
-                    await api("/api/public/stop", "POST");
-                    setPublicStatus(null);
-                    setPublicOrigin("");
-                    setPublicBuyOrigin("");
-                    setPublicStudioOrigin("");
-                  } catch (e: any) {
-                    setPublicMsg(e?.message || "Failed to stop public link.");
-                  } finally {
-                    setPublicBusy(false);
-                  }
-                }}
-                disabled={publicBusy}
-              >
-                Stop Public Link
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                onClick={async () => {
-                  try {
-                    setPublicBusy(true);
-                    const res = await api<any>("/api/public/go", "POST");
-                    setPublicStatus(res || null);
-                    if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
-                  } catch (e: any) {
-                    setPublicMsg(e?.message || "Public link unavailable.");
-                  } finally {
-                    setPublicBusy(false);
-                  }
-                }}
-                disabled={publicBusy || capabilities?.cloudflaredInstalled === false}
-              >
-                Enable Public Link
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="mt-2 text-xs text-neutral-400">
-          Public link:{" "}
-          <span className="text-neutral-200 break-all">
-            {publicStatus?.publicOrigin || "—"}
-          </span>
-          {publicStatus?.publicOrigin ? (
-            <button
-              type="button"
-              className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 ml-2"
-              onClick={() => copyText(publicStatus.publicOrigin)}
-            >
-              Copy
-            </button>
-          ) : null}
-        </div>
-        {capabilities?.cloudflaredInstalled === false ? (
-          <div className="mt-2 text-xs text-amber-300">
-            ⚠ cloudflared not installed. Public sharing (LTE) requires Cloudflare Tunnel.
-          </div>
-        ) : null}
-        {publicMsg ? <div className="mt-1 text-xs text-amber-300">{publicMsg}</div> : null}
-      </div>
-
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
         <div className="flex flex-wrap items-center justify-between mb-3 gap-3">
           <div className="flex items-center gap-2">
@@ -1336,6 +1274,7 @@ export default function ContentLibraryPage({
                 const isLoading = linkId ? clearanceLoadingByLink[linkId] : false;
                 const isCleared = a?.status === "APPROVED";
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
+                const canVote = Boolean(clearance?.viewer?.canVote);
 
                 return (
                   <div key={a.authorizationId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
@@ -1369,7 +1308,7 @@ export default function ContentLibraryPage({
                         >
                           {isLoading ? "Loading…" : "Refresh"}
                         </button>
-                        {!isCleared ? (
+                        {!isCleared && canVote ? (
                           <>
                             <button
                               type="button"
@@ -2267,9 +2206,135 @@ export default function ContentLibraryPage({
                         </div>
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
                           {(() => {
-                            const effectivePublicOrigin = (publicOrigin || "").trim();
-                            const effectiveBuyOrigin = (publicBuyOrigin || publicOrigin || "").trim();
-                            const effectiveStudioOrigin = (publicStudioOrigin || publicOrigin || "").trim();
+                            const status = String(publicStatus?.status || "STOPPED");
+                            const isStarting = status === "STARTING";
+                            const isOn = status === "ACTIVE";
+                            const isError = status === "ERROR";
+                            const canSharePublic = it.status === "published";
+                            const originBase = isOn ? String(publicStatus?.publicOrigin || "") : "";
+                            const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
+                            return (
+                              <div className="rounded-md border border-neutral-800 bg-neutral-900/30 p-3 space-y-2">
+                                <div className="text-xs text-neutral-300 font-medium">Public Link</div>
+
+                                {status === "STOPPED" ? (
+                                  <>
+                                    <div className="text-xs text-neutral-400">Share with anyone while ContentBox is running.</div>
+                                    {!canSharePublic ? (
+                                      <div className="text-xs text-neutral-500">Publish this item to enable a public link.</div>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={startPublicLink}
+                                      disabled={publicBusy || !canSharePublic}
+                                    >
+                                      Enable Public Link
+                                    </button>
+                                  </>
+                                ) : null}
+
+                                {isStarting ? (
+                                  <>
+                                    <div className="flex items-center gap-2 text-xs text-neutral-300">
+                                      <span className="inline-block h-3 w-3 rounded-full border border-neutral-500 border-t-transparent animate-spin" />
+                                      Starting public link…
+                                    </div>
+                                    <div className="text-xs text-neutral-400">Keep ContentBox open.</div>
+                                  </>
+                                ) : null}
+
+                                {isOn ? (
+                                  <>
+                                    <div className="text-xs text-neutral-400">Public link</div>
+                                    {canSharePublic ? (
+                                      <div className="flex items-center gap-2">
+                                        <input
+                                          readOnly
+                                          className="w-full rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs text-neutral-200"
+                                          value={publicUrl || "—"}
+                                        />
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                          onClick={() => publicUrl && copyText(publicUrl)}
+                                        >
+                                          Copy link
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <div className="text-xs text-neutral-500">Publish this item to share it publicly.</div>
+                                    )}
+                                    <div className="text-xs text-neutral-400">This link works while ContentBox is running on this device.</div>
+                                    <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={stopPublicLink}
+                                        disabled={publicBusy}
+                                      >
+                                        Stop sharing
+                                      </button>
+                                    </div>
+                                  </>
+                                ) : null}
+
+                                {isError ? (
+                                  <>
+                                    <div className="text-xs text-neutral-300 font-medium">Public link unavailable</div>
+                                    <div className="text-xs text-neutral-400">
+                                      {publicMsg || "We couldn’t start sharing from this device."}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={startPublicLink}
+                                        disabled={publicBusy}
+                                      >
+                                        Try again
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={() => setPublicAdvancedOpen((v) => !v)}
+                                      >
+                                        View details
+                                      </button>
+                                    </div>
+                                  </>
+                                ) : null}
+
+                                <div>
+                                  <button
+                                    type="button"
+                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                    onClick={() => setPublicAdvancedOpen((v) => !v)}
+                                  >
+                                    {publicAdvancedOpen ? "Hide details" : "Advanced"}
+                                  </button>
+                                </div>
+
+                                {publicAdvancedOpen ? (
+                                  <div className="text-[11px] text-neutral-500 space-y-1">
+                                    <div>Status: <span className="text-neutral-300">{status}</span></div>
+                                    <div>Last check: <span className="text-neutral-300">{publicStatus?.lastCheckedAt || "—"}</span></div>
+                                    <div>Public origin: <span className="text-neutral-300 break-all">{publicStatus?.publicOrigin || "—"}</span></div>
+                                    <div>Last error: <span className="text-neutral-300 break-all">{publicStatus?.lastError || publicMsg || "—"}</span></div>
+                                    <div>cloudflared path: <span className="text-neutral-300 break-all">{publicStatus?.cloudflaredPath || "—"}</span></div>
+                                    <div>cloudflared version: <span className="text-neutral-300 break-all">{publicStatus?.cloudflaredVersion || "—"}</span></div>
+                                  </div>
+                                ) : null}
+                              </div>
+                            );
+                          })()}
+
+                          {(() => {
+                            const activeOrigin = publicStatus?.status === "ACTIVE" ? String(publicStatus?.publicOrigin || "") : "";
+                            const effectivePublicOrigin = (activeOrigin || "").trim();
+                            const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
+                            const effectiveStudioOrigin = (publicStudioOrigin || effectivePublicOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || apiBase).replace(/\/$/, "");
                             const buyLink = `${buyBase}/buy/${it.id}`;
                             const isLocalOnly = !effectiveBuyOrigin && !effectivePublicOrigin && apiBase.includes("127.0.0.1");
@@ -2313,51 +2378,6 @@ export default function ContentLibraryPage({
                                   >
                                     Copy
                                   </button>
-                                </div>
-
-                                <div className="text-xs text-neutral-500">
-                                  Public link: <span className="text-neutral-300">{effectivePublicOrigin || "—"}</span>
-                                </div>
-                                <div className="text-xs text-neutral-500">
-                                  Public status:{" "}
-                                  <span className="text-neutral-300">
-                                    {effectivePublicOrigin || effectiveBuyOrigin || effectiveStudioOrigin ? "enabled" : "disabled"}
-                                  </span>
-                                </div>
-                                <div className="mt-2 flex items-center gap-2">
-                                  {effectivePublicOrigin ? (
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={async () => {
-                                        try {
-                                          await api("/api/public/stop", "POST");
-                                          setPublicOrigin("");
-                                          setPublicBuyOrigin("");
-                                          setPublicStudioOrigin("");
-                                        } catch (e: any) {
-                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to disable public access." }));
-                                        }
-                                      }}
-                                    >
-                                      Disable public sharing
-                                    </button>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={async () => {
-                                        try {
-                                          const res = await api<any>("/api/public/go", "POST");
-                                          if (res?.publicOrigin) setPublicOrigin(res.publicOrigin);
-                                        } catch (e: any) {
-                                          setShareMsg((m) => ({ ...m, [it.id]: e?.message || "Public sharing unavailable." }));
-                                        }
-                                      }}
-                                    >
-                                      Enable public sharing
-                                    </button>
-                                  )}
                                 </div>
 
                                 {shareP2PLink[it.id] ? (

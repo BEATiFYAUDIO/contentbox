@@ -54,9 +54,14 @@ CONTENTBOX_BIND=public
 ```
 If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
 
-## LTE sharing (quick tunnel)
-Out-of-box LTE sharing requires `cloudflared` installed.
-Public tunnels start on Publish or when you click “Enable Public Link”.
+## Public Link (Basic)
+- Public Link starts a managed quick tunnel when you publish or click “Enable Public Link”.
+- If `cloudflared` is not found, the API will download a managed binary into `CONTENTBOX_ROOT/.bin` automatically.
+- Public server listens on `PUBLIC_PORT` (default `4010`) and is the only listener exposed via the tunnel.
+- The public URL is transient and only works while ContentBox is running. The link may change after a restart.
+- Only buyer/public routes are exposed on the public origin (`/public/*`, `/p/:token`, `/buy/*`, and the minimal payment endpoints).
+- Optional: set `CLOUDFLARED_VERSION` to pin the exact cloudflared release used by managed download.
+
 Check capabilities:
 ```bash
 curl http://127.0.0.1:4000/api/capabilities
@@ -237,7 +242,12 @@ npm run tunnel:stop
 
 Logs: `/tmp/cloudflared-tunnel.log`
 
-When using Cloudflare Tunnel, set:
+When using Cloudflare Tunnel, ensure your tunnel ingress targets the public-only listener:
+```
+http://127.0.0.1:4010
+```
+
+Then set:
 ```
 CONTENTBOX_PUBLIC_ORIGIN=https://<your-subdomain>.trycloudflare.com
 ```

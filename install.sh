@@ -32,10 +32,9 @@ echo "[install] Node: $(node -v)"
 echo "[install] npm:  $(npm -v)"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
-  echo "⚠ cloudflared not installed. Public sharing (LTE) requires Cloudflare Tunnel."
-  echo "  Debian/Ubuntu: sudo apt update && sudo apt install cloudflared"
-  echo "  macOS: brew install cloudflared"
-  echo "  Docs: https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/"
+  echo "[install] cloudflared not found in PATH."
+  echo "[install] Public Link will auto-download a managed binary when first enabled."
+  echo "[install] (Optional) You can still install cloudflared system-wide if preferred."
 fi
 
 API_ENV="$API_DIR/.env"
@@ -79,3 +78,4 @@ echo "  Terminal 1: cd apps/api && npm run dev"
 echo "  Terminal 2: cd apps/dashboard && npm run dev"
 echo "  API: http://127.0.0.1:4000"
 echo "  Dashboard: http://127.0.0.1:5173"
+echo "  Public server: http://127.0.0.1:${PUBLIC_PORT:-4010} (PUBLIC_PORT)"
