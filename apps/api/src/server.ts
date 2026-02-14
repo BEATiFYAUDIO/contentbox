@@ -563,6 +563,7 @@ type LocalState = {
     grantedAt?: string | null;
     dontAskAgain?: boolean;
   };
+  publicSharingAutoStart?: boolean;
 };
 
 function readLocalState(): LocalState {
@@ -609,6 +610,17 @@ function setPublicSharingConsent(granted: boolean, dontAskAgain: boolean) {
 function clearPublicSharingConsent() {
   const s = readLocalState();
   if (s.publicSharingConsent) delete s.publicSharingConsent;
+  writeLocalState(s);
+}
+
+function getPublicSharingAutoStart(): boolean {
+  const s = readLocalState();
+  return Boolean(s.publicSharingAutoStart);
+}
+
+function setPublicSharingAutoStart(enabled: boolean) {
+  const s = readLocalState();
+  s.publicSharingAutoStart = enabled;
   writeLocalState(s);
 }
 
@@ -9042,6 +9054,14 @@ async function start() {
   if (mode !== "off") {
     const host = getPublicBindHost(mode);
     await startPublicServer(registerPublicRoutes, host);
+    if (mode === "quick") {
+      const consent = getPublicSharingConsent();
+      const consentGranted = consent.granted || consent.dontAskAgain;
+      if (consentGranted && getPublicSharingAutoStart()) {
+        setPublicSharingAutoStart(false);
+        tunnelManager.startQuick().catch(() => {});
+      }
+    }
   }
 }
 
