@@ -317,82 +317,94 @@ export class TunnelManager {
     };
 
     const targetUrl = `http://127.0.0.1:${this.opts.targetPort}`;
-    const child = spawn(binPath, ["tunnel", "--url", targetUrl, "--no-autoupdate"], {
-      stdio: ["ignore", "pipe", "pipe"]
-    });
 
-    this.proc = child;
-    this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
+    const tryProtocol = async (protocol?: "quic" | "http2") => {
+      const args = ["tunnel", "--url", targetUrl, "--no-autoupdate"];
+      if (protocol) args.push("--protocol", protocol);
+      const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+      this.proc = child;
+      this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
 
-    const urlPromise = new Promise<string>((resolve, reject) => {
-      let resolved = false;
-      const onData = (buf: Buffer) => {
-        const txt = buf.toString("utf8");
-        const url = parseQuickTunnelUrl(txt);
-        if (url && !resolved) {
-          resolved = true;
-          resolve(url);
-        }
-      };
+      const urlPromise = new Promise<string>((resolve, reject) => {
+        let resolved = false;
+        const onData = (buf: Buffer) => {
+          const txt = buf.toString("utf8");
+          const url = parseQuickTunnelUrl(txt);
+          if (url && !resolved) {
+            resolved = true;
+            resolve(url);
+          }
+        };
 
-      child.stdout?.on("data", onData);
-      child.stderr?.on("data", onData);
+        child.stdout?.on("data", onData);
+        child.stderr?.on("data", onData);
 
-      child.on("error", (err) => {
-        if (!resolved) {
-          resolved = true;
-          reject(err);
-        }
+        child.on("error", (err) => {
+          if (!resolved) {
+            resolved = true;
+            reject(err);
+          }
+        });
+
+        child.on("exit", () => {
+          if (!resolved) {
+            resolved = true;
+            reject(new Error("cloudflared exited before URL was assigned"));
+          }
+        });
+
+        setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            reject(new Error("Timed out waiting for cloudflared quick tunnel URL"));
+          }
+        }, 20000);
       });
+
+      let publicOrigin: string;
+      try {
+        publicOrigin = await urlPromise;
+      } catch (e: any) {
+        this.state = { ...this.state, status: "ERROR", lastError: String(e?.message || e) };
+        try {
+          if (child.pid) process.kill(child.pid);
+        } catch {}
+        this.proc = null;
+        return { ok: false, error: String(e?.message || e) } as const;
+      }
+
+      const healthOk = await this.verify(publicOrigin);
+      if (!healthOk) {
+        try {
+          if (child.pid) process.kill(child.pid);
+        } catch {}
+        this.proc = null;
+        return { ok: false, error: "Public link health check failed" } as const;
+      }
+
+      this.healthFailures = 0;
+      this.state = { ...this.state, status: "ACTIVE", publicOrigin, lastError: null };
+      this.startHealthChecks();
 
       child.on("exit", () => {
-        if (!resolved) {
-          resolved = true;
-          reject(new Error("cloudflared exited before URL was assigned"));
-        }
+        if (this.stopping) return;
+        this.proc = null;
+        this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
+        this.clearHealthTimer();
       });
 
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          reject(new Error("Timed out waiting for cloudflared quick tunnel URL"));
-        }
-      }, 20000);
-    });
+      return { ok: true } as const;
+    };
 
-    let publicOrigin: string;
-    try {
-      publicOrigin = await urlPromise;
-    } catch (e: any) {
-      this.state = { ...this.state, status: "ERROR", lastError: String(e?.message || e) };
-      try {
-        if (child.pid) process.kill(child.pid);
-      } catch {}
-      this.proc = null;
-      return this.status();
-    }
+    // Try default protocol (quic). If health fails, retry with http2.
+    const first = await tryProtocol("quic");
+    if (first.ok) return this.status();
 
-    const healthOk = await this.verify(publicOrigin);
-    if (!healthOk) {
-      this.state = { ...this.state, status: "ERROR", lastError: "Public link health check failed" };
-      try {
-        if (child.pid) process.kill(child.pid);
-      } catch {}
-      this.proc = null;
-      return this.status();
-    }
+    this.opts.logger?.warn?.("Quick tunnel health failed with QUIC; retrying with HTTP/2");
+    const second = await tryProtocol("http2");
+    if (second.ok) return this.status();
 
-    this.healthFailures = 0;
-    this.state = { ...this.state, status: "ACTIVE", publicOrigin, lastError: null };
-    this.startHealthChecks();
-
-    child.on("exit", () => {
-      if (this.stopping) return;
-      this.proc = null;
-      this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
-      this.clearHealthTimer();
-    });
-
+    this.state = { ...this.state, status: "ERROR", lastError: second.error || first.error || "Public link health check failed" };
     return this.status();
   }
 
