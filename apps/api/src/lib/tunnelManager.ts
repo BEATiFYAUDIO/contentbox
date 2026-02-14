@@ -180,6 +180,10 @@ async function resolveCloudflaredPath(binDir: string, logger?: TunnelManagerOpti
   const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
   if (envPath && fsSync.existsSync(envPath)) return envPath;
 
+  const managedName = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
+  const managedPath = path.join(binDir, managedName);
+  if (fsSync.existsSync(managedPath)) return managedPath;
+
   try {
     const res = spawnSync("cloudflared", ["--version"], { stdio: "ignore" });
     if (res.status === 0) return "cloudflared";
@@ -187,12 +191,8 @@ async function resolveCloudflaredPath(binDir: string, logger?: TunnelManagerOpti
     // ignore
   }
 
-  const binaryName = process.platform === "win32" ? "cloudflared.exe" : "cloudflared";
-  const destPath = path.join(binDir, binaryName);
-  if (fsSync.existsSync(destPath)) return destPath;
-
-  await downloadCloudflared(destPath, logger);
-  return destPath;
+  await downloadCloudflared(managedPath, logger);
+  return managedPath;
 }
 
 async function readCloudflaredVersion(binPath: string): Promise<string | null> {
