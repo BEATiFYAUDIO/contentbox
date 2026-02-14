@@ -7,8 +7,9 @@ import multipart from "@fastify/multipart";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import crypto from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
 import * as cheerio from "cheerio";
@@ -27,6 +28,10 @@ import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js
 import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
+import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
+import { TunnelManager } from "./lib/tunnelManager.js";
+import { startPublicServer } from "./publicServer.js";
+import { mapLightningErrorMessage } from "./lib/railHealth.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -64,6 +69,266 @@ function parseSats(x: unknown): bigint {
   return Number.isFinite(n) ? BigInt(Math.floor(n)) : 0n;
 }
 
+type RangeRequest =
+  | { kind: "ok"; start: number; end: number }
+  | { kind: "invalid" }
+  | { kind: "none" };
+
+function parseRangeHeader(range: string | undefined, size: number): RangeRequest {
+  if (!range) return { kind: "none" };
+  const trimmed = range.trim();
+  if (!trimmed.startsWith("bytes=")) return { kind: "invalid" };
+  const spec = trimmed.slice(6);
+  if (!spec || spec.includes(",")) return { kind: "invalid" };
+
+  const match = spec.match(/^(\d*)-(\d*)$/);
+  if (!match) return { kind: "invalid" };
+
+  const startRaw = match[1];
+  const endRaw = match[2];
+
+  if (!startRaw && !endRaw) return { kind: "invalid" };
+
+  if (!startRaw && endRaw) {
+    const suffix = Number(endRaw);
+    if (!Number.isFinite(suffix) || suffix <= 0) return { kind: "invalid" };
+    const end = Math.max(0, size - 1);
+    const start = Math.max(0, size - suffix);
+    if (start > end) return { kind: "invalid" };
+    return { kind: "ok", start, end };
+  }
+
+  const start = Number(startRaw);
+  if (!Number.isFinite(start) || start < 0) return { kind: "invalid" };
+
+  if (!endRaw) {
+    const end = Math.max(0, size - 1);
+    if (start > end) return { kind: "invalid" };
+    return { kind: "ok", start, end };
+  }
+
+  const end = Number(endRaw);
+  if (!Number.isFinite(end) || end < start) return { kind: "invalid" };
+  if (start >= size) return { kind: "invalid" };
+  return { kind: "ok", start, end: Math.min(end, size - 1) };
+}
+
+function previewMaxBytesFor(mime: string | null | undefined, contentType: string | null | undefined): number {
+  const mt = (mime || "").toLowerCase();
+  const ct = (contentType || "").toLowerCase();
+  if (mt.startsWith("audio/") || ct === "song") return 1_000_000;
+  if (mt.startsWith("video/") || ct === "video") return 2_500_000;
+  if (ct === "book") return 256_000;
+  return 0;
+}
+
+function canPreview(mime: string | null | undefined, contentType: string | null | undefined): boolean {
+  const ct = (contentType || "").toLowerCase();
+  if (ct === "file") return false;
+  const mt = (mime || "").toLowerCase();
+  if (mt.startsWith("audio/") || mt.startsWith("video/")) return true;
+  if (ct === "book") return true;
+  return false;
+}
+
+const previewTokens = new Map<
+  string,
+  { manifestHash: string; fileId: string; expiresAt: number; maxBytes: number }
+>();
+const previewRate = new Map<string, { count: number; resetAt: number }>();
+
+function isPreviewToken(token: string | null | undefined): boolean {
+  return Boolean(token && token.startsWith("preview_"));
+}
+
+function issuePreviewToken(input: { manifestHash: string; fileId: string; maxBytes: number; ttlMs: number }) {
+  const token = `preview_${crypto.randomBytes(18).toString("hex")}`;
+  const expiresAt = Date.now() + input.ttlMs;
+  previewTokens.set(token, {
+    manifestHash: input.manifestHash,
+    fileId: input.fileId,
+    maxBytes: input.maxBytes,
+    expiresAt
+  });
+  return { token, expiresAt };
+}
+
+function allowPreviewIssue(ip: string, limit = 6, windowMs = 5 * 60 * 1000): boolean {
+  const now = Date.now();
+  const entry = previewRate.get(ip);
+  if (!entry || now > entry.resetAt) {
+    previewRate.set(ip, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  entry.count += 1;
+  return true;
+}
+
+function base64UrlEncode(input: Buffer | string): string {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  return buf.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlDecode(input: string): Buffer {
+  const pad = input.length % 4 === 0 ? "" : "=".repeat(4 - (input.length % 4));
+  const normalized = input.replace(/-/g, "+").replace(/_/g, "/") + pad;
+  return Buffer.from(normalized, "base64");
+}
+
+type PermitClaims = {
+  manifestHash: string;
+  fileId: string;
+  buyerId: string;
+  scopes: string[];
+  iat: number;
+  exp: number;
+  nonce: string;
+};
+
+function signPermit(claims: PermitClaims): string {
+  const header = { alg: "HS256", typ: "CBP1" };
+  const headerB64 = base64UrlEncode(JSON.stringify(header));
+  const payloadB64 = base64UrlEncode(JSON.stringify(claims));
+  const data = `${headerB64}.${payloadB64}`;
+  const sig = crypto.createHmac("sha256", PERMIT_SECRET).update(data).digest();
+  const sigB64 = base64UrlEncode(sig);
+  return `permit_${data}.${sigB64}`;
+}
+
+function verifyPermit(token: string): { ok: boolean; expired?: boolean; claims?: PermitClaims } {
+  if (!token.startsWith("permit_")) return { ok: false };
+  const raw = token.slice("permit_".length);
+  const parts = raw.split(".");
+  if (parts.length !== 3) return { ok: false };
+  const [headerB64, payloadB64, sigB64] = parts;
+  try {
+    const header = JSON.parse(base64UrlDecode(headerB64).toString("utf8"));
+    if (header?.alg !== "HS256") return { ok: false };
+    const data = `${headerB64}.${payloadB64}`;
+    const expected = crypto.createHmac("sha256", PERMIT_SECRET).update(data).digest();
+    const actual = base64UrlDecode(sigB64);
+    if (expected.length !== actual.length || !crypto.timingSafeEqual(expected, actual)) return { ok: false };
+    const claims = JSON.parse(base64UrlDecode(payloadB64).toString("utf8")) as PermitClaims;
+    if (!claims?.manifestHash || !claims?.fileId || !claims?.exp || !claims?.iat) return { ok: false };
+    if (Date.now() > Number(claims.exp)) return { ok: false, expired: true, claims };
+    return { ok: true, claims };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function readPemMaybeFile(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes("BEGIN")) return trimmed;
+  if (fsSync.existsSync(trimmed)) {
+    try {
+      return fsSync.readFileSync(trimmed, "utf8");
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+function readMacaroon(value?: string | null): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (fsSync.existsSync(trimmed)) {
+    try {
+      const buf = fsSync.readFileSync(trimmed);
+      return buf.toString("hex");
+    } catch {
+      return null;
+    }
+  }
+  return trimmed;
+}
+
+function isValidPublicOrigin(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return /^https?:\/\/[^/\s]+/i.test(url);
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal } as any);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function lndHealthCheck() {
+  const baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
+  const macVal =
+    process.env.LND_MACAROON_PATH ||
+    process.env.LND_INVOICE_MACAROON_PATH ||
+    process.env.LND_MACAROON_HEX ||
+    process.env.LND_MACAROON ||
+    "";
+  const macaroon = readMacaroon(macVal);
+  const cert = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
+
+  if (!baseUrl || !macaroon) {
+    return {
+      status: "missing",
+      message: "LND env not configured",
+      endpoint: baseUrl || null,
+      hint: "Set LND_REST_URL and LND_MACAROON_PATH"
+    };
+  }
+
+  try {
+    const dispatcher = cert ? new (await import("undici")).Agent({ connect: { ca: cert } }) : undefined;
+    const res = await fetchWithTimeout(
+      `${baseUrl}/v1/getinfo`,
+      {
+        method: "GET",
+        headers: { "Grpc-Metadata-Macaroon": macaroon },
+        dispatcher
+      } as any,
+      4000
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      const mapped = mapLightningErrorMessage(text || `LND error ${res.status}`);
+      return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+    }
+    return { status: "healthy", message: "LND reachable", endpoint: baseUrl, hint: null };
+  } catch (e: any) {
+    const mapped = mapLightningErrorMessage(String(e?.message || e));
+    return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+  }
+}
+
+async function bitcoindHealthCheck() {
+  const url = (process.env.BITCOIND_RPC_URL || "").trim();
+  if (!url) return { status: "missing", message: "BITCOIND_RPC_URL not configured", endpoint: null, hint: "Set BITCOIND_RPC_URL" };
+  const user = process.env.BITCOIND_RPC_USER || "";
+  const pass = process.env.BITCOIND_RPC_PASS || "";
+  if (!user || !pass) return { status: "degraded", message: "RPC user/pass missing", endpoint: url, hint: "Set BITCOIND_RPC_USER/BITCOIND_RPC_PASS" };
+  try {
+    const auth = Buffer.from(`${user}:${pass}`).toString("base64");
+    const body = JSON.stringify({ jsonrpc: "1.0", id: crypto.randomUUID(), method: "getblockchaininfo", params: [] });
+    const res = await fetchWithTimeout(
+      url,
+      { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Basic ${auth}` }, body },
+      4000
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      return { status: "degraded", message: `RPC error: ${text}`, endpoint: url, hint: "Check bitcoind RPC settings" };
+    }
+    return { status: "healthy", message: "bitcoind reachable", endpoint: url, hint: null };
+  } catch (e: any) {
+    return { status: "degraded", message: String(e?.message || e), endpoint: url, hint: "Check RPC connectivity" };
+  }
+}
 // Try to return a URL string that is safe to pass to fetch. If the input
 // contains spaces or other characters that make it invalid, attempt to
 // encode it with encodeURI and re-validate. Returns null if still invalid.
@@ -112,6 +377,23 @@ function jsonSafe<T>(value: T): T {
 
 function jsonStringifySafe(value: unknown): string {
   return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? v.toString() : v));
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32) || "user";
+}
+
+function execFileAsync(cmd: string, args: string[]) {
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    execFile(cmd, args, (err, stdout, stderr) => {
+      if (err) return reject(Object.assign(err, { stdout, stderr }));
+      resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
+    });
+  });
 }
 
 type HistoryActor =
@@ -208,8 +490,16 @@ const adapter = new PrismaPg({ connectionString: mustEnv("DATABASE_URL") });
 const prisma = new PrismaClient({ adapter });
 
 const JWT_SECRET = mustEnv("JWT_SECRET");
+const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
+const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
 const CONTENTBOX_ROOT = mustEnv("CONTENTBOX_ROOT");
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
+const NODE_HTTP_PORT = Number(process.env.PORT || 4000);
+const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "quick").trim().toLowerCase();
+const PUBLIC_HEALTH_INTERVAL_MS = Math.max(5000, Math.floor(Number(process.env.PUBLIC_HEALTH_INTERVAL_MS || "60000")));
+const PUBLIC_HEALTH_FAILURE_THRESHOLD = Math.max(1, Math.floor(Number(process.env.PUBLIC_HEALTH_FAILURE_THRESHOLD || "2")));
+const CLOUDFLARED_BIN_DIR = String(process.env.CLOUDFLARED_BIN_DIR || "").trim() || path.join(CONTENTBOX_ROOT, ".bin");
+const PUBLIC_HTTP_PORT = Number(process.env.PUBLIC_PORT || 4010);
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
@@ -220,6 +510,143 @@ const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
 const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+const tunnelManager = new TunnelManager({
+  targetPort: PUBLIC_HTTP_PORT,
+  binDir: CLOUDFLARED_BIN_DIR,
+  healthIntervalMs: PUBLIC_HEALTH_INTERVAL_MS,
+  healthFailureThreshold: PUBLIC_HEALTH_FAILURE_THRESHOLD,
+  logger: {
+    info: (msg) => app.log.info(msg),
+    warn: (msg) => app.log.warn(msg),
+    error: (msg) => app.log.error(msg)
+  }
+});
+
+function resolveCloudflaredCmd(): string | null {
+  const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
+  if (envPath && fsSync.existsSync(envPath)) return envPath;
+  try {
+    const res = spawnSync("cloudflared", ["--version"], { stdio: "ignore" });
+    if (res.status === 0) return "cloudflared";
+  } catch {}
+  const localBin = path.join(CLOUDFLARED_BIN_DIR, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
+  return fsSync.existsSync(localBin) ? localBin : null;
+}
+
+function hasCloudflaredBinary(): boolean {
+  return Boolean(resolveCloudflaredCmd());
+}
+
+type PublicMode = "off" | "quick" | "named" | "direct";
+type PublicState = "STOPPED" | "STARTING" | "ACTIVE" | "ERROR";
+
+function normalizePublicMode(value: string): PublicMode {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "off" || v === "quick" || v === "named" || v === "direct") return v;
+  return "quick";
+}
+
+function getPublicBindHost(mode: PublicMode): string {
+  if (mode === "direct" && String(process.env.CONTENTBOX_BIND || "").trim() === "public") return "0.0.0.0";
+  return "127.0.0.1";
+}
+
+function detectPublicIp(): string | null {
+  const nets = os.networkInterfaces();
+  const candidates: string[] = [];
+  for (const list of Object.values(nets)) {
+    for (const info of list || []) {
+      if (info.family !== "IPv4") continue;
+      if (info.internal) continue;
+      candidates.push(info.address);
+    }
+  }
+  return candidates[0] || null;
+}
+
+function getDirectPublicOrigin(): string | null {
+  const host = getPublicBindHost("direct");
+  if (host !== "0.0.0.0") return null;
+  const ip = detectPublicIp();
+  if (!ip) return null;
+  return `http://${ip}:${PUBLIC_HTTP_PORT}`;
+}
+
+function toEpochMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const t = Date.parse(value);
+  return Number.isFinite(t) ? t : null;
+}
+
+function getPublicStatus(): { mode: PublicMode; state: PublicState; publicOrigin: string | null; lastError: string | null; lastCheckedAt: number | null } {
+  const mode = normalizePublicMode(PUBLIC_MODE);
+  if (mode === "off") {
+    return { mode, state: "STOPPED", publicOrigin: null, lastError: null, lastCheckedAt: null };
+  }
+
+  if (mode === "direct") {
+    const origin = getDirectPublicOrigin();
+    if (!origin) {
+      return { mode, state: "ERROR", publicOrigin: null, lastError: "direct_mode_not_public", lastCheckedAt: null };
+    }
+    return { mode, state: "ACTIVE", publicOrigin: origin, lastError: null, lastCheckedAt: null };
+  }
+
+  if (mode === "named") {
+    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
+    if (!tunnelName || !publicOrigin) {
+      return { mode, state: "ERROR", publicOrigin: null, lastError: "missing_named_tunnel_config", lastCheckedAt: null };
+    }
+  }
+
+  const base = tunnelManager.status();
+  return {
+    mode,
+    state: base.status as PublicState,
+    publicOrigin: base.status === "ACTIVE" ? base.publicOrigin : null,
+    lastError: base.lastError || null,
+    lastCheckedAt: toEpochMs(base.lastCheckedAt)
+  };
+}
+
+async function triggerPublicStartBestEffort() {
+  const mode = normalizePublicMode(PUBLIC_MODE);
+  if (mode === "quick") {
+    const prep = await tunnelManager.ensureBinary();
+    if (!prep.ok) return;
+    tunnelManager.startQuick().catch(() => {});
+    return;
+  }
+  if (mode === "named") {
+    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
+    if (!tunnelName || !publicOrigin) return;
+    tunnelManager
+      .startNamed({
+        publicOrigin,
+        tunnelName,
+        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
+      })
+      .catch(() => {});
+  }
+}
+
+async function checkPublicPing(publicOrigin: string): Promise<boolean> {
+  const base = publicOrigin.replace(/\/$/, "");
+  try {
+    const res = await fetchWithTimeout(`${base}/public/ping`, { method: "GET" } as any, 5000);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+function getActivePublicOrigin(): string | null {
+  const status = getPublicStatus();
+  if (status.state === "ACTIVE" && status.publicOrigin) return status.publicOrigin;
+  return null;
+}
 
 function isPublicCorsPath(url?: string) {
   if (!url) return false;
@@ -485,6 +912,7 @@ async function loadProofForSplitVersion(repoPath: string, versionNumber: number)
 }
 
 async function buildManifestJson(content: any, files: any[]) {
+  const primaryFile = files?.[0]?.objectKey || null;
   return {
     contentId: content.id,
     title: content.title,
@@ -492,6 +920,7 @@ async function buildManifestJson(content: any, files: any[]) {
     type: content.type,
     status: content.status,
     createdAt: content.createdAt,
+    primaryFile,
     files: files.map((f) => ({
       objectKey: f.objectKey,
       originalName: f.originalName,
@@ -502,6 +931,100 @@ async function buildManifestJson(content: any, files: any[]) {
       createdAt: f.createdAt
     }))
   };
+}
+
+async function ensurePreviewFile(content: any, files: any[]) {
+  try {
+    if (!content?.repoPath) return null;
+    if (!Array.isArray(files) || files.length === 0) return null;
+    const primary = files[files.length - 1];
+    const mime = String(primary?.mime || "").toLowerCase();
+    if (!mime.startsWith("video/") && !mime.startsWith("audio/")) return null;
+
+    const previewExt = mime.startsWith("video/") ? "mp4" : "mp3";
+    const previewDir = "previews";
+    const previewName = `${content.id}-preview.${previewExt}`;
+    const previewObjectKey = `${previewDir}/${previewName}`;
+
+    const repoRoot = path.resolve(content.repoPath);
+    const previewAbs = path.resolve(repoRoot, previewObjectKey);
+    if (fsSync.existsSync(previewAbs)) return previewObjectKey;
+
+    const inputAbs = path.resolve(repoRoot, primary.objectKey || "");
+    if (!inputAbs.startsWith(repoRoot)) return null;
+    if (!fsSync.existsSync(inputAbs)) return null;
+
+    const tmpOut = path.join(os.tmpdir(), `contentbox-preview-${content.id}.${previewExt}`);
+    const ffmpegArgs = mime.startsWith("video/")
+      ? [
+          "-y",
+          "-ss",
+          "0",
+          "-t",
+          "20",
+          "-i",
+          inputAbs,
+          "-vf",
+          "scale='min(1280,iw)':-2",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "veryfast",
+          "-crf",
+          "28",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "128k",
+          "-movflags",
+          "+faststart",
+          tmpOut
+        ]
+      : ["-y", "-ss", "0", "-t", "20", "-i", inputAbs, "-c:a", "libmp3lame", "-b:a", "128k", tmpOut];
+
+    await execFileAsync("ffmpeg", ffmpegArgs);
+
+    const stream = fsSync.createReadStream(tmpOut);
+    const fileEntry = await addFileToContentRepo({
+      repoPath: content.repoPath,
+      contentTitle: content.title,
+      originalName: previewName,
+      mime: mime.startsWith("video/") ? "video/mp4" : "audio/mpeg",
+      stream,
+      setAsPrimary: false,
+      preferMasterName: false
+    });
+
+    await prisma.contentFile.upsert({
+      where: { contentId_objectKey: { contentId: content.id, objectKey: fileEntry.path } },
+      update: {
+        originalName: previewName,
+        mime: mime.startsWith("video/") ? "video/mp4" : "audio/mpeg",
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        createdAt: new Date(fileEntry.committedAt)
+      },
+      create: {
+        contentId: content.id,
+        objectKey: fileEntry.path,
+        originalName: previewName,
+        mime: mime.startsWith("video/") ? "video/mp4" : "audio/mpeg",
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        encDek: "",
+        encAlg: ""
+      }
+    });
+
+    try {
+      fsSync.unlinkSync(tmpOut);
+    } catch {}
+
+    return fileEntry.path || previewObjectKey;
+  } catch (e: any) {
+    app.log.warn({ err: e }, "preview.generate.failed");
+    return null;
+  }
 }
 
 function hashManifestJson(manifestJson: any): string {
@@ -620,7 +1143,45 @@ function hashApprovalToken(token: string): string {
 
 /** ---------- routes ---------- */
 
+function registerPublicRoutes(appPublic: any) {
+  appPublic.get("/public/ping", handlePublicPing);
+  appPublic.get("/public/users/:id", handlePublicUser);
+  appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
+  appPublic.get("/public/content/:id/access", handlePublicContentAccess);
+  appPublic.get("/public/content/:id", handlePublicContent);
+  appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
+  appPublic.get("/public/content/:id/credits", handlePublicCredits);
+  appPublic.get("/public/content/:contentId/offer", handlePublicOffer);
+  appPublic.post("/public/payments/intents", handlePublicPaymentsIntents);
+  appPublic.post("/public/permits", handlePublicPermits);
+  appPublic.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
+  appPublic.get("/public/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
+  appPublic.get("/public/receipts/:receiptToken/file", handlePublicReceiptFile);
+  appPublic.get("/p/:token", handleShortPublicLink);
+  appPublic.get("/buy/:contentId", handleBuyPage);
+}
+
+function handlePublicPing(_req: any, reply: any) {
+  return reply.send({ ok: true, ts: new Date().toISOString() });
+}
+
 app.get("/health", async () => ({ ok: true }));
+app.get("/public/ping", async (_req: any, reply: any) => {
+  return reply.send({ ok: true, ts: new Date().toISOString() });
+});
+
+// Public capabilities (non-sensitive)
+app.get("/api/capabilities", async (_req: any, reply: any) => {
+  const provider = String(process.env.PUBLIC_TUNNEL_PROVIDER || "cloudflare").trim() || "cloudflare";
+  return reply.send({
+    ok: true,
+    cloudflaredInstalled: hasCloudflaredBinary(),
+    publicSharing: {
+      provider,
+      quickTunnelSupported: true
+    }
+  });
+});
 
 // Public node discovery endpoint to support basic P2P verification
 app.get("/.well-known/contentbox", async (req: any, reply: any) => {
@@ -635,13 +1196,15 @@ app.get("/.well-known/contentbox", async (req: any, reply: any) => {
 });
 
 // Public user profile lookup (minimal, intentionally public to allow cross-node verification)
-app.get("/public/users/:id", async (req: any, reply: any) => {
+async function handlePublicUser(req: any, reply: any) {
   const id = asString((req.params as any).id);
   const u = await prisma.user.findUnique({ where: { id }, select: { id: true, displayName: true, email: true, createdAt: true } });
   if (!u) return notFound(reply, "User not found");
   // Only return non-sensitive fields
   return reply.send({ id: u.id, displayName: u.displayName, createdAt: u.createdAt });
-});
+}
+
+app.get("/public/users/:id", handlePublicUser);
 
 // Local node: sign an acceptance payload for a token (used when accepting on a remote owner node)
 app.post("/local/sign-acceptance", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -1164,12 +1727,51 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         details: e.payloadJson || null
       });
     });
-  } else if (scopeType === "split" && scopeId) {
-    const sv = await prisma.splitVersion.findUnique({
-      where: { id: scopeId },
-      include: { content: true, participants: true }
-    });
-    if (!sv) return notFound(reply, "Split version not found");
+  } else if (scopeType === "split") {
+    if (!scopeId) {
+      const splitVersions = await prisma.splitVersion.findMany({
+        where: {
+          content: {
+            OR: [
+              { ownerUserId: userId },
+              { splitVersions: { some: { participants: { some: { participantUserId: userId, acceptedAt: { not: null } } } } } }
+            ]
+          }
+        },
+        include: { content: true, participants: true },
+        orderBy: { createdAt: "desc" },
+        take: 25
+      });
+
+      splitVersions.forEach((sv) => {
+        events.push({
+          id: `split.snapshot:${sv.id}`,
+          ts: sv.createdAt.toISOString(),
+          type: "split.snapshot",
+          summary: sv.content.title,
+          details: {
+            splitVersionId: sv.id,
+            versionNumber: sv.versionNumber,
+            status: sv.status,
+            lockedAt: sv.lockedAt ? sv.lockedAt.toISOString() : null,
+            participants: sv.participants.map((p) => ({
+              id: p.id,
+              participantEmail: p.participantEmail,
+              participantUserId: p.participantUserId,
+              role: p.role,
+              bps: p.bps,
+              percent: String(p.percent),
+              acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null
+            }))
+          }
+        });
+      });
+    } else {
+      const sv = await prisma.splitVersion.findUnique({
+        where: { id: scopeId },
+        include: { content: true, participants: true }
+      });
+      if (!sv) return notFound(reply, "Split version not found");
     if (sv.content.ownerUserId !== userId) {
       const ok = await isAcceptedParticipant(userId, sv.contentId);
       if (!ok) return forbidden(reply);
@@ -1197,22 +1799,23 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
       }
     });
 
-    const audits = await prisma.auditEvent.findMany({
-      where: { entityType: "SplitVersion", entityId: sv.id },
-      orderBy: { createdAt: "desc" },
-      include: { user: { select: { id: true, email: true, displayName: true } } }
-    });
-    audits.forEach((e) => {
-      events.push({
-        id: `split.audit:${e.id}`,
-        ts: e.createdAt.toISOString(),
-        type: e.action,
-        summary: sv.content.title,
-        actor: actorFromUser(e.user),
-        details: e.payloadJson || null,
-        diff: (e.payloadJson as any)?.diff || null
+      const audits = await prisma.auditEvent.findMany({
+        where: { entityType: "SplitVersion", entityId: sv.id },
+        orderBy: { createdAt: "desc" },
+        include: { user: { select: { id: true, email: true, displayName: true } } }
       });
-    });
+      audits.forEach((e) => {
+        events.push({
+          id: `split.audit:${e.id}`,
+          ts: e.createdAt.toISOString(),
+          type: e.action,
+          summary: sv.content.title,
+          actor: actorFromUser(e.user),
+          details: e.payloadJson || null,
+          diff: (e.payloadJson as any)?.diff || null
+        });
+      });
+    }
   } else if (scopeType === "invite") {
     const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, displayName: true } });
     const invites = await prisma.invitation.findMany({
@@ -1914,10 +2517,107 @@ app.post("/auth/login", async (req, reply) => {
 
 app.get("/me", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
-  return prisma.user.findUnique({
+  const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true, email: true, displayName: true, createdAt: true, bio: true, avatarUrl: true }
   });
+  const publicOrigin = getActivePublicOrigin();
+  return { ...user, publicOrigin: publicOrigin || null };
+});
+
+// Public exposure control
+app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(getPublicStatus());
+});
+
+app.get("/api/public/config", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const config = getPublicOriginConfig();
+  return reply.send({
+    ok: true,
+    provider: config.provider || null,
+    domain: config.domain || null,
+    tunnelName: config.tunnelName || null,
+    updatedAt: config.updatedAt || null
+  });
+});
+
+app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { provider?: string; domain?: string; tunnelName?: string };
+  const provider = String(body.provider || "").trim();
+  const domain = String(body.domain || "").trim();
+  const tunnelName = String(body.tunnelName || "").trim();
+  setPublicOriginConfig({
+    provider: provider || null,
+    domain: domain || null,
+    tunnelName: tunnelName || null
+  });
+  return reply.send({ ok: true, provider: provider || null, domain: domain || null, tunnelName: tunnelName || null });
+});
+
+app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const config = getPublicOriginConfig();
+  const provider = String(config.provider || process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
+  if (provider !== "cloudflare") {
+    return reply.code(400).send({ error: "Public tunnel provider not enabled" });
+  }
+
+  try {
+    const cloudflaredCmd = resolveCloudflaredCmd();
+    if (!cloudflaredCmd) return reply.code(503).send({ error: "cloudflared not available" });
+    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "list", "--output", "json"]);
+    const list = JSON.parse(stdout || "[]");
+    return reply.send({ ok: true, tunnels: list });
+  } catch (e: any) {
+    return reply.code(500).send({ error: "Failed to list tunnels", details: e?.message || String(e) });
+  }
+});
+
+app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const mode = normalizePublicMode(PUBLIC_MODE);
+
+  if (mode === "off") {
+    return reply.code(409).send({ mode, state: "ERROR", error: "public_mode_disabled" });
+  }
+
+  if (mode === "direct") {
+    const status = getPublicStatus();
+    if (status.state === "ERROR") {
+      return reply.code(409).send({ mode, state: "ERROR", error: "direct_mode_not_public" });
+    }
+    return reply.send(status);
+  }
+
+  if (mode === "named") {
+    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
+    if (!tunnelName || !publicOrigin) {
+      return reply.code(409).send({ mode, state: "ERROR", error: "missing_named_tunnel_config" });
+    }
+    const status = await tunnelManager.startNamed({
+      publicOrigin,
+      tunnelName,
+      configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
+    });
+    if (status.status === "ACTIVE") {
+      return reply.send({ mode, state: "ACTIVE", publicOrigin });
+    }
+    return reply.code(503).send({ mode, state: "ERROR", error: status.lastError || "named_tunnel_failed" });
+  }
+
+  // quick
+  const prep = await tunnelManager.ensureBinary();
+  if (!prep.ok) {
+    return reply.code(503).send({ mode, state: "ERROR", error: "cloudflared_unavailable" });
+  }
+  const status = getPublicStatus();
+  if (status.state === "ACTIVE") return reply.send(status);
+  tunnelManager.startQuick().catch(() => {});
+  return reply.send({ mode, state: "STARTING" });
+});
+
+app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  await tunnelManager.stop();
+  return reply.send({ mode: normalizePublicMode(PUBLIC_MODE), state: "STOPPED" });
 });
 
 // Buyer library (entitlements)
@@ -2480,7 +3180,7 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
 });
 
 // Serve stored avatars
-app.get("/public/avatars/:userId/:filename", async (req: any, reply: any) => {
+async function handlePublicAvatar(req: any, reply: any) {
   try {
     const userId = asString((req.params || {})?.userId || "");
     const filename = asString((req.params || {})?.filename || "");
@@ -2502,7 +3202,9 @@ app.get("/public/avatars/:userId/:filename", async (req: any, reply: any) => {
   } catch {
     return notFound(reply, "Not found");
   }
-});
+}
+
+app.get("/public/avatars/:userId/:filename", handlePublicAvatar);
 
 /**
  * PAYOUT METHODS (public for now)
@@ -2639,6 +3341,61 @@ app.post("/api/identities", { preHandler: requireAuth }, async (req: any, reply)
     });
   } catch {}
   return reply.send(identity);
+});
+
+// Basic payout settings (lightning address / lnurl / btc)
+app.get("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const methods = await prisma.payoutMethod.findMany({
+    where: { code: { in: ["lightning_address", "lnurl", "btc_onchain"] as any } }
+  });
+  const methodByCode = new Map(methods.map((m) => [m.code, m]));
+  const identities = await prisma.identity.findMany({
+    where: { userId, payoutMethodId: { in: methods.map((m) => m.id) } },
+    include: { payoutMethod: true }
+  });
+  const byCode = new Map(identities.map((i) => [i.payoutMethod.code, i]));
+  return reply.send({
+    lightningAddress: byCode.get("lightning_address")?.value || "",
+    lnurl: byCode.get("lnurl")?.value || "",
+    btcAddress: byCode.get("btc_onchain")?.value || ""
+  });
+});
+
+app.post("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body ?? {}) as { lightningAddress?: string; lnurl?: string; btcAddress?: string };
+
+  const methods = await prisma.payoutMethod.findMany({
+    where: { code: { in: ["lightning_address", "lnurl", "btc_onchain"] as any } }
+  });
+  const methodByCode = new Map(methods.map((m) => [m.code, m]));
+
+  async function upsert(code: "lightning_address" | "lnurl" | "btc_onchain", valueRaw: string | undefined) {
+    const method = methodByCode.get(code);
+    if (!method) return;
+    const value = String(valueRaw || "").trim();
+    const existing = await prisma.identity.findFirst({
+      where: { userId, payoutMethodId: method.id }
+    });
+    if (!value) {
+      if (existing) await prisma.identity.delete({ where: { id: existing.id } });
+      return;
+    }
+    if (existing) {
+      await prisma.identity.update({ where: { id: existing.id }, data: { value } });
+    } else {
+      await prisma.identity.create({
+        data: { userId, payoutMethodId: method.id, value, label: null }
+      });
+    }
+  }
+
+  await upsert("lightning_address", body.lightningAddress);
+  await upsert("lnurl", body.lnurl);
+  await upsert("btc_onchain", body.btcAddress);
+
+  return reply.send({ ok: true });
 });
 
 app.patch("/api/identities/:id", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -2996,6 +3753,10 @@ app.post("/api/content/:contentId/manifest", { preHandler: requireAuth }, async 
 
   const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
   const manifestJson = await buildManifestJson(content, files);
+  const previewObjectKey = await ensurePreviewFile(content, files);
+  if (previewObjectKey) {
+    (manifestJson as any).preview = previewObjectKey;
+  }
   const manifestSha256 = hashManifestJson(manifestJson);
 
   let parentManifestSha256: string | null = null;
@@ -3059,7 +3820,13 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     });
   });
 
-  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256 });
+  // Best-effort: trigger public sharing on publish
+  try {
+    await triggerPublicStartBestEffort();
+  } catch {}
+
+  const publicOrigin = getPublicStatus().publicOrigin;
+  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256, publicOrigin });
 });
 
 // Update storefront status (owner only)
@@ -3933,7 +4700,7 @@ app.get("/api/content/:id/access", { preHandler: requireAuth }, async (req: any,
 });
 
 // Public access via receipt token (no auth)
-app.get("/public/content/:id/access", async (req: any, reply) => {
+async function handlePublicContentAccess(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const manifestSha256 = asString((req.query || {})?.manifestSha256 || "").trim();
   const receiptToken = asString((req.query || {})?.receiptToken || "").trim();
@@ -3973,10 +4740,12 @@ app.get("/public/content/:id/access", async (req: any, reply) => {
     files: Array.isArray(manifestJson?.files) ? manifestJson.files : [],
     manifest: manifestJson
   });
-});
+}
+
+app.get("/public/content/:id/access", handlePublicContentAccess);
 
 // Public storefront content metadata (no auth)
-app.get("/public/content/:id", async (req: any, reply) => {
+async function handlePublicContent(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
@@ -3992,6 +4761,17 @@ app.get("/public/content/:id", async (req: any, reply) => {
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) return notFound(reply, "Manifest not found");
 
+  const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
+  const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
+  const baseUrl = host ? `${proto}://${host}` : "";
+  const normalizePreview = (value: string | null) => {
+    if (!value) return null;
+    const v = String(value).trim();
+    if (!v) return null;
+    if (/^https?:\/\//i.test(v)) return v;
+    return baseUrl ? `${baseUrl}/public/content/${contentId}/preview-file?objectKey=${encodeURIComponent(v)}` : null;
+  };
+
   return reply.send({
     contentId: content.id,
     title: content.title,
@@ -3999,13 +4779,65 @@ app.get("/public/content/:id", async (req: any, reply) => {
     storefrontStatus: content.storefrontStatus,
     manifestSha256: manifest.sha256,
     priceSats: content.priceSats != null ? content.priceSats.toString() : null,
-    cover: (manifest.json as any)?.cover || null,
-    preview: (manifest.json as any)?.preview || null
+    cover: normalizePreview((manifest.json as any)?.cover || null),
+    preview: normalizePreview((manifest.json as any)?.preview || null)
   });
-});
+}
+
+app.get("/public/content/:id", handlePublicContent);
+
+// Public preview file (no auth; only when content is publicly visible)
+async function handlePublicPreviewFile(req: any, reply: any) {
+  const contentId = asString((req.params as any).id);
+  const objectKey = asString((req.query || {})?.objectKey || "").trim();
+  if (!objectKey) return badRequest(reply, "objectKey required");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+  const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+  if (publicLinks.length > 1) return notFound(reply, "Not found");
+  const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
+  if (isDerivativeType || publicLinks.length > 0) {
+    if (publicLinks.length === 0) return notFound(reply, "Not found");
+    if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt) return notFound(reply, "Not found");
+  }
+
+  if (!content.repoPath) return notFound(reply, "Content not found");
+  const repoRoot = path.resolve(content.repoPath);
+  const absPath = path.resolve(repoRoot, objectKey);
+  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
+
+  const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
+  const mime = file?.mime || "application/octet-stream";
+
+  const stat = fsSync.statSync(absPath);
+  const range = req.headers.range;
+  if (range) {
+    const m = /bytes=(\d+)-(\d+)?/.exec(range);
+    if (m) {
+      const start = Number(m[1]);
+      const end = m[2] ? Number(m[2]) : stat.size - 1;
+      if (start >= stat.size) return reply.code(416).send();
+      reply.code(206);
+      reply.header("Content-Range", `bytes ${start}-${end}/${stat.size}`);
+      reply.header("Accept-Ranges", "bytes");
+      reply.header("Content-Length", end - start + 1);
+      reply.type(mime);
+      return reply.send(fsSync.createReadStream(absPath, { start, end }));
+    }
+  }
+
+  reply.header("Content-Length", stat.size);
+  reply.type(mime);
+  return reply.send(fsSync.createReadStream(absPath));
+}
+
+app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
 
 // Public credits (only when content is publicly visible)
-app.get("/public/content/:id/credits", async (req: any, reply) => {
+async function handlePublicCredits(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
@@ -4023,7 +4855,22 @@ app.get("/public/content/:id/credits", async (req: any, reply) => {
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }]
   });
   return reply.send(credits);
-});
+}
+
+app.get("/public/content/:id/credits", handlePublicCredits);
+
+// Short public link -> buy page
+async function handleShortPublicLink(req: any, reply: any) {
+  const token = asString((req.params as any).token || "").trim();
+  if (!token) return notFound(reply, "Not found");
+  const content = await prisma.contentItem.findUnique({ where: { id: token } });
+  if (!content) return notFound(reply, "Not found");
+  if (content.status !== "published") return notFound(reply, "Not found");
+  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+  return reply.redirect(`/buy/${encodeURIComponent(token)}`);
+}
+
+app.get("/p/:token", handleShortPublicLink);
 
 // External clearance page (no login required)
 app.get("/clearance/:token", async (req: any, reply) => {
@@ -4208,7 +5055,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
   return reply.send("Thanks — your clearance response has been recorded.");
 });
 
-app.get("/buy/:contentId", async (req: any, reply) => {
+async function handleBuyPage(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   if (!contentId) return notFound(reply, "Not found");
 
@@ -4230,13 +5077,19 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     .btn:disabled { opacity:0.6; cursor:not-allowed; }
     .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
     .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
+    .preview { margin-top:14px; }
+    .preview img, .preview video, .preview audio { width:100%; max-width:820px; border-radius:12px; border:1px solid #222; background:#0b0b0b; }
     a { color:#93c5fd; }
+    .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
       <div id="app">Loading…</div>
+      <div class="footer">
+        <a href="https://beatifyaudio.github.io/contentbox/index.html#mission" target="_blank" rel="noreferrer">Mission</a>
+      </div>
     </div>
   </div>
 <script>
@@ -4247,10 +5100,41 @@ app.get("/buy/:contentId", async (req: any, reply) => {
   let receiptToken = null;
   let pollTimer = null;
   let refreshTimer = null;
+  let currentOffer = null;
+  let previewSeconds = 20;
+  const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
 
   function qs(v){ return encodeURIComponent(v); }
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
+
+  function entKey(manifestHash){ return "cb:entitlement:" + manifestHash; }
+  function getEntitlement(manifestHash){
+    try {
+      const raw = localStorage.getItem(entKey(manifestHash));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.canStream) return null;
+      if (parsed.expiresAt && Date.now() > Number(parsed.expiresAt)) return null;
+      return parsed;
+    } catch { return null; }
+  }
+  function setEntitlement(manifestHash, token, status, expiresAt){
+    const now = Date.now();
+    const payload = {
+      canStream: true,
+      canDownload: false,
+      token,
+      status: status || "paid",
+      issuedAt: now,
+      expiresAt: expiresAt || now + ENTITLE_TTL_MS
+    };
+    try { localStorage.setItem(entKey(manifestHash), JSON.stringify(payload)); } catch {}
+    return payload;
+  }
+  function clearEntitlement(manifestHash){
+    try { localStorage.removeItem(entKey(manifestHash)); } catch {}
+  }
 
   async function fetchJson(path, opts){
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
@@ -4259,20 +5143,89 @@ app.get("/buy/:contentId", async (req: any, reply) => {
     return data;
   }
 
-  function renderOffer(offer){
+  function streamUrl(offer, token){
+    if (!offer?.primaryFileId) return null;
+    let url = apiBase + "/content/" + offer.manifestSha256 + "/" + encodeURIComponent(offer.primaryFileId);
+    if (token) url += "?t=" + encodeURIComponent(token);
+    return url;
+  }
+
+  function previewFallbackUrl(offer){
+    if (!offer?.previewObjectKey) return null;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey);
+  }
+
+  function renderOffer(offer, entitlement){
     const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
+    const isPaid = Number(offer.priceSats || 0) > 0;
+    const token = entitlement?.token || receiptToken || null;
+    const mediaSrc = token ? streamUrl(offer, token) : previewFallbackUrl(offer) || streamUrl(offer, token);
+    const mime = String(offer.primaryFileMime || "");
+    const isVideo = offer.type === "video" || mime.startsWith("video/");
+    const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
+    const hidePay = !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
+        \${mediaSrc && canStream ? \`
+          <div class="preview">
+            \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview</div>\` : ""}
+            \${isVideo ? \`<video id="player" controls preload="metadata" src="\${mediaSrc}"></video>\` : ""}
+            \${isAudio ? \`<audio id="player" controls preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
+            \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
+          </div>
+        \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         <div style="margin-top:8px;font-size:18px;">\${price}</div>
-        <button id="buyBtn" class="btn" style="margin-top:12px;">Pay</button>
+        <button id="buyBtn" class="btn" style="margin-top:12px; \${hidePay ? "display:none;" : ""}">Pay</button>
         <div id="status" class="muted" style="margin-top:8px;"></div>
+        \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
+        \${entitlement?.token ? \`<button id="resetEnt" class="copy" style="margin-top:8px;">Reset entitlement</button>\` : ""}
         <div id="rails" style="margin-top:16px;"></div>
         <div id="downloads" style="margin-top:16px;"></div>
       </div>
     \`;
-    document.getElementById("buyBtn").onclick = async () => startPurchase(offer);
+    const btn = document.getElementById("buyBtn");
+    if (btn) btn.onclick = async () => startPurchase(offer);
+    if (entitlement?.status === "preview" && isPaid) {
+      document.getElementById("status").textContent = "Preview playing…";
+      const player = document.getElementById("player");
+      const limitSec = Math.max(1, Number(previewSeconds || 25));
+      if (player) {
+        let previewEnded = false;
+        const stop = () => {
+          if (previewEnded) return;
+          previewEnded = true;
+          if (typeof player.pause === "function") player.pause();
+          try { player.currentTime = 0; } catch {}
+          try { player.controls = false; } catch {}
+          document.getElementById("status").textContent = "Preview ended. Pay to unlock.";
+        };
+        const onTime = () => {
+          if (player.currentTime >= limitSec) stop();
+        };
+        player.addEventListener("timeupdate", onTime);
+        player.addEventListener("ended", stop, { once: true });
+        player.addEventListener("play", () => {
+          if (previewEnded) {
+            player.pause();
+            return;
+          }
+          window.setTimeout(() => {
+            if (player && !player.paused && player.currentTime >= limitSec - 0.2) stop();
+          }, limitSec * 1000);
+        });
+      }
+    }
+    const resetBtn = document.getElementById("resetEnt");
+    if (resetBtn) {
+      resetBtn.onclick = () => {
+        clearEntitlement(offer.manifestSha256);
+        receiptToken = null;
+        renderOffer(offer, null);
+      };
+    }
   }
 
   function renderRails(intent){
@@ -4326,6 +5279,10 @@ app.get("/buy/:contentId", async (req: any, reply) => {
       clearInterval(pollTimer);
       const payload = await fetchJson("/public/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
+      if (currentOffer?.manifestSha256) {
+        const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
+        renderOffer(currentOffer, ent);
+      }
       document.getElementById("status").textContent = "Payment received. Download is ready.";
     } else {
       document.getElementById("status").textContent = "Waiting for payment…";
@@ -4335,15 +5292,35 @@ app.get("/buy/:contentId", async (req: any, reply) => {
   async function startPurchase(offer){
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
-    const intent = await fetchJson("/p2p/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    const intent = await fetchJson("/public/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
     receiptToken = intent.receiptToken;
     renderRails(intent);
     pollTimer = setInterval(pollStatus, 2000);
     pollStatus().catch(()=>{});
   }
 
-  fetchJson("/p2p/content/" + contentId + "/offer")
-    .then(renderOffer)
+  fetchJson("/public/content/" + contentId + "/offer")
+    .then(async (offer)=> {
+      currentOffer = offer;
+      const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
+      if (ent && ent.token) {
+        renderOffer(offer, ent);
+        return;
+      }
+      if (Number(offer.priceSats || 0) > 0) {
+        try {
+          const p = await fetchJson("/public/permits", {
+            method: "POST",
+            body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
+          });
+          previewSeconds = p.previewSeconds || previewSeconds;
+          const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
+          renderOffer(offer, next);
+          return;
+        } catch {}
+      }
+      renderOffer(offer, null);
+    })
     .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
 })();
 </script>
@@ -4352,7 +5329,9 @@ app.get("/buy/:contentId", async (req: any, reply) => {
 
   reply.type("text/html; charset=utf-8");
   return reply.send(html);
-});
+}
+
+app.get("/buy/:contentId", handleBuyPage);
 
 app.get("/embed.js", async (req: any, reply) => {
   const js = `(function(){
@@ -4415,8 +5394,16 @@ app.get("/embed.js", async (req: any, reply) => {
 /**
  * P2P OFFER + RECEIPT TOKEN FLOWS (no marketplace required)
  */
-app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (req: any, reply) => {
-  const userId = (req.user as JwtUser | undefined)?.sub || null;
+app.get("/p2p/identity", { preHandler: requireAuth }, async (req: any, reply) => {
+  const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
+  const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
+  const baseUrl = host ? `${proto}://${host}` : null;
+  const peerSeed = `${JWT_SECRET}:${host || "local"}`;
+  const peerId = crypto.createHash("sha256").update(peerSeed).digest("hex").slice(0, 32);
+  return reply.send({ peerId, baseUrl });
+});
+
+async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
@@ -4429,6 +5416,18 @@ app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (re
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) return notFound(reply, "Manifest not found");
   if (manifestShaQuery && manifest.sha256 !== manifestShaQuery) return badRequest(reply, "manifestSha256 does not match content manifest");
+
+  const manifestJson = (manifest.json || {}) as any;
+  const primaryFileId =
+    (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+    (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
+    null;
+  let primaryFileMime: string | null = null;
+  if (primaryFileId) {
+    const f = await prisma.contentFile.findFirst({ where: { contentId, objectKey: primaryFileId } });
+    primaryFileMime = f?.mime || null;
+  }
+  const previewObjectKey = typeof manifestJson?.preview === "string" ? manifestJson.preview : null;
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
@@ -4444,15 +5443,22 @@ app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, async (re
     contentId: content.id,
     title: content.title,
     description: content.description || null,
+    type: content.type,
     manifestSha256: manifest.sha256,
     priceSats: priceSats.toString(),
+    primaryFileId,
+    primaryFileMime,
+    previewObjectKey,
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
     fulfillment: { mode: "receiptToken", ttlSeconds }
   });
-});
+}
 
-app.post("/p2p/payments/intents", async (req: any, reply) => {
+app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, handlePublicOffer);
+app.get("/public/content/:contentId/offer", handlePublicOffer);
+
+async function handlePublicPaymentsIntents(req: any, reply: any) {
   const body = (req.body ?? {}) as {
     contentId?: string;
     manifestSha256?: string;
@@ -4594,9 +5600,63 @@ app.post("/p2p/payments/intents", async (req: any, reply) => {
     receiptToken,
     receiptTokenExpiresAt: receiptTokenExpiresAt.toISOString()
   });
-});
+}
 
-app.get("/public/receipts/:receiptToken/status", async (req: any, reply) => {
+app.post("/p2p/payments/intents", handlePublicPaymentsIntents);
+app.post("/public/payments/intents", handlePublicPaymentsIntents);
+
+async function handlePublicPermits(req: any, reply: any) {
+  if (!PERMIT_SECRET) return reply.code(500).send({ error: "permit secret missing" });
+  const body = (req.body ?? {}) as {
+    manifestHash?: string;
+    fileId?: string;
+    buyerId?: string;
+    requestedScope?: "preview" | "stream";
+  };
+
+  const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
+  const fileId = asString(body.fileId || "").trim();
+  const buyerId = asString(body.buyerId || "").trim() || "guest";
+  const requestedScope = body.requestedScope === "stream" ? "stream" : "preview";
+
+  if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content) return notFound(reply, "Content not found");
+
+  const devUnlock = String(process.env.DEV_P2P_UNLOCK || "").trim() === "1" || PAYMENT_PROVIDER.kind === "none";
+  const accessMode = devUnlock ? "stream" : requestedScope;
+  const scopes = accessMode === "stream" ? ["stream"] : ["preview"];
+  const now = Date.now();
+  const ttlMs = accessMode === "stream" ? 24 * 60 * 60 * 1000 : 30 * 60 * 1000;
+  const claims: PermitClaims = {
+    manifestHash,
+    fileId: fileId || "*",
+    buyerId,
+    scopes,
+    iat: now,
+    exp: now + ttlMs,
+    nonce: crypto.randomBytes(8).toString("hex")
+  };
+
+  const permit = signPermit(claims);
+  const previewSeconds = 25;
+
+  return reply.send({
+    permit,
+    scopes,
+    expiresAt: new Date(claims.exp).toISOString(),
+    accessMode,
+    previewSeconds
+  });
+}
+
+app.post("/p2p/permits", handlePublicPermits);
+app.post("/public/permits", handlePublicPermits);
+
+async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
 
@@ -4613,9 +5673,11 @@ app.get("/public/receipts/:receiptToken/status", async (req: any, reply) => {
     manifestSha256: intent.manifestSha256,
     canFulfill: intent.status === "paid"
   });
-});
+}
 
-app.get("/public/receipts/:receiptToken/fulfill", async (req: any, reply) => {
+app.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
+
+async function handlePublicReceiptFulfill(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
 
@@ -4677,9 +5739,11 @@ app.get("/public/receipts/:receiptToken/fulfill", async (req: any, reply) => {
       fileNonce: f.fileNonce
     }))
   });
-});
+}
 
-app.get("/public/receipts/:receiptToken/file", async (req: any, reply) => {
+app.get("/public/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
+
+async function handlePublicReceiptFile(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   const objectKey = asString((req.query || {})?.objectKey || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
@@ -4717,7 +5781,9 @@ app.get("/public/receipts/:receiptToken/file", async (req: any, reply) => {
   reply.header("Content-Disposition", `attachment; filename="${safeName}"`);
   reply.type(file.mime || "application/octet-stream");
   return reply.send(fsSync.createReadStream(absPath));
-});
+}
+
+app.get("/public/receipts/:receiptToken/file", handlePublicReceiptFile);
 
 // List files for a content item
 app.get("/content/:id/files", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -5179,6 +6245,163 @@ app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: a
 
   reply.code(200);
   reply.header("Content-Length", String(fileSize));
+  return reply.send(fsSync.createReadStream(absPath));
+});
+
+app.get("/content/:manifestHash/:fileId", async (req: any, reply: any) => {
+  const manifestHash = asString((req.params as any).manifestHash || "").trim().toLowerCase();
+  const fileId = asString((req.params as any).fileId || "").trim();
+  if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
+
+  const tokenHeader = asString(req.headers.authorization || "");
+  const tokenQuery = asString((req.query as any)?.t || (req.query as any)?.token || "");
+  const token = tokenHeader.toLowerCase().startsWith("bearer ") ? tokenHeader.slice(7).trim() : tokenQuery.trim();
+  if (STREAM_TOKEN_MODE === "require" && !token) {
+    reply.code(401);
+    return reply.send({ error: "Unauthorized" });
+  }
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content || content.deletedAt) return notFound(reply, "Content not found");
+
+  const manifestJson = manifest.json as any;
+  const files = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
+  let fileEntry: any = null;
+
+  if (fileId === "primary" || fileId === "main") {
+    const primary = manifestJson?.primaryFile;
+    const primaryKey =
+      typeof primary === "string"
+        ? primary
+        : primary && typeof primary === "object"
+          ? primary.path || primary.filename || primary.objectKey
+          : null;
+    if (primaryKey) {
+      fileEntry = files.find((f: any) => f.objectKey === primaryKey || f.path === primaryKey || f.filename === primaryKey) || null;
+    }
+  }
+
+  if (!fileEntry) {
+    fileEntry =
+      files.find(
+        (f: any) =>
+          f.objectKey === fileId ||
+          f.path === fileId ||
+          f.filename === fileId ||
+          f.sha256 === fileId ||
+          f.originalName === fileId
+      ) || null;
+  }
+
+  let objectKey: string | null =
+    (fileEntry?.objectKey as string) || (fileEntry?.path as string) || (fileEntry?.filename as string) || null;
+  let mime: string | null = (fileEntry?.mime as string) || null;
+
+  if (!fileEntry) {
+    const fallback = await prisma.contentFile.findFirst({
+      where: { contentId: content.id, OR: [{ objectKey: fileId }, { sha256: fileId }] }
+    });
+    if (fallback) {
+      objectKey = fallback.objectKey;
+      mime = fallback.mime;
+    }
+  }
+
+  if (!objectKey || !content.repoPath) return notFound(reply, "File not found");
+
+  const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
+  let accessMode: "preview" | "stream" = "stream";
+  let preview: { maxBytes: number } | null = null;
+  const previewEnabled = String(process.env.PREVIEW_ENABLED || "1") !== "0";
+
+  if (priceSats > 0n) {
+    let entitlementOk = false;
+    if (token) {
+      if (token.startsWith("permit_")) {
+        const res = verifyPermit(token);
+        if (res.ok && res.claims) {
+          const scopes = Array.isArray(res.claims.scopes) ? res.claims.scopes : [];
+          const fileOk = res.claims.fileId === "*" || res.claims.fileId === fileId;
+          const manifestOk = res.claims.manifestHash === manifestHash;
+          if (manifestOk && fileOk) {
+            if (scopes.includes("stream")) {
+              accessMode = "stream";
+              entitlementOk = true;
+            } else if (scopes.includes("preview")) {
+              accessMode = "preview";
+              preview = { maxBytes: previewMaxBytesFor(mime, content.type) };
+            }
+          }
+        }
+      } else if (isPreviewToken(token)) {
+        const meta = previewTokens.get(token);
+        if (meta && meta.expiresAt >= Date.now() && meta.manifestHash === manifestHash && meta.fileId === fileId) {
+          accessMode = "preview";
+          preview = { maxBytes: meta.maxBytes };
+        }
+      } else {
+        const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken: token } });
+        if (intent && intent.contentId === content.id && intent.status === "paid") {
+          entitlementOk = true;
+        }
+      }
+    }
+
+    if (!entitlementOk) {
+      if (previewEnabled) {
+        accessMode = "preview";
+        if (!preview) preview = { maxBytes: previewMaxBytesFor(mime, content.type) };
+      } else {
+        reply.code(402);
+        return reply.send({ error: "Payment required", code: "PAYMENT_REQUIRED" });
+      }
+    }
+  }
+
+  const repoRoot = path.resolve(content.repoPath);
+  const absPath = path.resolve(repoRoot, objectKey);
+  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
+
+  const stat = await fs.stat(absPath);
+  const fileSize = stat.size;
+  const range = req.headers.range as string | undefined;
+
+  reply.header("Accept-Ranges", "bytes");
+  reply.type(mime || "application/octet-stream");
+  reply.header("X-ContentBox-Access", accessMode);
+
+  const maxBytes = previewMaxBytesFor(mime, content.type);
+  const effectiveSize = accessMode === "preview" ? Math.min(fileSize, preview?.maxBytes || maxBytes || fileSize) : fileSize;
+  if (accessMode === "preview") reply.header("X-ContentBox-Preview-Max-Bytes", String(effectiveSize));
+
+  if (req.method === "HEAD") {
+    reply.code(200);
+    reply.header("Content-Length", String(effectiveSize));
+    return reply.send();
+  }
+
+  const parsed = parseRangeHeader(range, effectiveSize);
+  if (parsed.kind === "invalid") {
+    reply.code(416);
+    reply.header("Content-Range", `bytes */${effectiveSize}`);
+    return reply.send();
+  }
+  if (parsed.kind === "ok") {
+    reply.code(206);
+    reply.header("Content-Range", `bytes ${parsed.start}-${parsed.end}/${effectiveSize}`);
+    reply.header("Content-Length", String(parsed.end - parsed.start + 1));
+    return reply.send(fsSync.createReadStream(absPath, { start: parsed.start, end: parsed.end }));
+  }
+
+  reply.code(200);
+  reply.header("Content-Length", String(effectiveSize));
+  if (accessMode === "preview" && effectiveSize < fileSize) {
+    return reply.send(fsSync.createReadStream(absPath, { start: 0, end: Math.max(0, effectiveSize - 1) }));
+  }
   return reply.send(fsSync.createReadStream(absPath));
 });
 
@@ -6466,8 +7689,10 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
     lightningReason = "DISABLED";
   } else if (PAYMENT_PROVIDER.kind === "lnd") {
     const hasUrl = Boolean(String(process.env.LND_REST_URL || "").trim());
-    const mac = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
-    if (hasUrl && mac) {
+    const macHex = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
+    const macPath = String(process.env.LND_MACAROON_PATH || "").trim();
+    const hasMac = Boolean(macHex) || (macPath ? fsSync.existsSync(macPath) : false);
+    if (hasUrl && hasMac) {
       lightningReady = true;
       lightningReason = null;
     } else {
@@ -6502,6 +7727,252 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
     lightning: { ready: lightningReady, reason: lightningReason },
     onchain: { ready: onchainReady, reason: onchainReason }
   });
+});
+
+// ------------------------------
+// Finance endpoints (read-only)
+// ------------------------------
+
+function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reason: string | null }; onchain: { ready: boolean; reason: string | null } }) {
+  const lightning = readiness.lightning.ready
+    ? { status: "healthy", message: "Configured", endpoint: process.env.LND_REST_URL || null, hint: null }
+    : { status: "missing", message: readiness.lightning.reason || "Not configured", endpoint: process.env.LND_REST_URL || null, hint: null };
+  const onchain = readiness.onchain.ready
+    ? { status: "healthy", message: "Configured", endpoint: null, hint: null }
+    : { status: "missing", message: readiness.onchain.reason || "Not configured", endpoint: null, hint: null };
+  return { lightning, onchain };
+}
+
+app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+
+  const settlements = await prisma.settlement.findMany({
+    where: { contentId: { in: contentIds } }
+  });
+
+  const now = new Date();
+  const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  let salesSats = 0n;
+  let salesSatsLast30d = 0n;
+  const seriesMap = new Map<string, bigint>();
+
+  for (const s of settlements) {
+    const amt = BigInt(s.netAmountSats as any);
+    salesSats += amt;
+    if (s.createdAt >= since) {
+      salesSatsLast30d += amt;
+      const key = s.createdAt.toISOString().slice(0, 10);
+      const prev = seriesMap.get(key) || 0n;
+      seriesMap.set(key, prev + amt);
+    }
+  }
+
+  const revenueSeries: Array<{ date: string; amountSats: string }> = [];
+  for (let i = 29; i >= 0; i -= 1) {
+    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+    const key = d.toISOString().slice(0, 10);
+    revenueSeries.push({ date: key, amountSats: (seriesMap.get(key) || 0n).toString() });
+  }
+
+  // Reuse readiness logic
+  const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
+  const health = { lightning: lnd, onchain };
+
+  return reply.send({
+    totals: {
+      salesSats: salesSats.toString(),
+      salesSatsLast30d: salesSatsLast30d.toString(),
+      invoicesTotal: 0,
+      invoicesPaid: 0,
+      invoicesPending: 0,
+      invoicesFailed: 0,
+      invoicesExpired: 0,
+      paymentsReceivedSats: "0",
+      paymentsPendingSats: "0",
+      paymentsReceivedCount: 0,
+      paymentsPendingCount: 0,
+      paymentsLast30d: 0
+    },
+    revenueSeries,
+    health,
+    lastUpdatedAt: new Date().toISOString()
+  });
+});
+
+app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const email = (me?.email || "").toLowerCase();
+
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true, title: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+
+  const settlements = await prisma.settlement.findMany({
+    where: { contentId: { in: contentIds } }
+  });
+
+  const participantRows = await prisma.splitParticipant.findMany({
+    where: {
+      OR: [
+        { participantUserId: userId },
+        email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
+      ].filter(Boolean) as any
+    },
+    select: { id: true, participantEmail: true }
+  });
+  const participantIds = new Set(participantRows.map((p) => p.id));
+  const participantEmails = new Set(
+    participantRows.map((p) => (p.participantEmail ? p.participantEmail.toLowerCase() : "")).filter(Boolean)
+  );
+
+  const lines = await prisma.settlementLine.findMany({
+    where: {
+      OR: [
+        participantIds.size ? { participantId: { in: Array.from(participantIds) } } : undefined,
+        participantEmails.size ? { participantEmail: { in: Array.from(participantEmails) } } : undefined
+      ].filter(Boolean) as any
+    },
+    include: { settlement: true }
+  });
+
+  const rows = new Map<string, { contentId: string; title: string; total: bigint; yourShare: bigint }>();
+  for (const c of contents) {
+    rows.set(c.id, { contentId: c.id, title: c.title, total: 0n, yourShare: 0n });
+  }
+
+  for (const s of settlements) {
+    const row = rows.get(s.contentId);
+    if (!row) continue;
+    row.total += BigInt(s.netAmountSats as any);
+  }
+
+  for (const l of lines) {
+    if (!l.settlement?.contentId) continue;
+    const row = rows.get(l.settlement.contentId);
+    if (!row) continue;
+    row.yourShare += BigInt(l.amountSats as any);
+  }
+
+  let earnedTotal = 0n;
+  let pendingTotal = 0n;
+  const items = Array.from(rows.values()).map((r) => {
+    earnedTotal += r.yourShare;
+    return {
+      contentId: r.contentId,
+      title: r.title,
+      totalSalesSats: r.total.toString(),
+      grossRevenueSats: r.total.toString(),
+      allocationSats: r.yourShare.toString(),
+      settledSats: r.yourShare.toString(),
+      withdrawnSats: "0",
+      pendingSats: "0"
+    };
+  });
+
+  return reply.send({
+    items,
+    totals: { earnedSats: earnedTotal.toString(), pendingSats: pendingTotal.toString() },
+    cursor: null
+  });
+});
+
+app.get("/finance/payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null });
+});
+
+app.get("/finance/transactions", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: [], cursor: null });
+});
+
+app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const [overview, royalties, payouts, transactions] = await Promise.all([
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/overview", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any,
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/royalties", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any,
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/payouts", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any,
+    (await (async () => {
+      const res = await app.inject({ method: "GET", url: "/finance/transactions", headers: { authorization: req.headers.authorization || "" } });
+      return res.json();
+    })) as any
+  ]);
+
+  return reply.send({
+    overview,
+    royalties,
+    payouts,
+    transactions,
+    exportedAt: new Date().toISOString()
+  });
+});
+
+app.get("/finance/payment-rails", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
+
+  const rails: any[] = [];
+  rails.push({
+    id: "lightning",
+    type: "lightning",
+    label: "Lightning",
+    status: lnd.status,
+    endpoint: lnd.endpoint || null,
+    details: lnd.message || null,
+    hint: lnd.hint || null,
+    lastCheckedAt: new Date().toISOString()
+  });
+  rails.push({
+    id: "onchain",
+    type: "onchain",
+    label: "BTC On-chain",
+    status: onchain.status,
+    endpoint: onchain.endpoint || null,
+    details: onchain.message || null,
+    hint: onchain.hint || null,
+    lastCheckedAt: new Date().toISOString()
+  });
+
+  if (process.env.LNURL_PAY_URL) {
+    rails.push({
+      id: "lnurl",
+      type: "lnurl",
+      label: "LNURL-Pay",
+      status: "degraded",
+      endpoint: process.env.LNURL_PAY_URL,
+      details: "Configured",
+      lastCheckedAt: new Date().toISOString()
+    });
+  }
+
+  return reply.send(rails);
+});
+
+app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = asString((req.params as any).id);
+  if (id === "lightning") {
+    const res = await lndHealthCheck();
+    return reply.send({ ok: res.status === "healthy", status: res.status, message: res.message, endpoint: res.endpoint, hint: res.hint || null });
+  }
+  if (id === "onchain") {
+    const res = await bitcoindHealthCheck();
+    return reply.send({ ok: res.status === "healthy", status: res.status, message: res.message, endpoint: res.endpoint, hint: res.hint || null });
+  }
+  return reply.code(404).send({ error: "Unknown rail" });
 });
 
 app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: any, reply) => {
@@ -6968,12 +8439,16 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
         }
       });
 
+    const inviteBase =
+      String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim() ||
+      (getActivePublicOrigin() || APP_BASE_URL);
+
       createdInvites.push({
         participantEmail: String(p.participantEmail || ""),
         splitParticipantId: p.id,
         token,
         expiresAt,
-        inviteUrl: `${APP_BASE_URL}/invite/${token}`
+        inviteUrl: `${inviteBase.replace(/\/$/, "")}/invite/${token}`
       });
     }
 
@@ -7082,6 +8557,95 @@ app.get("/invites/:token", async (req: any, reply) => {
   }
 
   return reply.send({ ok: true, invitation, splitParticipant, splitVersion, content, invites: relatedInvites });
+});
+
+/**
+ * Public invite page (simple HTML) so remote users can accept.
+ */
+app.get("/invite/:token", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token);
+  if (!token) return notFound(reply, "Invite not found");
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Split Invite</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:#0b0b0b; color:#f4f4f5; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 24px; }
+    .card { background:#111; border:1px solid #222; border-radius:16px; padding:20px; }
+    .muted { color:#a1a1aa; font-size:14px; }
+    .btn { background:#fff; color:#000; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
+    .btn:disabled { opacity:0.6; cursor:not-allowed; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div id="app">Loading…</div>
+    </div>
+  </div>
+<script>
+(function(){
+  const token = ${JSON.stringify(token)};
+  const app = document.getElementById("app");
+  const apiBase = location.origin;
+
+  async function fetchJson(path, opts){
+    const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
+    const data = await res.json().catch(()=>null);
+    if (!res.ok) throw new Error((data && (data.error || data.message)) || "Request failed");
+    return data;
+  }
+
+  function render(inv){
+    const c = inv?.content || {};
+    const sp = inv?.splitParticipant || {};
+    app.innerHTML = \`
+      <div style="font-size:22px;font-weight:700;">You’ve been invited to a split</div>
+      <div class="muted" style="margin-top:6px;">Content: \${c.title || "Unknown"} (\${c.type || "content"})</div>
+      <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} • Share: \${sp.percent || "?"}%</div>
+      <button id="acceptBtn" class="btn" style="margin-top:14px;">Accept invite</button>
+      <div id="status" class="muted" style="margin-top:8px;"></div>
+      <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own ContentBox first and open this link in the same browser.</div>
+    \`;
+    document.getElementById("acceptBtn").onclick = async () => {
+      document.getElementById("status").textContent = "Accepting…";
+      try {
+        let authHeader: Record<string, string> = {};
+        try {
+          const t = localStorage.getItem("contentbox.token");
+          if (t) authHeader = { Authorization: "Bearer " + t };
+        } catch {}
+        const resp = await fetchJson("/invites/" + encodeURIComponent(token) + "/accept", {
+          method:"POST",
+          body:{},
+          headers: authHeader
+        });
+        if (resp?.alreadyAccepted) {
+          document.getElementById("status").textContent = "Already accepted.";
+        } else {
+          document.getElementById("status").textContent = "Accepted. You’re in the split.";
+        }
+      } catch (e) {
+        document.getElementById("status").textContent = e && e.message ? e.message : "Could not accept invite.";
+      }
+    };
+  }
+
+  fetchJson("/invites/" + encodeURIComponent(token))
+    .then(render)
+    .catch(err => { app.textContent = err && err.message ? err.message : "Invite not found."; });
+})();
+</script>
+</body>
+</html>`;
+
+  reply.type("text/html; charset=utf-8");
+  return reply.send(html);
 });
 
 /**
@@ -7298,6 +8862,11 @@ async function start() {
   await ensureNodeKeys();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
+  const mode = normalizePublicMode(PUBLIC_MODE);
+  if (mode !== "off") {
+    const host = getPublicBindHost(mode);
+    await startPublicServer(registerPublicRoutes, host);
+  }
 }
 
 start().catch((err) => {

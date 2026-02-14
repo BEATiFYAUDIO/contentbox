@@ -14,11 +14,15 @@ import PurchasesPage from "./pages/PurchasesPage";
 import CreatorToolsPage from "./pages/CreatorToolsPage";
 import ReceiptPage from "./pages/ReceiptPage";
 import SalesPage from "./pages/SalesPage";
+import ConfigPage from "./pages/ConfigPage";
+import DiagnosticsPage from "./pages/DiagnosticsPage";
+import FinancePage, { type FinanceTab } from "./pages/FinancePage";
 import { api } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
 import logo from "./assets/InShot_20260201_011901479.png";
 import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
 import AuditPanel from "./components/AuditPanel";
+import ErrorBoundary from "./components/ErrorBoundary";
 
 /* =======================
    Types
@@ -31,6 +35,7 @@ type Me = {
   bio?: string | null;
   avatarUrl?: string | null;
   createdAt: string;
+  useNodeRails?: boolean | null;
 };
 
 type PageKey =
@@ -45,6 +50,9 @@ type PageKey =
   | "split-editor"
   | "payouts"
   | "sales"
+  | "config"
+  | "diagnostics"
+  | "finance"
   | "receipt"
   | "invite"
   | "profile"
@@ -163,6 +171,22 @@ export default function App() {
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
+  const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
+  const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
+  const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("contentbox.showAdvancedNav", showAdvancedNav ? "1" : "0");
+    } catch {}
+  }, [showAdvancedNav]);
 
   // Extract the invite token from the URL when the component mounts
   useEffect(() => {
@@ -186,14 +210,33 @@ export default function App() {
       setSelectedContentId(royaltiesFromUrl);
       setPage("royalties-terms");
     }
+    const parts = window.location.pathname.split("/").filter(Boolean);
     if (!tokenFromUrl && !receiptFromUrl && !splitFromUrl && !royaltiesFromUrl) {
-      // Always land on Library after refresh (ignore prior path)
-      window.history.replaceState({}, "", "/");
-      setPage("library");
+      if (parts[0] === "config") setPage("config");
+      else if (parts[0] === "diagnostics") setPage("diagnostics");
+      else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
+      else {
+        // Always land on Library after refresh (ignore prior path)
+        window.history.replaceState({}, "", "/");
+        setPage("library");
+      }
     }
     loadMe();  // Load user data
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (page !== "profile") return;
+    if (!me) return;
+    (async () => {
+      try {
+        const res = await api<{ lightningAddress: string; lnurl: string; btcAddress: string }>(`/api/me/payout`, "GET");
+        setPayoutSettings(res || { lightningAddress: "", lnurl: "", btcAddress: "" });
+      } catch {
+        setPayoutSettings({ lightningAddress: "", lnurl: "", btcAddress: "" });
+      }
+    })();
+  }, [page, me]);
 
   // Function to load user data
   async function loadMe() {
@@ -251,16 +294,22 @@ export default function App() {
   const royaltiesNav = [
     { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in" },
     { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history" },
-    { key: "invite" as const, label: "Split Invites", hint: "Split requests" },
-    { key: "sales" as const, label: "Sales", hint: "Orders and receipts" }
+    { key: "invite" as const, label: "Split Invites", hint: "Split requests" }
   ];
 
   const identityNav = [
-    { key: "profile" as const, label: "Profile", hint: "Identity" },
-    { key: "payouts" as const, label: "Payout", hint: "Rails + payout destinations" }
+    { key: "profile" as const, label: "Profile", hint: "Identity" }
+  ];
+
+  const advancedNav = [
+    { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
+    { key: "config" as const, label: "Config", hint: "Networking + system" },
+    { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" }
   ];
 
   const pageTitle =
+    page === "config" ? "Config" :
+    page === "diagnostics" ? "Diagnostics" :
     page === "library" ? "Library" :
     page === "store" ? "Store (Direct link)" :
     page === "participations" ? "Royalties" :
@@ -268,6 +317,7 @@ export default function App() {
     page === "purchases" ? "Purchase history" :
     page === "creator" ? "Creator tools" :
     page === "sales" ? "Sales" :
+    page === "finance" ? "Revenue" :
     page === "splits" ? "Splits" :
     page === "split-editor" ? "Splits" :
     page === "profile" ? "Profile" :
@@ -290,16 +340,14 @@ export default function App() {
 
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
             <div>
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
               <div className="space-y-1">
-              {accessNav.map((item) => {
+              {contentNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
                     key={item.key}
-                    onClick={() => {
-                      setPage(item.key);
-                    }}
+                    onClick={() => setPage(item.key)}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
                       active
@@ -316,14 +364,16 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
               <div className="space-y-1">
-              {contentNav.map((item) => {
+              {accessNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
                     key={item.key}
-                    onClick={() => setPage(item.key)}
+                    onClick={() => {
+                      setPage(item.key);
+                    }}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
                       active
@@ -386,10 +436,43 @@ export default function App() {
               })}
               </div>
             </div>
+            {showAdvancedNav && (
+              <div className="mt-4 border-t border-neutral-900 pt-4">
+                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Advanced</div>
+                <div className="space-y-1">
+                {advancedNav.map((item) => {
+                  const active = item.key === page;
+                  return (
+                    <button
+                      key={item.key}
+                      onClick={() => setPage(item.key)}
+                      className={[
+                        "w-full text-left rounded-lg px-3 py-2 transition border",
+                        active
+                          ? "border-white/30 bg-white/5"
+                          : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                      ].join(" ")}
+                    >
+                      <div className="text-sm font-medium">{item.label}</div>
+                      <div className="text-xs text-neutral-400">{item.hint}</div>
+                    </button>
+                  );
+                })}
+                </div>
+              </div>
+            )}
           </div>
 
           {me && (
             <div className="pt-4 border-t border-neutral-900">
+              <div className="mb-3">
+                <button
+                  className="w-full text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                  onClick={() => setShowAdvancedNav((v) => !v)}
+                >
+                  {showAdvancedNav ? "Hide Advanced" : "Show Advanced"}
+                </button>
+              </div>
               <div className="text-xs text-neutral-400">Signed in as</div>
               <div className="flex items-center gap-2">
                 {me.avatarUrl ? (
@@ -437,9 +520,18 @@ export default function App() {
             <CreatorToolsPage
               onOpenContent={() => setPage("content")}
               onOpenSplits={() => setPage("splits")}
-              onOpenSales={() => setPage("sales")}
-              onOpenPayments={() => setPage("payouts")}
+              onOpenSales={() => { setFinanceTab("ledger"); setPage("finance"); }}
+              onOpenPayments={() => { setFinanceTab("payouts"); setPage("finance"); }}
             />
+          )}
+
+          {page === "config" && <ConfigPage />}
+          {page === "diagnostics" && <DiagnosticsPage />}
+
+          {page === "finance" && (
+            <ErrorBoundary>
+              <FinancePage initialTab={financeTab} />
+            </ErrorBoundary>
           )}
 
           {page === "sales" && <SalesPage />}
@@ -573,6 +665,52 @@ export default function App() {
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={me.avatarUrl} alt="avatar" className="w-12 h-12 rounded-full object-cover" />
                     ) : null}
+                  </div>
+                </div>
+
+                <hr className="border-neutral-800" />
+
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                  <div className="text-sm font-medium">Payout settings</div>
+                  <div className="text-xs text-neutral-400 mt-1">Where should earnings be sent?</div>
+                  <div className="mt-3 space-y-2">
+                    <input
+                      placeholder="Lightning Address (name@domain.com)"
+                      value={payoutSettings?.lightningAddress || ""}
+                      onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: e.target.value, lnurl: s?.lnurl || "", btcAddress: s?.btcAddress || "" }))}
+                      className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                    />
+                    <input
+                      placeholder="LNURL (optional)"
+                      value={payoutSettings?.lnurl || ""}
+                      onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: s?.lightningAddress || "", lnurl: e.target.value, btcAddress: s?.btcAddress || "" }))}
+                      className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                    />
+                    <input
+                      placeholder="BTC Address (optional)"
+                      value={payoutSettings?.btcAddress || ""}
+                      onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: s?.lightningAddress || "", lnurl: s?.lnurl || "", btcAddress: e.target.value }))}
+                      className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                    />
+                    <button
+                      onClick={async () => {
+                        try {
+                          setPayoutMsg(null);
+                          await api(`/api/me/payout`, "POST", {
+                            lightningAddress: payoutSettings?.lightningAddress || "",
+                            lnurl: payoutSettings?.lnurl || "",
+                            btcAddress: payoutSettings?.btcAddress || ""
+                          });
+                          setPayoutMsg("Saved.");
+                        } catch (e: any) {
+                          setPayoutMsg(e?.message || "Failed to save payout settings.");
+                        }
+                      }}
+                      className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                    >
+                      Save payout settings
+                    </button>
+                    {payoutMsg ? <div className="text-xs text-amber-300">{payoutMsg}</div> : null}
                   </div>
                 </div>
 

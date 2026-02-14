@@ -1,6 +1,25 @@
 import { getToken } from "./auth";
 
-const API_BASE = ((import.meta as any).env?.VITE_API_URL || "http://127.0.0.1:4000").replace(/\/$/, "");
+function resolveApiBase(): string {
+  const envBase =
+    ((import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.VITE_API_URL || "")
+      .toString()
+      .trim();
+  if (envBase) return envBase.replace(/\/$/, "");
+
+  try {
+    const origin = window.location.origin;
+    const port = window.location.port;
+    if (port && (port === "5173" || port === "5174")) {
+      return "http://127.0.0.1:4000";
+    }
+    return origin.replace(/\/$/, "");
+  } catch {
+    return "http://127.0.0.1:4000";
+  }
+}
+
+const API_BASE = resolveApiBase();
 
 type ApiOptions = {
   method?: string;

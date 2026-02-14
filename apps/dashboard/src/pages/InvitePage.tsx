@@ -4,6 +4,11 @@ import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import { getToken } from "../lib/auth";
 
+function getNodePublicOrigin(): string {
+  const v = String((import.meta as any).env?.VITE_NODE_PUBLIC_ORIGIN || "").trim();
+  return v ? v.replace(/\/+$/, "") : window.location.origin;
+}
+
 type InvitePageProps = {
   token?: string;
   onAccepted: (contentId?: string | null) => void;
@@ -72,6 +77,29 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
   const [createMsg, setCreateMsg] = useState<string | null>(null);
   const [historyItems, setHistoryItems] = useState<HistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [pasteRaw, setPasteRaw] = useState<string>("");
+  const [pasteMsg, setPasteMsg] = useState<string | null>(null);
+
+  function extractInviteTokenFromPaste(raw: string): string | null {
+    const v = String(raw || "").trim();
+    if (!v) return null;
+    const m1 = v.match(/\btoken=([^\s]+)/i);
+    if (m1 && m1[1]) return m1[1];
+    const m2 = v.match(/\/invite\/([^?#\s]+)/i);
+    if (m2 && m2[1]) return m2[1];
+    if (/^[A-Za-z0-9_-]{10,}$/.test(v)) return v;
+    return null;
+  }
+
+  function openPastedInvite() {
+    setPasteMsg(null);
+    const t = extractInviteTokenFromPaste(pasteRaw);
+    if (!t) {
+      setPasteMsg("Paste a token or an /invite/<token> link.");
+      return;
+    }
+    window.location.href = `/invite/${encodeURIComponent(t)}`;
+  }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
   const tokenFromLocation = (() => {
@@ -232,7 +260,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
       if (me?.id) {
         try {
           const tokenLocal = getToken();
-          const resSign = await fetch(`${window.location.origin}/local/sign-acceptance`, {
+          const resSign = await fetch(`${getNodePublicOrigin()}/local/sign-acceptance`, {
             method: "POST",
             headers: { Authorization: `Bearer ${tokenLocal}`, "Content-Type": "application/json" },
             body: JSON.stringify({ token: tokenToUse })
@@ -245,11 +273,11 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
             acceptBody.remoteUserId = js.payload.remoteUserId;
           } else {
             // fallback
-            acceptBody.remoteNodeUrl = window.location.origin;
+            acceptBody.remoteNodeUrl = getNodePublicOrigin();
             acceptBody.remoteUserId = me.id;
           }
         } catch {
-          acceptBody.remoteNodeUrl = window.location.origin;
+          acceptBody.remoteNodeUrl = getNodePublicOrigin();
           acceptBody.remoteUserId = me.id;
         }
       }
@@ -308,6 +336,9 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900/10 p-3">
             <div className="text-sm font-medium">Create invites</div>
             <div className="text-xs text-neutral-400">Select a content item to generate invite URLs for its latest split.</div>
+            <div className="text-[11px] text-neutral-500 mt-1">
+              Invite links use a neutral shared host when configured (recommended for scale).
+            </div>
 
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <select
@@ -375,6 +406,25 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
                 ))}
               </div>
             )}
+
+            <div className="mt-4 border-t border-neutral-800 pt-3">
+              <div className="text-xs text-neutral-400">Paste invite link or token</div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input
+                  value={pasteRaw}
+                  onChange={(e) => setPasteRaw(e.target.value)}
+                  placeholder="https://invites.contentbox.link/invite/<token> or token"
+                  className="text-sm rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 w-full md:w-[420px]"
+                />
+                <button
+                  onClick={openPastedInvite}
+                  className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                >
+                  Open
+                </button>
+              </div>
+              {pasteMsg ? <div className="mt-2 text-xs text-amber-300">{pasteMsg}</div> : null}
+            </div>
           </div>
         )}
 
