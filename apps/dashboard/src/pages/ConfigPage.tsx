@@ -73,6 +73,7 @@ export default function ConfigPage() {
   const [tunnelError, setTunnelError] = useState<string | null>(null);
   const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
+  const [publicStatus, setPublicStatus] = useState<any | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +119,26 @@ export default function ConfigPage() {
       cancelled = true;
     };
   }, [apiBase, token, tunnelEnabled]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/public/status`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json();
+        if (!cancelled) setPublicStatus(json || null);
+      } catch {
+        if (!cancelled) setPublicStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token]);
 
   const buildInfo = `${(import.meta as any).env?.MODE || "unknown"} • ${
     (import.meta as any).env?.VITE_APP_VERSION || "dev"
@@ -398,11 +419,37 @@ export default function ConfigPage() {
         {!err && !health && <div>Checking…</div>}
         {health && (
           <div style={{ display: "grid", gap: 4 }}>
+            {publicStatus ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+                <span
+                  className={`text-[11px] rounded-full border px-2 py-0.5 ${
+                    publicStatus?.state === "ACTIVE"
+                      ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
+                      : publicStatus?.state === "STARTING"
+                        ? "border-amber-900 bg-amber-950/30 text-amber-200"
+                        : publicStatus?.state === "ERROR"
+                          ? "border-red-900 bg-red-950/30 text-red-200"
+                          : "border-neutral-800 bg-neutral-950 text-neutral-400"
+                  }`}
+                >
+                  {publicStatus?.state || "STOPPED"}
+                </span>
+                <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
+                  DDNS disabled
+                </span>
+              </div>
+            ) : null}
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>
             <div><b>Buy origin</b>: {health.publicBuyOrigin || "—"}</div>
             <div><b>Studio origin</b>: {health.publicStudioOrigin || "—"}</div>
             <div><b>Contentbox origin</b>: {health.publicOrigin || "—"}</div>
             <div><b>Last seen</b>: {health.ts || "—"}</div>
+            {publicStatus ? (
+              <div>
+                <b>Last check</b>:{" "}
+                {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
+              </div>
+            ) : null}
           </div>
         )}
       </div>
