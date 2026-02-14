@@ -127,5 +127,37 @@ fi
 echo "[bootstrap] Prisma validate/generate..."
 (cd "$ROOT_DIR" && npx prisma validate && npx prisma generate)
 
+is_local_db() {
+  node - <<'NODE'
+const { URL } = require('url');
+const raw = process.env.DATABASE_URL || '';
+try {
+  const u = new URL(raw);
+  const host = u.hostname;
+  const local = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  process.exit(local ? 0 : 1);
+} catch {
+  process.exit(1);
+}
+NODE
+}
+
+if [ "${CONTENTBOX_ALLOW_MIGRATE:-}" = "1" ] || is_local_db; then
+  echo "[bootstrap] Applying database schema..."
+  if [ -d "$ROOT_DIR/prisma/migrations" ] && [ "$(ls -A "$ROOT_DIR/prisma/migrations" 2>/dev/null)" ]; then
+    echo "[bootstrap] Detected migrations. Running migrate deploy..."
+    if ! (cd "$ROOT_DIR" && npx prisma migrate deploy); then
+      fail "Prisma migrate deploy failed"
+    fi
+  else
+    echo "[bootstrap] No migrations found. Running prisma db push..."
+    if ! (cd "$ROOT_DIR" && npx prisma db push); then
+      fail "Prisma db push failed"
+    fi
+  fi
+else
+  echo "[bootstrap] Skipping schema apply (non-local DB). Set CONTENTBOX_ALLOW_MIGRATE=1 to override."
+fi
+
 echo "[bootstrap] Done. Start API with:"
 echo "  cd apps/api && npm run dev"
