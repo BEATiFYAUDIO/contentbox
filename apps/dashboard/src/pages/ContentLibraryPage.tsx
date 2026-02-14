@@ -2325,7 +2325,7 @@ export default function ContentLibraryPage({
                                   <>
                                     <div className="text-xs text-neutral-400">Share with anyone while ContentBox is running.</div>
                                     {!canSharePublic ? (
-                                      <div className="text-xs text-neutral-500">Publish this item to enable a public link.</div>
+                                      <div className="text-xs text-neutral-500">Must publish before starting public link.</div>
                                     ) : null}
                                     <button
                                       type="button"
@@ -2435,6 +2435,22 @@ export default function ContentLibraryPage({
                                     <div>cloudflared available: <span className="text-neutral-300">{publicStatus?.cloudflared?.available ? "yes" : "no"}</span></div>
                                     <div>cloudflared path: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.managedPath || "—"}</span></div>
                                     <div>cloudflared version: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.version || "—"}</span></div>
+                                    <label className="flex items-center gap-2">
+                                      <input
+                                        type="checkbox"
+                                        className="h-3 w-3"
+                                        checked={Boolean(publicStatus?.autoStartEnabled)}
+                                        onChange={async (e) => {
+                                          try {
+                                            await api("/api/public/autostart", "POST", { enabled: e.target.checked });
+                                            await refreshPublicStatus();
+                                          } catch {
+                                            setPublicMsg("Failed to update auto-start setting.");
+                                          }
+                                        }}
+                                      />
+                                      Auto-start Public Link on launch
+                                    </label>
                                     <button
                                       type="button"
                                       className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"

@@ -181,9 +181,9 @@ prompt_install_cloudflared() {
   # Store consent so the app won't re-prompt on first enable
   local state_file="$root_val/state.json"
   if [ ! -f "$state_file" ]; then
-    echo "{\"publicSharingConsent\":{\"granted\":true,\"dontAskAgain\":true,\"grantedAt\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"},\"publicSharingAutoStart\":true}" > "$state_file"
+    echo "{\"publicSharingConsent\":{\"granted\":true,\"dontAskAgain\":true,\"grantedAt\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"},\"publicSharingAutoStart\":false}" > "$state_file"
   else
-    node -e "const fs=require('fs');const p='$state_file';const s=JSON.parse(fs.readFileSync(p,'utf8'));s.publicSharingConsent={granted:true,dontAskAgain:true,grantedAt:new Date().toISOString()};s.publicSharingAutoStart=true;fs.writeFileSync(p,JSON.stringify(s,null,2));"
+    node -e "const fs=require('fs');const p='$state_file';const s=JSON.parse(fs.readFileSync(p,'utf8'));s.publicSharingConsent={granted:true,dontAskAgain:true,grantedAt:new Date().toISOString()};s.publicSharingAutoStart=false;fs.writeFileSync(p,JSON.stringify(s,null,2));"
   fi
   echo "[install] Helper tool installed."
 }

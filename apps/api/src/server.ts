@@ -673,29 +673,31 @@ function getPublicStatus(): {
   lastCheckedAt: number | null;
   cloudflared: { available: boolean; managedPath: string | null; version: string | null };
   consentRequired: boolean;
+  autoStartEnabled: boolean;
 } {
   const mode = normalizePublicMode(PUBLIC_MODE);
   const cloudflared = getCloudflaredStatus();
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
+  const autoStartEnabled = getPublicSharingAutoStart();
   const consentRequired = mode === "quick" && !cloudflared.available && !consentGranted;
   if (mode === "off") {
-    return { mode, state: "STOPPED", publicOrigin: null, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false };
+    return { mode, state: "STOPPED", publicOrigin: null, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
   }
 
   if (mode === "direct") {
     const origin = getDirectPublicOrigin();
     if (!origin) {
-      return { mode, state: "ERROR", publicOrigin: null, lastError: "direct_mode_not_public", lastCheckedAt: null, cloudflared, consentRequired: false };
+      return { mode, state: "ERROR", publicOrigin: null, lastError: "direct_mode_not_public", lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
     }
-    return { mode, state: "ACTIVE", publicOrigin: origin, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false };
+    return { mode, state: "ACTIVE", publicOrigin: origin, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
   }
 
   if (mode === "named") {
     const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
     const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
     if (!tunnelName || !publicOrigin) {
-      return { mode, state: "ERROR", publicOrigin: null, lastError: "missing_named_tunnel_config", lastCheckedAt: null, cloudflared, consentRequired: false };
+      return { mode, state: "ERROR", publicOrigin: null, lastError: "missing_named_tunnel_config", lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
     }
   }
 
@@ -707,7 +709,8 @@ function getPublicStatus(): {
     lastError: base.lastError || null,
     lastCheckedAt: toEpochMs(base.lastCheckedAt),
     cloudflared,
-    consentRequired
+    consentRequired,
+    autoStartEnabled
   };
 }
 
@@ -2798,6 +2801,12 @@ app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, repl
 
 app.post("/api/public/consent/reset", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   clearPublicSharingConsent();
+  return reply.send(getPublicStatus());
+});
+
+app.post("/api/public/autostart", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { enabled?: boolean };
+  setPublicSharingAutoStart(Boolean(body.enabled));
   return reply.send(getPublicStatus());
 });
 
@@ -9058,7 +9067,6 @@ async function start() {
       const consent = getPublicSharingConsent();
       const consentGranted = consent.granted || consent.dontAskAgain;
       if (consentGranted && getPublicSharingAutoStart()) {
-        setPublicSharingAutoStart(false);
         tunnelManager.startQuick().catch(() => {});
       }
     }

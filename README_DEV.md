@@ -64,7 +64,7 @@ If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
 - Only buyer/public routes are exposed on the public origin (`/public/ping`, `/p/:token`, `/buy/*`).
 - Optional: set `CLOUDFLARED_VERSION` to pin the exact cloudflared release used by managed download.
 Tip: the installer can optionally pre-download the helper tool (with consent) to make first enable instant.
-If you accept the installer prompt, ContentBox will auto-start the quick tunnel the next time the API boots.
+Auto-start is off by default; you can enable it in Advanced.
 
 Check capabilities:
 ```bash
