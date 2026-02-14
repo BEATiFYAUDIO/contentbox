@@ -63,6 +63,7 @@ If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
 - The public URL is transient and only works while ContentBox is running. The link may change after a restart.
 - Only buyer/public routes are exposed on the public origin (`/public/ping`, `/p/:token`, `/buy/*`).
 - Optional: set `CLOUDFLARED_VERSION` to pin the exact cloudflared release used by managed download.
+Tip: the installer can optionally pre-download the helper tool (with consent) to make first enable instant.
 
 Check capabilities:
 ```bash

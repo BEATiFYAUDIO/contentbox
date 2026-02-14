@@ -75,6 +75,121 @@ if ! grep -q '^PUBLIC_MODE=' "$API_ENV"; then
   echo "[install] Set PUBLIC_MODE=quick (default)."
 fi
 
+prompt_install_cloudflared() {
+  if command -v cloudflared >/dev/null 2>&1; then
+    return
+  fi
+
+  local root_val
+  root_val="$(grep '^CONTENTBOX_ROOT=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '"')"
+  if [ -z "$root_val" ]; then
+    return
+  fi
+  local bin_dir="$root_val/.bin"
+  local bin_name="cloudflared"
+  local dest="$bin_dir/$bin_name"
+
+  if [ -x "$dest" ]; then
+    return
+  fi
+
+  echo ""
+  echo "Public Link helper tool (optional)"
+  echo "This will download a small helper tool into:"
+  echo "  $bin_dir"
+  echo "It can be removed anytime."
+  printf "Download now? [y/N]: "
+  read -r ans
+  case "$ans" in
+    y|Y|yes|YES)
+      ;;
+    *)
+      return
+      ;;
+  esac
+
+  mkdir -p "$bin_dir"
+  local version
+  version="$(grep '^CLOUDFLARED_VERSION=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '"')"
+  if [ -z "$version" ]; then
+    version="latest"
+  fi
+  local base
+  if [ "$version" = "latest" ]; then
+    base="https://github.com/cloudflare/cloudflared/releases/latest/download"
+  else
+    base="https://github.com/cloudflare/cloudflared/releases/download/$version"
+  fi
+
+  local os
+  os="$(uname -s)"
+  local arch
+  arch="$(uname -m)"
+
+  local url=""
+  local is_tgz=0
+  if [ "$os" = "Linux" ]; then
+    if [ "$arch" = "x86_64" ] || [ "$arch" = "amd64" ]; then
+      url="$base/cloudflared-linux-amd64"
+    elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
+      url="$base/cloudflared-linux-arm64"
+    fi
+  elif [ "$os" = "Darwin" ]; then
+    if [ "$arch" = "x86_64" ] || [ "$arch" = "amd64" ]; then
+      url="$base/cloudflared-darwin-amd64.tgz"
+      is_tgz=1
+    elif [ "$arch" = "arm64" ]; then
+      url="$base/cloudflared-darwin-arm64.tgz"
+      is_tgz=1
+    fi
+  fi
+
+  if [ -z "$url" ]; then
+    echo "[install] Unsupported platform/arch for cloudflared download."
+    return
+  fi
+
+  echo "[install] Downloading helper tool..."
+  if [ "$is_tgz" -eq 1 ]; then
+    tmp_dir="$(mktemp -d)"
+    tmp_tgz="$tmp_dir/cloudflared.tgz"
+    if ! curl -fsSL "$url" -o "$tmp_tgz"; then
+      echo "[install] Download failed."
+      rm -rf "$tmp_dir"
+      return
+    fi
+    if ! tar -xzf "$tmp_tgz" -C "$tmp_dir"; then
+      echo "[install] Extract failed."
+      rm -rf "$tmp_dir"
+      return
+    fi
+    if [ ! -f "$tmp_dir/cloudflared" ]; then
+      echo "[install] Extracted binary not found."
+      rm -rf "$tmp_dir"
+      return
+    fi
+    cp "$tmp_dir/cloudflared" "$dest"
+    rm -rf "$tmp_dir"
+  else
+    if ! curl -fsSL "$url" -o "$dest"; then
+      echo "[install] Download failed."
+      return
+    fi
+  fi
+  chmod +x "$dest"
+
+  # Store consent so the app won't re-prompt on first enable
+  local state_file="$root_val/state.json"
+  if [ ! -f "$state_file" ]; then
+    echo "{\"publicSharingConsent\":{\"granted\":true,\"dontAskAgain\":true,\"grantedAt\":\"$(date -u +"%Y-%m-%dT%H:%M:%SZ")\"}}" > "$state_file"
+  else
+    node -e "const fs=require('fs');const p='$state_file';const s=JSON.parse(fs.readFileSync(p,'utf8'));s.publicSharingConsent={granted:true,dontAskAgain:true,grantedAt:new Date().toISOString()};fs.writeFileSync(p,JSON.stringify(s,null,2));"
+  fi
+  echo "[install] Helper tool installed."
+}
+
+prompt_install_cloudflared
+
 bash "$API_DIR/scripts/bootstrap-dev.sh" --install
 bash "$DASH_DIR/scripts/bootstrap-dev.sh" --install
 

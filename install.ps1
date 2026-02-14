@@ -88,6 +88,82 @@ if (-not ($envText -match "^PUBLIC_MODE=")) {
   Write-Host "[install] Set PUBLIC_MODE=quick (default)."
 }
 
+function Prompt-InstallCloudflared {
+  if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return }
+
+  $rootLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
+  if (-not $rootLine) { return }
+  $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
+  $rootVal = $rootVal.Trim('"')
+  if (-not $rootVal) { return }
+
+  $binDir = Join-Path $rootVal ".bin"
+  $dest = Join-Path $binDir "cloudflared.exe"
+  if (Test-Path $dest) { return }
+
+  Write-Host ""
+  Write-Host "Public Link helper tool (optional)"
+  Write-Host "This will download a small helper tool into:"
+  Write-Host "  $binDir"
+  Write-Host "It can be removed anytime."
+  $ans = Read-Host "Download now? (y/N)"
+  if ($ans -notmatch '^(y|Y|yes|YES)$') { return }
+
+  New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+
+  $versionLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CLOUDFLARED_VERSION=" } | Select-Object -First 1)
+  $version = $versionLine -replace "^CLOUDFLARED_VERSION=", ""
+  $version = $version.Trim('"')
+  if (-not $version) { $version = "latest" }
+  if ($version -eq "latest") {
+    $base = "https://github.com/cloudflare/cloudflared/releases/latest/download"
+  } else {
+    $base = "https://github.com/cloudflare/cloudflared/releases/download/$version"
+  }
+
+  $arch = (Get-CimInstance Win32_OperatingSystem).OSArchitecture
+  $url = ""
+  if ($arch -match "64") {
+    $url = "$base/cloudflared-windows-amd64.exe"
+  }
+  if (-not $url) {
+    Write-Host "[install] Unsupported platform/arch for cloudflared download."
+    return
+  }
+
+  Write-Host "[install] Downloading helper tool..."
+  try {
+    Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing | Out-Null
+  } catch {
+    Write-Host "[install] Download failed."
+    return
+  }
+
+  $stateFile = Join-Path $rootVal "state.json"
+  $consent = @{
+    publicSharingConsent = @{
+      granted = $true
+      dontAskAgain = $true
+      grantedAt = (Get-Date).ToUniversalTime().ToString("o")
+    }
+  }
+  if (Test-Path $stateFile) {
+    try {
+      $existing = Get-Content $stateFile | ConvertFrom-Json
+      $existing.publicSharingConsent = $consent.publicSharingConsent
+      $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
+    } catch {
+      $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
+    }
+  } else {
+    $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
+  }
+
+  Write-Host "[install] Helper tool installed."
+}
+
+Prompt-InstallCloudflared
+
 $envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
 $rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
 if ($rootLine) {
