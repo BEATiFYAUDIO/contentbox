@@ -113,6 +113,13 @@ prompt_install_cloudflared() {
       ;;
   esac
 
+  if ! command -v curl >/dev/null 2>&1; then
+    if ! command -v wget >/dev/null 2>&1; then
+      echo "[install] Download skipped: curl or wget is required."
+      return
+    fi
+  fi
+
   mkdir -p "$bin_dir"
   local version
   version="$(grep '^CLOUDFLARED_VERSION=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '"')"
@@ -158,10 +165,10 @@ prompt_install_cloudflared() {
   if [ "$is_tgz" -eq 1 ]; then
     tmp_dir="$(mktemp -d)"
     tmp_tgz="$tmp_dir/cloudflared.tgz"
-    if ! curl -fsSL "$url" -o "$tmp_tgz"; then
-      echo "[install] Download failed."
-      rm -rf "$tmp_dir"
-      return
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL "$url" -o "$tmp_tgz" || { echo "[install] Download failed."; rm -rf "$tmp_dir"; return; }
+    else
+      wget -qO "$tmp_tgz" "$url" || { echo "[install] Download failed."; rm -rf "$tmp_dir"; return; }
     fi
     if ! tar -xzf "$tmp_tgz" -C "$tmp_dir"; then
       echo "[install] Extract failed."
@@ -176,9 +183,10 @@ prompt_install_cloudflared() {
     cp "$tmp_dir/cloudflared" "$dest"
     rm -rf "$tmp_dir"
   else
-    if ! curl -fsSL "$url" -o "$dest"; then
-      echo "[install] Download failed."
-      return
+    if command -v curl >/dev/null 2>&1; then
+      curl -fsSL "$url" -o "$dest" || { echo "[install] Download failed."; return; }
+    else
+      wget -qO "$dest" "$url" || { echo "[install] Download failed."; return; }
     fi
   fi
   chmod +x "$dest"
@@ -193,8 +201,9 @@ prompt_install_cloudflared() {
   echo "[install] Helper tool installed."
 }
 
-prompt_install_cloudflared
+prompt_install_cloudflared || true
 
+echo "[install] Running bootstrap scripts..."
 bash "$API_DIR/scripts/bootstrap-dev.sh" --install
 bash "$DASH_DIR/scripts/bootstrap-dev.sh" --install
 
