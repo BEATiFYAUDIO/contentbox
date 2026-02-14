@@ -76,6 +76,7 @@ export default function ConfigPage() {
   const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
+  const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
 
   useEffect(() => {
     let cancelled = false;
@@ -181,6 +182,17 @@ export default function ConfigPage() {
     window.location.reload();
   };
 
+  const saveApiBaseOverride = () => {
+    writeStoredValue(STORAGE_API_BASE, normalizeOrigin(apiBaseOverride));
+    window.location.reload();
+  };
+
+  const clearApiBaseOverride = () => {
+    setApiBaseOverride("");
+    writeStoredValue(STORAGE_API_BASE, "");
+    window.location.reload();
+  };
+
   const saveTunnelConfig = async () => {
     if (!token) return;
     setTunnelError(null);
@@ -232,38 +244,45 @@ export default function ConfigPage() {
       <p style={{ opacity: 0.7, marginBottom: 16 }}>Networking + system settings used across ContentBox.</p>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
+        <div style={{ opacity: 0.7, marginBottom: 8 }}>
+          Current API base: <b>{apiBase}</b>
+        </div>
+        <label>
+          <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
+          <input
+            value={apiBaseOverride}
+            onChange={(e) => setApiBaseOverride(e.target.value)}
+            placeholder="http://127.0.0.1:4000"
+            className={inputClass}
+          />
+        </label>
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+          <button
+            onClick={saveApiBaseOverride}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Save & reload
+          </button>
+          <button
+            onClick={clearApiBaseOverride}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Clear override
+          </button>
+        </div>
+        <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+          If you see tunnels from another machine, your API base is pointing there.
+        </div>
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
         <div style={{ opacity: 0.7, marginBottom: 12 }}>
           Public hosts used for buy + studio + contentbox routing.
         </div>
 
         <div style={{ display: "grid", gap: 8 }}>
-          <label>
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>API base (advanced)</div>
-            <input
-              value={apiBaseOverride}
-              onChange={(e) => setApiBaseOverride(e.target.value)}
-              placeholder="http://127.0.0.1:4000"
-              className={inputClass}
-            />
-            <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
-              Override the API base without editing .env. Save will reload the app.
-            </div>
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button
-                onClick={saveApiBaseOverride}
-                style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Save & reload
-              </button>
-              <button
-                onClick={clearApiBaseOverride}
-                style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Clear
-              </button>
-            </div>
-          </label>
           <label>
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host (public)</div>
             <input
@@ -372,6 +391,11 @@ export default function ConfigPage() {
         {token && (
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
+            {publicStatus?.mode && publicStatus.mode !== "named" ? (
+              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                Named tunnel settings apply only when PUBLIC_MODE=named.
+              </div>
+            ) : null}
             <label>
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
               <input
