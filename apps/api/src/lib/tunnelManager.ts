@@ -26,6 +26,8 @@ type TunnelManagerOptions = {
   logger?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void };
   healthIntervalMs?: number;
   healthFailureThreshold?: number;
+  protocolPreference?: "auto" | "http2" | "quic";
+  onProtocolSuggestion?: (protocol: "http2" | "quic") => void;
 };
 
 type DownloadSpec = {
@@ -219,7 +221,8 @@ export class TunnelManager {
       ...opts,
       pingPath: opts.pingPath || "/public/ping",
       healthIntervalMs: opts.healthIntervalMs || 60_000,
-      healthFailureThreshold: opts.healthFailureThreshold || 2
+      healthFailureThreshold: opts.healthFailureThreshold || 2,
+      protocolPreference: opts.protocolPreference || "auto"
     };
     this.state = {
       status: "STOPPED",
@@ -396,13 +399,30 @@ export class TunnelManager {
       return { ok: true } as const;
     };
 
-    // Try default protocol (quic). If health fails, retry with http2.
+    const pref = this.opts.protocolPreference || "auto";
+    if (pref === "http2") {
+      const only = await tryProtocol("http2");
+      if (only.ok) return this.status();
+      this.state = { ...this.state, status: "ERROR", lastError: only.error || "Public link health check failed" };
+      return this.status();
+    }
+    if (pref === "quic") {
+      const only = await tryProtocol("quic");
+      if (only.ok) return this.status();
+      this.state = { ...this.state, status: "ERROR", lastError: only.error || "Public link health check failed" };
+      return this.status();
+    }
+
+    // auto: try QUIC first, then HTTP/2, and remember if HTTP/2 succeeds
     const first = await tryProtocol("quic");
     if (first.ok) return this.status();
 
     this.opts.logger?.warn?.("Quick tunnel health failed with QUIC; retrying with HTTP/2");
     const second = await tryProtocol("http2");
-    if (second.ok) return this.status();
+    if (second.ok) {
+      this.opts.onProtocolSuggestion?.("http2");
+      return this.status();
+    }
 
     this.state = { ...this.state, status: "ERROR", lastError: second.error || first.error || "Public link health check failed" };
     return this.status();

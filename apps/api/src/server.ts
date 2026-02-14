@@ -516,6 +516,10 @@ const tunnelManager = new TunnelManager({
   binDir: CLOUDFLARED_BIN_DIR,
   healthIntervalMs: PUBLIC_HEALTH_INTERVAL_MS,
   healthFailureThreshold: PUBLIC_HEALTH_FAILURE_THRESHOLD,
+  protocolPreference: getPublicSharingProtocolPreference(),
+  onProtocolSuggestion: (protocol) => {
+    setPublicSharingProtocolPreference(protocol);
+  },
   logger: {
     info: (msg) => app.log.info(msg),
     warn: (msg) => app.log.warn(msg),
@@ -564,6 +568,7 @@ type LocalState = {
     dontAskAgain?: boolean;
   };
   publicSharingAutoStart?: boolean;
+  publicSharingProtocol?: "http2" | "quic";
 };
 
 function readLocalState(): LocalState {
@@ -621,6 +626,19 @@ function getPublicSharingAutoStart(): boolean {
 function setPublicSharingAutoStart(enabled: boolean) {
   const s = readLocalState();
   s.publicSharingAutoStart = enabled;
+  writeLocalState(s);
+}
+
+function getPublicSharingProtocolPreference(): "auto" | "http2" | "quic" {
+  const s = readLocalState();
+  if (s.publicSharingProtocol === "http2") return "http2";
+  if (s.publicSharingProtocol === "quic") return "quic";
+  return "auto";
+}
+
+function setPublicSharingProtocolPreference(p: "http2" | "quic") {
+  const s = readLocalState();
+  s.publicSharingProtocol = p;
   writeLocalState(s);
 }
 
