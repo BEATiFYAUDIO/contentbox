@@ -22,6 +22,7 @@ const STORAGE_PUBLIC_ORIGIN_FALLBACK = "contentbox.publicOriginFallback";
 const STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK = "contentbox.publicBuyOriginFallback";
 const STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK = "contentbox.publicStudioOriginFallback";
 const STORAGE_TUNNEL_CONFIG_ENABLED = "contentbox.tunnelConfig.enabled";
+const STORAGE_API_BASE = "contentbox.apiBase";
 
 function getApiBase(): string {
   const env = (import.meta as any).env || {};
@@ -67,6 +68,7 @@ export default function ConfigPage() {
   const [publicBuyOriginFallback, setPublicBuyOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK));
   const [publicStudioOriginFallback, setPublicStudioOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK));
   const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(() => readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED) === "1");
+  const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
   const [tunnelProvider, setTunnelProvider] = useState<string>("cloudflare");
   const [tunnelDomain, setTunnelDomain] = useState<string>("");
   const [tunnelName, setTunnelName] = useState<string>("");
@@ -168,6 +170,17 @@ export default function ConfigPage() {
     writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, "");
   };
 
+  const saveApiBaseOverride = () => {
+    writeStoredValue(STORAGE_API_BASE, normalizeOrigin(apiBaseOverride));
+    window.location.reload();
+  };
+
+  const clearApiBaseOverride = () => {
+    setApiBaseOverride("");
+    writeStoredValue(STORAGE_API_BASE, "");
+    window.location.reload();
+  };
+
   const saveTunnelConfig = async () => {
     if (!token) return;
     setTunnelError(null);
@@ -225,6 +238,32 @@ export default function ConfigPage() {
         </div>
 
         <div style={{ display: "grid", gap: 8 }}>
+          <label>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>API base (advanced)</div>
+            <input
+              value={apiBaseOverride}
+              onChange={(e) => setApiBaseOverride(e.target.value)}
+              placeholder="http://127.0.0.1:4000"
+              className={inputClass}
+            />
+            <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
+              Override the API base without editing .env. Save will reload the app.
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                onClick={saveApiBaseOverride}
+                style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Save & reload
+              </button>
+              <button
+                onClick={clearApiBaseOverride}
+                style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Clear
+              </button>
+            </div>
+          </label>
           <label>
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host (public)</div>
             <input
@@ -322,10 +361,15 @@ export default function ConfigPage() {
           />
           <span>Enable advanced routing settings</span>
         </label>
+        {!tunnelEnabled && (
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+            Advanced routing is off — Quick tunnel will be used (no DDNS/custom domain).
+          </div>
+        )}
 
         {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
 
-        {tunnelEnabled && token && (
+        {token && (
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
             <label>
@@ -335,6 +379,7 @@ export default function ConfigPage() {
                 onChange={(e) => setTunnelProvider(e.target.value)}
                 placeholder="cloudflare"
                 className={inputClass}
+                disabled={!tunnelEnabled}
               />
             </label>
             <label>
@@ -344,6 +389,7 @@ export default function ConfigPage() {
                 onChange={(e) => setTunnelDomain(e.target.value)}
                 placeholder="contentbox.link"
                 className={inputClass}
+                disabled={!tunnelEnabled}
               />
               <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
                 Base domain for public links (e.g. <b>contentbox.link</b>). The tunnel list does not include domains.
@@ -356,19 +402,20 @@ export default function ConfigPage() {
                 onChange={(e) => setTunnelName(e.target.value)}
                 placeholder="contentbox"
                 className={inputClass}
+                disabled={!tunnelEnabled}
               />
             </label>
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={saveTunnelConfig}
-                disabled={tunnelLoading}
+                disabled={tunnelLoading || !tunnelEnabled}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
                 Save tunnel config
               </button>
               <button
                 onClick={discoverTunnels}
-                disabled={tunnelLoading}
+                disabled={tunnelLoading || !tunnelEnabled}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
                 Discover tunnels
