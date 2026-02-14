@@ -148,13 +148,13 @@ function Prompt-InstallCloudflared {
       dontAskAgain = $true
       grantedAt = (Get-Date).ToUniversalTime().ToString("o")
     }
-    publicSharingAutoStart = $false
+    publicSharingAutoStart = $true
   }
   if (Test-Path $stateFile) {
     try {
       $existing = Get-Content $stateFile | ConvertFrom-Json
       $existing.publicSharingConsent = $consent.publicSharingConsent
-      $existing.publicSharingAutoStart = $false
+      $existing.publicSharingAutoStart = $true
       $existing | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
     } catch {
       $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
