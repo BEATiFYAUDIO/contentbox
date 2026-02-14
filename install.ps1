@@ -41,7 +41,7 @@ if (-not (Test-Path $dashEnv)) {
   if (-not (Test-Path $dashEnvExample)) { Fail "Missing $dashEnvExample" }
   Copy-Item $dashEnvExample $dashEnv
   Write-Host "[install] Created $dashEnv from example."
-  Write-Host "[install] Edit $dashEnv if API is not localhost."
+  Write-Host "[install] Set VITE_API_URL to localhost by default."
 }
 
 if ($Lan) {
@@ -87,6 +87,8 @@ if (-not ($envText -match "^PUBLIC_MODE=")) {
   Set-EnvLine $apiEnv "PUBLIC_MODE" "quick"
   Write-Host "[install] Set PUBLIC_MODE=quick (default)."
 }
+
+Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
 
 function Prompt-InstallCloudflared {
   if (Get-Command cloudflared -ErrorAction SilentlyContinue) { return }

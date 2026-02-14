@@ -19,7 +19,22 @@ function resolveApiBase(): string {
   }
 }
 
-const API_BASE = resolveApiBase();
+const STORAGE_API_BASE = "contentbox.apiBase";
+
+function readStoredApiBase(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(STORAGE_API_BASE) || "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeBase(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+const API_BASE = normalizeBase(readStoredApiBase()) || resolveApiBase();
 
 type ApiOptions = {
   method?: string;

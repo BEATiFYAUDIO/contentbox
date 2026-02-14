@@ -57,7 +57,7 @@ if [ ! -f "$DASH_ENV" ]; then
   fi
   cp "$DASH_ENV_EXAMPLE" "$DASH_ENV"
   echo "[install] Created $DASH_ENV from example."
-  echo "[install] Edit $DASH_ENV if API is not localhost."
+  echo "[install] Set VITE_API_URL to localhost by default."
 fi
 
 if [ "$LAN_MODE" -eq 1 ]; then
@@ -73,6 +73,12 @@ fi
 if ! grep -q '^PUBLIC_MODE=' "$API_ENV"; then
   echo "PUBLIC_MODE=quick" >> "$API_ENV"
   echo "[install] Set PUBLIC_MODE=quick (default)."
+fi
+
+if grep -q '^VITE_API_URL=' "$DASH_ENV"; then
+  sed -i.bak 's#^VITE_API_URL=.*#VITE_API_URL=http://127.0.0.1:4000#' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
+else
+  echo "VITE_API_URL=http://127.0.0.1:4000" >> "$DASH_ENV"
 fi
 
 prompt_install_cloudflared() {

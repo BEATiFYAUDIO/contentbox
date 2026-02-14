@@ -54,8 +54,17 @@ function normalizeOrigin(value: string): string {
   return value.trim().replace(/\/+$/, "");
 }
 
+function safeHost(value: string): string {
+  try {
+    return new URL(value).host;
+  } catch {
+    return "";
+  }
+}
+
 export default function ConfigPage() {
   const apiBase = useMemo(() => getApiBase(), []);
+  const uiOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const [health, setHealth] = useState<Health | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const token = getToken();
@@ -76,6 +85,12 @@ export default function ConfigPage() {
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
   const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
+  const apiHost = safeHost(apiBase);
+  const uiHost = safeHost(uiOrigin);
+  const overrideHost = safeHost(apiBaseOverride);
+  const overrideActive = Boolean(apiBaseOverride.trim());
+  const apiMismatch = Boolean(uiHost && apiHost && uiHost !== apiHost);
+  const overrideMismatch = Boolean(overrideActive && overrideHost && overrideHost !== apiHost);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,17 +196,6 @@ export default function ConfigPage() {
     window.location.reload();
   };
 
-  const saveApiBaseOverride = () => {
-    writeStoredValue(STORAGE_API_BASE, normalizeOrigin(apiBaseOverride));
-    window.location.reload();
-  };
-
-  const clearApiBaseOverride = () => {
-    setApiBaseOverride("");
-    writeStoredValue(STORAGE_API_BASE, "");
-    window.location.reload();
-  };
-
   const saveTunnelConfig = async () => {
     if (!token) return;
     setTunnelError(null);
@@ -241,6 +245,40 @@ export default function ConfigPage() {
     <div style={{ padding: 16, maxWidth: 980 }}>
       <h2 style={{ margin: "8px 0 12px" }}>Config</h2>
       <p style={{ opacity: 0.7, marginBottom: 16 }}>Networking + system settings used across ContentBox.</p>
+
+      {(apiMismatch || overrideMismatch) && (
+        <div
+          style={{
+            border: "1px solid rgba(255,180,80,0.5)",
+            background: "rgba(255,180,80,0.08)",
+            borderRadius: 12,
+            padding: 12,
+            marginBottom: 14
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Diagnostics</div>
+          {apiMismatch && (
+            <div style={{ fontSize: 13, marginBottom: 4 }}>
+              This dashboard is pointed at a different machine. UI host: <b>{uiHost || "unknown"}</b> • API host:{" "}
+              <b>{apiHost || "unknown"}</b>
+            </div>
+          )}
+          {overrideMismatch && (
+            <div style={{ fontSize: 13 }}>
+              API override is set and does not match the current API base. Override:{" "}
+              <b>{overrideHost || "invalid"}</b> • API base: <b>{apiHost || "unknown"}</b>
+            </div>
+          )}
+          <div style={{ marginTop: 8 }}>
+            <button
+              onClick={clearApiBaseOverride}
+              style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              Clear override & reload
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
