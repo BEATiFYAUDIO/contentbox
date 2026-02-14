@@ -530,12 +530,13 @@ const tunnelManager = new TunnelManager({
 function resolveCloudflaredCmd(): string | null {
   const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
   if (envPath && fsSync.existsSync(envPath)) return envPath;
+  const localBin = path.join(CLOUDFLARED_BIN_DIR, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
+  if (fsSync.existsSync(localBin)) return localBin;
   try {
     const res = spawnSync("cloudflared", ["--version"], { stdio: "ignore" });
     if (res.status === 0) return "cloudflared";
   } catch {}
-  const localBin = path.join(CLOUDFLARED_BIN_DIR, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
-  return fsSync.existsSync(localBin) ? localBin : null;
+  return null;
 }
 
 function hasCloudflaredBinary(): boolean {
