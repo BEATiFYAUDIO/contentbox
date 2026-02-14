@@ -5004,6 +5004,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 }
 
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
+app.get("/buy/content/:id/preview-file", handlePublicPreviewFile);
 
 // Public credits (only when content is publicly visible)
 async function handlePublicCredits(req: any, reply: any) {
@@ -5626,6 +5627,7 @@ async function handlePublicOffer(req: any, reply: any) {
 
 app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, handlePublicOffer);
 app.get("/public/content/:contentId/offer", handlePublicOffer);
+app.get("/buy/content/:contentId/offer", handlePublicOffer);
 
 async function handlePublicPaymentsIntents(req: any, reply: any) {
   const body = (req.body ?? {}) as {
@@ -5773,6 +5775,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
 app.post("/p2p/payments/intents", handlePublicPaymentsIntents);
 app.post("/public/payments/intents", handlePublicPaymentsIntents);
+app.post("/buy/payments/intents", handlePublicPaymentsIntents);
 
 async function handlePublicPermits(req: any, reply: any) {
   if (!PERMIT_SECRET) return reply.code(500).send({ error: "permit secret missing" });
@@ -5824,6 +5827,7 @@ async function handlePublicPermits(req: any, reply: any) {
 
 app.post("/p2p/permits", handlePublicPermits);
 app.post("/public/permits", handlePublicPermits);
+app.post("/buy/permits", handlePublicPermits);
 
 async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
@@ -5845,6 +5849,7 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
 }
 
 app.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
+app.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
 
 async function handlePublicReceiptFulfill(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
@@ -5911,6 +5916,7 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
 }
 
 app.get("/public/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
+app.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
 
 async function handlePublicReceiptFile(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
@@ -5953,6 +5959,7 @@ async function handlePublicReceiptFile(req: any, reply: any) {
 }
 
 app.get("/public/receipts/:receiptToken/file", handlePublicReceiptFile);
+app.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
 
 // List files for a content item
 app.get("/content/:id/files", { preHandler: requireAuth }, async (req: any, reply) => {
