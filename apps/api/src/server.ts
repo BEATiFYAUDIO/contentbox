@@ -1145,20 +1145,15 @@ function hashApprovalToken(token: string): string {
 
 function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/ping", handlePublicPing);
-  appPublic.get("/public/users/:id", handlePublicUser);
-  appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
-  appPublic.get("/public/content/:id/access", handlePublicContentAccess);
-  appPublic.get("/public/content/:id", handlePublicContent);
-  appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
-  appPublic.get("/public/content/:id/credits", handlePublicCredits);
-  appPublic.get("/public/content/:contentId/offer", handlePublicOffer);
-  appPublic.post("/public/payments/intents", handlePublicPaymentsIntents);
-  appPublic.post("/public/permits", handlePublicPermits);
-  appPublic.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
-  appPublic.get("/public/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
-  appPublic.get("/public/receipts/:receiptToken/file", handlePublicReceiptFile);
   appPublic.get("/p/:token", handleShortPublicLink);
   appPublic.get("/buy/:contentId", handleBuyPage);
+  appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
+  appPublic.get("/buy/content/:id/preview-file", handlePublicPreviewFile);
+  appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
+  appPublic.post("/buy/permits", handlePublicPermits);
+  appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
+  appPublic.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
+  appPublic.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
 }
 
 function handlePublicPing(_req: any, reply: any) {
@@ -2576,13 +2571,25 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
   const mode = normalizePublicMode(PUBLIC_MODE);
 
   if (mode === "off") {
-    return reply.code(409).send({ mode, state: "ERROR", error: "public_mode_disabled" });
+    return reply.code(409).send({
+      mode,
+      state: "ERROR",
+      publicOrigin: null,
+      lastError: "public_mode_disabled",
+      lastCheckedAt: null
+    });
   }
 
   if (mode === "direct") {
     const status = getPublicStatus();
     if (status.state === "ERROR") {
-      return reply.code(409).send({ mode, state: "ERROR", error: "direct_mode_not_public" });
+      return reply.code(409).send({
+        mode,
+        state: "ERROR",
+        publicOrigin: null,
+        lastError: "direct_mode_not_public",
+        lastCheckedAt: null
+      });
     }
     return reply.send(status);
   }
@@ -2591,7 +2598,13 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
     const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
     if (!tunnelName || !publicOrigin) {
-      return reply.code(409).send({ mode, state: "ERROR", error: "missing_named_tunnel_config" });
+      return reply.code(409).send({
+        mode,
+        state: "ERROR",
+        publicOrigin: null,
+        lastError: "missing_named_tunnel_config",
+        lastCheckedAt: null
+      });
     }
     const status = await tunnelManager.startNamed({
       publicOrigin,
@@ -2599,25 +2612,55 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
     });
     if (status.status === "ACTIVE") {
-      return reply.send({ mode, state: "ACTIVE", publicOrigin });
+      return reply.send({
+        mode,
+        state: "ACTIVE",
+        publicOrigin,
+        lastError: null,
+        lastCheckedAt: toEpochMs(status.lastCheckedAt)
+      });
     }
-    return reply.code(503).send({ mode, state: "ERROR", error: status.lastError || "named_tunnel_failed" });
+    return reply.code(503).send({
+      mode,
+      state: "ERROR",
+      publicOrigin: null,
+      lastError: status.lastError || "named_tunnel_failed",
+      lastCheckedAt: toEpochMs(status.lastCheckedAt)
+    });
   }
 
   // quick
   const prep = await tunnelManager.ensureBinary();
   if (!prep.ok) {
-    return reply.code(503).send({ mode, state: "ERROR", error: "cloudflared_unavailable" });
+    return reply.code(503).send({
+      mode,
+      state: "ERROR",
+      publicOrigin: null,
+      lastError: "cloudflared_unavailable",
+      lastCheckedAt: null
+    });
   }
   const status = getPublicStatus();
   if (status.state === "ACTIVE") return reply.send(status);
   tunnelManager.startQuick().catch(() => {});
-  return reply.send({ mode, state: "STARTING" });
+  return reply.send({
+    mode,
+    state: "STARTING",
+    publicOrigin: null,
+    lastError: null,
+    lastCheckedAt: null
+  });
 });
 
 app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   await tunnelManager.stop();
-  return reply.send({ mode: normalizePublicMode(PUBLIC_MODE), state: "STOPPED" });
+  return reply.send({
+    mode: normalizePublicMode(PUBLIC_MODE),
+    state: "STOPPED",
+    publicOrigin: null,
+    lastError: null,
+    lastCheckedAt: null
+  });
 });
 
 // Buyer library (entitlements)
@@ -5152,7 +5195,7 @@ async function handleBuyPage(req: any, reply: any) {
 
   function previewFallbackUrl(offer){
     if (!offer?.previewObjectKey) return null;
-    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey);
+    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey);
   }
 
   function renderOffer(offer, entitlement){
@@ -5232,7 +5275,7 @@ async function handleBuyPage(req: any, reply: any) {
     const rails = document.getElementById("rails");
     const lightning = intent.paymentOptions?.lightning || {};
     const onchain = intent.paymentOptions?.onchain || {};
-    const receiptLink = apiBase + "/public/receipts/" + intent.receiptToken + "/status";
+    const receiptLink = apiBase + "/buy/receipts/" + intent.receiptToken + "/status";
     rails.innerHTML = \`
       <div class="row">
         <div class="rail">
@@ -5268,16 +5311,16 @@ async function handleBuyPage(req: any, reply: any) {
     }
     downloads.innerHTML = \`
       <div style="font-weight:600;margin-bottom:6px;">Download</div>
-      <ul>\${list.map(f=>\`<li><a href="\${apiBase}/public/receipts/\${receiptToken}/file?objectKey=\${qs(f.objectKey)}">\${f.originalName || f.objectKey}</a> <span class="muted">(\${f.sizeBytes} bytes)</span></li>\`).join("")}</ul>
+      <ul>\${list.map(f=>\`<li><a href="\${apiBase}/buy/receipts/\${receiptToken}/file?objectKey=\${qs(f.objectKey)}">\${f.originalName || f.objectKey}</a> <span class="muted">(\${f.sizeBytes} bytes)</span></li>\`).join("")}</ul>
     \`;
   }
 
   async function pollStatus(){
     if (!receiptToken) return;
-    const status = await fetchJson("/public/receipts/" + receiptToken + "/status");
+    const status = await fetchJson("/buy/receipts/" + receiptToken + "/status");
     if (status.canFulfill) {
       clearInterval(pollTimer);
-      const payload = await fetchJson("/public/receipts/" + receiptToken + "/fulfill");
+      const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
       if (currentOffer?.manifestSha256) {
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
@@ -5292,14 +5335,14 @@ async function handleBuyPage(req: any, reply: any) {
   async function startPurchase(offer){
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
-    const intent = await fetchJson("/public/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
     receiptToken = intent.receiptToken;
     renderRails(intent);
     pollTimer = setInterval(pollStatus, 2000);
     pollStatus().catch(()=>{});
   }
 
-  fetchJson("/public/content/" + contentId + "/offer")
+  fetchJson("/buy/content/" + contentId + "/offer")
     .then(async (offer)=> {
       currentOffer = offer;
       const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
@@ -5309,7 +5352,7 @@ async function handleBuyPage(req: any, reply: any) {
       }
       if (Number(offer.priceSats || 0) > 0) {
         try {
-          const p = await fetchJson("/public/permits", {
+          const p = await fetchJson("/buy/permits", {
             method: "POST",
             body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
           });

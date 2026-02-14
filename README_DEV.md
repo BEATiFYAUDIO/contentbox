@@ -55,11 +55,12 @@ CONTENTBOX_BIND=public
 If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
 
 ## Public Link (Basic)
+- Default `PUBLIC_MODE` is `quick` (if unset, quick tunnel is used).
 - Public Link starts a managed quick tunnel when you publish or click “Enable Public Link”.
 - If `cloudflared` is not found, the API will download a managed binary into `CONTENTBOX_ROOT/.bin` automatically.
 - Public server listens on `PUBLIC_PORT` (default `4010`) and is the only listener exposed via the tunnel.
 - The public URL is transient and only works while ContentBox is running. The link may change after a restart.
-- Only buyer/public routes are exposed on the public origin (`/public/*`, `/p/:token`, `/buy/*`, and the minimal payment endpoints).
+- Only buyer/public routes are exposed on the public origin (`/public/ping`, `/p/:token`, `/buy/*`).
 - Optional: set `CLOUDFLARED_VERSION` to pin the exact cloudflared release used by managed download.
 
 Check capabilities:

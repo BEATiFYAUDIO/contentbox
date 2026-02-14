@@ -83,6 +83,11 @@ if (-not ($envText -match "^CONTENTBOX_ROOT=")) {
   Write-Host "[install] Set CONTENTBOX_ROOT to $rootPath"
 }
 
+if (-not ($envText -match "^PUBLIC_MODE=")) {
+  Set-EnvLine $apiEnv "PUBLIC_MODE" "quick"
+  Write-Host "[install] Set PUBLIC_MODE=quick (default)."
+}
+
 $envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
 $rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
 if ($rootLine) {

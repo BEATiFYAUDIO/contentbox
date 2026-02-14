@@ -70,6 +70,11 @@ if [ "$LAN_MODE" -eq 1 ]; then
   echo "[install] If LAN access fails, allow tcp/4000 in your firewall."
 fi
 
+if ! grep -q '^PUBLIC_MODE=' "$API_ENV"; then
+  echo "PUBLIC_MODE=quick" >> "$API_ENV"
+  echo "[install] Set PUBLIC_MODE=quick (default)."
+fi
+
 bash "$API_DIR/scripts/bootstrap-dev.sh" --install
 bash "$DASH_DIR/scripts/bootstrap-dev.sh" --install
 
