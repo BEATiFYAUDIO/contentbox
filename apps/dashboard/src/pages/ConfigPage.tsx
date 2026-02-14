@@ -68,7 +68,6 @@ export default function ConfigPage() {
   const [publicBuyOriginFallback, setPublicBuyOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK));
   const [publicStudioOriginFallback, setPublicStudioOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK));
   const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(() => readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED) === "1");
-  const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
   const [tunnelProvider, setTunnelProvider] = useState<string>("cloudflare");
   const [tunnelDomain, setTunnelDomain] = useState<string>("");
   const [tunnelName, setTunnelName] = useState<string>("");
