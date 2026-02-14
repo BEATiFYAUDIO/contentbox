@@ -648,8 +648,8 @@ export default function ContentLibraryPage({
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
     setPublishMsg((m) => ({ ...m, [contentId]: "" }));
     try {
-      await api(`/api/content/${contentId}/manifest`, "POST");
-      await api(`/api/content/${contentId}/publish`, "POST");
+      await api(`/api/content/${contentId}/manifest`, "POST", {});
+      await api(`/api/content/${contentId}/publish`, "POST", {});
       await load(false);
       setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
     } catch (e: any) {
