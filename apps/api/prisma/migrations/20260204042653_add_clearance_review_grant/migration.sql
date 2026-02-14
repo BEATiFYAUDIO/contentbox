@@ -5,8 +5,9 @@ ALTER TABLE "Manifest" DROP CONSTRAINT "Manifest_contentId_fkey";
 DROP INDEX "ContentItem_storefrontStatus_idx";
 
 -- AlterTable
-ALTER TABLE "ClearanceRequest" ADD COLUMN     "reviewGrantedAt" TIMESTAMP(3),
-ADD COLUMN     "reviewGrantedByUserId" TEXT;
+ALTER TABLE IF EXISTS "ClearanceRequest"
+ADD COLUMN IF NOT EXISTS "reviewGrantedAt" TIMESTAMP(3),
+ADD COLUMN IF NOT EXISTS "reviewGrantedByUserId" TEXT;
 
 -- AlterTable
 ALTER TABLE "ContentCredit" ALTER COLUMN "updatedAt" DROP DEFAULT;
