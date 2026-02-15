@@ -1920,7 +1920,7 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
           participantUserId: p.participantUserId,
           role: p.role,
           bps: p.bps,
-          percent: String(p.percent),
+          percent: num(p.percent),
           acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null
         }))
       }
