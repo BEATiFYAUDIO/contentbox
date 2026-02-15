@@ -103,8 +103,6 @@ ensure_contentbox_root() {
   echo "$root_val"
 }
 
-ROOT_VAL="$(ensure_contentbox_root)"
-
 if ! grep -q '^DB_MODE=' "$API_ENV"; then
   echo "DB_MODE=basic" >> "$API_ENV"
   echo "[install] Set DB_MODE=basic (default)."
@@ -115,7 +113,15 @@ if [ -z "$DB_MODE_VAL" ]; then
   DB_MODE_VAL="basic"
 fi
 
+ROOT_VAL="$(ensure_contentbox_root)"
+
 if [ "$DB_MODE_VAL" = "basic" ]; then
+  ROOT_VAL="$REAL_HOME/contentbox-data"
+  if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
+    sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$ROOT_VAL\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+  else
+    echo "CONTENTBOX_ROOT=\"$ROOT_VAL\"" >> "$API_ENV"
+  fi
   SQLITE_URL="file:${ROOT_VAL}/contentbox.db"
   if grep -q '^DATABASE_URL=' "$API_ENV"; then
     sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=\"${SQLITE_URL}\"#" "$API_ENV" && rm -f "$API_ENV.bak"

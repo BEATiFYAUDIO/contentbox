@@ -13,7 +13,6 @@ import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
 import * as cheerio from "cheerio";
-import { PrismaPg } from "@prisma/adapter-pg";
 import { initContentRepo, addFileToContentRepo, commitAll } from "./lib/repo.js";
 import {
   computeManifestHash,
@@ -486,12 +485,7 @@ app.setErrorHandler((error, req, reply) => {
   reply.code(status).send(jsonStringifySafe(safe));
 });
 
-const dbMode = String(process.env.DB_MODE || "basic").toLowerCase();
-const dbUrl = mustEnv("DATABASE_URL");
-const prisma =
-  dbMode === "advanced"
-    ? new PrismaClient({ adapter: new PrismaPg({ connectionString: dbUrl }), log: [] })
-    : new PrismaClient({ log: [] });
+const prisma = new PrismaClient();
 
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
