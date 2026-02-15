@@ -2306,8 +2306,6 @@ export default function ContentLibraryPage({
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
                           {(() => {
                             const status = String(publicStatus?.state || "STOPPED");
-                            const mode = String(publicStatus?.mode || "quick");
-                            const isNamed = mode === "named";
                             const isStarting = status === "STARTING";
                             const isOn = status === "ACTIVE";
                             const isError = status === "ERROR";
@@ -2332,15 +2330,9 @@ export default function ContentLibraryPage({
                                     {status}
                                   </span>
                                   <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
-                                    {isNamed ? "Named tunnel" : "Quick tunnel"}
+                                    DDNS disabled
                                   </span>
                                 </div>
-
-                                {isNamed ? (
-                                  <div className="text-xs text-neutral-400">
-                                    Dedicated tunnel mode. Manage domain + tunnel settings in Config.
-                                  </div>
-                                ) : null}
 
                                 {status === "STOPPED" ? (
                                   <>
@@ -2407,54 +2399,27 @@ export default function ContentLibraryPage({
 
                                 {isError ? (
                                   <>
-                                    {isNamed ? (
-                                      <>
-                                        <div className="text-xs text-neutral-300 font-medium">Dedicated tunnel status</div>
-                                        <div className="text-xs text-neutral-400">
-                                          {publicMsg || "Using your configured tunnel. Check Config if the domain changed."}
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                          <button
-                                            type="button"
-                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                            onClick={() => (window.location.href = "/config")}
-                                          >
-                                            Open Config
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                            onClick={() => setPublicAdvancedOpen((v) => !v)}
-                                          >
-                                            View details
-                                          </button>
-                                        </div>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <div className="text-xs text-neutral-300 font-medium">Public link unavailable</div>
-                                        <div className="text-xs text-neutral-400">
-                                          {publicMsg || "We couldn’t start sharing from this device."}
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                          <button
-                                            type="button"
-                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                            onClick={startPublicLink}
-                                            disabled={publicBusy}
-                                          >
-                                            Try again
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                            onClick={() => setPublicAdvancedOpen((v) => !v)}
-                                          >
-                                            View details
-                                          </button>
-                                        </div>
-                                      </>
-                                    )}
+                                    <div className="text-xs text-neutral-300 font-medium">Public link unavailable</div>
+                                    <div className="text-xs text-neutral-400">
+                                      {publicMsg || "We couldn’t start sharing from this device."}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={startPublicLink}
+                                        disabled={publicBusy}
+                                      >
+                                        Try again
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        onClick={() => setPublicAdvancedOpen((v) => !v)}
+                                      >
+                                        View details
+                                      </button>
+                                    </div>
                                   </>
                                 ) : null}
 

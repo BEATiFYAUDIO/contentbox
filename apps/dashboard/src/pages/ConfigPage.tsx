@@ -529,28 +529,22 @@ export default function ConfigPage() {
           <div style={{ display: "grid", gap: 4 }}>
             {publicStatus ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
-                {(() => {
-                  const isNamed = publicStatus?.mode === "named";
-                  const hasNamedOrigin = Boolean(health.publicOrigin || health.publicBuyOrigin || health.publicStudioOrigin);
-                  const displayState = isNamed && hasNamedOrigin ? "ACTIVE" : publicStatus?.state || "STOPPED";
-                  const badge = displayState === "ACTIVE"
-                    ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
-                    : displayState === "STARTING"
-                      ? "border-amber-900 bg-amber-950/30 text-amber-200"
-                      : displayState === "ERROR"
-                        ? "border-red-900 bg-red-950/30 text-red-200"
-                        : "border-neutral-800 bg-neutral-950 text-neutral-400";
-                  return (
-                    <>
-                      <span className={`text-[11px] rounded-full border px-2 py-0.5 ${badge}`}>
-                        {displayState}
-                      </span>
-                      <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
-                        {isNamed ? "Named tunnel" : "Quick tunnel"}
-                      </span>
-                    </>
-                  );
-                })()}
+                <span
+                  className={`text-[11px] rounded-full border px-2 py-0.5 ${
+                    publicStatus?.state === "ACTIVE"
+                      ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
+                      : publicStatus?.state === "STARTING"
+                        ? "border-amber-900 bg-amber-950/30 text-amber-200"
+                        : publicStatus?.state === "ERROR"
+                          ? "border-red-900 bg-red-950/30 text-red-200"
+                          : "border-neutral-800 bg-neutral-950 text-neutral-400"
+                  }`}
+                >
+                  {publicStatus?.state || "STOPPED"}
+                </span>
+                <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
+                  DDNS disabled
+                </span>
               </div>
             ) : null}
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>

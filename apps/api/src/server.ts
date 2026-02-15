@@ -53,17 +53,6 @@ function normalizeEmail(x: unknown): string {
   return asString(x).trim().toLowerCase();
 }
 
-const DB_MODE = String(process.env.DB_MODE || "basic").toLowerCase();
-const INSENSITIVE_EMAIL = DB_MODE === "advanced";
-
-function emailEquals(value: string) {
-  return INSENSITIVE_EMAIL ? { equals: value, mode: "insensitive" as const } : { equals: value };
-}
-
-function emailIn(values: string[]) {
-  return INSENSITIVE_EMAIL ? { in: values, mode: "insensitive" as const } : { in: values };
-}
-
 function num(x: unknown): number {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
@@ -1550,7 +1539,7 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
     where: {
       OR: [
         { participantUserId: userId },
-        me.email ? { participantEmail: emailEquals(me.email) } : undefined
+        me.email ? { participantEmail: { equals: me.email, mode: "insensitive" } } : undefined
       ].filter(Boolean) as any
     },
     select: { id: true }
@@ -1564,7 +1553,7 @@ app.get("/me/royalty-history", { preHandler: requireAuth }, async (req: any, rep
     where: {
       OR: [
         participantIds.length ? { participantId: { in: participantIds } } : undefined,
-        me.email ? { participantEmail: emailEquals(me.email) } : undefined
+        me.email ? { participantEmail: { equals: me.email, mode: "insensitive" } } : undefined
       ].filter(Boolean) as any
     },
     include: {
@@ -1734,7 +1723,7 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
       OR: [
         { splitParticipant: { splitVersion: { content: { ownerUserId: userId } } } },
         { splitParticipant: { participantUserId: userId } },
-        me.email ? { splitParticipant: { participantEmail: emailEquals(me.email) } } : undefined
+        me.email ? { splitParticipant: { participantEmail: { equals: me.email, mode: "insensitive" } } } : undefined
       ].filter(Boolean) as any
     },
     include: {
@@ -1887,7 +1876,7 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
               participantUserId: p.participantUserId,
               role: p.role,
               bps: p.bps,
-              percent: num(p.percent),
+              percent: String(p.percent),
               acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null
             }))
           }
@@ -1920,7 +1909,7 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
           participantUserId: p.participantUserId,
           role: p.role,
           bps: p.bps,
-          percent: num(p.percent),
+          percent: String(p.percent),
           acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null
         }))
       }
@@ -1950,7 +1939,7 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         OR: [
           { splitParticipant: { splitVersion: { content: { ownerUserId: userId } } } },
           { splitParticipant: { participantUserId: userId } },
-          me?.email ? { splitParticipant: { participantEmail: emailEquals(me.email) } } : undefined
+          me?.email ? { splitParticipant: { participantEmail: { equals: me.email, mode: "insensitive" } } } : undefined
         ].filter(Boolean) as any
       },
       include: { splitParticipant: { include: { splitVersion: { include: { content: true } } } } },
@@ -1980,7 +1969,7 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
       where: {
         OR: [
           { participantUserId: userId },
-          me?.email ? { participantEmail: emailEquals(me.email) } : undefined
+          me?.email ? { participantEmail: { equals: me.email, mode: "insensitive" } } : undefined
         ].filter(Boolean) as any
       },
       select: { id: true }
@@ -1990,7 +1979,7 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
       where: {
         OR: [
           participantIds.length ? { participantId: { in: participantIds } } : undefined,
-          me?.email ? { participantEmail: emailEquals(me.email) } : undefined
+          me?.email ? { participantEmail: { equals: me.email, mode: "insensitive" } } : undefined
         ].filter(Boolean) as any
       },
       include: {
@@ -2154,7 +2143,7 @@ app.get("/invites/:id/audit", { preHandler: requireAuth }, async (req: any, repl
 /**
  * AUTH
  */
-async function handleAuthSignup(req: any, reply: any) {
+app.post("/auth/signup", async (req, reply) => {
   const body = (req.body ?? {}) as { email?: string; password?: string; displayName?: string };
 
   const email = normalizeEmail(body?.email);
@@ -2179,31 +2168,7 @@ async function handleAuthSignup(req: any, reply: any) {
 
   const token = app.jwt.sign({ sub: user.id });
   return reply.send({ token, user });
-}
-
-async function handleAuthLogin(req: any, reply: any) {
-  const body = (req.body ?? {}) as { email?: string; password?: string };
-
-  const email = normalizeEmail(body?.email);
-  const password = body?.password;
-
-  if (!email || !password) return badRequest(reply, "email and password are required");
-
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user?.passwordHash) return reply.code(401).send({ error: "Invalid credentials" });
-
-  const ok = await bcrypt.compare(password, user.passwordHash);
-  if (!ok) return reply.code(401).send({ error: "Invalid credentials" });
-
-  const token = app.jwt.sign({ sub: user.id });
-  return reply.send({
-    token,
-    user: { id: user.id, email: user.email, displayName: user.displayName, createdAt: user.createdAt }
-  });
-}
-
-app.post("/auth/signup", handleAuthSignup);
-app.post("/api/auth/signup", handleAuthSignup);
+});
 
 // List invitations for content owned by the authenticated user (no token values are returned)
 app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -2249,7 +2214,7 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
     where: {
       OR: [
         { splitParticipant: { participantUserId: userId } },
-        { splitParticipant: { participantEmail: emailEquals(me.email) } }
+        { splitParticipant: { participantEmail: { equals: me.email, mode: "insensitive" } } }
       ]
     },
     include: {
@@ -2290,7 +2255,7 @@ app.get("/my/split-participations", { preHandler: requireAuth }, async (req: any
         {
           OR: [
             { participantUserId: userId },
-            email ? { participantEmail: emailEquals(email) } : undefined
+            email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
           ].filter(Boolean) as any
         },
         {
@@ -2349,7 +2314,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     where: {
       OR: [
         { participantUserId: userId },
-        email ? { participantEmail: emailEquals(email) } : undefined
+        email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
       ].filter(Boolean) as any,
       acceptedAt: { not: null }
     },
@@ -2366,7 +2331,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     where: {
       OR: [
         { participantUserId: userId },
-        email ? { participantEmail: emailEquals(email) } : undefined
+        email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
       ].filter(Boolean) as any
     },
     select: { id: true }
@@ -2377,7 +2342,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     where: {
       OR: [
         participantIdList.length ? { participantId: { in: participantIdList } } : undefined,
-        email ? { participantEmail: emailEquals(email) } : undefined
+        email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
       ].filter(Boolean) as any
     },
     include: {
@@ -2561,7 +2526,7 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
         splitVersion: { contentId },
         OR: [
           { participantUserId: userId },
-          email ? { participantEmail: emailEquals(email) } : undefined
+          email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
         ].filter(Boolean) as any,
         acceptedAt: { not: null }
       }
@@ -2645,8 +2610,26 @@ app.delete("/invites/:id", { preHandler: requireAuth }, async (req: any, reply: 
   return reply.send({ ok: true });
 });
 
-app.post("/auth/login", handleAuthLogin);
-app.post("/api/auth/login", handleAuthLogin);
+app.post("/auth/login", async (req, reply) => {
+  const body = (req.body ?? {}) as { email?: string; password?: string };
+
+  const email = normalizeEmail(body?.email);
+  const password = body?.password;
+
+  if (!email || !password) return badRequest(reply, "email and password are required");
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user?.passwordHash) return reply.code(401).send({ error: "Invalid credentials" });
+
+  const ok = await bcrypt.compare(password, user.passwordHash);
+  if (!ok) return reply.code(401).send({ error: "Invalid credentials" });
+
+  const token = app.jwt.sign({ sub: user.id });
+  return reply.send({
+    token,
+    user: { id: user.id, email: user.email, displayName: user.displayName, createdAt: user.createdAt }
+  });
+});
 
 app.get("/me", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
@@ -3742,7 +3725,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
           acceptedAt: { not: null },
           OR: [
             { participantUserId: userId },
-            meEmail ? { participantEmail: emailEquals(meEmail) } : undefined
+            meEmail ? { participantEmail: { equals: meEmail, mode: "insensitive" } } : undefined
           ].filter(Boolean) as any
         },
         select: {
@@ -3914,7 +3897,7 @@ app.post("/api/content/:parentId/derivative", { preHandler: requireAuth }, async
         .map((e) => String(e).toLowerCase()) || [];
       const parentUsers = parentSplit?.participants?.map((sp) => sp.participantUserId).filter(Boolean) || [];
       const usersFromEmail = parentEmails.length
-        ? await tx.user.findMany({ where: { email: emailIn(parentEmails) }, select: { id: true } })
+        ? await tx.user.findMany({ where: { email: { in: parentEmails, mode: "insensitive" } }, select: { id: true } })
         : [];
       const approverIds = Array.from(new Set([...parentUsers.map(String), ...usersFromEmail.map((u) => u.id)]));
       if (approverIds.length === 0) {
@@ -4217,7 +4200,7 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
         splitVersion: { contentId },
         OR: [
           { participantUserId: userId },
-          email ? { participantEmail: emailEquals(email) } : undefined
+          email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
         ].filter(Boolean) as any
       }
     });
@@ -4662,7 +4645,7 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
     .map((a) => (a.participantEmail || "").toLowerCase())
     .filter(Boolean);
   const emailUsers = emails.length
-    ? await prisma.user.findMany({ where: { email: emailIn(emails) }, select: { email: true } })
+    ? await prisma.user.findMany({ where: { email: { in: emails, mode: "insensitive" } }, select: { email: true } })
     : [];
   const emailsWithUsers = new Set(emailUsers.map((u) => (u.email || "").toLowerCase()));
   function resolveApprover(uId: string, uEmail: string) {
@@ -4799,7 +4782,7 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     .map((a) => (a.participantEmail || "").toLowerCase())
     .filter(Boolean);
   const emailUsers = emails.length
-    ? await prisma.user.findMany({ where: { email: emailIn(emails) }, select: { email: true } })
+    ? await prisma.user.findMany({ where: { email: { in: emails, mode: "insensitive" } }, select: { email: true } })
     : [];
   const emailsWithUsers = new Set(emailUsers.map((u) => (u.email || "").toLowerCase()));
   function resolveApprover(uId: string, uEmail: string) {
@@ -6911,7 +6894,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
           splitVersionId: latest.id,
           participantEmail: p.participantEmail,
           role: p.role,
-          percent: num(p.percent),
+          percent: String(p.percent),
           bps: Math.round(num(p.percent) * 100)
         }
       });
@@ -6926,7 +6909,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
           splitVersionId: latest.id,
           OR: [
             { participantUserId: userId },
-            ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
+            ownerEmail ? { participantEmail: { equals: ownerEmail, mode: "insensitive" } } : undefined
           ].filter(Boolean) as any
         },
         data: { participantUserId: userId, acceptedAt: new Date() }
@@ -6939,7 +6922,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
     const after = validated.participants.map((p) => ({
       participantEmail: p.participantEmail,
       role: p.role,
-      percent: num(p.percent),
+      percent: String(p.percent),
       bps: Math.round(num(p.percent) * 100)
     }));
 
@@ -6955,7 +6938,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
             before: before.map((p) => ({
               participantEmail: p.participantEmail,
               role: p.role,
-              percent: num(p.percent),
+              percent: String(p.percent),
               bps: p.bps
             })),
             after
@@ -6998,7 +6981,7 @@ app.post("/content/:id/split-versions", { preHandler: requireAuth }, async (req:
             splitVersionId: sv.id,
             participantEmail: p.participantEmail,
             role: p.role,
-            percent: num(p.percent),
+            percent: String(p.percent),
             bps: (p as any).bps ?? Math.round(Number(p.percent || 0) * 100),
             payoutIdentityId: p.payoutIdentityId || null
           }
@@ -7015,7 +6998,7 @@ app.post("/content/:id/split-versions", { preHandler: requireAuth }, async (req:
           splitVersionId: sv.id,
           OR: [
             { participantUserId: userId },
-            ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
+            ownerEmail ? { participantEmail: { equals: ownerEmail, mode: "insensitive" } } : undefined
           ].filter(Boolean) as any
         },
         data: { participantUserId: userId, acceptedAt: new Date() }
@@ -7236,7 +7219,7 @@ async function getApproverUserIdsForParent(parentContentId: string): Promise<str
 
   if (emails.length > 0) {
     const users = await prisma.user.findMany({
-      where: { email: emailIn(emails) },
+      where: { email: { in: emails, mode: "insensitive" } },
       select: { id: true }
     });
     for (const u of users) userIds.add(u.id);
@@ -7265,7 +7248,7 @@ async function isAcceptedParticipant(userId: string, contentId: string) {
       splitVersion: { contentId },
       OR: [
         { participantUserId: userId },
-        email ? { participantEmail: emailEquals(email) } : undefined
+        email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
       ].filter(Boolean) as any
     }
   });
@@ -7563,7 +7546,7 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
         splitVersionId,
         OR: [
           { participantUserId: userId },
-          ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
+          ownerEmail ? { participantEmail: { equals: ownerEmail, mode: "insensitive" } } : undefined
         ].filter(Boolean) as any
       },
       data: { participantUserId: userId, acceptedAt: new Date() }
@@ -8054,7 +8037,7 @@ app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, repl
     where: {
       OR: [
         { participantUserId: userId },
-        email ? { participantEmail: emailEquals(email) } : undefined
+        email ? { participantEmail: { equals: email, mode: "insensitive" } } : undefined
       ].filter(Boolean) as any
     },
     select: { id: true, participantEmail: true }
