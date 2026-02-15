@@ -95,12 +95,6 @@ function titleCase(s?: string | null) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function formatDateSafe(value: any) {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "Unknown time";
-  return d.toLocaleString();
-}
-
 async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -166,8 +160,6 @@ export default function SplitEditorPage(props: {
   const [busy, setBusy] = React.useState(false);
   const [msg, setMsg] = React.useState<string | null>(null);
   const [auditByParticipant, setAuditByParticipant] = React.useState<Record<string, { remoteVerified: boolean; remoteNodeUrl?: string | null; remoteUserId?: string | null }>>({});
-  const [auditEventsList, setAuditEventsList] = React.useState<any[]>([]);
-  const [showAuditEvents, setShowAuditEvents] = React.useState(false);
   const [historyItems, setHistoryItems] = React.useState<HistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = React.useState(false);
   const [proofByVersionId, setProofByVersionId] = React.useState<Record<string, ProofData | null>>({});
@@ -237,7 +229,6 @@ export default function SplitEditorPage(props: {
       const latestId = v[0]?.id;
       if (latestId) {
         const events = await api<any>(`/split-versions/${latestId}/audit`, "GET");
-        setAuditEventsList(events || []);
         const map: Record<string, any> = {};
         for (const ev of events || []) {
           if (ev.action === "invite.accept" && ev.payload && ev.payload.splitParticipantId) {

@@ -89,6 +89,7 @@ type ParentLinkInfo = {
   upstreamBps: number;
   requiresApproval: boolean;
   approvedAt?: string | null;
+  clearance?: any;
   parent: {
     id: string;
     title: string;
@@ -249,7 +250,6 @@ export default function ContentLibraryPage({
   const [clearanceScope, setClearanceScope] = React.useState<"pending" | "voted" | "cleared">("pending");
   const [pendingClearanceCount, setPendingClearanceCount] = React.useState(0);
   const [busyAction, setBusyAction] = React.useState<Record<string, boolean>>({});
-  const [clearanceLinksByContent, setClearanceLinksByContent] = React.useState<Record<string, Array<{ email: string; url: string }>>>({});
   const [requestParentId, setRequestParentId] = React.useState("");
   const [requestTitle, setRequestTitle] = React.useState("");
   const [requestType, setRequestType] = React.useState<ContentType>("remix");
@@ -275,7 +275,6 @@ export default function ContentLibraryPage({
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
-  const [salesLoading, setSalesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewByChild, setDerivativePreviewByChild] = React.useState<Record<string, any | null>>({});
@@ -542,15 +541,6 @@ export default function ContentLibraryPage({
     } finally {
       setFilesLoading((m) => ({ ...m, [contentId]: false }));
     }
-  }
-
-  function baseFromHostPort(host?: string, port?: string): string {
-    const cleanHost = (host || "").trim().replace(/^https?:\/\//i, "");
-    if (!cleanHost) return "";
-    const useHttps = port === "443" || /trycloudflare\.com$/i.test(cleanHost) || /\.ts\.net$/i.test(cleanHost);
-    const scheme = useHttps ? "https" : "http";
-    const portPart = port ? `:${port}` : "";
-    return `${scheme}://${cleanHost}${portPart}`;
   }
 
   function hostPortFromOrigin(origin: string): { host: string; port: string } {
@@ -2501,7 +2491,6 @@ export default function ContentLibraryPage({
                             const activeOrigin = publicStatus?.state === "ACTIVE" ? String(publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (activeOrigin || "").trim();
                             const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
-                            const effectiveStudioOrigin = (publicStudioOrigin || effectivePublicOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const loopbackBase = "http://127.0.0.1:4000";
