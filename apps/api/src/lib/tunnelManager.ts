@@ -330,9 +330,11 @@ export class TunnelManager {
 
       const urlPromise = new Promise<string>((resolve, reject) => {
         let resolved = false;
+        let buffer = "";
         const onData = (buf: Buffer) => {
           const txt = buf.toString("utf8");
-          const url = parseQuickTunnelUrl(txt);
+          buffer = (buffer + txt).slice(-8000);
+          const url = parseQuickTunnelUrl(buffer);
           if (url && !resolved) {
             resolved = true;
             resolve(url);
