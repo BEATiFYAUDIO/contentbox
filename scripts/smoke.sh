@@ -14,7 +14,7 @@ pass() {
 }
 
 echo "[smoke] Running install (basic mode)..."
-if ! bash "$ROOT_DIR/install.sh" >/tmp/contentbox-install.log 2>&1; then
+if ! DB_MODE=basic bash "$ROOT_DIR/install.sh" >/tmp/contentbox-install.log 2>&1; then
   cat /tmp/contentbox-install.log >&2
   fail "install.sh failed"
 fi
@@ -48,5 +48,12 @@ if [ "$status" = "404" ] || [ -z "$status" ]; then
   fail "/auth/login route not found"
 fi
 pass "/auth/login reachable (status $status)"
+
+echo "[smoke] Building dashboard..."
+if ! (cd "$ROOT_DIR/apps/dashboard" && npm run build) >/tmp/contentbox-dashboard.log 2>&1; then
+  cat /tmp/contentbox-dashboard.log >&2
+  fail "dashboard build failed"
+fi
+pass "dashboard build ok"
 
 pass "Smoke test completed"
