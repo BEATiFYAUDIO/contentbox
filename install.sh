@@ -75,6 +75,42 @@ if ! grep -q '^PUBLIC_MODE=' "$API_ENV"; then
   echo "[install] Set PUBLIC_MODE=quick (default)."
 fi
 
+ensure_contentbox_root() {
+  local root_val
+  root_val="$(grep '^CONTENTBOX_ROOT=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '\"')"
+  if [ -z "$root_val" ] || echo "$root_val" | grep -q "<user>"; then
+    root_val="$HOME/contentbox-data"
+    if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
+      sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$root_val\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+    else
+      echo "CONTENTBOX_ROOT=\"$root_val\"" >> "$API_ENV"
+    fi
+  fi
+  echo "$root_val"
+}
+
+ROOT_VAL="$(ensure_contentbox_root)"
+
+if ! grep -q '^DB_MODE=' "$API_ENV"; then
+  echo "DB_MODE=basic" >> "$API_ENV"
+  echo "[install] Set DB_MODE=basic (default)."
+fi
+
+DB_MODE_VAL="$(grep '^DB_MODE=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '\"' | tr '[:upper:]' '[:lower:]')"
+if [ -z "$DB_MODE_VAL" ]; then
+  DB_MODE_VAL="basic"
+fi
+
+if [ "$DB_MODE_VAL" = "basic" ]; then
+  SQLITE_URL="file:${ROOT_VAL}/contentbox.db"
+  if grep -q '^DATABASE_URL=' "$API_ENV"; then
+    sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=\"${SQLITE_URL}\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+  else
+    echo "DATABASE_URL=\"${SQLITE_URL}\"" >> "$API_ENV"
+  fi
+  echo "[install] Using SQLite for basic mode."
+fi
+
 if grep -q '^VITE_API_URL=' "$DASH_ENV"; then
   sed -i.bak 's#^VITE_API_URL=.*#VITE_API_URL=http://127.0.0.1:4000#' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
 else
@@ -111,7 +147,9 @@ setup_local_postgres() {
   echo "[install] DATABASE_URL set for local Postgres."
 }
 
-setup_local_postgres || true
+if [ "$DB_MODE_VAL" = "advanced" ]; then
+  setup_local_postgres || true
+fi
 
 prompt_install_cloudflared() {
   if command -v cloudflared >/dev/null 2>&1; then

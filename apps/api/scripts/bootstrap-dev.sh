@@ -82,6 +82,12 @@ if [ -z "${DATABASE_URL:-}" ]; then
   fail "DATABASE_URL is missing in $ENV_FILE"
 fi
 
+DB_MODE="$(echo "${DB_MODE:-basic}" | tr '[:upper:]' '[:lower:]')"
+if [ -z "$DB_MODE" ]; then
+  DB_MODE="basic"
+fi
+set_env "DB_MODE" "$DB_MODE"
+
 if [ -z "${JWT_SECRET:-}" ] || [ "${JWT_SECRET}" = "change-me" ]; then
   JWT_SECRET="$(node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("hex"))')"
   set_env "JWT_SECRET" "$JWT_SECRET"
@@ -101,11 +107,16 @@ else
   echo "[bootstrap] Skipping npm install (node_modules present or --no-install)"
 fi
 
+SCHEMA_PATH="prisma/schema.sqlite.prisma"
+if [ "$DB_MODE" = "advanced" ]; then
+  SCHEMA_PATH="prisma/schema.prisma"
+fi
+
 echo "[bootstrap] Prisma validate/generate..."
-(cd "$ROOT_DIR" && npx prisma validate && npx prisma generate)
+(cd "$ROOT_DIR" && npx prisma validate --schema "$SCHEMA_PATH" && npx prisma generate --schema "$SCHEMA_PATH")
 
 # Verify Postgres reachability if possible
-if command -v psql >/dev/null 2>&1; then
+if [ "$DB_MODE" = "advanced" ] && command -v psql >/dev/null 2>&1; then
   DB_URL_PSQL="$(node - <<'NODE'
 const { URL } = require('url');
 const raw = process.env.DATABASE_URL || '';
@@ -154,16 +165,21 @@ try {
 NODE
 }
 
-if [ "${CONTENTBOX_ALLOW_MIGRATE:-}" = "1" ] || is_local_db; then
+if [ "$DB_MODE" != "advanced" ]; then
+  echo "[bootstrap] Using SQLite (basic). Applying schema via db push..."
+  if ! (cd "$ROOT_DIR" && npx prisma db push --schema "$SCHEMA_PATH"); then
+    fail "Prisma db push failed"
+  fi
+elif [ "${CONTENTBOX_ALLOW_MIGRATE:-}" = "1" ] || is_local_db; then
   echo "[bootstrap] Applying database schema..."
   if [ -d "$ROOT_DIR/prisma/migrations" ] && [ "$(ls -A "$ROOT_DIR/prisma/migrations" 2>/dev/null)" ]; then
     echo "[bootstrap] Detected migrations. Running migrate deploy..."
-    if ! (cd "$ROOT_DIR" && npx prisma migrate deploy); then
+    if ! (cd "$ROOT_DIR" && npx prisma migrate deploy --schema "$SCHEMA_PATH"); then
       fail "Prisma migrate deploy failed"
     fi
   else
     echo "[bootstrap] No migrations found. Running prisma db push..."
-    if ! (cd "$ROOT_DIR" && npx prisma db push); then
+    if ! (cd "$ROOT_DIR" && npx prisma db push --schema "$SCHEMA_PATH"); then
       fail "Prisma db push failed"
     fi
   fi

@@ -88,6 +88,26 @@ if (-not ($envText -match "^PUBLIC_MODE=")) {
   Write-Host "[install] Set PUBLIC_MODE=quick (default)."
 }
 
+if (-not ($envText -match "^DB_MODE=")) {
+  Set-EnvLine $apiEnv "DB_MODE" "basic"
+  Write-Host "[install] Set DB_MODE=basic (default)."
+}
+
+$envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
+$dbModeLine = ($envText | Where-Object { $_ -match "^DB_MODE=" } | Select-Object -First 1)
+$dbMode = ($dbModeLine -replace "^DB_MODE=", "").Trim()
+if (-not $dbMode) { $dbMode = "basic" }
+
+if ($dbMode -eq "basic") {
+  $rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
+  $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
+  $rootVal = $rootVal.Trim('"')
+  if (-not $rootVal) { $rootVal = Join-Path $HOME "contentbox-data" }
+  $sqliteUrl = "file:$rootVal/contentbox.db"
+  Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
+  Write-Host "[install] Using SQLite for basic mode."
+}
+
 Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
 
 function Prompt-InstallCloudflared {
@@ -180,8 +200,10 @@ if ($rootLine) {
 
 Push-Location $apiDir
 npm install
-npx prisma validate
-npx prisma generate
+$schemaPath = "prisma/schema.sqlite.prisma"
+if ($dbMode -eq "advanced") { $schemaPath = "prisma/schema.prisma" }
+npx prisma validate --schema $schemaPath
+npx prisma generate --schema $schemaPath
 Pop-Location
 
 Push-Location $dashDir
