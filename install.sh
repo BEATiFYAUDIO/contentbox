@@ -93,10 +93,8 @@ setup_local_postgres() {
   local db_url="postgresql://${target_user}:${target_pass}@127.0.0.1:5432/${target_db}"
 
   local psql_cmd="psql"
-  if ! psql -h 127.0.0.1 -U postgres -c "select 1" >/dev/null 2>&1; then
-    if command -v sudo >/dev/null 2>&1; then
-      psql_cmd="sudo -u postgres psql"
-    fi
+  if command -v sudo >/dev/null 2>&1; then
+    psql_cmd="sudo -u postgres psql"
   fi
 
   echo "[install] Ensuring local Postgres user/db..."
