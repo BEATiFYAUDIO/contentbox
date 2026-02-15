@@ -81,6 +81,40 @@ else
   echo "VITE_API_URL=http://127.0.0.1:4000" >> "$DASH_ENV"
 fi
 
+setup_local_postgres() {
+  if ! command -v psql >/dev/null 2>&1; then
+    echo "[install] Postgres not found. Please install PostgreSQL to continue."
+    return 1
+  fi
+
+  local target_db="contentbox"
+  local target_user="contentbox"
+  local target_pass="contentbox"
+  local db_url="postgresql://${target_user}:${target_pass}@127.0.0.1:5432/${target_db}"
+
+  local psql_cmd="psql"
+  if ! psql -h 127.0.0.1 -U postgres -c "select 1" >/dev/null 2>&1; then
+    if command -v sudo >/dev/null 2>&1; then
+      psql_cmd="sudo -u postgres psql"
+    fi
+  fi
+
+  echo "[install] Ensuring local Postgres user/db..."
+  eval $psql_cmd -h 127.0.0.1 -c "\"DROP DATABASE IF EXISTS ${target_db};\"" >/dev/null 2>&1 || true
+  eval $psql_cmd -h 127.0.0.1 -c "\"DROP USER IF EXISTS ${target_user};\"" >/dev/null 2>&1 || true
+  eval $psql_cmd -h 127.0.0.1 -c "\"CREATE USER ${target_user} WITH PASSWORD '${target_pass}';\"" >/dev/null 2>&1 || return 1
+  eval $psql_cmd -h 127.0.0.1 -c "\"CREATE DATABASE ${target_db} OWNER ${target_user};\"" >/dev/null 2>&1 || return 1
+
+  if grep -q '^DATABASE_URL=' "$API_ENV"; then
+    sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=\"${db_url}\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+  else
+    echo "DATABASE_URL=\"${db_url}\"" >> "$API_ENV"
+  fi
+  echo "[install] DATABASE_URL set for local Postgres."
+}
+
+setup_local_postgres || true
+
 prompt_install_cloudflared() {
   if command -v cloudflared >/dev/null 2>&1; then
     return
