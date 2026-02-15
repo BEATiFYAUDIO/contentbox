@@ -125,8 +125,12 @@ function downloadJson(filename: string, data: any) {
   }
 }
 
-export default function SplitEditorPage(props: { contentId: string | null; onGoToPayouts?: () => void }) {
-  const { contentId, onGoToPayouts } = props;
+export default function SplitEditorPage(props: {
+  contentId: string | null;
+  onGoToPayouts?: () => void;
+  onNotFound?: () => void;
+}) {
+  const { contentId, onGoToPayouts, onNotFound } = props;
 
   const [content, setContent] = React.useState<ContentItem | null>(null);
   const [versions, setVersions] = React.useState<SplitVersion[]>([]);
@@ -182,13 +186,32 @@ export default function SplitEditorPage(props: { contentId: string | null; onGoT
   const lightningReason = paymentsReadiness?.lightning?.reason ?? "UNKNOWN";
   const lightningBlocked = readinessLoaded && !lightningReady;
 
+  function isNotFoundError(err: any) {
+    const msg = String(err?.message || err || "");
+    return /404\b/i.test(msg) || /not found/i.test(msg);
+  }
+
   async function loadAll(id: string) {
     setMsg(null);
 
-    const [c, v] = await Promise.all([
-      api<ContentItem>(`/content/${id}`, "GET"),
-      api<SplitVersion[]>(`/content/${id}/split-versions`, "GET")
-    ]);
+    let c: ContentItem | null = null;
+    let v: SplitVersion[] = [];
+    try {
+      [c, v] = await Promise.all([
+        api<ContentItem>(`/content/${id}`, "GET"),
+        api<SplitVersion[]>(`/content/${id}/split-versions`, "GET")
+      ]);
+    } catch (e: any) {
+      setContent(null);
+      setVersions([]);
+      setSelectedVersionId(null);
+      setRows([{ participantEmail: "", role: "writer", percent: "100" }]);
+      setMsg(e?.message || "Failed to load splits");
+      if (isNotFoundError(e)) {
+        onNotFound?.();
+      }
+      throw e;
+    }
 
     setContent(c);
     setVersions(v);

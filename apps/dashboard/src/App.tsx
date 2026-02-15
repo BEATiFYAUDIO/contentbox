@@ -569,6 +569,11 @@ export default function App() {
             <SplitEditorPage
               contentId={selectedContentId}
               onGoToPayouts={() => setPage("payouts")}
+              onNotFound={() => {
+                window.history.pushState({}, "", "/content");
+                setSelectedContentId(null);
+                setPage("content");
+              }}
             />
           )}
 
