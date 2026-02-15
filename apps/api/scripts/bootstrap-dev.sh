@@ -111,10 +111,10 @@ else
 fi
 
 check_prisma_versions() {
-  node - <<'NODE'
+  PRISMA_BASE="$ROOT_DIR" node - <<'NODE'
 const fs = require("fs");
 const path = require("path");
-const base = process.cwd();
+const base = process.env.PRISMA_BASE || process.cwd();
 function readVersion(p) {
   try {
     const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
