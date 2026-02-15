@@ -213,6 +213,16 @@ echo "[install] Running bootstrap scripts..."
 bash "$API_DIR/scripts/bootstrap-dev.sh" --install
 bash "$DASH_DIR/scripts/bootstrap-dev.sh" --install
 
+# Ensure local dev binaries exist (vite/tsx) even if npm install was interrupted.
+if [ ! -x "$API_DIR/node_modules/.bin/tsx" ]; then
+  echo "[install] API deps missing (tsx). Installing..."
+  (cd "$API_DIR" && npm install)
+fi
+if [ ! -x "$DASH_DIR/node_modules/.bin/vite" ]; then
+  echo "[install] Dashboard deps missing (vite). Installing..."
+  (cd "$DASH_DIR" && npm install)
+fi
+
 echo "[install] Next steps:"
 echo "  Terminal 1: cd apps/api && npm run dev"
 echo "  Terminal 2: cd apps/dashboard && npm run dev"
