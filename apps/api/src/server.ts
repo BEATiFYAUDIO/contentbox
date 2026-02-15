@@ -487,10 +487,11 @@ app.setErrorHandler((error, req, reply) => {
 });
 
 const dbMode = String(process.env.DB_MODE || "basic").toLowerCase();
+const dbUrl = mustEnv("DATABASE_URL");
 const prisma =
   dbMode === "advanced"
-    ? new PrismaClient({ adapter: new PrismaPg({ connectionString: mustEnv("DATABASE_URL") }) })
-    : new PrismaClient();
+    ? new PrismaClient({ adapter: new PrismaPg({ connectionString: dbUrl }), datasourceUrl: dbUrl })
+    : new PrismaClient({ datasourceUrl: dbUrl });
 
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
