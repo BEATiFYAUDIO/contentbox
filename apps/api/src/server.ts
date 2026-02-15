@@ -1887,7 +1887,7 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
               participantUserId: p.participantUserId,
               role: p.role,
               bps: p.bps,
-              percent: String(p.percent),
+              percent: num(p.percent),
               acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null
             }))
           }
@@ -6911,7 +6911,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
           splitVersionId: latest.id,
           participantEmail: p.participantEmail,
           role: p.role,
-          percent: String(p.percent),
+          percent: num(p.percent),
           bps: Math.round(num(p.percent) * 100)
         }
       });
@@ -6939,7 +6939,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
     const after = validated.participants.map((p) => ({
       participantEmail: p.participantEmail,
       role: p.role,
-      percent: String(p.percent),
+      percent: num(p.percent),
       bps: Math.round(num(p.percent) * 100)
     }));
 
@@ -6955,7 +6955,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
             before: before.map((p) => ({
               participantEmail: p.participantEmail,
               role: p.role,
-              percent: String(p.percent),
+              percent: num(p.percent),
               bps: p.bps
             })),
             after
@@ -6998,7 +6998,7 @@ app.post("/content/:id/split-versions", { preHandler: requireAuth }, async (req:
             splitVersionId: sv.id,
             participantEmail: p.participantEmail,
             role: p.role,
-            percent: String(p.percent),
+            percent: num(p.percent),
             bps: (p as any).bps ?? Math.round(Number(p.percent || 0) * 100),
             payoutIdentityId: p.payoutIdentityId || null
           }
