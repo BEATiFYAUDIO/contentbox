@@ -3,6 +3,7 @@ import { defineConfig, env } from "prisma/config";
 
 const mode = String(process.env.DB_MODE || "").trim().toLowerCase();
 const schema = mode === "advanced" ? "prisma/schema.prisma" : "prisma/schema.sqlite.prisma";
+const url = env("DATABASE_URL");
 
 export default defineConfig({
   schema,
@@ -10,6 +11,6 @@ export default defineConfig({
     path: "prisma/migrations"
   },
   datasource: {
-    url: env("DATABASE_URL")
+    url
   }
 });
