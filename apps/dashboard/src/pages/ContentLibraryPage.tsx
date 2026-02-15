@@ -622,14 +622,11 @@ export default function ContentLibraryPage({
   }
 
   async function loadSales(contentId: string) {
-    setSalesLoading((m) => ({ ...m, [contentId]: true }));
     try {
       const data = await api<{ totalSats: string; recent: any[] }>(`/content/${contentId}/sales`, "GET");
       setSalesByContent((m) => ({ ...m, [contentId]: data }));
     } catch {
       setSalesByContent((m) => ({ ...m, [contentId]: null }));
-    } finally {
-      setSalesLoading((m) => ({ ...m, [contentId]: false }));
     }
   }
 

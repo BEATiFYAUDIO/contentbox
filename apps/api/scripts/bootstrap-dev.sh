@@ -74,8 +74,11 @@ normalize_content_root() {
 }
 
 set -a
-# shellcheck source=/dev/null
-. "$ENV_FILE"
+if [ -f "$ENV_FILE" ]; then
+  # Only load valid KEY=VALUE lines to avoid breaking on comments or notes.
+  # shellcheck source=/dev/null
+  source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE")
+fi
 set +a
 
 if [ -z "${DATABASE_URL:-}" ]; then
