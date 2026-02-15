@@ -1,21 +1,28 @@
 import { getToken } from "./auth";
 
+function isLocalHost(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
 function resolveApiBase(): string {
   const envBase =
     ((import.meta as any).env?.VITE_API_BASE_URL || (import.meta as any).env?.VITE_API_URL || "")
       .toString()
       .trim();
-  if (envBase) return envBase.replace(/\/$/, "");
 
   try {
     const origin = window.location.origin;
+    const hostname = window.location.hostname;
     const port = window.location.port;
-    if (port && (port === "5173" || port === "5174")) {
+    const isDevUi = port === "5173" || port === "5174";
+    if (isDevUi && isLocalHost(hostname)) {
+      // In local dev, default to local API unless user explicitly overrides.
       return "http://127.0.0.1:4000";
     }
+    if (envBase) return envBase.replace(/\/$/, "");
     return origin.replace(/\/$/, "");
   } catch {
-    return "http://127.0.0.1:4000";
+    return envBase ? envBase.replace(/\/$/, "") : "http://127.0.0.1:4000";
   }
 }
 
