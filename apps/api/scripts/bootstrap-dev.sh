@@ -101,6 +101,9 @@ else
   echo "[bootstrap] Skipping npm install (node_modules present or --no-install)"
 fi
 
+echo "[bootstrap] Prisma validate/generate..."
+(cd "$ROOT_DIR" && npx prisma validate && npx prisma generate)
+
 # Verify Postgres reachability if possible
 if command -v psql >/dev/null 2>&1; then
   DB_URL_PSQL="$(node - <<'NODE'
@@ -135,9 +138,6 @@ NODE
     echo "[bootstrap] Skipping Postgres reachability check (psql or pg not available)."
   fi
 fi
-
-echo "[bootstrap] Prisma validate/generate..."
-(cd "$ROOT_DIR" && npx prisma validate && npx prisma generate)
 
 is_local_db() {
   node - <<'NODE'
