@@ -79,13 +79,7 @@ export async function api<T>(path: string, methodOrOptions: string | ApiOptions 
   const hasBody = body !== undefined && body !== null;
   const requestBody = hasBody ? (body instanceof FormData ? body : JSON.stringify(body)) : undefined;
 
-  const normalizedPath = (() => {
-    const p = path.startsWith("/") ? path : `/${path}`;
-    if (p.startsWith("/api/") || p === "/api") return p;
-    if (p.startsWith("/public/") || p === "/public") return p;
-    if (p.startsWith("/health") || p.startsWith("/metrics")) return p;
-    return `/api${p}`;
-  })();
+  const normalizedPath = path.startsWith("/api/auth") ? path.replace(/^\/api\/auth/, "/auth") : path;
   const url = `${API_BASE}${normalizedPath}`;
   // Make the API request
   const res = await fetch(url, {
