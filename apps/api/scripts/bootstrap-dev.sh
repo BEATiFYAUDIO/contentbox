@@ -114,7 +114,7 @@ check_prisma_versions() {
   node - <<'NODE'
 const fs = require("fs");
 const path = require("path");
-const base = path.resolve(__dirname, "..");
+const base = process.cwd();
 function readVersion(p) {
   try {
     const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
