@@ -8,6 +8,10 @@ if [ -n "${SUDO_USER:-}" ]; then
 else
   REAL_HOME="$HOME"
 fi
+if [ "${EUID:-$(id -u)}" -eq 0 ] && [ -z "${SUDO_USER:-}" ]; then
+  echo "[install] Do not run install.sh as root. Re-run as a normal user." >&2
+  exit 1
+fi
 API_DIR="$ROOT_DIR/apps/api"
 DASH_DIR="$ROOT_DIR/apps/dashboard"
 
@@ -126,6 +130,9 @@ if grep -q '^VITE_API_URL=' "$DASH_ENV"; then
 else
   echo "VITE_API_URL=http://127.0.0.1:4000" >> "$DASH_ENV"
 fi
+if grep -q '^CONTENTBOX_ROOT=' "$DASH_ENV"; then
+  sed -i.bak '/^CONTENTBOX_ROOT=/d' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
+fi
 
 setup_local_postgres() {
   if ! command -v psql >/dev/null 2>&1; then
@@ -169,12 +176,16 @@ prompt_install_cloudflared() {
   local root_val
   root_val="$(grep '^CONTENTBOX_ROOT=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '"')"
   if [ -z "$root_val" ] || echo "$root_val" | grep -q "<user>"; then
-    root_val="$HOME/contentbox-data"
+    root_val="$REAL_HOME/contentbox-data"
     if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
       sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$root_val\"#" "$API_ENV" && rm -f "$API_ENV.bak"
     else
       echo "CONTENTBOX_ROOT=\"$root_val\"" >> "$API_ENV"
     fi
+  fi
+  if echo "$root_val" | grep -q "^/root/"; then
+    root_val="$REAL_HOME/contentbox-data"
+    sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$root_val\"#" "$API_ENV" && rm -f "$API_ENV.bak"
   fi
   local bin_dir="$root_val/.bin"
   local bin_name="cloudflared"

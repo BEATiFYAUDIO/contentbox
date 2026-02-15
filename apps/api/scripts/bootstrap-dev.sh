@@ -107,6 +107,35 @@ else
   echo "[bootstrap] Skipping npm install (node_modules present or --no-install)"
 fi
 
+check_prisma_versions() {
+  node - <<'NODE'
+const fs = require("fs");
+const path = require("path");
+const base = path.resolve(__dirname, "..");
+function readVersion(p) {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
+    return pkg.version || "";
+  } catch {
+    return "";
+  }
+}
+const prisma = readVersion(path.join(base, "node_modules", "prisma", "package.json"));
+const client = readVersion(path.join(base, "node_modules", "@prisma", "client", "package.json"));
+if (!prisma || !client) {
+  console.error("[bootstrap] Prisma packages missing. Run npm install.");
+  process.exit(1);
+}
+if (prisma !== client) {
+  console.error(`[bootstrap] Prisma version mismatch: prisma ${prisma} vs @prisma/client ${client}`);
+  process.exit(1);
+}
+NODE
+}
+
+echo "[bootstrap] Checking Prisma versions..."
+check_prisma_versions
+
 SCHEMA_PATH="prisma/schema.sqlite.prisma"
 if [ "$DB_MODE" = "advanced" ]; then
   SCHEMA_PATH="prisma/schema.prisma"
