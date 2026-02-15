@@ -2,6 +2,12 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REAL_USER="${SUDO_USER:-$(whoami)}"
+if [ -n "${SUDO_USER:-}" ]; then
+  REAL_HOME="$(getent passwd "$SUDO_USER" | cut -d: -f6)"
+else
+  REAL_HOME="$HOME"
+fi
 API_DIR="$ROOT_DIR/apps/api"
 DASH_DIR="$ROOT_DIR/apps/dashboard"
 
@@ -79,12 +85,16 @@ ensure_contentbox_root() {
   local root_val
   root_val="$(grep '^CONTENTBOX_ROOT=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '\"')"
   if [ -z "$root_val" ] || echo "$root_val" | grep -q "<user>"; then
-    root_val="$HOME/contentbox-data"
+    root_val="$REAL_HOME/contentbox-data"
     if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
       sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$root_val\"#" "$API_ENV" && rm -f "$API_ENV.bak"
     else
       echo "CONTENTBOX_ROOT=\"$root_val\"" >> "$API_ENV"
     fi
+  fi
+  if echo "$root_val" | grep -q "^/root/"; then
+    root_val="$REAL_HOME/contentbox-data"
+    sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$root_val\"#" "$API_ENV" && rm -f "$API_ENV.bak"
   fi
   echo "$root_val"
 }

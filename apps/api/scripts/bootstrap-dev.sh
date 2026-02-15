@@ -133,7 +133,7 @@ NODE
   if ! psql "$DB_URL_PSQL" -c "select 1" >/dev/null 2>&1; then
     fail "Postgres unreachable using DATABASE_URL"
   fi
-else
+elif [ "$DB_MODE" = "advanced" ]; then
   if [ -d "$ROOT_DIR/node_modules/pg" ]; then
     echo "[bootstrap] Checking Postgres via node+pg..."
     (cd "$ROOT_DIR" && node - <<'NODE')
@@ -148,6 +148,8 @@ NODE
   else
     echo "[bootstrap] Skipping Postgres reachability check (psql or pg not available)."
   fi
+else
+  echo "[bootstrap] Skipping Postgres check (basic mode)."
 fi
 
 is_local_db() {
