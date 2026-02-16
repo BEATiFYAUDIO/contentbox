@@ -1288,7 +1288,6 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
   appPublic.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
   appPublic.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
-  appPublic.get("/content/:manifestHash/:fileId", handlePublicContentFile);
 }
 
 function handlePublicPing(_req: any, reply: any) {
@@ -6500,7 +6499,7 @@ app.get("/content/:id/preview-file", { preHandler: optionalAuth }, async (req: a
   return reply.send(fsSync.createReadStream(absPath));
 });
 
-async function handlePublicContentFile(req: any, reply: any) {
+app.get("/content/:manifestHash/:fileId", async (req: any, reply: any) => {
   const manifestHash = asString((req.params as any).manifestHash || "").trim().toLowerCase();
   const fileId = asString((req.params as any).fileId || "").trim();
   if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
@@ -6655,9 +6654,7 @@ async function handlePublicContentFile(req: any, reply: any) {
     return reply.send(fsSync.createReadStream(absPath, { start: 0, end: Math.max(0, effectiveSize - 1) }));
   }
   return reply.send(fsSync.createReadStream(absPath));
-}
-
-app.get("/content/:manifestHash/:fileId", handlePublicContentFile);
+});
 
 // DJ grants OG read-only review access to a derivative submission.
 app.post("/content-links/:linkId/grant-review", { preHandler: requireAuth }, async (req: any, reply: any) => {
