@@ -20,7 +20,7 @@ if ! bash "$ROOT_DIR/install.sh" >/tmp/contentbox-install.log 2>&1; then
 fi
 
 echo "[smoke] Starting API..."
-(cd "$API_DIR" && npm run dev) >/tmp/contentbox-api.log 2>&1 &
+(cd "$API_DIR" && IDENTITY_LEVEL_OVERRIDE=BASIC npm run dev) >/tmp/contentbox-api.log 2>&1 &
 API_PID=$!
 
 cleanup() {
@@ -48,5 +48,12 @@ if [ "$status" = "404" ] || [ -z "$status" ]; then
   fail "/auth/login route not found"
 fi
 pass "/auth/login reachable (status $status)"
+
+echo "[smoke] Running identity gating test (basic)..."
+if ! (cd "$API_DIR" && EXPECT_IDENTITY_LEVEL=BASIC npm run test:identity-gating) >/tmp/contentbox-identity-gating.log 2>&1; then
+  cat /tmp/contentbox-identity-gating.log >&2
+  fail "identity gating test failed"
+fi
+pass "identity gating test ok"
 
 pass "Smoke test completed"

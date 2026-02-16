@@ -12,6 +12,7 @@ function getNodePublicOrigin(): string {
 type InvitePageProps = {
   token?: string;
   onAccepted: (contentId?: string | null) => void;
+  identityLevel?: string | null;
 };
 
 type InviteGetResponse = {
@@ -58,7 +59,8 @@ function num(x: any) {
   return Number.isFinite(n) ? n : 0;
 }
 
-export default function InvitePage({ token, onAccepted }: InvitePageProps) {
+export default function InvitePage({ token, onAccepted, identityLevel }: InvitePageProps) {
+  const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<InviteGetResponse | null>(null);
@@ -228,6 +230,12 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
   }
 
   useEffect(() => {
+    if (isBasicIdentity) {
+      setLoading(false);
+      setData(null);
+      setMsg(null);
+      return;
+    }
     load();
     // attempt to load current user (if signed in on this node)
     (async () => {
@@ -238,10 +246,11 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setMe(null);
       }
     })();
-  }, [tokenToUse, remoteOriginFromLocation]);
+  }, [tokenToUse, remoteOriginFromLocation, isBasicIdentity]);
 
   // If this is a remote invite and the user is signed in locally, ingest it so it shows under Received invites.
   useEffect(() => {
+    if (isBasicIdentity) return;
     if (!me || !remoteOriginFromLocation || !tokenToUse || !data) return;
     (async () => {
       try {
@@ -259,10 +268,11 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setRemoteReceivedInvites(listRemote || []);
       } catch {}
     })();
-  }, [me, data, remoteOriginFromLocation, tokenToUse]);
+  }, [me, data, remoteOriginFromLocation, tokenToUse, isBasicIdentity]);
 
   // Load outgoing invites for the signed-in owner (no token values are returned)
   useEffect(() => {
+    if (isBasicIdentity) return;
     if (!me) {
       setMyInvites(null);
       setReceivedInvites(null);
@@ -307,9 +317,10 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setHistoryLoading(false);
       }
     })();
-  }, [me]);
+  }, [me, isBasicIdentity]);
 
   useEffect(() => {
+    if (isBasicIdentity) return;
     if (!me) {
       setContentList([]);
       return;
@@ -322,9 +333,10 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setContentList([]);
       }
     })();
-  }, [me]);
+  }, [me, isBasicIdentity]);
 
   useEffect(() => {
+    if (isBasicIdentity) return;
     if (!selectedContentId) {
       setSelectedSplitId(null);
       return;
@@ -337,7 +349,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setSelectedSplitId(null);
       }
     })();
-  }, [selectedContentId]);
+  }, [selectedContentId, isBasicIdentity]);
 
   // manual token loader removed — invite tab (owner view) now shows only invites lists; use direct invite URL for detail view.
 
@@ -469,6 +481,12 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
 
   return (
     <div className="space-y-4">
+      {isBasicIdentity ? (
+        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
+          Split invites require a persistent identity (named tunnel).
+        </div>
+      ) : null}
+      {!isBasicIdentity ? (
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Invite</div>
         {tokenToUse ? (
@@ -818,6 +836,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
 
         {msg && <div className="mt-4 text-sm text-neutral-300">{msg}</div>}
       </div>
+      ) : null}
     </div>
   );
 }

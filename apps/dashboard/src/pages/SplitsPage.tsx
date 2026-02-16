@@ -33,8 +33,9 @@ function formatDateLabel(value?: string | null) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
-export default function SplitsPage(props: { onEditContent?: (id: string) => void }) {
-  const { onEditContent } = props;
+export default function SplitsPage(props: { onEditContent?: (id: string) => void; identityLevel?: string | null }) {
+  const { onEditContent, identityLevel } = props;
+  const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
 
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -54,10 +55,16 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
   }
 
   React.useEffect(() => {
+    if (isBasicIdentity) {
+      setContentList([]);
+      setSplitSummaryByContent({});
+      return;
+    }
     loadContentList().catch(() => {});
-  }, []);
+  }, [isBasicIdentity]);
 
   React.useEffect(() => {
+    if (isBasicIdentity) return;
     if (!contentList.length) return;
     for (const c of contentList) {
       if (splitSummaryByContent[c.id] === undefined) {
@@ -65,10 +72,16 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentList]);
+  }, [contentList, isBasicIdentity]);
 
   return (
     <div className="space-y-4">
+      {isBasicIdentity ? (
+        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
+          Splits require a persistent identity (named tunnel).
+        </div>
+      ) : null}
+      {!isBasicIdentity ? (
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -110,6 +123,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
       </div>
 
       <AuditPanel scopeType="split" title="Audit" exportName="split-audit.json" />
+      ) : null}
     </div>
   );
 }

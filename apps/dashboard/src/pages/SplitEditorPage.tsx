@@ -123,8 +123,10 @@ export default function SplitEditorPage(props: {
   contentId: string | null;
   onGoToPayouts?: () => void;
   onNotFound?: () => void;
+  identityLevel?: string | null;
 }) {
-  const { contentId, onGoToPayouts, onNotFound } = props;
+  const { contentId, onGoToPayouts, onNotFound, identityLevel } = props;
+  const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
 
   const [content, setContent] = React.useState<ContentItem | null>(null);
   const [versions, setVersions] = React.useState<SplitVersion[]>([]);
@@ -257,12 +259,27 @@ export default function SplitEditorPage(props: {
   }
 
   React.useEffect(() => {
+    if (isBasicIdentity) {
+      setPaymentsReadiness(null);
+      return;
+    }
     api<{ lightning: { ready: boolean; reason?: string | null } }>("/api/payments/readiness", "GET")
       .then((r) => setPaymentsReadiness(r))
       .catch(() => setPaymentsReadiness(null));
-  }, []);
+  }, [isBasicIdentity]);
 
   React.useEffect(() => {
+    if (isBasicIdentity) {
+      setContent(null);
+      setVersions([]);
+      setSelectedVersionId(null);
+      setRows([]);
+      setProofByVersionId({});
+      setPurchase(null);
+      setPayMsg(null);
+      setUpstreamInfo(null);
+      return;
+    }
     if (!contentId) {
       setContent(null);
       setVersions([]);
@@ -307,9 +324,9 @@ export default function SplitEditorPage(props: {
         setUpstreamInfo(null);
         setUpstreamError(e?.message || "Failed to load parent link.");
         setUpstreamMultiParent(Boolean(e?.message && /multiple parent/i.test(e.message)));
-      });
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentId]);
+  }, [contentId, isBasicIdentity]);
 
   React.useEffect(() => {
     if (!contentId || !selectedVersion) return;
@@ -457,6 +474,20 @@ export default function SplitEditorPage(props: {
 
   const canEdit = content?.canEdit !== false;
   const viewOnly = !canEdit || !latestIsEditable || (selectedVersionId && selectedVersionId !== latest?.id);
+
+  if (isBasicIdentity) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
+          Split editing requires a persistent identity (named tunnel).
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
+          <div className="text-lg font-semibold">Splits editor</div>
+          <div className="text-sm text-neutral-400 mt-1">Connect a persistent identity to edit splits.</div>
+        </div>
+      </div>
+    );
+  }
 
   if (!contentId) {
     return (

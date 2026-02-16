@@ -4,6 +4,7 @@ import { getToken } from "../lib/auth";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
+import { type IdentityLevel } from "../lib/identity";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
 
@@ -81,6 +82,11 @@ type ContentCredit = {
   userId?: string | null;
   sortOrder?: number;
   createdAt?: string;
+};
+
+type ContentLibraryPageProps = {
+  identityLevel?: IdentityLevel;
+  onOpenSplits?: (contentId: string) => void;
 };
 
 type ParentLinkInfo = {
@@ -208,11 +214,14 @@ async function copyText(text: string) {
   } catch {}
 }
 
-export default function ContentLibraryPage({
-  onOpenSplits
-}: {
-  onOpenSplits?: (contentId: string) => void;
-}) {
+export default function ContentLibraryPage({ onOpenSplits, identityLevel }: ContentLibraryPageProps) {
+  const isBasicIdentity = identityLevel === "BASIC";
+
+  React.useEffect(() => {
+    if (isBasicIdentity && showClearance) {
+      setShowClearance(false);
+    }
+  }, [isBasicIdentity, showClearance]);
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -599,6 +608,10 @@ export default function ContentLibraryPage({
   }
 
   async function loadLatestSplit(contentId: string) {
+    if (isBasicIdentity) {
+      setSplitByContent((m) => ({ ...m, [contentId]: null }));
+      return;
+    }
     setSplitLoading((m) => ({ ...m, [contentId]: true }));
     try {
       // server returns the latest SplitVersion (with scalar fields included by default)
@@ -638,6 +651,13 @@ export default function ContentLibraryPage({
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
     setPublishMsg((m) => ({ ...m, [contentId]: "" }));
     try {
+      if (isBasicIdentity) {
+        await api(`/api/content/${contentId}/manifest`, "POST", {});
+        await api(`/api/content/${contentId}/publish`, "POST", {});
+        await load(false);
+        setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
+        return;
+      }
       const versions = await api<any[]>(`/content/${contentId}/split-versions`, "GET");
       const latest = versions?.[0] || null;
       if (!latest || latest.status !== "draft") {
@@ -722,6 +742,7 @@ export default function ContentLibraryPage({
   }
 
   async function loadDerivativeAuth(contentId: string) {
+    if (isBasicIdentity) return;
     try {
       const res = await api<{ status: string }>(`/api/content/${contentId}/derivative-authorization`, "GET");
       setDerivativeAuthByContent((m) => ({ ...m, [contentId]: res?.status || "NONE" }));
@@ -731,6 +752,7 @@ export default function ContentLibraryPage({
   }
 
   async function loadDerivativesForParent(contentId: string) {
+    if (isBasicIdentity) return;
     setDerivativesLoading((m) => ({ ...m, [contentId]: true }));
     try {
       const res = await api<any[]>(`/api/content/${contentId}/derivatives`, "GET");
@@ -774,6 +796,7 @@ export default function ContentLibraryPage({
   }
 
   async function loadDerivativePreview(childContentId: string) {
+    if (isBasicIdentity) return;
     setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
     setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
     try {
@@ -800,6 +823,7 @@ export default function ContentLibraryPage({
   }
 
   async function loadApprovals(scope: "pending" | "voted" | "cleared" = clearanceScope) {
+    if (isBasicIdentity) return;
     setApprovalsLoading(true);
     try {
       const data = await api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET");
@@ -814,6 +838,7 @@ export default function ContentLibraryPage({
   }
 
   async function loadPendingClearanceCount() {
+    if (isBasicIdentity) return;
     try {
       const data = await api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET");
       setPendingClearanceCount(Array.isArray(data) ? data.length : 0);
@@ -909,6 +934,10 @@ export default function ContentLibraryPage({
   }
 
   async function requestDerivativeFromId() {
+    if (isBasicIdentity) {
+      setRequestMsg("Requires persistent identity (named tunnel).");
+      return;
+    }
     const parentId = requestParentId.trim();
     const title = requestTitle.trim();
     const type = (requestType || "remix").trim();
@@ -1180,73 +1209,79 @@ export default function ContentLibraryPage({
         <div className="text-xs text-neutral-500">Upload sets the master file and updates manifest.json.primaryFile automatically.</div>
       </form>
 
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
-        <div className="font-medium">Create derivative (from OG content ID)</div>
-        <div className="text-xs text-neutral-500">
-          Use this if the original isn’t publicly visible. You’ll create a private derivative, then request clearance from its page.
-        </div>
+      {!isBasicIdentity ? (
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
+          <div className="font-medium">Create derivative (from OG content ID)</div>
+          <div className="text-xs text-neutral-500">
+            Use this if the original isn’t publicly visible. You’ll create a private derivative, then request clearance from its page.
+          </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="md:col-span-2">
-            <label className="block text-sm mb-1 text-neutral-300">Original content ID</label>
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="md:col-span-2">
+              <label className="block text-sm mb-1 text-neutral-300">Original content ID</label>
+              <input
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={requestParentId}
+                onChange={(e) => setRequestParentId(e.target.value)}
+                placeholder="e.g. cml7..."
+              />
+            </div>
+            <div>
+              <label className="block text-sm mb-1 text-neutral-300">Type</label>
+              <select
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={requestType}
+                onChange={(e) => setRequestType(e.target.value as ContentType)}
+              >
+                <option value="remix">Remix</option>
+                <option value="mashup">Mashup</option>
+                <option value="derivative">Derivative</option>
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm mb-1 text-neutral-300">Derivative title</label>
             <input
               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-              value={requestParentId}
-              onChange={(e) => setRequestParentId(e.target.value)}
-              placeholder="e.g. cml7..."
+              value={requestTitle}
+              onChange={(e) => setRequestTitle(e.target.value)}
+              placeholder="e.g. OG Track (DJ Remix)"
             />
           </div>
-          <div>
-            <label className="block text-sm mb-1 text-neutral-300">Type</label>
-            <select
-              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-              value={requestType}
-              onChange={(e) => setRequestType(e.target.value as ContentType)}
-            >
-              <option value="remix">Remix</option>
-              <option value="mashup">Mashup</option>
-              <option value="derivative">Derivative</option>
-            </select>
-          </div>
+
+          <button
+            type="button"
+            className="rounded-lg border border-neutral-800 px-4 py-2 hover:bg-neutral-900"
+            onClick={requestDerivativeFromId}
+          >
+            Create derivative
+          </button>
+
+          {requestMsg ? <div className="text-xs text-neutral-400">{requestMsg}</div> : null}
+          {requestLinks?.length ? (
+            <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
+              <div className="text-neutral-500">Clearance links to share:</div>
+              {requestLinks.map((l, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <span className="truncate">{l.email}</span>
+                  <button
+                    type="button"
+                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                    onClick={() => navigator.clipboard.writeText(l.url)}
+                  >
+                    Copy link
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
-
-        <div>
-          <label className="block text-sm mb-1 text-neutral-300">Derivative title</label>
-          <input
-            className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-            value={requestTitle}
-            onChange={(e) => setRequestTitle(e.target.value)}
-            placeholder="e.g. OG Track (DJ Remix)"
-          />
+      ) : (
+        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
+          Derivative tools require a persistent identity (named tunnel).
         </div>
-
-        <button
-          type="button"
-          className="rounded-lg border border-neutral-800 px-4 py-2 hover:bg-neutral-900"
-          onClick={requestDerivativeFromId}
-        >
-          Create derivative
-        </button>
-
-        {requestMsg ? <div className="text-xs text-neutral-400">{requestMsg}</div> : null}
-        {requestLinks?.length ? (
-          <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
-            <div className="text-neutral-500">Clearance links to share:</div>
-            {requestLinks.map((l, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <span className="truncate">{l.email}</span>
-                <button
-                  type="button"
-                  className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                  onClick={() => navigator.clipboard.writeText(l.url)}
-                >
-                  Copy link
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
+      )}
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
         <div className="flex flex-wrap items-center justify-between mb-3 gap-3">
@@ -1276,25 +1311,27 @@ export default function ContentLibraryPage({
               >
                 Trash
               </button>
-              <button
-                type="button"
-                className={`text-sm px-3 py-1 whitespace-nowrap ${showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
-                onClick={async () => {
-                  setShowTrash(false);
-                  setShowClearance(true);
-                  await loadApprovals(clearanceScope);
-                  await loadPendingClearanceCount();
-                }}
-              >
-                <span className="inline-flex items-center gap-2">
-                  Clearance
-                  {pendingClearanceCount > 0 ? (
-                    <span className="text-[10px] rounded-full border border-amber-900 bg-amber-950/40 px-2 py-0.5 text-amber-200">
-                      {pendingClearanceCount}
-                    </span>
-                  ) : null}
-                </span>
-              </button>
+              {!isBasicIdentity ? (
+                <button
+                  type="button"
+                  className={`text-sm px-3 py-1 whitespace-nowrap ${showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                  onClick={async () => {
+                    setShowTrash(false);
+                    setShowClearance(true);
+                    await loadApprovals(clearanceScope);
+                    await loadPendingClearanceCount();
+                  }}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    Clearance
+                    {pendingClearanceCount > 0 ? (
+                      <span className="text-[10px] rounded-full border border-amber-900 bg-amber-950/40 px-2 py-0.5 text-amber-200">
+                        {pendingClearanceCount}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -1560,14 +1597,16 @@ export default function ContentLibraryPage({
 
                               <UploadButton contentId={it.id} disabled={busy} />
 
-                              <button
-                                type="button"
-                                className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
-                                onClick={() => onOpenSplits?.(it.id)}
-                                disabled={busy}
-                              >
-                                Edit splits
-                              </button>
+                              {!isBasicIdentity ? (
+                                <button
+                                  type="button"
+                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                                  onClick={() => onOpenSplits?.(it.id)}
+                                  disabled={busy}
+                                >
+                                  Edit splits
+                                </button>
+                              ) : null}
 
                               <button
                                 type="button"
@@ -1871,9 +1910,13 @@ export default function ContentLibraryPage({
                                     {parentLink.upstreamBps ? `${upstreamRatePct}%` : "Set at clearance"}
                                   </span>
                                   {" "}•{" "}
-                                  <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
-                                    View routing
-                                  </a>
+                                  {!isBasicIdentity ? (
+                                    <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
+                                      View routing
+                                    </a>
+                                  ) : (
+                                    <span className="text-neutral-500">Routing requires persistent identity</span>
+                                  )}
                                 </div>
                                 <div className="mt-2 h-2 rounded-full bg-neutral-900 border border-neutral-800 overflow-hidden">
                                   {(() => {
@@ -2040,19 +2083,35 @@ export default function ContentLibraryPage({
                             {parentLink ? (
                               <div className="mt-2 text-xs text-neutral-400">
                                 Original:{" "}
-                                <a href={`/splits/${parentLink.parent?.id}`} className="text-neutral-200 underline">
-                                  {parentLink.parent?.title || "Original work"}
-                                </a>
+                                {!isBasicIdentity ? (
+                                  <a href={`/splits/${parentLink.parent?.id}`} className="text-neutral-200 underline">
+                                    {parentLink.parent?.title || "Original work"}
+                                  </a>
+                                ) : (
+                                  <span className="text-neutral-200">{parentLink.parent?.title || "Original work"}</span>
+                                )}
                                 {" "}• Upstream: {parentLink.approvedAt ? `${upstreamRatePct}%` : "Set at clearance"} • Clearance:{" "}
                                 {parentLink.requiresApproval ? (parentLink.approvedAt ? "Cleared" : "Pending clearance") : "Not required"}
                                 {" "}•{" "}
-                                <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
-                                  View routing
-                                </a>
+                                {!isBasicIdentity ? (
+                                  <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
+                                    View routing
+                                  </a>
+                                ) : (
+                                  <span className="text-neutral-500">Routing requires persistent identity</span>
+                                )}
                               </div>
                             ) : (
                               <div className="mt-2 text-xs text-amber-300">
-                                No original linked. <a href={`/splits/${it.id}`} className="underline">Link original in Splits</a>.
+                                No original linked.
+                                {!isBasicIdentity ? (
+                                  <>
+                                    {" "}
+                                    <a href={`/splits/${it.id}`} className="underline">
+                                      Link original in Splits
+                                    </a>.
+                                  </>
+                                ) : null}
                               </div>
                             )}
                             {parentLinkErrorByContent[it.id] ? (

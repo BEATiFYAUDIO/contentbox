@@ -9,7 +9,8 @@
     "prisma:generate": "prisma generate",
     "prisma:check": "prisma validate && prisma generate",
     "prisma:seed": "prisma db seed",
-    "test:storefront-gating": "API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 npx tsx src/scripts/storefront_gating_test.ts"
+    "test:storefront-gating": "API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 npx tsx src/scripts/storefront_gating_test.ts",
+    "test:identity-gating": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/identity_gating_test.ts"
   },
   "dependencies": {
     "ethers": "^6.9.0",

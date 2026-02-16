@@ -28,6 +28,7 @@ import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
+import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
@@ -665,6 +666,18 @@ function normalizePublicMode(value: string): PublicMode {
   const v = String(value || "").trim().toLowerCase();
   if (v === "off" || v === "quick" || v === "named" || v === "direct") return v;
   return "quick";
+}
+
+function requirePersistent(featureName: string) {
+  return async (_req: any, reply: any) => {
+    const level = getIdentityLevel();
+    if (level === IdentityLevel.PERSISTENT) return;
+    return reply.code(403).send({
+      error: "FEATURE_LOCKED",
+      feature: featureName,
+      message: "Requires persistent identity (named tunnel)."
+    });
+  };
 }
 
 function normalizeRemoteOrigin(raw: string): string | null {
@@ -1392,7 +1405,7 @@ app.post("/local/sign-acceptance", { preHandler: requireAuth }, async (req: any,
 });
 
 // Get audit events for a split version
-app.get("/split-versions/:id/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/split-versions/:id/audit", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = asString((req.params as any).id);
 
@@ -1422,7 +1435,7 @@ app.get("/split-versions/:id/audit", { preHandler: requireAuth }, async (req: an
 });
 
 // Alias: splits audit (same as split-versions)
-app.get("/splits/:id/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/splits/:id/audit", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = asString((req.params as any).id);
 
@@ -2809,6 +2822,10 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
   return reply.send(getPublicStatus());
 });
 
+app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(getIdentityDetail());
+});
+
 // Proxy remote invite fetch to avoid browser CORS (auth required)
 app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const token = asString((req.params as any).token);
@@ -4064,7 +4081,7 @@ app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
 });
 
 // Create derivative content (child) with parent links and draft split
-app.post("/api/content/:parentId/derivative", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const parentId = asString((req.params as any).parentId);
   const body = (req.body ?? {}) as {
@@ -4243,6 +4260,39 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   });
   if (!sv) return badRequest(reply, "Split version missing");
 
+  if (getIdentityLevel() === IdentityLevel.BASIC && sv.participants.length === 0) {
+    const owner = await prisma.user.findUnique({ where: { id: content.ownerUserId }, select: { email: true } });
+    const email = owner?.email || `${content.ownerUserId}@local`;
+    await prisma.splitParticipant.create({
+      data: {
+        splitVersionId: sv.id,
+        participantEmail: email,
+        participantUserId: content.ownerUserId,
+        role: "owner",
+        percent: 100,
+        bps: 10000
+      }
+    });
+    sv.participants = [
+      {
+        id: "auto",
+        splitVersionId: sv.id,
+        participantEmail: email,
+        participantUserId: content.ownerUserId,
+        role: "owner",
+        roleCode: "writer",
+        percent: 100,
+        bps: 10000,
+        payoutIdentityId: null,
+        payoutIdentity: null,
+        acceptedAt: null,
+        verifiedAt: null,
+        createdAt: new Date(),
+        invitations: []
+      } as any
+    ];
+  }
+
   const totalBps = sumBps(sv.participants.map((p) => ({ bps: toBps(p) })));
   if (totalBps !== 10000) return badRequest(reply, "Split bps must total 10000 to publish");
 
@@ -4268,7 +4318,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 });
 
 // Update storefront status (owner only)
-app.patch("/api/content/:id/storefront", { preHandler: requireAuth }, async (req: any, reply) => {
+app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requirePersistent("public_discovery")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const body = (req.body ?? {}) as { storefrontStatus?: string };
@@ -4328,7 +4378,7 @@ app.patch("/api/content/:id/storefront", { preHandler: requireAuth }, async (req
   return reply.send({ ok: true, storefrontStatus: updated.storefrontStatus });
 });
 
-app.get("/api/content/:id/derivative-authorization", { preHandler: requireAuth }, async (req: any, reply) => {
+app.get("/api/content/:id/derivative-authorization", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
   const contentId = asString((req.params as any).id);
   const status = await getDerivativeAuthorizationStatus(contentId);
   return reply.send(status);
@@ -4369,7 +4419,7 @@ app.get("/api/content/:id/links", { preHandler: requireAuth }, async (req: any, 
 });
 
 // List derivatives linked to a parent content item (owner only)
-app.get("/api/content/:id/derivatives", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -4586,7 +4636,7 @@ app.post("/api/content-links/:id/authorization/request", { preHandler: requireAu
   return reply.send(auth);
 });
 
-app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/api/derivative-authorizations/:id/vote", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const id = asString((req.params as any).id);
   const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number };
@@ -4660,7 +4710,7 @@ app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth },
   return reply.send(updated);
 });
 
-app.get("/api/derivatives/approvals", { preHandler: requireAuth }, async (req: any, reply) => {
+app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const scopeRaw = asString((req.query || {})?.scope || "pending").toLowerCase();
   const scope = ["pending", "voted", "cleared", "all"].includes(scopeRaw) ? scopeRaw : "pending";
@@ -4713,7 +4763,7 @@ app.get("/api/derivatives/approvals", { preHandler: requireAuth }, async (req: a
 });
 
 // TODO(legacy): remove this alias after UI migrates to /content-links/:linkId/vote (target: 2026-06).
-app.post("/api/derivatives/:childId/approve", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/api/derivatives/:childId/approve", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
   if (process.env.ENABLE_LEGACY_DERIVATIVE_APPROVE === "false") {
     return reply.code(410).send({ error: "Legacy derivative approval route disabled." });
   }
@@ -5773,6 +5823,11 @@ async function handleBuyPage(req: any, reply: any) {
 app.get("/buy/:contentId", handleBuyPage);
 
 app.get("/embed.js", async (req: any, reply) => {
+  if (getIdentityLevel() !== IdentityLevel.PERSISTENT) {
+    reply.code(403);
+    reply.type("application/javascript; charset=utf-8");
+    return reply.send("console.error('ContentBox embed requires persistent identity (named tunnel).');");
+  }
   const js = `(function(){
   const script = document.currentScript;
   const base = script ? new URL(script.src).origin : "";
@@ -6404,7 +6459,7 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
 });
 
 // Return the latest split version for a content item (used by ContentLibraryPage)
-app.get("/content/:id/splits", { preHandler: requireAuth }, async (req: any, reply) => {
+app.get("/content/:id/splits", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -7062,7 +7117,7 @@ app.post("/content/:id/open-folder", { preHandler: requireAuth }, async (req: an
 });
 
 // List split versions for a content item (latest first)
-app.get("/content/:id/split-versions", { preHandler: requireAuth }, async (req: any, reply) => {
+app.get("/content/:id/split-versions", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -7095,7 +7150,7 @@ app.get("/content/:id/split-versions", { preHandler: requireAuth }, async (req: 
 });
 
 // Update participants for the latest draft split for a content item
-app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/content/:id/splits", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -7185,7 +7240,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
 });
 
 // Create a new split version (copies participants from latest)
-app.post("/content/:id/split-versions", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/content/:id/split-versions", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -7731,7 +7786,7 @@ async function settlePaymentIntent(paymentIntentId: string) {
 }
 
 // Lock a split version (owner only)
-app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/split-versions/:id/lock", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = asString((req.params as any).id);
 
@@ -8713,7 +8768,7 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
 });
 
 // Lock a split version by content + version number (owner only)
-app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/content/:id/splits/:version/lock", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const versionParam = asString((req.params as any).version);
@@ -8802,7 +8857,7 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
 });
 
 // Fetch proof.json for a split version (owner only)
-app.get("/content/:id/splits/:version/proof", { preHandler: requireAuth }, async (req: any, reply) => {
+app.get("/content/:id/splits/:version/proof", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const versionParam = asString((req.params as any).version);
@@ -8829,7 +8884,7 @@ app.get("/content/:id/splits/:version/proof", { preHandler: requireAuth }, async
 /**
  * INVITE SYSTEM
  */
-app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = (req.params as any).id as string;
 

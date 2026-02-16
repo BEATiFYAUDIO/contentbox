@@ -57,7 +57,9 @@ type RemoteRoyaltyRow = {
   remoteNodeUrl?: string | null;
 };
 
-export default function SplitParticipationsPage() {
+export default function SplitParticipationsPage(props: { identityLevel?: string | null }) {
+  const isBasicIdentity = String(props.identityLevel || "").toUpperCase() === "BASIC";
+
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);
   const [remoteRoyalties, setRemoteRoyalties] = useState<RemoteRoyaltyRow[]>([]);
@@ -67,6 +69,14 @@ export default function SplitParticipationsPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
 
   useEffect(() => {
+    if (isBasicIdentity) {
+      setLoading(false);
+      setWorks([]);
+      setUpstream([]);
+      setRemoteRoyalties([]);
+      setHistoryItems([]);
+      return;
+    }
     (async () => {
       try {
         setLoading(true);
@@ -94,14 +104,25 @@ export default function SplitParticipationsPage() {
 
   return (
     <div className="space-y-4">
+      {isBasicIdentity ? (
+        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
+          Royalties require a persistent identity (named tunnel).
+        </div>
+      ) : null}
       <div>
         <div className="text-lg font-semibold">My Royalties</div>
         <div className="text-sm text-neutral-400 mt-1">Entitlements from content splits (owned or invited).</div>
       </div>
 
+      {isBasicIdentity ? (
+        <div className="text-sm text-neutral-400">Connect a persistent identity to view royalties.</div>
+      ) : null}
+
       {loading ? <div className="text-sm text-neutral-400">Loading…</div> : null}
       {error ? <div className="text-sm text-amber-300">{error}</div> : null}
 
+      {!isBasicIdentity ? (
+        <>
       {!loading && works.length === 0 ? (
         <div className="text-sm text-neutral-500">No works yet.</div>
       ) : null}
@@ -247,6 +268,8 @@ export default function SplitParticipationsPage() {
         title="Audit"
         exportName="royalty-audit.json"
       />
+        </>
+      ) : null}
     </div>
   );
 }

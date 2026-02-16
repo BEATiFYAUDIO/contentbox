@@ -19,6 +19,7 @@ import DiagnosticsPage from "./pages/DiagnosticsPage";
 import FinancePage, { type FinanceTab } from "./pages/FinancePage";
 import { api } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
+import { fetchIdentityDetail, type IdentityDetail } from "./lib/identity";
 import logo from "./assets/InShot_20260201_011901479.png";
 import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
 import AuditPanel from "./components/AuditPanel";
@@ -172,6 +173,7 @@ export default function App() {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
+  const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(null);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -187,6 +189,17 @@ export default function App() {
       window.localStorage.setItem("contentbox.showAdvancedNav", showAdvancedNav ? "1" : "0");
     } catch {}
   }, [showAdvancedNav]);
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setIdentityDetail(null);
+      return;
+    }
+    fetchIdentityDetail()
+      .then((d) => setIdentityDetail(d))
+      .catch(() => setIdentityDetail(null));
+  }, [me?.id]);
 
   // Extract the invite token from the URL when the component mounts
   useEffect(() => {
@@ -279,6 +292,9 @@ export default function App() {
     return <AuthPage onAuthed={loadMe} />;
   }
 
+  const identityLevel = identityDetail?.level || "BASIC";
+  const isBasicIdentity = identityLevel === "BASIC";
+
   // Navigation options for the sidebar
   const accessNav = [
     { key: "store" as const, label: "Store (Link)", hint: "Buy from a link" },
@@ -292,9 +308,9 @@ export default function App() {
   ];
 
   const royaltiesNav = [
-    { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in" },
-    { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history" },
-    { key: "invite" as const, label: "Split Invites", hint: "Split requests" }
+    { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in", advanced: true },
+    { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history", advanced: true },
+    { key: "invite" as const, label: "Split Invites", hint: "Split requests", advanced: true }
   ];
 
   const identityNav = [
@@ -394,7 +410,7 @@ export default function App() {
             <div className="mt-4 border-t border-neutral-900 pt-4">
               <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
               <div className="space-y-1">
-              {royaltiesNav.map((item) => {
+              {royaltiesNav.filter((item: any) => !isBasicIdentity || !item.advanced).map((item: any) => {
                 const active = item.key === page;
                 return (
                   <button
@@ -505,12 +521,18 @@ export default function App() {
           <div className="text-xl font-semibold">{pageTitle}</div>
         </header>
 
+        {isBasicIdentity ? (
+          <div className="mx-6 mt-4 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
+            Basic identity mode. Advanced features (splits, derivatives, embeds, discovery) require a persistent identity (named tunnel).
+          </div>
+        ) : null}
+
         <main className="p-6 max-w-5xl">
           {page === "library" && <LibraryPage />}
 
           {page === "store" && <StorePage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
 
-          {page === "participations" && <SplitParticipationsPage />}
+          {page === "participations" && <SplitParticipationsPage identityLevel={identityLevel} />}
 
           {page === "royalties-terms" && <RoyaltiesTermsPage contentId={selectedContentId} />}
 
@@ -542,13 +564,14 @@ export default function App() {
 
           {/* Render InvitePage if the page is 'invite' */}
           {page === "invite" && (
-            <InvitePage token={inviteToken ?? undefined} onAccepted={onAccepted} />
+            <InvitePage token={inviteToken ?? undefined} onAccepted={onAccepted} identityLevel={identityLevel} />
           )}
 
           {page === "payouts" && <PayoutRailsPage />}
 
           {page === "content" && (
             <ContentLibraryPage
+              identityLevel={identityLevel}
               onOpenSplits={(contentId) => {
                 window.history.pushState({}, "", `/splits/${contentId}`);
                 setSelectedContentId(contentId);
@@ -559,6 +582,7 @@ export default function App() {
 
           {page === "splits" && (
             <SplitsPage
+              identityLevel={identityLevel}
               onEditContent={(id) => {
                 window.history.pushState({}, "", `/splits/${id}`);
                 setSelectedContentId(id);
@@ -569,6 +593,7 @@ export default function App() {
 
           {page === "split-editor" && (
             <SplitEditorPage
+              identityLevel={identityLevel}
               contentId={selectedContentId}
               onGoToPayouts={() => setPage("payouts")}
               onNotFound={() => {
