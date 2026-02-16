@@ -8890,7 +8890,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
     document.getElementById("acceptBtn").onclick = async () => {
       document.getElementById("status").textContent = "Accepting…";
       try {
-        let authHeader: Record<string, string> = {};
+        let authHeader = {};
         try {
           const t = localStorage.getItem("contentbox.token");
           if (t) authHeader = { Authorization: "Bearer " + t };
