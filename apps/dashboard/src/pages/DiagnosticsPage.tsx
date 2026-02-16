@@ -1,5 +1,6 @@
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { getToken } from "../lib/auth";
 
 type HealthPath = "/health" | "/api/health" | "/public/health";
 const DEFAULT_HEALTH_PATH: HealthPath = "/health";
@@ -92,6 +93,12 @@ type ProbeRow = {
   label: string;
 };
 
+type PublicStatus = {
+  publicOrigin?: string | null;
+  state?: string | null;
+  lastCheckedAt?: number | null;
+};
+
 function getApiBase(): string {
   const env = (import.meta as any).env || {};
   const v = String(env.VITE_API_URL || "").trim();
@@ -149,6 +156,11 @@ export default function DiagnosticsPage() {
   const [rows, setRows] = useState<ProbeRow[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [publicStatus, setPublicStatus] = useState<PublicStatus | null>(null);
+  const [tunnelHealth, setTunnelHealth] = useState<{ ok: boolean; ts?: string; status?: number } | null>(null);
+  const [tunnelHealthErr, setTunnelHealthErr] = useState<string | null>(null);
+  const [tunnelHealthBusy, setTunnelHealthBusy] = useState(false);
+  const token = getToken();
 
   const healthPath = DEFAULT_HEALTH_PATH;
   const useProxy = shouldProxyHealthProbe() || isLocalApiBase(apiBase);
@@ -205,6 +217,51 @@ export default function DiagnosticsPage() {
     setRunning(false);
   }
 
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/public/status`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json();
+        if (!cancelled) setPublicStatus(json || null);
+      } catch {
+        if (!cancelled) setPublicStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token]);
+
+  const checkTunnelHealth = async () => {
+    const origin = String(publicStatus?.publicOrigin || "").trim();
+    if (!origin) {
+      setTunnelHealth(null);
+      setTunnelHealthErr("No public origin available.");
+      return;
+    }
+    const url = `${origin.replace(/\/$/, "")}/public/ping`;
+    setTunnelHealthBusy(true);
+    setTunnelHealthErr(null);
+    try {
+      const res = await fetch(url, { method: "GET" });
+      const json = await res.json().catch(() => ({}));
+      setTunnelHealth({ ok: Boolean(json?.ok), ts: json?.ts, status: res.status });
+      if (!res.ok) {
+        setTunnelHealthErr(`HTTP ${res.status}`);
+      }
+    } catch (e: any) {
+      setTunnelHealth(null);
+      setTunnelHealthErr(e?.message || String(e));
+    } finally {
+      setTunnelHealthBusy(false);
+    }
+  };
+
   function copyReport() {
     const lines = rows.map((row) => {
       const status = fmtStatus(row);
@@ -228,6 +285,37 @@ export default function DiagnosticsPage() {
       <p style={{ opacity: 0.7, marginBottom: 12 }}>
         Run connectivity tests against your public hosts. This never includes secrets.
       </p>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Public tunnel health</div>
+        {!token && <div style={{ opacity: 0.7 }}>Sign in to check tunnel health.</div>}
+        {token && (
+          <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+            <div><b>Status</b>: {publicStatus?.state || "—"}</div>
+            <div><b>Public origin</b>: {publicStatus?.publicOrigin || "—"}</div>
+            <div>
+              <b>Last check</b>:{" "}
+              {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
+            </div>
+            <div>
+              <b>Public ping</b>:{" "}
+              {tunnelHealth ? (tunnelHealth.ok ? "ok" : "failed") : "—"}
+              {tunnelHealth?.status ? ` (HTTP ${tunnelHealth.status})` : ""}
+              {tunnelHealth?.ts ? ` • ${tunnelHealth.ts}` : ""}
+              {tunnelHealthErr ? ` • ${tunnelHealthErr}` : ""}
+            </div>
+            <div>
+              <button
+                onClick={checkTunnelHealth}
+                disabled={tunnelHealthBusy}
+                className={buttonClass}
+              >
+                {tunnelHealthBusy ? "Checking…" : "Check tunnel health"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Test hosts</div>

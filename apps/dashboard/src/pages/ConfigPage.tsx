@@ -85,9 +85,6 @@ export default function ConfigPage() {
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
   const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
-  const [tunnelHealth, setTunnelHealth] = useState<{ ok: boolean; ts?: string; status?: number } | null>(null);
-  const [tunnelHealthErr, setTunnelHealthErr] = useState<string | null>(null);
-  const [tunnelHealthBusy, setTunnelHealthBusy] = useState(false);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -197,31 +194,6 @@ export default function ConfigPage() {
     setApiBaseOverride("");
     writeStoredValue(STORAGE_API_BASE, "");
     window.location.reload();
-  };
-
-  const checkTunnelHealth = async () => {
-    const origin = String(publicStatus?.publicOrigin || "").trim();
-    if (!origin) {
-      setTunnelHealth(null);
-      setTunnelHealthErr("No public origin available.");
-      return;
-    }
-    const url = `${origin.replace(/\/$/, "")}/public/ping`;
-    setTunnelHealthBusy(true);
-    setTunnelHealthErr(null);
-    try {
-      const res = await fetch(url, { method: "GET" });
-      const json = await res.json().catch(() => ({}));
-      setTunnelHealth({ ok: Boolean(json?.ok), ts: json?.ts, status: res.status });
-      if (!res.ok) {
-        setTunnelHealthErr(`HTTP ${res.status}`);
-      }
-    } catch (e: any) {
-      setTunnelHealth(null);
-      setTunnelHealthErr(e?.message || String(e));
-    } finally {
-      setTunnelHealthBusy(false);
-    }
   };
 
   const saveTunnelConfig = async () => {
@@ -586,22 +558,6 @@ export default function ConfigPage() {
                 {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
               </div>
             ) : null}
-            <div style={{ marginTop: 6 }}>
-              <b>Public ping</b>:{" "}
-              {tunnelHealth ? (tunnelHealth.ok ? "ok" : "failed") : "—"}
-              {tunnelHealth?.status ? ` (HTTP ${tunnelHealth.status})` : ""}
-              {tunnelHealth?.ts ? ` • ${tunnelHealth.ts}` : ""}
-              {tunnelHealthErr ? ` • ${tunnelHealthErr}` : ""}
-            </div>
-            <div>
-              <button
-                onClick={checkTunnelHealth}
-                style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
-                disabled={tunnelHealthBusy}
-              >
-                {tunnelHealthBusy ? "Checking…" : "Check tunnel health"}
-              </button>
-            </div>
           </div>
         )}
       </div>
