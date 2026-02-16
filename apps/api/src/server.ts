@@ -3945,7 +3945,7 @@ app.post("/api/content/:parentId/derivative", { preHandler: requireAuth }, async
             participantUserId: sp.userId || null,
             role: asString(sp.role).trim() || "writer",
             roleCode: "writer" as any,
-            percent: String(percent),
+            percent,
             bps
           }
         });
@@ -6907,7 +6907,7 @@ app.post("/content/:id/splits", { preHandler: requireAuth }, async (req: any, re
           splitVersionId: latest.id,
           participantEmail: p.participantEmail,
           role: p.role,
-          percent: String(p.percent),
+          percent: num(p.percent),
           bps: Math.round(num(p.percent) * 100)
         }
       });
@@ -6994,7 +6994,7 @@ app.post("/content/:id/split-versions", { preHandler: requireAuth }, async (req:
             splitVersionId: sv.id,
             participantEmail: p.participantEmail,
             role: p.role,
-            percent: String(p.percent),
+            percent: num(p.percent),
             bps: (p as any).bps ?? Math.round(Number(p.percent || 0) * 100),
             payoutIdentityId: p.payoutIdentityId || null
           }
