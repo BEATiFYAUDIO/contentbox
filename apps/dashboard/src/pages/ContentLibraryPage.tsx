@@ -155,6 +155,11 @@ function formatBytes(n: any) {
   return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+function num(x: any) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function shortSha(sha?: string | null, take: number = 12) {
   const s = (sha || "").trim();
   if (!s) return "";
@@ -633,6 +638,18 @@ export default function ContentLibraryPage({
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
     setPublishMsg((m) => ({ ...m, [contentId]: "" }));
     try {
+      const versions = await api<any[]>(`/content/${contentId}/split-versions`, "GET");
+      const latest = versions?.[0] || null;
+      if (!latest || latest.status !== "draft") {
+        setPublishMsg((m) => ({ ...m, [contentId]: "No editable split found. Open splits and save your 100% split." }));
+        return;
+      }
+      const participants = Array.isArray(latest.participants) ? latest.participants : [];
+      const total = Math.round(participants.reduce((s: number, p: any) => s + num(p.percent), 0) * 1000) / 1000;
+      if (total !== 100) {
+        setPublishMsg((m) => ({ ...m, [contentId]: `Split must total 100%. Current total=${total}.` }));
+        return;
+      }
       await api(`/api/content/${contentId}/manifest`, "POST", {});
       await api(`/api/content/${contentId}/publish`, "POST", {});
       await load(false);
@@ -2338,6 +2355,7 @@ export default function ContentLibraryPage({
                                     {!canSharePublic ? (
                                       <div className="text-xs text-neutral-500">Must publish before starting public link.</div>
                                     ) : null}
+                                    <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
                                     <button
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
