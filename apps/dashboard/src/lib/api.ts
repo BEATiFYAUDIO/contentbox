@@ -28,6 +28,7 @@ function resolveApiBase(): string {
 
 const STORAGE_API_BASE = "contentbox.apiBase";
 const STORAGE_AUTO_FIX = "contentbox.apiBase.autoFixed";
+const STORAGE_SHOW_ADVANCED = "contentbox.showAdvancedNav";
 
 function readStoredApiBase(): string {
   if (typeof window === "undefined") return "";
@@ -35,6 +36,15 @@ function readStoredApiBase(): string {
     return window.localStorage.getItem(STORAGE_API_BASE) || "";
   } catch {
     return "";
+  }
+}
+
+function isAdvancedEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(STORAGE_SHOW_ADVANCED) === "1";
+  } catch {
+    return false;
   }
 }
 
@@ -61,6 +71,7 @@ function shouldAutoFixApiBase(currentBase: string): boolean {
   if (typeof window === "undefined") return false;
   const uiHost = window.location.hostname || "";
   if (!isLocalHost(uiHost)) return false;
+  if (isAdvancedEnabled()) return false;
   const stored = readStoredApiBase();
   if (!stored) return false;
   try {
@@ -92,6 +103,10 @@ function normalizeBase(value: string): string {
 }
 
 const API_BASE = normalizeBase(readStoredApiBase()) || resolveApiBase();
+if (shouldAutoFixApiBase(API_BASE) && !alreadyAutoFixed()) {
+  clearStoredApiBase();
+  markAutoFix();
+}
 
 type ApiOptions = {
   method?: string;
