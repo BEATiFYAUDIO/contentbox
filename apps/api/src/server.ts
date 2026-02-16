@@ -668,9 +668,85 @@ function normalizePublicMode(value: string): PublicMode {
   return "quick";
 }
 
+function normalizePublicOriginCandidate(value: string | null | undefined): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  return `https://${raw.replace(/\/+$/, "")}`;
+}
+
+function normalizeDbModeLocal(raw: string | undefined): "basic" | "advanced" {
+  const v = String(raw || "basic").trim().toLowerCase();
+  return v === "advanced" ? "advanced" : "basic";
+}
+
+function getNamedTunnelConfig(): { tunnelName: string; publicOrigin: string } | null {
+  const envTunnel = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+  const envOrigin = normalizePublicOriginCandidate(process.env.CONTENTBOX_PUBLIC_ORIGIN || "");
+  if (envTunnel && envOrigin) {
+    return { tunnelName: envTunnel, publicOrigin: envOrigin };
+  }
+  const cfg = getPublicOriginConfig();
+  const cfgTunnel = String(cfg.tunnelName || "").trim();
+  const cfgOrigin = normalizePublicOriginCandidate(cfg.domain || "");
+  const provider = String(cfg.provider || "").trim();
+  if (provider === "cloudflare" && cfgTunnel && cfgOrigin) {
+    return { tunnelName: cfgTunnel, publicOrigin: cfgOrigin };
+  }
+  return null;
+}
+
+function getEffectivePublicMode(): PublicMode {
+  const mode = normalizePublicMode(PUBLIC_MODE);
+  if (mode === "named") return mode;
+  if (mode === "off" || mode === "direct") return mode;
+  if (normalizeDbModeLocal(process.env.DB_MODE) === "advanced" && getNamedTunnelConfig()) {
+    return "named";
+  }
+  return mode;
+}
+
+function isPersistentOrigin(origin: string | null): boolean {
+  if (!origin) return false;
+  try {
+    const host = new URL(origin).hostname.toLowerCase();
+    if (host.endsWith(".trycloudflare.com")) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getRuntimeIdentityDetail() {
+  const base = getIdentityDetail();
+  if (base.level === IdentityLevel.PERSISTENT) return base;
+  const status = getPublicStatus();
+  if (isPersistentOrigin(status.publicOrigin)) {
+    return {
+      ...base,
+      level: IdentityLevel.PERSISTENT,
+      persistentConfigured: true,
+      reason: "public_origin_detected",
+      publicOrigin: status.publicOrigin
+    };
+  }
+  const cfg = getPublicOriginConfig();
+  const cfgOrigin = normalizePublicOriginCandidate(cfg.domain || null);
+  if (cfgOrigin && isPersistentOrigin(cfgOrigin)) {
+    return {
+      ...base,
+      level: IdentityLevel.PERSISTENT,
+      persistentConfigured: true,
+      reason: "public_origin_configured",
+      publicOrigin: cfgOrigin
+    };
+  }
+  return base;
+}
+
 function requirePersistent(featureName: string) {
   return async (_req: any, reply: any) => {
-    const level = getIdentityLevel();
+    const level = getRuntimeIdentityDetail().level;
     if (level === IdentityLevel.PERSISTENT) return;
     return reply.code(403).send({
       error: "FEATURE_LOCKED",
@@ -749,7 +825,7 @@ function getPublicStatus(): {
   consentRequired: boolean;
   autoStartEnabled: boolean;
 } {
-  const mode = normalizePublicMode(PUBLIC_MODE);
+  const mode = getEffectivePublicMode();
   const cloudflared = getCloudflaredStatus();
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
@@ -768,9 +844,8 @@ function getPublicStatus(): {
   }
 
   if (mode === "named") {
-    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
-    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
-    if (!tunnelName || !publicOrigin) {
+    const cfg = getNamedTunnelConfig();
+    if (!cfg) {
       return { mode, state: "ERROR", publicOrigin: null, lastError: "missing_named_tunnel_config", lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
     }
   }
@@ -789,7 +864,7 @@ function getPublicStatus(): {
 }
 
 async function triggerPublicStartBestEffort() {
-  const mode = normalizePublicMode(PUBLIC_MODE);
+  const mode = getEffectivePublicMode();
   if (mode === "quick") {
     const prep = await tunnelManager.ensureBinary();
     if (!prep.ok) return;
@@ -797,13 +872,12 @@ async function triggerPublicStartBestEffort() {
     return;
   }
   if (mode === "named") {
-    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
-    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
-    if (!tunnelName || !publicOrigin) return;
+    const cfg = getNamedTunnelConfig();
+    if (!cfg) return;
     tunnelManager
       .startNamed({
-        publicOrigin,
-        tunnelName,
+        publicOrigin: cfg.publicOrigin,
+        tunnelName: cfg.tunnelName,
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
       })
       .catch(() => {});
@@ -2808,7 +2882,7 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
 
 // Public exposure control
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const mode = normalizePublicMode(PUBLIC_MODE);
+  const mode = getEffectivePublicMode();
   if (mode === "quick") {
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
@@ -2823,7 +2897,7 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
 });
 
 app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send(getIdentityDetail());
+  return reply.send(getRuntimeIdentityDetail());
 });
 
 // Proxy remote invite fetch to avoid browser CORS (auth required)
@@ -2913,7 +2987,7 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
 });
 
 app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const mode = normalizePublicMode(PUBLIC_MODE);
+  const mode = getEffectivePublicMode();
   const body = (_req.body ?? {}) as { consent?: boolean; dontAskAgain?: boolean };
 
   if (mode === "off") {
@@ -2945,9 +3019,8 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
   }
 
   if (mode === "named") {
-    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
-    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
-    if (!tunnelName || !publicOrigin) {
+    const cfg = getNamedTunnelConfig();
+    if (!cfg) {
       return reply.code(409).send({
         mode,
         state: "ERROR",
@@ -2959,15 +3032,15 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       });
     }
     const status = await tunnelManager.startNamed({
-      publicOrigin,
-      tunnelName,
+      publicOrigin: cfg.publicOrigin,
+      tunnelName: cfg.tunnelName,
       configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
     });
     if (status.status === "ACTIVE") {
       return reply.send({
         mode,
         state: "ACTIVE",
-        publicOrigin,
+        publicOrigin: cfg.publicOrigin,
         lastError: null,
         lastCheckedAt: toEpochMs(status.lastCheckedAt),
         cloudflared: getCloudflaredStatus(),
@@ -2987,19 +3060,18 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
 
   // quick: if a named tunnel is configured, try it first, then fall back to quick
   if (mode === "quick") {
-    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
-    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
-    if (tunnelName && publicOrigin) {
+    const cfg = getNamedTunnelConfig();
+    if (cfg) {
       const status = await tunnelManager.startNamed({
-        publicOrigin,
-        tunnelName,
+        publicOrigin: cfg.publicOrigin,
+        tunnelName: cfg.tunnelName,
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
       });
       if (status.status === "ACTIVE") {
         return reply.send({
           mode: "named",
           state: "ACTIVE",
-          publicOrigin,
+          publicOrigin: cfg.publicOrigin,
           lastError: null,
           lastCheckedAt: toEpochMs(status.lastCheckedAt),
           cloudflared: getCloudflaredStatus(),
@@ -4246,8 +4318,34 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     if (!ok) return forbidden(reply);
   }
 
-  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  if (!manifest) return badRequest(reply, "Manifest missing");
+  let manifest = await prisma.manifest.findUnique({ where: { contentId } });
+  if (!manifest) {
+    // Auto-generate manifest on publish for smoother UX
+    const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+    const manifestJson = await buildManifestJson(content, files);
+    const previewObjectKey = await ensurePreviewFile(content, files);
+    if (previewObjectKey) {
+      (manifestJson as any).preview = previewObjectKey;
+    }
+    const manifestSha256 = hashManifestJson(manifestJson);
+
+    let parentManifestSha256: string | null = null;
+    let lineageRelation: any = null;
+    const parentLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+    if (parentLinks.length === 1) {
+      const parentManifest = await prisma.manifest.findUnique({ where: { contentId: parentLinks[0].parentContentId } });
+      parentManifestSha256 = parentManifest?.sha256 || null;
+      lineageRelation = parentLinks[0].relation as any;
+    }
+
+    manifest = await prisma.manifest.upsert({
+      where: { contentId },
+      update: { json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation },
+      create: { contentId, json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation }
+    });
+
+    await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id } });
+  }
 
   const parents = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   const upstreamSum = sumBps(parents.map((p) => ({ bps: p.upstreamBps })));
@@ -9393,14 +9491,17 @@ async function start() {
   await ensureNodeKeys();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
-  const mode = normalizePublicMode(PUBLIC_MODE);
+  const mode = getEffectivePublicMode();
   if (mode !== "off") {
     const host = getPublicBindHost(mode);
     await startPublicServer(registerPublicRoutes, host);
-    if (mode === "quick") {
+    const autoStart = getPublicSharingAutoStart();
+    if (autoStart) {
+      triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
+    } else if (mode === "quick") {
       const consent = getPublicSharingConsent();
       const consentGranted = consent.granted || consent.dontAskAgain;
-      if (consentGranted && getPublicSharingAutoStart()) {
+      if (consentGranted) {
         tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
       }
     }

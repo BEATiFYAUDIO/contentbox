@@ -216,12 +216,6 @@ async function copyText(text: string) {
 
 export default function ContentLibraryPage({ onOpenSplits, identityLevel }: ContentLibraryPageProps) {
   const isBasicIdentity = identityLevel === "BASIC";
-
-  React.useEffect(() => {
-    if (isBasicIdentity && showClearance) {
-      setShowClearance(false);
-    }
-  }, [isBasicIdentity, showClearance]);
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -261,6 +255,12 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [showClearance, setShowClearance] = React.useState(false);
   const [clearanceScope, setClearanceScope] = React.useState<"pending" | "voted" | "cleared">("pending");
   const [pendingClearanceCount, setPendingClearanceCount] = React.useState(0);
+
+  React.useEffect(() => {
+    if (isBasicIdentity && showClearance) {
+      setShowClearance(false);
+    }
+  }, [isBasicIdentity, showClearance]);
   const [busyAction, setBusyAction] = React.useState<Record<string, boolean>>({});
   const [requestParentId, setRequestParentId] = React.useState("");
   const [requestTitle, setRequestTitle] = React.useState("");

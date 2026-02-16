@@ -100,6 +100,14 @@ type PublicStatus = {
   lastCheckedAt?: number | null;
 };
 
+type PublicTunnel = {
+  id?: string;
+  name?: string;
+  createdAt?: string;
+  status?: string;
+  connections?: number;
+};
+
 
 function isLocalHostname(hostname: string): boolean {
   if (!hostname) return false;
@@ -156,6 +164,9 @@ export default function DiagnosticsPage() {
   const [tunnelHealth, setTunnelHealth] = useState<{ ok: boolean; ts?: string; status?: number } | null>(null);
   const [tunnelHealthErr, setTunnelHealthErr] = useState<string | null>(null);
   const [tunnelHealthBusy, setTunnelHealthBusy] = useState(false);
+  const [publicTunnels, setPublicTunnels] = useState<PublicTunnel[]>([]);
+  const [publicTunnelsErr, setPublicTunnelsErr] = useState<string | null>(null);
+  const [publicTunnelsBusy, setPublicTunnelsBusy] = useState(false);
   const token = getToken();
 
   const healthPath = DEFAULT_HEALTH_PATH;
@@ -233,6 +244,35 @@ export default function DiagnosticsPage() {
     };
   }, [apiBase, token]);
 
+  const loadPublicTunnels = async () => {
+    if (!token) return;
+    setPublicTunnelsBusy(true);
+    setPublicTunnelsErr(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/tunnels`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setPublicTunnels([]);
+        setPublicTunnelsErr(json?.error || `HTTP ${res.status}`);
+      } else {
+        setPublicTunnels(Array.isArray(json?.tunnels) ? json.tunnels : []);
+      }
+    } catch (e: any) {
+      setPublicTunnels([]);
+      setPublicTunnelsErr(e?.message || String(e));
+    } finally {
+      setPublicTunnelsBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!token) return;
+    loadPublicTunnels().catch(() => {});
+  }, [token, apiBase]);
+
   const checkTunnelHealth = async () => {
     const origin = String(publicStatus?.publicOrigin || "").trim();
     if (!origin) {
@@ -307,6 +347,31 @@ export default function DiagnosticsPage() {
                 className={buttonClass}
               >
                 {tunnelHealthBusy ? "Checking…" : "Check tunnel health"}
+              </button>
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Named tunnels</div>
+              {publicTunnelsErr ? (
+                <div style={{ color: "#ffb4b4" }}>{publicTunnelsErr}</div>
+              ) : publicTunnels.length === 0 ? (
+                <div style={{ opacity: 0.7 }}>No named tunnels found.</div>
+              ) : (
+                <div style={{ display: "grid", gap: 4 }}>
+                  {publicTunnels.map((t, idx) => (
+                    <div key={`${t.id || t.name || idx}`} style={{ display: "flex", gap: 8 }}>
+                      <div style={{ minWidth: 140 }}>{t.name || t.id || "unnamed"}</div>
+                      <div style={{ opacity: 0.8 }}>{t.status || "—"}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <button
+                onClick={loadPublicTunnels}
+                disabled={publicTunnelsBusy}
+                className={buttonClass}
+                style={{ marginTop: 6 }}
+              >
+                {publicTunnelsBusy ? "Refreshing…" : "Refresh tunnels"}
               </button>
             </div>
           </div>

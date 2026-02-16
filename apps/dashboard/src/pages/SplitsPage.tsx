@@ -82,6 +82,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
         </div>
       ) : null}
       {!isBasicIdentity ? (
+      <>
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -123,6 +124,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
       </div>
 
       <AuditPanel scopeType="split" title="Audit" exportName="split-audit.json" />
+      </>
       ) : null}
     </div>
   );
