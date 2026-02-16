@@ -268,6 +268,7 @@ export class TunnelManager {
     if (this.state.status === "ACTIVE") return this.status();
     if (this.startPromise) return this.startPromise;
 
+    this.opts.logger?.info?.("Starting quick tunnel");
     this.startPromise = this._startQuick();
     try {
       const res = await this.startPromise;
@@ -320,10 +321,13 @@ export class TunnelManager {
     };
 
     const targetUrl = `http://127.0.0.1:${this.opts.targetPort}`;
+    this.opts.logger?.info?.(`cloudflared path: ${binPath}`);
+    this.opts.logger?.info?.(`quick tunnel target: ${targetUrl}`);
 
     const tryProtocol = async (protocol?: "quic" | "http2") => {
       const args = ["tunnel", "--url", targetUrl, "--no-autoupdate"];
       if (protocol) args.push("--protocol", protocol);
+      this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
       const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
       this.proc = child;
       this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
@@ -337,6 +341,7 @@ export class TunnelManager {
           const url = parseQuickTunnelUrl(buffer);
           if (url && !resolved) {
             resolved = true;
+            this.opts.logger?.info?.(`quick tunnel URL: ${url}`);
             resolve(url);
           }
         };
@@ -347,6 +352,7 @@ export class TunnelManager {
         child.on("error", (err) => {
           if (!resolved) {
             resolved = true;
+            this.opts.logger?.error?.(`cloudflared error: ${err?.message || err}`);
             reject(err);
           }
         });
@@ -354,6 +360,7 @@ export class TunnelManager {
         child.on("exit", () => {
           if (!resolved) {
             resolved = true;
+            this.opts.logger?.error?.("cloudflared exited before URL was assigned");
             reject(new Error("cloudflared exited before URL was assigned"));
           }
         });
@@ -361,6 +368,7 @@ export class TunnelManager {
         setTimeout(() => {
           if (!resolved) {
             resolved = true;
+            this.opts.logger?.error?.("Timed out waiting for cloudflared quick tunnel URL");
             reject(new Error("Timed out waiting for cloudflared quick tunnel URL"));
           }
         }, 20000);
@@ -380,6 +388,7 @@ export class TunnelManager {
 
       const healthOk = await this.verifyWithRetries(publicOrigin, 6, 1500);
       if (!healthOk) {
+        this.opts.logger?.warn?.(`quick tunnel health failed: ${publicOrigin}`);
         try {
           if (child.pid) process.kill(child.pid);
         } catch {}
@@ -394,6 +403,7 @@ export class TunnelManager {
       child.on("exit", () => {
         if (this.stopping) return;
         this.proc = null;
+        this.opts.logger?.error?.("cloudflared exited");
         this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
         this.clearHealthTimer();
       });
@@ -434,6 +444,7 @@ export class TunnelManager {
     if (this.state.status === "ACTIVE") return this.status();
     if (this.startPromise) return this.startPromise;
 
+    this.opts.logger?.info?.("Starting named tunnel");
     this.startPromise = this._startNamed(input);
     try {
       const res = await this.startPromise;
@@ -462,9 +473,11 @@ export class TunnelManager {
       lastError: null
     };
 
+    this.opts.logger?.info?.(`cloudflared path: ${binPath}`);
     const args = ["tunnel"];
     if (input.configPath) args.push("--config", input.configPath);
     args.push("run", input.tunnelName);
+    this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
 
     const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = child;
