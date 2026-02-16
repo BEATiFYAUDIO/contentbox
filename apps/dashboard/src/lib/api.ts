@@ -102,10 +102,16 @@ function normalizeBase(value: string): string {
   return value.trim().replace(/\/+$/, "");
 }
 
-const API_BASE = normalizeBase(readStoredApiBase()) || resolveApiBase();
-if (shouldAutoFixApiBase(API_BASE) && !alreadyAutoFixed()) {
-  clearStoredApiBase();
-  markAutoFix();
+function getApiBase(): string {
+  const stored = normalizeBase(readStoredApiBase());
+  const resolved = resolveApiBase();
+  const base = stored || resolved;
+  if (shouldAutoFixApiBase(base) && !alreadyAutoFixed()) {
+    clearStoredApiBase();
+    markAutoFix();
+    return resolveApiBase();
+  }
+  return base;
 }
 
 type ApiOptions = {
@@ -152,7 +158,7 @@ export async function api<T>(path: string, methodOrOptions: string | ApiOptions 
   const requestBody = hasBody ? (body instanceof FormData ? body : JSON.stringify(body)) : undefined;
 
   const normalizedPath = path.startsWith("/api/auth") ? path.replace(/^\/api\/auth/, "/auth") : path;
-  const url = `${API_BASE}${normalizedPath}`;
+  const url = `${getApiBase()}${normalizedPath}`;
   // Make the API request
   const res = await fetch(url, {
     method,
