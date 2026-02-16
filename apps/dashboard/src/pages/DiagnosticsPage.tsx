@@ -160,6 +160,8 @@ export default function DiagnosticsPage() {
   const [tunnelHealth, setTunnelHealth] = useState<{ ok: boolean; ts?: string; status?: number } | null>(null);
   const [tunnelHealthErr, setTunnelHealthErr] = useState<string | null>(null);
   const [tunnelHealthBusy, setTunnelHealthBusy] = useState(false);
+  const [tunnelStartBusy, setTunnelStartBusy] = useState(false);
+  const [tunnelStartMsg, setTunnelStartMsg] = useState<string | null>(null);
   const token = getToken();
 
   const healthPath = DEFAULT_HEALTH_PATH;
@@ -262,6 +264,32 @@ export default function DiagnosticsPage() {
     }
   };
 
+  const startTunnelNow = async () => {
+    if (!token) return;
+    setTunnelStartBusy(true);
+    setTunnelStartMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/go`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ consent: true })
+      });
+      const json = await res.json().catch(() => ({}));
+      setPublicStatus(json || null);
+      if (!res.ok) {
+        setTunnelStartMsg(json?.error || json?.lastError || "Failed to start tunnel.");
+      } else if (json?.state === "STARTING") {
+        setTunnelStartMsg("Starting tunnel…");
+      } else if (json?.state === "ACTIVE") {
+        setTunnelStartMsg("Tunnel is active.");
+      }
+    } catch (e: any) {
+      setTunnelStartMsg(e?.message || String(e));
+    } finally {
+      setTunnelStartBusy(false);
+    }
+  };
+
   function copyReport() {
     const lines = rows.map((row) => {
       const status = fmtStatus(row);
@@ -312,7 +340,16 @@ export default function DiagnosticsPage() {
               >
                 {tunnelHealthBusy ? "Checking…" : "Check tunnel health"}
               </button>
+              <button
+                onClick={startTunnelNow}
+                disabled={tunnelStartBusy}
+                className={buttonClass}
+                style={{ marginLeft: 8 }}
+              >
+                {tunnelStartBusy ? "Starting…" : "Start tunnel now"}
+              </button>
             </div>
+            {tunnelStartMsg ? <div style={{ opacity: 0.8 }}>{tunnelStartMsg}</div> : null}
           </div>
         )}
       </div>
