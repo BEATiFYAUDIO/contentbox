@@ -8698,7 +8698,8 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
 
     const inviteBase =
       String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim() ||
-      (getActivePublicOrigin() || APP_BASE_URL);
+      getPublicStatus().publicOrigin ||
+      `http://127.0.0.1:${NODE_HTTP_PORT}`;
 
       createdInvites.push({
         participantEmail: String(p.participantEmail || ""),
