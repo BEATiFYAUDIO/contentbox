@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, getApiBase } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import { getToken } from "../lib/auth";
@@ -93,12 +93,26 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
 
   function openPastedInvite() {
     setPasteMsg(null);
-    const t = extractInviteTokenFromPaste(pasteRaw);
+    const raw = String(pasteRaw || "").trim();
+    if (!raw) {
+      setPasteMsg("Paste a token or an /invite/<token> link.");
+      return;
+    }
+    if (/^https?:\/\//i.test(raw)) {
+      window.location.href = raw;
+      return;
+    }
+    const t = extractInviteTokenFromPaste(raw);
     if (!t) {
       setPasteMsg("Paste a token or an /invite/<token> link.");
       return;
     }
-    window.location.href = `/invite/${encodeURIComponent(t)}`;
+    const base = getApiBase();
+    if (base.includes("127.0.0.1") || base.includes("localhost")) {
+      setPasteMsg("For remote invites, paste the full invite link.");
+      return;
+    }
+    window.location.href = `${base.replace(/\/$/, "")}/invite/${encodeURIComponent(t)}`;
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
