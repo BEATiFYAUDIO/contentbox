@@ -2774,6 +2774,30 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     });
   }
 
+  // quick: if a named tunnel is configured, try it first, then fall back to quick
+  if (mode === "quick") {
+    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
+    if (tunnelName && publicOrigin) {
+      const status = await tunnelManager.startNamed({
+        publicOrigin,
+        tunnelName,
+        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
+      });
+      if (status.status === "ACTIVE") {
+        return reply.send({
+          mode: "named",
+          state: "ACTIVE",
+          publicOrigin,
+          lastError: null,
+          lastCheckedAt: toEpochMs(status.lastCheckedAt),
+          cloudflared: getCloudflaredStatus(),
+          consentRequired: false
+        });
+      }
+    }
+  }
+
   // quick
   const cloudflared = getCloudflaredStatus();
   const consent = getPublicSharingConsent();
