@@ -42,9 +42,25 @@ type RoyaltiesResponse = {
   upstreamIncome: UpstreamIncomeRow[];
 };
 
+type RemoteRoyaltyRow = {
+  id: string;
+  remoteOrigin: string;
+  inviteUrl?: string | null;
+  contentId?: string | null;
+  contentTitle?: string | null;
+  contentType?: string | null;
+  splitVersionNum?: number | null;
+  role?: string | null;
+  percent?: any;
+  participantEmail?: string | null;
+  acceptedAt?: string | null;
+  remoteNodeUrl?: string | null;
+};
+
 export default function SplitParticipationsPage() {
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);
+  const [remoteRoyalties, setRemoteRoyalties] = useState<RemoteRoyaltyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [historyItems, setHistoryItems] = useState<HistoryEvent[]>([]);
@@ -57,6 +73,12 @@ export default function SplitParticipationsPage() {
         const res = await api<RoyaltiesResponse>("/my/royalties", "GET");
         setWorks(res?.works || []);
         setUpstream(res?.upstreamIncome || []);
+        try {
+          const remote = await api<RemoteRoyaltyRow[]>("/my/royalties/remote", "GET");
+          setRemoteRoyalties(remote || []);
+        } catch {
+          setRemoteRoyalties([]);
+        }
         setHistoryLoading(true);
         const hist = await api<HistoryEvent[]>("/me/royalty-history", "GET");
         setHistoryItems(hist || []);
@@ -139,6 +161,44 @@ export default function SplitParticipationsPage() {
           </div>
         ))}
       </div>
+
+      <div className="text-sm text-neutral-300 mt-6">Remote royalties</div>
+      {remoteRoyalties.length === 0 ? (
+        <div className="text-sm text-neutral-500">No remote invites yet.</div>
+      ) : (
+        <div className="space-y-3">
+          {remoteRoyalties.map((r) => (
+            <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • remote
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    Role: <span className="text-neutral-200">{r.role || "participant"}</span>
+                    {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
+                  </div>
+                  <div className="text-xs text-neutral-500 mt-1">
+                    Remote: {r.remoteOrigin}
+                  </div>
+                  {r.acceptedAt ? (
+                    <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
+                  ) : null}
+                </div>
+                {r.inviteUrl ? (
+                  <button
+                    onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
+                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  >
+                    Open
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="text-sm text-neutral-300 mt-6">Upstream income from derivatives</div>
       {upstream.length === 0 ? (

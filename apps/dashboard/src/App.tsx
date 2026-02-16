@@ -327,10 +327,12 @@ export default function App() {
     page === "receipt" ? "Receipt" :
     page === "invite" ? "Invite" : "Dashboard";
 
+  const hideSidebar = Boolean(inviteToken && !me);
+
   return (
     <div className="h-screen overflow-hidden bg-neutral-950 text-neutral-100 flex">
       {/* Sidebar */}
-      {inviteToken === null && (
+      {!hideSidebar && (
         <aside className="w-64 border-r border-neutral-900 bg-neutral-950/60 p-4 h-screen shrink-0 flex flex-col">
           <div className="flex items-center justify-center pt-2 pb-4">
             {/* eslint-disable-next-line @next/next/no-img-element */}

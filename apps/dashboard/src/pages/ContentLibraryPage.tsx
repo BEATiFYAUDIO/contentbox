@@ -2360,7 +2360,7 @@ export default function ContentLibraryPage({
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                                       onClick={startPublicLink}
-                                      disabled={publicBusy}
+                                      disabled={publicBusy || isStarting || isOn}
                                     >
                                       Enable Public Link
                                     </button>
@@ -2424,7 +2424,7 @@ export default function ContentLibraryPage({
                                         type="button"
                                         className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                                         onClick={startPublicLink}
-                                        disabled={publicBusy}
+                                        disabled={publicBusy || isStarting || isOn}
                                       >
                                         Try again
                                       </button>

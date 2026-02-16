@@ -266,6 +266,8 @@ export class TunnelManager {
 
   async startQuick(): Promise<TunnelState> {
     if (this.state.status === "ACTIVE") return this.status();
+    if (this.state.status === "STARTING") return this.status();
+    if (this.proc?.pid && !this.stopping) return this.status();
     if (this.startPromise) return this.startPromise;
 
     this.opts.logger?.info?.("Starting quick tunnel");
@@ -302,6 +304,10 @@ export class TunnelManager {
   }
 
   private async _startQuick(): Promise<TunnelState> {
+    if (this.proc?.pid && !this.stopping) {
+      this.opts.logger?.warn?.("Quick tunnel already running; skipping spawn");
+      return this.status();
+    }
     this.state = { ...this.state, status: "STARTING", lastError: null };
 
     let binPath: string;
@@ -442,6 +448,8 @@ export class TunnelManager {
 
   async startNamed(input: { publicOrigin: string; tunnelName: string; configPath?: string | null }): Promise<TunnelState> {
     if (this.state.status === "ACTIVE") return this.status();
+    if (this.state.status === "STARTING") return this.status();
+    if (this.proc?.pid && !this.stopping) return this.status();
     if (this.startPromise) return this.startPromise;
 
     this.opts.logger?.info?.("Starting named tunnel");
@@ -455,6 +463,10 @@ export class TunnelManager {
   }
 
   private async _startNamed(input: { publicOrigin: string; tunnelName: string; configPath?: string | null }): Promise<TunnelState> {
+    if (this.proc?.pid && !this.stopping) {
+      this.opts.logger?.warn?.("Named tunnel already running; skipping spawn");
+      return this.status();
+    }
     this.state = { ...this.state, status: "STARTING", lastError: null };
 
     let binPath: string;

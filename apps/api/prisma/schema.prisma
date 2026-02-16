@@ -109,6 +109,7 @@ model User {
   approvedContentLinks ContentLink[] @relation("ContentLinkApprovedBy")
   paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
   entitlements         Entitlement[] @relation("EntitlementBuyer")
+  remoteInvites        RemoteInvite[]
 
   @@index([email])
 }
@@ -399,6 +400,33 @@ model Invitation {
 
   @@index([splitParticipantId])
   @@index([tokenHash])
+}
+
+model RemoteInvite {
+  id              String   @id @default(cuid())
+  userId          String
+  remoteOrigin    String
+  tokenHash       String
+  inviteUrl       String?
+  contentId       String?
+  contentTitle    String?
+  contentType     String?
+  splitVersionNum Int?
+  role            String?
+  percent         Decimal? @db.Decimal(10, 3)
+  participantEmail String?
+  acceptedAt      DateTime?
+  remoteUserId    String?
+  remoteNodeUrl   String?
+  remoteVerified  Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([remoteOrigin])
+  @@unique([remoteOrigin, tokenHash])
 }
 
 model AuditEvent {

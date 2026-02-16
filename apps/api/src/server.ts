@@ -667,6 +667,33 @@ function normalizePublicMode(value: string): PublicMode {
   return "quick";
 }
 
+function normalizeRemoteOrigin(raw: string): string | null {
+  try {
+    const u = new URL(String(raw || "").trim());
+    const host = u.hostname.toLowerCase();
+    const isTry = host.endsWith(".trycloudflare.com");
+    const isContentbox = host.endsWith(".contentbox.link");
+    const isLocal = host === "127.0.0.1" || host === "localhost";
+    const isPrivate =
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+    let isNamed = false;
+    try {
+      const named = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
+      if (named) {
+        const n = new URL(named);
+        isNamed = n.hostname.toLowerCase() === host;
+      }
+    } catch {}
+
+    if (!(isTry || isContentbox || isNamed || isLocal || isPrivate)) return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
+
 function getPublicBindHost(mode: PublicMode): string {
   if (mode === "direct" && String(process.env.CONTENTBOX_BIND || "").trim() === "public") return "0.0.0.0";
   return "127.0.0.1";
@@ -2264,6 +2291,110 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
   return reply.send(out);
 });
 
+// List remote invitations accepted on other nodes (stored locally for payments/visibility)
+app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const list = await prisma.remoteInvite.findMany({
+    where: { userId },
+    orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+  });
+  return reply.send(
+    list.map((inv) => ({
+      id: inv.id,
+      remoteOrigin: inv.remoteOrigin,
+      inviteUrl: inv.inviteUrl || null,
+      contentId: inv.contentId || null,
+      contentTitle: inv.contentTitle || null,
+      contentType: inv.contentType || null,
+      splitVersionNum: inv.splitVersionNum ?? null,
+      role: inv.role || null,
+      percent: percentToPrimitive(inv.percent ?? null),
+      participantEmail: inv.participantEmail || null,
+      acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
+      remoteUserId: inv.remoteUserId || null,
+      remoteNodeUrl: inv.remoteNodeUrl || null,
+      remoteVerified: Boolean(inv.remoteVerified),
+      createdAt: inv.createdAt.toISOString()
+    }))
+  );
+});
+
+// Remote royalties summary (for invited remote splits)
+app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const list = await prisma.remoteInvite.findMany({
+    where: { userId },
+    orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+  });
+  return reply.send(
+    list.map((inv) => ({
+      id: inv.id,
+      remoteOrigin: inv.remoteOrigin,
+      inviteUrl: inv.inviteUrl || null,
+      contentId: inv.contentId || null,
+      contentTitle: inv.contentTitle || null,
+      contentType: inv.contentType || null,
+      splitVersionNum: inv.splitVersionNum ?? null,
+      role: inv.role || null,
+      percent: percentToPrimitive(inv.percent ?? null),
+      participantEmail: inv.participantEmail || null,
+      acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
+      remoteUserId: inv.remoteUserId || null,
+      remoteNodeUrl: inv.remoteNodeUrl || null,
+      remoteVerified: Boolean(inv.remoteVerified),
+      createdAt: inv.createdAt.toISOString()
+    }))
+  );
+});
+
+// Ingest a remote invite acceptance into local storage (for payments & visibility)
+app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body ?? {}) as any;
+
+  const remoteOrigin = asString(body.remoteOrigin || "").replace(/\/+$/, "");
+  const token = asString(body.token || "").trim();
+  const inviteUrl = asString(body.inviteUrl || "").trim();
+
+  if (!remoteOrigin) return badRequest(reply, "remoteOrigin required");
+  if (!token) return badRequest(reply, "token required");
+
+  const tokenHash = hashInviteToken(token);
+
+  const content = body.content || {};
+  const splitParticipant = body.splitParticipant || {};
+  const splitVersion = body.splitVersion || {};
+
+  const percent = round3(num(splitParticipant.percent));
+  const acceptedAt = body.acceptedAt ? new Date(body.acceptedAt) : null;
+
+  const data = {
+    userId,
+    remoteOrigin,
+    tokenHash,
+    inviteUrl: inviteUrl || null,
+    contentId: asString(content.id || "") || null,
+    contentTitle: asString(content.title || "") || null,
+    contentType: asString(content.type || "") || null,
+    splitVersionNum: Number.isFinite(Number(splitVersion.versionNumber)) ? Number(splitVersion.versionNumber) : null,
+    role: asString(splitParticipant.role || "") || null,
+    percent: Number.isFinite(percent) && percent > 0 ? percent : null,
+    participantEmail: asString(splitParticipant.participantEmail || "") || null,
+    acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
+    remoteUserId: asString(body.remoteUserId || "") || null,
+    remoteNodeUrl: asString(body.remoteNodeUrl || "").replace(/\/+$/, "") || null,
+    remoteVerified: Boolean(body.remoteVerified)
+  };
+
+  const saved = await prisma.remoteInvite.upsert({
+    where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } },
+    update: data as any,
+    create: data as any
+  });
+
+  return reply.send({ ok: true, id: saved.id });
+});
+
 // List accepted split participations for the authenticated user
 app.get("/my/split-participations", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
@@ -2676,6 +2807,50 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
     }
   }
   return reply.send(getPublicStatus());
+});
+
+// Proxy remote invite fetch to avoid browser CORS (auth required)
+app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const token = asString((req.params as any).token);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!origin) return badRequest(reply, "invalid origin");
+
+  try {
+    const res = await fetchWithTimeout(`${origin}/invites/${encodeURIComponent(token)}`, { method: "GET" } as any, 8000);
+    const text = await res.text();
+    reply.code(res.status);
+    reply.type("application/json");
+    return reply.send(text);
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote invite fetch failed", details: String(e?.message || e) });
+  }
+});
+
+// Proxy remote invite accept to avoid browser CORS (auth required)
+app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const token = asString((req.params as any).token);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!origin) return badRequest(reply, "invalid origin");
+
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}/accept`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" } as any,
+        body: JSON.stringify(req.body ?? {})
+      } as any,
+      8000
+    );
+    const text = await res.text();
+    reply.code(res.status);
+    reply.type("application/json");
+    return reply.send(text);
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote invite accept failed", details: String(e?.message || e) });
+  }
 });
 
 app.get("/api/public/config", { preHandler: requireAuth }, async (_req: any, reply: any) => {

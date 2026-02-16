@@ -68,6 +68,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
   const [showInviteAuditEvents, setShowInviteAuditEvents] = useState(false);
   const [myInvites, setMyInvites] = useState<any[] | null>(null);
   const [receivedInvites, setReceivedInvites] = useState<any[] | null>(null);
+  const [remoteReceivedInvites, setRemoteReceivedInvites] = useState<any[] | null>(null);
   const [sentOpen, setSentOpen] = useState<Record<string, boolean>>({});
   const [receivedOpen, setReceivedOpen] = useState<Record<string, boolean>>({});
   const [contentList, setContentList] = useState<any[]>([]);
@@ -91,6 +92,24 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
     return null;
   }
 
+  function getRemoteOriginFromLocation(): string | null {
+    try {
+      const qs = new URLSearchParams(window.location.search);
+      const remote = qs.get("remote");
+      if (remote) return String(remote).replace(/\/+$/, "");
+
+      const h = window.location.hash || "";
+      if (h.startsWith("#")) {
+        const hash = h.slice(1);
+        const m = hash.match(/remote=([^&]+)/);
+        if (m && m[1]) return decodeURIComponent(m[1]).replace(/\/+$/, "");
+      }
+    } catch {}
+    return null;
+  }
+
+  const remoteOriginFromLocation = getRemoteOriginFromLocation();
+
   function openPastedInvite() {
     setPasteMsg(null);
     const raw = String(pasteRaw || "").trim();
@@ -99,8 +118,19 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
       return;
     }
     if (/^https?:\/\//i.test(raw)) {
-      window.location.href = raw;
-      return;
+      try {
+        const u = new URL(raw);
+        const token = extractInviteTokenFromPaste(raw);
+        if (!token) {
+          setPasteMsg("Paste a valid /invite/<token> link.");
+          return;
+        }
+        window.location.href = `/invite/${encodeURIComponent(token)}?remote=${encodeURIComponent(u.origin)}`;
+        return;
+      } catch {
+        setPasteMsg("Paste a valid invite link.");
+        return;
+      }
     }
     const t = extractInviteTokenFromPaste(raw);
     if (!t) {
@@ -112,7 +142,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
       setPasteMsg("For remote invites, paste the full invite link.");
       return;
     }
-    window.location.href = `${base.replace(/\/$/, "")}/invite/${encodeURIComponent(t)}`;
+    window.location.href = `/invite/${encodeURIComponent(t)}?remote=${encodeURIComponent(base)}`;
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
@@ -143,6 +173,14 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
   const expired = new Date(data?.invitation.expiresAt ?? "").getTime() < Date.now();
   const alreadyAccepted = Boolean(data?.invitation?.acceptedAt || data?.splitParticipant?.acceptedAt);
 
+  async function fetchRemoteJson(path: string, opts?: { method?: string; body?: any; headers?: Record<string, string> }) {
+    if (!remoteOriginFromLocation) throw new Error("Remote origin missing");
+    const origin = encodeURIComponent(remoteOriginFromLocation);
+    const url = `/api/remote${path}?origin=${origin}`;
+    const res = await api<any>(url, opts?.method || "GET", opts?.body || undefined);
+    return res;
+  }
+
   async function load() {
     setLoading(true);
     setMsg(null);
@@ -151,7 +189,9 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setData(null);
         return;
       }
-      const res = await api<InviteGetResponse>(`/invites/${encodeURIComponent(tokenToUse)}`, "GET");
+      const res = remoteOriginFromLocation
+        ? await fetchRemoteJson(`/invites/${encodeURIComponent(tokenToUse)}`)
+        : await api<InviteGetResponse>(`/invites/${encodeURIComponent(tokenToUse)}`, "GET");
       setData(res);
       // If the server included related invites for this split, show them even
       // when the viewer isn't signed in (so invite pages always show sent invites).
@@ -173,7 +213,15 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
       }
     } catch (e: any) {
       setData(null);
-      if (tokenToUse) setMsg(e?.message || "Failed to load invite");
+      if (tokenToUse) {
+        const base = remoteOriginFromLocation ? ` (${remoteOriginFromLocation})` : "";
+        const raw = e?.message || "Failed to load invite";
+        const friendly =
+          raw === "Failed to fetch"
+            ? `Failed to reach remote invite${base}. Make sure the tunnel is running and updated.`
+            : raw;
+        setMsg(friendly);
+      }
     } finally {
       setLoading(false);
     }
@@ -190,13 +238,35 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setMe(null);
       }
     })();
-  }, [token]);
+  }, [tokenToUse, remoteOriginFromLocation]);
+
+  // If this is a remote invite and the user is signed in locally, ingest it so it shows under Received invites.
+  useEffect(() => {
+    if (!me || !remoteOriginFromLocation || !tokenToUse || !data) return;
+    (async () => {
+      try {
+        await api(`/invites/ingest`, "POST", {
+          remoteOrigin: remoteOriginFromLocation,
+          token: tokenToUse,
+          inviteUrl: `${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`,
+          content: data?.content || null,
+          splitParticipant: data?.splitParticipant || null,
+          splitVersion: data?.splitVersion || null,
+          acceptedAt: data?.invitation?.acceptedAt || null,
+          remoteNodeUrl: remoteOriginFromLocation
+        });
+        const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+        setRemoteReceivedInvites(listRemote || []);
+      } catch {}
+    })();
+  }, [me, data, remoteOriginFromLocation, tokenToUse]);
 
   // Load outgoing invites for the signed-in owner (no token values are returned)
   useEffect(() => {
     if (!me) {
       setMyInvites(null);
       setReceivedInvites(null);
+      setRemoteReceivedInvites(null);
       setHistoryItems([]);
       return;
     }
@@ -215,6 +285,13 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         setReceivedInvites(listR || []);
       } catch {
         setReceivedInvites([]);
+      }
+
+      try {
+        const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+        setRemoteReceivedInvites(listRemote || []);
+      } catch {
+        setRemoteReceivedInvites([]);
       }
     }
 
@@ -269,6 +346,51 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
     setMsg(null);
     try {
       if (!tokenToUse) throw new Error("Invite token missing");
+
+      if (remoteOriginFromLocation) {
+        let acceptBody: any = {};
+        if (me?.id) {
+          try {
+            const tokenLocal = getToken();
+            const resSign = await fetch(`${getNodePublicOrigin()}/local/sign-acceptance`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${tokenLocal}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ token: tokenToUse })
+            });
+            if (resSign.ok) {
+              const js = await resSign.json();
+              acceptBody.payload = js.payload;
+              acceptBody.signature = js.signature;
+              acceptBody.remoteNodeUrl = js.payload.nodeUrl;
+              acceptBody.remoteUserId = js.payload.remoteUserId;
+            }
+          } catch {
+            // ignore signed acceptance
+          }
+        }
+
+        const res = await fetchRemoteJson(`/invites/${encodeURIComponent(tokenToUse)}/accept`, {
+          method: "POST",
+          body: acceptBody
+        });
+        setMsg(res?.alreadyAccepted ? "Already accepted on remote node." : "Accepted on remote node.");
+        try {
+          await api(`/invites/ingest`, "POST", {
+            remoteOrigin: remoteOriginFromLocation,
+            token: tokenToUse,
+            inviteUrl: `${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`,
+            content: data?.content || null,
+            splitParticipant: data?.splitParticipant || null,
+            splitVersion: data?.splitVersion || null,
+            acceptedAt: res?.acceptedAt || null,
+            remoteNodeUrl: remoteOriginFromLocation
+          });
+        } catch {}
+        await load();
+        onAccepted(data?.content?.id ?? null);
+        return;
+      }
+
       // Attempt to sign locally (strong verification). If that fails, fall back to sending nodeUrl + userId.
       let acceptBody: any = {};
       if (me?.id) {
@@ -338,12 +460,34 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
     return Object.values(out);
   }
 
+  const mergedReceivedInvites = (() => {
+    const base = receivedInvites || [];
+    const remote = remoteReceivedInvites || [];
+    if (remote.length === 0) return base;
+    return [...remote, ...base];
+  })();
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Invite</div>
         {tokenToUse ? (
           <div className="text-sm text-neutral-400 mt-1 break-all">token: {tokenToUse}</div>
+        ) : null}
+        {remoteOriginFromLocation ? (
+          <div className="text-xs text-neutral-400 mt-1">Remote invite: {remoteOriginFromLocation}</div>
+        ) : null}
+        {remoteOriginFromLocation && tokenToUse ? (
+          <div className="mt-2">
+            <a
+              href={`${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="text-xs text-neutral-400 underline"
+            >
+              Open remote invite page
+            </a>
+          </div>
         ) : null}
 
         {me && (
@@ -443,7 +587,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
         )}
 
         {/* If signed in, show invite history (tokens are shown only at creation time). */}
-        {me && (myInvites || receivedInvites) && (
+        {me && (myInvites || receivedInvites || remoteReceivedInvites) && (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900/10 p-3 space-y-4">
             <div>
               <div className="text-sm font-medium">Sent invites</div>
@@ -510,10 +654,18 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
             <div>
               <div className="text-sm font-medium">Received invites</div>
               <div className="text-xs text-neutral-400">Invites addressed to your email or account on this node.</div>
-              {receivedInvites && receivedInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No received invites yet.</div>}
-              {receivedInvites && receivedInvites.length > 0 && (
+              {remoteOriginFromLocation && data ? (
+                <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/40 p-2 text-xs text-neutral-300">
+                  Remote invite from: {remoteOriginFromLocation}
+                  <div className="text-neutral-400 mt-1">
+                    This invite lives on a remote node and will be ingested into your received list.
+                  </div>
+                </div>
+              ) : null}
+              {mergedReceivedInvites && mergedReceivedInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No received invites yet.</div>}
+              {mergedReceivedInvites && mergedReceivedInvites.length > 0 && (
                 <div className="mt-2 space-y-2 text-sm text-neutral-200">
-                  {groupByContent(receivedInvites).map((group) => {
+                  {groupByContent(mergedReceivedInvites).map((group) => {
                     const open = receivedOpen[group.key] ?? true;
                     return (
                       <div key={group.key} className="rounded-md border border-neutral-800 bg-neutral-950/40 p-2">
@@ -534,7 +686,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
                                     <div className="text-xs text-neutral-400">
-                                      From: {inv.ownerDisplayName || inv.ownerEmail || inv.ownerUserId || "(unknown)"}
+                                      From: {inv.ownerDisplayName || inv.ownerEmail || inv.ownerUserId || (inv.remoteOrigin ? "Remote node" : "(unknown)")}
                                     </div>
                                     {inv.role ? <div className="text-xs text-neutral-400">Role: {inv.role}</div> : null}
                                     {inv.percent !== null && inv.percent !== undefined ? (
@@ -542,6 +694,7 @@ export default function InvitePage({ token, onAccepted }: InvitePageProps) {
                                     ) : null}
                                     <div className="text-xs text-neutral-400">Created: {new Date(inv.createdAt).toLocaleString()}</div>
                                     <div className="text-xs text-neutral-400">Expires: {new Date(inv.expiresAt).toLocaleString()}</div>
+                                    {inv.remoteOrigin ? <div className="text-[10px] text-neutral-500">Remote: {inv.remoteOrigin}</div> : null}
                                     {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {new Date(inv.acceptedAt).toLocaleString()}</div> : null}
                                   </div>
                                   <div className="text-xs uppercase tracking-wide text-neutral-400">{status}</div>
