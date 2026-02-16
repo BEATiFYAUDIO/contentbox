@@ -261,6 +261,9 @@ export default function ContentLibraryPage({
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [priceDraft, setPriceDraft] = React.useState<Record<string, string>>({});
   const [priceMsg, setPriceMsg] = React.useState<Record<string, string>>({});
+  const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
+  const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
+  const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
   const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
@@ -537,6 +540,58 @@ export default function ContentLibraryPage({
       setFilesByContent((m) => ({ ...m, [contentId]: files }));
     } finally {
       setFilesLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  function hostPortFromOrigin(origin: string): { host: string; port: string } {
+    if (!origin) return { host: "", port: "" };
+    try {
+      const url = new URL(origin);
+      const port = url.port || (url.protocol === "https:" ? "443" : "80");
+      return { host: url.hostname, port };
+    } catch {
+      return { host: origin.replace(/^https?:\/\//i, ""), port: "" };
+    }
+  }
+
+  async function buildP2PLink(
+    contentId: string,
+    manifestSha256: string | null,
+    opts: { host?: string; port?: string; baseUrl?: string } = {}
+  ) {
+    if (!manifestSha256) {
+      setShareMsg((m) => ({ ...m, [contentId]: "Publish to generate a manifest first." }));
+      return;
+    }
+    try {
+      setShareBusy((m) => ({ ...m, [contentId]: true }));
+      setShareMsg((m) => ({ ...m, [contentId]: "" }));
+      const identity = await api<any>("/p2p/identity", "GET");
+      const offer = await api<any>(`/p2p/content/${contentId}/offer`, "GET");
+      const sellerPeerId = String(identity?.peerId || "").trim();
+      const primaryFileId = String(offer?.primaryFileId || "").trim();
+      if (!sellerPeerId || !primaryFileId) {
+        setShareMsg((m) => ({ ...m, [contentId]: "Missing seller identity or primary file. Check publish + price." }));
+        return;
+      }
+      const params = new URLSearchParams({
+        v: "1",
+        manifestHash: manifestSha256,
+        primaryFileId,
+        sellerPeerId
+      });
+      if (opts.host) params.set("host", opts.host);
+      if (opts.port) params.set("port", opts.port);
+      const linkBase = opts.baseUrl ? opts.baseUrl.replace(/\/$/, "") : apiBase;
+      const link = `${linkBase}/buy?${params.toString()}`;
+      await copyText(link);
+      setShareP2PLink((m) => ({ ...m, [contentId]: link }));
+      setShareMsg((m) => ({ ...m, [contentId]: "P2P link copied." }));
+    } catch (e: any) {
+      const msg = e?.message || "Failed to build P2P link.";
+      setShareMsg((m) => ({ ...m, [contentId]: msg }));
+    } finally {
+      setShareBusy((m) => ({ ...m, [contentId]: false }));
     }
   }
 
@@ -2435,7 +2490,10 @@ export default function ContentLibraryPage({
                             const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
+                            const loopbackBase = "http://127.0.0.1:4000";
+                            const loopbackLink = `${loopbackBase}/buy/${it.id}`;
                             const hasPublicBuy = Boolean(buyBase);
+                            const isLocalOnly = !hasPublicBuy;
                             let lanBase = "";
                             try {
                               const u = new URL(apiBase);
@@ -2447,29 +2505,32 @@ export default function ContentLibraryPage({
                             return (
                               <>
                                 <div className="text-[11px] text-neutral-500">Buy links</div>
-                                {hasPublicBuy ? (
-                                  <div className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0">
-                                      Public buy link: <span className="text-neutral-300 break-all">{buyLink}</span>
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={() => window.open(buyLink, "_blank", "noopener,noreferrer")}
-                                      >
-                                        Open
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={() => copyText(buyLink)}
-                                      >
-                                        Copy link
-                                      </button>
-                                    </div>
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    Public buy link:{" "}
+                                    <span className="text-neutral-300 break-all">{hasPublicBuy ? buyLink : "Not available"}</span>
                                   </div>
-                                ) : null}
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => {
+                                        if (hasPublicBuy) window.open(buyLink, "_blank", "noopener,noreferrer");
+                                      }}
+                                      disabled={!hasPublicBuy}
+                                    >
+                                      Open
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                      onClick={() => copyText(buyLink)}
+                                      disabled={!hasPublicBuy}
+                                    >
+                                      Copy link
+                                    </button>
+                                  </div>
+                                </div>
 
                                 {lanBase ? (
                                   <div className="flex items-center justify-between gap-3">
@@ -2497,9 +2558,31 @@ export default function ContentLibraryPage({
                                   </div>
                                 ) : null}
 
-                                {!hasPublicBuy && !lanBase ? (
-                                  <div className="text-xs text-neutral-500">No shareable links yet.</div>
-                                ) : null}
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    Local loopback:{" "}
+                                    <span className="text-neutral-300 break-all">{loopbackLink}</span>
+                                    {isLocalOnly ? <span className="text-neutral-500"> (local only)</span> : null}
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => window.open(loopbackLink, "_blank", "noopener,noreferrer")}
+                                    >
+                                      Open
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => copyText(loopbackLink)}
+                                    >
+                                      Copy link
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
 
                                 <div className="text-xs text-neutral-500">
                                   Content ID: <span className="text-neutral-300">{it.id}</span>{" "}
@@ -2512,6 +2595,49 @@ export default function ContentLibraryPage({
                                   </button>
                                 </div>
 
+                                {shareP2PLink[it.id] ? (
+                                  <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
+                                    <div className="min-w-0 break-all">
+                                      Last P2P link: <span className="text-neutral-300">{shareP2PLink[it.id]}</span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                      onClick={() => copyText(shareP2PLink[it.id])}
+                                    >
+                                      Copy
+                                    </button>
+                                  </div>
+                                ) : null}
+
+                                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                                  <button
+                                    type="button"
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                    onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
+                                    disabled={!!shareBusy[it.id]}
+                                  >
+                                    Copy LAN P2P Link
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                    onClick={() => {
+                                      const { host, port } = hostPortFromOrigin(effectiveBuyOrigin);
+                                      const baseUrl = effectiveBuyOrigin ? effectiveBuyOrigin : "";
+                                      return buildP2PLink(it.id, manifestSha256 || null, { host, port, baseUrl });
+                                    }}
+                                    disabled={!effectiveBuyOrigin || !!shareBusy[it.id]}
+                                  >
+                                    Copy Buy P2P Link
+                                  </button>
+                                </div>
+
+                                {!manifestSha256 ? (
+                                  <div className="text-xs text-amber-300">
+                                    Publish to generate a manifest before sharing P2P links.
+                                  </div>
+                                ) : null}
                               </>
                             );
                           })()}
