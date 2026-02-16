@@ -8658,6 +8658,28 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = (req.params as any).id as string;
 
+  const mode = normalizePublicMode(PUBLIC_MODE);
+  if (mode === "quick") {
+    const consent = getPublicSharingConsent();
+    const consentGranted = consent.granted || consent.dontAskAgain;
+    if (consentGranted && getPublicSharingAutoStart()) {
+      const st = tunnelManager.status();
+      if (st.status !== "ACTIVE") {
+        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
+      }
+    }
+  } else if (mode === "named") {
+    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
+    if (tunnelName && publicOrigin) {
+      tunnelManager.startNamed({
+        publicOrigin,
+        tunnelName,
+        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
+      }).catch((e) => app.log.warn(String(e?.message || e)));
+    }
+  }
+
   const ttlHoursIn = num((req.body as Record<string, unknown>).ttlHours ?? 168);
   const ttlHours = Math.max(1, Math.min(24 * 30, ttlHoursIn));
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
