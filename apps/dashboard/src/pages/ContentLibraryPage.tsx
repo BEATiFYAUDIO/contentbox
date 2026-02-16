@@ -116,9 +116,7 @@ async function uploadToRepo(contentId: string, file: File) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
 
-  // Prefer IPv4 loopback in dev to avoid localhost->IPv6 issues
-  const base =
-    (import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000";
+  const base = getApiBase();
 
   const form = new FormData();
   form.append("file", file);
