@@ -27,6 +27,7 @@ function resolveApiBase(): string {
 }
 
 const STORAGE_API_BASE = "contentbox.apiBase";
+const STORAGE_AUTO_FIX = "contentbox.apiBase.autoFixed";
 
 function readStoredApiBase(): string {
   if (typeof window === "undefined") return "";
@@ -34,6 +35,55 @@ function readStoredApiBase(): string {
     return window.localStorage.getItem(STORAGE_API_BASE) || "";
   } catch {
     return "";
+  }
+}
+
+function clearStoredApiBase(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(STORAGE_API_BASE);
+  } catch {}
+}
+
+function isPrivateHost(hostname: string): boolean {
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return true;
+  const m = hostname.match(/^172\.(\d+)\./);
+  if (m) {
+    const n = Number(m[1]);
+    return n >= 16 && n <= 31;
+  }
+  return false;
+}
+
+function shouldAutoFixApiBase(currentBase: string): boolean {
+  if (typeof window === "undefined") return false;
+  const uiHost = window.location.hostname || "";
+  if (!isLocalHost(uiHost)) return false;
+  const stored = readStoredApiBase();
+  if (!stored) return false;
+  try {
+    const apiHost = new URL(currentBase).hostname;
+    return isPrivateHost(apiHost) && !isLocalHost(apiHost);
+  } catch {
+    return false;
+  }
+}
+
+function markAutoFix(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(STORAGE_AUTO_FIX, "1");
+  } catch {}
+}
+
+function alreadyAutoFixed(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.sessionStorage.getItem(STORAGE_AUTO_FIX) === "1";
+  } catch {
+    return false;
   }
 }
 
@@ -107,6 +157,13 @@ export async function api<T>(path: string, methodOrOptions: string | ApiOptions 
 
   // Handle non-2xx responses
   if (!res.ok) {
+    if (res.status === 401 && shouldAutoFixApiBase(API_BASE) && !alreadyAutoFixed()) {
+      clearStoredApiBase();
+      markAutoFix();
+      try {
+        window.location.reload();
+      } catch {}
+    }
     const payload = data ?? text;
     const detail = typeof payload === "string" ? payload : JSON.stringify(payload);
     const err = new Error(`[${method} ${url}] ${res.status} ${res.statusText} :: ${detail}`);

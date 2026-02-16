@@ -91,6 +91,7 @@ export default function ConfigPage() {
   const overrideActive = Boolean(apiBaseOverride.trim());
   const apiMismatch = Boolean(uiHost && apiHost && uiHost !== apiHost);
   const overrideMismatch = Boolean(overrideActive && overrideHost && overrideHost !== apiHost);
+  const canForceLocal = Boolean(uiHost && (uiHost === "localhost" || uiHost === "127.0.0.1"));
 
   useEffect(() => {
     let cancelled = false;
@@ -276,6 +277,17 @@ export default function ConfigPage() {
             >
               Clear override & reload
             </button>
+            {canForceLocal && (
+              <button
+                onClick={() => {
+                  writeStoredValue(STORAGE_API_BASE, "http://127.0.0.1:4000");
+                  window.location.reload();
+                }}
+                style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer", marginLeft: 8 }}
+              >
+                Use local API
+              </button>
+            )}
           </div>
         </div>
       )}
