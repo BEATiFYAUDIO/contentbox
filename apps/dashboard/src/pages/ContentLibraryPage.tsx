@@ -2324,7 +2324,7 @@ export default function ContentLibraryPage({
                             const isStarting = status === "STARTING";
                             const isOn = status === "ACTIVE";
                             const isError = status === "ERROR";
-                            const canSharePublic = it.status === "published";
+                            const canSharePublic = true;
                             const originBase = isOn ? String(publicStatus?.publicOrigin || "") : "";
                             const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
                             return (
@@ -2352,15 +2352,15 @@ export default function ContentLibraryPage({
                                 {status === "STOPPED" ? (
                                   <>
                                     <div className="text-xs text-neutral-400">Share with anyone while ContentBox is running.</div>
-                                    {!canSharePublic ? (
-                                      <div className="text-xs text-neutral-500">Must publish before starting public link.</div>
+                                    {it.status !== "published" ? (
+                                      <div className="text-xs text-neutral-500">Publish to generate a public buy link.</div>
                                     ) : null}
                                     <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
                                     <button
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                                       onClick={startPublicLink}
-                                      disabled={publicBusy || !canSharePublic}
+                                      disabled={publicBusy}
                                     >
                                       Enable Public Link
                                     </button>
@@ -2380,7 +2380,7 @@ export default function ContentLibraryPage({
                                 {isOn ? (
                                   <>
                                     <div className="text-xs text-neutral-400">Public link</div>
-                                    {canSharePublic ? (
+                                    {it.status === "published" ? (
                                       <div className="flex items-center gap-2">
                                         <input
                                           readOnly
