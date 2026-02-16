@@ -525,7 +525,7 @@ export default function App() {
             />
           )}
 
-          {page === "config" && <ConfigPage />}
+          {page === "config" && <ConfigPage showAdvanced={showAdvancedNav} />}
           {page === "diagnostics" && <DiagnosticsPage />}
 
           {page === "finance" && (

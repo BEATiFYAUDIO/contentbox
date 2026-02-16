@@ -62,7 +62,7 @@ function safeHost(value: string): string {
   }
 }
 
-export default function ConfigPage() {
+export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean }) {
   const apiBase = useMemo(() => getApiBase(), []);
   const uiOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const [health, setHealth] = useState<Health | null>(null);
@@ -297,32 +297,40 @@ export default function ConfigPage() {
         <div style={{ opacity: 0.7, marginBottom: 8 }}>
           Current API base: <b>{apiBase}</b>
         </div>
-        <label>
-          <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
-          <input
-            value={apiBaseOverride}
-            onChange={(e) => setApiBaseOverride(e.target.value)}
-            placeholder="http://127.0.0.1:4000"
-            className={inputClass}
-          />
-        </label>
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <button
-            onClick={saveApiBaseOverride}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Save & reload
-          </button>
-          <button
-            onClick={clearApiBaseOverride}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Clear override
-          </button>
-        </div>
-        <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
-          If you see tunnels from another machine, your API base is pointing there.
-        </div>
+        {showAdvanced ? (
+          <>
+            <label>
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
+              <input
+                value={apiBaseOverride}
+                onChange={(e) => setApiBaseOverride(e.target.value)}
+                placeholder="http://127.0.0.1:4000"
+                className={inputClass}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                onClick={saveApiBaseOverride}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Save & reload
+              </button>
+              <button
+                onClick={clearApiBaseOverride}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Clear override
+              </button>
+            </div>
+            <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+              If you see tunnels from another machine, your API base is pointing there.
+            </div>
+          </>
+        ) : (
+          <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+            Advanced mode required to override API base.
+          </div>
+        )}
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
