@@ -80,6 +80,9 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
   const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
+  const [publicBusy, setPublicBusy] = useState(false);
+  const [publicMsg, setPublicMsg] = useState<string | null>(null);
+  const [publicAdvancedOpen, setPublicAdvancedOpen] = useState(false);
   const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
@@ -153,6 +156,60 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
       cancelled = true;
     };
   }, [apiBase, token]);
+
+  const refreshPublicStatus = async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${apiBase}/api/public/status`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json();
+      setPublicStatus(json || null);
+    } catch {
+      setPublicStatus(null);
+    }
+  };
+
+  const startPublicLink = async () => {
+    if (!token) return;
+    setPublicBusy(true);
+    setPublicMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/go`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ consent: true })
+      });
+      const json = await res.json();
+      setPublicStatus(json || null);
+      if (!res.ok) {
+        setPublicMsg(json?.error || "Failed to start public link.");
+      }
+    } catch (e: any) {
+      setPublicMsg(e?.message || "Failed to start public link.");
+    } finally {
+      setPublicBusy(false);
+    }
+  };
+
+  const stopPublicLink = async () => {
+    if (!token) return;
+    setPublicBusy(true);
+    setPublicMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/stop`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json();
+      setPublicStatus(json || null);
+    } catch (e: any) {
+      setPublicMsg(e?.message || "Failed to stop public link.");
+    } finally {
+      setPublicBusy(false);
+    }
+  };
 
   const buildInfo = `${(import.meta as any).env?.MODE || "unknown"} • ${
     (import.meta as any).env?.VITE_APP_VERSION || "dev"
@@ -563,6 +620,32 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                 </span>
               </div>
             ) : null}
+            {publicStatus ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+                <button
+                  onClick={startPublicLink}
+                  disabled={publicBusy || publicStatus?.state === "STARTING" || publicStatus?.state === "ACTIVE"}
+                  style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Enable Public Link
+                </button>
+                <button
+                  onClick={stopPublicLink}
+                  disabled={publicBusy || publicStatus?.state !== "ACTIVE"}
+                  style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Stop sharing
+                </button>
+                <button
+                  onClick={refreshPublicStatus}
+                  disabled={publicBusy}
+                  style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Refresh
+                </button>
+              </div>
+            ) : null}
+            {publicMsg ? <div style={{ color: "#ffb4b4" }}>{publicMsg}</div> : null}
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>
             <div><b>Buy origin</b>: {health.publicBuyOrigin || "—"}</div>
             <div><b>Studio origin</b>: {health.publicStudioOrigin || "—"}</div>
@@ -573,6 +656,66 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                 <b>Last check</b>:{" "}
                 {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
               </div>
+            ) : null}
+            {publicStatus ? (
+              <>
+                <div><b>Public origin</b>: {publicStatus?.publicOrigin || "—"}</div>
+                <div><b>Last error</b>: {publicStatus?.lastError || "—"}</div>
+                <div><b>cloudflared</b>: {publicStatus?.cloudflared?.available ? "yes" : "no"}</div>
+                <div><b>cloudflared path</b>: {publicStatus?.cloudflared?.managedPath || "—"}</div>
+                <div><b>cloudflared version</b>: {publicStatus?.cloudflared?.version || "—"}</div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(publicStatus?.autoStartEnabled)}
+                    onChange={async (e) => {
+                      try {
+                        const res = await fetch(`${apiBase}/api/public/autostart`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                          body: JSON.stringify({ enabled: e.target.checked })
+                        });
+                        const json = await res.json();
+                        setPublicStatus(json || null);
+                      } catch {
+                        setPublicMsg("Failed to update auto-start setting.");
+                      }
+                    }}
+                  />
+                  Auto-start Public Link on launch
+                </label>
+                <div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch(`${apiBase}/api/public/consent/reset`, {
+                          method: "POST",
+                          headers: { Authorization: `Bearer ${token}` }
+                        });
+                        const json = await res.json();
+                        setPublicStatus(json || null);
+                      } catch {
+                        setPublicMsg("Failed to reset consent.");
+                      }
+                    }}
+                    style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+                  >
+                    Reset Public Link consent
+                  </button>
+                </div>
+                <button
+                  onClick={() => setPublicAdvancedOpen((v) => !v)}
+                  style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  {publicAdvancedOpen ? "Hide details" : "Show details"}
+                </button>
+                {publicAdvancedOpen ? (
+                  <div style={{ opacity: 0.8 }}>
+                    <div><b>Mode</b>: {publicStatus?.mode || "—"}</div>
+                    <div><b>Consent required</b>: {publicStatus?.consentRequired ? "yes" : "no"}</div>
+                  </div>
+                ) : null}
+              </>
             ) : null}
           </div>
         )}
