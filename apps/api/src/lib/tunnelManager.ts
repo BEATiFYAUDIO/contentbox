@@ -378,7 +378,7 @@ export class TunnelManager {
         return { ok: false, error: String(e?.message || e) } as const;
       }
 
-      const healthOk = await this.verify(publicOrigin);
+      const healthOk = await this.verifyWithRetries(publicOrigin, 6, 1500);
       if (!healthOk) {
         try {
           if (child.pid) process.kill(child.pid);
@@ -470,7 +470,7 @@ export class TunnelManager {
     this.proc = child;
     this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
 
-    const healthOk = await this.verify(input.publicOrigin);
+    const healthOk = await this.verifyWithRetries(input.publicOrigin, 6, 1500);
     if (!healthOk) {
       this.state = { ...this.state, status: "ERROR", lastError: "Public link health check failed" };
       try {
@@ -505,6 +505,17 @@ export class TunnelManager {
       this.state = { ...this.state, lastCheckedAt: new Date().toISOString() };
       return false;
     }
+  }
+
+  private async verifyWithRetries(publicOrigin: string, attempts: number, delayMs: number): Promise<boolean> {
+    for (let i = 0; i < attempts; i += 1) {
+      const ok = await this.verify(publicOrigin);
+      if (ok) return true;
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, delayMs));
+      }
+    }
+    return false;
   }
 
   private startHealthChecks() {
