@@ -102,7 +102,7 @@ function normalizeBase(value: string): string {
   return value.trim().replace(/\/+$/, "");
 }
 
-function getApiBase(): string {
+export function getApiBase(): string {
   const stored = normalizeBase(readStoredApiBase());
   const resolved = resolveApiBase();
   const base = stored || resolved;

@@ -1,5 +1,5 @@
 import React from "react";
-import api from "../lib/api";
+import api, { getApiBase } from "../lib/api";
 import { getToken } from "../lib/auth";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
@@ -210,7 +210,7 @@ export default function ContentLibraryPage({
 }: {
   onOpenSplits?: (contentId: string) => void;
 }) {
-  const apiBase = ((import.meta as any).env?.VITE_API_URL?.toString()?.replace(/\/$/, "") || "http://127.0.0.1:4000");
+  const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
   const envPublicStudioOrigin = ((import.meta as any).env?.VITE_PUBLIC_STUDIO_ORIGIN || "").toString().trim();
