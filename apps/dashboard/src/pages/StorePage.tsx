@@ -1,8 +1,8 @@
 import React from "react";
+import { getApiBase } from "../lib/api";
 
 function guessApiBase() {
-  const raw = ((import.meta as any).env?.VITE_API_URL || window.location.origin) as string;
-  return raw.replace(/\/$/, "");
+  return getApiBase();
 }
 
 function isLikelyUrl(s: string) {

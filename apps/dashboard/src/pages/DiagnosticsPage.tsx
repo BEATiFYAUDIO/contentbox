@@ -1,6 +1,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { getToken } from "../lib/auth";
+import { getApiBase } from "../lib/api";
 
 type HealthPath = "/health" | "/api/health" | "/public/health";
 const DEFAULT_HEALTH_PATH: HealthPath = "/health";
@@ -99,11 +100,6 @@ type PublicStatus = {
   lastCheckedAt?: number | null;
 };
 
-function getApiBase(): string {
-  const env = (import.meta as any).env || {};
-  const v = String(env.VITE_API_URL || "").trim();
-  return (v || "http://127.0.0.1:4000").replace(/\/+$/, "");
-}
 
 function isLocalHostname(hostname: string): boolean {
   if (!hostname) return false;

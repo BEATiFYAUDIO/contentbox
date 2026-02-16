@@ -1,5 +1,5 @@
 import React from "react";
-import { api } from "../lib/api";
+import { api, getApiBase } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 
 type ReceiptStatus = {
@@ -24,8 +24,7 @@ type FulfillPayload = {
 };
 
 function apiBase() {
-  const raw = ((import.meta as any).env?.VITE_API_URL || window.location.origin) as string;
-  return raw.replace(/\/$/, "");
+  return getApiBase();
 }
 
 export default function ReceiptPage(props: { token: string }) {

@@ -1,6 +1,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { clearToken, getToken } from "../lib/auth";
+import { getApiBase } from "../lib/api";
 
 const DEFAULT_HEALTH_PATH = "/health";
 
@@ -24,11 +25,6 @@ const STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK = "contentbox.publicStudioOriginFall
 const STORAGE_TUNNEL_CONFIG_ENABLED = "contentbox.tunnelConfig.enabled";
 const STORAGE_API_BASE = "contentbox.apiBase";
 
-function getApiBase(): string {
-  const env = (import.meta as any).env || {};
-  const v = String(env.VITE_API_URL || "").trim();
-  return (v || "http://127.0.0.1:4000").replace(/\/+$/, "");
-}
 
 function readStoredValue(key: string): string {
   if (typeof window === "undefined") return "";

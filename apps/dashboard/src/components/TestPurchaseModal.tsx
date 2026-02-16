@@ -1,6 +1,7 @@
 import React from "react";
 import QRCode from "qrcode";
 import { getToken } from "../lib/auth";
+import { getApiBase } from "../lib/api";
 
 type Props = {
   open: boolean;
@@ -12,7 +13,9 @@ type Props = {
   contentStatus?: string | null;
 };
 
-const API_BASE = ((import.meta as any).env?.VITE_API_URL || "http://127.0.0.1:4000").replace(/\/$/, "");
+function apiBase() {
+  return getApiBase();
+}
 const IS_DEV = Boolean((import.meta as any).env?.DEV);
 const DEV_SIMULATE = IS_DEV && String((import.meta as any).env?.VITE_DEV_ALLOW_SIMULATE_PAYMENTS || "") === "1";
 
@@ -82,7 +85,7 @@ export default function TestPurchaseModal({
 
     const pollStatus = async () => {
       try {
-        const data = await fetchJson(`${API_BASE}/api/payments/intents/${intentId}`);
+        const data = await fetchJson(`${apiBase()}/api/payments/intents/${intentId}`);
         if (stopped) return;
         setStatus(String(data?.status || ""));
         if (data?.receiptToken && !receiptToken) {
@@ -95,7 +98,7 @@ export default function TestPurchaseModal({
 
     const refresh = async () => {
       try {
-        const data = await fetchJson(`${API_BASE}/api/payments/intents/${intentId}/refresh`, { method: "POST" });
+        const data = await fetchJson(`${apiBase()}/api/payments/intents/${intentId}/refresh`, { method: "POST" });
         if (stopped) return;
         setStatus(String(data?.status || ""));
         if (data?.receiptToken && !receiptToken) {
@@ -125,14 +128,14 @@ export default function TestPurchaseModal({
       try {
         if (authToken) {
           const data = await fetchJson(
-            `${API_BASE}/api/content/${encodeURIComponent(contentId)}/access?manifestSha256=${encodeURIComponent(manifestSha256)}`,
+            `${apiBase()}/api/content/${encodeURIComponent(contentId)}/access?manifestSha256=${encodeURIComponent(manifestSha256)}`,
             { headers: { Authorization: `Bearer ${authToken}` } }
           );
           setUnlockPayload(data);
           return;
         }
         if (!receiptToken) return;
-        const url = `${API_BASE}/public/content/${encodeURIComponent(contentId)}/access?manifestSha256=${encodeURIComponent(
+        const url = `${apiBase()}/public/content/${encodeURIComponent(contentId)}/access?manifestSha256=${encodeURIComponent(
           manifestSha256
         )}&receiptToken=${encodeURIComponent(receiptToken)}`;
         const data = await fetchJson(url);
