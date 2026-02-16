@@ -1288,6 +1288,9 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
   appPublic.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
   appPublic.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
+  appPublic.get("/invites/:token", handlePublicInviteLookup);
+  appPublic.get("/invite/:token", handlePublicInvitePage);
+  appPublic.post("/invites/:token/accept", handlePublicInviteAccept);
   appPublic.get("/content/:manifestHash/:fileId", handlePublicContentFile);
 }
 
@@ -8723,7 +8726,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
 /**
  * Public invite lookup by token (frontend uses this to show invite details)
  */
-app.get("/invites/:token", async (req: any, reply) => {
+async function handlePublicInviteLookup(req: any, reply: any) {
   const token = asString((req.params as any).token);
   if (!token) return notFound(reply, "Invite not found");
 
@@ -8811,12 +8814,14 @@ app.get("/invites/:token", async (req: any, reply) => {
   }
 
   return reply.send({ ok: true, invitation, splitParticipant, splitVersion, content, invites: relatedInvites });
-});
+}
+
+app.get("/invites/:token", handlePublicInviteLookup);
 
 /**
  * Public invite page (simple HTML) so remote users can accept.
  */
-app.get("/invite/:token", async (req: any, reply: any) => {
+async function handlePublicInvitePage(req: any, reply: any) {
   const token = asString((req.params as any).token);
   if (!token) return notFound(reply, "Invite not found");
 
@@ -8900,13 +8905,15 @@ app.get("/invite/:token", async (req: any, reply: any) => {
 
   reply.type("text/html; charset=utf-8");
   return reply.send(html);
-});
+}
+
+app.get("/invite/:token", handlePublicInvitePage);
 
 /**
  * Accept an invite token. If the requester is authenticated, associate the
  * SplitParticipant.participantUserId with the authenticated user.
  */
-app.post("/invites/:token/accept", async (req: any, reply) => {
+async function handlePublicInviteAccept(req: any, reply: any) {
   const token = asString((req.params as any).token);
   if (!token) return notFound(reply, "Invite not found");
 
@@ -9088,7 +9095,9 @@ app.post("/invites/:token/accept", async (req: any, reply) => {
   }
 
   return reply.send({ ok: true, acceptedAt: now.toISOString() });
-});
+}
+
+app.post("/invites/:token/accept", handlePublicInviteAccept);
 
 /** ---------- boot ---------- */
 
