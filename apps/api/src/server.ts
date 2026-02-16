@@ -2664,6 +2664,17 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
 
 // Public exposure control
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const mode = normalizePublicMode(PUBLIC_MODE);
+  if (mode === "quick") {
+    const consent = getPublicSharingConsent();
+    const consentGranted = consent.granted || consent.dontAskAgain;
+    if (consentGranted && getPublicSharingAutoStart()) {
+      const st = tunnelManager.status();
+      if (st.status === "STOPPED") {
+        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
+      }
+    }
+  }
   return reply.send(getPublicStatus());
 });
 
@@ -9138,7 +9149,7 @@ async function start() {
       const consent = getPublicSharingConsent();
       const consentGranted = consent.granted || consent.dontAskAgain;
       if (consentGranted && getPublicSharingAutoStart()) {
-        tunnelManager.startQuick().catch(() => {});
+        tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
       }
     }
   }
