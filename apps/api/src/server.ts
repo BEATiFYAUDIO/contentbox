@@ -620,6 +620,9 @@ function setPublicSharingConsent(granted: boolean, dontAskAgain: boolean) {
     dontAskAgain,
     grantedAt: granted ? new Date().toISOString() : null
   };
+  if (granted && typeof s.publicSharingAutoStart !== "boolean") {
+    s.publicSharingAutoStart = true;
+  }
   writeLocalState(s);
   return s.publicSharingConsent;
 }
