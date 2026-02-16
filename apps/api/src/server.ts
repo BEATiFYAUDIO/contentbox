@@ -632,7 +632,8 @@ function clearPublicSharingConsent() {
 
 function getPublicSharingAutoStart(): boolean {
   const s = readLocalState();
-  return Boolean(s.publicSharingAutoStart);
+  if (typeof s.publicSharingAutoStart === "boolean") return s.publicSharingAutoStart;
+  return true;
 }
 
 function setPublicSharingAutoStart(enabled: boolean) {
