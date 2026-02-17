@@ -552,6 +552,31 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
         <div style={{ opacity: 0.7, marginBottom: 10 }}>
           Advanced routing for public links.
         </div>
+        {publicStatus ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            <button
+              onClick={startPublicLink}
+              disabled={publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
+              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              Start temporary link
+            </button>
+            <button
+              onClick={stopPublicLink}
+              disabled={publicBusy || publicStatus?.status !== "online"}
+              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              Stop sharing
+            </button>
+            <button
+              onClick={refreshPublicStatus}
+              disabled={publicBusy}
+              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              Refresh status
+            </button>
+          </div>
+        ) : null}
         <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input
             type="checkbox"
@@ -624,25 +649,26 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                   onChange={(e) => setNamedTokenInput(e.target.value)}
                   placeholder="Cloudflare connector token"
                   className={inputClass}
+                  disabled={!tunnelEnabled}
                 />
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                   <button
                     onClick={generateNamedToken}
-                    disabled={namedTokenBusy}
+                    disabled={namedTokenBusy || !tunnelEnabled}
                     style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
                   >
                     Generate token
                   </button>
                   <button
                     onClick={() => saveNamedToken(false)}
-                    disabled={namedTokenBusy}
+                    disabled={namedTokenBusy || !tunnelEnabled}
                     style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
                   >
                     Save token
                   </button>
                   <button
                     onClick={() => saveNamedToken(true)}
-                    disabled={namedTokenBusy}
+                    disabled={namedTokenBusy || !tunnelEnabled}
                     style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
                   >
                     Save & start tunnel
@@ -650,7 +676,7 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                   {publicStatus?.namedTokenStored ? (
                     <button
                       onClick={clearNamedToken}
-                      disabled={namedTokenBusy}
+                      disabled={namedTokenBusy || !tunnelEnabled}
                       style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
                     >
                       Clear saved token
@@ -676,31 +702,6 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                 Discover tunnels
               </button>
             </div>
-            {publicStatus ? (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
-                <button
-                  onClick={startPublicLink}
-                  disabled={publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
-                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Start temporary link
-                </button>
-                <button
-                  onClick={stopPublicLink}
-                  disabled={publicBusy || publicStatus?.status !== "online"}
-                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Stop sharing
-                </button>
-                <button
-                  onClick={refreshPublicStatus}
-                  disabled={publicBusy}
-                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Refresh status
-                </button>
-              </div>
-            ) : null}
             {tunnelList.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
