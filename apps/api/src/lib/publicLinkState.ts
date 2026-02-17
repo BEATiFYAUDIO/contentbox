@@ -1,5 +1,11 @@
 import { getPublicOriginConfig } from "./publicOriginStore.js";
 
+/**
+ * Strict canonical public link model:
+ * - Named tunnel (if configured) is always the canonical origin.
+ * - Quick tunnel is allowed only when named is not configured.
+ * - Named offline is OFFLINE (not ERROR); canonical origin stays the same.
+ */
 export type PublicMode = "off" | "quick" | "named";
 export type PublicStatus = "starting" | "online" | "offline" | "error";
 
