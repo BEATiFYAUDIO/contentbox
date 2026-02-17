@@ -39,10 +39,20 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
 
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
+  const [remoteInvites, setRemoteInvites] = React.useState<any[]>([]);
 
   async function loadContentList() {
     const list = await api<ContentItem[]>("/content?scope=mine", "GET");
     setContentList(list);
+  }
+
+  async function loadRemoteInvites() {
+    try {
+      const list = await api<any[]>(`/my/invitations/remote`, "GET");
+      setRemoteInvites(Array.isArray(list) ? list : []);
+    } catch {
+      setRemoteInvites([]);
+    }
   }
 
   async function loadSplitSummary(contentId: string) {
@@ -58,9 +68,11 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
     if (isBasicIdentity) {
       setContentList([]);
       setSplitSummaryByContent({});
+      setRemoteInvites([]);
       return;
     }
     loadContentList().catch(() => {});
+    loadRemoteInvites().catch(() => {});
   }, [isBasicIdentity]);
 
   React.useEffect(() => {
@@ -122,6 +134,48 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
           )}
         </div>
       </div>
+
+      {remoteInvites.length > 0 ? (
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-lg font-semibold">Remote splits (read-only)</div>
+              <div className="text-sm text-neutral-400 mt-1">Accepted invites from other nodes.</div>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-2">
+            {remoteInvites
+              .filter((inv) => inv.acceptedAt)
+              .map((inv) => (
+                <div key={inv.id} className="rounded-lg border border-neutral-800 px-3 py-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{inv.contentTitle || inv.contentId || "Remote content"}</div>
+                      <div className="text-xs text-neutral-400">
+                        {titleCase(inv.contentType)} • {inv.role ? `${inv.role}` : "role —"} • {inv.percent != null ? `${inv.percent}%` : "percent —"}
+                      </div>
+                      {inv.remoteOrigin ? (
+                        <div className="text-[11px] text-neutral-500 break-all">Remote: {inv.remoteOrigin}</div>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {inv.inviteUrl ? (
+                        <button
+                          onClick={() => window.open(inv.inviteUrl, "_blank", "noopener,noreferrer")}
+                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                        >
+                          View invite
+                        </button>
+                      ) : null}
+                      <div className="text-[11px] text-neutral-500 uppercase tracking-wide">read-only</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+          </div>
+        </div>
+      ) : null}
 
       <AuditPanel scopeType="split" title="Audit" exportName="split-audit.json" />
       </>
