@@ -3124,6 +3124,11 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
 
 app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   await tunnelManager.stop();
+  if (process.platform !== "win32") {
+    try {
+      spawnSync("pkill", ["-f", "cloudflared tunnel run"], { stdio: "ignore" });
+    } catch {}
+  }
   const status = getPublicStatus();
   return reply.send({
     ...status,
