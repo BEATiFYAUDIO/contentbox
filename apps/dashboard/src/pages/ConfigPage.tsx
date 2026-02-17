@@ -618,6 +618,9 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                 <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
                   DDNS disabled
                 </span>
+                <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-400">
+                  {publicStatus?.mode === "named" ? "Named link" : publicStatus?.mode === "quick" ? "Quick link" : "Local link"}
+                </span>
               </div>
             ) : null}
             {publicStatus ? (
