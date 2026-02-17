@@ -699,6 +699,8 @@ function normalizePublicOriginCandidate(value: string | null | undefined): strin
 
 function getRuntimeIdentityDetail() {
   const base = getIdentityDetail();
+  const override = String(process.env.IDENTITY_LEVEL_OVERRIDE || "").trim();
+  if (override) return base;
   if (base.level === IdentityLevel.PERSISTENT) return base;
   const status = getPublicLinkState();
   if (isPersistentOrigin(status.canonicalOrigin)) {

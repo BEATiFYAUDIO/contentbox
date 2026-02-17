@@ -19,8 +19,10 @@ if ! bash "$ROOT_DIR/install.sh" >/tmp/contentbox-install.log 2>&1; then
   fail "install.sh failed"
 fi
 
-echo "[smoke] Starting API..."
-(cd "$API_DIR" && IDENTITY_LEVEL_OVERRIDE=BASIC npm run dev) >/tmp/contentbox-api.log 2>&1 &
+API_PORT="${API_PORT:-4015}"
+PUBLIC_PORT="${PUBLIC_PORT:-4016}"
+echo "[smoke] Starting API on port $API_PORT (public port $PUBLIC_PORT)..."
+(cd "$API_DIR" && PORT="$API_PORT" PUBLIC_PORT="$PUBLIC_PORT" IDENTITY_LEVEL_OVERRIDE=BASIC npm run dev) >/tmp/contentbox-api.log 2>&1 &
 API_PID=$!
 
 cleanup() {
@@ -30,9 +32,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sleep 4
-
-if ! curl -fsS http://127.0.0.1:4000/health >/tmp/contentbox-health.json; then
+for i in {1..10}; do
+  if curl -fsS "http://127.0.0.1:${API_PORT}/health" >/tmp/contentbox-health.json; then
+    break
+  fi
+  sleep 1
+done
+if ! curl -fsS "http://127.0.0.1:${API_PORT}/health" >/tmp/contentbox-health.json; then
   cat /tmp/contentbox-api.log >&2
   fail "API /health failed"
 fi
@@ -41,7 +47,7 @@ pass "API /health ok"
 status=$(curl -s -o /tmp/contentbox-auth.json -w "%{http_code}" \
   -H "Content-Type: application/json" \
   -d '{}' \
-  http://127.0.0.1:4000/auth/login || true)
+  "http://127.0.0.1:${API_PORT}/auth/login" || true)
 
 if [ "$status" = "404" ] || [ -z "$status" ]; then
   cat /tmp/contentbox-auth.json >&2
@@ -50,7 +56,7 @@ fi
 pass "/auth/login reachable (status $status)"
 
 echo "[smoke] Running identity gating test (basic)..."
-if ! (cd "$API_DIR" && EXPECT_IDENTITY_LEVEL=BASIC npm run test:identity-gating) >/tmp/contentbox-identity-gating.log 2>&1; then
+if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" EXPECT_IDENTITY_LEVEL=BASIC npx tsx src/scripts/identity_gating_test.ts) >/tmp/contentbox-identity-gating.log 2>&1; then
   cat /tmp/contentbox-identity-gating.log >&2
   fail "identity gating test failed"
 fi
