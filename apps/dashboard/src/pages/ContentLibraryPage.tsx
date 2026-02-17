@@ -922,7 +922,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
       setShowTrash(false);
       await load(false);
 
-      if (onOpenSplits) onOpenSplits(created.id);
+      setPendingOpenContentId(created.id);
     } catch (e: any) {
       setError(e?.message || "Failed to create content");
     } finally {
