@@ -79,6 +79,7 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
   const [remoteReceivedInvites, setRemoteReceivedInvites] = useState<any[] | null>(null);
   const [sentOpen, setSentOpen] = useState<Record<string, boolean>>({});
   const [receivedOpen, setReceivedOpen] = useState<Record<string, boolean>>({});
+  const [remoteAcceptBusy, setRemoteAcceptBusy] = useState<Record<string, boolean>>({});
   const [contentList, setContentList] = useState<any[]>([]);
   const [selectedContentId, setSelectedContentId] = useState<string>("");
   const [selectedSplitId, setSelectedSplitId] = useState<string | null>(null);
@@ -185,6 +186,17 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
     if (!remoteOriginFromLocation) throw new Error("Remote origin missing");
     const origin = encodeURIComponent(remoteOriginFromLocation);
     const url = `/api/remote${path}?origin=${origin}`;
+    const res = await api<any>(url, opts?.method || "GET", opts?.body || undefined);
+    return res;
+  }
+
+  async function fetchRemoteJsonFromOrigin(
+    origin: string,
+    path: string,
+    opts?: { method?: string; body?: any; headers?: Record<string, string> }
+  ) {
+    const encoded = encodeURIComponent(origin);
+    const url = `/api/remote${path}?origin=${encoded}`;
     const res = await api<any>(url, opts?.method || "GET", opts?.body || undefined);
     return res;
   }
@@ -485,6 +497,41 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
     return [...remote, ...base];
   })();
 
+  async function acceptRemoteInvite(inv: any) {
+    const inviteUrl = String(inv?.inviteUrl || "").trim();
+    const token = extractInviteTokenFromPaste(inviteUrl || inv?.token || "");
+    let origin = String(inv?.remoteOrigin || "").trim();
+    if (!origin && inviteUrl) {
+      try {
+        origin = new URL(inviteUrl).origin;
+      } catch {}
+    }
+    if (!token || !origin) {
+      setMsg("Remote invite is missing token or origin.");
+      return;
+    }
+    setRemoteAcceptBusy((m) => ({ ...m, [inv.id]: true }));
+    try {
+      const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}/accept`, { method: "POST", body: {} });
+      await api(`/invites/ingest`, "POST", {
+        remoteOrigin: origin,
+        token,
+        inviteUrl,
+        content: res?.content || null,
+        splitParticipant: res?.splitParticipant || null,
+        splitVersion: res?.splitVersion || null,
+        acceptedAt: res?.invitation?.acceptedAt || null,
+        remoteNodeUrl: origin
+      });
+      const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+      setRemoteReceivedInvites(listRemote || []);
+    } catch (e: any) {
+      setMsg(e?.message || "Remote accept failed");
+    } finally {
+      setRemoteAcceptBusy((m) => ({ ...m, [inv.id]: false }));
+    }
+  }
+
   return (
     <div className="space-y-4">
       {isBasicIdentity ? (
@@ -721,7 +768,18 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                                     {inv.remoteOrigin ? <div className="text-[10px] text-neutral-500">Remote: {inv.remoteOrigin}</div> : null}
                                     {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
                                   </div>
-                                  <div className="text-xs uppercase tracking-wide text-neutral-400">{status}</div>
+                                  <div className="flex items-center gap-2">
+                                    {inv.remoteOrigin && !inv.acceptedAt ? (
+                                      <button
+                                        onClick={() => acceptRemoteInvite(inv)}
+                                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
+                                        disabled={remoteAcceptBusy[inv.id]}
+                                      >
+                                        {remoteAcceptBusy[inv.id] ? "Accepting…" : "Accept"}
+                                      </button>
+                                    ) : null}
+                                    <div className="text-xs uppercase tracking-wide text-neutral-400">{status}</div>
+                                  </div>
                                 </div>
                               );
                             })}
