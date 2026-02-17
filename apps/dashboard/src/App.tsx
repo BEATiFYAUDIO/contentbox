@@ -219,17 +219,9 @@ export default function App() {
       setPage("receipt");
     }
     const splitFromUrl = getSplitContentIdFromLocation();
-    if (!tokenFromUrl && !receiptFromUrl && splitFromUrl) {
-      setSelectedContentId(splitFromUrl);
-      setPage("split-editor");
-    }
     const royaltiesFromUrl = getRoyaltiesContentIdFromLocation();
-    if (!tokenFromUrl && !receiptFromUrl && !splitFromUrl && royaltiesFromUrl) {
-      setSelectedContentId(royaltiesFromUrl);
-      setPage("royalties-terms");
-    }
     const parts = window.location.pathname.split("/").filter(Boolean);
-    if (!tokenFromUrl && !receiptFromUrl && !splitFromUrl && !royaltiesFromUrl) {
+    if (!tokenFromUrl && !receiptFromUrl) {
       if (parts[0] === "config") setPage("config");
       else if (parts[0] === "diagnostics") setPage("diagnostics");
       else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
