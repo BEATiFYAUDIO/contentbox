@@ -657,7 +657,12 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
         setItems((prev) =>
           prev.map((it) =>
             it.id === contentId
-              ? { ...it, status: "published", publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString() }
+              ? {
+                  ...it,
+                  status: "published",
+                  publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString(),
+                  manifest: res?.manifestSha256 ? { sha256: res.manifestSha256 } : it.manifest
+                }
               : it
           )
         );
@@ -682,7 +687,12 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
       setItems((prev) =>
         prev.map((it) =>
           it.id === contentId
-            ? { ...it, status: "published", publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString() }
+            ? {
+                ...it,
+                status: "published",
+                publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString(),
+                manifest: res?.manifestSha256 ? { sha256: res.manifestSha256 } : it.manifest
+              }
             : it
         )
       );
