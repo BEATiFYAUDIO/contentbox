@@ -2092,6 +2092,36 @@ app.get("/me/invite-history", { preHandler: requireAuth }, async (req: any, repl
     }
   }
 
+  const remoteInvites = await prisma.remoteInvite.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" }
+  });
+  for (const inv of remoteInvites) {
+    const contentTitle = inv.contentTitle || "Remote content";
+    events.push({
+      id: `invite.remote.received:${inv.id}`,
+      ts: inv.createdAt.toISOString(),
+      category: "invite",
+      type: "invite.remote.received",
+      title: `Remote invite received • ${contentTitle}`,
+      summary: inv.participantEmail || null,
+      actor: actorFromUser(me),
+      details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
+    });
+    if (inv.acceptedAt) {
+      events.push({
+        id: `invite.remote.accepted:${inv.id}`,
+        ts: inv.acceptedAt.toISOString(),
+        category: "invite",
+        type: "invite.remote.accepted",
+        title: `Remote invite accepted • ${contentTitle}`,
+        summary: inv.participantEmail || null,
+        actor: actorFromUser(me),
+        details: { remoteOrigin: inv.remoteOrigin, inviteUrl: inv.inviteUrl }
+      });
+    }
+  }
+
   events.sort((a, b) => (a.ts < b.ts ? 1 : -1));
   return reply.send(jsonSafe(events));
 });
@@ -2280,6 +2310,28 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
           contentId: inv.splitParticipant?.splitVersion?.contentId,
           contentTitle: inv.splitParticipant?.splitVersion?.content?.title,
           expiresAt: inv.expiresAt.toISOString(),
+          acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null
+        }
+      });
+    });
+
+    const remoteInvites = await prisma.remoteInvite.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" }
+    });
+    remoteInvites.forEach((inv) => {
+      events.push({
+        id: `invite.remote:${inv.id}`,
+        ts: inv.createdAt.toISOString(),
+        type: inv.acceptedAt ? "invite.remote.accepted" : "invite.remote.received",
+        summary: inv.participantEmail || null,
+        actor: actorFromUser(me ? { id: me.id, email: me.email, displayName: me.displayName } : null),
+        details: {
+          id: inv.id,
+          contentId: inv.contentId,
+          contentTitle: inv.contentTitle,
+          remoteOrigin: inv.remoteOrigin,
+          inviteUrl: inv.inviteUrl,
           acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null
         }
       });
@@ -2763,6 +2815,28 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
     update: data as any,
     create: data as any
   });
+
+  try {
+    await prisma.auditEvent.create({
+      data: {
+        userId,
+        action: acceptedAt ? "invite.remote.accepted" : "invite.remote.ingest",
+        entityType: "RemoteInvite",
+        entityId: saved.id,
+        payloadJson: {
+          remoteOrigin,
+          inviteUrl: inviteUrl || null,
+          contentId: data.contentId,
+          contentTitle: data.contentTitle,
+          splitVersionNum: data.splitVersionNum,
+          role: data.role,
+          percent: data.percent,
+          participantEmail: data.participantEmail,
+          acceptedAt: data.acceptedAt ? data.acceptedAt.toISOString?.() || data.acceptedAt : null
+        } as any
+      }
+    });
+  } catch {}
 
   return reply.send({ ok: true, id: saved.id });
 });
