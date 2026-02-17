@@ -2622,6 +2622,15 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
+                            const embedBase = effectivePublicOrigin.replace(/\/$/, "");
+                            const canEmbed = Boolean(publicStatus?.isCanonical && embedBase);
+                            const embedScript = canEmbed ? `${embedBase}/embed.js` : "";
+                            const embedTag = canEmbed
+                              ? `<script async src="${embedScript}"></script>\n<div data-contentbox-buy="${it.id}"></div>`
+                              : "";
+                            const embedIframe = canEmbed
+                              ? `<iframe src="${buyLink}" style="width:100%;max-width:900px;height:720px;border:1px solid #222;border-radius:16px;"></iframe>`
+                              : "";
                             const loopbackBase = "http://127.0.0.1:4000";
                             const loopbackLink = `${loopbackBase}/buy/${it.id}`;
                             const hasPublicBuy = Boolean(buyBase);
@@ -2715,6 +2724,44 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                 </div>
 
                                 {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
+
+                                <div className="text-[11px] text-neutral-500">Embed</div>
+                                {canEmbed ? (
+                                  <>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="min-w-0">
+                                        Script embed: <span className="text-neutral-300 break-all">{embedScript}</span>
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                          onClick={() => copyText(embedTag)}
+                                        >
+                                          Copy snippet
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="min-w-0">
+                                        iFrame embed: <span className="text-neutral-300 break-all">{buyLink}</span>
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                          onClick={() => copyText(embedIframe)}
+                                        >
+                                          Copy iframe
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </>
+                                ) : (
+                                  <div className="text-xs text-neutral-500">
+                                    Embeds require a persistent identity (named tunnel).
+                                  </div>
+                                )}
 
                                 <div className="text-xs text-neutral-500">
                                   Content ID: <span className="text-neutral-300">{it.id}</span>{" "}
