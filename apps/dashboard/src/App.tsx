@@ -198,12 +198,21 @@ export default function App() {
       setPublicStatus(null);
       return;
     }
-    fetchIdentityDetail()
-      .then((d) => setIdentityDetail(d))
-      .catch(() => setIdentityDetail(null));
-    api("/api/public/status", "GET")
-      .then((d: any) => setPublicStatus(d))
-      .catch(() => setPublicStatus(null));
+    let alive = true;
+    const refresh = () => {
+      fetchIdentityDetail()
+        .then((d) => alive && setIdentityDetail(d))
+        .catch(() => alive && setIdentityDetail(null));
+      api("/api/public/status", "GET")
+        .then((d: any) => alive && setPublicStatus(d))
+        .catch(() => alive && setPublicStatus(null));
+    };
+    refresh();
+    const t = window.setInterval(refresh, 30000);
+    return () => {
+      alive = false;
+      window.clearInterval(t);
+    };
   }, [me?.id]);
 
   // Extract the invite token from the URL when the component mounts
