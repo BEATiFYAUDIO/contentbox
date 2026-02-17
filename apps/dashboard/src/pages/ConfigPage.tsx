@@ -604,22 +604,32 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
                 <span
                   className={`text-[11px] rounded-full border px-2 py-0.5 ${
-                    publicStatus?.state === "ACTIVE"
+                    publicStatus?.status === "online"
                       ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
-                      : publicStatus?.state === "STARTING"
+                      : publicStatus?.status === "starting"
                         ? "border-amber-900 bg-amber-950/30 text-amber-200"
-                        : publicStatus?.state === "ERROR"
+                        : publicStatus?.status === "error"
                           ? "border-red-900 bg-red-950/30 text-red-200"
                           : "border-neutral-800 bg-neutral-950 text-neutral-400"
                   }`}
                 >
-                  {publicStatus?.state || "STOPPED"}
+                  {publicStatus?.status === "online"
+                    ? "ONLINE"
+                    : publicStatus?.status === "starting"
+                      ? "STARTING"
+                      : publicStatus?.status === "error"
+                        ? "ERROR"
+                        : "OFFLINE"}
                 </span>
                 <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
                   DDNS disabled
                 </span>
                 <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-400">
-                  {publicStatus?.mode === "named" ? "Named link" : publicStatus?.mode === "quick" ? "Quick link" : "Local link"}
+                  {publicStatus?.mode === "named"
+                    ? "Permanent (Named)"
+                    : publicStatus?.mode === "quick"
+                      ? "Temporary (Quick)"
+                      : "Local"}
                 </span>
               </div>
             ) : null}
@@ -627,14 +637,14 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
                 <button
                   onClick={startPublicLink}
-                  disabled={publicBusy || publicStatus?.state === "STARTING" || publicStatus?.state === "ACTIVE"}
+                  disabled={publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
                   style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
                 >
                   Enable Public Link
                 </button>
                 <button
                   onClick={stopPublicLink}
-                  disabled={publicBusy || publicStatus?.state !== "ACTIVE"}
+                  disabled={publicBusy || publicStatus?.status !== "online"}
                   style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
                 >
                   Stop sharing
@@ -662,7 +672,7 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
             ) : null}
             {publicStatus ? (
               <>
-                <div><b>Public origin</b>: {publicStatus?.publicOrigin || "—"}</div>
+                <div><b>Public origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
                 <div><b>Last error</b>: {publicStatus?.lastError || "—"}</div>
                 <div><b>cloudflared</b>: {publicStatus?.cloudflared?.available ? "yes" : "no"}</div>
                 <div><b>cloudflared path</b>: {publicStatus?.cloudflared?.managedPath || "—"}</div>

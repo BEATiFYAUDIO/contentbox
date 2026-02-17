@@ -96,7 +96,9 @@ type ProbeRow = {
 
 type PublicStatus = {
   publicOrigin?: string | null;
-  state?: string | null;
+  canonicalOrigin?: string | null;
+  status?: string | null;
+  mode?: string | null;
   lastCheckedAt?: number | null;
 };
 
@@ -274,7 +276,7 @@ export default function DiagnosticsPage() {
   }, [token, apiBase]);
 
   const checkTunnelHealth = async () => {
-    const origin = String(publicStatus?.publicOrigin || "").trim();
+    const origin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
     if (!origin) {
       setTunnelHealth(null);
       setTunnelHealthErr("No public origin available.");
@@ -327,8 +329,8 @@ export default function DiagnosticsPage() {
         {!token && <div style={{ opacity: 0.7 }}>Sign in to check tunnel health.</div>}
         {token && (
           <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
-            <div><b>Status</b>: {publicStatus?.state || "—"}</div>
-            <div><b>Public origin</b>: {publicStatus?.publicOrigin || "—"}</div>
+            <div><b>Status</b>: {publicStatus?.status || "—"}</div>
+            <div><b>Public origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
             <div>
               <b>Last check</b>:{" "}
               {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}

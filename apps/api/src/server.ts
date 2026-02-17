@@ -28,6 +28,13 @@ import { deriveFromXpub } from "./payments/xpub.js";
 import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
+import {
+  canonicalOriginForLinks,
+  computePublicLinkState,
+  getNamedTunnelConfig,
+  isNamedConfigured,
+  type PublicLinkState
+} from "./lib/publicLinkState.js";
 import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
@@ -672,46 +679,6 @@ function setPublicSharingProtocolPreference(p: "http2" | "quic") {
   writeLocalState(s);
 }
 
-type PublicMode = "off" | "quick" | "named" | "direct";
-type PublicState = "STOPPED" | "STARTING" | "ACTIVE" | "ERROR";
-
-function normalizePublicMode(value: string): PublicMode {
-  const v = String(value || "").trim().toLowerCase();
-  if (v === "off" || v === "quick" || v === "named" || v === "direct") return v;
-  return "quick";
-}
-
-function normalizePublicOriginCandidate(value: string | null | undefined): string | null {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
-  return `https://${raw.replace(/\/+$/, "")}`;
-}
-
-function getNamedTunnelConfig(): { tunnelName: string; publicOrigin: string } | null {
-  const envTunnel = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
-  const envOrigin = normalizePublicOriginCandidate(process.env.CONTENTBOX_PUBLIC_ORIGIN || "");
-  if (envTunnel && envOrigin) {
-    return { tunnelName: envTunnel, publicOrigin: envOrigin };
-  }
-  const cfg = getPublicOriginConfig();
-  const cfgTunnel = String(cfg.tunnelName || "").trim();
-  const cfgOrigin = normalizePublicOriginCandidate(cfg.domain || "");
-  const provider = String(cfg.provider || "").trim();
-  if (provider === "cloudflare" && cfgTunnel && cfgOrigin) {
-    return { tunnelName: cfgTunnel, publicOrigin: cfgOrigin };
-  }
-  return null;
-}
-
-function getEffectivePublicMode(): PublicMode {
-  const mode = normalizePublicMode(PUBLIC_MODE);
-  if (mode === "off" || mode === "direct") return mode;
-  if (getNamedTunnelConfig()) return "named";
-  if (mode === "named") return mode;
-  return mode;
-}
-
 function isPersistentOrigin(origin: string | null): boolean {
   if (!origin) return false;
   try {
@@ -723,21 +690,28 @@ function isPersistentOrigin(origin: string | null): boolean {
   }
 }
 
+function normalizePublicOriginCandidate(value: string | null | undefined): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  return `https://${raw.replace(/\/+$/, "")}`;
+}
+
 function getRuntimeIdentityDetail() {
   const base = getIdentityDetail();
   if (base.level === IdentityLevel.PERSISTENT) return base;
-  const status = getPublicStatus();
-  if (isPersistentOrigin(status.publicOrigin)) {
+  const status = getPublicLinkState();
+  if (isPersistentOrigin(status.canonicalOrigin)) {
     return {
       ...base,
       level: IdentityLevel.PERSISTENT,
       persistentConfigured: true,
       reason: "public_origin_detected",
-      publicOrigin: status.publicOrigin
+      publicOrigin: status.canonicalOrigin
     };
   }
   const cfg = getPublicOriginConfig();
-  const cfgOrigin = normalizePublicOriginCandidate(cfg.domain || null);
+  const cfgOrigin = String(cfg.domain || "").trim() ? normalizePublicOriginCandidate(cfg.domain || null) : null;
   if (cfgOrigin && isPersistentOrigin(cfgOrigin)) {
     return {
       ...base,
@@ -821,48 +795,76 @@ function toEpochMs(value: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
-function getPublicStatus(): {
-  mode: PublicMode;
-  state: PublicState;
-  publicOrigin: string | null;
-  lastError: string | null;
-  lastCheckedAt: number | null;
-  cloudflared: { available: boolean; managedPath: string | null; version: string | null };
-  consentRequired: boolean;
-  autoStartEnabled: boolean;
-} {
-  const mode = getEffectivePublicMode();
+const namedHealthCache: { ok: boolean | null; checkedAt: number | null; inflight: boolean } = {
+  ok: null,
+  checkedAt: null,
+  inflight: false
+};
+
+async function refreshNamedHealth(origin: string) {
+  if (namedHealthCache.inflight) return;
+  namedHealthCache.inflight = true;
+  try {
+    const localOk = await checkLocalPublicHealth();
+    const publicOk = await checkPublicPing(origin);
+    const ok = Boolean(localOk && publicOk);
+    namedHealthCache.ok = ok;
+    namedHealthCache.checkedAt = Date.now();
+  } finally {
+    namedHealthCache.inflight = false;
+  }
+}
+
+function getPublicLinkState(): PublicLinkState {
+  const namedCfg = getNamedTunnelConfig();
+  const quick = tunnelManager.status();
+  const namedHealthOk = namedCfg ? namedHealthCache.ok : null;
+  const state = computePublicLinkState({
+    publicModeEnv: PUBLIC_MODE,
+    dbModeEnv: process.env.DB_MODE,
+    namedEnv: {
+      tunnelName: process.env.CLOUDFLARE_TUNNEL_NAME || null,
+      publicOrigin: process.env.CONTENTBOX_PUBLIC_ORIGIN || null
+    },
+    config: getPublicOriginConfig(),
+    quick: {
+      status: quick.status,
+      publicOrigin: quick.publicOrigin,
+      lastError: quick.lastError,
+      lastCheckedAt: quick.lastCheckedAt
+    },
+    namedHealthOk
+  });
+
+  if (state.mode === "named" && state.canonicalOrigin) {
+    if (!namedHealthCache.checkedAt || Date.now() - namedHealthCache.checkedAt > 15000) {
+      refreshNamedHealth(state.canonicalOrigin).catch(() => {});
+    }
+  }
+  return state;
+}
+
+function getPublicStatus() {
+  const state = getPublicLinkState();
   const cloudflared = getCloudflaredStatus();
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
   const autoStartEnabled = getPublicSharingAutoStart();
-  const consentRequired = mode === "quick" && !cloudflared.available && !consentGranted;
-  if (mode === "off") {
-    return { mode, state: "STOPPED", publicOrigin: null, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
-  }
+  const consentRequired = state.mode === "quick" && !cloudflared.available && !consentGranted;
+  const legacyState =
+    state.status === "online" ? "ACTIVE" : state.status === "starting" ? "STARTING" : state.status === "error" ? "ERROR" : "STOPPED";
 
-  if (mode === "direct") {
-    const origin = getDirectPublicOrigin();
-    if (!origin) {
-      return { mode, state: "ERROR", publicOrigin: null, lastError: "direct_mode_not_public", lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
-    }
-    return { mode, state: "ACTIVE", publicOrigin: origin, lastError: null, lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
-  }
-
-  if (mode === "named") {
-    const cfg = getNamedTunnelConfig();
-    if (!cfg) {
-      return { mode, state: "ERROR", publicOrigin: null, lastError: "missing_named_tunnel_config", lastCheckedAt: null, cloudflared, consentRequired: false, autoStartEnabled };
-    }
-  }
-
-  const base = tunnelManager.status();
   return {
-    mode,
-    state: base.status as PublicState,
-    publicOrigin: base.status === "ACTIVE" ? base.publicOrigin : null,
-    lastError: base.lastError || null,
-    lastCheckedAt: toEpochMs(base.lastCheckedAt),
+    mode: state.mode,
+    status: state.status,
+    canonicalOrigin: state.canonicalOrigin,
+    publicOrigin: state.canonicalOrigin,
+    isCanonical: state.isCanonical,
+    message: state.message,
+    lastChangedAt: state.lastChangedAt,
+    state: legacyState,
+    lastError: state.status === "error" ? "Public link error" : null,
+    lastCheckedAt: namedHealthCache.checkedAt,
     cloudflared,
     consentRequired,
     autoStartEnabled
@@ -870,14 +872,14 @@ function getPublicStatus(): {
 }
 
 async function triggerPublicStartBestEffort() {
-  const mode = getEffectivePublicMode();
-  if (mode === "quick") {
+  const state = getPublicLinkState();
+  if (state.mode === "quick") {
     const prep = await tunnelManager.ensureBinary();
     if (!prep.ok) return;
     tunnelManager.startQuick().catch(() => {});
     return;
   }
-  if (mode === "named") {
+  if (state.mode === "named") {
     const cfg = getNamedTunnelConfig();
     if (!cfg) return;
     const cur = tunnelManager.status();
@@ -896,7 +898,16 @@ async function triggerPublicStartBestEffort() {
 async function checkPublicPing(publicOrigin: string): Promise<boolean> {
   const base = publicOrigin.replace(/\/$/, "");
   try {
-    const res = await fetchWithTimeout(`${base}/public/ping`, { method: "GET" } as any, 5000);
+    const res = await fetchWithTimeout(`${base}/health`, { method: "GET" } as any, 4000);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function checkLocalPublicHealth(): Promise<boolean> {
+  try {
+    const res = await fetchWithTimeout(`http://127.0.0.1:${PUBLIC_HTTP_PORT}/health`, { method: "GET" } as any, 2000);
     return res.ok;
   } catch {
     return false;
@@ -904,8 +915,9 @@ async function checkPublicPing(publicOrigin: string): Promise<boolean> {
 }
 
 function getActivePublicOrigin(): string | null {
-  const status = getPublicStatus();
-  if (status.state === "ACTIVE" && status.publicOrigin) return status.publicOrigin;
+  const status = getPublicLinkState();
+  if (status.mode === "named") return status.canonicalOrigin;
+  if (status.status === "online" && status.canonicalOrigin) return status.canonicalOrigin;
   return null;
 }
 
@@ -1405,6 +1417,7 @@ function hashApprovalToken(token: string): string {
 /** ---------- routes ---------- */
 
 function registerPublicRoutes(appPublic: any) {
+  appPublic.get("/health", handlePublicPing);
   appPublic.get("/public/ping", handlePublicPing);
   appPublic.get("/p/:token", handleShortPublicLink);
   appPublic.get("/buy/:contentId", handleBuyPage);
@@ -2891,8 +2904,8 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
 
 // Public exposure control
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const mode = getEffectivePublicMode();
-  if (mode === "quick") {
+  const state = getPublicLinkState();
+  if (state.mode === "quick") {
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
     if (consentGranted && getPublicSharingAutoStart()) {
@@ -2996,60 +3009,28 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
 });
 
 app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const mode = getEffectivePublicMode();
+  const state = getPublicLinkState();
   const body = (_req.body ?? {}) as { consent?: boolean; dontAskAgain?: boolean };
 
-  if (mode === "off") {
+  if (state.mode === "off") {
     return reply.code(409).send({
-      mode,
-      state: "ERROR",
-      publicOrigin: null,
-      lastError: "public_mode_disabled",
-      lastCheckedAt: null,
-      cloudflared: getCloudflaredStatus(),
-      consentRequired: false
+      ...getPublicStatus(),
+      lastError: "public_mode_disabled"
     });
   }
 
-  if (mode === "direct") {
-    const status = getPublicStatus();
-    if (status.state === "ERROR") {
-      return reply.code(409).send({
-        mode,
-        state: "ERROR",
-        publicOrigin: null,
-        lastError: "direct_mode_not_public",
-        lastCheckedAt: null,
-        cloudflared: status.cloudflared,
-        consentRequired: false
-      });
-    }
-    return reply.send(status);
-  }
-
-  if (mode === "named") {
+  if (state.mode === "named") {
     const cfg = getNamedTunnelConfig();
     if (!cfg) {
       return reply.code(409).send({
-        mode,
-        state: "ERROR",
-        publicOrigin: null,
-        lastError: "missing_named_tunnel_config",
-        lastCheckedAt: null,
-        cloudflared: getCloudflaredStatus(),
-        consentRequired: false
+        ...getPublicStatus(),
+        lastError: "missing_named_tunnel_config"
       });
     }
     const cur = tunnelManager.status();
     if (cur.status === "ACTIVE" && cur.publicOrigin === cfg.publicOrigin) {
       return reply.send({
-        mode,
-        state: "ACTIVE",
-        publicOrigin: cfg.publicOrigin,
-        lastError: null,
-        lastCheckedAt: toEpochMs(cur.lastCheckedAt),
-        cloudflared: getCloudflaredStatus(),
-        consentRequired: false
+        ...getPublicStatus()
       });
     }
     await tunnelManager.stop();
@@ -3060,63 +3041,30 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     });
     if (status.status === "ACTIVE") {
       return reply.send({
-        mode,
-        state: "ACTIVE",
-        publicOrigin: cfg.publicOrigin,
-        lastError: null,
-        lastCheckedAt: toEpochMs(status.lastCheckedAt),
-        cloudflared: getCloudflaredStatus(),
-        consentRequired: false
+        ...getPublicStatus()
       });
     }
     return reply.code(503).send({
-      mode,
-      state: "ERROR",
-      publicOrigin: null,
-      lastError: status.lastError || "named_tunnel_failed",
-      lastCheckedAt: toEpochMs(status.lastCheckedAt),
-      cloudflared: getCloudflaredStatus(),
-      consentRequired: false
+      ...getPublicStatus(),
+      lastError: status.lastError || "named_tunnel_failed"
     });
   }
 
-  // quick: if a named tunnel is configured, try it first, then fall back to quick
-  if (mode === "quick") {
-    const cfg = getNamedTunnelConfig();
-    if (cfg) {
-      const status = await tunnelManager.startNamed({
-        publicOrigin: cfg.publicOrigin,
-        tunnelName: cfg.tunnelName,
-        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
-      });
-      if (status.status === "ACTIVE") {
-        return reply.send({
-          mode: "named",
-          state: "ACTIVE",
-          publicOrigin: cfg.publicOrigin,
-          lastError: null,
-          lastCheckedAt: toEpochMs(status.lastCheckedAt),
-          cloudflared: getCloudflaredStatus(),
-          consentRequired: false
-        });
-      }
-    }
+  // quick
+  if (isNamedConfigured()) {
+    return reply.code(409).send({
+      ...getPublicStatus(),
+      lastError: "named_configured",
+      message: "Named tunnel configured. Disable named mode to use a temporary link."
+    });
   }
 
-  // quick
   const cloudflared = getCloudflaredStatus();
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
   if (!cloudflared.available && !consentGranted) {
     if (body?.consent !== true) {
-      const status = getPublicStatus();
-      return reply.code(409).send({
-        ...status,
-        state: "ERROR",
-        publicOrigin: null,
-        lastError: "consent_required",
-        consentRequired: true
-      });
+      return reply.code(409).send({ ...getPublicStatus(), lastError: "consent_required", consentRequired: true });
     }
     setPublicSharingConsent(true, body?.dontAskAgain === true);
   }
@@ -3124,27 +3072,16 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
   const prep = await tunnelManager.ensureBinary();
   if (!prep.ok) {
     tunnelManager.setError("cloudflared_download_failed");
-    const status = getPublicStatus();
     return reply.code(503).send({
-      ...status,
-      state: "ERROR",
-      publicOrigin: null,
+      ...getPublicStatus(),
       lastError: "cloudflared_download_failed",
       consentRequired: false
     });
   }
   const status = getPublicStatus();
-  if (status.state === "ACTIVE") return reply.send(status);
+  if (status.status === "online") return reply.send(status);
   tunnelManager.startQuick().catch(() => {});
-  return reply.send({
-    mode,
-    state: "STARTING",
-    publicOrigin: null,
-    lastError: null,
-    lastCheckedAt: null,
-    cloudflared: getCloudflaredStatus(),
-    consentRequired: false
-  });
+  return reply.send({ ...getPublicStatus(), status: "starting" });
 });
 
 app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -4433,7 +4370,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     await triggerPublicStartBestEffort();
   } catch {}
 
-  const publicOrigin = getPublicStatus().publicOrigin;
+  const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), "");
   return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256, publicOrigin });
 });
 
@@ -9008,8 +8945,8 @@ app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersis
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = (req.params as any).id as string;
 
-  const mode = normalizePublicMode(PUBLIC_MODE);
-  if (mode === "quick") {
+  const state = getPublicLinkState();
+  if (state.mode === "quick") {
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
     if (consentGranted && getPublicSharingAutoStart()) {
@@ -9018,13 +8955,12 @@ app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersis
         tunnelManager.startQuick().catch((e) => app.log.warn(String(e?.message || e)));
       }
     }
-  } else if (mode === "named") {
-    const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
-    const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim();
-    if (tunnelName && publicOrigin) {
+  } else if (state.mode === "named") {
+    const cfg = getNamedTunnelConfig();
+    if (cfg) {
       tunnelManager.startNamed({
-        publicOrigin,
-        tunnelName,
+        publicOrigin: cfg.publicOrigin,
+        tunnelName: cfg.tunnelName,
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
       }).catch((e) => app.log.warn(String(e?.message || e)));
     }
@@ -9086,14 +9022,8 @@ app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersis
     const inviteBase = (() => {
       const override = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
       if (override) return override;
-      const mode = getEffectivePublicMode();
-      if (mode === "named") {
-        const cfg = getNamedTunnelConfig();
-        if (cfg?.publicOrigin) return cfg.publicOrigin;
-      }
-      const active = getPublicStatus().publicOrigin;
-      if (active) return active;
-      return `http://127.0.0.1:${NODE_HTTP_PORT}`;
+      const state = getPublicLinkState();
+      return canonicalOriginForLinks(state, `http://127.0.0.1:${NODE_HTTP_PORT}`);
     })();
 
       createdInvites.push({
@@ -9521,14 +9451,14 @@ async function start() {
   await ensureNodeKeys();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
-  const mode = getEffectivePublicMode();
-  if (mode !== "off") {
-    const host = getPublicBindHost(mode);
+  const state = getPublicLinkState();
+  if (state.mode !== "off") {
+    const host = getPublicBindHost(state.mode);
     await startPublicServer(registerPublicRoutes, host);
     const autoStart = getPublicSharingAutoStart();
     if (autoStart) {
       triggerPublicStartBestEffort().catch((e) => app.log.warn(String(e?.message || e)));
-    } else if (mode === "quick") {
+    } else if (state.mode === "quick") {
       const consent = getPublicSharingConsent();
       const consentGranted = consent.granted || consent.dontAskAgain;
       if (consentGranted) {

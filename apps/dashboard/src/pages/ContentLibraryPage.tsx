@@ -2393,19 +2393,24 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                         </div>
                         <div className="mt-2 text-xs text-neutral-400 space-y-2">
                           {(() => {
-                            const status = String(publicStatus?.state || "STOPPED");
-                            const isStarting = status === "STARTING";
-                            const isOn = status === "ACTIVE";
-                            const isError = status === "ERROR";
+                            const status = String(publicStatus?.status || "offline");
+                            const isStarting = status === "starting";
+                            const isOn = status === "online";
+                            const isError = status === "error";
+                            const isOffline = status === "offline";
                             const canSharePublic = true;
-                            const originBase = isOn ? String(publicStatus?.publicOrigin || "") : "";
+                            const originBase = isOn ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
                             return (
                               <div className="rounded-md border border-neutral-800 bg-neutral-900/30 p-3 space-y-2">
                                 <div className="flex items-center gap-2 text-xs text-neutral-300 font-medium">
                                   <span>Public Link</span>
                                   <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[10px] text-neutral-400">
-                                    {publicStatus?.mode === "named" ? "Named link" : publicStatus?.mode === "quick" ? "Quick link" : "Local link"}
+                                    {publicStatus?.mode === "named"
+                                      ? "Permanent (Named)"
+                                      : publicStatus?.mode === "quick"
+                                        ? "Temporary (Quick)"
+                                        : "Local"}
                                   </span>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
@@ -2420,20 +2425,35 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                             : "border-neutral-800 bg-neutral-950 text-neutral-400"
                                     }`}
                                   >
-                                    {status}
+                                    {status === "online"
+                                      ? "ONLINE"
+                                      : status === "starting"
+                                        ? "STARTING"
+                                        : status === "error"
+                                          ? "ERROR"
+                                          : "OFFLINE"}
                                   </span>
                                   <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-500">
                                     DDNS disabled
                                   </span>
                                 </div>
 
-                                {status === "STOPPED" ? (
+                                {isOffline ? (
                                   <>
-                                    <div className="text-xs text-neutral-400">Share with anyone while ContentBox is running.</div>
+                                    <div className="text-xs text-neutral-400">
+                                      {publicStatus?.mode === "named"
+                                        ? "Permanent identity link (stable hostname)."
+                                        : "Temporary link (changes on restart)."}
+                                    </div>
+                                    {publicStatus?.message ? (
+                                      <div className="text-xs text-neutral-500">{publicStatus.message}</div>
+                                    ) : null}
                                     {it.status !== "published" ? (
                                       <div className="text-xs text-neutral-500">Publish to generate a public buy link.</div>
                                     ) : null}
-                                    <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
+                                    {publicStatus?.mode === "quick" ? (
+                                      <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
+                                    ) : null}
                                     <button
                                       type="button"
                                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -2476,8 +2496,16 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                     ) : (
                                       <div className="text-xs text-neutral-500">Publish this item to share it publicly.</div>
                                     )}
-                                    <div className="text-xs text-neutral-400">This link works while ContentBox is running on this device.</div>
-                                    <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
+                                    <div className="text-xs text-neutral-400">
+                                      {publicStatus?.mode === "named"
+                                        ? "Identity link stays the same even when offline."
+                                        : "This link works while ContentBox is running on this device."}
+                                    </div>
+                                    {publicStatus?.mode === "quick" ? (
+                                      <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
+                                    ) : (
+                                      <div className="text-xs text-neutral-500">If offline, recipients may see a connection error.</div>
+                                    )}
                                     <div className="flex items-center gap-2">
                                       <button
                                         type="button"
@@ -2495,7 +2523,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                   <>
                                     <div className="text-xs text-neutral-300 font-medium">Public link unavailable</div>
                                     <div className="text-xs text-neutral-400">
-                                      {publicMsg || "We couldn’t start sharing from this device."}
+                                      {publicMsg || publicStatus?.message || "We couldn’t start sharing from this device."}
                                     </div>
                                     <div className="flex items-center gap-2">
                                       <button
@@ -2536,7 +2564,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                         {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
                                       </span>
                                     </div>
-                                    <div>Public origin: <span className="text-neutral-300 break-all">{publicStatus?.publicOrigin || "—"}</span></div>
+                                    <div>Public origin: <span className="text-neutral-300 break-all">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span></div>
                                     <div>Last error: <span className="text-neutral-300 break-all">{publicStatus?.lastError || publicMsg || "—"}</span></div>
                                     <div>Consent required: <span className="text-neutral-300">{publicStatus?.consentRequired ? "yes" : "no"}</span></div>
                                     <div>cloudflared available: <span className="text-neutral-300">{publicStatus?.cloudflared?.available ? "yes" : "no"}</span></div>
@@ -2579,7 +2607,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                           })()}
 
                           {(() => {
-                            const activeOrigin = publicStatus?.state === "ACTIVE" ? String(publicStatus?.publicOrigin || "") : "";
+                            const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (activeOrigin || "").trim();
                             const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
