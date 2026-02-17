@@ -394,17 +394,15 @@ export class TunnelManager {
 
       const healthOk = await this.verifyWithRetries(publicOrigin, 6, 1500);
       if (!healthOk) {
-        this.opts.logger?.warn?.(`quick tunnel health failed: ${publicOrigin}`);
-        try {
-          if (child.pid) process.kill(child.pid);
-        } catch {}
-        this.proc = null;
-        return { ok: false, error: "Public link health check failed" } as const;
+        this.opts.logger?.warn?.(`quick tunnel health pending: ${publicOrigin}`);
+        this.healthFailures = 0;
+        this.state = { ...this.state, status: "STARTING", publicOrigin, lastError: "Public link health pending" };
+        this.startHealthChecks();
+      } else {
+        this.healthFailures = 0;
+        this.state = { ...this.state, status: "ACTIVE", publicOrigin, lastError: null };
+        this.startHealthChecks();
       }
-
-      this.healthFailures = 0;
-      this.state = { ...this.state, status: "ACTIVE", publicOrigin, lastError: null };
-      this.startHealthChecks();
 
       child.on("exit", () => {
         if (this.stopping) return;
@@ -563,12 +561,15 @@ export class TunnelManager {
     if (this.healthTimer) return;
     this.healthTimer = setInterval(async () => {
       if (this.healthInFlight) return;
-      if (this.state.status !== "ACTIVE" || !this.state.publicOrigin) return;
+      if ((this.state.status !== "ACTIVE" && this.state.status !== "STARTING") || !this.state.publicOrigin) return;
       this.healthInFlight = true;
       try {
         const ok = await this.verify(this.state.publicOrigin);
         if (ok) {
           this.healthFailures = 0;
+          if (this.state.status !== "ACTIVE") {
+            this.state = { ...this.state, status: "ACTIVE", lastError: null };
+          }
         } else {
           this.healthFailures += 1;
           if (this.healthFailures >= (this.opts.healthFailureThreshold || 2)) {
