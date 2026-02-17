@@ -862,6 +862,7 @@ function getPublicStatus() {
     isCanonical: state.isCanonical,
     message: state.message,
     lastChangedAt: state.lastChangedAt,
+    tunnelName: getNamedTunnelConfig()?.tunnelName || null,
     state: legacyState,
     lastError: state.status === "error" ? "Public link error" : null,
     lastCheckedAt: namedHealthCache.checkedAt,

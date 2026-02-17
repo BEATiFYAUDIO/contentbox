@@ -626,7 +626,7 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                 </span>
                 <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-400">
                   {publicStatus?.mode === "named"
-                    ? "Permanent (Named)"
+                    ? `Permanent (${(publicStatus as any)?.tunnelName || "Named"})`
                     : publicStatus?.mode === "quick"
                       ? "Temporary (Quick)"
                       : "Local"}

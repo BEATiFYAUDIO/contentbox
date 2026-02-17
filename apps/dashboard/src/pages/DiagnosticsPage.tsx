@@ -99,6 +99,7 @@ type PublicStatus = {
   canonicalOrigin?: string | null;
   status?: string | null;
   mode?: string | null;
+  tunnelName?: string | null;
   lastCheckedAt?: number | null;
 };
 

@@ -2417,7 +2417,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                   <span>Public Link</span>
                                   <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[10px] text-neutral-400">
                                     {publicStatus?.mode === "named"
-                                      ? "Permanent (Named)"
+                                      ? `Permanent (${publicStatus?.tunnelName || "Named"})`
                                       : publicStatus?.mode === "quick"
                                         ? "Temporary (Quick)"
                                         : "Local"}
