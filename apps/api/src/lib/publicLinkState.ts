@@ -64,6 +64,26 @@ const normalizeOrigin = (value: string | null | undefined): string | null => {
   return `https://${raw.replace(/\/+$/, "")}`;
 };
 
+const applyTunnelSubdomain = (origin: string | null, tunnelName: string | null | undefined): string | null => {
+  if (!origin) return null;
+  const tn = String(tunnelName || "").trim();
+  if (!tn) return origin;
+  try {
+    const u = new URL(origin);
+    const host = u.hostname.toLowerCase();
+    const lowerTn = tn.toLowerCase();
+    if (host === lowerTn || host.startsWith(`${lowerTn}.`)) return origin;
+    const parts = host.split(".");
+    if (parts.length === 2) {
+      u.hostname = `${lowerTn}.${host}`;
+      return u.origin;
+    }
+    return origin;
+  } catch {
+    return origin;
+  }
+};
+
 export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkState => {
   const envMode = normalizeMode(input.publicModeEnv);
   if (envMode === "off") {
@@ -76,9 +96,9 @@ export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkS
     };
   }
 
-  const envNamedOrigin = normalizeOrigin(input.namedEnv.publicOrigin || null);
+  const envNamedOrigin = applyTunnelSubdomain(normalizeOrigin(input.namedEnv.publicOrigin || null), input.namedEnv.tunnelName);
   const envTunnel = String(input.namedEnv.tunnelName || "").trim();
-  const cfgOrigin = normalizeOrigin(input.config.domain || null);
+  const cfgOrigin = applyTunnelSubdomain(normalizeOrigin(input.config.domain || null), input.config.tunnelName);
   const cfgTunnel = String(input.config.tunnelName || "").trim();
   const cfgProvider = String(input.config.provider || "").trim();
   const namedConfigured = Boolean((envTunnel && envNamedOrigin) || (cfgProvider === "cloudflare" && cfgTunnel && cfgOrigin));
@@ -119,12 +139,12 @@ export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkS
 export const getNamedTunnelConfig = () => {
   if (readStateFlag()) return null;
   const envTunnel = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
-  const envOrigin = normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || "");
+  const envOrigin = applyTunnelSubdomain(normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || ""), envTunnel);
   if (envTunnel && envOrigin) return { tunnelName: envTunnel, publicOrigin: envOrigin };
 
   const cfg = getPublicOriginConfig();
   const cfgTunnel = String(cfg.tunnelName || "").trim();
-  const cfgOrigin = normalizeOrigin(cfg.domain || "");
+  const cfgOrigin = applyTunnelSubdomain(normalizeOrigin(cfg.domain || ""), cfgTunnel);
   const provider = String(cfg.provider || "").trim();
   if (provider === "cloudflare" && cfgTunnel && cfgOrigin) return { tunnelName: cfgTunnel, publicOrigin: cfgOrigin };
   return null;

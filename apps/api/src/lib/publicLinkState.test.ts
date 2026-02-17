@@ -72,3 +72,15 @@ test("canonicalOriginForLinks prefers canonical origin", () => {
   const base = canonicalOriginForLinks(state, "http://127.0.0.1:4000");
   assert.equal(base, "https://contentbox.example.com");
 });
+
+test("root domain config expands to tunnel subdomain", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: "contentbox", publicOrigin: "https://darrylhillock.com" },
+    config: { provider: "cloudflare", domain: "darrylhillock.com", tunnelName: "contentbox" },
+    quick: { status: "STOPPED", publicOrigin: null },
+    namedHealthOk: true
+  });
+  assert.equal(state.canonicalOrigin, "https://contentbox.darrylhillock.com");
+});
