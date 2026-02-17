@@ -585,10 +585,18 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
               const v = e.target.checked;
               setTunnelEnabled(v);
               writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
+              if (!v && publicStatus?.mode === "named" && publicStatus?.status !== "offline") {
+                setPublicMsg("Named tunnel is still running. Click Stop sharing to shut it down.");
+              }
             }}
           />
           <span>Enable advanced routing settings</span>
         </label>
+        {!tunnelEnabled && publicStatus?.mode === "named" && publicStatus?.status !== "offline" ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#ffb4b4" }}>
+            Named tunnel still running. Use <b>Stop sharing</b> to disable it.
+          </div>
+        ) : null}
         {!tunnelEnabled && (
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
             Advanced routing is off — Quick tunnel will be used (no DDNS/custom domain).
