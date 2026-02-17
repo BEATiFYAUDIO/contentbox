@@ -59,6 +59,12 @@ function num(x: any) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function formatDate(value?: string | null) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
+
 export default function InvitePage({ token, onAccepted, identityLevel }: InvitePageProps) {
   const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
   const [loading, setLoading] = useState(true);
@@ -635,9 +641,9 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
                                     <div className="text-xs text-neutral-400">To: {inv.participantEmail || "(unknown)"}</div>
-                                    <div className="text-xs text-neutral-400">Created: {new Date(inv.createdAt).toLocaleString()}</div>
-                                    <div className="text-xs text-neutral-400">Expires: {new Date(inv.expiresAt).toLocaleString()}</div>
-                                    {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {new Date(inv.acceptedAt).toLocaleString()}</div> : null}
+                                    <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
+                                    <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
+                                    {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <div className="text-xs uppercase tracking-wide text-neutral-400">{status}</div>
@@ -710,10 +716,10 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                                     {inv.percent !== null && inv.percent !== undefined ? (
                                       <div className="text-xs text-neutral-400">Percent: {num(inv.percent)}%</div>
                                     ) : null}
-                                    <div className="text-xs text-neutral-400">Created: {new Date(inv.createdAt).toLocaleString()}</div>
-                                    <div className="text-xs text-neutral-400">Expires: {new Date(inv.expiresAt).toLocaleString()}</div>
+                                    <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
+                                    <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
                                     {inv.remoteOrigin ? <div className="text-[10px] text-neutral-500">Remote: {inv.remoteOrigin}</div> : null}
-                                    {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {new Date(inv.acceptedAt).toLocaleString()}</div> : null}
+                                    {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
                                   </div>
                                   <div className="text-xs uppercase tracking-wide text-neutral-400">{status}</div>
                                 </div>
@@ -732,6 +738,11 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
 
         {me ? (
           <div className="mt-4">
+            {remoteReceivedInvites && remoteReceivedInvites.length > 0 ? (
+              <div className="mb-2 text-xs text-neutral-500">
+                Remote invites do not include local history or audit events.
+              </div>
+            ) : null}
             <HistoryFeed
               title="Invites history"
               items={historyItems}
