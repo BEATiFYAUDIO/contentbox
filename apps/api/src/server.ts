@@ -9070,10 +9070,18 @@ app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersis
         }
       });
 
-    const inviteBase =
-      String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim() ||
-      getPublicStatus().publicOrigin ||
-      `http://127.0.0.1:${NODE_HTTP_PORT}`;
+    const inviteBase = (() => {
+      const override = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
+      if (override) return override;
+      const mode = getEffectivePublicMode();
+      if (mode === "named") {
+        const cfg = getNamedTunnelConfig();
+        if (cfg?.publicOrigin) return cfg.publicOrigin;
+      }
+      const active = getPublicStatus().publicOrigin;
+      if (active) return active;
+      return `http://127.0.0.1:${NODE_HTTP_PORT}`;
+    })();
 
       createdInvites.push({
         participantEmail: String(p.participantEmail || ""),
