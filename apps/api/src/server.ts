@@ -9353,10 +9353,17 @@ app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersis
       });
 
     const inviteBase = (() => {
-      const override = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
-      if (override) return override;
       const state = getPublicLinkState();
-      return canonicalOriginForLinks(state, `http://127.0.0.1:${NODE_HTTP_PORT}`);
+      const canonical = canonicalOriginForLinks(state, `http://127.0.0.1:${NODE_HTTP_PORT}`);
+      const override = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
+      if (override) {
+        try {
+          const host = new URL(override).hostname.toLowerCase();
+          if (host === "invites.contentbox.link" && canonical) return canonical;
+        } catch {}
+        return override;
+      }
+      return canonical;
     })();
 
       createdInvites.push({
