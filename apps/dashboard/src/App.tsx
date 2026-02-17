@@ -416,21 +416,30 @@ export default function App() {
             <div className="mt-4 border-t border-neutral-900 pt-4">
               <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
               <div className="space-y-1">
-              {royaltiesNav.filter((item: any) => !isBasicIdentity || !item.advanced).map((item: any) => {
+              {royaltiesNav.map((item: any) => {
                 const active = item.key === page;
+                const locked = isBasicIdentity && item.advanced;
                 return (
                   <button
                     key={item.key}
-                    onClick={() => setPage(item.key)}
+                    onClick={() => {
+                      if (locked) return;
+                      setPage(item.key);
+                    }}
+                    disabled={locked}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
-                      active
-                        ? "border-white/30 bg-white/5"
-                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                      locked
+                        ? "border-neutral-900 bg-neutral-950 text-neutral-600 cursor-not-allowed"
+                        : active
+                          ? "border-white/30 bg-white/5"
+                          : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
                     ].join(" ")}
                   >
                     <div className="text-sm font-medium">{item.label}</div>
-                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                    <div className="text-xs text-neutral-400">
+                      {locked ? "Not available in Basic mode" : item.hint}
+                    </div>
                   </button>
                 );
               })}
