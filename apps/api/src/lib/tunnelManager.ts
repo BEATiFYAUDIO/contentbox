@@ -392,17 +392,10 @@ export class TunnelManager {
         return { ok: false, error: String(e?.message || e) } as const;
       }
 
-      const healthOk = await this.verifyWithRetries(publicOrigin, 6, 1500);
-      if (!healthOk) {
-        this.opts.logger?.warn?.(`quick tunnel health pending: ${publicOrigin}`);
-        this.healthFailures = 0;
-        this.state = { ...this.state, status: "STARTING", publicOrigin, lastError: "Public link health pending" };
-        this.startHealthChecks();
-      } else {
-        this.healthFailures = 0;
-        this.state = { ...this.state, status: "ACTIVE", publicOrigin, lastError: null };
-        this.startHealthChecks();
-      }
+      // Mark active as soon as we have a URL; health checks will confirm or flip to ERROR later.
+      this.healthFailures = 0;
+      this.state = { ...this.state, status: "ACTIVE", publicOrigin, lastError: null };
+      this.startHealthChecks();
 
       child.on("exit", () => {
         if (this.stopping) return;
