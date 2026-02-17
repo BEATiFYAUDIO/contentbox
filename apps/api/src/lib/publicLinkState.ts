@@ -1,4 +1,21 @@
+import fs from "node:fs";
+import path from "node:path";
 import { getPublicOriginConfig } from "./publicOriginStore.js";
+
+const CONTENTBOX_ROOT = String(process.env.CONTENTBOX_ROOT || "").trim();
+const STATE_FILE = CONTENTBOX_ROOT ? path.join(CONTENTBOX_ROOT, "state.json") : "";
+
+function readStateFlag(): boolean {
+  if (!STATE_FILE) return false;
+  try {
+    if (!fs.existsSync(STATE_FILE)) return false;
+    const raw = fs.readFileSync(STATE_FILE, "utf8");
+    const json = JSON.parse(raw);
+    return Boolean(json?.namedTunnelDisabled);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Strict canonical public link model:
@@ -100,6 +117,7 @@ export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkS
 };
 
 export const getNamedTunnelConfig = () => {
+  if (readStateFlag()) return null;
   const envTunnel = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
   const envOrigin = normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || "");
   if (envTunnel && envOrigin) return { tunnelName: envTunnel, publicOrigin: envOrigin };

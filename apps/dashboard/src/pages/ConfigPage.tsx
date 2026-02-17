@@ -196,6 +196,25 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
     }
   };
 
+  const setNamedOverride = async (disabled: boolean) => {
+    if (!token) return;
+    setPublicBusy(true);
+    setPublicMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/named/${disabled ? "disable" : "enable"}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to update named override.");
+      await refreshPublicStatus();
+    } catch (e: any) {
+      setPublicMsg(e?.message || "Failed to update named override.");
+    } finally {
+      setPublicBusy(false);
+    }
+  };
+
   const stopPublicLink = async () => {
     if (!token) return;
     setPublicBusy(true);
@@ -572,6 +591,29 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
             >
               Refresh status
             </button>
+          </div>
+        ) : null}
+        {publicStatus ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+            <button
+              onClick={() => setNamedOverride(true)}
+              disabled={publicBusy || publicStatus?.namedDisabled}
+              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              Disable named (override)
+            </button>
+            <button
+              onClick={() => setNamedOverride(false)}
+              disabled={publicBusy || !publicStatus?.namedDisabled}
+              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              Re-enable named
+            </button>
+            {publicStatus?.namedDisabled ? (
+              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
+                Named tunnel override is ON. Env config is ignored.
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div style={{ opacity: 0.7, marginBottom: 10 }}>

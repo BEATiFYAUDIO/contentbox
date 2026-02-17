@@ -603,6 +603,7 @@ type LocalState = {
   publicSharingAutoStart?: boolean;
   publicSharingProtocol?: "http2" | "quic";
   namedTunnelToken?: string;
+  namedTunnelDisabled?: boolean;
 };
 
 function readLocalState(): LocalState {
@@ -677,6 +678,17 @@ function getPublicSharingProtocolPreference(): "auto" | "http2" | "quic" {
 function setPublicSharingProtocolPreference(p: "http2" | "quic") {
   const s = readLocalState();
   s.publicSharingProtocol = p;
+  writeLocalState(s);
+}
+
+function isNamedTunnelDisabled(): boolean {
+  const s = readLocalState();
+  return Boolean(s.namedTunnelDisabled);
+}
+
+function setNamedTunnelDisabled(disabled: boolean) {
+  const s = readLocalState();
+  s.namedTunnelDisabled = disabled;
   writeLocalState(s);
 }
 
@@ -885,6 +897,7 @@ function getPublicStatus() {
     lastChangedAt: state.lastChangedAt,
     tunnelName: getNamedTunnelConfig()?.tunnelName || null,
     namedTokenStored: Boolean(getNamedTunnelToken()),
+    namedDisabled: isNamedTunnelDisabled(),
     state: legacyState,
     lastError: state.status === "error" ? "Public link error" : null,
     lastCheckedAt: namedHealthCache.checkedAt,
@@ -3176,6 +3189,16 @@ app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async 
 app.post("/api/public/named-token/clear", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   clearNamedTunnelToken();
   return reply.send({ ok: true, stored: false });
+});
+
+app.post("/api/public/named/disable", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  setNamedTunnelDisabled(true);
+  return reply.send({ ok: true, disabled: true });
+});
+
+app.post("/api/public/named/enable", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  setNamedTunnelDisabled(false);
+  return reply.send({ ok: true, disabled: false });
 });
 
 app.post("/api/public/autostart", { preHandler: requireAuth }, async (req: any, reply: any) => {
