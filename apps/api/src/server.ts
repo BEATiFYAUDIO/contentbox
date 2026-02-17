@@ -3148,6 +3148,26 @@ app.post("/api/public/named-token", { preHandler: requireAuth }, async (_req: an
   return reply.send({ ok: true, stored: true });
 });
 
+app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNamedTunnelConfig();
+  if (!cfg?.tunnelName) {
+    return reply.code(400).send({ error: "Tunnel name not configured" });
+  }
+  const cloudflaredCmd = resolveCloudflaredCmd();
+  if (!cloudflaredCmd) return reply.code(503).send({ error: "cloudflared not available" });
+  const originCert = String(process.env.TUNNEL_ORIGIN_CERT || "").trim() || path.join(os.homedir(), ".cloudflared", "cert.pem");
+  try {
+    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "token", cfg.tunnelName], {
+      env: { ...process.env, TUNNEL_ORIGIN_CERT: originCert }
+    } as any);
+    const token = String(stdout || "").trim();
+    if (!token) return reply.code(500).send({ error: "Token generation failed" });
+    return reply.send({ ok: true, token });
+  } catch (e: any) {
+    return reply.code(500).send({ error: "Token generation failed", details: e?.message || String(e) });
+  }
+});
+
 app.post("/api/public/named-token/clear", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   clearNamedTunnelToken();
   return reply.send({ ok: true, stored: false });

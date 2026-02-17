@@ -326,6 +326,29 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
     }
   };
 
+  const generateNamedToken = async () => {
+    if (!token) return;
+    setNamedTokenBusy(true);
+    setNamedTokenMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/named-token/generate`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to generate token");
+      const tok = String(json?.token || "").trim();
+      if (!tok) throw new Error("Token generation failed");
+      setNamedTokenInput(tok);
+      setNamedTokenMsg("Token generated. Click Save & start tunnel.");
+    } catch (e: any) {
+      const details = e?.message || "Failed to generate token.";
+      setNamedTokenMsg(details);
+    } finally {
+      setNamedTokenBusy(false);
+    }
+  };
+
   const clearNamedToken = async () => {
     if (!token) return;
     setNamedTokenBusy(true);
@@ -603,6 +626,13 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                   className={inputClass}
                 />
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={generateNamedToken}
+                    disabled={namedTokenBusy}
+                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                  >
+                    Generate token
+                  </button>
                   <button
                     onClick={() => saveNamedToken(false)}
                     disabled={namedTokenBusy}
