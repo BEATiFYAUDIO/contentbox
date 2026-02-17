@@ -525,7 +525,7 @@ export default function App() {
         <header className="px-6 py-4 border-b border-neutral-900 space-y-2">
           <div className="text-sm text-neutral-400">Dashboard</div>
           <div className="text-xl font-semibold">{pageTitle}</div>
-          {publicStatus ? (
+          {getToken() ? (
             <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
               <span>
                 Public Identity:{" "}
@@ -533,11 +533,15 @@ export default function App() {
                   ? `Permanent (${publicStatus?.tunnelName || "Named"})`
                   : publicStatus?.mode === "quick"
                     ? "Temporary (Quick)"
-                    : "Local"}
+                    : identityDetail?.level === "PERSISTENT"
+                      ? "Permanent (Named)"
+                      : "Temporary (Quick)"}
               </span>
               <span className="text-neutral-500">•</span>
               <span>
-                {publicStatus?.status === "online"
+                {!publicStatus?.lastCheckedAt
+                  ? "SEARCHING"
+                  : publicStatus?.status === "online"
                   ? "ONLINE"
                   : publicStatus?.status === "starting"
                     ? "STARTING"
