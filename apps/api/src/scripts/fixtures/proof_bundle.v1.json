@@ -1,0 +1,53 @@
+{
+  "bundleHash": "d0614a484696ccb286e35d65e8e64e2425857a6e80c148fd4883aba2b457bebe",
+  "canonicalOrigin": "https://contentbox.example.com",
+  "generatedAt": "2026-02-01T00:00:00.000Z",
+  "lines": [
+    {
+      "amountSats": 60,
+      "bps": 6000,
+      "recipientRef": "email:alice@example.com"
+    },
+    {
+      "amountSats": 40,
+      "bps": 4000,
+      "recipientRef": "email:bob@example.com"
+    }
+  ],
+  "publish": {
+    "contentId": "content_fixture",
+    "manifestSha256": "manifest_fixture",
+    "publishedAt": "2026-02-01T00:00:00.000Z",
+    "splitVersionId": "split_fixture",
+    "splitsHash": "dfb6b0fa451d0ec584e55a820cb34de78cf394631869208e18ff4df53fb1957a"
+  },
+  "settlement": {
+    "amountSats": 100,
+    "contentId": "content_fixture",
+    "manifestSha256": "manifest_fixture",
+    "paidAt": "2026-02-01T00:00:00.000Z",
+    "paymentRef": "payment_fixture",
+    "settlementId": "settlement_fixture",
+    "splitVersionId": "split_fixture",
+    "splitsHash": "dfb6b0fa451d0ec584e55a820cb34de78cf394631869208e18ff4df53fb1957a"
+  },
+  "split": {
+    "contentId": "content_fixture",
+    "lockedAt": "2026-02-01T00:00:00.000Z",
+    "lockedFileSha256": null,
+    "lockedManifestSha256": "manifest_fixture",
+    "participants": [
+      {
+        "bps": 6000,
+        "recipientRef": "email:alice@example.com"
+      },
+      {
+        "bps": 4000,
+        "recipientRef": "email:bob@example.com"
+      }
+    ],
+    "splitVersionId": "split_fixture",
+    "splitsHash": "dfb6b0fa451d0ec584e55a820cb34de78cf394631869208e18ff4df53fb1957a"
+  },
+  "version": "v1"
+}

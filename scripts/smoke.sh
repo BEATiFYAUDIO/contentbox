@@ -62,4 +62,17 @@ if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" EXPECT_IDENTI
 fi
 pass "identity gating test ok"
 
+echo "[smoke] Running proof bundle tests..."
+if ! (cd "$API_DIR" && npx tsx src/scripts/proof_bundle_test.ts) >/tmp/contentbox-proof-bundle.log 2>&1; then
+  cat /tmp/contentbox-proof-bundle.log >&2
+  fail "proof bundle test failed"
+fi
+pass "proof bundle test ok"
+
+if ! (cd "$API_DIR" && npx tsx src/scripts/proof_bundle_verifier_test.ts) >/tmp/contentbox-proof-bundle-verifier.log 2>&1; then
+  cat /tmp/contentbox-proof-bundle-verifier.log >&2
+  fail "proof bundle verifier test failed"
+fi
+pass "proof bundle verifier test ok"
+
 pass "Smoke test completed"
