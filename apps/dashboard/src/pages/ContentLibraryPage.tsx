@@ -653,7 +653,14 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
     try {
       if (isBasicIdentity) {
         await api(`/api/content/${contentId}/manifest`, "POST", {});
-        await api(`/api/content/${contentId}/publish`, "POST", {});
+        const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === contentId
+              ? { ...it, status: "published", publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString() }
+              : it
+          )
+        );
         await load(false);
         setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
         return;
@@ -671,7 +678,14 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
         return;
       }
       await api(`/api/content/${contentId}/manifest`, "POST", {});
-      await api(`/api/content/${contentId}/publish`, "POST", {});
+      const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === contentId
+            ? { ...it, status: "published", publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString() }
+            : it
+        )
+      );
       await load(false);
       setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
     } catch (e: any) {
