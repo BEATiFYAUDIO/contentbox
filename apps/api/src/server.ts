@@ -886,9 +886,16 @@ function getPublicStatus() {
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
   const autoStartEnabled = getPublicSharingAutoStart();
+  const quickState = tunnelManager.status();
   const consentRequired = state.mode === "quick" && !cloudflared.available && !consentGranted;
   const legacyState =
     state.status === "online" ? "ACTIVE" : state.status === "starting" ? "STARTING" : state.status === "error" ? "ERROR" : "STOPPED";
+  const errorDetail =
+    state.status === "error"
+      ? state.mode === "quick"
+        ? quickState.lastError || "Public link error"
+        : tunnelManager.status().lastError || "Public link error"
+      : null;
 
   return {
     mode: state.mode,
@@ -902,7 +909,7 @@ function getPublicStatus() {
     namedTokenStored: Boolean(getNamedTunnelToken()),
     namedDisabled: isNamedTunnelDisabled(),
     state: legacyState,
-    lastError: state.status === "error" ? "Public link error" : null,
+    lastError: errorDetail,
     lastCheckedAt: namedHealthCache.checkedAt,
     cloudflared,
     consentRequired,
@@ -3134,6 +3141,9 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
   }
   const status = getPublicStatus();
   if (status.status === "online") return reply.send(status);
+  if (tunnelManager.status().status === "ERROR") {
+    await tunnelManager.stop();
+  }
   tunnelManager.startQuick().catch(() => {});
   return reply.send({ ...getPublicStatus(), status: "starting" });
 });
