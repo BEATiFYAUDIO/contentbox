@@ -537,7 +537,9 @@ export default function App() {
               </span>
               <span className="text-neutral-500">•</span>
               <span>
-                {publicStatus?.status === "online"
+                {!publicStatus?.lastCheckedAt
+                  ? "SEARCHING"
+                  : publicStatus?.status === "online"
                   ? "ONLINE"
                   : publicStatus?.status === "starting"
                     ? "STARTING"
