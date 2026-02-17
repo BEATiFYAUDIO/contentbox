@@ -472,6 +472,19 @@ const app = Fastify({
   stringify: (obj: any) => JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v))
 });
 
+// Allow empty JSON bodies (treat as {})
+const jsonParser = (_req: any, body: string, done: (err: Error | null, value?: any) => void) => {
+  const raw = String(body || "").trim();
+  if (!raw) return done(null, {});
+  try {
+    return done(null, JSON.parse(raw));
+  } catch (e: any) {
+    return done(e);
+  }
+};
+app.addContentTypeParser("application/json", { parseAs: "string" }, jsonParser);
+app.addContentTypeParser("application/*+json", { parseAs: "string" }, jsonParser);
+
 app.addHook("onRequest", async (req, reply) => {
   const existing = (req.headers["x-request-id"] as string | undefined) || null;
   const id = existing || crypto.randomUUID();
