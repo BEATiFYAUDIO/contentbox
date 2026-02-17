@@ -581,10 +581,26 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
           <input
             type="checkbox"
             checked={tunnelEnabled}
-            onChange={(e) => {
+            onChange={async (e) => {
               const v = e.target.checked;
               setTunnelEnabled(v);
               writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
+              if (!v && token) {
+                try {
+                  const res = await fetch(`${apiBase}/api/public/config`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                    body: JSON.stringify({ provider: null, domain: null, tunnelName: null })
+                  });
+                  const json = await res.json();
+                  if (res.ok) {
+                    setTunnelProvider(json?.provider || "cloudflare");
+                    setTunnelDomain(json?.domain || "");
+                    setTunnelName(json?.tunnelName || "");
+                    await refreshPublicStatus();
+                  }
+                } catch {}
+              }
               if (!v && publicStatus?.mode === "named" && publicStatus?.status !== "offline") {
                 setPublicMsg("Named tunnel is still running. Click Stop sharing to shut it down.");
               }
