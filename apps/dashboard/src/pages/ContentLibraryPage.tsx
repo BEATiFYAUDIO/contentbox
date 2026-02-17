@@ -672,8 +672,8 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
       }
       const versions = await api<any[]>(`/content/${contentId}/split-versions`, "GET");
       const latest = versions?.[0] || null;
-      if (!latest || latest.status !== "draft") {
-        setPublishMsg((m) => ({ ...m, [contentId]: "No editable split found. Open splits and save your 100% split." }));
+      if (!latest || (latest.status !== "draft" && latest.status !== "locked")) {
+        setPublishMsg((m) => ({ ...m, [contentId]: "No split found. Open splits and save your 100% split." }));
         return;
       }
       const participants = Array.isArray(latest.participants) ? latest.participants : [];
