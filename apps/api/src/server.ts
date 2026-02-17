@@ -851,15 +851,18 @@ async function refreshNamedHealth(origin: string) {
 function getPublicLinkState(): PublicLinkState {
   const namedCfg = getNamedTunnelConfig();
   const quick = tunnelManager.status();
+  const namedDisabled = isNamedTunnelDisabled();
   const namedHealthOk = namedCfg ? namedHealthCache.ok : null;
   const state = computePublicLinkState({
     publicModeEnv: PUBLIC_MODE,
     dbModeEnv: process.env.DB_MODE,
-    namedEnv: {
-      tunnelName: process.env.CLOUDFLARE_TUNNEL_NAME || null,
-      publicOrigin: process.env.CONTENTBOX_PUBLIC_ORIGIN || null
-    },
-    config: getPublicOriginConfig(),
+    namedEnv: namedDisabled
+      ? { tunnelName: null, publicOrigin: null }
+      : {
+          tunnelName: process.env.CLOUDFLARE_TUNNEL_NAME || null,
+          publicOrigin: process.env.CONTENTBOX_PUBLIC_ORIGIN || null
+        },
+    config: namedDisabled ? { provider: null, domain: null, tunnelName: null } : getPublicOriginConfig(),
     quick: {
       status: quick.status,
       publicOrigin: quick.publicOrigin,
