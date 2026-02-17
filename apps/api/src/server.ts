@@ -3188,14 +3188,19 @@ app.post("/api/public/named-token", { preHandler: requireAuth }, async (_req: an
 
 app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const cfg = getNamedTunnelConfig();
-  if (!cfg?.tunnelName) {
+  const fallback = getPublicOriginConfig();
+  const tunnelName =
+    String(cfg?.tunnelName || "").trim() ||
+    (String(fallback?.provider || "").trim() === "cloudflare" ? String(fallback?.tunnelName || "").trim() : "") ||
+    String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+  if (!tunnelName) {
     return reply.code(400).send({ error: "Tunnel name not configured" });
   }
   const cloudflaredCmd = resolveCloudflaredCmd();
   if (!cloudflaredCmd) return reply.code(503).send({ error: "cloudflared not available" });
   const originCert = String(process.env.TUNNEL_ORIGIN_CERT || "").trim() || path.join(os.homedir(), ".cloudflared", "cert.pem");
   try {
-    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "token", cfg.tunnelName], {
+    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "token", tunnelName], {
       env: { ...process.env, TUNNEL_ORIGIN_CERT: originCert }
     } as any);
     const token = String(stdout || "").trim();
