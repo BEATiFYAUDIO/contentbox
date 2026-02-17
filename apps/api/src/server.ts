@@ -675,11 +675,6 @@ function normalizePublicOriginCandidate(value: string | null | undefined): strin
   return `https://${raw.replace(/\/+$/, "")}`;
 }
 
-function normalizeDbModeLocal(raw: string | undefined): "basic" | "advanced" {
-  const v = String(raw || "basic").trim().toLowerCase();
-  return v === "advanced" ? "advanced" : "basic";
-}
-
 function getNamedTunnelConfig(): { tunnelName: string; publicOrigin: string } | null {
   const envTunnel = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
   const envOrigin = normalizePublicOriginCandidate(process.env.CONTENTBOX_PUBLIC_ORIGIN || "");
@@ -698,11 +693,9 @@ function getNamedTunnelConfig(): { tunnelName: string; publicOrigin: string } | 
 
 function getEffectivePublicMode(): PublicMode {
   const mode = normalizePublicMode(PUBLIC_MODE);
-  if (mode === "named") return mode;
   if (mode === "off" || mode === "direct") return mode;
-  if (normalizeDbModeLocal(process.env.DB_MODE) === "advanced" && getNamedTunnelConfig()) {
-    return "named";
-  }
+  if (getNamedTunnelConfig()) return "named";
+  if (mode === "named") return mode;
   return mode;
 }
 
@@ -874,6 +867,9 @@ async function triggerPublicStartBestEffort() {
   if (mode === "named") {
     const cfg = getNamedTunnelConfig();
     if (!cfg) return;
+    const cur = tunnelManager.status();
+    if (cur.status === "ACTIVE" && cur.publicOrigin === cfg.publicOrigin) return;
+    await tunnelManager.stop();
     tunnelManager
       .startNamed({
         publicOrigin: cfg.publicOrigin,
@@ -3031,6 +3027,19 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
         consentRequired: false
       });
     }
+    const cur = tunnelManager.status();
+    if (cur.status === "ACTIVE" && cur.publicOrigin === cfg.publicOrigin) {
+      return reply.send({
+        mode,
+        state: "ACTIVE",
+        publicOrigin: cfg.publicOrigin,
+        lastError: null,
+        lastCheckedAt: toEpochMs(cur.lastCheckedAt),
+        cloudflared: getCloudflaredStatus(),
+        consentRequired: false
+      });
+    }
+    await tunnelManager.stop();
     const status = await tunnelManager.startNamed({
       publicOrigin: cfg.publicOrigin,
       tunnelName: cfg.tunnelName,
