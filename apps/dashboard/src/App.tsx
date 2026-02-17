@@ -174,6 +174,7 @@ export default function App() {
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
   const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(null);
+  const [publicStatus, setPublicStatus] = useState<any | null>(null);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -194,11 +195,15 @@ export default function App() {
     const token = getToken();
     if (!token) {
       setIdentityDetail(null);
+      setPublicStatus(null);
       return;
     }
     fetchIdentityDetail()
       .then((d) => setIdentityDetail(d))
       .catch(() => setIdentityDetail(null));
+    api("/api/public/status", "GET")
+      .then((d: any) => setPublicStatus(d))
+      .catch(() => setPublicStatus(null));
   }, [me?.id]);
 
   // Extract the invite token from the URL when the component mounts
@@ -516,9 +521,33 @@ export default function App() {
 
       {/* Main content */}
       <div className="flex-1 min-w-0 overflow-y-auto">
-        <header className="px-6 py-4 border-b border-neutral-900">
+        <header className="px-6 py-4 border-b border-neutral-900 space-y-2">
           <div className="text-sm text-neutral-400">Dashboard</div>
           <div className="text-xl font-semibold">{pageTitle}</div>
+          {publicStatus ? (
+            <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+              <span>
+                Public Identity:{" "}
+                {publicStatus?.mode === "named"
+                  ? `Permanent (${publicStatus?.tunnelName || "Named"})`
+                  : publicStatus?.mode === "quick"
+                    ? "Temporary (Quick)"
+                    : "Local"}
+              </span>
+              <span className="text-neutral-500">•</span>
+              <span>
+                {publicStatus?.status === "online"
+                  ? "ONLINE"
+                  : publicStatus?.status === "starting"
+                    ? "STARTING"
+                    : publicStatus?.status === "error"
+                      ? "ERROR"
+                      : "OFFLINE"}
+              </span>
+              <span className="text-neutral-500">•</span>
+              <span className="truncate max-w-[380px]">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
+            </div>
+          ) : null}
         </header>
 
         {isBasicIdentity ? (
