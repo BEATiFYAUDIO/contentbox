@@ -549,9 +549,6 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
-        <div style={{ opacity: 0.7, marginBottom: 10 }}>
-          Advanced routing for public links.
-        </div>
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             <button
@@ -577,6 +574,9 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
             </button>
           </div>
         ) : null}
+        <div style={{ opacity: 0.7, marginBottom: 10 }}>
+          Advanced routing for public links.
+        </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <input
             type="checkbox"
