@@ -168,7 +168,7 @@ export default function App() {
   const [beatifyHandle, setBeatifyHandle] = useState<string>("");
 
   // Define 'page' and 'setPage' for routing
-  const [page, setPage] = useState<PageKey>("library");
+  const [page, setPage] = useState<PageKey>("content");
   const [selectedContentId, setSelectedContentId] = useState<string | null>(null);
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
@@ -234,9 +234,9 @@ export default function App() {
       else if (parts[0] === "diagnostics") setPage("diagnostics");
       else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
       else {
-        // Always land on Library after refresh (ignore prior path)
+        // Always land on Content after refresh (ignore prior path)
         window.history.replaceState({}, "", "/");
-        setPage("library");
+        setPage("content");
       }
     }
     loadMe();  // Load user data
