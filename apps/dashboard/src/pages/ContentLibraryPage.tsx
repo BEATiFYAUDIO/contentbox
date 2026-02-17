@@ -2388,7 +2388,12 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
                             return (
                               <div className="rounded-md border border-neutral-800 bg-neutral-900/30 p-3 space-y-2">
-                                <div className="text-xs text-neutral-300 font-medium">Public Link</div>
+                                <div className="flex items-center gap-2 text-xs text-neutral-300 font-medium">
+                                  <span>Public Link</span>
+                                  <span className="rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-[10px] text-neutral-400">
+                                    {publicStatus?.mode === "named" ? "Named link" : publicStatus?.mode === "quick" ? "Quick link" : "Local link"}
+                                  </span>
+                                </div>
                                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
                                   <span
                                     className={`rounded-full border px-2 py-0.5 ${
