@@ -910,8 +910,11 @@ async function checkPublicPing(publicOrigin: string): Promise<boolean> {
 
 async function checkLocalPublicHealth(): Promise<boolean> {
   try {
-    const res = await fetchWithTimeout(`http://127.0.0.1:${PUBLIC_HTTP_PORT}/health`, { method: "GET" } as any, 2000);
-    return res.ok;
+    const base = `http://127.0.0.1:${PUBLIC_HTTP_PORT}`;
+    const primary = await fetchWithTimeout(`${base}/health`, { method: "GET" } as any, 2000);
+    if (primary.ok) return true;
+    const fallback = await fetchWithTimeout(`${base}/public/ping`, { method: "GET" } as any, 2000);
+    return fallback.ok;
   } catch {
     return false;
   }
