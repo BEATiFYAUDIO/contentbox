@@ -276,8 +276,27 @@ export default function DiagnosticsPage() {
     loadPublicTunnels().catch(() => {});
   }, [token, apiBase]);
 
+  const resolveHealthOrigin = () => {
+    const rawOrigin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
+    if (!rawOrigin) return "";
+    try {
+      const u = new URL(rawOrigin);
+      const tunnelName = String(publicStatus?.tunnelName || "").trim();
+      if (!tunnelName) return rawOrigin;
+      const host = u.hostname.toLowerCase();
+      const sub = `${tunnelName.toLowerCase()}.`;
+      if (host.startsWith(sub)) return rawOrigin;
+      const isRootDomain = host.split(".").length === 2;
+      if (!isRootDomain) return rawOrigin;
+      u.hostname = `${tunnelName}.${host}`;
+      return u.origin;
+    } catch {
+      return rawOrigin;
+    }
+  };
+
   const checkTunnelHealth = async () => {
-    const origin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
+    const origin = resolveHealthOrigin();
     if (!origin) {
       setTunnelHealth(null);
       setTunnelHealthErr("No public origin available.");
@@ -332,6 +351,7 @@ export default function DiagnosticsPage() {
           <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
             <div><b>Status</b>: {publicStatus?.status || "—"}</div>
             <div><b>Public origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
+            <div><b>Health probe</b>: {resolveHealthOrigin() || "—"}</div>
             <div>
               <b>Last check</b>:{" "}
               {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}
