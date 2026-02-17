@@ -676,6 +676,31 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                 Discover tunnels
               </button>
             </div>
+            {publicStatus ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
+                <button
+                  onClick={startPublicLink}
+                  disabled={publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Start temporary link
+                </button>
+                <button
+                  onClick={stopPublicLink}
+                  disabled={publicBusy || publicStatus?.status !== "online"}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Stop sharing
+                </button>
+                <button
+                  onClick={refreshPublicStatus}
+                  disabled={publicBusy}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Refresh status
+                </button>
+              </div>
+            ) : null}
             {tunnelList.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
@@ -755,28 +780,8 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
               </div>
             ) : null}
             {publicStatus ? (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
-                <button
-                  onClick={startPublicLink}
-                  disabled={publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
-                  style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Enable Public Link
-                </button>
-                <button
-                  onClick={stopPublicLink}
-                  disabled={publicBusy || publicStatus?.status !== "online"}
-                  style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Stop sharing
-                </button>
-                <button
-                  onClick={refreshPublicStatus}
-                  disabled={publicBusy}
-                  style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Refresh
-                </button>
+              <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
+                Controls for Quick link and sharing are in <b>Tunnel &amp; routing</b>.
               </div>
             ) : null}
             {publicMsg ? <div style={{ color: "#ffb4b4" }}>{publicMsg}</div> : null}
