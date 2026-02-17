@@ -531,6 +531,7 @@ const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "quick").trim().toLowerCas
 const PUBLIC_HEALTH_INTERVAL_MS = Math.max(5000, Math.floor(Number(process.env.PUBLIC_HEALTH_INTERVAL_MS || "60000")));
 const PUBLIC_HEALTH_FAILURE_THRESHOLD = Math.max(1, Math.floor(Number(process.env.PUBLIC_HEALTH_FAILURE_THRESHOLD || "2")));
 const CLOUDFLARED_BIN_DIR = String(process.env.CLOUDFLARED_BIN_DIR || "").trim() || path.join(CONTENTBOX_ROOT, ".bin");
+const QUICK_TUNNEL_CONFIG_PATH = path.join(CONTENTBOX_ROOT, "quick-tunnel.yml");
 const PUBLIC_HTTP_PORT = Number(process.env.PUBLIC_PORT || 4010);
 const STATE_FILE = path.join(CONTENTBOX_ROOT, "state.json");
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
@@ -543,9 +544,15 @@ const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
 const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+if (!fsSync.existsSync(QUICK_TUNNEL_CONFIG_PATH)) {
+  try {
+    fsSync.writeFileSync(QUICK_TUNNEL_CONFIG_PATH, "");
+  } catch {}
+}
 const tunnelManager = new TunnelManager({
   targetPort: PUBLIC_HTTP_PORT,
   binDir: CLOUDFLARED_BIN_DIR,
+  quickConfigPath: QUICK_TUNNEL_CONFIG_PATH,
   healthIntervalMs: PUBLIC_HEALTH_INTERVAL_MS,
   healthFailureThreshold: PUBLIC_HEALTH_FAILURE_THRESHOLD,
   protocolPreference: getPublicSharingProtocolPreference(),

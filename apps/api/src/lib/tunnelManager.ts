@@ -23,6 +23,7 @@ type TunnelManagerOptions = {
   targetPort: number;
   pingPath?: string;
   binDir: string;
+  quickConfigPath?: string | null;
   logger?: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void };
   healthIntervalMs?: number;
   healthFailureThreshold?: number;
@@ -331,7 +332,10 @@ export class TunnelManager {
     this.opts.logger?.info?.(`quick tunnel target: ${targetUrl}`);
 
     const tryProtocol = async (protocol?: "quic" | "http2") => {
-      const args = ["tunnel", "--url", targetUrl, "--no-autoupdate"];
+      const args = ["tunnel"];
+      const quickConfigPath = String(this.opts.quickConfigPath || "").trim();
+      if (quickConfigPath) args.push("--config", quickConfigPath);
+      args.push("--url", targetUrl, "--no-autoupdate");
       if (protocol) args.push("--protocol", protocol);
       this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
       const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
