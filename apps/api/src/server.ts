@@ -809,7 +809,10 @@ function normalizeRemoteOrigin(raw: string): string | null {
       }
     } catch {}
 
-    if (!(isTry || isContentbox || isNamed || isLocal || isPrivate)) return null;
+    const isHttps = u.protocol === "https:";
+    if (!(isTry || isContentbox || isNamed || isLocal || isPrivate)) {
+      if (!isHttps || isLocal || isPrivate) return null;
+    }
     return u.origin;
   } catch {
     return null;
