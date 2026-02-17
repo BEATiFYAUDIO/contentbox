@@ -446,7 +446,12 @@ export class TunnelManager {
     return this.status();
   }
 
-  async startNamed(input: { publicOrigin: string; tunnelName: string; configPath?: string | null }): Promise<TunnelState> {
+  async startNamed(input: {
+    publicOrigin: string;
+    tunnelName: string;
+    configPath?: string | null;
+    token?: string | null;
+  }): Promise<TunnelState> {
     if (this.state.status === "ACTIVE") return this.status();
     if (this.state.status === "STARTING") return this.status();
     if (this.proc?.pid && !this.stopping) return this.status();
@@ -462,7 +467,12 @@ export class TunnelManager {
     }
   }
 
-  private async _startNamed(input: { publicOrigin: string; tunnelName: string; configPath?: string | null }): Promise<TunnelState> {
+  private async _startNamed(input: {
+    publicOrigin: string;
+    tunnelName: string;
+    configPath?: string | null;
+    token?: string | null;
+  }): Promise<TunnelState> {
     if (this.proc?.pid && !this.stopping) {
       this.opts.logger?.warn?.("Named tunnel already running; skipping spawn");
       return this.status();
@@ -486,9 +496,15 @@ export class TunnelManager {
     };
 
     this.opts.logger?.info?.(`cloudflared path: ${binPath}`);
-    const args = ["tunnel"];
-    if (input.configPath) args.push("--config", input.configPath);
-    args.push("run", input.tunnelName);
+    const args = ["tunnel", "run"];
+    const token = String(input.token || "").trim();
+    if (token) {
+      const targetUrl = `http://127.0.0.1:${this.opts.targetPort}`;
+      args.push("--token", token, "--url", targetUrl);
+    } else {
+      if (input.configPath) args.push("--config", input.configPath);
+      args.push(input.tunnelName);
+    }
     this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
 
     const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });

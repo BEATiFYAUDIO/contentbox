@@ -602,6 +602,7 @@ type LocalState = {
   };
   publicSharingAutoStart?: boolean;
   publicSharingProtocol?: "http2" | "quic";
+  namedTunnelToken?: string;
 };
 
 function readLocalState(): LocalState {
@@ -676,6 +677,24 @@ function getPublicSharingProtocolPreference(): "auto" | "http2" | "quic" {
 function setPublicSharingProtocolPreference(p: "http2" | "quic") {
   const s = readLocalState();
   s.publicSharingProtocol = p;
+  writeLocalState(s);
+}
+
+function getNamedTunnelToken(): string | null {
+  const s = readLocalState();
+  const token = String(s.namedTunnelToken || "").trim();
+  return token || null;
+}
+
+function setNamedTunnelToken(token: string) {
+  const s = readLocalState();
+  s.namedTunnelToken = token.trim();
+  writeLocalState(s);
+}
+
+function clearNamedTunnelToken() {
+  const s = readLocalState();
+  if (s.namedTunnelToken) delete s.namedTunnelToken;
   writeLocalState(s);
 }
 
@@ -865,6 +884,7 @@ function getPublicStatus() {
     message: state.message,
     lastChangedAt: state.lastChangedAt,
     tunnelName: getNamedTunnelConfig()?.tunnelName || null,
+    namedTokenStored: Boolean(getNamedTunnelToken()),
     state: legacyState,
     lastError: state.status === "error" ? "Public link error" : null,
     lastCheckedAt: namedHealthCache.checkedAt,
@@ -888,11 +908,13 @@ async function triggerPublicStartBestEffort() {
     const cur = tunnelManager.status();
     if (cur.status === "ACTIVE" && cur.publicOrigin === cfg.publicOrigin) return;
     await tunnelManager.stop();
+    const namedToken = getNamedTunnelToken();
     tunnelManager
       .startNamed({
         publicOrigin: cfg.publicOrigin,
         tunnelName: cfg.tunnelName,
-        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
+        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
+        token: namedToken
       })
       .catch(() => {});
   }
@@ -3033,6 +3055,15 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
         lastError: "missing_named_tunnel_config"
       });
     }
+    const namedToken = getNamedTunnelToken();
+    const configPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null;
+    if (!namedToken && !configPath) {
+      return reply.code(409).send({
+        ...getPublicStatus(),
+        lastError: "named_token_missing",
+        message: "Named tunnel requires a connector token. Add it in Config → Tunnel & routing."
+      });
+    }
     const cur = tunnelManager.status();
     if (cur.status === "ACTIVE" && cur.publicOrigin === cfg.publicOrigin) {
       return reply.send({
@@ -3043,7 +3074,8 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     const status = await tunnelManager.startNamed({
       publicOrigin: cfg.publicOrigin,
       tunnelName: cfg.tunnelName,
-      configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
+      configPath,
+      token: namedToken
     });
     if (status.status === "ACTIVE") {
       return reply.send({
@@ -3104,6 +3136,21 @@ app.post("/api/public/stop", { preHandler: requireAuth }, async (_req: any, repl
 app.post("/api/public/consent/reset", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   clearPublicSharingConsent();
   return reply.send(getPublicStatus());
+});
+
+app.post("/api/public/named-token", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const body = (_req.body ?? {}) as { token?: string };
+  const token = String(body?.token || "").trim();
+  if (!token || token.length < 20) {
+    return reply.code(400).send({ error: "Invalid token" });
+  }
+  setNamedTunnelToken(token);
+  return reply.send({ ok: true, stored: true });
+});
+
+app.post("/api/public/named-token/clear", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  clearNamedTunnelToken();
+  return reply.send({ ok: true, stored: false });
 });
 
 app.post("/api/public/autostart", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -8964,10 +9011,12 @@ app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersis
   } else if (state.mode === "named") {
     const cfg = getNamedTunnelConfig();
     if (cfg) {
+      const namedToken = getNamedTunnelToken();
       tunnelManager.startNamed({
         publicOrigin: cfg.publicOrigin,
         tunnelName: cfg.tunnelName,
-        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null
+        configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
+        token: namedToken
       }).catch((e) => app.log.warn(String(e?.message || e)));
     }
   }

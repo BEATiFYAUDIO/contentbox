@@ -79,6 +79,9 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
   const [tunnelError, setTunnelError] = useState<string | null>(null);
   const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
+  const [namedTokenInput, setNamedTokenInput] = useState<string>("");
+  const [namedTokenBusy, setNamedTokenBusy] = useState<boolean>(false);
+  const [namedTokenMsg, setNamedTokenMsg] = useState<string | null>(null);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
   const [publicBusy, setPublicBusy] = useState(false);
   const [publicMsg, setPublicMsg] = useState<string | null>(null);
@@ -184,7 +187,7 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
       const json = await res.json();
       setPublicStatus(json || null);
       if (!res.ok) {
-        setPublicMsg(json?.error || "Failed to start public link.");
+        setPublicMsg(json?.message || json?.error || "Failed to start public link.");
       }
     } catch (e: any) {
       setPublicMsg(e?.message || "Failed to start public link.");
@@ -292,6 +295,54 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
       setTunnelError(e?.message || String(e));
     } finally {
       setTunnelLoading(false);
+    }
+  };
+
+  const saveNamedToken = async (autoStart?: boolean) => {
+    if (!token) return;
+    const trimmed = namedTokenInput.trim();
+    if (!trimmed) {
+      setNamedTokenMsg("Paste the connector token to continue.");
+      return;
+    }
+    setNamedTokenBusy(true);
+    setNamedTokenMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/named-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ token: trimmed })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to save token");
+      setNamedTokenInput("");
+      setNamedTokenMsg("Token saved.");
+      if (autoStart) await startPublicLink();
+      await refreshPublicStatus();
+    } catch (e: any) {
+      setNamedTokenMsg(e?.message || "Failed to save token.");
+    } finally {
+      setNamedTokenBusy(false);
+    }
+  };
+
+  const clearNamedToken = async () => {
+    if (!token) return;
+    setNamedTokenBusy(true);
+    setNamedTokenMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/public/named-token/clear`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Failed to clear token");
+      setNamedTokenMsg("Token cleared.");
+      await refreshPublicStatus();
+    } catch (e: any) {
+      setNamedTokenMsg(e?.message || "Failed to clear token.");
+    } finally {
+      setNamedTokenBusy(false);
     }
   };
 
@@ -539,6 +590,46 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                 disabled={!tunnelEnabled}
               />
             </label>
+            {tunnelEnabled ? (
+              <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
+                <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
+                  Paste the Cloudflare connector token once. ContentBox will reuse it to start the tunnel.
+                </div>
+                <input
+                  value={namedTokenInput}
+                  onChange={(e) => setNamedTokenInput(e.target.value)}
+                  placeholder="Cloudflare connector token"
+                  className={inputClass}
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => saveNamedToken(false)}
+                    disabled={namedTokenBusy}
+                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                  >
+                    Save token
+                  </button>
+                  <button
+                    onClick={() => saveNamedToken(true)}
+                    disabled={namedTokenBusy}
+                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                  >
+                    Save & start tunnel
+                  </button>
+                  {publicStatus?.namedTokenStored ? (
+                    <button
+                      onClick={clearNamedToken}
+                      disabled={namedTokenBusy}
+                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                    >
+                      Clear saved token
+                    </button>
+                  ) : null}
+                </div>
+                {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
+              </div>
+            ) : null}
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={saveTunnelConfig}
