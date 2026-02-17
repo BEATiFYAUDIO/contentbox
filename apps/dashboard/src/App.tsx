@@ -548,15 +548,15 @@ export default function App() {
               </span>
               <span className="text-neutral-500">•</span>
               <span>
-                {!publicStatus?.lastCheckedAt
-                  ? "SEARCHING"
-                  : publicStatus?.status === "online"
+                {publicStatus?.status === "online"
                   ? "ONLINE"
                   : publicStatus?.status === "starting"
                     ? "STARTING"
                     : publicStatus?.status === "error"
                       ? "ERROR"
-                      : "OFFLINE"}
+                      : publicStatus?.status === "offline"
+                        ? "OFFLINE"
+                        : "SEARCHING"}
               </span>
               <span className="text-neutral-500">•</span>
               <span className="truncate max-w-[380px]">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
