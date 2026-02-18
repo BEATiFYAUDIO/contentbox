@@ -4513,6 +4513,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
   const q = (req.query || {}) as { trash?: string; scope?: string };
   const trash = q.trash === "1";
   const scope = String(q.scope || "library").toLowerCase();
+  const trashWhere = trash
+    ? {
+        deletedAt: { not: null },
+        deletedReason: { not: "hard" }
+      }
+    : { deletedAt: null };
 
   const selectBase = {
     id: true,
@@ -4534,14 +4540,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
 
   if (scope === "local") {
     const local = await prisma.contentItem.findMany({
-      where: { deletedAt: trash ? { not: null } : null },
+      where: trashWhere,
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
     items.push(...local.map((i) => ({ ...i, libraryAccess: i.ownerUserId === userId ? "owned" : "local" })));
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
-      where: { ownerUserId: userId, deletedAt: trash ? { not: null } : null },
+      where: { ownerUserId: userId, ...trashWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -4552,7 +4558,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
     const meEmail = (me?.email || "").toLowerCase();
     const [owned, purchased, publicPreview, participantLinks] = await prisma.$transaction([
       prisma.contentItem.findMany({
-        where: { ownerUserId: userId, deletedAt: trash ? { not: null } : null },
+        where: { ownerUserId: userId, ...trashWhere },
         orderBy: { createdAt: "desc" },
         select: selectBase
       }),
@@ -4565,7 +4571,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
         where: {
           storefrontStatus: { in: ["LISTED", "UNLISTED"] },
           status: "published",
-          deletedAt: trash ? { not: null } : null
+          ...trashWhere
         },
         orderBy: { createdAt: "desc" },
         select: selectBase
@@ -4597,7 +4603,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
       );
       if (participantIds.length > 0) {
         const participantContent = await prisma.contentItem.findMany({
-          where: { id: { in: participantIds }, deletedAt: trash ? { not: null } : null },
+          where: { id: { in: participantIds }, ...trashWhere },
           orderBy: { createdAt: "desc" },
           select: selectBase
         });
