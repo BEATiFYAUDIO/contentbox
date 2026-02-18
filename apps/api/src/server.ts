@@ -5150,31 +5150,46 @@ app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requirePersi
   });
   const authByLink = new Map(auths.map((a) => [a.derivativeLinkId, a]));
 
-  return reply.send(
-    links.map((l) => {
+  const out = await Promise.all(
+    links.map(async (l) => {
       const childOrigin = getRemoteOriginFromDescription(l.childContent?.description || null);
-      return {
-      linkId: l.id,
-      childContentId: l.childContentId,
-      childTitle: l.childContent?.title || null,
-      childDeletedAt: childOrigin ? null : l.childContent?.deletedAt || null,
-      childOrigin: childOrigin || null,
-      relation: l.relation,
-      upstreamBps: l.upstreamBps,
-      requiresApproval: l.requiresApproval,
-      approvedAt: l.approvedAt || null,
-      clearance: authByLink.get(l.id)
-        ? {
-            status: authByLink.get(l.id)!.status,
-            approveWeightBps: authByLink.get(l.id)!.approveWeightBps,
-            rejectWeightBps: authByLink.get(l.id)!.rejectWeightBps,
-            approvalBpsTarget: authByLink.get(l.id)!.approvalBpsTarget ?? 6667,
-            approvedApprovers: authByLink.get(l.id)!.approvedApprovers
+      let childDeletedAt: Date | null = childOrigin ? null : l.childContent?.deletedAt || null;
+      if (childOrigin) {
+        try {
+          const ctrl = new AbortController();
+          const timeout = setTimeout(() => ctrl.abort(), 3000);
+          const url = `${childOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(l.childContentId)}/offer`;
+          const res = await fetch(url, { signal: ctrl.signal as any });
+          clearTimeout(timeout);
+          if (res.status === 404 || res.status === 410) {
+            childDeletedAt = new Date();
           }
-        : null
-    };
+        } catch {}
+      }
+      return {
+        linkId: l.id,
+        childContentId: l.childContentId,
+        childTitle: l.childContent?.title || null,
+        childDeletedAt: childDeletedAt ? childDeletedAt.toISOString() : null,
+        childOrigin: childOrigin || null,
+        relation: l.relation,
+        upstreamBps: l.upstreamBps,
+        requiresApproval: l.requiresApproval,
+        approvedAt: l.approvedAt ? l.approvedAt.toISOString() : null,
+        clearance: authByLink.get(l.id)
+          ? {
+              status: authByLink.get(l.id)!.status,
+              approveWeightBps: authByLink.get(l.id)!.approveWeightBps,
+              rejectWeightBps: authByLink.get(l.id)!.rejectWeightBps,
+              approvalBpsTarget: authByLink.get(l.id)!.approvalBpsTarget ?? 6667,
+              approvedApprovers: authByLink.get(l.id)!.approvedApprovers
+            }
+          : null
+      };
     })
   );
+
+  return reply.send(out);
 });
 
 app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -5234,6 +5249,24 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
     } catch {}
   }
 
+  let clearanceRequest: { status: string; requestedAt: string; reviewGrantedAt?: string | null } | null = null;
+  const clearanceModel = (prisma as any).clearanceRequest;
+  if (clearanceModel) {
+    try {
+      const reqRow = await clearanceModel.findFirst({
+        where: { contentLinkId: link.id },
+        orderBy: { createdAt: "desc" }
+      });
+      if (reqRow) {
+        clearanceRequest = {
+          status: String(reqRow.status || "PENDING"),
+          requestedAt: reqRow.createdAt ? reqRow.createdAt.toISOString() : new Date().toISOString(),
+          reviewGrantedAt: reqRow.reviewGrantedAt ? reqRow.reviewGrantedAt.toISOString() : null
+        };
+      }
+    } catch {}
+  }
+
   return reply.send({
     linkId: link.id,
     relation: link.relation,
@@ -5263,6 +5296,7 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
     parentSplit: parentSplit
       ? { splitVersionId: parentSplit.id, status: parentSplit.status, lockedAt: parentSplit.lockedAt || null }
       : null,
+    clearanceRequest,
     canRequestApproval: Boolean(content.ownerUserId === userId) && Boolean(link.requiresApproval) && !(remoteStatus?.approvedAt || link.approvedAt),
     canVote: Boolean(isEligibleVoter) && !(remoteStatus?.approvedAt || link.approvedAt)
   });
@@ -5618,6 +5652,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
+  const childPublicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
   if (remoteOrigin) {
     try {
       const ctrl = new AbortController();
@@ -5628,7 +5663,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         body: JSON.stringify({
           parentContentId: link.parentContentId,
           childContentId: link.childContentId,
-          childOrigin: APP_BASE_URL,
+          childOrigin: childPublicOrigin,
           relation: link.relation,
           childTitle: child.title,
           childType: child.type
@@ -5712,6 +5747,14 @@ app.post("/api/derivatives/remote-request", { preHandler: requirePersistent("der
         description: `Remote origin: ${childOrigin.replace(/\/+$/, "")}`
       }
     });
+  } else {
+    const existingOrigin = getRemoteOriginFromDescription(child.description || null);
+    if (child.deletedAt && existingOrigin !== childOrigin.replace(/\/+$/, "")) {
+      child = await prisma.contentItem.update({
+        where: { id: childContentId },
+        data: { description: `Remote origin: ${childOrigin.replace(/\/+$/, "")}` }
+      });
+    }
   }
 
   const link =
@@ -5971,6 +6014,10 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
   const linkId = asString((req.params as any).linkId);
   const link = await prisma.contentLink.findUnique({ where: { id: linkId } });
   if (!link) return notFound(reply, "Content link not found");
+  const review = await prisma.clearanceRequest.findFirst({
+    where: { contentLinkId: linkId },
+    orderBy: { createdAt: "desc" }
+  });
 
   const thresholdBps = 6667;
   const { approvers, eligible } = await getEligibleApproversForParent(link.parentContentId);
@@ -6068,6 +6115,7 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     approvers,
     votes,
     progressBps,
+    reviewGrantedAt: review?.reviewGrantedAt ? review.reviewGrantedAt.toISOString() : null,
     viewer: {
       canVote: Boolean(viewerApprover) && !link.approvedAt,
       hasVoted: Boolean(viewerVote),
@@ -6201,13 +6249,21 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
   const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   if (publicLinks.length > 1) return notFound(reply, "Not found");
   const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
+  const reviewLinkId = publicLinks[0]?.id || null;
+  const reviewAccess = reviewLinkId
+    ? await prisma.clearanceRequest.findFirst({
+        where: { contentLinkId: reviewLinkId },
+        orderBy: { createdAt: "desc" }
+      })
+    : null;
+  const allowReviewPreview = Boolean(reviewAccess?.reviewGrantedAt);
+  if (content.storefrontStatus === "DISABLED" && !allowReviewPreview) return notFound(reply, "Not found");
   if (isDerivativeType || publicLinks.length > 0) {
     if (publicLinks.length === 0) return notFound(reply, "Not found");
-    if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt) return notFound(reply, "Not found");
+    if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
   }
 
   if (!content.repoPath) return notFound(reply, "Content not found");

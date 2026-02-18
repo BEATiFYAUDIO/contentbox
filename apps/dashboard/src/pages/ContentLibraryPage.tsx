@@ -830,6 +830,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                 ? {
                     approveWeightBps: cs.progressBps || 0,
                     approvalBpsTarget: cs.thresholdBps || 6667,
+                    reviewGrantedAt: cs.reviewGrantedAt || null,
                     approvedApprovers: Array.isArray(cs.votes)
                       ? cs.votes.filter((v: any) => {
                           if (String(v.decision).toLowerCase() !== "approve") return false;
@@ -858,11 +859,42 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
     }
   }
 
-  async function loadDerivativePreview(childContentId: string) {
+  async function loadDerivativePreview(childContentId: string, childOrigin?: string | null) {
     if (isBasicIdentity) return;
     setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
     setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
     try {
+      if (childOrigin) {
+        const base = String(childOrigin || "").replace(/\/+$/, "");
+        if (!base) {
+          setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Remote origin not set." }));
+          return;
+        }
+        const offer = await fetch(`${base}/public/content/${childContentId}/offer`).then((r) => r.json());
+        const objectKey = offer?.previewObjectKey || offer?.primaryFileId || null;
+        if (!objectKey) {
+          setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
+          return;
+        }
+        const previewUrl = `${base}/public/content/${childContentId}/preview-file?objectKey=${encodeURIComponent(objectKey)}`;
+        setDerivativePreviewByChild((m) => ({
+          ...m,
+          [childContentId]: {
+            content: { id: childContentId, title: offer?.title || null, type: offer?.type || null, status: "published" },
+            previewUrl,
+            files: [
+              {
+                id: objectKey,
+                objectKey,
+                originalName: offer?.primaryFileId || objectKey,
+                sizeBytes: offer?.sizeBytes || 0,
+                mime: offer?.primaryFileMime || ""
+              }
+            ]
+          }
+        }));
+        return;
+      }
       const res = await api<any>(`/content/${childContentId}/preview`, "GET");
       setDerivativePreviewByChild((m) => ({ ...m, [childContentId]: res || null }));
     } catch (e: any) {
@@ -1662,6 +1694,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
           <div className="space-y-2">
             {items.map((it) => {
               const isOwner = !it.ownerUserId || it.ownerUserId === meId;
+              const canInspect = isOwner || it.libraryAccess === "participant";
               const ownerLabel = it.owner?.displayName || it.owner?.email || it.ownerUserId || "Unknown";
               const isOpen = !!expanded[it.id];
               const filesCount = it._count?.files ?? 0;
@@ -1705,7 +1738,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                     <div className="flex flex-wrap items-center gap-2">
                       {!showTrash ? (
                         <>
-                          {isOwner ? (
+                          {canInspect ? (
                             <>
                               <button
                                 type="button"
@@ -1715,29 +1748,35 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                   setExpanded((m) => ({ ...m, [it.id]: next }));
                                   if (next) {
                                     try {
-                                      await Promise.all([
-                                        filesByContent[it.id] ? Promise.resolve() : loadFiles(it.id),
-                                        splitByContent[it.id] !== undefined ? Promise.resolve() : loadLatestSplit(it.id),
-                                        derivativeAuthByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativeAuth(it.id),
-                                        approvals.length ? Promise.resolve() : loadApprovals(),
-                                        salesByContent[it.id] !== undefined ? Promise.resolve() : loadSales(it.id),
-                                        parentLinkByContent[it.id] !== undefined ? Promise.resolve() : loadParentLink(it.id),
-                                        derivativesByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativesForParent(it.id),
-                                        creditsByContent[it.id] !== undefined ? Promise.resolve() : loadCredits(it.id),
-                                        auditByContent[it.id] !== undefined ? Promise.resolve() : loadAudit(it.id)
-                                      ]);
+                                      if (isOwner) {
+                                        await Promise.all([
+                                          filesByContent[it.id] ? Promise.resolve() : loadFiles(it.id),
+                                          splitByContent[it.id] !== undefined ? Promise.resolve() : loadLatestSplit(it.id),
+                                          derivativeAuthByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativeAuth(it.id),
+                                          approvals.length ? Promise.resolve() : loadApprovals(),
+                                          salesByContent[it.id] !== undefined ? Promise.resolve() : loadSales(it.id),
+                                          parentLinkByContent[it.id] !== undefined ? Promise.resolve() : loadParentLink(it.id),
+                                          derivativesByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativesForParent(it.id),
+                                          creditsByContent[it.id] !== undefined ? Promise.resolve() : loadCredits(it.id),
+                                          auditByContent[it.id] !== undefined ? Promise.resolve() : loadAudit(it.id)
+                                        ]);
+                                      } else {
+                                        await Promise.all([
+                                          derivativesByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativesForParent(it.id)
+                                        ]);
+                                      }
                                     } catch (e: any) {
                                       setError(e?.message || "Failed to load content details.");
                                     }
                                   }
                                 }}
                               >
-                                {isOpen ? "Hide files" : "Show files"}
+                                {isOpen ? "Hide details" : isOwner ? "Show files" : "Details"}
                               </button>
 
-                              <UploadButton contentId={it.id} disabled={busy} />
+                              {isOwner ? <UploadButton contentId={it.id} disabled={busy} /> : null}
 
-                              {!isBasicIdentity ? (
+                              {!isBasicIdentity && isOwner ? (
                                 <button
                                   type="button"
                                   className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
@@ -2142,6 +2181,13 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                   You can share/sell privately now. To release publicly, request clearance from original rights holders.
                                 </div>
                               ) : null}
+                              {parentLink.clearanceRequest ? (
+                                <div className="mt-1 text-[11px] text-neutral-400">
+                                  Clearance requested: {titleCase(String(parentLink.clearanceRequest.status || "pending"))}
+                                  {" "}•{" "}
+                                  {formatDateLabel(parentLink.clearanceRequest.requestedAt)}
+                                </div>
+                              ) : null}
                               {filesCount === 0 ? (
                                 <div className="mt-2 text-[11px] text-amber-300 flex items-center gap-2">
                                   <span>No files uploaded yet. Upload your remix to enable preview and clearance.</span>
@@ -2154,10 +2200,22 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                 </div>
                               ) : null}
                               <div className="mt-2 flex items-center gap-2">
+                                {parentLink.requiresApproval &&
+                                !parentLink.approvedAt &&
+                                isOwner &&
+                                (!parentLink.clearanceRequest || parentLink.clearanceRequest.status !== "PENDING") ? (
+                                  <button
+                                    type="button"
+                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                    onClick={() => requestClearanceForContent(it.id, parentLink.linkId)}
+                                  >
+                                    {parentLink.clearanceRequest ? "Retry request" : "Request clearance"}
+                                  </button>
+                                ) : null}
                                 <button
                                   type="button"
                                   className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                  onClick={() => loadDerivativePreview(it.id)}
+                                  onClick={() => loadDerivativePreview(it.id, it.childOrigin)}
                                 >
                                   {derivativePreviewLoading[it.id] ? "Loading…" : "Load preview"}
                                 </button>
@@ -2202,6 +2260,9 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                               </div>
                               {reviewGrantMsgByContent[it.id] ? (
                                 <div className="mt-2 text-[11px] text-neutral-300">{reviewGrantMsgByContent[it.id]}</div>
+                              ) : null}
+                              {clearanceRequestMsgByContent[it.id] ? (
+                                <div className="mt-2 text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
                               ) : null}
                               {derivativePreviewError[it.id] ? (
                                 <div className="mt-2 text-[11px] text-amber-300">
@@ -2333,6 +2394,11 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                     >
                                       {d.approvedAt ? "Cleared" : "Pending"}
                                     </span>
+                                    {d.clearance?.reviewGrantedAt ? (
+                                      <span className="text-[10px] px-2 py-0.5 rounded-full border border-sky-900 bg-sky-950/30 text-sky-200">
+                                        Preview granted
+                                      </span>
+                                    ) : null}
                                     <span className="text-[11px]">
                                       Upstream {(d.upstreamBps || 0) / 100}%
                                     </span>
@@ -3121,7 +3187,9 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                         ) : null}
                         {parentLinkByContent[it.id]?.requiresApproval &&
                         !parentLinkByContent[it.id]?.approvedAt &&
-                        parentLinkByContent[it.id]?.canRequestApproval ? (
+                        isOwner &&
+                        (!parentLinkByContent[it.id]?.clearanceRequest ||
+                          parentLinkByContent[it.id]?.clearanceRequest?.status !== "PENDING") ? (
                           <div className="mt-2 space-y-2 text-xs text-neutral-500">
                             <div className="flex items-center gap-2">
                               <button
@@ -3129,7 +3197,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                 className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
                                 onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
                               >
-                                Request clearance
+                                {parentLinkByContent[it.id]?.clearanceRequest ? "Retry request" : "Request clearance"}
                               </button>
                               {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
                                 <button
@@ -3143,6 +3211,14 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             </div>
                             {clearanceRequestMsgByContent[it.id] ? (
                               <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
+                            ) : null}
+                            {parentLinkByContent[it.id]?.clearanceRequest ? (
+                              <div className="text-[11px] text-neutral-400">
+                                Clearance requested:{" "}
+                                {titleCase(String(parentLinkByContent[it.id]!.clearanceRequest.status || "pending"))}
+                                {" "}•{" "}
+                                {formatDateLabel(parentLinkByContent[it.id]!.clearanceRequest.requestedAt)}
+                              </div>
                             ) : null}
                             {clearanceRequestMetaByContent[it.id]?.lastAttemptAt ? (
                               <div className="text-[11px] text-neutral-500">
