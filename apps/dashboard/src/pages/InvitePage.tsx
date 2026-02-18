@@ -65,6 +65,10 @@ function formatDate(value?: string | null) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
+function statusLabel(value?: string | null) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : "—";
+}
+
 export default function InvitePage({ token, onAccepted, identityLevel }: InvitePageProps) {
   const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
   const [loading, setLoading] = useState(true);
@@ -494,9 +498,8 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
   }
 
   const visibleSentInvites = (myInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
-  const visibleRemoteAccepted = (remoteReceivedInvites || [])
-    .filter((inv) => inv.acceptedAt)
-    .filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
+  const visibleReceivedInvites = (receivedInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
+  const visibleRemoteInvites = (remoteReceivedInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
 
   async function acceptRemoteInvite(inv: any) {
     const inviteUrl = String(inv?.inviteUrl || "").trim();
@@ -774,12 +777,14 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
             </div>
 
             <div>
-              <div className="text-sm font-medium">Remote splits (accepted)</div>
-              <div className="text-xs text-neutral-400">Accepted invites from other nodes (read-only).</div>
-              {visibleRemoteAccepted.length === 0 && <div className="mt-2 text-xs text-neutral-500">No remote splits yet.</div>}
-              {visibleRemoteAccepted.length > 0 && (
+              <div className="text-sm font-medium">Received invites</div>
+              <div className="text-xs text-neutral-400">Invites addressed to your account, including remote nodes.</div>
+              {visibleReceivedInvites.length === 0 && visibleRemoteInvites.length === 0 ? (
+                <div className="mt-2 text-xs text-neutral-500">No received invites yet.</div>
+              ) : null}
+              {visibleReceivedInvites.length > 0 && (
                 <div className="mt-2 space-y-2 text-sm text-neutral-200">
-                  {groupByContent(visibleRemoteAccepted).map((group) => {
+                  {groupByContent(visibleReceivedInvites).map((group) => {
                     const open = receivedOpen[group.key] ?? true;
                     return (
                       <div key={group.key} className="rounded-md border border-neutral-800 bg-neutral-950/40 p-2">
@@ -794,23 +799,94 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                         </div>
                         {open && (
                           <div className="mt-2 space-y-2">
-                            {group.invites.map((inv) => (
-                              <div key={inv.id} className="flex items-center justify-between gap-2">
-                                <div className="break-all">
-                                  <div className="text-xs text-neutral-400">From: Remote node</div>
-                                  {inv.role ? <div className="text-xs text-neutral-400">Role: {inv.role}</div> : null}
-                                  {inv.percent !== null && inv.percent !== undefined ? (
-                                    <div className="text-xs text-neutral-400">Percent: {num(inv.percent)}%</div>
-                                  ) : null}
-                                  <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
-                                  <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
-                                  {inv.contentDeletedAt ? <div className="text-[11px] text-amber-300">Tombstoned</div> : null}
-                                  {inv.remoteOrigin ? <div className="text-[10px] text-neutral-500">Remote: {inv.remoteOrigin}</div> : null}
-                                  {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
+                            {group.invites.map((inv) => {
+                              const status = inviteStatus(inv);
+                              return (
+                                <div key={inv.id} className="flex items-center justify-between gap-2">
+                                  <div className="break-all">
+                                    <div className="text-xs text-neutral-400">
+                                      {titleCase(inv.contentType)} • {statusLabel(inv.contentStatus)} • v{inv.splitVersionNum ?? "—"} • {statusLabel(inv.splitStatus)}
+                                    </div>
+                                    {inv.role ? <div className="text-xs text-neutral-400">Role: {inv.role}</div> : null}
+                                    {inv.percent !== null && inv.percent !== undefined ? (
+                                      <div className="text-xs text-neutral-400">Percent: {num(inv.percent)}%</div>
+                                    ) : null}
+                                    <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
+                                    <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
+                                    {inv.contentDeletedAt ? <div className="text-[11px] text-amber-300">Tombstoned</div> : null}
+                                    {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
+                                  </div>
+                                  <div className="text-xs uppercase tracking-wide text-neutral-400">{status}</div>
                                 </div>
-                                <div className="text-xs uppercase tracking-wide text-neutral-400">accepted</div>
-                              </div>
-                            ))}
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {visibleRemoteInvites.length > 0 && (
+                <div className="mt-2 space-y-2 text-sm text-neutral-200">
+                  {groupByContent(visibleRemoteInvites).map((group) => {
+                    const open = receivedOpen[group.key] ?? true;
+                    return (
+                      <div key={group.key} className="rounded-md border border-neutral-800 bg-neutral-950/40 p-2">
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm">{group.title}</div>
+                          <button
+                            onClick={() => setReceivedOpen((m) => ({ ...m, [group.key]: !open }))}
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                          >
+                            {open ? "Hide" : "Show"}
+                          </button>
+                        </div>
+                        {open && (
+                          <div className="mt-2 space-y-2">
+                            {group.invites.map((inv) => {
+                              const accepted = Boolean(inv.acceptedAt);
+                              return (
+                                <div key={inv.id} className="flex items-center justify-between gap-2">
+                                  <div className="break-all">
+                                    <div className="text-xs text-neutral-400">
+                                      {titleCase(inv.contentType)} • {statusLabel(inv.contentStatus)} • v{inv.splitVersionNum ?? "—"} • {statusLabel(inv.splitStatus)}
+                                    </div>
+                                    <div className="text-xs text-neutral-400">From: Remote node</div>
+                                    {inv.role ? <div className="text-xs text-neutral-400">Role: {inv.role}</div> : null}
+                                    {inv.percent !== null && inv.percent !== undefined ? (
+                                      <div className="text-xs text-neutral-400">Percent: {num(inv.percent)}%</div>
+                                    ) : null}
+                                    <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
+                                    <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
+                                    {inv.contentDeletedAt ? <div className="text-[11px] text-amber-300">Tombstoned</div> : null}
+                                    {inv.remoteOrigin ? <div className="text-[10px] text-neutral-500">Remote: {inv.remoteOrigin}</div> : null}
+                                    {accepted ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      onClick={() => syncRemoteInvite(inv)}
+                                      className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
+                                      disabled={remoteSyncBusy[inv.id]}
+                                    >
+                                      {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
+                                    </button>
+                                    {!accepted ? (
+                                      <button
+                                        onClick={() => acceptRemoteInvite(inv)}
+                                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
+                                        disabled={remoteAcceptBusy[inv.id]}
+                                      >
+                                        {remoteAcceptBusy[inv.id] ? "Accepting…" : "Accept"}
+                                      </button>
+                                    ) : null}
+                                    <div className="text-xs uppercase tracking-wide text-neutral-400">
+                                      {accepted ? "accepted" : "pending"}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </div>

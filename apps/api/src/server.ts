@@ -2669,10 +2669,14 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
     participantEmail: inv.splitParticipant?.participantEmail || null,
     contentId: inv.splitParticipant?.splitVersion?.contentId || null,
     contentTitle: inv.splitParticipant?.splitVersion?.content?.title || null,
+    contentType: inv.splitParticipant?.splitVersion?.content?.type || null,
+    contentStatus: inv.splitParticipant?.splitVersion?.content?.status || null,
     contentDeletedAt: inv.splitParticipant?.splitVersion?.content?.deletedAt
       ? inv.splitParticipant.splitVersion.content.deletedAt.toISOString()
       : null,
     splitVersionId: inv.splitParticipant?.splitVersionId || null,
+    splitVersionNum: inv.splitParticipant?.splitVersion?.versionNumber ?? null,
+    splitStatus: inv.splitParticipant?.splitVersion?.status || null,
     expiresAt: inv.expiresAt.toISOString(),
     acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
     createdAt: inv.createdAt.toISOString()
@@ -2709,10 +2713,14 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
     percent: percentToPrimitive(inv.splitParticipant?.percent ?? null),
     contentId: inv.splitParticipant?.splitVersion?.contentId || null,
     contentTitle: inv.splitParticipant?.splitVersion?.content?.title || null,
+    contentType: inv.splitParticipant?.splitVersion?.content?.type || null,
+    contentStatus: inv.splitParticipant?.splitVersion?.content?.status || null,
     contentDeletedAt: inv.splitParticipant?.splitVersion?.content?.deletedAt
       ? inv.splitParticipant.splitVersion.content.deletedAt.toISOString()
       : null,
     splitVersionId: inv.splitParticipant?.splitVersionId || null,
+    splitVersionNum: inv.splitParticipant?.splitVersion?.versionNumber ?? null,
+    splitStatus: inv.splitParticipant?.splitVersion?.status || null,
     ownerUserId: inv.splitParticipant?.splitVersion?.content?.ownerUserId || null,
     ownerDisplayName: inv.splitParticipant?.splitVersion?.content?.owner?.displayName || null,
     ownerEmail: inv.splitParticipant?.splitVersion?.content?.owner?.email || null,
