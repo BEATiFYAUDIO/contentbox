@@ -281,6 +281,12 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                         {titleCase(inv.contentType)} • {inv.role ? `${inv.role}` : "role —"} • {inv.percent != null ? `${inv.percent}%` : "percent —"}
                         {inv.contentDeletedAt ? " • tombstoned" : ""}
                       </div>
+                      <div className="text-xs text-neutral-400">
+                        {inv.participantEmail ? `To: ${inv.participantEmail}` : null}
+                      </div>
+                      <div className="text-xs text-neutral-400">Created: {formatDateLabel(inv.createdAt)}</div>
+                      <div className="text-xs text-neutral-400">Expires: {formatDateLabel(inv.expiresAt)}</div>
+                      {accepted ? <div className="text-xs text-emerald-300">Redeemed: {formatDateLabel(inv.acceptedAt)}</div> : null}
                       {isRemote ? <div className="text-[11px] text-neutral-500 break-all">Remote: {inv.remoteOrigin}</div> : null}
                     </div>
                     <div className="flex items-center gap-2">
