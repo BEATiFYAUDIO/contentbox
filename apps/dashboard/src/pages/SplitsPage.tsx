@@ -67,7 +67,6 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
   const [remoteAcceptBusy, setRemoteAcceptBusy] = React.useState<Record<string, boolean>>({});
   const [remoteSyncBusy, setRemoteSyncBusy] = React.useState<Record<string, boolean>>({});
   const [msg, setMsg] = React.useState<string | null>(null);
-  const [remoteInvites, setRemoteInvites] = React.useState<any[]>([]);
 
   async function loadContentList() {
     const list = await api<ContentItem[]>("/content?scope=mine", "GET");
