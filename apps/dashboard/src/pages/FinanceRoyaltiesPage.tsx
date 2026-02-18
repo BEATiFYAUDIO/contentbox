@@ -28,10 +28,13 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
     status?: string | null;
     approveWeightBps?: number | null;
     approvalBpsTarget?: number | null;
+    childDeletedAt?: string | null;
+    parentDeletedAt?: string | null;
   }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
+  const [showInactive, setShowInactive] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -145,14 +148,28 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
       <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-base font-semibold">Upstream derivatives</div>
         <div className="text-sm text-neutral-400 mt-1">Cleared or pending derivative royalties tied to your splits.</div>
-        {upstream.length === 0 ? (
+        <div className="mt-3 flex items-center justify-between">
+          <div className="text-xs text-neutral-500">Inactive items are tombstoned or deleted works.</div>
+          <button
+            onClick={() => setShowInactive((v) => !v)}
+            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+          >
+            {showInactive ? "Hide inactive" : "Show inactive"}
+          </button>
+        </div>
+        {upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt)).length === 0 ? (
           <div className="text-sm text-neutral-500 mt-3">No upstream derivatives yet.</div>
         ) : (
           <div className="mt-3 space-y-3">
-            {upstream.map((u, idx) => (
+            {upstream
+              .filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt))
+              .map((u, idx) => (
               <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
                 <div className="text-sm font-medium text-neutral-100">
                   {u.parentTitle} → {u.childTitle}
+                  {u.childDeletedAt || u.parentDeletedAt ? (
+                    <span className="ml-2 text-[10px] text-amber-300">inactive</span>
+                  ) : null}
                 </div>
                 <div className="text-xs text-neutral-400 mt-1">
                   Upstream rate: {(u.upstreamBps / 100).toFixed(u.upstreamBps % 100 ? 2 : 0)}% • My effective share:{" "}
