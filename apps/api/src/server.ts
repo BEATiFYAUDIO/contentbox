@@ -5425,13 +5425,18 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requirePersist
     const { eligible } = await getEligibleApproversForParent(a.parentContentId);
     const parent = await prisma.contentItem.findUnique({
       where: { id: a.parentContentId },
-      select: { ownerUserId: true }
+      select: { ownerUserId: true, repoPath: true, deletedReason: true, description: true }
     });
+    const isShadowRemote =
+      Boolean(parent?.deletedReason === "hard") &&
+      !parent?.repoPath &&
+      String(parent?.description || "").toLowerCase().startsWith("remote origin:");
     const existingVote = await prisma.derivativeApprovalVote.findUnique({
       where: { authorizationId_approverUserId: { authorizationId: a.id, approverUserId: userId } }
     });
     const isEligible =
-      eligible.some((p) => matchApproverToUser(p, userId, meEmail)) || (parent?.ownerUserId === userId);
+      eligible.some((p) => matchApproverToUser(p, userId, meEmail)) ||
+      (parent?.ownerUserId === userId && !isShadowRemote);
 
     if (scope === "pending") {
       if (!isEligible) continue;
