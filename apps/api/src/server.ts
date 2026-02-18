@@ -6896,14 +6896,23 @@ async function handlePublicOffer(req: any, reply: any) {
   }
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  if (!manifest) return notFound(reply, "Manifest not found");
-  if (manifestShaQuery && manifest.sha256 !== manifestShaQuery) return badRequest(reply, "manifestSha256 does not match content manifest");
+  if (!manifest && !allowDraftPreview) return notFound(reply, "Manifest not found");
+  if (manifest && manifestShaQuery && manifest.sha256 !== manifestShaQuery) {
+    return badRequest(reply, "manifestSha256 does not match content manifest");
+  }
 
-  const manifestJson = (manifest.json || {}) as any;
-  const primaryFileId =
+  const manifestJson = (manifest?.json || {}) as any;
+  let primaryFileId =
     (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
     (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
     null;
+  if (!primaryFileId && allowDraftPreview) {
+    const latestFile = await prisma.contentFile.findFirst({
+      where: { contentId },
+      orderBy: { createdAt: "desc" }
+    });
+    primaryFileId = latestFile?.objectKey || null;
+  }
   let primaryFileMime: string | null = null;
   if (primaryFileId) {
     const f = await prisma.contentFile.findFirst({ where: { contentId, objectKey: primaryFileId } });
@@ -6920,8 +6929,10 @@ async function handlePublicOffer(req: any, reply: any) {
   const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
 
   const priceSats = content.priceSats ?? null;
-  if (!priceSats || priceSats < 1) {
-    return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
+  if (!allowDraftPreview) {
+    if (!priceSats || priceSats < 1) {
+      return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
+    }
   }
 
   return reply.send({
@@ -6929,8 +6940,8 @@ async function handlePublicOffer(req: any, reply: any) {
     title: content.title,
     description: content.description || null,
     type: content.type,
-    manifestSha256: manifest.sha256,
-    priceSats: priceSats.toString(),
+    manifestSha256: manifest?.sha256 || null,
+    priceSats: priceSats != null ? priceSats.toString() : null,
     primaryFileId,
     primaryFileMime,
     previewObjectKey,
