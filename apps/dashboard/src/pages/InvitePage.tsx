@@ -80,6 +80,7 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
   const [sentOpen, setSentOpen] = useState<Record<string, boolean>>({});
   const [receivedOpen, setReceivedOpen] = useState<Record<string, boolean>>({});
   const [remoteAcceptBusy, setRemoteAcceptBusy] = useState<Record<string, boolean>>({});
+  const [showTombstones, setShowTombstones] = useState(false);
   const [contentList, setContentList] = useState<any[]>([]);
   const [selectedContentId, setSelectedContentId] = useState<string>("");
   const [selectedSplitId, setSelectedSplitId] = useState<string | null>(null);
@@ -497,6 +498,9 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
     return [...remote, ...base];
   })();
 
+  const visibleSentInvites = (myInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
+  const visibleReceivedInvites = mergedReceivedInvites.filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
+
   async function acceptRemoteInvite(inv: any) {
     const inviteUrl = String(inv?.inviteUrl || "").trim();
     const token = extractInviteTokenFromPaste(inviteUrl || inv?.token || "");
@@ -660,13 +664,23 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
         {/* If signed in, show invite history (tokens are shown only at creation time). */}
         {me && (myInvites || receivedInvites || remoteReceivedInvites) && (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900/10 p-3 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="text-xs text-neutral-400">Invite lists</div>
+              <button
+                type="button"
+                className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                onClick={() => setShowTombstones((s) => !s)}
+              >
+                {showTombstones ? "Hide tombstones" : "Show tombstones"}
+              </button>
+            </div>
             <div>
               <div className="text-sm font-medium">Sent invites</div>
               <div className="text-xs text-neutral-400">Tokens are only shown at creation; this list shows sent invites with status.</div>
-              {myInvites && myInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No sent invites yet.</div>}
-              {myInvites && myInvites.length > 0 && (
+              {visibleSentInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No sent invites yet.</div>}
+              {visibleSentInvites.length > 0 && (
                 <div className="mt-2 space-y-2 text-sm text-neutral-200">
-                  {groupByContent(myInvites).map((group) => {
+                  {groupByContent(visibleSentInvites).map((group) => {
                     const open = sentOpen[group.key] ?? true;
                     return (
                       <div key={group.key} className="rounded-md border border-neutral-800 bg-neutral-950/40 p-2">
@@ -690,6 +704,9 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                                     <div className="text-xs text-neutral-400">To: {inv.participantEmail || "(unknown)"}</div>
                                     <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
                                     <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
+                                    {inv.contentDeletedAt ? (
+                                      <div className="text-[11px] text-amber-300">Tombstoned</div>
+                                    ) : null}
                                     {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
                                   </div>
                                   <div className="flex items-center gap-2">
@@ -733,10 +750,10 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                   </div>
                 </div>
               ) : null}
-              {mergedReceivedInvites && mergedReceivedInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No received invites yet.</div>}
-              {mergedReceivedInvites && mergedReceivedInvites.length > 0 && (
+              {visibleReceivedInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No received invites yet.</div>}
+              {visibleReceivedInvites.length > 0 && (
                 <div className="mt-2 space-y-2 text-sm text-neutral-200">
-                  {groupByContent(mergedReceivedInvites).map((group) => {
+                  {groupByContent(visibleReceivedInvites).map((group) => {
                     const open = receivedOpen[group.key] ?? true;
                     return (
                       <div key={group.key} className="rounded-md border border-neutral-800 bg-neutral-950/40 p-2">
@@ -765,6 +782,9 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                                     ) : null}
                                     <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
                                     <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
+                                    {inv.contentDeletedAt ? (
+                                      <div className="text-[11px] text-amber-300">Tombstoned</div>
+                                    ) : null}
                                     {inv.remoteOrigin ? <div className="text-[10px] text-neutral-500">Remote: {inv.remoteOrigin}</div> : null}
                                     {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
                                   </div>

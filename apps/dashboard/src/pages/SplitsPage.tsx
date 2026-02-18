@@ -8,6 +8,7 @@ type ContentItem = {
   type: "song" | "book" | "video" | "file";
   status: "draft" | "published";
   createdAt: string;
+  deletedAt?: string | null;
 };
 
 type SplitVersion = {
@@ -39,6 +40,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
 
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
+  const [showTombstones, setShowTombstones] = React.useState(false);
   const [remoteInvites, setRemoteInvites] = React.useState<any[]>([]);
 
   async function loadContentList() {
@@ -101,10 +103,18 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
             <div className="text-lg font-semibold">Splits</div>
             <div className="text-sm text-neutral-400 mt-1">Pick a content item to edit its split versions.</div>
           </div>
+          <button
+            onClick={() => setShowTombstones((s) => !s)}
+            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+          >
+            {showTombstones ? "Hide tombstones" : "Show tombstones"}
+          </button>
         </div>
 
         <div className="mt-4 space-y-2">
-          {contentList.map((c) => {
+          {contentList
+            .filter((c) => (showTombstones ? true : !c.deletedAt))
+            .map((c) => {
             const summary = splitSummaryByContent[c.id];
             const updatedAt = summary?.lockedAt || summary?.createdAt || c.createdAt;
             return (
@@ -114,6 +124,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                     <div className="text-sm font-medium truncate">{c.title}</div>
                     <div className="text-xs text-neutral-400">
                       {titleCase(c.type)} • {titleCase(c.status)} • {summary ? `v${summary.versionNumber}` : "v—"} • {summary?.status || "—"} • {formatDateLabel(updatedAt)}
+                      {c.deletedAt ? " • tombstoned" : ""}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

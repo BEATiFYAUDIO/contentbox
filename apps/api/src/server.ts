@@ -2669,6 +2669,9 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
     participantEmail: inv.splitParticipant?.participantEmail || null,
     contentId: inv.splitParticipant?.splitVersion?.contentId || null,
     contentTitle: inv.splitParticipant?.splitVersion?.content?.title || null,
+    contentDeletedAt: inv.splitParticipant?.splitVersion?.content?.deletedAt
+      ? inv.splitParticipant.splitVersion.content.deletedAt.toISOString()
+      : null,
     splitVersionId: inv.splitParticipant?.splitVersionId || null,
     expiresAt: inv.expiresAt.toISOString(),
     acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
@@ -2706,6 +2709,9 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
     percent: percentToPrimitive(inv.splitParticipant?.percent ?? null),
     contentId: inv.splitParticipant?.splitVersion?.contentId || null,
     contentTitle: inv.splitParticipant?.splitVersion?.content?.title || null,
+    contentDeletedAt: inv.splitParticipant?.splitVersion?.content?.deletedAt
+      ? inv.splitParticipant.splitVersion.content.deletedAt.toISOString()
+      : null,
     splitVersionId: inv.splitParticipant?.splitVersionId || null,
     ownerUserId: inv.splitParticipant?.splitVersion?.content?.ownerUserId || null,
     ownerDisplayName: inv.splitParticipant?.splitVersion?.content?.owner?.displayName || null,
@@ -2733,6 +2739,7 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
       contentId: inv.contentId || null,
       contentTitle: inv.contentTitle || null,
       contentType: inv.contentType || null,
+      contentDeletedAt: null,
       splitVersionNum: inv.splitVersionNum ?? null,
       role: inv.role || null,
       percent: percentToPrimitive(inv.percent ?? null),

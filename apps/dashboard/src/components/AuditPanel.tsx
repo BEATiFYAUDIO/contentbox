@@ -72,6 +72,7 @@ export default function AuditPanel({
   const [open, setOpen] = React.useState(defaultOpen);
   const [loading, setLoading] = React.useState(false);
   const [items, setItems] = React.useState<AuditEvent[]>([]);
+  const [showTombstones, setShowTombstones] = React.useState(false);
 
   async function load() {
     setLoading(true);
@@ -98,6 +99,13 @@ export default function AuditPanel({
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs text-neutral-300 font-medium">{title}</div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+            onClick={() => setShowTombstones((s) => !s)}
+          >
+            {showTombstones ? "Hide tombstones" : "Show tombstones"}
+          </button>
           <button
             type="button"
             className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -133,7 +141,9 @@ export default function AuditPanel({
           ) : items.length === 0 ? (
             <div className="text-neutral-500">No audit events.</div>
           ) : (
-            items.map((e) => (
+            items
+              .filter((e) => (showTombstones ? true : !String(e.type || "").includes("tombstone")))
+              .map((e) => (
               <div key={e.id} className="rounded-md border border-neutral-800 bg-neutral-950 p-2">
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
