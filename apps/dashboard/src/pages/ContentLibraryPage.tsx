@@ -329,6 +329,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativeGroupOpen, setDerivativeGroupOpen] = React.useState<Record<string, boolean>>({});
+  const [derivativeShowTombstones, setDerivativeShowTombstones] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewByChild, setDerivativePreviewByChild] = React.useState<Record<string, any | null>>({});
   const [derivativePreviewLoading, setDerivativePreviewLoading] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewError, setDerivativePreviewError] = React.useState<Record<string, string>>({});
@@ -2376,13 +2377,28 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             {derivativesLoading[it.id] ? "Loading…" : "Refresh"}
                           </button>
                         </div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <div className="text-[11px] text-neutral-500">Manage clearance requests and previews.</div>
+                          <button
+                            type="button"
+                            className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                            onClick={() =>
+                              setDerivativeShowTombstones((m) => ({ ...m, [it.id]: !m[it.id] }))
+                            }
+                          >
+                            {derivativeShowTombstones[it.id] ? "Hide tombstones" : "Show tombstones"}
+                          </button>
+                        </div>
                         <div className="mt-2 space-y-2">
                           {(() => {
                             const all = derivativesByContent[it.id] || [];
+                            const showTomb = Boolean(derivativeShowTombstones[it.id]);
+                            const active = all.filter((d) => !d.childDeletedAt);
+                            const tombs = all.filter((d) => d.childDeletedAt);
                             const groups = [
-                              { key: "action", label: "Action needed", items: all.filter((d) => !d.approvedAt && !d.childDeletedAt) },
-                              { key: "cleared", label: "Cleared", items: all.filter((d) => d.approvedAt && !d.childDeletedAt) },
-                              { key: "tomb", label: "Tombstoned", items: all.filter((d) => d.childDeletedAt) }
+                              { key: "action", label: "Action needed", items: active.filter((d) => !d.approvedAt) },
+                              { key: "cleared", label: "Cleared", items: active.filter((d) => d.approvedAt) },
+                              { key: "tomb", label: "Tombstoned", items: showTomb ? tombs : [] }
                             ];
 
                             const renderItem = (d: any) => (
@@ -2412,78 +2428,82 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                       Upstream {(d.upstreamBps || 0) / 100}%
                                     </span>
                                   </div>
-                                  <button
-                                    type="button"
-                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                    onClick={async () => {
-                                      const next = !(clearanceHistoryOpen[d.linkId] ?? false);
-                                      setClearanceHistoryOpen((m) => ({ ...m, [d.linkId]: next }));
-                                      if (next && !clearanceHistoryByLink[d.linkId]) {
-                                        await loadClearanceHistory(d.linkId);
-                                      }
-                                    }}
-                                  >
-                                    {clearanceHistoryOpen[d.linkId] ? "Hide history" : "History"}
-                                  </button>
-                                  {d.childOrigin ? (
-                                    <button
-                                      type="button"
-                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={() => openRemoteDerivativePreview(d.childOrigin, d.childContentId)}
-                                    >
-                                      {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
-                                    </button>
-                                  ) : !d.childDeletedAt ? (
-                                    <button
-                                      type="button"
-                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={() => loadDerivativePreview(d.childContentId)}
-                                    >
-                                      {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
-                                    </button>
-                                  ) : null}
-                                  {(() => {
-                                    const viewer = d.clearance?.viewer || null;
-                                    const hasVoted = Boolean(viewer?.hasVoted);
-                                    const decision = String(viewer?.decision || "").toLowerCase();
-                                    const canVote = Boolean(viewer?.canVote);
-                                    if (d.approvedAt) {
-                                      return (
-                                        <span className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200">
-                                          Cleared for release ({(d.upstreamBps || 0) / 100}% upstream)
-                                        </span>
-                                      );
-                                    }
-                                    if (hasVoted) {
-                                      return (
-                                        <span className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200">
-                                          {decision === "reject" ? "You rejected" : "You approved"}
-                                        </span>
-                                      );
-                                    }
-                                    if (!canVote) return null;
-                                    return (
+                                  {!d.childDeletedAt ? (
+                                    <>
                                       <button
                                         type="button"
-                                        className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200"
+                                        className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
                                         onClick={async () => {
-                                          const input = window.prompt("Set upstream royalty rate (%) for clearance", "10");
-                                          const pct = Number((input || "").trim());
-                                          if (!Number.isFinite(pct)) {
-                                            setError("Upstream rate required to grant clearance.");
-                                            return;
+                                          const next = !(clearanceHistoryOpen[d.linkId] ?? false);
+                                          setClearanceHistoryOpen((m) => ({ ...m, [d.linkId]: next }));
+                                          if (next && !clearanceHistoryByLink[d.linkId]) {
+                                            await loadClearanceHistory(d.linkId);
                                           }
-                                          await api(`/content-links/${d.linkId}/vote`, "POST", {
-                                            decision: "approve",
-                                            upstreamRatePercent: pct
-                                          });
-                                          await loadDerivativesForParent(it.id);
                                         }}
                                       >
-                                        Grant permission
+                                        {clearanceHistoryOpen[d.linkId] ? "Hide history" : "History"}
                                       </button>
-                                    );
-                                  })()}
+                                      {d.childOrigin ? (
+                                        <button
+                                          type="button"
+                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                          onClick={() => openRemoteDerivativePreview(d.childOrigin, d.childContentId)}
+                                        >
+                                          {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                          onClick={() => loadDerivativePreview(d.childContentId)}
+                                        >
+                                          {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
+                                        </button>
+                                      )}
+                                      {(() => {
+                                        const viewer = d.clearance?.viewer || null;
+                                        const hasVoted = Boolean(viewer?.hasVoted);
+                                        const decision = String(viewer?.decision || "").toLowerCase();
+                                        const canVote = Boolean(viewer?.canVote);
+                                        if (d.approvedAt) {
+                                          return (
+                                            <span className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200">
+                                              Cleared for release ({(d.upstreamBps || 0) / 100}% upstream)
+                                            </span>
+                                          );
+                                        }
+                                        if (hasVoted) {
+                                          return (
+                                            <span className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200">
+                                              {decision === "reject" ? "You rejected" : "You approved"}
+                                            </span>
+                                          );
+                                        }
+                                        if (!canVote) return null;
+                                        return (
+                                          <button
+                                            type="button"
+                                            className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200"
+                                            onClick={async () => {
+                                              const input = window.prompt("Set upstream royalty rate (%) for clearance", "10");
+                                              const pct = Number((input || "").trim());
+                                              if (!Number.isFinite(pct)) {
+                                                setError("Upstream rate required to grant clearance.");
+                                                return;
+                                              }
+                                              await api(`/content-links/${d.linkId}/vote`, "POST", {
+                                                decision: "approve",
+                                                upstreamRatePercent: pct
+                                              });
+                                              await loadDerivativesForParent(it.id);
+                                            }}
+                                          >
+                                            Grant permission
+                                          </button>
+                                        );
+                                      })()}
+                                    </>
+                                  ) : null}
                                 </div>
                                 </div>
                                 <div className="mt-1 text-[11px] text-neutral-500">
@@ -2584,7 +2604,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             </div>
                             );
 
-                            if (all.length === 0) {
+                            if (all.length === 0 || (!showTomb && active.length === 0)) {
                               return <div className="text-neutral-500">No linked derivatives.</div>;
                             }
 
