@@ -5582,10 +5582,6 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   if (!child) return notFound(reply, "Content not found");
   if (child.ownerUserId !== userId) return forbidden(reply);
 
-  const parentSplit = await getLockedSplitForContent(link.parentContentId);
-  if (!parentSplit || parentSplit.status !== "locked") {
-    return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before approval." });
-  }
   const { approvers } = await getApproversForParent(link.parentContentId);
   const parent = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
@@ -5593,6 +5589,12 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   });
   const remoteOrigin =
     parent && parent.deletedReason === "hard" && !parent.repoPath ? getRemoteOriginFromDescription(parent.description) : null;
+  if (!remoteOrigin) {
+    const parentSplit = await getLockedSplitForContent(link.parentContentId);
+    if (!parentSplit || parentSplit.status !== "locked") {
+      return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before approval." });
+    }
+  }
 
   const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: linkId } });
   const auth =
