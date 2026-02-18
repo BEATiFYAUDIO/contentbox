@@ -411,6 +411,7 @@ model RemoteInvite {
   contentId       String?
   contentTitle    String?
   contentType     String?
+  contentDeletedAt DateTime?
   splitVersionNum Int?
   role            String?
   percent         Decimal? @db.Decimal(10, 3)

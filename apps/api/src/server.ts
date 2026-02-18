@@ -2739,7 +2739,7 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
       contentId: inv.contentId || null,
       contentTitle: inv.contentTitle || null,
       contentType: inv.contentType || null,
-      contentDeletedAt: null,
+      contentDeletedAt: inv.contentDeletedAt ? inv.contentDeletedAt.toISOString() : null,
       splitVersionNum: inv.splitVersionNum ?? null,
       role: inv.role || null,
       percent: percentToPrimitive(inv.percent ?? null),
@@ -2801,6 +2801,7 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
 
   const percent = round3(num(splitParticipant.percent));
   const acceptedAt = body.acceptedAt ? new Date(body.acceptedAt) : null;
+  const contentDeletedAt = body.contentDeletedAt || content.deletedAt || null;
 
   const data = {
     userId,
@@ -2810,6 +2811,7 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
     contentId: asString(content.id || "") || null,
     contentTitle: asString(content.title || "") || null,
     contentType: asString(content.type || "") || null,
+    contentDeletedAt: contentDeletedAt ? new Date(contentDeletedAt) : null,
     splitVersionNum: Number.isFinite(Number(splitVersion.versionNumber)) ? Number(splitVersion.versionNumber) : null,
     role: asString(splitParticipant.role || "") || null,
     percent: Number.isFinite(percent) && percent > 0 ? percent : null,
@@ -2842,6 +2844,7 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
           role: data.role,
           percent: data.percent,
           participantEmail: data.participantEmail,
+          contentDeletedAt: data.contentDeletedAt ? data.contentDeletedAt.toISOString?.() || data.contentDeletedAt : null,
           acceptedAt: data.acceptedAt ? data.acceptedAt.toISOString?.() || data.acceptedAt : null
         } as any
       }
@@ -9548,7 +9551,8 @@ async function handlePublicInviteLookup(req: any, reply: any) {
         title: sv.content.title,
         type: sv.content.type,
         status: sv.content.status,
-        createdAt: sv.content.createdAt.toISOString()
+        createdAt: sv.content.createdAt.toISOString(),
+        deletedAt: sv.content.deletedAt ? sv.content.deletedAt.toISOString() : null
       }
     : null;
 

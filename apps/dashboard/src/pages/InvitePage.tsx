@@ -80,6 +80,7 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
   const [sentOpen, setSentOpen] = useState<Record<string, boolean>>({});
   const [receivedOpen, setReceivedOpen] = useState<Record<string, boolean>>({});
   const [remoteAcceptBusy, setRemoteAcceptBusy] = useState<Record<string, boolean>>({});
+  const [remoteSyncBusy, setRemoteSyncBusy] = useState<Record<string, boolean>>({});
   const [showTombstones, setShowTombstones] = useState(false);
   const [contentList, setContentList] = useState<any[]>([]);
   const [selectedContentId, setSelectedContentId] = useState<string>("");
@@ -281,6 +282,7 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
           splitParticipant: data?.splitParticipant || null,
           splitVersion: data?.splitVersion || null,
           acceptedAt: data?.invitation?.acceptedAt || null,
+          contentDeletedAt: (data as any)?.content?.deletedAt || null,
           remoteNodeUrl: remoteOriginFromLocation
         });
         const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
@@ -525,6 +527,7 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
         splitParticipant: res?.splitParticipant || null,
         splitVersion: res?.splitVersion || null,
         acceptedAt: res?.invitation?.acceptedAt || null,
+        contentDeletedAt: res?.content?.deletedAt || null,
         remoteNodeUrl: origin
       });
       const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
@@ -533,6 +536,42 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
       setMsg(e?.message || "Remote accept failed");
     } finally {
       setRemoteAcceptBusy((m) => ({ ...m, [inv.id]: false }));
+    }
+  }
+
+  async function syncRemoteInvite(inv: any) {
+    const inviteUrl = String(inv?.inviteUrl || "").trim();
+    const token = extractInviteTokenFromPaste(inviteUrl || inv?.token || "");
+    let origin = String(inv?.remoteOrigin || "").trim();
+    if (!origin && inviteUrl) {
+      try {
+        origin = new URL(inviteUrl).origin;
+      } catch {}
+    }
+    if (!token || !origin) {
+      setMsg("Remote invite is missing token or origin.");
+      return;
+    }
+    setRemoteSyncBusy((m) => ({ ...m, [inv.id]: true }));
+    try {
+      const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}`, { method: "GET" });
+      await api(`/invites/ingest`, "POST", {
+        remoteOrigin: origin,
+        token,
+        inviteUrl,
+        content: res?.content || null,
+        splitParticipant: res?.splitParticipant || null,
+        splitVersion: res?.splitVersion || null,
+        acceptedAt: res?.invitation?.acceptedAt || null,
+        remoteNodeUrl: origin,
+        contentDeletedAt: res?.content?.deletedAt || null
+      });
+      const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+      setRemoteReceivedInvites(listRemote || []);
+    } catch (e: any) {
+      setMsg(e?.message || "Remote sync failed");
+    } finally {
+      setRemoteSyncBusy((m) => ({ ...m, [inv.id]: false }));
     }
   }
 
@@ -789,6 +828,15 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                                     {inv.acceptedAt ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
                                   </div>
                                   <div className="flex items-center gap-2">
+                                    {inv.remoteOrigin ? (
+                                      <button
+                                        onClick={() => syncRemoteInvite(inv)}
+                                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
+                                        disabled={remoteSyncBusy[inv.id]}
+                                      >
+                                        {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
+                                      </button>
+                                    ) : null}
                                     {inv.remoteOrigin && !inv.acceptedAt ? (
                                       <button
                                         onClick={() => acceptRemoteInvite(inv)}

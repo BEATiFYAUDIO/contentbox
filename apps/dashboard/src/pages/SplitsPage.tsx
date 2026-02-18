@@ -157,6 +157,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
 
           <div className="mt-4 space-y-2">
             {remoteInvites
+              .filter((inv) => (showTombstones ? true : !inv.contentDeletedAt))
               .filter((inv) => inv.acceptedAt)
               .map((inv) => (
                 <div key={inv.id} className="rounded-lg border border-neutral-800 px-3 py-2">
@@ -165,6 +166,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                       <div className="text-sm font-medium truncate">{inv.contentTitle || inv.contentId || "Remote content"}</div>
                       <div className="text-xs text-neutral-400">
                         {titleCase(inv.contentType)} • {inv.role ? `${inv.role}` : "role —"} • {inv.percent != null ? `${inv.percent}%` : "percent —"}
+                        {inv.contentDeletedAt ? " • tombstoned" : ""}
                       </div>
                       {inv.remoteOrigin ? (
                         <div className="text-[11px] text-neutral-500 break-all">Remote: {inv.remoteOrigin}</div>
