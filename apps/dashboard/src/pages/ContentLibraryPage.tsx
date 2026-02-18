@@ -2379,21 +2379,29 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                         </div>
                         <div className="mt-2 flex items-center justify-between">
                           <div className="text-[11px] text-neutral-500">Manage clearance requests and previews.</div>
+                          {(() => {
+                            const all = derivativesByContent[it.id] || [];
+                            const tombCount = all.filter((d: any) => d.childDeletedAt).length;
+                            return (
                           <button
                             type="button"
                             className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
                             onClick={() =>
                               setDerivativeShowTombstones((m) => ({ ...m, [it.id]: !m[it.id] }))
                             }
+                            disabled={tombCount === 0}
                           >
-                            {derivativeShowTombstones[it.id] ? "Hide tombstones" : "Show tombstones"}
+                            {derivativeShowTombstones[it.id] ? "Hide tombstones" : `Show tombstones (${tombCount})`}
                           </button>
+                            );
+                          })()}
                         </div>
                         <div className="mt-2 space-y-2">
                           {(() => {
                             const all = derivativesByContent[it.id] || [];
                             const showTomb = Boolean(derivativeShowTombstones[it.id]);
-                            const active = all.filter((d) => !d.childDeletedAt);
+                            const visibleAll = showTomb ? all : all.filter((d) => !d.childDeletedAt);
+                            const active = visibleAll.filter((d) => !d.childDeletedAt);
                             const tombs = all.filter((d) => d.childDeletedAt);
                             const groups = [
                               { key: "action", label: "Action needed", items: active.filter((d) => !d.approvedAt) },
@@ -2604,7 +2612,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             </div>
                             );
 
-                            if (all.length === 0 || (!showTomb && active.length === 0)) {
+                            if (visibleAll.length === 0) {
                               return <div className="text-neutral-500">No linked derivatives.</div>;
                             }
 
