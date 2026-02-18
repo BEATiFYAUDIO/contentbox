@@ -38,6 +38,8 @@ type UpstreamIncomeRow = {
   status?: string | null;
   approveWeightBps?: number | null;
   approvalBpsTarget?: number | null;
+  childDeletedAt?: string | null;
+  parentDeletedAt?: string | null;
 };
 
 type RoyaltiesResponse = {
@@ -70,6 +72,7 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
   const [error, setError] = useState<string | null>(null);
   const [historyItems, setHistoryItems] = useState<HistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
 
   useEffect(() => {
     if (isBasicIdentity) {
@@ -185,6 +188,47 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
           </div>
         ))}
       </div>
+
+      <div className="text-sm text-neutral-300 mt-6">Upstream derivatives</div>
+      <div className="text-xs text-neutral-500 mt-1">Derivative royalties tied to your splits.</div>
+      <div className="mt-2 flex items-center justify-between">
+        <div className="text-xs text-neutral-500">Inactive items are tombstoned or deleted works.</div>
+        <button
+          onClick={() => setShowInactive((v) => !v)}
+          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+        >
+          {showInactive ? "Hide inactive" : "Show inactive"}
+        </button>
+      </div>
+      {upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt)).length === 0 ? (
+        <div className="text-sm text-neutral-500 mt-3">No upstream derivatives yet.</div>
+      ) : (
+        <div className="mt-3 space-y-3">
+          {upstream
+            .filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt))
+            .map((u, idx) => (
+              <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                <div className="text-sm font-medium text-neutral-100">
+                  {u.parentTitle} → {u.childTitle}
+                  {u.childDeletedAt || u.parentDeletedAt ? (
+                    <span className="ml-2 text-[10px] text-amber-300">inactive</span>
+                  ) : null}
+                </div>
+                <div className="text-xs text-neutral-400 mt-1">
+                  Upstream rate: {(u.upstreamBps / 100).toFixed(u.upstreamBps % 100 ? 2 : 0)}% • My effective share:{" "}
+                  {(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%
+                </div>
+                <div className="text-xs text-neutral-400 mt-1">
+                  Earned: <span className="text-neutral-200">{u.earnedSatsToDate} sats</span>
+                  {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
+                  {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
+                    <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
+                  ) : null}
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
 
       <div className="text-sm text-neutral-300 mt-6">Remote royalties</div>
       {remoteRoyalties.length === 0 ? (
