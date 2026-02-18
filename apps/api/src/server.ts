@@ -5205,13 +5205,32 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
   const userEmail = (user?.email || "").toLowerCase();
   const isEligibleVoter = eligible.some((p) => matchApproverToUser(p, userId, userEmail));
 
+  let remoteStatus: any = null;
+  const parentOrigin =
+    parent && parent.deletedReason === "hard" && !parent.repoPath ? getRemoteOriginFromDescription(parent.description) : null;
+  if (parentOrigin) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      const url = `${parentOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+        link.parentContentId
+      )}&childContentId=${encodeURIComponent(link.childContentId)}`;
+      const res = await fetch(url, { signal: ctrl.signal as any });
+      const data = await res.json().catch(() => null);
+      clearTimeout(timeout);
+      if (res.ok && data) remoteStatus = data;
+    } catch {}
+  }
+
   return reply.send({
     linkId: link.id,
     relation: link.relation,
-    upstreamBps: link.upstreamBps,
+    upstreamBps: remoteStatus?.upstreamBps ?? link.upstreamBps,
     requiresApproval: link.requiresApproval,
-    approvedAt: link.approvedAt || null,
-    clearance: auth
+    approvedAt: remoteStatus?.approvedAt || link.approvedAt || null,
+    clearance: remoteStatus?.clearance
+      ? remoteStatus.clearance
+      : auth
       ? {
           status: auth.status,
           approveWeightBps: auth.approveWeightBps,
@@ -5232,8 +5251,8 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
     parentSplit: parentSplit
       ? { splitVersionId: parentSplit.id, status: parentSplit.status, lockedAt: parentSplit.lockedAt || null }
       : null,
-    canRequestApproval: Boolean(content.ownerUserId === userId) && Boolean(link.requiresApproval) && !link.approvedAt,
-    canVote: Boolean(isEligibleVoter) && !link.approvedAt
+    canRequestApproval: Boolean(content.ownerUserId === userId) && Boolean(link.requiresApproval) && !(remoteStatus?.approvedAt || link.approvedAt),
+    canVote: Boolean(isEligibleVoter) && !(remoteStatus?.approvedAt || link.approvedAt)
   });
 });
 
@@ -5754,6 +5773,38 @@ app.post("/api/derivatives/remote-request", { preHandler: requirePersistent("der
   }
 
   return reply.send({ ok: true, authorization: auth, approvalUrls, expiresAt });
+});
+
+// Remote clearance status (parent node -> child node)
+app.get("/api/derivatives/remote-status", async (req: any, reply) => {
+  const parentContentId = asString((req.query || {})?.parentContentId || "").trim();
+  const childContentId = asString((req.query || {})?.childContentId || "").trim();
+  if (!parentContentId || !childContentId) {
+    return badRequest(reply, "parentContentId and childContentId are required");
+  }
+
+  const link = await prisma.contentLink.findFirst({
+    where: { parentContentId, childContentId }
+  });
+  if (!link) return notFound(reply, "link not found");
+
+  const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  return reply.send({
+    linkId: link.id,
+    parentContentId,
+    childContentId,
+    upstreamBps: link.upstreamBps,
+    approvedAt: link.approvedAt || null,
+    clearance: auth
+      ? {
+          status: auth.status,
+          approveWeightBps: auth.approveWeightBps,
+          rejectWeightBps: auth.rejectWeightBps,
+          approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
+          approvedApprovers: auth.approvedApprovers
+        }
+      : null
+  });
 });
 
 app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req: any, reply) => {
