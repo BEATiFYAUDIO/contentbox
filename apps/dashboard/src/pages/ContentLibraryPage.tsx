@@ -253,6 +253,10 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
   >({});
+  const [clearanceRequestMsgByContent, setClearanceRequestMsgByContent] = React.useState<Record<string, string | null>>({});
+  const [clearanceLinksByContent, setClearanceLinksByContent] = React.useState<
+    Record<string, Array<{ email: string; url: string; weightBps?: number }> | null>
+  >({});
 
   const [showTrash, setShowTrash] = React.useState(false);
   const [showClearance, setShowClearance] = React.useState(false);
@@ -928,6 +932,23 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
       setError(e?.message || "Failed to update storefront status");
     } finally {
       setBusyAction((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function requestClearanceForContent(contentId: string, linkId: string) {
+    setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: null }));
+    try {
+      const res: any = await api(`/content-links/${linkId}/request-approval`, "POST");
+      const links = (Array.isArray(res?.remoteApprovalUrls) && res.remoteApprovalUrls.length > 0)
+        ? res.remoteApprovalUrls
+        : Array.isArray(res?.approvalUrls)
+          ? res.approvalUrls
+          : [];
+      setClearanceLinksByContent((m) => ({ ...m, [contentId]: links }));
+      setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: "Clearance requested." }));
+      await loadParentLink(contentId);
+    } catch (e: any) {
+      setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: e?.message || "Clearance request failed." }));
     }
   }
 
@@ -3071,8 +3092,34 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                         {parentLinkByContent[it.id]?.requiresApproval &&
                         !parentLinkByContent[it.id]?.approvedAt &&
                         parentLinkByContent[it.id]?.canRequestApproval ? (
-                          <div className="mt-2 text-xs text-neutral-500">
-                            Request clearance in Splits → Lineage / Upstream royalties.
+                          <div className="mt-2 space-y-2 text-xs text-neutral-500">
+                            <button
+                              type="button"
+                              className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                              onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
+                            >
+                              Request clearance
+                            </button>
+                            {clearanceRequestMsgByContent[it.id] ? (
+                              <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
+                            ) : null}
+                            {clearanceLinksByContent[it.id]?.length ? (
+                              <div className="space-y-1 text-[11px] text-neutral-400">
+                                <div className="text-neutral-500">Clearance links:</div>
+                                {clearanceLinksByContent[it.id]!.map((l, idx) => (
+                                  <div key={idx} className="flex items-center gap-2">
+                                    <span className="truncate">{l.email}</span>
+                                    <button
+                                      type="button"
+                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                      onClick={() => navigator.clipboard.writeText(l.url)}
+                                    >
+                                      Copy link
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
 
