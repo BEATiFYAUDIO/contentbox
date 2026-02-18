@@ -6880,7 +6880,20 @@ async function handlePublicOffer(req: any, reply: any) {
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.deletedAt) return notFound(reply, "Not found");
-  if (content.status !== "published") return notFound(reply, "Not found");
+  let allowDraftPreview = false;
+  if (content.status !== "published") {
+    const links = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+    if (links.length === 1) {
+      const review = await (prisma as any).clearanceRequest?.findFirst?.({
+        where: { contentLinkId: links[0].id },
+        orderBy: { createdAt: "desc" }
+      });
+      if (review?.reviewGrantedAt) {
+        allowDraftPreview = true;
+      }
+    }
+    if (!allowDraftPreview) return notFound(reply, "Not found");
+  }
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) return notFound(reply, "Manifest not found");
