@@ -625,6 +625,7 @@ type LocalState = {
   publicSharingProtocol?: "http2" | "quic";
   namedTunnelToken?: string;
   namedTunnelDisabled?: boolean;
+  backupsEnabled?: boolean;
 };
 
 function readLocalState(): LocalState {
@@ -729,6 +730,19 @@ function clearNamedTunnelToken() {
   const s = readLocalState();
   if (s.namedTunnelToken) delete s.namedTunnelToken;
   writeLocalState(s);
+}
+
+function getBackupsEnabled(): boolean {
+  const s = readLocalState();
+  if (typeof s.backupsEnabled === "boolean") return s.backupsEnabled;
+  return true;
+}
+
+function setBackupsEnabled(enabled: boolean) {
+  const s = readLocalState();
+  s.backupsEnabled = enabled;
+  writeLocalState(s);
+  return s.backupsEnabled;
 }
 
 function isPersistentOrigin(origin: string | null): boolean {
@@ -3412,7 +3426,7 @@ app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: an
   }
   try {
     const items = await listBackupFiles();
-    return reply.send({ ok: true, dir: BACKUP_DIR, items });
+    return reply.send({ ok: true, dir: BACKUP_DIR, items, enabled: getBackupsEnabled() });
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to list backups", details: e?.message || String(e) });
   }
@@ -3422,12 +3436,25 @@ app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: a
   if (!isAdvancedDb()) {
     return reply.code(400).send({ error: "Backups require DB_MODE=advanced with Postgres." });
   }
+  if (!getBackupsEnabled()) {
+    return reply.code(409).send({ error: "Backups are disabled for this device." });
+  }
   try {
     const item = await runBackup();
     return reply.send({ ok: true, dir: BACKUP_DIR, item });
   } catch (e: any) {
     return reply.code(500).send({ error: "Backup failed", details: e?.message || String(e) });
   }
+});
+
+app.get("/api/diagnostics/backups/settings", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ ok: true, enabled: getBackupsEnabled() });
+});
+
+app.post("/api/diagnostics/backups/settings", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { enabled?: boolean };
+  const enabled = Boolean(body.enabled);
+  return reply.send({ ok: true, enabled: setBackupsEnabled(enabled) });
 });
 
 app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply: any) => {

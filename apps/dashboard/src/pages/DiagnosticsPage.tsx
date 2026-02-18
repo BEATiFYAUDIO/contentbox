@@ -186,6 +186,8 @@ export default function DiagnosticsPage() {
   const [backupsBusy, setBackupsBusy] = useState(false);
   const [backupRunBusy, setBackupRunBusy] = useState(false);
   const [backupDir, setBackupDir] = useState<string | null>(null);
+  const [backupsEnabled, setBackupsEnabled] = useState(true);
+  const [backupsSettingsBusy, setBackupsSettingsBusy] = useState(false);
   const token = getToken();
 
   const healthPath = DEFAULT_HEALTH_PATH;
@@ -308,12 +310,30 @@ export default function DiagnosticsPage() {
       } else {
         setBackups(Array.isArray(json?.items) ? json.items : []);
         setBackupDir(json?.dir || null);
+        setBackupsEnabled(Boolean(json?.enabled));
       }
     } catch (e: any) {
       setBackups([]);
       setBackupsErr(e?.message || String(e));
     } finally {
       setBackupsBusy(false);
+    }
+  };
+
+  const loadBackupSettings = async () => {
+    if (!token) return;
+    setBackupsSettingsBusy(true);
+    try {
+      const res = await fetch(`${apiBase}/api/diagnostics/backups/settings`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setBackupsEnabled(Boolean(json?.enabled));
+      }
+    } finally {
+      setBackupsSettingsBusy(false);
     }
   };
 
@@ -339,9 +359,33 @@ export default function DiagnosticsPage() {
     }
   };
 
+  const toggleBackups = async (enabled: boolean) => {
+    if (!token) return;
+    setBackupsSettingsBusy(true);
+    setBackupsErr(null);
+    try {
+      const res = await fetch(`${apiBase}/api/diagnostics/backups/settings`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled })
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setBackupsErr(json?.error || `HTTP ${res.status}`);
+      } else {
+        setBackupsEnabled(Boolean(json?.enabled));
+      }
+    } catch (e: any) {
+      setBackupsErr(e?.message || String(e));
+    } finally {
+      setBackupsSettingsBusy(false);
+    }
+  };
+
   useEffect(() => {
     if (!token) return;
     loadBackups().catch(() => {});
+    loadBackupSettings().catch(() => {});
   }, [token, apiBase]);
 
   const resolveHealthOrigin = () => {
@@ -476,8 +520,20 @@ export default function DiagnosticsPage() {
           <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
             <div><b>Backup directory</b>: {backupDir || "—"}</div>
             {backupsErr ? <div style={{ color: "#ffb4b4" }}>{backupsErr}</div> : null}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input
+                  type="checkbox"
+                  checked={backupsEnabled}
+                  onChange={(e) => toggleBackups(e.target.checked)}
+                  disabled={backupsSettingsBusy}
+                />
+                <span>Backups enabled</span>
+              </label>
+              {backupsSettingsBusy ? <span style={{ opacity: 0.6 }}>Saving…</span> : null}
+            </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button onClick={runBackup} disabled={backupRunBusy} className={buttonClass}>
+              <button onClick={runBackup} disabled={backupRunBusy || !backupsEnabled} className={buttonClass}>
                 {backupRunBusy ? "Running…" : "Run backup"}
               </button>
               <button onClick={loadBackups} disabled={backupsBusy} className={buttonClass}>
