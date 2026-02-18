@@ -74,7 +74,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
     }
     const [active, trashed] = await Promise.all([
       api<ContentItem[]>("/content?scope=mine", "GET"),
-      api<ContentItem[]>("/content?trash=1&scope=mine", "GET")
+      api<ContentItem[]>("/content?trash=1&tombstones=1&scope=mine", "GET")
     ]);
     const seen = new Set<string>();
     const merged: ContentItem[] = [];
@@ -131,7 +131,23 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
       });
       await loadRemoteInvites();
     } catch (e: any) {
-      setMsg(e?.message || "Remote sync failed");
+      const msgText = String(e?.message || "");
+      if (msgText.includes("404") && msgText.toLowerCase().includes("invite not found")) {
+        try {
+          await api(`/invites/ingest`, "POST", {
+            remoteOrigin: origin,
+            token,
+            inviteUrl,
+            contentDeletedAt: new Date().toISOString(),
+            acceptedAt: inv?.acceptedAt || null,
+            remoteNodeUrl: origin
+          });
+          await loadRemoteInvites();
+        } catch {}
+        setMsg("Remote invite not found (likely deleted or expired).");
+      } else {
+        setMsg(e?.message || "Remote sync failed");
+      }
     } finally {
       setRemoteSyncBusy((m) => ({ ...m, [inv.id]: false }));
     }
@@ -174,6 +190,17 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentList, isBasicIdentity]);
 
+  function shouldShowContent(c: ContentItem) {
+    const summary = splitSummaryByContent[c.id];
+    if (showTombstones) {
+      if (!c.deletedAt) return true;
+      return c.status === "published" || summary?.status === "locked";
+    }
+    return c.status === "published" && !c.deletedAt;
+  }
+
+  const visibleContent = contentList.filter(shouldShowContent);
+
   return (
     <div className="space-y-4">
       {isBasicIdentity ? (
@@ -183,25 +210,24 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
       ) : null}
       {!isBasicIdentity ? (
       <>
+      <div className="flex justify-end">
+        <button
+          onClick={() => setShowTombstones((s) => !s)}
+          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+        >
+          {showTombstones ? "Hide tombstones" : "Show tombstones"}
+        </button>
+      </div>
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-lg font-semibold">Splits</div>
             <div className="text-sm text-neutral-400 mt-1">Pick a content item to edit its split versions.</div>
           </div>
-          <button
-            onClick={() => setShowTombstones((s) => !s)}
-            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-          >
-            {showTombstones ? "Hide tombstones" : "Show tombstones"}
-          </button>
         </div>
 
         <div className="mt-4 space-y-2">
-          {contentList
-            .filter((c) => c.status === "published")
-            .filter((c) => (showTombstones ? true : !c.deletedAt))
-            .map((c) => {
+          {visibleContent.map((c) => {
             const summary = splitSummaryByContent[c.id];
             const updatedAt = summary?.lockedAt || summary?.createdAt || c.createdAt;
             return (
@@ -209,7 +235,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">{c.title}</div>
-                    <div className="text-xs text-neutral-400">
+                    <div className={`text-xs ${c.deletedAt ? "text-amber-300" : "text-neutral-400"}`}>
                       {titleCase(c.type)} • {titleCase(c.status)} • {summary ? `v${summary.versionNumber}` : "v—"} • {summary?.status || "—"} • {formatDateLabel(updatedAt)}
                       {c.deletedAt ? " • tombstoned" : ""}
                     </div>
@@ -227,7 +253,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
             );
           })}
 
-          {contentList.filter((c) => c.status === "published").length === 0 && (
+          {visibleContent.length === 0 && (
             <div className="text-sm text-neutral-400">No published content yet.</div>
           )}
         </div>
@@ -240,12 +266,6 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
               <div className="text-lg font-semibold">Remote splits</div>
               <div className="text-sm text-neutral-400 mt-1">Accepted invites from other nodes (read-only).</div>
             </div>
-            <button
-              onClick={() => setShowTombstones((s) => !s)}
-              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-            >
-              {showTombstones ? "Hide tombstones" : "Show tombstones"}
-            </button>
           </div>
 
           {msg ? <div className="mt-2 text-xs text-amber-300">{msg}</div> : null}
@@ -258,7 +278,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="text-sm font-medium truncate">{inv.contentTitle || inv.contentId || "Remote content"}</div>
-                      <div className="text-xs text-neutral-400">
+                      <div className={`text-xs ${inv.contentDeletedAt ? "text-amber-300" : "text-neutral-400"}`}>
                         {titleCase(inv.contentType)} • {inv.role ? `${inv.role}` : "role —"} • {inv.percent != null ? `${inv.percent}%` : "percent —"}
                         {inv.contentDeletedAt ? " • tombstoned" : ""}
                       </div>
@@ -267,13 +287,15 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
                       ) : null}
                     </div>
                     <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => syncRemoteInvite(inv)}
-                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
-                        disabled={remoteSyncBusy[inv.id]}
-                      >
-                        {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
-                      </button>
+                      {!inv.contentDeletedAt ? (
+                        <button
+                          onClick={() => syncRemoteInvite(inv)}
+                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
+                          disabled={remoteSyncBusy[inv.id]}
+                        >
+                          {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
+                        </button>
+                      ) : null}
                       {inv.inviteUrl ? (
                         <button
                           onClick={() => window.open(inv.inviteUrl, "_blank", "noopener,noreferrer")}
@@ -291,7 +313,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
         </div>
       ) : null}
 
-      <AuditPanel scopeType="split" title="Audit" exportName="split-audit.json" />
+      <AuditPanel scopeType="split" title="Audit" exportName="split-audit.json" showTombstoneToggle={false} />
       </>
       ) : null}
     </div>

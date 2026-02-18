@@ -4510,14 +4510,17 @@ app.get("/api/payout-methods", { preHandler: requireAuth }, async () => {
 app.get("/content", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
 
-  const q = (req.query || {}) as { trash?: string; scope?: string };
+  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string };
   const trash = q.trash === "1";
+  const tombstones = q.tombstones === "1";
   const scope = String(q.scope || "library").toLowerCase();
   const trashWhere = trash
-    ? {
-        deletedAt: { not: null },
-        deletedReason: { not: "hard" }
-      }
+    ? tombstones
+      ? { deletedAt: { not: null } }
+      : {
+          deletedAt: { not: null },
+          deletedReason: { not: "hard" }
+        }
     : { deletedAt: null };
 
   const selectBase = {

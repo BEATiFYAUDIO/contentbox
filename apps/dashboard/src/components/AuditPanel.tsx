@@ -31,6 +31,7 @@ type AuditPanelProps = {
   title?: string;
   defaultOpen?: boolean;
   exportName?: string;
+  showTombstoneToggle?: boolean;
 };
 
 function formatTs(ts: string) {
@@ -67,7 +68,8 @@ export default function AuditPanel({
   scopeId,
   title = "Audit",
   defaultOpen = false,
-  exportName
+  exportName,
+  showTombstoneToggle = true
 }: AuditPanelProps) {
   const [open, setOpen] = React.useState(defaultOpen);
   const [loading, setLoading] = React.useState(false);
@@ -99,13 +101,15 @@ export default function AuditPanel({
       <div className="flex items-center justify-between gap-2">
         <div className="text-xs text-neutral-300 font-medium">{title}</div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-            onClick={() => setShowTombstones((s) => !s)}
-          >
-            {showTombstones ? "Hide tombstones" : "Show tombstones"}
-          </button>
+          {showTombstoneToggle ? (
+            <button
+              type="button"
+              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              onClick={() => setShowTombstones((s) => !s)}
+            >
+              {showTombstones ? "Hide tombstones" : "Show tombstones"}
+            </button>
+          ) : null}
           <button
             type="button"
             className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
