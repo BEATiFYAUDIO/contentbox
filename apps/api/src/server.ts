@@ -4700,6 +4700,7 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     title?: string;
     description?: string | null;
     splitDraft?: Array<{ participantEmail?: string; userId?: string; role: string; bps: number }>;
+    parentOrigin?: string | null;
   };
 
   const title = asString(body.title).trim();
@@ -4708,7 +4709,43 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
   const description = body.description ? asString(body.description).trim() : null;
   if (!title) return badRequest(reply, "title required");
 
-  const parent = await prisma.contentItem.findUnique({ where: { id: parentId } });
+  let parent = await prisma.contentItem.findUnique({ where: { id: parentId } });
+  const parentOrigin = body.parentOrigin ? asString(body.parentOrigin).trim() : "";
+  if (!parent && parentOrigin) {
+    let remoteMeta: any = null;
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      const originBase = parentOrigin.replace(/\/+$/, "");
+      const url = `${originBase}/public/content/${encodeURIComponent(parentId)}/offer`;
+      const res = await fetch(url, { signal: ctrl.signal as any });
+      const data = await res.json().catch(() => null);
+      clearTimeout(timeout);
+      if (res.ok) {
+        remoteMeta = data;
+      }
+    } catch {}
+
+    const remoteTitle = asString(remoteMeta?.title || "").trim() || `Remote content ${parentId}`;
+    const remoteTypeRaw = asString(remoteMeta?.type || "").trim().toLowerCase();
+    const remoteType = (["song", "book", "video", "file"] as const).includes(remoteTypeRaw as any)
+      ? (remoteTypeRaw as any)
+      : "file";
+    const remoteDesc =
+      asString(remoteMeta?.description || "").trim() || `Remote origin: ${parentOrigin.replace(/\/+$/, "")}`;
+    parent = await prisma.contentItem.create({
+      data: {
+        id: parentId,
+        ownerUserId: userId,
+        title: remoteTitle,
+        description: remoteDesc,
+        type: remoteType as any,
+        status: "published" as any,
+        deletedAt: new Date(),
+        deletedReason: "hard"
+      }
+    });
+  }
   if (!parent) return notFound(reply, "parent content not found");
 
   let splitDraft = Array.isArray(body.splitDraft) ? body.splitDraft : [];
@@ -4844,6 +4881,27 @@ app.post("/api/content/:contentId/manifest", { preHandler: requireAuth }, async 
 
   return reply.send({ ok: true, manifestSha256 });
 });
+
+// Get manifest JSON for content
+async function handleGetManifest(req: any, reply: any) {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).contentId);
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) {
+    const ok = await isAcceptedParticipant(userId, contentId);
+    if (!ok) return forbidden(reply);
+  }
+
+  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+  if (!manifest) return notFound(reply, "Manifest not found");
+
+  return reply.send({ ok: true, sha256: manifest.sha256, manifest: manifest.json });
+}
+
+app.get("/api/content/:contentId/manifest", { preHandler: requireAuth }, handleGetManifest);
+app.get("/content/:contentId/manifest", { preHandler: requireAuth }, handleGetManifest);
 
 // Publish content (locks split + validates upstream)
 app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (req: any, reply) => {

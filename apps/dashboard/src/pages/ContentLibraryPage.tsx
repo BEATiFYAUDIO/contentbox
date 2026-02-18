@@ -250,6 +250,9 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [parentLinkErrorByContent, setParentLinkErrorByContent] = React.useState<Record<string, string>>({});
   const [approvals, setApprovals] = React.useState<any[]>([]);
   const [approvalsLoading, setApprovalsLoading] = React.useState(false);
+  const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
+    Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
+  >({});
 
   const [showTrash, setShowTrash] = React.useState(false);
   const [showClearance, setShowClearance] = React.useState(false);
@@ -268,6 +271,35 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [requestMsg, setRequestMsg] = React.useState<string | null>(null);
   const [requestLinks, setRequestLinks] = React.useState<Array<{ email: string; url: string }> | null>(null);
   const [meId, setMeId] = React.useState<string>("");
+
+  function setManifestPreview(contentId: string, patch: Partial<{ open: boolean; loading: boolean; data?: any; error?: string | null }>) {
+    setManifestPreviewByContent((m) => ({
+      ...m,
+      [contentId]: {
+        open: m[contentId]?.open ?? false,
+        loading: m[contentId]?.loading ?? false,
+        data: m[contentId]?.data,
+        error: m[contentId]?.error ?? null,
+        ...patch
+      }
+    }));
+  }
+
+  async function loadManifestPreview(contentId: string) {
+    setManifestPreview(contentId, { loading: true, error: null });
+    try {
+      const res = await api<{ ok: boolean; sha256: string; manifest: any }>(`/content/${contentId}/manifest`, "GET");
+      setManifestPreview(contentId, { loading: false, data: res?.manifest || null, open: true });
+      return res?.manifest || null;
+    } catch (e: any) {
+      setManifestPreview(contentId, { loading: false, error: e?.message || "Manifest not found" });
+      return null;
+    }
+  }
+
+  const openManifestEntry = Object.entries(manifestPreviewByContent).find(([, v]) => v?.open);
+  const openManifestId = openManifestEntry?.[0] || null;
+  const openManifest = openManifestEntry?.[1] || null;
   const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("library");
   const [storefrontPreview, setStorefrontPreview] = React.useState<Record<string, any | null>>({});
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
@@ -962,7 +994,22 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
       setRequestMsg("Requires persistent identity (named tunnel).");
       return;
     }
-    const parentId = requestParentId.trim();
+    const rawParent = requestParentId.trim();
+    let parentOrigin: string | null = null;
+    let parentId = rawParent;
+    if (/^https?:\/\//i.test(rawParent)) {
+      try {
+        const u = new URL(rawParent);
+        parentOrigin = u.origin;
+        const path = u.pathname || "";
+        parentId =
+          (path.match(/\/p\/([^/]+)/i)?.[1] ||
+            path.match(/\/content\/([^/]+)/i)?.[1] ||
+            path.match(/\/buy\/([^/]+)/i)?.[1] ||
+            path.split("/").filter(Boolean).slice(-1)[0] ||
+            parentId) as string;
+      } catch {}
+    }
     const title = requestTitle.trim();
     const type = (requestType || "remix").trim();
     if (!parentId || !title) {
@@ -974,7 +1021,8 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
       setRequestLinks(null);
       const res = await api<{ ok: true; childContentId: string }>(`/api/content/${parentId}/derivative`, "POST", {
         type,
-        title
+        title,
+        parentOrigin
       });
       if (res?.childContentId) {
         setPendingOpenContentId(res.childContentId);
@@ -1264,7 +1312,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
                 value={requestParentId}
                 onChange={(e) => setRequestParentId(e.target.value)}
-                placeholder="e.g. cml7..."
+                placeholder="e.g. cml7... or https://host/p/..."
               />
             </div>
             <div>
@@ -1728,13 +1776,54 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                       </div>
 
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">File identity</div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs text-neutral-300 font-medium">File identity</div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="text-[11px] rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={() => {
+                                const entry = manifestPreviewByContent[it.id];
+                                if (entry?.open) {
+                                  setManifestPreview(it.id, { open: false });
+                                  return;
+                                }
+                                loadManifestPreview(it.id);
+                              }}
+                            >
+                              View JSON
+                            </button>
+                            <button
+                              type="button"
+                              className="text-[11px] rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={async () => {
+                                const entry = manifestPreviewByContent[it.id];
+                                const data = entry?.data ?? (await loadManifestPreview(it.id));
+                                if (data) {
+                                  await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+                                }
+                              }}
+                            >
+                              Copy JSON
+                            </button>
+                          </div>
+                        </div>
                         {isFilesLoading ? (
                           <div className="mt-2 text-sm text-neutral-400">Loading files…</div>
                         ) : files.length === 0 ? (
                           <div className="mt-2 text-sm text-neutral-400">No files yet. Click Upload.</div>
                         ) : (
                           <div className="mt-2 space-y-2">
+                            <div className="text-[11px] text-neutral-400 flex items-center gap-2">
+                              <span>Content ID: <span className="text-neutral-300">{it.id}</span></span>
+                              <button
+                                type="button"
+                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                onClick={() => navigator.clipboard.writeText(it.id)}
+                              >
+                                Copy
+                              </button>
+                            </div>
                             {files.map((f) => {
                               const hasVerify =
                                 typeof f.sha256MatchesManifest === "boolean" ||
@@ -3148,6 +3237,45 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
           </div>
         )}
       </div>
+
+      {openManifestId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-3xl rounded-xl border border-neutral-800 bg-neutral-950 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">manifest.json</div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  onClick={async () => {
+                    if (openManifest?.data) {
+                      await navigator.clipboard.writeText(JSON.stringify(openManifest.data, null, 2));
+                    }
+                  }}
+                >
+                  Copy
+                </button>
+                <button
+                  type="button"
+                  className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  onClick={() => setManifestPreview(openManifestId, { open: false })}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            {openManifest?.loading ? (
+              <div className="mt-3 text-xs text-neutral-400">Loading manifest…</div>
+            ) : openManifest?.error ? (
+              <div className="mt-3 text-xs text-red-300">{openManifest.error}</div>
+            ) : (
+              <pre className="mt-3 max-h-[70vh] overflow-auto text-xs text-neutral-200 bg-neutral-900/30 rounded-lg p-3">
+                {JSON.stringify(openManifest?.data ?? {}, null, 2)}
+              </pre>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <TestPurchaseModal
         open={!!testPurchaseFor}
