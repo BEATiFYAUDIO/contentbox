@@ -5558,6 +5558,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
   const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
 
+  const clearanceBase = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
   for (const p of approvers) {
     const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
     if (!email) continue;
@@ -5573,7 +5574,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         expiresAt
       }
     });
-    approvalUrls.push({ email, url: `${APP_BASE_URL}/clearance/${token}`, weightBps });
+    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
   }
 
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
@@ -5724,6 +5725,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requirePersistent("der
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
   const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
 
+  const clearanceBase = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
   for (const p of approvers) {
     const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
     if (!email) continue;
@@ -5739,7 +5741,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requirePersistent("der
         expiresAt
       }
     });
-    approvalUrls.push({ email, url: `${APP_BASE_URL}/clearance/${token}`, weightBps });
+    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
   }
 
   return reply.send({ ok: true, authorization: auth, approvalUrls, expiresAt });
