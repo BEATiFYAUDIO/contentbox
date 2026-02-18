@@ -5513,6 +5513,12 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before approval." });
   }
   const { approvers } = await getApproversForParent(link.parentContentId);
+  const parent = await prisma.contentItem.findUnique({
+    where: { id: link.parentContentId },
+    select: { description: true, repoPath: true, deletedReason: true }
+  });
+  const remoteOrigin =
+    parent && parent.deletedReason === "hard" && !parent.repoPath ? getRemoteOriginFromDescription(parent.description) : null;
 
   const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: linkId } });
   const auth =
@@ -5570,7 +5576,33 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     approvalUrls.push({ email, url: `${APP_BASE_URL}/clearance/${token}`, weightBps });
   }
 
-  return reply.send({ ok: true, authorization: auth, approvalUrls, expiresAt });
+  let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
+  if (remoteOrigin) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parentContentId: link.parentContentId,
+          childContentId: link.childContentId,
+          childOrigin: APP_BASE_URL,
+          relation: link.relation,
+          childTitle: child.title,
+          childType: child.type
+        }),
+        signal: ctrl.signal as any
+      });
+      const data = await res.json().catch(() => null);
+      clearTimeout(timeout);
+      if (res.ok && Array.isArray(data?.approvalUrls)) {
+        remoteApprovalUrls = data.approvalUrls;
+      }
+    } catch {}
+  }
+
+  return reply.send({ ok: true, authorization: auth, approvalUrls, remoteApprovalUrls, expiresAt });
 });
 
 // Compatibility: request clearance (musician wording)
@@ -5593,6 +5625,124 @@ app.post("/content-links/:linkId/request-clearance", { preHandler: requireAuth }
       }
       return reply.send(out);
     });
+});
+
+// Remote clearance request (child node -> parent node)
+app.post("/api/derivatives/remote-request", { preHandler: requirePersistent("derivative_work") }, async (req: any, reply) => {
+  const body = (req.body ?? {}) as {
+    parentContentId?: string;
+    childContentId?: string;
+    childOrigin?: string;
+    relation?: string;
+    childTitle?: string;
+    childType?: string;
+  };
+  const parentContentId = asString(body.parentContentId || "").trim();
+  const childContentId = asString(body.childContentId || "").trim();
+  const childOrigin = asString(body.childOrigin || "").trim();
+  const relationRaw = asString(body.relation || "derivative").trim().toLowerCase();
+  const relation = (["remix", "mashup", "derivative"] as const).includes(relationRaw as any) ? (relationRaw as any) : "derivative";
+  if (!parentContentId || !childContentId || !childOrigin) {
+    return badRequest(reply, "parentContentId, childContentId, childOrigin are required");
+  }
+
+  const parent = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
+  if (!parent) return notFound(reply, "parent content not found");
+
+  const parentSplit = await getLockedSplitForContent(parentContentId);
+  if (!parentSplit || parentSplit.status !== "locked") {
+    return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before approval." });
+  }
+
+  let child = await prisma.contentItem.findUnique({ where: { id: childContentId } });
+  if (!child) {
+    const title = asString(body.childTitle || "").trim() || `Remote child ${childContentId}`;
+    const typeRaw = asString(body.childType || "").trim().toLowerCase();
+    const type = (["song", "book", "video", "file"] as const).includes(typeRaw as any) ? (typeRaw as any) : "file";
+    child = await prisma.contentItem.create({
+      data: {
+        id: childContentId,
+        ownerUserId: parent.ownerUserId,
+        title,
+        type: type as any,
+        status: "published" as any,
+        deletedAt: new Date(),
+        deletedReason: "hard",
+        description: `Remote child origin: ${childOrigin.replace(/\/+$/, "")}`
+      }
+    });
+  }
+
+  const link =
+    (await prisma.contentLink.findFirst({
+      where: { parentContentId, childContentId }
+    })) ||
+    (await prisma.contentLink.create({
+      data: {
+        parentContentId,
+        childContentId,
+        relation: relation as any,
+        upstreamBps: 0,
+        requiresApproval: true
+      }
+    }));
+
+  const { approvers } = await getApproversForParent(parentContentId);
+  const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  const auth =
+    existing ||
+    (await prisma.derivativeAuthorization.create({
+      data: {
+        derivativeLinkId: link.id,
+        parentContentId,
+        requiredApprovers: approvers.length,
+        approvedApprovers: 0,
+        approveWeightBps: 0,
+        rejectWeightBps: 0,
+        approvalPolicy: "WEIGHTED_BPS",
+        approvalBpsTarget: 6667,
+        status: "PENDING"
+      }
+    }));
+
+  const clearanceModel = (prisma as any).clearanceRequest;
+  const approvalTokenModel = (prisma as any).approvalToken;
+  if (!clearanceModel || !approvalTokenModel) {
+    return reply.code(501).send({ error: "Clearance requests not enabled. Restart API after migrations." });
+  }
+
+  const existingReq = await clearanceModel.findFirst({
+    where: { contentLinkId: link.id, status: "PENDING" }
+  });
+  if (!existingReq) {
+    await clearanceModel.create({
+      data: { contentLinkId: link.id, requestedByUserId: parent.ownerUserId, status: "PENDING" }
+    });
+  }
+
+  const ttlHours = Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168)));
+  const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
+  const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
+
+  for (const p of approvers) {
+    const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
+    if (!email) continue;
+    const weightBps = p.weightBps || 0;
+    const token = makeApprovalToken();
+    const tokenHash = hashApprovalToken(token);
+    await approvalTokenModel.create({
+      data: {
+        contentLinkId: link.id,
+        tokenHash,
+        approverEmail: email,
+        weightBps,
+        expiresAt
+      }
+    });
+    approvalUrls.push({ email, url: `${APP_BASE_URL}/clearance/${token}`, weightBps });
+  }
+
+  return reply.send({ ok: true, authorization: auth, approvalUrls, expiresAt });
 });
 
 app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -8343,6 +8493,13 @@ async function getApproversForParent(parentContentId: string): Promise<{
   }
 
   return { split, approvers: unique };
+}
+
+function getRemoteOriginFromDescription(desc?: string | null): string | null {
+  const d = String(desc || "").trim();
+  if (!d.toLowerCase().startsWith("remote origin:")) return null;
+  const origin = d.slice("remote origin:".length).trim();
+  return origin ? origin.replace(/\/+$/, "") : null;
 }
 
 async function getEligibleApproversForParent(parentContentId: string) {
