@@ -3444,7 +3444,9 @@ app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: an
     return reply.code(400).send({ error: "Backups require DB_MODE=advanced with Postgres." });
   }
   try {
-    await pruneBackups();
+    if (getBackupsEnabled()) {
+      await pruneBackups();
+    }
     const items = await listBackupFiles();
     return reply.send({
       ok: true,
@@ -9999,6 +10001,7 @@ async function start() {
   await ensureDirWritable(CONTENTBOX_ROOT);
   async function preflightDb() {
     if (!isAdvancedDb()) return;
+    const allowEmpty = String(process.env.CONTENTBOX_ALLOW_EMPTY_DB || "") === "1";
     try {
       await prisma.$queryRaw`SELECT 1`;
     } catch (e: any) {
@@ -10018,9 +10021,9 @@ async function start() {
         `Database schema not ready. Run migrations or restore a backup. (${e?.message || e})`
       );
     }
-    if (userCount === 0 && contentCount === 0) {
+    if (userCount === 0 && contentCount === 0 && !allowEmpty) {
       throw new Error(
-        "EMPTY_DB in advanced mode. Restore from backup or migrate existing data before continuing."
+        "Advanced DB empty. Set CONTENTBOX_ALLOW_EMPTY_DB=1 for first-run bootstrap."
       );
     }
   }
