@@ -2299,13 +2299,23 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                   >
                                     {clearanceHistoryOpen[d.linkId] ? "Hide history" : "History"}
                                   </button>
-                                  <button
-                                    type="button"
-                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                    onClick={() => loadDerivativePreview(d.childContentId)}
-                                  >
-                                    {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
-                                  </button>
+                                  {!d.childDeletedAt ? (
+                                    <button
+                                      type="button"
+                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                      onClick={() => loadDerivativePreview(d.childContentId)}
+                                    >
+                                      {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
+                                    </button>
+                                  ) : d.childOrigin ? (
+                                    <button
+                                      type="button"
+                                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                      onClick={() => window.open(`${String(d.childOrigin).replace(/\\/+$/, "")}/p/${d.childContentId}`, "_blank", "noopener,noreferrer")}
+                                    >
+                                      Open remote
+                                    </button>
+                                  ) : null}
                                   {(() => {
                                     const viewer = d.clearance?.viewer || null;
                                     const hasVoted = Boolean(viewer?.hasVoted);

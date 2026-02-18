@@ -5139,11 +5139,14 @@ app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requirePersi
   const authByLink = new Map(auths.map((a) => [a.derivativeLinkId, a]));
 
   return reply.send(
-    links.map((l) => ({
+    links.map((l) => {
+      const childOrigin = getRemoteOriginFromDescription(l.childContent?.description || null);
+      return {
       linkId: l.id,
       childContentId: l.childContentId,
       childTitle: l.childContent?.title || null,
       childDeletedAt: l.childContent?.deletedAt || null,
+      childOrigin: childOrigin || null,
       relation: l.relation,
       upstreamBps: l.upstreamBps,
       requiresApproval: l.requiresApproval,
@@ -5157,7 +5160,8 @@ app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requirePersi
             approvedApprovers: authByLink.get(l.id)!.approvedApprovers
           }
         : null
-    }))
+    };
+    })
   );
 });
 
