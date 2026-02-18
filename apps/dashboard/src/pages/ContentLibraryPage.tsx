@@ -328,6 +328,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
+  const [derivativeGroupOpen, setDerivativeGroupOpen] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewByChild, setDerivativePreviewByChild] = React.useState<Record<string, any | null>>({});
   const [derivativePreviewLoading, setDerivativePreviewLoading] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewError, setDerivativePreviewError] = React.useState<Record<string, string>>({});
@@ -2376,8 +2377,16 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                           </button>
                         </div>
                         <div className="mt-2 space-y-2">
-                          {(derivativesByContent[it.id] || []).map((d) => (
-                            <div key={d.linkId} className="rounded-md border border-neutral-800 bg-neutral-950/50 p-2">
+                          {(() => {
+                            const all = derivativesByContent[it.id] || [];
+                            const groups = [
+                              { key: "action", label: "Action needed", items: all.filter((d) => !d.approvedAt && !d.childDeletedAt) },
+                              { key: "cleared", label: "Cleared", items: all.filter((d) => d.approvedAt && !d.childDeletedAt) },
+                              { key: "tomb", label: "Tombstoned", items: all.filter((d) => d.childDeletedAt) }
+                            ];
+
+                            const renderItem = (d: any) => (
+                              <div key={d.linkId} className="rounded-md border border-neutral-800 bg-neutral-950/50 p-2">
                                 <div className="flex items-center justify-between gap-2">
                                 <div className="text-neutral-300">
                                   {d.childTitle || d.childContentId}
@@ -2573,10 +2582,50 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                 />
                               </div>
                             </div>
-                          ))}
-                          {(derivativesByContent[it.id] || []).length === 0 ? (
-                            <div className="text-neutral-500">No linked derivatives.</div>
-                          ) : null}
+                            );
+
+                            if (all.length === 0) {
+                              return <div className="text-neutral-500">No linked derivatives.</div>;
+                            }
+
+                            return (
+                              <div className="space-y-3">
+                                {groups
+                                  .filter((g) => g.items.length > 0)
+                                  .map((g) => {
+                                    const key = `${it.id}:${g.key}`;
+                                    const isOpen = !!derivativeGroupOpen[key];
+                                    const visible = isOpen ? g.items : g.items.slice(0, 3);
+                                    return (
+                                      <div key={g.key} className="space-y-2">
+                                        <div className="flex items-center justify-between">
+                                          <div className="text-[11px] uppercase tracking-wide text-neutral-400">
+                                            {g.label} • {g.items.length}
+                                          </div>
+                                          {g.items.length > 3 ? (
+                                            <button
+                                              type="button"
+                                              className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                              onClick={() =>
+                                                setDerivativeGroupOpen((m) => ({ ...m, [key]: !isOpen }))
+                                              }
+                                            >
+                                              {isOpen ? "Show less" : "Show all"}
+                                            </button>
+                                          ) : null}
+                                        </div>
+                                        {visible.map(renderItem)}
+                                        {!isOpen && g.items.length > visible.length ? (
+                                          <div className="text-[11px] text-neutral-500">
+                                            Showing {visible.length} of {g.items.length}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                       ) : null}
