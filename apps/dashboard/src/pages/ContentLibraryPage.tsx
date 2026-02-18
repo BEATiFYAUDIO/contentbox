@@ -873,6 +873,30 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
     }
   }
 
+  async function openRemoteDerivativePreview(origin: string, childContentId: string) {
+    const base = String(origin || "").replace(/\/+$/, "");
+    if (!base) {
+      setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Remote origin not set." }));
+      return;
+    }
+    setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
+    setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
+    try {
+      const offer = await fetch(`${base}/public/content/${childContentId}/offer`).then((r) => r.json());
+      const objectKey = offer?.previewObjectKey || offer?.primaryFileId || null;
+      if (!objectKey) {
+        setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
+        return;
+      }
+      const url = `${base}/public/content/${childContentId}/preview-file?objectKey=${encodeURIComponent(objectKey)}`;
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
+    } finally {
+      setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
+    }
+  }
+
   async function loadCredits(contentId: string) {
     setCreditsLoading((m) => ({ ...m, [contentId]: true }));
     try {
@@ -2338,9 +2362,9 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                     <button
                                       type="button"
                                       className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={() => window.open(`${String(d.childOrigin).replace(/\/+$/, "")}/p/${d.childContentId}`, "_blank", "noopener,noreferrer")}
+                                      onClick={() => openRemoteDerivativePreview(d.childOrigin, d.childContentId)}
                                     >
-                                      Open remote
+                                      {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
                                     </button>
                                   ) : null}
                                   {(() => {

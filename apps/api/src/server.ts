@@ -5157,7 +5157,7 @@ app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requirePersi
       linkId: l.id,
       childContentId: l.childContentId,
       childTitle: l.childContent?.title || null,
-      childDeletedAt: l.childContent?.deletedAt || null,
+      childDeletedAt: childOrigin ? null : l.childContent?.deletedAt || null,
       childOrigin: childOrigin || null,
       relation: l.relation,
       upstreamBps: l.upstreamBps,
