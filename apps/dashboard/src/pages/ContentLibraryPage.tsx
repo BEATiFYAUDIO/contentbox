@@ -1046,6 +1046,8 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   function UploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = upload.status === "uploading" && upload.contentId === contentId;
+    const done = upload.status === "done" && upload.contentId === contentId;
+    const err = upload.status === "error" && upload.contentId === contentId;
 
     return (
       <>
@@ -1067,12 +1069,9 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
 
               await load();
 
-              // If the files panel is open, refresh it too
-              if (expanded[contentId]) {
-                await Promise.all([loadFiles(contentId), loadLatestSplit(contentId)]);
-              }
-
-              window.setTimeout(() => setUpload({ status: "idle" }), 1200);
+              // Auto-open the card and refresh files/split so the file ID shows immediately.
+              setExpanded((m) => ({ ...m, [contentId]: true }));
+              await Promise.all([loadFiles(contentId), loadLatestSplit(contentId)]);
             } catch (err: any) {
               setUpload({ status: "error", contentId, message: err?.message || "Upload failed" });
             }
@@ -1088,6 +1087,8 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
         >
           {busy ? "Uploading…" : "Upload"}
         </button>
+        {done ? <span className="text-xs text-emerald-300 ml-2">Uploaded</span> : null}
+        {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
       </>
     );
   }
@@ -1187,13 +1188,31 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
 
       {upload.status === "error" && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-sm">
-          Upload failed: {upload.message}
+          <div className="flex items-center justify-between gap-2">
+            <span>Upload failed: {upload.message}</span>
+            <button
+              type="button"
+              onClick={() => setUpload({ status: "idle" })}
+              className="text-xs rounded-md border border-red-900/60 px-2 py-1 hover:bg-red-950/60"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
       {upload.status === "done" && (
         <div className="rounded-lg border border-emerald-900 bg-emerald-950/30 text-emerald-200 px-3 py-2 text-sm">
-          Uploaded + committed: {upload.filename}
+          <div className="flex items-center justify-between gap-2">
+            <span>Uploaded + committed: {upload.filename}</span>
+            <button
+              type="button"
+              onClick={() => setUpload({ status: "idle" })}
+              className="text-xs rounded-md border border-emerald-900/60 px-2 py-1 hover:bg-emerald-950/60"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
