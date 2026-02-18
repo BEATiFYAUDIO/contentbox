@@ -6840,7 +6840,10 @@ async function handlePublicOffer(req: any, reply: any) {
     const f = await prisma.contentFile.findFirst({ where: { contentId, objectKey: primaryFileId } });
     primaryFileMime = f?.mime || null;
   }
-  const previewObjectKey = typeof manifestJson?.preview === "string" ? manifestJson.preview : null;
+  const previewObjectKey =
+    (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+    (typeof primaryFileId === "string" && primaryFileId) ||
+    null;
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
