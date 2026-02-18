@@ -59,6 +59,11 @@ function num(x: any) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function titleCase(s?: string | null) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 function formatDate(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
