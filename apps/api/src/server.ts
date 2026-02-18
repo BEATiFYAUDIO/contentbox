@@ -5673,7 +5673,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requirePersistent("der
         status: "published" as any,
         deletedAt: new Date(),
         deletedReason: "hard",
-        description: `Remote child origin: ${childOrigin.replace(/\/+$/, "")}`
+        description: `Remote origin: ${childOrigin.replace(/\/+$/, "")}`
       }
     });
   }
@@ -8503,8 +8503,14 @@ async function getApproversForParent(parentContentId: string): Promise<{
 
 function getRemoteOriginFromDescription(desc?: string | null): string | null {
   const d = String(desc || "").trim();
-  if (!d.toLowerCase().startsWith("remote origin:")) return null;
-  const origin = d.slice("remote origin:".length).trim();
+  const lower = d.toLowerCase();
+  let prefix = "remote origin:";
+  if (lower.startsWith("remote child origin:")) {
+    prefix = "remote child origin:";
+  } else if (!lower.startsWith("remote origin:")) {
+    return null;
+  }
+  const origin = d.slice(prefix.length).trim();
   return origin ? origin.replace(/\/+$/, "") : null;
 }
 
