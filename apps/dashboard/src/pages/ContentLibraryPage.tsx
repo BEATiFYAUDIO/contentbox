@@ -257,6 +257,9 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [clearanceLinksByContent, setClearanceLinksByContent] = React.useState<
     Record<string, Array<{ email: string; url: string; weightBps?: number }> | null>
   >({});
+  const [clearanceRequestMetaByContent, setClearanceRequestMetaByContent] = React.useState<
+    Record<string, { lastAttemptAt?: string | null; status?: "success" | "error" | "idle"; }>
+  >({});
 
   const [showTrash, setShowTrash] = React.useState(false);
   const [showClearance, setShowClearance] = React.useState(false);
@@ -937,6 +940,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
 
   async function requestClearanceForContent(contentId: string, linkId: string) {
     setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: null }));
+    setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "idle" } }));
     try {
       const res: any = await api(`/content-links/${linkId}/request-approval`, "POST");
       const links = (Array.isArray(res?.remoteApprovalUrls) && res.remoteApprovalUrls.length > 0)
@@ -946,9 +950,11 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
           : [];
       setClearanceLinksByContent((m) => ({ ...m, [contentId]: links }));
       setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: "Clearance requested." }));
+      setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "success" } }));
       await loadParentLink(contentId);
     } catch (e: any) {
       setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: e?.message || "Clearance request failed." }));
+      setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "error" } }));
     }
   }
 
@@ -3093,15 +3099,31 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                         !parentLinkByContent[it.id]?.approvedAt &&
                         parentLinkByContent[it.id]?.canRequestApproval ? (
                           <div className="mt-2 space-y-2 text-xs text-neutral-500">
-                            <button
-                              type="button"
-                              className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                              onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
-                            >
-                              Request clearance
-                            </button>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
+                              >
+                                Request clearance
+                              </button>
+                              {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
+                                <button
+                                  type="button"
+                                  className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30"
+                                  onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
+                                >
+                                  Retry
+                                </button>
+                              ) : null}
+                            </div>
                             {clearanceRequestMsgByContent[it.id] ? (
                               <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
+                            ) : null}
+                            {clearanceRequestMetaByContent[it.id]?.lastAttemptAt ? (
+                              <div className="text-[11px] text-neutral-500">
+                                Last attempt: {new Date(clearanceRequestMetaByContent[it.id]!.lastAttemptAt as string).toLocaleString()}
+                              </div>
                             ) : null}
                             {clearanceLinksByContent[it.id]?.length ? (
                               <div className="space-y-1 text-[11px] text-neutral-400">
