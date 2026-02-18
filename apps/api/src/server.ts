@@ -548,6 +548,7 @@ const QUICK_TUNNEL_CONFIG_PATH = path.join(CONTENTBOX_ROOT, "quick-tunnel.yml");
 const PUBLIC_HTTP_PORT = Number(process.env.PUBLIC_PORT || 4010);
 const BACKUP_DIR = path.join(CONTENTBOX_ROOT, "backups");
 const BACKUP_RETENTION_DAYS = Math.max(1, Math.floor(Number(process.env.CONTENTBOX_BACKUP_RETENTION_DAYS || "30")));
+const INVITE_RETENTION_DAYS = Math.max(1, Math.floor(Number(process.env.CONTENTBOX_INVITE_RETENTION_DAYS || "90")));
 const STATE_FILE = path.join(CONTENTBOX_ROOT, "state.json");
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
@@ -860,6 +861,28 @@ async function runBackup() {
   const st = await fs.stat(fullPath);
   await pruneBackups();
   return { name: filename, size: st.size, modifiedAt: st.mtime.toISOString() };
+}
+
+async function pruneOldInvites() {
+  const cutoff = new Date(Date.now() - INVITE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+  try {
+    await prisma.invitation.deleteMany({
+      where: {
+        OR: [
+          { expiresAt: { lt: cutoff }, acceptedAt: null },
+          { splitParticipant: { splitVersion: { content: { deletedAt: { lt: cutoff } } } } }
+        ]
+      }
+    });
+  } catch {}
+
+  try {
+    await prisma.remoteInvite.deleteMany({
+      where: {
+        contentDeletedAt: { lt: cutoff }
+      }
+    });
+  } catch {}
 }
 
 function normalizeRemoteOrigin(raw: string): string | null {
@@ -2721,6 +2744,7 @@ app.post("/auth/signup", async (req, reply) => {
 // List invitations for content owned by the authenticated user (no token values are returned)
 app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  await pruneOldInvites();
 
   const invites = await prisma.invitation.findMany({
     where: {
@@ -2761,6 +2785,7 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
 // List invitations received by the authenticated user (matched by participantUserId or email)
 app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  await pruneOldInvites();
 
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
   if (!me?.email) return reply.send([]);
@@ -2808,6 +2833,7 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
 // List remote invitations accepted on other nodes (stored locally for payments/visibility)
 app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  await pruneOldInvites();
   const list = await prisma.remoteInvite.findMany({
     where: { userId },
     orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
@@ -7061,7 +7087,11 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
   if (content.ownerUserId !== userId) return forbidden(reply);
 
   const repoPath = content.repoPath;
-  await prisma.contentItem.delete({ where: { id: contentId } });
+  const deletedAt = content.deletedAt || new Date();
+  await prisma.contentItem.update({
+    where: { id: contentId },
+    data: { deletedAt, deletedReason: "hard" }
+  });
 
   if (repoPath) {
     try {
