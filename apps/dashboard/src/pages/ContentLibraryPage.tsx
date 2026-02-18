@@ -2311,7 +2311,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                     <button
                                       type="button"
                                       className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                      onClick={() => window.open(`${String(d.childOrigin).replace(/\\/+$/, "")}/p/${d.childContentId}`, "_blank", "noopener,noreferrer")}
+                                      onClick={() => window.open(`${String(d.childOrigin).replace(/\/+$/, "")}/p/${d.childContentId}`, "_blank", "noopener,noreferrer")}
                                     >
                                       Open remote
                                     </button>
