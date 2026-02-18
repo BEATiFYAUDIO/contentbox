@@ -9944,6 +9944,33 @@ app.post("/invites/:token/accept", handlePublicInviteAccept);
 
 async function start() {
   await ensureDirWritable(CONTENTBOX_ROOT);
+  async function preflightDb() {
+    if (!isAdvancedDb()) return;
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+    } catch (e: any) {
+      throw new Error(
+        `Prisma client/database mismatch. Run "npx prisma generate" and ensure migrations are applied. (${e?.message || e})`
+      );
+    }
+    let userCount = 0;
+    let contentCount = 0;
+    try {
+      [userCount, contentCount] = await Promise.all([
+        prisma.user.count(),
+        prisma.contentItem.count()
+      ]);
+    } catch (e: any) {
+      throw new Error(
+        `Database schema not ready. Run migrations or restore a backup. (${e?.message || e})`
+      );
+    }
+    if (userCount === 0 && contentCount === 0) {
+      throw new Error(
+        "EMPTY_DB in advanced mode. Restore from backup or migrate existing data before continuing."
+      );
+    }
+  }
   // Ensure node keypair exists for signed P2P assertions
   async function ensureNodeKeys() {
     const nodeDir = path.join(CONTENTBOX_ROOT, ".node");
@@ -9964,6 +9991,7 @@ async function start() {
   }
 
   await ensureNodeKeys();
+  await preflightDb();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
   const state = getPublicLinkState();
