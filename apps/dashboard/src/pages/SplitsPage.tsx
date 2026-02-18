@@ -66,9 +66,31 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
   const [remoteSyncBusy, setRemoteSyncBusy] = React.useState<Record<string, boolean>>({});
   const [msg, setMsg] = React.useState<string | null>(null);
 
-  async function loadContentList() {
-    const list = await api<ContentItem[]>("/content?scope=mine", "GET");
-    setContentList(list);
+  async function loadContentList(includeTombstones: boolean) {
+    if (!includeTombstones) {
+      const list = await api<ContentItem[]>("/content?scope=mine", "GET");
+      setContentList(list);
+      return;
+    }
+    const [active, trashed] = await Promise.all([
+      api<ContentItem[]>("/content?scope=mine", "GET"),
+      api<ContentItem[]>("/content?trash=1&scope=mine", "GET")
+    ]);
+    const seen = new Set<string>();
+    const merged: ContentItem[] = [];
+    for (const it of active || []) {
+      if (!seen.has(it.id)) {
+        merged.push(it);
+        seen.add(it.id);
+      }
+    }
+    for (const it of trashed || []) {
+      if (!seen.has(it.id)) {
+        merged.push(it);
+        seen.add(it.id);
+      }
+    }
+    setContentList(merged);
   }
 
   async function loadRemoteInvites() {
@@ -131,9 +153,15 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
       setRemoteInvites([]);
       return;
     }
-    loadContentList().catch(() => {});
+    loadContentList(showTombstones).catch(() => {});
     loadRemoteInvites().catch(() => {});
   }, [isBasicIdentity]);
+
+  React.useEffect(() => {
+    if (isBasicIdentity) return;
+    loadContentList(showTombstones).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showTombstones, isBasicIdentity]);
 
   React.useEffect(() => {
     if (isBasicIdentity) return;
