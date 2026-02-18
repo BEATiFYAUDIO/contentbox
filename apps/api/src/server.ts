@@ -547,6 +547,7 @@ const CLOUDFLARED_BIN_DIR = String(process.env.CLOUDFLARED_BIN_DIR || "").trim()
 const QUICK_TUNNEL_CONFIG_PATH = path.join(CONTENTBOX_ROOT, "quick-tunnel.yml");
 const PUBLIC_HTTP_PORT = Number(process.env.PUBLIC_PORT || 4010);
 const BACKUP_DIR = path.join(CONTENTBOX_ROOT, "backups");
+const BACKUP_RETENTION_DAYS = Math.max(1, Math.floor(Number(process.env.CONTENTBOX_BACKUP_RETENTION_DAYS || "30")));
 const STATE_FILE = path.join(CONTENTBOX_ROOT, "state.json");
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
@@ -824,6 +825,23 @@ async function listBackupFiles() {
   return out.sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
 }
 
+async function pruneBackups() {
+  const cutoff = Date.now() - BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  await fs.mkdir(BACKUP_DIR, { recursive: true });
+  const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true });
+  for (const e of entries) {
+    if (!e.isFile()) continue;
+    if (!e.name.endsWith(".dump")) continue;
+    const full = path.join(BACKUP_DIR, e.name);
+    try {
+      const st = await fs.stat(full);
+      if (st.mtime.getTime() < cutoff) {
+        await fs.unlink(full);
+      }
+    } catch {}
+  }
+}
+
 async function runBackup() {
   if (!isAdvancedDb()) {
     throw new Error("Backups require DB_MODE=advanced with a Postgres DATABASE_URL.");
@@ -840,6 +858,7 @@ async function runBackup() {
     });
   });
   const st = await fs.stat(fullPath);
+  await pruneBackups();
   return { name: filename, size: st.size, modifiedAt: st.mtime.toISOString() };
 }
 
@@ -3425,8 +3444,15 @@ app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: an
     return reply.code(400).send({ error: "Backups require DB_MODE=advanced with Postgres." });
   }
   try {
+    await pruneBackups();
     const items = await listBackupFiles();
-    return reply.send({ ok: true, dir: BACKUP_DIR, items, enabled: getBackupsEnabled() });
+    return reply.send({
+      ok: true,
+      dir: BACKUP_DIR,
+      items,
+      enabled: getBackupsEnabled(),
+      retentionDays: BACKUP_RETENTION_DAYS
+    });
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to list backups", details: e?.message || String(e) });
   }

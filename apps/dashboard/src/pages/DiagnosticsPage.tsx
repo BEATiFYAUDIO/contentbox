@@ -186,6 +186,7 @@ export default function DiagnosticsPage() {
   const [backupsBusy, setBackupsBusy] = useState(false);
   const [backupRunBusy, setBackupRunBusy] = useState(false);
   const [backupDir, setBackupDir] = useState<string | null>(null);
+  const [backupRetentionDays, setBackupRetentionDays] = useState<number | null>(null);
   const [backupsEnabled, setBackupsEnabled] = useState(true);
   const [backupsSettingsBusy, setBackupsSettingsBusy] = useState(false);
   const token = getToken();
@@ -311,6 +312,9 @@ export default function DiagnosticsPage() {
         setBackups(Array.isArray(json?.items) ? json.items : []);
         setBackupDir(json?.dir || null);
         setBackupsEnabled(Boolean(json?.enabled));
+        setBackupRetentionDays(
+          typeof json?.retentionDays === "number" ? json.retentionDays : null
+        );
       }
     } catch (e: any) {
       setBackups([]);
@@ -519,6 +523,7 @@ export default function DiagnosticsPage() {
         {token && (
           <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
             <div><b>Backup directory</b>: {backupDir || "—"}</div>
+            <div><b>Retention</b>: {backupRetentionDays ? `${backupRetentionDays} days` : "—"}</div>
             {backupsErr ? <div style={{ color: "#ffb4b4" }}>{backupsErr}</div> : null}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6 }}>

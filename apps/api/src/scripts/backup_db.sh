@@ -24,6 +24,7 @@ fi
 
 DATA_ROOT="${CONTENTBOX_ROOT:-$ROOT_DIR}"
 BACKUP_DIR="${CONTENTBOX_BACKUP_DIR:-$DATA_ROOT/backups}"
+RETENTION_DAYS="${CONTENTBOX_BACKUP_RETENTION_DAYS:-30}"
 mkdir -p "$BACKUP_DIR"
 
 STAMP="$(date -u +"%Y-%m-%dT%H-%M-%SZ")"
@@ -31,3 +32,6 @@ OUT="$BACKUP_DIR/contentbox-$STAMP.dump"
 
 pg_dump --format=custom --file "$OUT" "$DB_URL"
 echo "Backup created: $OUT"
+
+# Retention: delete old backups
+find "$BACKUP_DIR" -type f -name "contentbox-*.dump" -mtime +"$RETENTION_DAYS" -print -delete
