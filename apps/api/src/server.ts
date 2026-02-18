@@ -6882,7 +6882,22 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
 
-  await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt: new Date(), deletedReason: "soft" } });
+  const deletedAt = new Date();
+  await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt, deletedReason: "soft" } });
+  try {
+    await prisma.auditEvent.create({
+      data: {
+        userId,
+        action: "content.tombstone",
+        entityType: "ContentItem",
+        entityId: contentId,
+        payloadJson: {
+          deletedAt: deletedAt.toISOString(),
+          deletedReason: "soft"
+        } as any
+      }
+    });
+  } catch {}
   return reply.send({ ok: true });
 });
 
