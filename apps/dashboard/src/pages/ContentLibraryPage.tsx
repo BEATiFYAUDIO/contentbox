@@ -1046,7 +1046,6 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   function UploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = upload.status === "uploading" && upload.contentId === contentId;
-    const done = upload.status === "done" && upload.contentId === contentId;
     const err = upload.status === "error" && upload.contentId === contentId;
 
     return (
@@ -1087,7 +1086,6 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
         >
           {busy ? "Uploading…" : "Upload"}
         </button>
-        {done ? <span className="text-xs text-emerald-300 ml-2">Uploaded</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
       </>
     );
