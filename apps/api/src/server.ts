@@ -546,6 +546,7 @@ const PUBLIC_HEALTH_FAILURE_THRESHOLD = Math.max(1, Math.floor(Number(process.en
 const CLOUDFLARED_BIN_DIR = String(process.env.CLOUDFLARED_BIN_DIR || "").trim() || path.join(CONTENTBOX_ROOT, ".bin");
 const QUICK_TUNNEL_CONFIG_PATH = path.join(CONTENTBOX_ROOT, "quick-tunnel.yml");
 const PUBLIC_HTTP_PORT = Number(process.env.PUBLIC_PORT || 4010);
+const BACKUP_DIR = path.join(CONTENTBOX_ROOT, "backups");
 const STATE_FILE = path.join(CONTENTBOX_ROOT, "state.json");
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
@@ -787,6 +788,45 @@ function requirePersistent(featureName: string) {
       message: "Requires persistent identity (named tunnel)."
     });
   };
+}
+
+function isAdvancedDb() {
+  const mode = String(process.env.DB_MODE || "").toLowerCase();
+  const url = String(process.env.DATABASE_URL || "");
+  return mode === "advanced" && /^postgres(ql)?:\/\//i.test(url);
+}
+
+async function listBackupFiles() {
+  await fs.mkdir(BACKUP_DIR, { recursive: true });
+  const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true });
+  const out: { name: string; size: number; modifiedAt: string }[] = [];
+  for (const e of entries) {
+    if (!e.isFile()) continue;
+    const name = e.name;
+    const full = path.join(BACKUP_DIR, name);
+    const st = await fs.stat(full);
+    out.push({ name, size: st.size, modifiedAt: st.mtime.toISOString() });
+  }
+  return out.sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
+}
+
+async function runBackup() {
+  if (!isAdvancedDb()) {
+    throw new Error("Backups require DB_MODE=advanced with a Postgres DATABASE_URL.");
+  }
+  await fs.mkdir(BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filename = `contentbox-${stamp}.dump`;
+  const fullPath = path.join(BACKUP_DIR, filename);
+  const args = ["--format=custom", "--file", fullPath, String(process.env.DATABASE_URL)];
+  await new Promise<void>((resolve, reject) => {
+    execFile("pg_dump", args, { env: process.env }, (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+  const st = await fs.stat(fullPath);
+  return { name: filename, size: st.size, modifiedAt: st.mtime.toISOString() };
 }
 
 function normalizeRemoteOrigin(raw: string): string | null {
@@ -3363,6 +3403,30 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
     return reply.send({ ok: true, tunnels: list });
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to list tunnels", details: e?.message || String(e) });
+  }
+});
+
+app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  if (!isAdvancedDb()) {
+    return reply.code(400).send({ error: "Backups require DB_MODE=advanced with Postgres." });
+  }
+  try {
+    const items = await listBackupFiles();
+    return reply.send({ ok: true, dir: BACKUP_DIR, items });
+  } catch (e: any) {
+    return reply.code(500).send({ error: "Failed to list backups", details: e?.message || String(e) });
+  }
+});
+
+app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  if (!isAdvancedDb()) {
+    return reply.code(400).send({ error: "Backups require DB_MODE=advanced with Postgres." });
+  }
+  try {
+    const item = await runBackup();
+    return reply.send({ ok: true, dir: BACKUP_DIR, item });
+  } catch (e: any) {
+    return reply.code(500).send({ error: "Backup failed", details: e?.message || String(e) });
   }
 });
 

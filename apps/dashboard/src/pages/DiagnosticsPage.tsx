@@ -137,6 +137,17 @@ function fmtLatency(ms?: number) {
   return `${Math.round(ms)}ms`;
 }
 
+function fmtBytes(bytes?: number) {
+  if (bytes === undefined || bytes === null) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  const gb = mb / 1024;
+  return `${gb.toFixed(2)} GB`;
+}
+
 function fmtStatus(row: ProbeRow) {
   if (row.ok) return "OK";
   if (row.status) return `HTTP ${row.status}`;
@@ -170,6 +181,11 @@ export default function DiagnosticsPage() {
   const [publicTunnels, setPublicTunnels] = useState<PublicTunnel[]>([]);
   const [publicTunnelsErr, setPublicTunnelsErr] = useState<string | null>(null);
   const [publicTunnelsBusy, setPublicTunnelsBusy] = useState(false);
+  const [backups, setBackups] = useState<{ name: string; size: number; modifiedAt: string }[]>([]);
+  const [backupsErr, setBackupsErr] = useState<string | null>(null);
+  const [backupsBusy, setBackupsBusy] = useState(false);
+  const [backupRunBusy, setBackupRunBusy] = useState(false);
+  const [backupDir, setBackupDir] = useState<string | null>(null);
   const token = getToken();
 
   const healthPath = DEFAULT_HEALTH_PATH;
@@ -274,6 +290,58 @@ export default function DiagnosticsPage() {
   useEffect(() => {
     if (!token) return;
     loadPublicTunnels().catch(() => {});
+  }, [token, apiBase]);
+
+  const loadBackups = async () => {
+    if (!token) return;
+    setBackupsBusy(true);
+    setBackupsErr(null);
+    try {
+      const res = await fetch(`${apiBase}/api/diagnostics/backups`, {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setBackups([]);
+        setBackupsErr(json?.error || `HTTP ${res.status}`);
+      } else {
+        setBackups(Array.isArray(json?.items) ? json.items : []);
+        setBackupDir(json?.dir || null);
+      }
+    } catch (e: any) {
+      setBackups([]);
+      setBackupsErr(e?.message || String(e));
+    } finally {
+      setBackupsBusy(false);
+    }
+  };
+
+  const runBackup = async () => {
+    if (!token) return;
+    setBackupRunBusy(true);
+    setBackupsErr(null);
+    try {
+      const res = await fetch(`${apiBase}/api/diagnostics/backups`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setBackupsErr(json?.error || `HTTP ${res.status}`);
+      } else {
+        await loadBackups();
+      }
+    } catch (e: any) {
+      setBackupsErr(e?.message || String(e));
+    } finally {
+      setBackupRunBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!token) return;
+    loadBackups().catch(() => {});
   }, [token, apiBase]);
 
   const resolveHealthOrigin = () => {
@@ -396,6 +464,41 @@ export default function DiagnosticsPage() {
               >
                 {publicTunnelsBusy ? "Refreshing…" : "Refresh tunnels"}
               </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Backups (local)</div>
+        {!token && <div style={{ opacity: 0.7 }}>Sign in to manage backups.</div>}
+        {token && (
+          <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+            <div><b>Backup directory</b>: {backupDir || "—"}</div>
+            {backupsErr ? <div style={{ color: "#ffb4b4" }}>{backupsErr}</div> : null}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={runBackup} disabled={backupRunBusy} className={buttonClass}>
+                {backupRunBusy ? "Running…" : "Run backup"}
+              </button>
+              <button onClick={loadBackups} disabled={backupsBusy} className={buttonClass}>
+                {backupsBusy ? "Refreshing…" : "Refresh list"}
+              </button>
+            </div>
+            {backups.length === 0 ? (
+              <div style={{ opacity: 0.7 }}>No backups found yet.</div>
+            ) : (
+              <div style={{ display: "grid", gap: 4 }}>
+                {backups.map((b) => (
+                  <div key={b.name} style={{ display: "flex", gap: 10 }}>
+                    <div style={{ minWidth: 220 }}>{b.name}</div>
+                    <div style={{ opacity: 0.8 }}>{fmtBytes(b.size)}</div>
+                    <div style={{ opacity: 0.8 }}>{new Date(b.modifiedAt).toLocaleString()}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ opacity: 0.65, marginTop: 6 }}>
+              Command line: <code>apps/api/src/scripts/backup_db.sh</code>
             </div>
           </div>
         )}
