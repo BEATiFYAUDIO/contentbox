@@ -8313,9 +8313,14 @@ async function getApproversForParent(parentContentId: string): Promise<{
 
   const parent = await prisma.contentItem.findUnique({
     where: { id: parentContentId },
-    select: { ownerUserId: true, owner: { select: { email: true } } }
+    select: { ownerUserId: true, repoPath: true, deletedReason: true, description: true, owner: { select: { email: true } } }
   });
-  if (parent?.ownerUserId && approvers.length === 0) {
+  const isShadowRemote =
+    Boolean(parent?.deletedReason === "hard") &&
+    !parent?.repoPath &&
+    String(parent?.description || "").toLowerCase().startsWith("remote origin:");
+
+  if (parent?.ownerUserId && approvers.length === 0 && !isShadowRemote) {
     approvers.push({
       splitParticipantId: null,
       participantUserId: parent.ownerUserId,
