@@ -3141,7 +3141,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     });
   }
 
-  // Upstream income from derivative settlements
+  // Upstream income + pending clearance from derivatives
   const upstreamIncomeMap = new Map<string, any>();
   for (const l of settlementLines) {
     if (l.role !== "upstream") continue;
@@ -3173,26 +3173,34 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
         upstreamBps,
         myEffectiveBps,
         earnedSatsToDate: earned,
-        approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null
+        approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null,
+        status: link.approvedAt ? "APPROVED" : "PENDING"
       });
     } else {
       existing.earnedSatsToDate = (existing.earnedSatsToDate as bigint) + earned;
     }
   }
 
-  // Also include cleared upstream links even if no earnings yet
-  const clearedLinks = await prisma.contentLink.findMany({
-    where: { approvedAt: { not: null }, upstreamBps: { gt: 0 } },
+  const linksForStatus = await prisma.contentLink.findMany({
+    where: { requiresApproval: true },
     include: { parentContent: true, childContent: true }
   });
+  const auths = await prisma.derivativeAuthorization.findMany({
+    where: { derivativeLinkId: { in: linksForStatus.map((l) => l.id) } }
+  });
+  const authByLinkId = new Map(auths.map((a) => [a.derivativeLinkId, a]));
+
+  // Include cleared + pending upstream links even if no earnings yet
+  const clearedLinks = linksForStatus.filter((l) => l.approvedAt);
+  const pendingLinks = linksForStatus.filter((l) => !l.approvedAt);
   const parentSplits = new Map<string, any>();
-  for (const link of clearedLinks) {
+  for (const link of [...clearedLinks, ...pendingLinks]) {
     if (!parentSplits.has(link.parentContentId)) {
       const ps = await getLockedSplitForContent(link.parentContentId);
       parentSplits.set(link.parentContentId, ps);
     }
   }
-  for (const link of clearedLinks) {
+  for (const link of [...clearedLinks, ...pendingLinks]) {
     const ps = parentSplits.get(link.parentContentId);
     if (!ps) continue;
     const parentParticipant =
@@ -3201,6 +3209,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     if (!parentParticipant) continue;
     const key = `${link.parentContentId}::${link.childContentId}`;
     if (!upstreamIncomeMap.has(key)) {
+      const auth = authByLinkId.get(link.id);
       upstreamIncomeMap.set(key, {
         parentContentId: link.parentContentId,
         parentTitle: link.parentContent?.title || null,
@@ -3209,7 +3218,10 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
         upstreamBps: link.upstreamBps || 0,
         myEffectiveBps: Math.round((link.upstreamBps || 0) * (toBps(parentParticipant) || 0) / 10000),
         earnedSatsToDate: 0n,
-        approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null
+        approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null,
+        status: auth?.status || (link.approvedAt ? "APPROVED" : "PENDING"),
+        approveWeightBps: auth?.approveWeightBps ?? 0,
+        approvalBpsTarget: auth?.approvalBpsTarget ?? 6667
       });
     }
   }

@@ -35,6 +35,9 @@ type UpstreamIncomeRow = {
   myEffectiveBps: number;
   earnedSatsToDate: string;
   approvedAt: string | null;
+  status?: string | null;
+  approveWeightBps?: number | null;
+  approvalBpsTarget?: number | null;
 };
 
 type RoyaltiesResponse = {
@@ -237,7 +240,10 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
               </div>
               <div className="text-xs text-neutral-400 mt-1">
                 Earned: <span className="text-neutral-200">{u.earnedSatsToDate} sats</span>
-                {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : null}
+                {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
+                {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
+                  <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
+                ) : null}
               </div>
             </div>
           ))}
