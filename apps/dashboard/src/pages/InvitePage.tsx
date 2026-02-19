@@ -505,6 +505,17 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
   const visibleSentInvites = (myInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
   const visibleReceivedInvites = (receivedInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
   const visibleRemoteInvites = (remoteReceivedInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
+  const dedupeKey = (inv: any) => {
+    const id = String(inv?.contentId || "").trim();
+    if (id) return id;
+    return [
+      String(inv?.contentTitle || "").trim(),
+      String(inv?.role || "").trim(),
+      String(inv?.percent ?? "").trim()
+    ].join("|");
+  };
+  const localInviteKeys = new Set(visibleReceivedInvites.map(dedupeKey));
+  const dedupedRemoteInvites = visibleRemoteInvites.filter((inv) => !localInviteKeys.has(dedupeKey(inv)));
 
   async function acceptRemoteInvite(inv: any) {
     const inviteUrl = String(inv?.inviteUrl || "").trim();
@@ -832,9 +843,9 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
                   })}
                 </div>
               )}
-              {visibleRemoteInvites.length > 0 && (
+              {dedupedRemoteInvites.length > 0 && (
                 <div className="mt-2 space-y-2 text-sm text-neutral-200">
-                  {groupByContent(visibleRemoteInvites).map((group) => {
+                  {groupByContent(dedupedRemoteInvites).map((group) => {
                     const open = receivedOpen[group.key] ?? true;
                     return (
                       <div key={group.key} className="rounded-md border border-neutral-800 bg-neutral-950/40 p-2">
