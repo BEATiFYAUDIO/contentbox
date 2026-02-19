@@ -148,6 +148,13 @@ function getRoyaltiesContentIdFromLocation(): string | null {
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authNotice, setAuthNotice] = useState<string | null>(() => {
+    try {
+      return window.localStorage.getItem("contentbox.authNotice") || null;
+    } catch {
+      return null;
+    }
+  });
 
   // Define 'page' and 'setPage' for routing
   const [page, setPage] = useState<PageKey>("content");
@@ -182,6 +189,15 @@ export default function App() {
       .catch(() => setIdentityDetail(null));
   };
 
+  const forceLogin = (message: string) => {
+    try {
+      window.localStorage.setItem("contentbox.authNotice", message);
+    } catch {}
+    setAuthNotice(message);
+    clearToken();
+    setMe(null);
+  };
+
   useEffect(() => {
     const token = getToken();
     if (!token) {
@@ -203,6 +219,13 @@ export default function App() {
       window.clearInterval(t);
     };
   }, [me?.id]);
+
+  useEffect(() => {
+    if (!authNotice) return;
+    try {
+      window.localStorage.removeItem("contentbox.authNotice");
+    } catch {}
+  }, [authNotice]);
 
   // Extract the invite token from the URL when the component mounts
   useEffect(() => {
@@ -268,7 +291,7 @@ export default function App() {
   }
 
   if (!me && inviteToken === null) {
-    return <AuthPage onAuthed={loadMe} />;
+    return <AuthPage onAuthed={loadMe} notice={authNotice} />;
   }
 
   const identityLevel = identityDetail?.level || "BASIC";
@@ -524,15 +547,24 @@ export default function App() {
             <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
               <span>
-                Public Identity:{" "}
-                {publicStatus?.mode === "named"
-                  ? `Permanent (${publicStatus?.tunnelName || "Named"})`
-                  : publicStatus?.mode === "quick"
-                    ? "Temporary (Quick)"
-                    : identityDetail?.level === "PERSISTENT"
-                      ? "Permanent (Named)"
-                      : "Temporary (Quick)"}
+                Public:{" "}
+                {(() => {
+                  if (nodeMode === "advanced") {
+                    if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
+                    if (publicStatus?.mode === "quick") return "Temporary (Quick — testing only)";
+                    return "Not configured";
+                  }
+                  if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
+                  if (publicStatus?.mode === "quick") return "Temporary (Quick)";
+                  return "Not configured";
+                })()}
               </span>
+              {nodeMode === "advanced" && publicStatus?.mode === "quick" ? (
+                <>
+                  <span className="text-neutral-500">•</span>
+                  <span className="text-amber-300">Testing only</span>
+                </>
+              ) : null}
               <span className="text-neutral-500">•</span>
               <span>
                 {publicStatus?.status === "online"
@@ -548,6 +580,14 @@ export default function App() {
               <span className="text-neutral-500">•</span>
               <span className="truncate max-w-[380px]">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
             </div>
+            {nodeMode === "advanced" && publicStatus?.mode !== "named" ? (
+              <button
+                onClick={() => setPage("config")}
+                className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+              >
+                Set up named link
+              </button>
+            ) : null}
             <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
               <span>Mode: {modeLabel(nodeMode)}</span>
               <span className="text-neutral-500">•</span>
@@ -667,6 +707,7 @@ export default function App() {
                 setPage("participations");
               }}
               onIdentityRefresh={refreshIdentityDetail}
+              onForceLogin={forceLogin}
             />
           )}
         </main>

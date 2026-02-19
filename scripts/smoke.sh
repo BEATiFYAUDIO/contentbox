@@ -18,6 +18,10 @@ if ! bash "$ROOT_DIR/install.sh" >/tmp/contentbox-install.log 2>&1; then
   cat /tmp/contentbox-install.log >&2
   fail "install.sh failed"
 fi
+if grep -q "Password for user postgres:" /tmp/contentbox-install.log; then
+  cat /tmp/contentbox-install.log >&2
+  fail "install.sh prompted for postgres password in basic mode"
+fi
 
 API_PORT="${API_PORT:-4015}"
 PUBLIC_PORT="${PUBLIC_PORT:-4016}"
@@ -93,6 +97,12 @@ if ! NODE_MODE_RESP="$node_mode_resp" NODE_MODE_EXPECT="$SMOKE_NODE_MODE" DB_MOD
   fail \"/api/node/mode unexpected response\"
 fi
 pass "/api/node/mode ok"
+
+echo "[smoke] Checking /api/node/restart route exists (static check)..."
+if ! grep -q "api/node/restart" "$API_DIR/src/server.ts"; then
+  fail "/api/node/restart route not found in server.ts"
+fi
+pass "/api/node/restart route present"
 
 EXPECT_IDENTITY_LEVEL="${EXPECT_IDENTITY_LEVEL:-BASIC}"
 echo "[smoke] Running identity gating test (${EXPECT_IDENTITY_LEVEL})..."

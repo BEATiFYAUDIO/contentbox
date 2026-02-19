@@ -6,7 +6,7 @@ import { setToken } from "../lib/auth";
 
 type Mode = "login" | "signup";
 
-export default function AuthPage({ onAuthed }: { onAuthed: () => void }) {
+export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; notice?: string | null }) {
   const [mode, setMode] = React.useState<Mode>("login");
   const [email, setEmail] = React.useState("you@test.com");
   const [password, setPassword] = React.useState("password123");
@@ -78,6 +78,12 @@ export default function AuthPage({ onAuthed }: { onAuthed: () => void }) {
             </button>
           ) : null}
         </div>
+
+        {notice ? (
+          <div className="mb-3 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
+            {notice}
+          </div>
+        ) : null}
 
         <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-xs text-neutral-300 space-y-1">
           <div>Mode: {nodeMode ? modeLabel(nodeMode as any) : "Unknown"}</div>

@@ -123,9 +123,7 @@ if [ "$DB_MODE_VAL" = "basic" ]; then
     echo "CONTENTBOX_ROOT=\"$ROOT_VAL\"" >> "$API_ENV"
   fi
   SQLITE_URL="file:${ROOT_VAL}/contentbox.db"
-  if grep -q '^DATABASE_URL=' "$API_ENV"; then
-    sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=\"${SQLITE_URL}\"#" "$API_ENV" && rm -f "$API_ENV.bak"
-  else
+  if ! grep -q '^DATABASE_URL=' "$API_ENV"; then
     echo "DATABASE_URL=\"${SQLITE_URL}\"" >> "$API_ENV"
   fi
   echo "[install] Using SQLite for basic mode."
@@ -170,7 +168,7 @@ setup_local_postgres() {
   echo "[install] DATABASE_URL set for local Postgres."
 }
 
-if [ "$DB_MODE_VAL" = "advanced" ]; then
+if [[ "${STORAGE:-}" == "postgres" ]] || grep -q '^DATABASE_URL=postgresql://' "$API_ENV"; then
   setup_local_postgres || true
 fi
 
