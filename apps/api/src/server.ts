@@ -3428,7 +3428,8 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
 // Public exposure control
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const state = getPublicLinkState();
-  if (state.mode === "quick") {
+  const nodeMode = getNodeMode();
+  if (state.mode === "quick" && nodeMode !== "advanced") {
     const consent = getPublicSharingConsent();
     const consentGranted = consent.granted || consent.dontAskAgain;
     if (consentGranted && getPublicSharingAutoStart()) {
@@ -3472,6 +3473,13 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
     return reply.code(500).send({ error: "Failed to persist node mode", message: String(e?.message || e) });
   }
   return reply.send(getNodeModeStatus());
+});
+
+app.post("/api/node/restart", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  reply.send({ ok: true, restarting: true });
+  setTimeout(() => {
+    process.exit(0);
+  }, 500);
 });
 
 app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {

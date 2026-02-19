@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../lib/api";
+import { api, getApiBase } from "../lib/api";
 import type { IdentityDetail } from "../lib/identity";
 import { modeLabel } from "../lib/nodeMode";
 import { PAYOUT_DESTINATIONS_LABEL } from "../lib/terminology";
@@ -20,6 +20,7 @@ type ProfilePageProps = {
   identityDetail: IdentityDetail | null;
   onOpenParticipations: () => void;
   onIdentityRefresh: () => void;
+  onForceLogin: (message: string) => void;
 };
 
 function extractBeatifyHandle(bio: string | null | undefined): string {
@@ -36,7 +37,7 @@ function applyBeatifyHandleToBio(bio: string | null | undefined, handle: string)
   return base ? `${base}\n${line}` : line;
 }
 
-export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipations }: ProfilePageProps) {
+export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipations, onIdentityRefresh, onForceLogin }: ProfilePageProps) {
   const [importUrl, setImportUrl] = useState<string>("");
   const [importPreview, setImportPreview] = useState<any | null>(null);
   const [importLoading, setImportLoading] = useState<boolean>(false);
@@ -47,6 +48,10 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [modeBusy, setModeBusy] = useState(false);
   const [modeMsg, setModeMsg] = useState<string | null>(null);
   const [showRestart, setShowRestart] = useState(false);
+  const [showRestartConfirm, setShowRestartConfirm] = useState(false);
+  const [pendingMode, setPendingMode] = useState<"basic" | "advanced" | "lan" | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectMsg, setReconnectMsg] = useState<string | null>(null);
 
   useEffect(() => {
     setBeatifyHandle(extractBeatifyHandle(me?.bio));
@@ -76,6 +81,49 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
 
   const modeLocked = modeInfo?.source === "env";
   const restartCommand = "npm run dev";
+  const apiBase = getApiBase();
+
+  const handleRestartNow = async () => {
+    setReconnectMsg(null);
+    setReconnecting(true);
+    try {
+      await api(`/api/node/restart`, "POST");
+    } catch {
+      setReconnectMsg("Couldn't request restart. Please restart manually.");
+      setReconnecting(false);
+      return;
+    }
+    const deadline = Date.now() + 30000;
+    let ok = false;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch(`${apiBase}/health`, { method: "GET" });
+        if (res.ok) {
+          ok = true;
+          break;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (!ok) {
+      setReconnectMsg("Couldn't reconnect automatically. Please restart the app manually.");
+      setReconnecting(false);
+      return;
+    }
+    try {
+      await api(`/api/identity`, "GET");
+      onIdentityRefresh();
+      setReconnecting(false);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (msg.includes("SINGLE_IDENTITY_NODE") || msg.includes("401")) {
+        onForceLogin("Restarted in Advanced mode. Sign in as owner.");
+        return;
+      }
+      setReconnectMsg("Restarted, but couldn't verify session. Please sign in again.");
+      onForceLogin("Restarted. Please sign in again.");
+    }
+  };
 
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
@@ -127,6 +175,8 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                       setModeInfo(res);
                       setShowRestart(Boolean(res?.restartRequired));
                       setModeMsg("Saved. Restart required.");
+                      setPendingMode(opt);
+                      setShowRestartConfirm(true);
                       onIdentityRefresh();
                     } catch (e: any) {
                       setModeMsg(e?.message || "Failed to update node mode.");
@@ -157,6 +207,13 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
               <div className="flex-1 min-w-[160px]">Restart required to apply mode change.</div>
               <button
                 type="button"
+                onClick={handleRestartNow}
+                className="text-xs rounded-lg border border-amber-800 px-2 py-1 hover:bg-amber-900/30 font-medium"
+              >
+                Restart now
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   try {
                     navigator.clipboard.writeText(restartCommand);
@@ -168,6 +225,13 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                 className="text-xs rounded-lg border border-amber-800 px-2 py-1 hover:bg-amber-900/30"
               >
                 Copy restart command
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowRestart(false)}
+                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              >
+                I’ll restart later
               </button>
             </div>
           ) : null}
@@ -444,6 +508,56 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
 
         <AuditPanel scopeType="identity" title="Audit" exportName="identity-audit.json" />
       </div>
+
+      {showRestartConfirm && pendingMode ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
+            <div className="text-sm font-medium">Switching node mode requires restart.</div>
+            <div className="text-xs text-neutral-400 mt-1">Restart now?</div>
+            <div className="mt-4 flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowRestartConfirm(false);
+                  setPendingMode(null);
+                }}
+                className="text-xs rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowRestartConfirm(false);
+                  await handleRestartNow();
+                  setPendingMode(null);
+                }}
+                className="text-xs rounded-lg border border-amber-800 bg-amber-900/20 px-3 py-1 hover:bg-amber-900/30"
+              >
+                Restart now
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {reconnecting ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
+            <div className="text-sm font-medium">Reconnecting…</div>
+            <div className="text-xs text-neutral-400 mt-1">Waiting for the node to restart.</div>
+            {reconnectMsg ? (
+              <div className="mt-3 text-xs text-amber-300">{reconnectMsg}</div>
+            ) : null}
+            {reconnectMsg ? (
+              <div className="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+                Manual restart:\n                <div className="mt-2 text-[11px] text-neutral-200">API: Ctrl+C then {restartCommand}</div>
+                <div className="mt-1 text-[11px] text-neutral-200">Dashboard: npm run dev</div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

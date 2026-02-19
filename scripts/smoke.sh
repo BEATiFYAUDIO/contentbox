@@ -18,6 +18,10 @@ if ! bash "$ROOT_DIR/install.sh" >/tmp/contentbox-install.log 2>&1; then
   cat /tmp/contentbox-install.log >&2
   fail "install.sh failed"
 fi
+if grep -q "Password for user postgres:" /tmp/contentbox-install.log; then
+  cat /tmp/contentbox-install.log >&2
+  fail "install.sh prompted for postgres password in basic mode"
+fi
 
 API_PORT="${API_PORT:-4015}"
 PUBLIC_PORT="${PUBLIC_PORT:-4016}"
