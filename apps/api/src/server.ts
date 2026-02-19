@@ -3476,6 +3476,17 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
 });
 
 app.post("/api/node/restart", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const supervised =
+    Boolean(process.env.PM2_HOME) ||
+    Boolean(process.env.pm_id) ||
+    Boolean(process.env.INVOCATION_ID) ||
+    Boolean(process.env.SYSTEMD_EXEC_PID);
+  if (process.env.NODE_ENV !== "production" || !supervised) {
+    return reply.code(409).send({
+      error: "RESTART_NOT_SUPERVISED",
+      message: "Restart is only available under a process supervisor in production."
+    });
+  }
   reply.send({ ok: true, restarting: true });
   setTimeout(() => {
     process.exit(0);

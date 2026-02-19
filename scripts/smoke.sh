@@ -98,6 +98,12 @@ if ! NODE_MODE_RESP="$node_mode_resp" NODE_MODE_EXPECT="$SMOKE_NODE_MODE" DB_MOD
 fi
 pass "/api/node/mode ok"
 
+echo "[smoke] Checking /api/node/restart route exists (static check)..."
+if ! grep -q "api/node/restart" "$API_DIR/src/server.ts"; then
+  fail "/api/node/restart route not found in server.ts"
+fi
+pass "/api/node/restart route present"
+
 EXPECT_IDENTITY_LEVEL="${EXPECT_IDENTITY_LEVEL:-BASIC}"
 echo "[smoke] Running identity gating test (${EXPECT_IDENTITY_LEVEL})..."
 if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" EXPECT_IDENTITY_LEVEL="$EXPECT_IDENTITY_LEVEL" npx tsx src/scripts/identity_gating_test.ts) >/tmp/contentbox-identity-gating.log 2>&1; then

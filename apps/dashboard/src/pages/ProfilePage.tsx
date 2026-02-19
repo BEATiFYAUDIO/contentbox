@@ -88,8 +88,13 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
     setReconnecting(true);
     try {
       await api(`/api/node/restart`, "POST");
-    } catch {
-      setReconnectMsg("Couldn't request restart. Please restart manually.");
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (msg.includes("RESTART_NOT_SUPERVISED") || msg.includes("409")) {
+        setReconnectMsg("Auto-restart is not available. Please restart manually.");
+      } else {
+        setReconnectMsg("Couldn't request restart. Please restart manually.");
+      }
       setReconnecting(false);
       return;
     }
