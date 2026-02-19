@@ -302,16 +302,16 @@ export default function App() {
   const identityLevel = identityDetail?.level || "BASIC";
   const nodeMode = identityDetail?.nodeMode || (identityDetail?.dbMode === "advanced" ? "advanced" : "basic");
   const features = identityDetail?.features || {
-    publicShare: identityLevel === "PERSISTENT",
-    derivatives: identityLevel === "PERSISTENT",
-    advancedSplits: identityLevel === "PERSISTENT",
+    publicShare: false,
+    derivatives: false,
+    advancedSplits: false,
     multiUser: false
   };
   const lockReasons = identityDetail?.lockReasons || {
-    public_share: "Requires persistent identity (named tunnel).",
-    derivatives: "Requires persistent identity (named tunnel).",
-    advanced_splits: "Requires persistent identity (named tunnel).",
-    multi_user: "Advanced nodes are single-identity. Use LAN mode for multi-user."
+    public_share: "Feature locked in this mode.",
+    derivatives: "Feature locked in this mode.",
+    advanced_splits: "Feature locked in this mode.",
+    multi_user: "Feature locked in this mode."
   };
   const isBasicMode = nodeMode === "basic";
 

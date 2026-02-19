@@ -128,8 +128,8 @@ export default function SplitEditorPage(props: {
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
 }) {
-  const { contentId, onGoToPayouts, onNotFound, identityLevel, features, lockReasons } = props;
-  const canAdvancedSplits = features?.advancedSplits ?? String(identityLevel || "").toUpperCase() !== "BASIC";
+  const { contentId, onGoToPayouts, onNotFound, features, lockReasons } = props;
+  const canAdvancedSplits = features?.advancedSplits ?? false;
 
   const [content, setContent] = React.useState<ContentItem | null>(null);
   const [versions, setVersions] = React.useState<SplitVersion[]>([]);

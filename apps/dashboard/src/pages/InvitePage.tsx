@@ -77,8 +77,8 @@ function statusLabel(value?: string | null) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "—";
 }
 
-export default function InvitePage({ token, onAccepted, identityLevel, features, lockReasons }: InvitePageProps) {
-  const canAdvancedSplits = features?.advancedSplits ?? String(identityLevel || "").toUpperCase() !== "BASIC";
+export default function InvitePage({ token, onAccepted, features, lockReasons }: InvitePageProps) {
+  const canAdvancedSplits = features?.advancedSplits ?? false;
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<InviteGetResponse | null>(null);

@@ -217,10 +217,10 @@ async function copyText(text: string) {
   } catch {}
 }
 
-export default function ContentLibraryPage({ onOpenSplits, identityLevel, features, lockReasons, currentUserEmail }: ContentLibraryPageProps) {
-  const canAdvancedSplits = features?.advancedSplits ?? identityLevel !== "BASIC";
-  const canDerivatives = features?.derivatives ?? identityLevel !== "BASIC";
-  const canPublicShare = features?.publicShare ?? identityLevel !== "BASIC";
+export default function ContentLibraryPage({ onOpenSplits, features, lockReasons, currentUserEmail }: ContentLibraryPageProps) {
+  const canAdvancedSplits = features?.advancedSplits ?? false;
+  const canDerivatives = features?.derivatives ?? false;
+  const canPublicShare = features?.publicShare ?? false;
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -3322,7 +3322,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel, featur
                                       className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
                                       onClick={() => navigator.clipboard.writeText(l.url)}
                                     >
-                                      Copy link
+                                      Copy approval link
                                     </button>
                                   </div>
                                 ))}

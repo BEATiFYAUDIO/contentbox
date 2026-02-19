@@ -69,7 +69,7 @@ export default function SplitParticipationsPage(props: {
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
 }) {
-  const canAdvancedSplits = props.features?.advancedSplits ?? String(props.identityLevel || "").toUpperCase() !== "BASIC";
+  const canAdvancedSplits = props.features?.advancedSplits ?? false;
 
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);

@@ -62,8 +62,8 @@ export default function SplitsPage(props: {
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
 }) {
-  const { onEditContent, identityLevel, features, lockReasons } = props;
-  const canAdvancedSplits = features?.advancedSplits ?? String(identityLevel || "").toUpperCase() !== "BASIC";
+  const { onEditContent, features, lockReasons } = props;
+  const canAdvancedSplits = features?.advancedSplits ?? false;
 
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});

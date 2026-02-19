@@ -2753,11 +2753,14 @@ app.post("/auth/signup", async (req, reply) => {
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) return reply.code(409).send({ error: "email already in use" });
   const nodeMode = getNodeMode();
-  if (shouldBlockAdditionalUser(nodeMode, allowMultiUserOverride(), await hasDifferentUser(null))) {
-    return reply.code(403).send({
-      error: "SINGLE_IDENTITY_NODE",
-      message: "Advanced nodes are single-identity. Log in as the owner or use LAN mode for multi-user."
-    });
+  if (nodeMode === "advanced" && !allowMultiUserOverride()) {
+    const anyUser = await prisma.user.findFirst({ select: { id: true } });
+    if (anyUser?.id) {
+      return reply.code(403).send({
+        error: "SINGLE_IDENTITY_NODE",
+        message: "Advanced nodes are single-identity. Log in as the owner or use LAN mode for multi-user."
+      });
+    }
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
@@ -3393,11 +3396,15 @@ app.post("/auth/login", async (req, reply) => {
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return reply.code(401).send({ error: "Invalid credentials" });
   const nodeMode = getNodeMode();
-  if (shouldBlockAdditionalUser(nodeMode, allowMultiUserOverride(), await hasDifferentUser(user.id))) {
-    return reply.code(403).send({
-      error: "SINGLE_IDENTITY_NODE",
-      message: "Advanced nodes are single-identity. Log in as the owner or use LAN mode for multi-user."
-    });
+  if (nodeMode === "advanced" && !allowMultiUserOverride()) {
+    const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { email: true } });
+    const ownerEmail = (owner?.email || "").toLowerCase();
+    if (ownerEmail && ownerEmail !== email.toLowerCase()) {
+      return reply.code(403).send({
+        error: "SINGLE_IDENTITY_NODE",
+        message: `Advanced nodes are single-identity. Log in as ${owner?.email} or use LAN mode for multi-user.`
+      });
+    }
   }
 
   const token = app.jwt.sign({ sub: user.id });
