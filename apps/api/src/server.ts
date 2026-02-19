@@ -50,6 +50,7 @@ import {
 } from "./lib/proofs/proofBundle.js";
 import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
 import { canAdvancedSplits, canDerivatives, canMultiUser, canPublicShare, dbModeCompatFromStorage, getFeatureMatrix, getNodeMode, lockReason, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
+import { validateNodeMode, writeNodeConfig } from "./lib/nodeConfig.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
@@ -3438,6 +3439,39 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
     }
   }
   return reply.send(getPublicStatus());
+});
+
+function getNodeModeStatus() {
+  const runtime = resolveRuntimeConfig();
+  const source = runtime.nodeModeSource;
+  return {
+    nodeMode: runtime.nodeMode,
+    source,
+    restartRequired: true
+  };
+}
+
+app.get("/api/node/mode", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(getNodeModeStatus());
+});
+
+app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const runtime = resolveRuntimeConfig();
+  if (runtime.nodeModeSource === "env") {
+    return reply.code(403).send({
+      error: "NODE_MODE_LOCKED",
+      message: "Mode is locked by server environment settings."
+    });
+  }
+  const body = (req.body ?? {}) as { nodeMode?: string };
+  const next = validateNodeMode(body?.nodeMode);
+  if (!next) return badRequest(reply, "Invalid node mode");
+  try {
+    await writeNodeConfig(next);
+  } catch (e: any) {
+    return reply.code(500).send({ error: "Failed to persist node mode", message: String(e?.message || e) });
+  }
+  return reply.send(getNodeModeStatus());
 });
 
 app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {

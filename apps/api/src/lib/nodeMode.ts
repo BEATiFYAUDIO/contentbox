@@ -1,3 +1,5 @@
+import { readNodeConfigSync } from "./nodeConfig.js";
+
 export type NodeMode = "basic" | "advanced" | "lan";
 export type StorageEngine = "sqlite" | "postgres";
 
@@ -25,27 +27,53 @@ function envBool(value: string | undefined): boolean {
   return v === "1" || v === "true" || v === "yes";
 }
 
-export function resolveRuntimeConfig(): { nodeMode: NodeMode; storage: StorageEngine } {
+export type RuntimeConfig = {
+  nodeMode: NodeMode;
+  storage: StorageEngine;
+  nodeModeSource: "env" | "file" | "legacy" | "default";
+  storageSource: "env" | "legacy" | "default";
+};
+
+export function resolveRuntimeConfig(): RuntimeConfig {
   const explicitNodeMode = normalizeNodeMode(process.env.NODE_MODE);
   const explicitStorage = normalizeStorage(process.env.STORAGE);
   const legacyDbMode = normalizeDbMode(process.env.DB_MODE);
   const legacyLan = envBool(process.env.CONTENTBOX_LAN);
+  const fileNodeMode = normalizeNodeMode(readNodeConfigSync()?.nodeMode);
 
-  const nodeMode: NodeMode = explicitNodeMode
-    ? explicitNodeMode
-    : legacyLan
-      ? "lan"
-      : legacyDbMode === "advanced"
-        ? "advanced"
-        : "basic";
+  let nodeMode: NodeMode = "basic";
+  let nodeModeSource: RuntimeConfig["nodeModeSource"] = "default";
+  if (explicitNodeMode) {
+    nodeMode = explicitNodeMode;
+    nodeModeSource = "env";
+  } else if (fileNodeMode) {
+    nodeMode = fileNodeMode;
+    nodeModeSource = "file";
+  } else if (legacyLan) {
+    nodeMode = "lan";
+    nodeModeSource = "legacy";
+  } else if (legacyDbMode === "advanced") {
+    nodeMode = "advanced";
+    nodeModeSource = "legacy";
+  } else {
+    nodeMode = "basic";
+    nodeModeSource = "legacy";
+  }
 
-  const storage: StorageEngine = explicitStorage
-    ? explicitStorage
-    : legacyDbMode === "advanced"
-      ? "postgres"
-      : "sqlite";
+  let storage: StorageEngine = "sqlite";
+  let storageSource: RuntimeConfig["storageSource"] = "default";
+  if (explicitStorage) {
+    storage = explicitStorage;
+    storageSource = "env";
+  } else if (legacyDbMode === "advanced") {
+    storage = "postgres";
+    storageSource = "legacy";
+  } else {
+    storage = "sqlite";
+    storageSource = "legacy";
+  }
 
-  return { nodeMode, storage };
+  return { nodeMode, storage, nodeModeSource, storageSource };
 }
 
 export function getNodeMode(): NodeMode {

@@ -171,6 +171,17 @@ export default function App() {
     } catch {}
   }, [showAdvancedNav]);
 
+  const refreshIdentityDetail = () => {
+    fetchIdentityDetail()
+      .then((d) => {
+        setIdentityDetail(d);
+        try {
+          window.localStorage.setItem("contentbox.identityDetail", JSON.stringify(d));
+        } catch {}
+      })
+      .catch(() => setIdentityDetail(null));
+  };
+
   useEffect(() => {
     const token = getToken();
     if (!token) {
@@ -180,15 +191,7 @@ export default function App() {
     }
     let alive = true;
     const refresh = () => {
-      fetchIdentityDetail()
-        .then((d) => {
-          if (!alive) return;
-          setIdentityDetail(d);
-          try {
-            window.localStorage.setItem("contentbox.identityDetail", JSON.stringify(d));
-          } catch {}
-        })
-        .catch(() => alive && setIdentityDetail(null));
+      refreshIdentityDetail();
       api("/api/public/status", "GET")
         .then((d: any) => alive && setPublicStatus(d))
         .catch(() => alive && setPublicStatus(null));
@@ -663,6 +666,7 @@ export default function App() {
                 window.history.pushState({}, "", "/participations");
                 setPage("participations");
               }}
+              onIdentityRefresh={refreshIdentityDetail}
             />
           )}
         </main>

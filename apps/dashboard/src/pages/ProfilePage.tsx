@@ -19,6 +19,7 @@ type ProfilePageProps = {
   setMe: (next: Me | null) => void;
   identityDetail: IdentityDetail | null;
   onOpenParticipations: () => void;
+  onIdentityRefresh: () => void;
 };
 
 function extractBeatifyHandle(bio: string | null | undefined): string {
@@ -42,15 +43,39 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [beatifyHandle, setBeatifyHandle] = useState<string>("");
   const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
   const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
+  const [modeInfo, setModeInfo] = useState<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean } | null>(null);
+  const [modeBusy, setModeBusy] = useState(false);
+  const [modeMsg, setModeMsg] = useState<string | null>(null);
+  const [showRestart, setShowRestart] = useState(false);
 
   useEffect(() => {
     setBeatifyHandle(extractBeatifyHandle(me?.bio));
   }, [me?.bio]);
 
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await api<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean }>(`/api/node/mode`, "GET");
+        if (!alive) return;
+        setModeInfo(res);
+      } catch {
+        if (!alive) return;
+        setModeInfo(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   const nodeMode = identityDetail?.nodeMode || "basic";
   const ownerEmail = identityDetail?.ownerEmail || null;
   const nodeBadge = nodeMode === "advanced" ? "Owner account" : nodeMode === "lan" ? "Shared node account" : "Trial account";
   const beatifyStatus = beatifyHandle ? "UNVERIFIED" : "UNLINKED";
+
+  const modeLocked = modeInfo?.source === "env";
+  const restartCommand = "npm run dev";
 
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
@@ -58,6 +83,96 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
       <div className="text-sm text-neutral-400 mt-1">Node account, public profile, and optional external claims.</div>
 
       <div className="mt-5 space-y-4">
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-sm font-medium">Node Mode</div>
+              <div className="text-xs text-neutral-500">Choose how this node behaves. Storage stays the same.</div>
+            </div>
+            <div className="text-xs rounded-full border border-neutral-800 px-2 py-1 text-neutral-300">
+              {modeInfo?.nodeMode ? modeLabel(modeInfo.nodeMode) : "Unknown"}
+            </div>
+          </div>
+
+          {modeLocked ? (
+            <div className="mt-2 text-xs text-amber-300">Mode is locked by server environment settings.</div>
+          ) : null}
+
+          <div className="mt-3 grid gap-2 text-sm">
+            {(["basic", "advanced", "lan"] as const).map((opt) => (
+              <label key={opt} className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="node-mode"
+                  value={opt}
+                  disabled={modeLocked || modeBusy}
+                  checked={modeInfo?.nodeMode === opt}
+                  onChange={async () => {
+                    if (!modeInfo) return;
+                    if (opt === modeInfo.nodeMode) return;
+                    if (opt === "advanced") {
+                      const ok = window.confirm(
+                        "Advanced is single identity. If another local account exists, only the owner can log in."
+                      );
+                      if (!ok) return;
+                    }
+                    setModeBusy(true);
+                    setModeMsg(null);
+                    try {
+                      const res = await api<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean }>(
+                        `/api/node/mode`,
+                        "POST",
+                        { nodeMode: opt }
+                      );
+                      setModeInfo(res);
+                      setShowRestart(Boolean(res?.restartRequired));
+                      setModeMsg("Saved. Restart required.");
+                      onIdentityRefresh();
+                    } catch (e: any) {
+                      setModeMsg(e?.message || "Failed to update node mode.");
+                    } finally {
+                      setModeBusy(false);
+                    }
+                  }}
+                />
+                <span>
+                  {opt === "basic"
+                    ? "Basic (Trial)"
+                    : opt === "advanced"
+                      ? "Advanced (Sovereign Node — single identity)"
+                      : "LAN (Studio Node — multi-user)"}
+                </span>
+              </label>
+            ))}
+          </div>
+
+          {modeInfo?.source ? (
+            <div className="mt-2 text-xs text-neutral-500">Source: {modeInfo.source}</div>
+          ) : null}
+
+          {modeMsg ? <div className="mt-2 text-xs text-amber-300">{modeMsg}</div> : null}
+
+          {showRestart ? (
+            <div className="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center gap-2">
+              <div className="flex-1 min-w-[160px]">Restart required to apply mode change.</div>
+              <button
+                type="button"
+                onClick={() => {
+                  try {
+                    navigator.clipboard.writeText(restartCommand);
+                    setModeMsg("Restart command copied.");
+                  } catch {
+                    setModeMsg("Copy failed. Use: npm run dev");
+                  }
+                }}
+                className="text-xs rounded-lg border border-amber-800 px-2 py-1 hover:bg-amber-900/30"
+              >
+                Copy restart command
+              </button>
+            </div>
+          ) : null}
+        </div>
+
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
