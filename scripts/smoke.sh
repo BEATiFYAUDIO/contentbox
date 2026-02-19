@@ -22,7 +22,7 @@ fi
 API_PORT="${API_PORT:-4015}"
 PUBLIC_PORT="${PUBLIC_PORT:-4016}"
 echo "[smoke] Starting API on port $API_PORT (public port $PUBLIC_PORT)..."
-(cd "$API_DIR" && PORT="$API_PORT" PUBLIC_PORT="$PUBLIC_PORT" IDENTITY_LEVEL_OVERRIDE=BASIC npm run dev) >/tmp/contentbox-api.log 2>&1 &
+(cd "$API_DIR" && PORT="$API_PORT" PUBLIC_PORT="$PUBLIC_PORT" DB_MODE=basic CONTENTBOX_LAN= IDENTITY_LEVEL_OVERRIDE=BASIC npm run dev) >/tmp/contentbox-api.log 2>&1 &
 API_PID=$!
 
 cleanup() {
