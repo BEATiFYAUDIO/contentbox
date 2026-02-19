@@ -3137,7 +3137,8 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
       splitSummary,
       earnedSatsToDate: earned.toString(),
       storefrontStatus: content.storefrontStatus,
-      contentStatus: content.status
+      contentStatus: content.status,
+      contentDeletedAt: content.deletedAt ? content.deletedAt.toISOString() : null
     });
   }
 

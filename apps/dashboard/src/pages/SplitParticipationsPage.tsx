@@ -24,6 +24,7 @@ type WorkRoyaltyRow = {
   earnedSatsToDate: string;
   storefrontStatus?: string | null;
   contentStatus?: string | null;
+  contentDeletedAt?: string | null;
 };
 
 type UpstreamIncomeRow = {
@@ -73,6 +74,7 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
   const [historyItems, setHistoryItems] = useState<HistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
+  const [showInactiveWorks, setShowInactiveWorks] = useState(false);
 
   useEffect(() => {
     if (isBasicIdentity) {
@@ -134,14 +136,26 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
       ) : null}
 
       <div className="text-sm text-neutral-300">Works I have a share in</div>
+      <div className="mt-2 flex items-center justify-between">
+        <div className="text-xs text-neutral-500">Inactive works are tombstoned or trashed items.</div>
+        <button
+          onClick={() => setShowInactiveWorks((v) => !v)}
+          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+        >
+          {showInactiveWorks ? "Hide inactive" : "Show inactive"}
+        </button>
+      </div>
       <div className="space-y-3">
-        {works.map((p) => (
+        {works
+          .filter((p) => showInactiveWorks || !p.contentDeletedAt)
+          .map((p) => (
           <div key={p.contentId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-medium text-neutral-100">{p.title || "Untitled"}</div>
                 <div className="text-xs text-neutral-400 mt-1">
                   {p.type ? p.type.toUpperCase() : "CONTENT"} • {p.contentStatus || "unknown"}
+                  {p.contentDeletedAt ? <span className="ml-2 text-[10px] text-amber-300">inactive</span> : null}
                 </div>
                 <div className="text-xs text-neutral-400 mt-1">
                   Role: <span className="text-neutral-200">{p.myRole === "owner" ? "owner" : "participant"}</span>
