@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
+import type { FeatureMatrix } from "../lib/identity";
 
 type WorkRoyaltyRow = {
   contentId: string;
@@ -63,8 +64,12 @@ type RemoteRoyaltyRow = {
   remoteNodeUrl?: string | null;
 };
 
-export default function SplitParticipationsPage(props: { identityLevel?: string | null }) {
-  const isBasicIdentity = String(props.identityLevel || "").toUpperCase() === "BASIC";
+export default function SplitParticipationsPage(props: {
+  identityLevel?: string | null;
+  features?: FeatureMatrix;
+  lockReasons?: Record<string, string>;
+}) {
+  const canAdvancedSplits = props.features?.advancedSplits ?? false;
 
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);
@@ -75,9 +80,10 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
   const [historyLoading, setHistoryLoading] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
   const [showInactiveWorks, setShowInactiveWorks] = useState(false);
+  const [showAllUpstream, setShowAllUpstream] = useState(false);
 
   useEffect(() => {
-    if (isBasicIdentity) {
+    if (!canAdvancedSplits) {
       setLoading(false);
       setWorks([]);
       setUpstream([]);
@@ -112,9 +118,9 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
 
   return (
     <div className="space-y-4">
-      {isBasicIdentity ? (
+      {!canAdvancedSplits ? (
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          Royalties require a persistent identity (named tunnel).
+          {props.lockReasons?.advanced_splits || "Splits and royalties require Advanced or LAN mode."}
         </div>
       ) : null}
       <div>
@@ -122,14 +128,14 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
         <div className="text-sm text-neutral-400 mt-1">Entitlements from content splits (owned or invited).</div>
       </div>
 
-      {isBasicIdentity ? (
-        <div className="text-sm text-neutral-400">Connect a persistent identity to view royalties.</div>
+      {!canAdvancedSplits ? (
+        <div className="text-sm text-neutral-400">{props.lockReasons?.advanced_splits || "Advanced splits are locked."}</div>
       ) : null}
 
       {loading ? <div className="text-sm text-neutral-400">Loading…</div> : null}
       {error ? <div className="text-sm text-amber-300">{error}</div> : null}
 
-      {!isBasicIdentity ? (
+      {canAdvancedSplits ? (
         <>
       {!loading && works.length === 0 ? (
         <div className="text-sm text-neutral-500">No works yet.</div>
@@ -207,12 +213,20 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
       <div className="text-xs text-neutral-500 mt-1">Derivative royalties tied to your splits.</div>
       <div className="mt-2 flex items-center justify-between">
         <div className="text-xs text-neutral-500">Inactive items are tombstoned or deleted works.</div>
-        <button
-          onClick={() => setShowInactive((v) => !v)}
-          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-        >
-          {showInactive ? "Hide inactive" : "Show inactive"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowInactive((v) => !v)}
+            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+          >
+            {showInactive ? "Hide inactive" : "Show inactive"}
+          </button>
+          <button
+            onClick={() => setShowAllUpstream((v) => !v)}
+            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+          >
+            {showAllUpstream ? "Show less" : "Show all"}
+          </button>
+        </div>
       </div>
       {upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt)).length === 0 ? (
         <div className="text-sm text-neutral-500 mt-3">No upstream derivatives yet.</div>
@@ -220,6 +234,7 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
         <div className="mt-3 space-y-3">
           {upstream
             .filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt))
+            .slice(0, showAllUpstream ? upstream.length : 3)
             .map((u, idx) => (
               <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
                 <div className="text-sm font-medium text-neutral-100">
@@ -275,32 +290,6 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
                   >
                     Open
                   </button>
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="text-sm text-neutral-300 mt-6">Upstream income from derivatives</div>
-      {upstream.length === 0 ? (
-        <div className="text-sm text-neutral-500">No upstream income yet.</div>
-      ) : (
-        <div className="space-y-3">
-          {upstream.map((u) => (
-            <div key={`${u.parentContentId}:${u.childContentId}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-              <div className="text-sm font-medium text-neutral-100">
-                {u.parentTitle} → {u.childTitle}
-              </div>
-              <div className="text-xs text-neutral-400 mt-1">
-                Upstream rate: {(u.upstreamBps / 100).toFixed(u.upstreamBps % 100 ? 2 : 0)}% • My effective share:{" "}
-                {(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%
-              </div>
-              <div className="text-xs text-neutral-400 mt-1">
-                Earned: <span className="text-neutral-200">{u.earnedSatsToDate} sats</span>
-                {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
-                {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
-                  <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
                 ) : null}
               </div>
             </div>

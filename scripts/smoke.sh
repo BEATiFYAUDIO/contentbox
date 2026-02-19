@@ -21,8 +21,20 @@ fi
 
 API_PORT="${API_PORT:-4015}"
 PUBLIC_PORT="${PUBLIC_PORT:-4016}"
+SMOKE_DB_MODE="${DB_MODE:-basic}"
+SMOKE_NODE_MODE="${NODE_MODE:-}"
+SMOKE_STORAGE="${STORAGE:-}"
+SMOKE_LAN="${CONTENTBOX_LAN:-}"
+EXPECTED_STORAGE="${SMOKE_STORAGE}"
+if [ -z "$EXPECTED_STORAGE" ]; then
+  if [ "$SMOKE_DB_MODE" = "advanced" ]; then
+    EXPECTED_STORAGE="postgres"
+  else
+    EXPECTED_STORAGE="sqlite"
+  fi
+fi
 echo "[smoke] Starting API on port $API_PORT (public port $PUBLIC_PORT)..."
-(cd "$API_DIR" && PORT="$API_PORT" PUBLIC_PORT="$PUBLIC_PORT" IDENTITY_LEVEL_OVERRIDE=BASIC npm run dev) >/tmp/contentbox-api.log 2>&1 &
+(cd "$API_DIR" && PORT="$API_PORT" PUBLIC_PORT="$PUBLIC_PORT" DB_MODE="$SMOKE_DB_MODE" NODE_MODE="$SMOKE_NODE_MODE" STORAGE="$SMOKE_STORAGE" CONTENTBOX_LAN="$SMOKE_LAN" IDENTITY_LEVEL_OVERRIDE=BASIC npm run dev) >/tmp/contentbox-api.log 2>&1 &
 API_PID=$!
 
 cleanup() {
@@ -55,12 +67,61 @@ if [ "$status" = "404" ] || [ -z "$status" ]; then
 fi
 pass "/auth/login reachable (status $status)"
 
-echo "[smoke] Running identity gating test (basic)..."
-if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" EXPECT_IDENTITY_LEVEL=BASIC npx tsx src/scripts/identity_gating_test.ts) >/tmp/contentbox-identity-gating.log 2>&1; then
+echo "[smoke] Running authenticated identity check..."
+SMOKE_EMAIL="smoke+$(date +%s)@local"
+SMOKE_PASS="password123"
+signup_resp=$(curl -s \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"${SMOKE_EMAIL}\",\"password\":\"${SMOKE_PASS}\",\"displayName\":\"Smoke\"}" \
+  "http://127.0.0.1:${API_PORT}/auth/signup")
+token=$(RESP="$signup_resp" node -e "const d=JSON.parse(process.env.RESP||'{}'); process.stdout.write(d.token||'')") || true
+if [ -z "$token" ]; then
+  echo "$signup_resp" >&2
+  fail "auth/signup did not return token"
+fi
+identity_resp=$(curl -s -H "Authorization: Bearer $token" "http://127.0.0.1:${API_PORT}/api/identity")
+if ! IDENTITY="$identity_resp" EXPECTED_STORAGE="$EXPECTED_STORAGE" node -e "const d=JSON.parse(process.env.IDENTITY||'{}'); const exp=process.env.EXPECTED_STORAGE; if(!('ownerEmail' in d)) process.exit(1); if(d.storage!==exp) process.exit(2);"; then
+  echo "$identity_resp" >&2
+  fail "authenticated /api/identity missing ownerEmail or storage"
+fi
+pass "authenticated /api/identity ok"
+
+echo "[smoke] Running /api/node/mode check..."
+node_mode_resp=$(curl -s -H "Authorization: Bearer $token" "http://127.0.0.1:${API_PORT}/api/node/mode")
+if ! NODE_MODE_RESP="$node_mode_resp" NODE_MODE_EXPECT="$SMOKE_NODE_MODE" DB_MODE_EXPECT="$SMOKE_DB_MODE" LAN_EXPECT="$SMOKE_LAN" node -e "const d=JSON.parse(process.env.NODE_MODE_RESP||'{}'); const nm=process.env.NODE_MODE_EXPECT; const db=process.env.DB_MODE_EXPECT; const lan=process.env.LAN_EXPECT; let expected='basic'; if(nm) expected=nm; else if(lan==='1') expected='lan'; else if(db==='advanced') expected='advanced'; if(d.nodeMode!==expected) process.exit(1); if(!d.source) process.exit(2);"; then
+  echo \"$node_mode_resp\" >&2
+  fail \"/api/node/mode unexpected response\"
+fi
+pass "/api/node/mode ok"
+
+EXPECT_IDENTITY_LEVEL="${EXPECT_IDENTITY_LEVEL:-BASIC}"
+echo "[smoke] Running identity gating test (${EXPECT_IDENTITY_LEVEL})..."
+if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" EXPECT_IDENTITY_LEVEL="$EXPECT_IDENTITY_LEVEL" npx tsx src/scripts/identity_gating_test.ts) >/tmp/contentbox-identity-gating.log 2>&1; then
   cat /tmp/contentbox-identity-gating.log >&2
   fail "identity gating test failed"
 fi
 pass "identity gating test ok"
+
+echo "[smoke] Running node mode tests..."
+if ! (cd "$API_DIR" && npx tsx src/scripts/node_mode_test.ts) >/tmp/contentbox-node-mode.log 2>&1; then
+  cat /tmp/contentbox-node-mode.log >&2
+  fail "node mode test failed"
+fi
+pass "node mode test ok"
+
+echo "[smoke] Running node mode persistence tests..."
+if ! (cd "$API_DIR" && npx tsx src/scripts/node_mode_persist_test.ts) >/tmp/contentbox-node-mode-persist.log 2>&1; then
+  cat /tmp/contentbox-node-mode-persist.log >&2
+  fail "node mode persist test failed"
+fi
+pass "node mode persist test ok"
+
+echo "[smoke] Running single-identity guard test (advanced-only)..."
+if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" npx tsx src/scripts/single_identity_guard_test.ts) >/tmp/contentbox-single-identity.log 2>&1; then
+  cat /tmp/contentbox-single-identity.log >&2
+  fail "single-identity guard test failed"
+fi
+pass "single-identity guard test ok"
 
 echo "[smoke] Running proof bundle tests..."
 if ! (cd "$API_DIR" && npx tsx src/scripts/proof_bundle_test.ts) >/tmp/contentbox-proof-bundle.log 2>&1; then

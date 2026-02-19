@@ -1,5 +1,7 @@
 import React from "react";
 import { api } from "../lib/api";
+import type { IdentityDetail } from "../lib/identity";
+import { modeLabel } from "../lib/nodeMode";
 import { setToken } from "../lib/auth";
 
 type Mode = "login" | "signup";
@@ -11,6 +13,31 @@ export default function AuthPage({ onAuthed }: { onAuthed: () => void }) {
   const [displayName, setDisplayName] = React.useState("Darryl");
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
+  const [nodeMode, setNodeMode] = React.useState<string | null>(null);
+  const [ownerEmail, setOwnerEmail] = React.useState<string | null>(null);
+  const [lockReasons, setLockReasons] = React.useState<Record<string, string> | null>(null);
+
+  React.useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("contentbox.identityDetail");
+      if (!raw) return;
+      const info = JSON.parse(raw) as IdentityDetail;
+      setNodeMode(info?.nodeMode || null);
+      setOwnerEmail(info?.ownerEmail || null);
+      setLockReasons(info?.lockReasons || null);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const isAdvanced = nodeMode === "advanced";
+  const isLan = nodeMode === "lan";
+  const isBasic = nodeMode === "basic";
+  const signupAllowed = !isAdvanced || !ownerEmail;
+
+  React.useEffect(() => {
+    if (!signupAllowed && mode === "signup") setMode("login");
+  }, [signupAllowed, mode]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -41,13 +68,27 @@ export default function AuthPage({ onAuthed }: { onAuthed: () => void }) {
             {mode === "signup" ? "Create account" : "Sign in"}
           </h1>
 
-          <button
-            className="text-sm text-neutral-300 hover:text-white"
-            onClick={() => setMode(mode === "signup" ? "login" : "signup")}
-            type="button"
-          >
-            {mode === "signup" ? "Have an account?" : "New here?"}
-          </button>
+          {signupAllowed ? (
+            <button
+              className="text-sm text-neutral-300 hover:text-white"
+              onClick={() => setMode(mode === "signup" ? "login" : "signup")}
+              type="button"
+            >
+              {mode === "signup" ? "Have an account?" : "New here?"}
+            </button>
+          ) : null}
+        </div>
+
+        <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-xs text-neutral-300 space-y-1">
+          <div>Mode: {nodeMode ? modeLabel(nodeMode as any) : "Unknown"}</div>
+          {isAdvanced && ownerEmail ? (
+            <div>This node belongs to {ownerEmail}. Sign in as the owner account.</div>
+          ) : null}
+          {isLan ? <div>LAN (Studio) node — multiple local accounts allowed.</div> : null}
+          {isBasic ? <div>Basic (Trial) node — limited features until advanced is enabled.</div> : null}
+          {!signupAllowed && lockReasons?.multi_user ? (
+            <div className="text-neutral-500">{lockReasons.multi_user}</div>
+          ) : null}
         </div>
 
         <form onSubmit={submit} className="space-y-3">

@@ -18,23 +18,9 @@ type FinanceRoyaltiesPageProps = {
 
 export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyaltiesPageProps) {
   const [rows, setRows] = useState<RoyaltyRow[]>([]);
-  const [upstream, setUpstream] = useState<Array<{
-    parentTitle: string;
-    childTitle: string;
-    upstreamBps: number;
-    myEffectiveBps: number;
-    earnedSatsToDate: string;
-    approvedAt: string | null;
-    status?: string | null;
-    approveWeightBps?: number | null;
-    approvalBpsTarget?: number | null;
-    childDeletedAt?: string | null;
-    parentDeletedAt?: string | null;
-  }>>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
-  const [showInactive, setShowInactive] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -45,13 +31,6 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
         const res = await api<{ items: RoyaltyRow[] }>("/finance/royalties");
         if (!active) return;
         setRows(res.items || []);
-        try {
-          const r2 = await api<{ upstreamIncome: any[] }>("/my/royalties", "GET");
-          if (!active) return;
-          setUpstream(r2?.upstreamIncome || []);
-        } catch {
-          setUpstream([]);
-        }
       } catch (e: any) {
         if (!active) return;
         setError(e.message || "Failed to load royalties.");
@@ -145,48 +124,7 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
         </div>
       </div>
 
-      <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Upstream derivatives</div>
-        <div className="text-sm text-neutral-400 mt-1">Cleared or pending derivative royalties tied to your splits.</div>
-        <div className="mt-3 flex items-center justify-between">
-          <div className="text-xs text-neutral-500">Inactive items are tombstoned or deleted works.</div>
-          <button
-            onClick={() => setShowInactive((v) => !v)}
-            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-          >
-            {showInactive ? "Hide inactive" : "Show inactive"}
-          </button>
-        </div>
-        {upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt)).length === 0 ? (
-          <div className="text-sm text-neutral-500 mt-3">No upstream derivatives yet.</div>
-        ) : (
-          <div className="mt-3 space-y-3">
-            {upstream
-              .filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt))
-              .map((u, idx) => (
-              <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-                <div className="text-sm font-medium text-neutral-100">
-                  {u.parentTitle} → {u.childTitle}
-                  {u.childDeletedAt || u.parentDeletedAt ? (
-                    <span className="ml-2 text-[10px] text-amber-300">inactive</span>
-                  ) : null}
-                </div>
-                <div className="text-xs text-neutral-400 mt-1">
-                  Upstream rate: {(u.upstreamBps / 100).toFixed(u.upstreamBps % 100 ? 2 : 0)}% • My effective share:{" "}
-                  {(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%
-                </div>
-                <div className="text-xs text-neutral-400 mt-1">
-                  Earned: <span className="text-neutral-200">{u.earnedSatsToDate} sats</span>
-                  {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
-                  {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
-                    <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Upstream derivatives live in My Royalties */}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import React from "react";
 import { api } from "../lib/api";
+import type { FeatureMatrix } from "../lib/identity";
 import AuditPanel from "../components/AuditPanel";
 
 type ContentItem = {
@@ -55,9 +56,14 @@ function formatDateLabel(value?: string | null) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
-export default function SplitsPage(props: { onEditContent?: (id: string) => void; identityLevel?: string | null }) {
-  const { onEditContent, identityLevel } = props;
-  const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
+export default function SplitsPage(props: {
+  onEditContent?: (id: string) => void;
+  identityLevel?: string | null;
+  features?: FeatureMatrix;
+  lockReasons?: Record<string, string>;
+}) {
+  const { onEditContent, features, lockReasons } = props;
+  const canAdvancedSplits = features?.advancedSplits ?? false;
 
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -163,7 +169,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
   }
 
   React.useEffect(() => {
-    if (isBasicIdentity) {
+    if (!canAdvancedSplits) {
       setContentList([]);
       setSplitSummaryByContent({});
       setRemoteInvites([]);
@@ -171,16 +177,16 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
     }
     loadContentList(showTombstones).catch(() => {});
     loadRemoteInvites().catch(() => {});
-  }, [isBasicIdentity]);
+  }, [canAdvancedSplits]);
 
   React.useEffect(() => {
-    if (isBasicIdentity) return;
+    if (!canAdvancedSplits) return;
     loadContentList(showTombstones).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showTombstones, isBasicIdentity]);
+  }, [showTombstones, canAdvancedSplits]);
 
   React.useEffect(() => {
-    if (isBasicIdentity) return;
+    if (!canAdvancedSplits) return;
     if (!contentList.length) return;
     for (const c of contentList) {
       if (splitSummaryByContent[c.id] === undefined) {
@@ -188,7 +194,7 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentList, isBasicIdentity]);
+  }, [contentList, canAdvancedSplits]);
 
   function shouldShowContent(c: ContentItem) {
     const summary = splitSummaryByContent[c.id];
@@ -203,12 +209,12 @@ export default function SplitsPage(props: { onEditContent?: (id: string) => void
 
   return (
     <div className="space-y-4">
-      {isBasicIdentity ? (
+      {!canAdvancedSplits ? (
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          Splits require a persistent identity (named tunnel).
+          {lockReasons?.advanced_splits || "Splits require Advanced or LAN mode."}
         </div>
       ) : null}
-      {!isBasicIdentity ? (
+      {canAdvancedSplits ? (
       <>
       <div className="flex justify-end">
         <button
