@@ -3,6 +3,7 @@ import { api, getApiBase } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import { getToken } from "../lib/auth";
+import type { FeatureMatrix } from "../lib/identity";
 
 function getNodePublicOrigin(): string {
   const v = String((import.meta as any).env?.VITE_NODE_PUBLIC_ORIGIN || "").trim();
@@ -13,6 +14,8 @@ type InvitePageProps = {
   token?: string;
   onAccepted: (contentId?: string | null) => void;
   identityLevel?: string | null;
+  features?: FeatureMatrix;
+  lockReasons?: Record<string, string>;
 };
 
 type InviteGetResponse = {
@@ -74,8 +77,8 @@ function statusLabel(value?: string | null) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "—";
 }
 
-export default function InvitePage({ token, onAccepted, identityLevel }: InvitePageProps) {
-  const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
+export default function InvitePage({ token, onAccepted, identityLevel, features, lockReasons }: InvitePageProps) {
+  const canAdvancedSplits = features?.advancedSplits ?? String(identityLevel || "").toUpperCase() !== "BASIC";
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<InviteGetResponse | null>(null);
@@ -259,7 +262,7 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
   }
 
   useEffect(() => {
-    if (isBasicIdentity) {
+    if (!canAdvancedSplits) {
       setLoading(false);
       setData(null);
       setMsg(null);
@@ -275,11 +278,11 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
         setMe(null);
       }
     })();
-  }, [tokenToUse, remoteOriginFromLocation, isBasicIdentity]);
+  }, [tokenToUse, remoteOriginFromLocation, canAdvancedSplits]);
 
   // If this is a remote invite and the user is signed in locally, ingest it so it shows under Received invites.
   useEffect(() => {
-    if (isBasicIdentity) return;
+    if (!canAdvancedSplits) return;
     if (!me || !remoteOriginFromLocation || !tokenToUse || !data) return;
     (async () => {
       try {
@@ -298,11 +301,11 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
         setRemoteReceivedInvites(listRemote || []);
       } catch {}
     })();
-  }, [me, data, remoteOriginFromLocation, tokenToUse, isBasicIdentity]);
+  }, [me, data, remoteOriginFromLocation, tokenToUse, canAdvancedSplits]);
 
   // Load outgoing invites for the signed-in owner (no token values are returned)
   useEffect(() => {
-    if (isBasicIdentity) return;
+    if (!canAdvancedSplits) return;
     if (!me) {
       setMyInvites(null);
       setReceivedInvites(null);
@@ -347,10 +350,10 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
         setHistoryLoading(false);
       }
     })();
-  }, [me, isBasicIdentity]);
+  }, [me, canAdvancedSplits]);
 
   useEffect(() => {
-    if (isBasicIdentity) return;
+    if (!canAdvancedSplits) return;
     if (!me) {
       setContentList([]);
       return;
@@ -363,10 +366,10 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
         setContentList([]);
       }
     })();
-  }, [me, isBasicIdentity]);
+  }, [me, canAdvancedSplits]);
 
   useEffect(() => {
-    if (isBasicIdentity) return;
+    if (!canAdvancedSplits) return;
     if (!selectedContentId) {
       setSelectedSplitId(null);
       return;
@@ -379,7 +382,7 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
         setSelectedSplitId(null);
       }
     })();
-  }, [selectedContentId, isBasicIdentity]);
+  }, [selectedContentId, canAdvancedSplits]);
 
   // manual token loader removed — invite tab (owner view) now shows only invites lists; use direct invite URL for detail view.
 
@@ -591,12 +594,12 @@ export default function InvitePage({ token, onAccepted, identityLevel }: InviteP
 
   return (
     <div className="space-y-4">
-      {isBasicIdentity ? (
+      {!canAdvancedSplits ? (
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          Split invites require a persistent identity (named tunnel).
+          {lockReasons?.advanced_splits || "Split invites require Advanced or LAN mode."}
         </div>
       ) : null}
-      {!isBasicIdentity ? (
+      {canAdvancedSplits ? (
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Invite</div>
         {tokenToUse ? (

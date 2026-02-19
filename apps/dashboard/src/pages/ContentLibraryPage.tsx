@@ -4,7 +4,7 @@ import { getToken } from "../lib/auth";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
-import { type IdentityLevel } from "../lib/identity";
+import { type IdentityLevel, type FeatureMatrix } from "../lib/identity";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
 
@@ -86,6 +86,9 @@ type ContentCredit = {
 
 type ContentLibraryPageProps = {
   identityLevel?: IdentityLevel;
+  features?: FeatureMatrix;
+  lockReasons?: Record<string, string>;
+  currentUserEmail?: string | null;
   onOpenSplits?: (contentId: string) => void;
 };
 
@@ -214,8 +217,10 @@ async function copyText(text: string) {
   } catch {}
 }
 
-export default function ContentLibraryPage({ onOpenSplits, identityLevel }: ContentLibraryPageProps) {
-  const isBasicIdentity = identityLevel === "BASIC";
+export default function ContentLibraryPage({ onOpenSplits, identityLevel, features, lockReasons, currentUserEmail }: ContentLibraryPageProps) {
+  const canAdvancedSplits = features?.advancedSplits ?? identityLevel !== "BASIC";
+  const canDerivatives = features?.derivatives ?? identityLevel !== "BASIC";
+  const canPublicShare = features?.publicShare ?? identityLevel !== "BASIC";
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -267,10 +272,10 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   const [pendingClearanceCount, setPendingClearanceCount] = React.useState(0);
 
   React.useEffect(() => {
-    if (isBasicIdentity && showClearance) {
+    if (!canDerivatives && showClearance) {
       setShowClearance(false);
     }
-  }, [isBasicIdentity, showClearance]);
+  }, [canDerivatives, showClearance]);
   const [busyAction, setBusyAction] = React.useState<Record<string, boolean>>({});
   const [requestParentId, setRequestParentId] = React.useState("");
   const [requestTitle, setRequestTitle] = React.useState("");
@@ -649,7 +654,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   }
 
   async function loadLatestSplit(contentId: string) {
-    if (isBasicIdentity) {
+    if (!canAdvancedSplits) {
       setSplitByContent((m) => ({ ...m, [contentId]: null }));
       return;
     }
@@ -692,7 +697,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
     setPublishMsg((m) => ({ ...m, [contentId]: "" }));
     try {
-      if (isBasicIdentity) {
+      if (!canAdvancedSplits) {
         await api(`/api/content/${contentId}/manifest`, "POST", {});
         const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
         setItems((prev) =>
@@ -807,7 +812,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   }
 
   async function loadDerivativeAuth(contentId: string) {
-    if (isBasicIdentity) return;
+    if (!canDerivatives) return;
     try {
       const res = await api<{ status: string }>(`/api/content/${contentId}/derivative-authorization`, "GET");
       setDerivativeAuthByContent((m) => ({ ...m, [contentId]: res?.status || "NONE" }));
@@ -817,7 +822,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   }
 
   async function loadDerivativesForParent(contentId: string) {
-    if (isBasicIdentity) return;
+    if (!canDerivatives) return;
     setDerivativesLoading((m) => ({ ...m, [contentId]: true }));
     try {
       const res = await api<any[]>(`/api/content/${contentId}/derivatives`, "GET");
@@ -862,7 +867,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   }
 
   async function loadDerivativePreview(childContentId: string, childOrigin?: string | null) {
-    if (isBasicIdentity) return;
+    if (!canDerivatives) return;
     setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
     setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
     try {
@@ -944,7 +949,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   }
 
   async function loadApprovals(scope: "pending" | "voted" | "cleared" = clearanceScope) {
-    if (isBasicIdentity) return;
+    if (!canDerivatives) return;
     setApprovalsLoading(true);
     try {
       const data = await api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET");
@@ -959,7 +964,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   }
 
   async function loadPendingClearanceCount() {
-    if (isBasicIdentity) return;
+    if (!canDerivatives) return;
     try {
       const data = await api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET");
       setPendingClearanceCount(Array.isArray(data) ? data.length : 0);
@@ -1075,8 +1080,8 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
   }
 
   async function requestDerivativeFromId() {
-    if (isBasicIdentity) {
-      setRequestMsg("Requires persistent identity (named tunnel).");
+    if (!canDerivatives) {
+      setRequestMsg(lockReasons?.derivatives || "Derivatives require Advanced or LAN mode.");
       return;
     }
     const rawParent = requestParentId.trim();
@@ -1376,6 +1381,10 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
           </div>
         </div>
 
+        {currentUserEmail ? (
+          <div className="text-xs text-neutral-500">Creating as: <span className="text-neutral-300">{currentUserEmail}</span></div>
+        ) : null}
+
         <button className="rounded-lg bg-white text-black font-medium px-4 py-2 disabled:opacity-60" disabled={creating}>
           {creating ? "Creating…" : "Create"}
         </button>
@@ -1383,7 +1392,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
         <div className="text-xs text-neutral-500">Upload sets the master file and updates manifest.json.primaryFile automatically.</div>
       </form>
 
-      {!isBasicIdentity ? (
+      {canDerivatives ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
           <div className="font-medium">Create derivative (from OG content ID)</div>
           <div className="text-xs text-neutral-500">
@@ -1453,7 +1462,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
         </div>
       ) : (
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          Derivative tools require a persistent identity (named tunnel).
+          {lockReasons?.derivatives || "Derivatives require Advanced or LAN mode."}
         </div>
       )}
 
@@ -1485,7 +1494,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
               >
                 Trash
               </button>
-              {!isBasicIdentity ? (
+              {canDerivatives ? (
                 <button
                   type="button"
                   className={`text-sm px-3 py-1 whitespace-nowrap ${showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
@@ -1778,7 +1787,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
 
                               {isOwner ? <UploadButton contentId={it.id} disabled={busy} /> : null}
 
-                              {!isBasicIdentity && isOwner ? (
+                              {canAdvancedSplits && isOwner ? (
                                 <button
                                   type="button"
                                   className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
@@ -2132,12 +2141,12 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                     {parentLink.upstreamBps ? `${upstreamRatePct}%` : "Set at clearance"}
                                   </span>
                                   {" "}•{" "}
-                                  {!isBasicIdentity ? (
+                                  {canAdvancedSplits ? (
                                     <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
                                       View routing
                                     </a>
                                   ) : (
-                                    <span className="text-neutral-500">Routing requires persistent identity</span>
+                                    <span className="text-neutral-500">{lockReasons?.advanced_splits || "Routing requires Advanced or LAN mode."}</span>
                                   )}
                                 </div>
                                 <div className="mt-2 h-2 rounded-full bg-neutral-900 border border-neutral-800 overflow-hidden">
@@ -2327,7 +2336,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             {parentLink ? (
                               <div className="mt-2 text-xs text-neutral-400">
                                 Original:{" "}
-                                {!isBasicIdentity ? (
+                                {canAdvancedSplits ? (
                                   <a href={`/splits/${parentLink.parent?.id}`} className="text-neutral-200 underline">
                                     {parentLink.parent?.title || "Original work"}
                                   </a>
@@ -2337,18 +2346,18 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                 {" "}• Upstream: {parentLink.approvedAt ? `${upstreamRatePct}%` : "Set at clearance"} • Clearance:{" "}
                                 {parentLink.requiresApproval ? (parentLink.approvedAt ? "Cleared" : "Pending clearance") : "Not required"}
                                 {" "}•{" "}
-                                {!isBasicIdentity ? (
+                                {canAdvancedSplits ? (
                                   <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
                                     View routing
                                   </a>
                                 ) : (
-                                  <span className="text-neutral-500">Routing requires persistent identity</span>
+                                  <span className="text-neutral-500">{lockReasons?.advanced_splits || "Routing requires Advanced or LAN mode."}</span>
                                 )}
                               </div>
                             ) : (
                               <div className="mt-2 text-xs text-amber-300">
                                 No original linked.
-                                {!isBasicIdentity ? (
+                                {canAdvancedSplits ? (
                                   <>
                                     {" "}
                                     <a href={`/splits/${it.id}`} className="underline">
@@ -2933,7 +2942,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");
-                            const canEmbed = Boolean(publicStatus?.isCanonical && embedBase);
+                            const canEmbed = Boolean(canPublicShare && publicStatus?.isCanonical && embedBase);
                             const embedScript = canEmbed ? `${embedBase}/embed.js` : "";
                             const embedTag = canEmbed
                               ? `<script async src="${embedScript}"></script>\n<div data-contentbox-buy="${it.id}"></div>`
@@ -3069,7 +3078,7 @@ export default function ContentLibraryPage({ onOpenSplits, identityLevel }: Cont
                                   </>
                                 ) : (
                                   <div className="text-xs text-neutral-500">
-                                    Embeds require a persistent identity (named tunnel).
+                                    {lockReasons?.public_share || "Embeds require Advanced mode with public sharing."}
                                   </div>
                                 )}
 

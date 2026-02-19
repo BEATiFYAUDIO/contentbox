@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
+import type { FeatureMatrix } from "../lib/identity";
 
 type WorkRoyaltyRow = {
   contentId: string;
@@ -63,8 +64,12 @@ type RemoteRoyaltyRow = {
   remoteNodeUrl?: string | null;
 };
 
-export default function SplitParticipationsPage(props: { identityLevel?: string | null }) {
-  const isBasicIdentity = String(props.identityLevel || "").toUpperCase() === "BASIC";
+export default function SplitParticipationsPage(props: {
+  identityLevel?: string | null;
+  features?: FeatureMatrix;
+  lockReasons?: Record<string, string>;
+}) {
+  const canAdvancedSplits = props.features?.advancedSplits ?? String(props.identityLevel || "").toUpperCase() !== "BASIC";
 
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);
@@ -78,7 +83,7 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
   const [showAllUpstream, setShowAllUpstream] = useState(false);
 
   useEffect(() => {
-    if (isBasicIdentity) {
+    if (!canAdvancedSplits) {
       setLoading(false);
       setWorks([]);
       setUpstream([]);
@@ -113,9 +118,9 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
 
   return (
     <div className="space-y-4">
-      {isBasicIdentity ? (
+      {!canAdvancedSplits ? (
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          Royalties require a persistent identity (named tunnel).
+          {props.lockReasons?.advanced_splits || "Splits and royalties require Advanced or LAN mode."}
         </div>
       ) : null}
       <div>
@@ -123,14 +128,14 @@ export default function SplitParticipationsPage(props: { identityLevel?: string 
         <div className="text-sm text-neutral-400 mt-1">Entitlements from content splits (owned or invited).</div>
       </div>
 
-      {isBasicIdentity ? (
-        <div className="text-sm text-neutral-400">Connect a persistent identity to view royalties.</div>
+      {!canAdvancedSplits ? (
+        <div className="text-sm text-neutral-400">{props.lockReasons?.advanced_splits || "Advanced splits are locked."}</div>
       ) : null}
 
       {loading ? <div className="text-sm text-neutral-400">Loading…</div> : null}
       {error ? <div className="text-sm text-amber-300">{error}</div> : null}
 
-      {!isBasicIdentity ? (
+      {canAdvancedSplits ? (
         <>
       {!loading && works.length === 0 ? (
         <div className="text-sm text-neutral-500">No works yet.</div>

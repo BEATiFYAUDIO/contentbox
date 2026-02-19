@@ -1,5 +1,6 @@
 import React from "react";
 import { api } from "../lib/api";
+import type { FeatureMatrix } from "../lib/identity";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 
@@ -124,9 +125,11 @@ export default function SplitEditorPage(props: {
   onGoToPayouts?: () => void;
   onNotFound?: () => void;
   identityLevel?: string | null;
+  features?: FeatureMatrix;
+  lockReasons?: Record<string, string>;
 }) {
-  const { contentId, onGoToPayouts, onNotFound, identityLevel } = props;
-  const isBasicIdentity = String(identityLevel || "").toUpperCase() === "BASIC";
+  const { contentId, onGoToPayouts, onNotFound, identityLevel, features, lockReasons } = props;
+  const canAdvancedSplits = features?.advancedSplits ?? String(identityLevel || "").toUpperCase() !== "BASIC";
 
   const [content, setContent] = React.useState<ContentItem | null>(null);
   const [versions, setVersions] = React.useState<SplitVersion[]>([]);
@@ -259,17 +262,17 @@ export default function SplitEditorPage(props: {
   }
 
   React.useEffect(() => {
-    if (isBasicIdentity) {
+    if (!canAdvancedSplits) {
       setPaymentsReadiness(null);
       return;
     }
     api<{ lightning: { ready: boolean; reason?: string | null } }>("/api/payments/readiness", "GET")
       .then((r) => setPaymentsReadiness(r))
       .catch(() => setPaymentsReadiness(null));
-  }, [isBasicIdentity]);
+  }, [canAdvancedSplits]);
 
   React.useEffect(() => {
-    if (isBasicIdentity) {
+    if (!canAdvancedSplits) {
       setContent(null);
       setVersions([]);
       setSelectedVersionId(null);
@@ -326,7 +329,7 @@ export default function SplitEditorPage(props: {
         setUpstreamMultiParent(Boolean(e?.message && /multiple parent/i.test(e.message)));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentId, isBasicIdentity]);
+  }, [contentId, canAdvancedSplits]);
 
   React.useEffect(() => {
     if (!contentId || !selectedVersion) return;
@@ -474,16 +477,18 @@ export default function SplitEditorPage(props: {
 
   const canEdit = content?.canEdit !== false;
   const viewOnly = !canEdit || !latestIsEditable || (selectedVersionId && selectedVersionId !== latest?.id);
+  const emailOnlyParticipants =
+    selectedVersion?.participants?.filter((p) => !p.participantUserId && p.participantEmail) || [];
 
-  if (isBasicIdentity) {
+  if (!canAdvancedSplits) {
     return (
       <div className="space-y-4">
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          Split editing requires a persistent identity (named tunnel).
+          {lockReasons?.advanced_splits || "Split editing requires Advanced or LAN mode."}
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
           <div className="text-lg font-semibold">Splits editor</div>
-          <div className="text-sm text-neutral-400 mt-1">Connect a persistent identity to edit splits.</div>
+          <div className="text-sm text-neutral-400 mt-1">{lockReasons?.advanced_splits || "Advanced splits are locked."}</div>
         </div>
       </div>
     );
@@ -957,6 +962,12 @@ export default function SplitEditorPage(props: {
         </div>
 
         <div className="mt-4 overflow-x-auto">
+          {emailOnlyParticipants.length > 0 ? (
+            <div className="mb-2 rounded-md border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-[11px] text-amber-200">
+              Email-only participant: approvals/royalties will not appear on this node unless the user has a local account
+              or uses a shared approval link.
+            </div>
+          ) : null}
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-neutral-400">

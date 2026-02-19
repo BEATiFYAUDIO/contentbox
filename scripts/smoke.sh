@@ -62,6 +62,20 @@ if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" EXPECT_IDENTI
 fi
 pass "identity gating test ok"
 
+echo "[smoke] Running node mode tests..."
+if ! (cd "$API_DIR" && npx tsx src/scripts/node_mode_test.ts) >/tmp/contentbox-node-mode.log 2>&1; then
+  cat /tmp/contentbox-node-mode.log >&2
+  fail "node mode test failed"
+fi
+pass "node mode test ok"
+
+echo "[smoke] Running single-identity guard test (advanced-only)..."
+if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" npx tsx src/scripts/single_identity_guard_test.ts) >/tmp/contentbox-single-identity.log 2>&1; then
+  cat /tmp/contentbox-single-identity.log >&2
+  fail "single-identity guard test failed"
+fi
+pass "single-identity guard test ok"
+
 echo "[smoke] Running proof bundle tests..."
 if ! (cd "$API_DIR" && npx tsx src/scripts/proof_bundle_test.ts) >/tmp/contentbox-proof-bundle.log 2>&1; then
   cat /tmp/contentbox-proof-bundle.log >&2

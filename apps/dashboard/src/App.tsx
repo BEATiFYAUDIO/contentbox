@@ -20,6 +20,7 @@ import FinancePage, { type FinanceTab } from "./pages/FinancePage";
 import { api } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
 import { fetchIdentityDetail, type IdentityDetail } from "./lib/identity";
+import { modeLabel } from "./lib/nodeMode";
 import logo from "./assets/InShot_20260201_011901479.png";
 import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
 import AuditPanel from "./components/AuditPanel";
@@ -299,7 +300,20 @@ export default function App() {
   }
 
   const identityLevel = identityDetail?.level || "BASIC";
-  const isBasicIdentity = identityLevel === "BASIC";
+  const nodeMode = identityDetail?.nodeMode || (identityDetail?.dbMode === "advanced" ? "advanced" : "basic");
+  const features = identityDetail?.features || {
+    publicShare: identityLevel === "PERSISTENT",
+    derivatives: identityLevel === "PERSISTENT",
+    advancedSplits: identityLevel === "PERSISTENT",
+    multiUser: false
+  };
+  const lockReasons = identityDetail?.lockReasons || {
+    public_share: "Requires persistent identity (named tunnel).",
+    derivatives: "Requires persistent identity (named tunnel).",
+    advanced_splits: "Requires persistent identity (named tunnel).",
+    multi_user: "Advanced nodes are single-identity. Use LAN mode for multi-user."
+  };
+  const isBasicMode = nodeMode === "basic";
 
   // Navigation options for the sidebar
   const accessNav = [
@@ -418,7 +432,7 @@ export default function App() {
               <div className="space-y-1">
               {royaltiesNav.map((item: any) => {
                 const active = item.key === page;
-                const locked = isBasicIdentity && item.advanced;
+                const locked = !features.advancedSplits && item.advanced;
                 return (
                   <button
                     key={item.key}
@@ -438,7 +452,7 @@ export default function App() {
                   >
                     <div className="text-sm font-medium">{item.label}</div>
                     <div className="text-xs text-neutral-400">
-                      {locked ? "Not available in Basic mode" : item.hint}
+                      {locked ? lockReasons.advanced_splits : item.hint}
                     </div>
                   </button>
                 );
@@ -535,6 +549,7 @@ export default function App() {
           <div className="text-sm text-neutral-400">Dashboard</div>
           <div className="text-xl font-semibold">{pageTitle}</div>
           {getToken() ? (
+            <div className="flex flex-wrap items-center gap-2">
             <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
               <span>
                 Public Identity:{" "}
@@ -561,12 +576,18 @@ export default function App() {
               <span className="text-neutral-500">•</span>
               <span className="truncate max-w-[380px]">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
             </div>
+            <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+              <span>Mode: {modeLabel(nodeMode)}</span>
+              <span className="text-neutral-500">•</span>
+              <span>Logged in as: {me?.email || "unknown"}</span>
+            </div>
+            </div>
           ) : null}
         </header>
 
-        {isBasicIdentity ? (
+        {isBasicMode ? (
           <div className="mx-6 mt-4 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
-            Basic identity mode. Advanced features (splits, derivatives, embeds, discovery) require a persistent identity (named tunnel).
+            {lockReasons.advanced_splits} {lockReasons.derivatives} {lockReasons.public_share}
           </div>
         ) : null}
 
@@ -575,7 +596,9 @@ export default function App() {
 
           {page === "store" && <StorePage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
 
-          {page === "participations" && <SplitParticipationsPage identityLevel={identityLevel} />}
+          {page === "participations" && (
+            <SplitParticipationsPage identityLevel={identityLevel} features={features} lockReasons={lockReasons} />
+          )}
 
           {page === "royalties-terms" && <RoyaltiesTermsPage contentId={selectedContentId} />}
 
@@ -607,7 +630,13 @@ export default function App() {
 
           {/* Render InvitePage if the page is 'invite' */}
           {page === "invite" && (
-            <InvitePage token={inviteToken ?? undefined} onAccepted={onAccepted} identityLevel={identityLevel} />
+            <InvitePage
+              token={inviteToken ?? undefined}
+              onAccepted={onAccepted}
+              identityLevel={identityLevel}
+              features={features}
+              lockReasons={lockReasons}
+            />
           )}
 
           {page === "payouts" && <PayoutRailsPage />}
@@ -615,6 +644,9 @@ export default function App() {
           {page === "content" && (
             <ContentLibraryPage
               identityLevel={identityLevel}
+              features={features}
+              lockReasons={lockReasons}
+              currentUserEmail={me?.email || null}
               onOpenSplits={(contentId) => {
                 window.history.pushState({}, "", `/splits/${contentId}`);
                 setSelectedContentId(contentId);
@@ -626,6 +658,8 @@ export default function App() {
           {page === "splits" && (
             <SplitsPage
               identityLevel={identityLevel}
+              features={features}
+              lockReasons={lockReasons}
               onEditContent={(id) => {
                 window.history.pushState({}, "", `/splits/${id}`);
                 setSelectedContentId(id);
@@ -637,6 +671,8 @@ export default function App() {
           {page === "split-editor" && (
             <SplitEditorPage
               identityLevel={identityLevel}
+              features={features}
+              lockReasons={lockReasons}
               contentId={selectedContentId}
               onGoToPayouts={() => setPage("payouts")}
               onNotFound={() => {

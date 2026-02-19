@@ -49,6 +49,7 @@ import {
   sortParticipants
 } from "./lib/proofs/proofBundle.js";
 import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
+import { canAdvancedSplits, canDerivatives, canMultiUser, canPublicShare, getFeatureMatrix, getNodeMode, lockReason, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
@@ -794,14 +795,29 @@ function getRuntimeIdentityDetail() {
   return base;
 }
 
-function requirePersistent(featureName: string) {
+function requireFeature(featureName: string) {
   return async (_req: any, reply: any) => {
-    const level = getRuntimeIdentityDetail().level;
-    if (level === IdentityLevel.PERSISTENT) return;
+    const mode = getNodeMode();
+    const allowed =
+      featureName === "splits"
+        ? canAdvancedSplits(mode)
+        : featureName === "derivative_work"
+          ? canDerivatives(mode)
+          : featureName === "public_discovery"
+            ? canPublicShare(mode)
+            : false;
+    if (allowed) return;
     return reply.code(403).send({
       error: "FEATURE_LOCKED",
       feature: featureName,
-      message: "Requires persistent identity (named tunnel)."
+      message:
+        featureName === "splits"
+          ? lockReason("advanced_splits", mode)
+          : featureName === "derivative_work"
+            ? lockReason("derivatives", mode)
+            : featureName === "public_discovery"
+              ? lockReason("public_share", mode)
+              : "Feature unavailable in this mode."
     });
   };
 }
@@ -810,6 +826,17 @@ function isAdvancedDb() {
   const mode = String(process.env.DB_MODE || "").toLowerCase();
   const url = String(process.env.DATABASE_URL || "");
   return mode === "advanced" && /^postgres(ql)?:\/\//i.test(url);
+}
+
+function allowMultiUserOverride() {
+  const v = String(process.env.CONTENTBOX_ALLOW_MULTI_USER || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
+async function hasDifferentUser(existingUserId?: string | null) {
+  const where = existingUserId ? { id: { not: existingUserId } } : {};
+  const other = await prisma.user.findFirst({ where, select: { id: true } });
+  return Boolean(other?.id);
 }
 
 async function listBackupFiles() {
@@ -1764,7 +1791,7 @@ app.post("/local/sign-acceptance", { preHandler: requireAuth }, async (req: any,
 });
 
 // Get audit events for a split version
-app.get("/split-versions/:id/audit", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply: any) => {
+app.get("/split-versions/:id/audit", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = asString((req.params as any).id);
 
@@ -1794,7 +1821,7 @@ app.get("/split-versions/:id/audit", { preHandler: [requireAuth, requirePersiste
 });
 
 // Alias: splits audit (same as split-versions)
-app.get("/splits/:id/audit", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply: any) => {
+app.get("/splits/:id/audit", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = asString((req.params as any).id);
 
@@ -2725,6 +2752,13 @@ app.post("/auth/signup", async (req, reply) => {
 
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) return reply.code(409).send({ error: "email already in use" });
+  const nodeMode = getNodeMode();
+  if (shouldBlockAdditionalUser(nodeMode, allowMultiUserOverride(), await hasDifferentUser(null))) {
+    return reply.code(403).send({
+      error: "SINGLE_IDENTITY_NODE",
+      message: "Advanced nodes are single-identity. Log in as the owner or use LAN mode for multi-user."
+    });
+  }
 
   const passwordHash = await bcrypt.hash(password, 10);
 
@@ -3358,6 +3392,13 @@ app.post("/auth/login", async (req, reply) => {
 
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) return reply.code(401).send({ error: "Invalid credentials" });
+  const nodeMode = getNodeMode();
+  if (shouldBlockAdditionalUser(nodeMode, allowMultiUserOverride(), await hasDifferentUser(user.id))) {
+    return reply.code(403).send({
+      error: "SINGLE_IDENTITY_NODE",
+      message: "Advanced nodes are single-identity. Log in as the owner or use LAN mode for multi-user."
+    });
+  }
 
   const token = app.jwt.sign({ sub: user.id });
   return reply.send({
@@ -3393,7 +3434,18 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
 });
 
 app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send(getRuntimeIdentityDetail());
+  const mode = getNodeMode();
+  return reply.send({
+    ...getRuntimeIdentityDetail(),
+    nodeMode: mode,
+    features: getFeatureMatrix(mode),
+    lockReasons: {
+      public_share: lockReason("public_share", mode),
+      derivatives: lockReason("derivatives", mode),
+      advanced_splits: lockReason("advanced_splits", mode),
+      multi_user: lockReason("multi_user", mode)
+    }
+  });
 });
 
 // Proxy remote invite fetch to avoid browser CORS (auth required)
@@ -4709,7 +4761,7 @@ app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
 });
 
 // Create derivative content (child) with parent links and draft split
-app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
+app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const parentId = asString((req.params as any).parentId);
   const body = (req.body ?? {}) as {
@@ -5030,7 +5082,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 });
 
 // Update storefront status (owner only)
-app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requirePersistent("public_discovery")] }, async (req: any, reply) => {
+app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requireFeature("public_discovery")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const body = (req.body ?? {}) as { storefrontStatus?: string };
@@ -5090,7 +5142,7 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requirePers
   return reply.send({ ok: true, storefrontStatus: updated.storefrontStatus });
 });
 
-app.get("/api/content/:id/derivative-authorization", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
+app.get("/api/content/:id/derivative-authorization", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
   const contentId = asString((req.params as any).id);
   const status = await getDerivativeAuthorizationStatus(contentId);
   return reply.send(status);
@@ -5131,7 +5183,7 @@ app.get("/api/content/:id/links", { preHandler: requireAuth }, async (req: any, 
 });
 
 // List derivatives linked to a parent content item (owner only)
-app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply: any) => {
+app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -5405,7 +5457,7 @@ app.post("/api/content-links/:id/authorization/request", { preHandler: requireAu
   return reply.send(auth);
 });
 
-app.post("/api/derivative-authorizations/:id/vote", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
+app.post("/api/derivative-authorizations/:id/vote", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const id = asString((req.params as any).id);
   const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number };
@@ -5479,7 +5531,7 @@ app.post("/api/derivative-authorizations/:id/vote", { preHandler: [requireAuth, 
   return reply.send(updated);
 });
 
-app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
+app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const scopeRaw = asString((req.query || {})?.scope || "pending").toLowerCase();
   const scope = ["pending", "voted", "cleared", "all"].includes(scopeRaw) ? scopeRaw : "pending";
@@ -5537,7 +5589,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requirePersist
 });
 
 // TODO(legacy): remove this alias after UI migrates to /content-links/:linkId/vote (target: 2026-06).
-app.post("/api/derivatives/:childId/approve", { preHandler: [requireAuth, requirePersistent("derivative_work")] }, async (req: any, reply) => {
+app.post("/api/derivatives/:childId/approve", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
   if (process.env.ENABLE_LEGACY_DERIVATIVE_APPROVE === "false") {
     return reply.code(410).send({ error: "Legacy derivative approval route disabled." });
   }
@@ -5711,7 +5763,7 @@ app.post("/content-links/:linkId/request-clearance", { preHandler: requireAuth }
 });
 
 // Remote clearance request (child node -> parent node)
-app.post("/api/derivatives/remote-request", { preHandler: requirePersistent("derivative_work") }, async (req: any, reply) => {
+app.post("/api/derivatives/remote-request", { preHandler: requireFeature("derivative_work") }, async (req: any, reply) => {
   const body = (req.body ?? {}) as {
     parentContentId?: string;
     childContentId?: string;
@@ -7487,7 +7539,7 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
 });
 
 // Return the latest split version for a content item (used by ContentLibraryPage)
-app.get("/content/:id/splits", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.get("/content/:id/splits", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -8145,7 +8197,7 @@ app.post("/content/:id/open-folder", { preHandler: requireAuth }, async (req: an
 });
 
 // List split versions for a content item (latest first)
-app.get("/content/:id/split-versions", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -8178,7 +8230,7 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requirePersis
 });
 
 // Update participants for the latest draft split for a content item
-app.post("/content/:id/splits", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -8268,7 +8320,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requirePersistent("s
 });
 
 // Create a new split version (copies participants from latest)
-app.post("/content/:id/split-versions", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -8832,7 +8884,7 @@ async function settlePaymentIntent(paymentIntentId: string) {
 }
 
 // Lock a split version (owner only)
-app.post("/split-versions/:id/lock", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.post("/split-versions/:id/lock", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = asString((req.params as any).id);
 
@@ -9814,7 +9866,7 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
 });
 
 // Lock a split version by content + version number (owner only)
-app.post("/content/:id/splits/:version/lock", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.post("/content/:id/splits/:version/lock", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const versionParam = asString((req.params as any).version);
@@ -9903,7 +9955,7 @@ app.post("/content/:id/splits/:version/lock", { preHandler: [requireAuth, requir
 });
 
 // Fetch proof.json for a split version (owner only)
-app.get("/content/:id/splits/:version/proof", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.get("/content/:id/splits/:version/proof", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const versionParam = asString((req.params as any).version);
@@ -9930,7 +9982,7 @@ app.get("/content/:id/splits/:version/proof", { preHandler: [requireAuth, requir
 /**
  * INVITE SYSTEM
  */
-app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requirePersistent("splits")] }, async (req: any, reply) => {
+app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = (req.params as any).id as string;
 
