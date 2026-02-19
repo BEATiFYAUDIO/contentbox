@@ -17,6 +17,8 @@ export type IdentityDetail = {
   reason: string;
   publicOrigin: string | null;
   nodeMode?: NodeMode;
+  ownerEmail?: string | null;
+  storage?: "sqlite" | "postgres";
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
 };

@@ -49,7 +49,7 @@ import {
   sortParticipants
 } from "./lib/proofs/proofBundle.js";
 import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
-import { canAdvancedSplits, canDerivatives, canMultiUser, canPublicShare, getFeatureMatrix, getNodeMode, lockReason, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
+import { canAdvancedSplits, canDerivatives, canMultiUser, canPublicShare, dbModeCompatFromStorage, getFeatureMatrix, getNodeMode, lockReason, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
@@ -75,8 +75,8 @@ function normalizeEmail(x: unknown): string {
   return asString(x).trim().toLowerCase();
 }
 
-const DB_MODE = (process.env.DB_MODE || "basic").toLowerCase();
-const SUPPORTS_INSENSITIVE = DB_MODE === "advanced";
+const RUNTIME_CONFIG = resolveRuntimeConfig();
+const SUPPORTS_INSENSITIVE = RUNTIME_CONFIG.storage === "postgres";
 
 function emailEquals(email: string | null | undefined) {
   if (!email) return undefined;
@@ -823,9 +823,9 @@ function requireFeature(featureName: string) {
 }
 
 function isAdvancedDb() {
-  const mode = String(process.env.DB_MODE || "").toLowerCase();
+  const storage = RUNTIME_CONFIG.storage;
   const url = String(process.env.DATABASE_URL || "");
-  return mode === "advanced" && /^postgres(ql)?:\/\//i.test(url);
+  return storage === "postgres" && /^postgres(ql)?:\/\//i.test(url);
 }
 
 function allowMultiUserOverride() {
@@ -872,7 +872,7 @@ async function pruneBackups() {
 
 async function runBackup() {
   if (!isAdvancedDb()) {
-    throw new Error("Backups require DB_MODE=advanced with a Postgres DATABASE_URL.");
+    throw new Error("Backups require STORAGE=postgres with a Postgres DATABASE_URL.");
   }
   await fs.mkdir(BACKUP_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1001,7 +1001,7 @@ function getPublicLinkState(): PublicLinkState {
   const namedHealthOk = namedCfg ? namedHealthCache.ok : null;
   const state = computePublicLinkState({
     publicModeEnv: PUBLIC_MODE,
-    dbModeEnv: process.env.DB_MODE,
+    dbModeEnv: dbModeCompatFromStorage(RUNTIME_CONFIG.storage),
     namedEnv: namedDisabled
       ? { tunnelName: null, publicOrigin: null }
       : {
@@ -3441,16 +3441,19 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
 });
 
 app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const mode = getNodeMode();
+  const runtime = resolveRuntimeConfig();
+  const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { email: true } });
   return reply.send({
     ...getRuntimeIdentityDetail(),
-    nodeMode: mode,
-    features: getFeatureMatrix(mode),
+    nodeMode: runtime.nodeMode,
+    storage: runtime.storage,
+    ownerEmail: owner?.email || null,
+    features: getFeatureMatrix(runtime.nodeMode),
     lockReasons: {
-      public_share: lockReason("public_share", mode),
-      derivatives: lockReason("derivatives", mode),
-      advanced_splits: lockReason("advanced_splits", mode),
-      multi_user: lockReason("multi_user", mode)
+      public_share: lockReason("public_share", runtime.nodeMode),
+      derivatives: lockReason("derivatives", runtime.nodeMode),
+      advanced_splits: lockReason("advanced_splits", runtime.nodeMode),
+      multi_user: lockReason("multi_user", runtime.nodeMode)
     }
   });
 });
@@ -3543,7 +3546,7 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
 
 app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   if (!isAdvancedDb()) {
-    return reply.code(400).send({ error: "Backups require DB_MODE=advanced with Postgres." });
+    return reply.code(400).send({ error: "Backups require STORAGE=postgres with Postgres." });
   }
   try {
     if (getBackupsEnabled()) {
@@ -3564,7 +3567,7 @@ app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: an
 
 app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   if (!isAdvancedDb()) {
-    return reply.code(400).send({ error: "Backups require DB_MODE=advanced with Postgres." });
+    return reply.code(400).send({ error: "Backups require STORAGE=postgres with Postgres." });
   }
   if (!getBackupsEnabled()) {
     return reply.code(409).send({ error: "Backups are disabled for this device." });

@@ -1,3 +1,5 @@
+import { dbModeCompatFromStorage, resolveRuntimeConfig } from "./nodeMode.js";
+
 export enum IdentityLevel {
   BASIC = "BASIC",
   PERSISTENT = "PERSISTENT"
@@ -6,34 +8,33 @@ export enum IdentityLevel {
 export type IdentityDetail = {
   level: IdentityLevel;
   dbMode: "basic" | "advanced";
+  storage: "sqlite" | "postgres";
   persistentConfigured: boolean;
   reason: string;
   publicOrigin: string | null;
 };
 
-function normalizeDbMode(raw: string | undefined): "basic" | "advanced" {
-  const v = String(raw || "basic").trim().toLowerCase();
-  return v === "advanced" ? "advanced" : "basic";
-}
-
 export function getIdentityDetail(): IdentityDetail {
+  const runtime = resolveRuntimeConfig();
+  const dbMode = dbModeCompatFromStorage(runtime.storage);
   const overrideRaw = String(process.env.IDENTITY_LEVEL_OVERRIDE || "").trim().toUpperCase();
   if (overrideRaw === IdentityLevel.BASIC || overrideRaw === IdentityLevel.PERSISTENT) {
     const level = overrideRaw as IdentityLevel;
     return {
       level,
       dbMode: level === IdentityLevel.PERSISTENT ? "advanced" : "basic",
+      storage: runtime.storage,
       persistentConfigured: level === IdentityLevel.PERSISTENT,
       reason: "override",
       publicOrigin: String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() || null
     };
   }
 
-  const dbMode = normalizeDbMode(process.env.DB_MODE);
-  if (dbMode === "basic") {
+  if (runtime.nodeMode === "basic") {
     return {
       level: IdentityLevel.BASIC,
       dbMode,
+      storage: runtime.storage,
       persistentConfigured: false,
       reason: "db_mode_basic",
       publicOrigin: null
@@ -49,6 +50,7 @@ export function getIdentityDetail(): IdentityDetail {
     return {
       level: IdentityLevel.BASIC,
       dbMode,
+      storage: runtime.storage,
       persistentConfigured: false,
       reason: "named_tunnel_missing",
       publicOrigin
@@ -58,6 +60,7 @@ export function getIdentityDetail(): IdentityDetail {
   return {
     level: IdentityLevel.PERSISTENT,
     dbMode,
+    storage: runtime.storage,
     persistentConfigured: true,
     reason: "named_tunnel_configured",
     publicOrigin

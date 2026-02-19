@@ -17,8 +17,22 @@ if [[ -z "$DB_URL" ]]; then
   exit 1
 fi
 
+STORAGE_MODE="${STORAGE:-}"
+if [[ -z "$STORAGE_MODE" ]]; then
+  if [[ "${DB_MODE:-basic}" == "advanced" ]]; then
+    STORAGE_MODE="postgres"
+  else
+    STORAGE_MODE="sqlite"
+  fi
+fi
+
+if [[ "$STORAGE_MODE" != "postgres" ]]; then
+  echo "Backups require STORAGE=postgres." >&2
+  exit 1
+fi
+
 if [[ "$DB_URL" != postgres* ]]; then
-  echo "DATABASE_URL is not Postgres. Backups require DB_MODE=advanced." >&2
+  echo "DATABASE_URL is not Postgres. Backups require STORAGE=postgres." >&2
   exit 1
 fi
 
