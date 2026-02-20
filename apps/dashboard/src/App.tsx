@@ -355,7 +355,6 @@ export default function App() {
   ].filter((item) => {
     if (!item.requiresSplits) return true;
     if (productTier === "basic") return false;
-    if (advancedInactive) return false;
     return true;
   });
 
