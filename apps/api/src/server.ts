@@ -8608,7 +8608,7 @@ app.patch("/content/:id/price", { preHandler: requireAuth }, async (req: any, re
   const contentId = asString((req.params as any).id);
   const sats = parseSats((req.body ?? {}).priceSats);
   if (!contentId) return badRequest(reply, "contentId required");
-  if (sats < 1n) return badRequest(reply, "priceSats must be >= 1");
+  if (sats < 0n) return badRequest(reply, "priceSats must be >= 0");
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
