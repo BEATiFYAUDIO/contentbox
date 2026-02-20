@@ -5229,6 +5229,12 @@ function generateShareToken() {
   return crypto.randomBytes(18).toString("hex");
 }
 
+function isShareLinkTableMissing(err: any) {
+  const msg = String(err?.message || "");
+  const code = String(err?.code || "");
+  return code === "P2021" || (msg.includes("ShareLink") && msg.includes("does not exist"));
+}
+
 async function getActiveShareLink(contentId: string, tx: PrismaClient = prisma) {
   return tx.shareLink.findFirst({
     where: { contentId, status: "ACTIVE" },
@@ -5317,7 +5323,15 @@ app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
 
-  const shareLink = await getActiveShareLink(contentId);
+  let shareLink = null as any;
+  try {
+    shareLink = await getActiveShareLink(contentId);
+  } catch (e: any) {
+    if (isShareLinkTableMissing(e)) {
+      return reply.code(503).send({ code: "share_links_not_initialized", reason: "Share links are not initialized. Run migrations and restart the API." });
+    }
+    throw e;
+  }
   if (!shareLink) return reply.send({ shareLink: null });
   const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
@@ -5367,7 +5381,15 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
     data: { status: "published", manifestId: manifest.id }
   });
 
-  const shareLink = await rotateShareLink(contentId);
+  let shareLink = null as any;
+  try {
+    shareLink = await rotateShareLink(contentId);
+  } catch (e: any) {
+    if (isShareLinkTableMissing(e)) {
+      return reply.code(503).send({ code: "share_links_not_initialized", reason: "Share links are not initialized. Run migrations and restart the API." });
+    }
+    throw e;
+  }
   const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
@@ -5389,10 +5411,17 @@ app.post("/api/content/:contentId/share-link/revoke", { preHandler: requireAuth 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  await prisma.shareLink.updateMany({
-    where: { contentId, status: "ACTIVE" },
-    data: { status: "REVOKED", revokedAt: new Date() }
-  });
+  try {
+    await prisma.shareLink.updateMany({
+      where: { contentId, status: "ACTIVE" },
+      data: { status: "REVOKED", revokedAt: new Date() }
+    });
+  } catch (e: any) {
+    if (isShareLinkTableMissing(e)) {
+      return reply.code(503).send({ code: "share_links_not_initialized", reason: "Share links are not initialized. Run migrations and restart the API." });
+    }
+    throw e;
+  }
   return reply.send({ ok: true });
 });
 
@@ -7445,7 +7474,7 @@ async function handlePublicOffer(req: any, reply: any) {
 
   const priceSats = content.priceSats ?? null;
   if (!allowDraftPreview) {
-    if (!priceSats || priceSats < 1) {
+    if (priceSats == null) {
       return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
     }
   }
@@ -7483,8 +7512,11 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (!content.priceSats || content.priceSats < 1n) {
+  if (content.priceSats == null) {
     return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
+  }
+  if (content.priceSats < 1n) {
+    return reply.code(409).send({ code: "PRICE_FREE", message: "This item is free and does not require payment." });
   }
   const amountSats = content.priceSats;
   if (amountSatsInput > 0n && amountSatsInput !== content.priceSats) {
