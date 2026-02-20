@@ -5371,8 +5371,14 @@ async function handleGetManifest(req: any, reply: any) {
     if (!ok) return forbidden(reply);
   }
 
-  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  if (!manifest) return notFound(reply, "Manifest not found");
+  let manifest = await prisma.manifest.findUnique({ where: { contentId } });
+  if (!manifest) {
+    try {
+      manifest = await ensureManifestForContent(content);
+    } catch {
+      return notFound(reply, "Manifest not found");
+    }
+  }
 
   return reply.send({ ok: true, sha256: manifest.sha256, manifest: manifest.json });
 }
