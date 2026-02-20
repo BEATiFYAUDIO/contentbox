@@ -174,6 +174,13 @@ export default function App() {
   });
 
   useEffect(() => {
+    const hash = window.location.hash || "";
+    if (hash.includes("payments")) {
+      setPage("profile");
+    }
+  }, []);
+
+  useEffect(() => {
     try {
       window.localStorage.setItem("contentbox.showAdvancedNav", showAdvancedNav ? "1" : "0");
     } catch {}
@@ -666,11 +673,6 @@ export default function App() {
           ) : null}
         </header>
 
-        {isBasicMode ? (
-          <div className="mx-6 mt-4 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200">
-            {lockReasons.advanced_splits} {lockReasons.derivatives} {lockReasons.public_share}
-          </div>
-        ) : null}
         {advancedInactive ? (
             <div className="mx-6 mt-4 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center gap-2">
               <div className="flex-1 min-w-[200px]">
@@ -729,7 +731,15 @@ export default function App() {
                 />
               )}
 
-              {page === "config" && <ConfigPage showAdvanced={showAdvancedNav} />}
+              {page === "config" && (
+                <ConfigPage
+                  showAdvanced={showAdvancedNav}
+                  onOpenPayments={() => {
+                    window.location.hash = "#payments";
+                    setPage("profile");
+                  }}
+                />
+              )}
               {page === "diagnostics" && <DiagnosticsPage />}
 
               {page === "finance" && (

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { api, getApiBase } from "../lib/api";
 import type { IdentityDetail } from "../lib/identity";
 import { modeLabel } from "../lib/nodeMode";
@@ -44,6 +44,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [beatifyHandle, setBeatifyHandle] = useState<string>("");
   const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
   const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
+  const paymentsRef = useRef<HTMLDivElement | null>(null);
   const [modeInfo, setModeInfo] = useState<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean } | null>(null);
   const [modeBusy, setModeBusy] = useState(false);
   const [modeMsg, setModeMsg] = useState<string | null>(null);
@@ -72,6 +73,13 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
     return () => {
       alive = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const hash = window.location.hash || "";
+    if (hash.includes("payments")) {
+      paymentsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   }, []);
 
   const nodeMode = identityDetail?.nodeMode || "basic";
@@ -136,7 +144,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
       <div className="text-sm text-neutral-400 mt-1">Node account, public profile, and optional external claims.</div>
 
       <div className="mt-5 space-y-4">
-        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
+        <div ref={paymentsRef} id="payments" className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-medium">Node Mode</div>

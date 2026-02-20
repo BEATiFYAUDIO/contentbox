@@ -58,7 +58,7 @@ function safeHost(value: string): string {
   }
 }
 
-export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean }) {
+export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvanced?: boolean; onOpenPayments?: () => void }) {
   const apiBase = useMemo(() => getApiBase(), []);
   const uiOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const [health, setHealth] = useState<Health | null>(null);
@@ -983,6 +983,19 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
             ) : null}
           </div>
         )}
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Payments</div>
+        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 10 }}>
+          Set your Lightning address or LNURL to receive payments in Basic mode.
+        </div>
+        <button
+          onClick={() => onOpenPayments?.()}
+          style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+        >
+          Open payments settings
+        </button>
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14 }}>
