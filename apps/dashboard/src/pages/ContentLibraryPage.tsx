@@ -213,6 +213,19 @@ function formatDateLabel(value?: string | null) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
+function extractApiReason(err: any): string | null {
+  const raw = String(err?.message || "");
+  const m = raw.match(/::\\s*(.+)$/);
+  if (!m) return null;
+  const tail = m[1];
+  try {
+    const parsed = JSON.parse(tail);
+    return parsed?.reason || parsed?.message || parsed?.error || null;
+  } catch {
+    return tail;
+  }
+}
+
 async function copyText(text: string) {
   if (!text) return;
   try {
@@ -651,7 +664,8 @@ export default function ContentLibraryPage({
       setShareLinkByContent((m) => ({ ...m, [contentId]: res?.shareLink || null }));
       setPublishMsg((m) => ({ ...m, [contentId]: "Share link created." }));
     } catch (e: any) {
-      setPublishMsg((m) => ({ ...m, [contentId]: e?.message || "Failed to create share link." }));
+      const reason = extractApiReason(e);
+      setPublishMsg((m) => ({ ...m, [contentId]: reason || e?.message || "Failed to create share link." }));
     } finally {
       setPublishBusy((m) => ({ ...m, [contentId]: false }));
     }
@@ -2885,8 +2899,8 @@ export default function ContentLibraryPage({
                               onClick={async () => {
                                 const raw = (priceDraft[it.id] || "").trim();
                                 const sats = Number(raw);
-                                if (!Number.isFinite(sats) || sats < 1) {
-                                  setPriceMsg((m) => ({ ...m, [it.id]: "Price must be at least 1 sat." }));
+                                if (!Number.isFinite(sats) || sats < 0) {
+                                  setPriceMsg((m) => ({ ...m, [it.id]: "Price must be 0 or more." }));
                                   return;
                                 }
                                 try {

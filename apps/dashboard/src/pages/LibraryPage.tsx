@@ -91,6 +91,12 @@ export default function LibraryPage() {
     }
   }
 
+  function formatDateLabel(value?: string | null) {
+    if (!value) return "—";
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
@@ -127,8 +133,8 @@ export default function LibraryPage() {
                         <div>
                           <div className="text-sm font-medium">{it.title || "Content"}</div>
                           <div className="text-xs text-neutral-500">
-                            {String(it.type || "").toUpperCase()} · {it.status?.toUpperCase?.() || "STATUS"} ·{" "}
-                            {new Date(it.createdAt).toLocaleString()} · Storefront: {it.storefrontStatus || "DISABLED"}
+                          {String(it.type || "").toUpperCase()} · {it.status?.toUpperCase?.() || "STATUS"} ·{" "}
+                          {formatDateLabel(it.createdAt)} · Storefront: {it.storefrontStatus || "DISABLED"}
                           </div>
                           <div className="mt-1 text-[11px] text-neutral-500 capitalize">
                             Access: {it.libraryAccess || "preview"}
