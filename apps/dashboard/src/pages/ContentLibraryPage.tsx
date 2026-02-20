@@ -1711,7 +1711,7 @@ export default function ContentLibraryPage({
                         ) : null}
                       </div>
                     </div>
-                    {!crossNodeAllowed && nodeMode === "advanced" ? (
+                    {!crossNodeAllowed ? (
                       <div className="mt-2 text-[11px] text-amber-300">
                         {clearanceReason}{" "}
                         <button
@@ -1898,7 +1898,7 @@ export default function ContentLibraryPage({
                         </>
                       )}
                     </div>
-                    {!publishAllowed && nodeMode === "advanced" ? (
+                    {!publishAllowed ? (
                       <div className="w-full text-[11px] text-amber-300">
                         {publishReason}{" "}
                         <button
@@ -2337,7 +2337,7 @@ export default function ContentLibraryPage({
                                   Revoke preview access
                                 </button>
                               </div>
-                              {!crossNodeAllowed && nodeMode === "advanced" ? (
+                              {!crossNodeAllowed ? (
                                 <div className="mt-1 text-[11px] text-amber-300">
                                   {clearanceReason}{" "}
                                   <button
@@ -2612,7 +2612,7 @@ export default function ContentLibraryPage({
                                   ) : null}
                                 </div>
                                 </div>
-                                {!crossNodeAllowed && nodeMode === "advanced" && !d.childDeletedAt ? (
+                                {!crossNodeAllowed && !d.childDeletedAt ? (
                                   <div className="mt-2 text-[11px] text-amber-300">
                                     {clearanceReason}{" "}
                                     <button
@@ -3403,7 +3403,7 @@ export default function ContentLibraryPage({
                                 </button>
                               ) : null}
                             </div>
-                            {!crossNodeAllowed && nodeMode === "advanced" ? (
+                            {!crossNodeAllowed ? (
                               <div className="text-[11px] text-amber-300">
                                 {clearanceReason}{" "}
                                 <button

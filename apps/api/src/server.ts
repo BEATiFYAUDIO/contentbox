@@ -1759,6 +1759,20 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
 /** ---------- routes ---------- */
 
 function registerPublicRoutes(appPublic: any) {
+  appPublic.get("/", async (_req: any, reply: any) => {
+    return reply.send({
+      ok: true,
+      message: "This is the ContentBox public endpoint. It can be whatever you want.",
+      examples: [
+        "A storefront",
+        "A cryptographic identity",
+        "A catalog of releases",
+        "A studio landing page",
+        "A private licensing gateway"
+      ],
+      hint: "Share a specific content link like /p/<contentId> or /buy/<contentId>."
+    });
+  });
   appPublic.get("/health", handlePublicPing);
   appPublic.get("/public/ping", handlePublicPing);
   appPublic.get("/p/:token", handleShortPublicLink);
