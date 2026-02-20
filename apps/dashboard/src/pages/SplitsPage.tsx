@@ -1,6 +1,6 @@
 import React from "react";
 import { api } from "../lib/api";
-import type { FeatureMatrix } from "../lib/identity";
+import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
 import AuditPanel from "../components/AuditPanel";
 
 type ContentItem = {
@@ -61,9 +61,14 @@ export default function SplitsPage(props: {
   identityLevel?: string | null;
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
+  capabilities?: CapabilitySet;
+  capabilityReasons?: Record<string, string>;
 }) {
-  const { onEditContent, features, lockReasons } = props;
+  const { onEditContent, features, lockReasons, capabilities, capabilityReasons } = props;
   const canAdvancedSplits = features?.advancedSplits ?? false;
+  const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
+  const splitsReason =
+    capabilityReasons?.splits || lockReasons?.advanced_splits || "Splits require Advanced or LAN mode.";
 
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -73,6 +78,10 @@ export default function SplitsPage(props: {
   const [msg, setMsg] = React.useState<string | null>(null);
 
   async function loadContentList(includeTombstones: boolean) {
+    if (!splitsAllowed) {
+      setContentList([]);
+      return;
+    }
     if (!includeTombstones) {
       const list = await api<ContentItem[]>("/content?scope=mine", "GET");
       setContentList(list);
@@ -100,6 +109,10 @@ export default function SplitsPage(props: {
   }
 
   async function loadRemoteInvites() {
+    if (!splitsAllowed) {
+      setRemoteInvites([]);
+      return;
+    }
     try {
       const list = await api<any[]>(`/my/invitations/remote`, "GET");
       setRemoteInvites(Array.isArray(list) ? list : []);
@@ -169,7 +182,7 @@ export default function SplitsPage(props: {
   }
 
   React.useEffect(() => {
-    if (!canAdvancedSplits) {
+    if (!splitsAllowed) {
       setContentList([]);
       setSplitSummaryByContent({});
       setRemoteInvites([]);
@@ -177,16 +190,16 @@ export default function SplitsPage(props: {
     }
     loadContentList(showTombstones).catch(() => {});
     loadRemoteInvites().catch(() => {});
-  }, [canAdvancedSplits]);
+  }, [splitsAllowed]);
 
   React.useEffect(() => {
-    if (!canAdvancedSplits) return;
+    if (!splitsAllowed) return;
     loadContentList(showTombstones).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showTombstones, canAdvancedSplits]);
+  }, [showTombstones, splitsAllowed]);
 
   React.useEffect(() => {
-    if (!canAdvancedSplits) return;
+    if (!splitsAllowed) return;
     if (!contentList.length) return;
     for (const c of contentList) {
       if (splitSummaryByContent[c.id] === undefined) {
@@ -194,7 +207,7 @@ export default function SplitsPage(props: {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentList, canAdvancedSplits]);
+  }, [contentList, splitsAllowed]);
 
   function shouldShowContent(c: ContentItem) {
     const summary = splitSummaryByContent[c.id];
@@ -209,12 +222,12 @@ export default function SplitsPage(props: {
 
   return (
     <div className="space-y-4">
-      {!canAdvancedSplits ? (
+      {!splitsAllowed ? (
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          {lockReasons?.advanced_splits || "Splits require Advanced or LAN mode."}
+          {splitsReason}
         </div>
       ) : null}
-      {canAdvancedSplits ? (
+      {splitsAllowed ? (
       <>
       <div className="flex justify-end">
         <button

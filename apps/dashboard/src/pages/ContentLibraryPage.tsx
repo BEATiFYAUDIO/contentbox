@@ -4,7 +4,7 @@ import { getToken } from "../lib/auth";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
-import { type IdentityLevel, type FeatureMatrix } from "../lib/identity";
+import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
 
@@ -88,6 +88,8 @@ type ContentLibraryPageProps = {
   identityLevel?: IdentityLevel;
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
+  capabilities?: CapabilitySet;
+  capabilityReasons?: Record<string, string>;
   currentUserEmail?: string | null;
   onOpenSplits?: (contentId: string) => void;
 };
@@ -217,10 +219,28 @@ async function copyText(text: string) {
   } catch {}
 }
 
-export default function ContentLibraryPage({ onOpenSplits, features, lockReasons, currentUserEmail }: ContentLibraryPageProps) {
+export default function ContentLibraryPage({
+  onOpenSplits,
+  features,
+  lockReasons,
+  capabilities,
+  capabilityReasons,
+  currentUserEmail
+}: ContentLibraryPageProps) {
   const canAdvancedSplits = features?.advancedSplits ?? false;
   const canDerivatives = features?.derivatives ?? false;
   const canPublicShare = features?.publicShare ?? false;
+  const publishReason =
+    capabilityReasons?.publish ||
+    "You can prepare this action, but a permanent named link must be online to perform it.";
+  const clearanceReason =
+    capabilityReasons?.clearance ||
+    "You can prepare this action, but a permanent named link must be online to perform it.";
+  const publishAllowed = capabilities?.publish ?? true;
+  const crossNodeAllowed = capabilities?.requestClearance ?? true;
+  const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
+  const derivativesAllowed = capabilities?.useDerivatives ?? canDerivatives;
+  const publicShareAllowed = capabilities?.publicShare ?? canPublicShare;
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -272,10 +292,10 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   const [pendingClearanceCount, setPendingClearanceCount] = React.useState(0);
 
   React.useEffect(() => {
-    if (!canDerivatives && showClearance) {
+    if (!derivativesAllowed && showClearance) {
       setShowClearance(false);
     }
-  }, [canDerivatives, showClearance]);
+  }, [derivativesAllowed, showClearance]);
   const [busyAction, setBusyAction] = React.useState<Record<string, boolean>>({});
   const [requestParentId, setRequestParentId] = React.useState("");
   const [requestTitle, setRequestTitle] = React.useState("");
@@ -654,7 +674,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   }
 
   async function loadLatestSplit(contentId: string) {
-    if (!canAdvancedSplits) {
+    if (!splitsAllowed) {
       setSplitByContent((m) => ({ ...m, [contentId]: null }));
       return;
     }
@@ -694,10 +714,14 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
 
   async function publishContent(contentId: string) {
     if (publishBusy[contentId]) return;
+    if (!publishAllowed) {
+      setPublishMsg((m) => ({ ...m, [contentId]: publishReason }));
+      return;
+    }
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
     setPublishMsg((m) => ({ ...m, [contentId]: "" }));
     try {
-      if (!canAdvancedSplits) {
+      if (!splitsAllowed) {
         await api(`/api/content/${contentId}/manifest`, "POST", {});
         const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
         setItems((prev) =>
@@ -812,7 +836,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   }
 
   async function loadDerivativeAuth(contentId: string) {
-    if (!canDerivatives) return;
+    if (!derivativesAllowed) return;
     try {
       const res = await api<{ status: string }>(`/api/content/${contentId}/derivative-authorization`, "GET");
       setDerivativeAuthByContent((m) => ({ ...m, [contentId]: res?.status || "NONE" }));
@@ -822,7 +846,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   }
 
   async function loadDerivativesForParent(contentId: string) {
-    if (!canDerivatives) return;
+    if (!derivativesAllowed) return;
     setDerivativesLoading((m) => ({ ...m, [contentId]: true }));
     try {
       const res = await api<any[]>(`/api/content/${contentId}/derivatives`, "GET");
@@ -867,7 +891,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   }
 
   async function loadDerivativePreview(childContentId: string, childOrigin?: string | null) {
-    if (!canDerivatives) return;
+    if (!derivativesAllowed) return;
     setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
     setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
     try {
@@ -949,7 +973,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   }
 
   async function loadApprovals(scope: "pending" | "voted" | "cleared" = clearanceScope) {
-    if (!canDerivatives) return;
+    if (!derivativesAllowed) return;
     setApprovalsLoading(true);
     try {
       const data = await api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET");
@@ -964,7 +988,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   }
 
   async function loadPendingClearanceCount() {
-    if (!canDerivatives) return;
+    if (!derivativesAllowed) return;
     try {
       const data = await api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET");
       setPendingClearanceCount(Array.isArray(data) ? data.length : 0);
@@ -1080,7 +1104,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
   }
 
   async function requestDerivativeFromId() {
-    if (!canDerivatives) {
+    if (!derivativesAllowed) {
       setRequestMsg(lockReasons?.derivatives || "Derivatives require Advanced or LAN mode.");
       return;
     }
@@ -1392,7 +1416,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
         <div className="text-xs text-neutral-500">Upload sets the master file and updates manifest.json.primaryFile automatically.</div>
       </form>
 
-      {canDerivatives ? (
+      {derivativesAllowed ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
           <div className="font-medium">Create derivative (from OG content ID)</div>
           <div className="text-xs text-neutral-500">
@@ -1494,7 +1518,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
               >
                 Trash
               </button>
-              {canDerivatives ? (
+              {derivativesAllowed ? (
                 <button
                   type="button"
                   className={`text-sm px-3 py-1 whitespace-nowrap ${showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
@@ -1646,7 +1670,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                           <>
                             <button
                               type="button"
-                              className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
+                              className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
                               onClick={async () => {
                                 if (!linkId) return;
                                 const input = window.prompt("Set upstream royalty rate (%) for clearance", "10");
@@ -1663,13 +1687,14 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
                               }}
-                              disabled={!linkId}
+                              disabled={!linkId || !crossNodeAllowed}
+                              title={!crossNodeAllowed ? clearanceReason : "Grant permission"}
                             >
                               Grant permission
                             </button>
                             <button
                               type="button"
-                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                               onClick={async () => {
                                 if (!linkId) return;
                                 await api(`/content-links/${linkId}/vote`, "POST", { decision: "reject" });
@@ -1677,7 +1702,8 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
                               }}
-                              disabled={!linkId}
+                              disabled={!linkId || !crossNodeAllowed}
+                              title={!crossNodeAllowed ? clearanceReason : "Reject"}
                             >
                               Reject
                             </button>
@@ -1685,6 +1711,21 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                         ) : null}
                       </div>
                     </div>
+                    {!crossNodeAllowed && nodeMode === "advanced" ? (
+                      <div className="mt-2 text-[11px] text-amber-300">
+                        {clearanceReason}{" "}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            window.history.pushState({}, "", "/config");
+                            window.location.reload();
+                          }}
+                          className="underline text-amber-200 hover:text-amber-100"
+                        >
+                          Set up named link
+                        </button>
+                      </div>
+                    ) : null}
 
                     <div className="mt-2 h-2 rounded-full bg-neutral-900 border border-neutral-800 overflow-hidden">
                       <div className="h-full bg-emerald-600/40" style={{ width: `${pct}%` }} />
@@ -1787,7 +1828,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
 
                               {isOwner ? <UploadButton contentId={it.id} disabled={busy} /> : null}
 
-                              {canAdvancedSplits && isOwner ? (
+                              {splitsAllowed && isOwner ? (
                                 <button
                                   type="button"
                                   className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
@@ -1802,8 +1843,14 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                 type="button"
                                 className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
                                 onClick={() => publishContent(it.id)}
-                                disabled={publishBusy[it.id] || it.status === "published"}
-                                title={it.status === "published" ? "Already published" : "Publish this content"}
+                                disabled={publishBusy[it.id] || it.status === "published" || !publishAllowed}
+                                title={
+                                  it.status === "published"
+                                    ? "Already published"
+                                    : !publishAllowed
+                                      ? publishReason
+                                      : "Publish this content"
+                                }
                               >
                                 {it.status === "published" ? "Published" : publishBusy[it.id] ? "Publishing…" : "Publish"}
                               </button>
@@ -1851,6 +1898,21 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                         </>
                       )}
                     </div>
+                    {!publishAllowed && nodeMode === "advanced" ? (
+                      <div className="w-full text-[11px] text-amber-300">
+                        {publishReason}{" "}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            window.history.pushState({}, "", "/config");
+                            window.location.reload();
+                          }}
+                          className="underline text-amber-200 hover:text-amber-100"
+                        >
+                          Set up named link
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
 
                   {!showTrash && isOpen && (
@@ -2141,7 +2203,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                     {parentLink.upstreamBps ? `${upstreamRatePct}%` : "Set at clearance"}
                                   </span>
                                   {" "}•{" "}
-                                  {canAdvancedSplits ? (
+                                  {splitsAllowed ? (
                                     <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
                                       View routing
                                     </a>
@@ -2217,8 +2279,10 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                 (!parentLink.clearanceRequest || parentLink.clearanceRequest.status !== "PENDING") ? (
                                   <button
                                     type="button"
-                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                                     onClick={() => requestClearanceForContent(it.id, parentLink.linkId)}
+                                    disabled={!crossNodeAllowed}
+                                    title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                                   >
                                     {parentLink.clearanceRequest ? "Retry request" : "Request clearance"}
                                   </button>
@@ -2232,7 +2296,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                 </button>
                                 <button
                                   type="button"
-                                  className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200"
+                                  className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                   onClick={async () => {
                                     if (!parentLink?.linkId) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Missing parent link." }));
@@ -2246,12 +2310,14 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Grant failed." }));
                                     }
                                   }}
+                                  disabled={!crossNodeAllowed}
+                                  title={!crossNodeAllowed ? clearanceReason : "Grant preview access"}
                                 >
                                   Grant preview access
                                 </button>
                                 <button
                                   type="button"
-                                  className="text-[11px] rounded border border-red-900 bg-red-950/30 px-2 py-0.5 text-red-200"
+                                  className="text-[11px] rounded border border-red-900 bg-red-950/30 px-2 py-0.5 text-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                   onClick={async () => {
                                     if (!parentLink?.linkId) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Missing parent link." }));
@@ -2265,10 +2331,27 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Revoke failed." }));
                                     }
                                   }}
+                                  disabled={!crossNodeAllowed}
+                                  title={!crossNodeAllowed ? clearanceReason : "Revoke preview access"}
                                 >
                                   Revoke preview access
                                 </button>
                               </div>
+                              {!crossNodeAllowed && nodeMode === "advanced" ? (
+                                <div className="mt-1 text-[11px] text-amber-300">
+                                  {clearanceReason}{" "}
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      window.history.pushState({}, "", "/config");
+                                      window.location.reload();
+                                    }}
+                                    className="underline text-amber-200 hover:text-amber-100"
+                                  >
+                                    Set up named link
+                                  </button>
+                                </div>
+                              ) : null}
                               {reviewGrantMsgByContent[it.id] ? (
                                 <div className="mt-2 text-[11px] text-neutral-300">{reviewGrantMsgByContent[it.id]}</div>
                               ) : null}
@@ -2336,7 +2419,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                             {parentLink ? (
                               <div className="mt-2 text-xs text-neutral-400">
                                 Original:{" "}
-                                {canAdvancedSplits ? (
+                                {splitsAllowed ? (
                                   <a href={`/splits/${parentLink.parent?.id}`} className="text-neutral-200 underline">
                                     {parentLink.parent?.title || "Original work"}
                                   </a>
@@ -2346,7 +2429,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                 {" "}• Upstream: {parentLink.approvedAt ? `${upstreamRatePct}%` : "Set at clearance"} • Clearance:{" "}
                                 {parentLink.requiresApproval ? (parentLink.approvedAt ? "Cleared" : "Pending clearance") : "Not required"}
                                 {" "}•{" "}
-                                {canAdvancedSplits ? (
+                                {splitsAllowed ? (
                                   <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
                                     View routing
                                   </a>
@@ -2357,7 +2440,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                             ) : (
                               <div className="mt-2 text-xs text-amber-300">
                                 No original linked.
-                                {canAdvancedSplits ? (
+                                {splitsAllowed ? (
                                   <>
                                     {" "}
                                     <a href={`/splits/${it.id}`} className="underline">
@@ -2463,16 +2546,20 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                       {d.childOrigin ? (
                                         <button
                                           type="button"
-                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                                           onClick={() => openRemoteDerivativePreview(d.childOrigin, d.childContentId)}
+                                          disabled={!crossNodeAllowed}
+                                          title={!crossNodeAllowed ? clearanceReason : "Preview submission"}
                                         >
                                           {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
                                         </button>
                                       ) : (
                                         <button
                                           type="button"
-                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                                           onClick={() => loadDerivativePreview(d.childContentId)}
+                                          disabled={!crossNodeAllowed}
+                                          title={!crossNodeAllowed ? clearanceReason : "Preview submission"}
                                         >
                                           {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
                                         </button>
@@ -2500,7 +2587,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                         return (
                                           <button
                                             type="button"
-                                            className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200"
+                                            className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                             onClick={async () => {
                                               const input = window.prompt("Set upstream royalty rate (%) for clearance", "10");
                                               const pct = Number((input || "").trim());
@@ -2514,6 +2601,8 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                               });
                                               await loadDerivativesForParent(it.id);
                                             }}
+                                            disabled={!crossNodeAllowed}
+                                            title={!crossNodeAllowed ? clearanceReason : "Grant permission"}
                                           >
                                             Grant permission
                                           </button>
@@ -2523,6 +2612,21 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                                   ) : null}
                                 </div>
                                 </div>
+                                {!crossNodeAllowed && nodeMode === "advanced" && !d.childDeletedAt ? (
+                                  <div className="mt-2 text-[11px] text-amber-300">
+                                    {clearanceReason}{" "}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        window.history.pushState({}, "", "/config");
+                                        window.location.reload();
+                                      }}
+                                      className="underline text-amber-200 hover:text-amber-100"
+                                    >
+                                      Set up named link
+                                    </button>
+                                  </div>
+                                ) : null}
                                 <div className="mt-1 text-[11px] text-neutral-500">
                                   {titleCase(d.relation || "Derivative")} of {it.title}
                                 </div>
@@ -2942,7 +3046,7 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");
-                            const canEmbed = Boolean(canPublicShare && publicStatus?.isCanonical && embedBase);
+                            const canEmbed = Boolean(publicShareAllowed && publicStatus?.isCanonical && embedBase);
                             const embedScript = canEmbed ? `${embedBase}/embed.js` : "";
                             const embedTag = canEmbed
                               ? `<script async src="${embedScript}"></script>\n<div data-contentbox-buy="${it.id}"></div>`
@@ -3280,21 +3384,40 @@ export default function ContentLibraryPage({ onOpenSplits, features, lockReasons
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
-                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                                className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                                 onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
+                                disabled={!crossNodeAllowed}
+                                title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                               >
                                 {parentLinkByContent[it.id]?.clearanceRequest ? "Retry request" : "Request clearance"}
                               </button>
                               {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
                                 <button
                                   type="button"
-                                  className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30"
+                                  className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
                                   onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
+                                  disabled={!crossNodeAllowed}
+                                  title={!crossNodeAllowed ? clearanceReason : "Retry request"}
                                 >
                                   Retry
                                 </button>
                               ) : null}
                             </div>
+                            {!crossNodeAllowed && nodeMode === "advanced" ? (
+                              <div className="text-[11px] text-amber-300">
+                                {clearanceReason}{" "}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    window.history.pushState({}, "", "/config");
+                                    window.location.reload();
+                                  }}
+                                  className="underline text-amber-200 hover:text-amber-100"
+                                >
+                                  Set up named link
+                                </button>
+                              </div>
+                            ) : null}
                             {clearanceRequestMsgByContent[it.id] ? (
                               <div className="text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
                             ) : null}

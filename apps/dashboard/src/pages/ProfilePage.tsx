@@ -152,53 +152,58 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
           ) : null}
 
           <div className="mt-3 grid gap-2 text-sm">
-            {(["basic", "advanced", "lan"] as const).map((opt) => (
-              <label key={opt} className="flex items-center gap-2">
-                <input
-                  type="radio"
-                  name="node-mode"
-                  value={opt}
-                  disabled={modeLocked || modeBusy}
-                  checked={modeInfo?.nodeMode === opt}
-                  onChange={async () => {
-                    if (!modeInfo) return;
-                    if (opt === modeInfo.nodeMode) return;
-                    if (opt === "advanced") {
-                      const ok = window.confirm(
-                        "Advanced is single identity. If another local account exists, only the owner can log in."
-                      );
-                      if (!ok) return;
-                    }
-                    setModeBusy(true);
-                    setModeMsg(null);
-                    try {
-                      const res = await api<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean }>(
-                        `/api/node/mode`,
-                        "POST",
-                        { nodeMode: opt }
-                      );
-                      setModeInfo(res);
-                      setShowRestart(Boolean(res?.restartRequired));
-                      setModeMsg("Saved. Restart required.");
-                      setPendingMode(opt);
-                      setShowRestartConfirm(true);
-                      onIdentityRefresh();
-                    } catch (e: any) {
-                      setModeMsg(e?.message || "Failed to update node mode.");
-                    } finally {
-                      setModeBusy(false);
-                    }
-                  }}
-                />
-                <span>
-                  {opt === "basic"
-                    ? "Basic (Trial)"
-                    : opt === "advanced"
-                      ? "Advanced (Sovereign Node — single identity)"
-                      : "LAN (Studio Node — multi-user)"}
-                </span>
-              </label>
-            ))}
+            {(["basic", "advanced", "lan"] as const).map((opt) => {
+              const lanDisabled = opt === "lan" && modeInfo?.nodeMode !== "lan";
+              const disabled = modeLocked || modeBusy || lanDisabled;
+              return (
+                <label key={opt} className={`flex items-center gap-2 ${lanDisabled ? "text-neutral-500" : ""}`}>
+                  <input
+                    type="radio"
+                    name="node-mode"
+                    value={opt}
+                    disabled={disabled}
+                    checked={modeInfo?.nodeMode === opt}
+                    onChange={async () => {
+                      if (!modeInfo) return;
+                      if (opt === modeInfo.nodeMode) return;
+                      if (opt === "advanced") {
+                        const ok = window.confirm(
+                          "Advanced is single identity. If another local account exists, only the owner can log in."
+                        );
+                        if (!ok) return;
+                      }
+                      setModeBusy(true);
+                      setModeMsg(null);
+                      try {
+                        const res = await api<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean }>(
+                          `/api/node/mode`,
+                          "POST",
+                          { nodeMode: opt }
+                        );
+                        setModeInfo(res);
+                        setShowRestart(Boolean(res?.restartRequired));
+                        setModeMsg("Saved. Restart required.");
+                        setPendingMode(opt);
+                        setShowRestartConfirm(true);
+                        onIdentityRefresh();
+                      } catch (e: any) {
+                        setModeMsg(e?.message || "Failed to update node mode.");
+                      } finally {
+                        setModeBusy(false);
+                      }
+                    }}
+                  />
+                  <span>
+                    {opt === "basic"
+                      ? "Basic (Trial)"
+                      : opt === "advanced"
+                        ? "Advanced (Sovereign Node — single identity)"
+                        : "LAN (Studio Node — multi-user)"}
+                  </span>
+                  {lanDisabled ? <span className="text-[11px] text-neutral-500">(coming soon)</span> : null}
+                </label>
+              );
+            })}
           </div>
 
           {modeInfo?.source ? (

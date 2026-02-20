@@ -49,7 +49,9 @@ import {
   sortParticipants
 } from "./lib/proofs/proofBundle.js";
 import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
-import { canAdvancedSplits, canDerivatives, canMultiUser, canPublicShare, dbModeCompatFromStorage, getFeatureMatrix, getNodeMode, lockReason, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
+import { buildCapabilitySet, canLock, canPublish, canPublicShare, canRequestClearance, canSendInvite, canUseDerivatives, canUseProofBundles, canUseSplits, capabilityReason, isAdvancedActive } from "./lib/capabilities.js";
+import { dbModeCompatFromStorage, getNodeMode, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
+import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
 import { validateNodeMode, writeNodeConfig } from "./lib/nodeConfig.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
@@ -558,6 +560,8 @@ const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .filter(Boolean);
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
+const BOOT_ID = crypto.randomUUID();
+const STARTED_AT = new Date().toISOString();
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -796,31 +800,74 @@ function getRuntimeIdentityDetail() {
   return base;
 }
 
+function getCapabilityContext() {
+  const productTier = resolveProductTier().productTier;
+  const paymentsMode = getPaymentsMode(productTier);
+  const publicStatus = getPublicStatus();
+  const namedReady = publicStatus.mode === "named" && publicStatus.status === "online";
+  const nodeMode = resolveRuntimeConfig().nodeMode;
+  return { productTier, paymentsMode, namedReady, nodeMode, publicStatus };
+}
+
+function isAdvancedInactive(ctx: ReturnType<typeof getCapabilityContext>) {
+  return ctx.productTier === "advanced" && !isAdvancedActive(ctx);
+}
+
+function sendAdvancedInactive(reply: any, ctx: ReturnType<typeof getCapabilityContext>) {
+  if (!isAdvancedInactive(ctx)) return false;
+  const reason = capabilityReason(ctx, "publish", capabilityReasonContext(ctx));
+  reply.code(403).send({
+    error: "FEATURE_LOCKED",
+    code: "advanced_not_active",
+    reason,
+    message: reason
+  });
+  return true;
+}
+
 function requireFeature(featureName: string) {
   return async (_req: any, reply: any) => {
-    const mode = getNodeMode();
+    const ctx = getCapabilityContext();
+    if (isAdvancedInactive(ctx)) {
+      const reason = capabilityReason(ctx, "publish", capabilityReasonContext(ctx));
+      return reply.code(403).send({
+        error: "FEATURE_LOCKED",
+        code: "advanced_not_active",
+        reason,
+        feature: featureName,
+        message: reason
+      });
+    }
     const allowed =
       featureName === "splits"
-        ? canAdvancedSplits(mode)
+        ? canUseSplits(ctx)
         : featureName === "derivative_work"
-          ? canDerivatives(mode)
+          ? canUseDerivatives(ctx)
           : featureName === "public_discovery"
-            ? canPublicShare(mode)
+            ? canPublicShare(ctx)
             : false;
     if (allowed) return;
+    const reason = capabilityReason(
+      ctx,
+      featureName === "splits"
+        ? "splits"
+        : featureName === "derivative_work"
+          ? "derivatives"
+          : "public_share",
+      { namedMode: ctx.publicStatus.mode, namedStatus: ctx.publicStatus.status }
+    );
     return reply.code(403).send({
       error: "FEATURE_LOCKED",
+      code: `${featureName}_not_allowed`,
+      reason,
       feature: featureName,
-      message:
-        featureName === "splits"
-          ? lockReason("advanced_splits", mode)
-          : featureName === "derivative_work"
-            ? lockReason("derivatives", mode)
-            : featureName === "public_discovery"
-              ? lockReason("public_share", mode)
-              : "Feature unavailable in this mode."
+      message: reason
     });
   };
+}
+
+function capabilityReasonContext(ctx: ReturnType<typeof getCapabilityContext>) {
+  return { namedMode: ctx.publicStatus.mode, namedStatus: ctx.publicStatus.status };
 }
 
 function isAdvancedDb() {
@@ -1000,8 +1047,11 @@ function getPublicLinkState(): PublicLinkState {
   const quick = tunnelManager.status();
   const namedDisabled = isNamedTunnelDisabled();
   const namedHealthOk = namedCfg ? namedHealthCache.ok : null;
+  const productTier = resolveProductTier().productTier;
+  const preferNamed = productTier === "advanced" && isNamedConfigured();
+  const publicModeEnv = preferNamed ? "named" : PUBLIC_MODE;
   const state = computePublicLinkState({
-    publicModeEnv: PUBLIC_MODE,
+    publicModeEnv,
     dbModeEnv: dbModeCompatFromStorage(RUNTIME_CONFIG.storage),
     namedEnv: namedDisabled
       ? { tunnelName: null, publicOrigin: null }
@@ -1054,6 +1104,7 @@ function getPublicStatus() {
     lastChangedAt: state.lastChangedAt,
     tunnelName: getNamedTunnelConfig()?.tunnelName || null,
     namedTokenStored: Boolean(getNamedTunnelToken()),
+    namedConfigured: isNamedConfigured(),
     namedDisabled: isNamedTunnelDisabled(),
     state: legacyState,
     lastError: errorDetail,
@@ -2642,6 +2693,14 @@ app.get("/invites/:id/audit", { preHandler: requireAuth }, async (req: any, repl
 
 // Export proof bundle for a content item (owner only)
 app.get("/api/proofs/content/:contentId", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const proofCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, proofCtx)) return;
+  if (!canUseProofBundles(proofCtx)) {
+    return reply.code(403).send({
+      code: "proofs_not_allowed",
+      reason: capabilityReason(proofCtx, "proofs", capabilityReasonContext(proofCtx))
+    });
+  }
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).contentId);
   const includeSettlement = asString((req.query as any)?.includeSettlement || "").trim();
@@ -2930,6 +2989,13 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
 app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const body = (req.body ?? {}) as any;
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
 
   const remoteOrigin = asString(body.remoteOrigin || "").replace(/\/+$/, "");
   const token = asString(body.token || "").trim();
@@ -3495,24 +3561,58 @@ app.post("/api/node/restart", { preHandler: requireAuth }, async (_req: any, rep
 
 app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const runtime = resolveRuntimeConfig();
+  const productTierInfo = resolveProductTier();
+  const ctx = getCapabilityContext();
+  const capabilities = buildCapabilitySet(ctx);
+  const reasonCtx = { namedMode: ctx.publicStatus.mode, namedStatus: ctx.publicStatus.status };
   const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { email: true } });
   return reply.send({
     ...getRuntimeIdentityDetail(),
     nodeMode: runtime.nodeMode,
     storage: runtime.storage,
+    productTier: productTierInfo.productTier,
+    productTierSource: productTierInfo.source,
+    paymentsMode: ctx.paymentsMode,
+    namedReady: ctx.namedReady,
+    capabilities,
+    capabilityReasons: {
+      splits: capabilityReason(ctx, "splits", reasonCtx),
+      derivatives: capabilityReason(ctx, "derivatives", reasonCtx),
+      invite: capabilityReason(ctx, "invite", reasonCtx),
+      lock: capabilityReason(ctx, "lock", reasonCtx),
+      publish: capabilityReason(ctx, "publish", reasonCtx),
+      clearance: capabilityReason(ctx, "clearance", reasonCtx),
+      public_share: capabilityReason(ctx, "public_share", reasonCtx),
+      proofs: capabilityReason(ctx, "proofs", reasonCtx)
+    },
     ownerEmail: owner?.email || null,
-    features: getFeatureMatrix(runtime.nodeMode),
+    features: {
+      publicShare: capabilities.publicShare,
+      derivatives: capabilities.useDerivatives,
+      advancedSplits: capabilities.useSplits,
+      multiUser: productTierInfo.productTier === "lan"
+    },
     lockReasons: {
-      public_share: lockReason("public_share", runtime.nodeMode),
-      derivatives: lockReason("derivatives", runtime.nodeMode),
-      advanced_splits: lockReason("advanced_splits", runtime.nodeMode),
-      multi_user: lockReason("multi_user", runtime.nodeMode)
+      public_share: capabilityReason(ctx, "public_share", reasonCtx),
+      derivatives: capabilityReason(ctx, "derivatives", reasonCtx),
+      advanced_splits: capabilityReason(ctx, "splits", reasonCtx),
+      multi_user:
+        productTierInfo.productTier === "lan"
+          ? "Multi-user is enabled in LAN mode."
+          : "Multi-user requires LAN mode."
     }
   });
 });
 
 // Proxy remote invite fetch to avoid browser CORS (auth required)
 app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
   const token = asString((req.params as any).token);
   const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
   if (!token) return badRequest(reply, "token required");
@@ -3531,6 +3631,13 @@ app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: a
 
 // Proxy remote invite accept to avoid browser CORS (auth required)
 app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
   const token = asString((req.params as any).token);
   const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
   if (!token) return badRequest(reply, "token required");
@@ -3616,6 +3723,32 @@ app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: an
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to list backups", details: e?.message || String(e) });
   }
+});
+
+app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const runtime = resolveRuntimeConfig();
+  const productTierInfo = resolveProductTier();
+  const ctx = getCapabilityContext();
+  const userId = (req.user as JwtUser).sub;
+  const paymentsReadiness = await getPaymentsReadiness(userId);
+  return reply.send({
+    bootId: BOOT_ID,
+    startedAt: STARTED_AT,
+    productTier: productTierInfo.productTier,
+    namedReady: ctx.namedReady,
+    publicStatus: {
+      mode: ctx.publicStatus.mode,
+      status: ctx.publicStatus.status,
+      url: ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || null,
+      tunnelName: ctx.publicStatus.tunnelName || null,
+      canonicalOrigin: ctx.publicStatus.canonicalOrigin || null,
+      publicOrigin: ctx.publicStatus.publicOrigin || null,
+      namedConfigured: Boolean(ctx.publicStatus.namedConfigured)
+    },
+    paymentsMode: ctx.paymentsMode,
+    paymentsReadiness,
+    storage: runtime.storage
+  });
 });
 
 app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -5046,6 +5179,14 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     const ok = await isAcceptedParticipant(userId, contentId);
     if (!ok) return forbidden(reply);
   }
+  const publishCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, publishCtx)) return;
+  if (!canPublish(publishCtx)) {
+    return reply.code(403).send({
+      code: "publish_not_allowed",
+      reason: capabilityReason(publishCtx, "publish", capabilityReasonContext(publishCtx))
+    });
+  }
 
   let manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) {
@@ -5430,6 +5571,15 @@ app.post("/content/:id/parent-link", { preHandler: requireAuth }, async (req: an
     relation?: string;
   };
 
+  const derivativeCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, derivativeCtx)) return;
+  if (!canUseDerivatives(derivativeCtx)) {
+    return reply.code(403).send({
+      code: "derivatives_not_allowed",
+      reason: capabilityReason(derivativeCtx, "derivatives", capabilityReasonContext(derivativeCtx))
+    });
+  }
+
   const child = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!child) return notFound(reply, "Content not found");
   if (child.ownerUserId !== userId) return forbidden(reply);
@@ -5484,6 +5634,14 @@ app.get("/api/content-links/:id/authorization", { preHandler: requireAuth }, asy
 app.post("/api/content-links/:id/authorization/request", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const id = asString((req.params as any).id);
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
   const link = await prisma.contentLink.findUnique({ where: { id } });
   if (!link) return notFound(reply, "Content link not found");
   if (!link.requiresApproval) return badRequest(reply, "Approval not required for this link");
@@ -5520,12 +5678,21 @@ app.post("/api/content-links/:id/authorization/request", { preHandler: requireAu
   return reply.send(auth);
 });
 
-app.post("/api/derivative-authorizations/:id/vote", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
+app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const id = asString((req.params as any).id);
   const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number };
   const decision = asString(body.decision || "").trim().toUpperCase();
   if (!["APPROVE", "REJECT"].includes(decision)) return badRequest(reply, "decision must be APPROVE|REJECT");
+
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
 
   const auth = await prisma.derivativeAuthorization.findUnique({
     where: { id },
@@ -5695,6 +5862,14 @@ app.post("/api/derivatives/:childId/approve", { preHandler: [requireAuth, requir
 app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const linkId = asString((req.params as any).linkId);
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
   const link = await prisma.contentLink.findUnique({ where: { id: linkId } });
   if (!link) return notFound(reply, "Content link not found");
 
@@ -5826,7 +6001,15 @@ app.post("/content-links/:linkId/request-clearance", { preHandler: requireAuth }
 });
 
 // Remote clearance request (child node -> parent node)
-app.post("/api/derivatives/remote-request", { preHandler: requireFeature("derivative_work") }, async (req: any, reply) => {
+app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (req: any, reply) => {
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
   const body = (req.body ?? {}) as {
     parentContentId?: string;
     childContentId?: string;
@@ -5990,6 +6173,15 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number };
   const decision = asString(body.decision || "").toLowerCase();
   if (!["approve", "reject"].includes(decision)) return badRequest(reply, "decision must be approve|reject");
+
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
 
   const link = await prisma.contentLink.findUnique({ where: { id: linkId } });
   if (!link) return notFound(reply, "Content link not found");
@@ -8054,6 +8246,14 @@ app.get("/content/:manifestHash/:fileId", handlePublicContentFile);
 app.post("/content-links/:linkId/grant-review", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const linkId = asString((req.params as any).linkId);
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
 
   const link = await prisma.contentLink.findUnique({
     where: { id: linkId },
@@ -8094,6 +8294,14 @@ app.post("/content-links/:linkId/grant-review", { preHandler: requireAuth }, asy
 app.post("/content-links/:linkId/revoke-review", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const linkId = asString((req.params as any).linkId);
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
 
   const link = await prisma.contentLink.findUnique({
     where: { id: linkId },
@@ -8947,7 +9155,7 @@ async function settlePaymentIntent(paymentIntentId: string) {
 }
 
 // Lock a split version (owner only)
-app.post("/split-versions/:id/lock", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
+app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = asString((req.params as any).id);
 
@@ -8957,6 +9165,14 @@ app.post("/split-versions/:id/lock", { preHandler: [requireAuth, requireFeature(
   });
   if (!sv) return notFound(reply, "Split version not found");
   if (sv.content.ownerUserId !== userId) return forbidden(reply);
+  const lockCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, lockCtx)) return;
+  if (!canLock(lockCtx)) {
+    return reply.code(403).send({
+      code: "lock_not_allowed",
+      reason: capabilityReason(lockCtx, "lock", capabilityReasonContext(lockCtx))
+    });
+  }
   if (sv.status !== "draft") return badRequest(reply, "Split version already locked");
   if (!sv.content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
   if (!sv.participants?.length) return badRequest(reply, "Split version has no participants");
@@ -9343,8 +9559,7 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
   });
 });
 
-app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any, reply) => {
-  const userId = (req.user as JwtUser).sub;
+async function getPaymentsReadiness(userId: string) {
   let lightningReady = false;
   let lightningReason: string | null = "NOT_CONFIGURED";
 
@@ -9386,10 +9601,16 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
     }
   }
 
-  return reply.send({
+  return {
     lightning: { ready: lightningReady, reason: lightningReason },
     onchain: { ready: onchainReady, reason: onchainReason }
-  });
+  };
+}
+
+app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const readiness = await getPaymentsReadiness(userId);
+  return reply.send(readiness);
 });
 
 // ------------------------------
@@ -9929,7 +10150,7 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
 });
 
 // Lock a split version by content + version number (owner only)
-app.post("/content/:id/splits/:version/lock", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
+app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
   const versionParam = asString((req.params as any).version);
@@ -9939,6 +10160,14 @@ app.post("/content/:id/splits/:version/lock", { preHandler: [requireAuth, requir
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  const lockCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, lockCtx)) return;
+  if (!canLock(lockCtx)) {
+    return reply.code(403).send({
+      code: "lock_not_allowed",
+      reason: capabilityReason(lockCtx, "lock", capabilityReasonContext(lockCtx))
+    });
+  }
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
 
   const sv = await prisma.splitVersion.findFirst({
@@ -10045,9 +10274,17 @@ app.get("/content/:id/splits/:version/proof", { preHandler: [requireAuth, requir
 /**
  * INVITE SYSTEM
  */
-app.post("/split-versions/:id/invite", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
+app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const splitVersionId = (req.params as any).id as string;
+  const inviteCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, inviteCtx)) return;
+  if (!canSendInvite(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
 
   const state = getPublicLinkState();
   if (state.mode === "quick") {
@@ -10356,6 +10593,13 @@ app.get("/invite/:token", handlePublicInvitePage);
 async function handlePublicInviteAccept(req: any, reply: any) {
   const token = asString((req.params as any).token);
   if (!token) return notFound(reply, "Invite not found");
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
 
   // Optional auth: bind participation to the local user if Authorization header is present
   let userId: string | undefined;

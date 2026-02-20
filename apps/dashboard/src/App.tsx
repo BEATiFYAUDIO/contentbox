@@ -164,6 +164,7 @@ export default function App() {
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
   const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(null);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -208,9 +209,17 @@ export default function App() {
     let alive = true;
     const refresh = () => {
       refreshIdentityDetail();
-      api("/api/public/status", "GET")
-        .then((d: any) => alive && setPublicStatus(d))
-        .catch(() => alive && setPublicStatus(null));
+      api("/api/diagnostics/status", "GET")
+        .then((d: any) => {
+          if (!alive) return;
+          setDiagnosticsStatus(d || null);
+          setPublicStatus(d?.publicStatus || null);
+        })
+        .catch(() => {
+          if (!alive) return;
+          setDiagnosticsStatus(null);
+          setPublicStatus(null);
+        });
     };
     refresh();
     const t = window.setInterval(refresh, 30000);
@@ -308,7 +317,24 @@ export default function App() {
     advanced_splits: "Feature locked in this mode.",
     multi_user: "Feature locked in this mode."
   };
-  const isBasicMode = nodeMode === "basic";
+  const productTier =
+    diagnosticsStatus?.productTier ||
+    identityDetail?.productTier ||
+    (nodeMode === "advanced" ? "advanced" : nodeMode === "lan" ? "lan" : "basic");
+  const capabilities = identityDetail?.capabilities || {
+    useSplits: features.advancedSplits,
+    useDerivatives: features.derivatives,
+    sendInvite: features.advancedSplits,
+    lockSplits: features.advancedSplits,
+    publish: true,
+    requestClearance: features.derivatives,
+    publicShare: features.publicShare,
+    proofBundles: features.advancedSplits
+  };
+  const capabilityReasons = identityDetail?.capabilityReasons || {};
+  const isBasicMode = productTier === "basic";
+  const namedReady = diagnosticsStatus?.namedReady ?? identityDetail?.namedReady;
+  const advancedInactive = productTier === "advanced" && !namedReady;
 
   // Navigation options for the sidebar
   const accessNav = [
@@ -323,10 +349,15 @@ export default function App() {
   ];
 
   const royaltiesNav = [
-    { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in", advanced: true },
-    { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history", advanced: true },
-    { key: "invite" as const, label: "Split Invites", hint: "Split requests", advanced: true }
-  ];
+    { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in", requiresSplits: false },
+    { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history", requiresSplits: true },
+    { key: "invite" as const, label: "Split Invites", hint: "Split requests", requiresSplits: true }
+  ].filter((item) => {
+    if (!item.requiresSplits) return true;
+    if (productTier === "basic") return false;
+    if (advancedInactive) return false;
+    return true;
+  });
 
   const identityNav = [
     { key: "profile" as const, label: "Profile", hint: "Identity" }
@@ -357,6 +388,13 @@ export default function App() {
     page === "content" ? "Content library" :
     page === "receipt" ? "Receipt" :
     page === "invite" ? "Invite" : "Dashboard";
+
+  const showAdvancedLocked =
+    advancedInactive && (page === "splits" || page === "invite" || page === "split-editor");
+  const advancedCtaLabel =
+    publicStatus?.mode === "named" && publicStatus?.status !== "online"
+      ? "Bring named link online"
+      : "Configure named link";
 
   const hideSidebar = Boolean(inviteToken && !me);
 
@@ -427,7 +465,7 @@ export default function App() {
               <div className="space-y-1">
               {royaltiesNav.map((item: any) => {
                 const active = item.key === page;
-                const locked = !features.advancedSplits && item.advanced;
+                const locked = item.requiresSplits && !capabilities.useSplits;
                 return (
                   <button
                     key={item.key}
@@ -447,7 +485,7 @@ export default function App() {
                   >
                     <div className="text-sm font-medium">{item.label}</div>
                     <div className="text-xs text-neutral-400">
-                      {locked ? lockReasons.advanced_splits : item.hint}
+                      {locked ? (capabilityReasons.splits || lockReasons.advanced_splits) : item.hint}
                     </div>
                   </button>
                 );
@@ -545,56 +583,81 @@ export default function App() {
           <div className="text-xl font-semibold">{pageTitle}</div>
           {getToken() ? (
             <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
-              <span>
-                Public:{" "}
-                {(() => {
-                  if (nodeMode === "advanced") {
+              <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+                <span>
+                  Public:{" "}
+                  {(() => {
+                    if (productTier === "advanced") {
+                      if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
+                      if (publicStatus?.mode === "quick") return "Temporary (Quick — testing only)";
+                      return "Not configured";
+                    }
                     if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
-                    if (publicStatus?.mode === "quick") return "Temporary (Quick — testing only)";
+                    if (publicStatus?.mode === "quick") return "Temporary (Quick)";
                     return "Not configured";
-                  }
-                  if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
-                  if (publicStatus?.mode === "quick") return "Temporary (Quick)";
-                  return "Not configured";
-                })()}
-              </span>
-              {nodeMode === "advanced" && publicStatus?.mode === "quick" ? (
+                  })()}
+                </span>
+                {productTier === "advanced" && publicStatus?.mode !== "named" ? (
+                  <>
+                    <span className="text-neutral-500">•</span>
+                    <span className="text-amber-300">Advanced requires a permanent named link to activate sovereign features</span>
+                  </>
+                ) : null}
+                <span className="text-neutral-500">•</span>
+                <span>
+                  {publicStatus?.status === "online"
+                    ? "ONLINE"
+                    : publicStatus?.status === "starting"
+                      ? "STARTING"
+                      : publicStatus?.status === "error"
+                        ? "ERROR"
+                        : publicStatus?.status === "offline"
+                          ? "OFFLINE"
+                      : "SEARCHING"}
+                </span>
+                <span className="text-neutral-500">•</span>
+                <span className="truncate max-w-[380px]">{publicStatus?.url || publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
+              </div>
+              {publicStatus?.url ? (
                 <>
-                  <span className="text-neutral-500">•</span>
-                  <span className="text-amber-300">Testing only</span>
+                  <button
+                    onClick={() => window.open(String(publicStatus.url), "_blank", "noopener,noreferrer")}
+                    className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                  >
+                    Open public link
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (publicStatus?.url) {
+                        navigator.clipboard.writeText(String(publicStatus.url)).catch(() => {});
+                      }
+                    }}
+                    className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                  >
+                    Copy public link
+                  </button>
                 </>
               ) : null}
-              <span className="text-neutral-500">•</span>
-              <span>
-                {publicStatus?.status === "online"
-                  ? "ONLINE"
-                  : publicStatus?.status === "starting"
-                    ? "STARTING"
-                    : publicStatus?.status === "error"
-                      ? "ERROR"
-                      : publicStatus?.status === "offline"
-                        ? "OFFLINE"
-                        : "SEARCHING"}
-              </span>
-              <span className="text-neutral-500">•</span>
-              <span className="truncate max-w-[380px]">{publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
-            </div>
-            {nodeMode === "advanced" && publicStatus?.mode !== "named" ? (
-              <button
-                onClick={() => setPage("config")}
-                className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
-              >
-                Set up named link
-              </button>
-            ) : null}
-            <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
-              <span>Mode: {modeLabel(nodeMode)}</span>
-              <span className="text-neutral-500">•</span>
-              <span>Storage: {identityDetail?.storage || "unknown"}</span>
-              <span className="text-neutral-500">•</span>
-              <span>Logged in as: {me?.email || "unknown"}</span>
-            </div>
+              {productTier === "advanced" && publicStatus?.mode !== "named" ? (
+                <button
+                  onClick={() => setPage("config")}
+                  className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                >
+                  Set up named link
+                </button>
+              ) : null}
+              <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+                <span>
+                  Product: {modeLabel(productTier as any)}
+                  {advancedInactive ? " (inactive)" : ""}
+                </span>
+                <span className="text-neutral-500">•</span>
+                <span>Payments: {diagnosticsStatus?.paymentsMode || identityDetail?.paymentsMode || (productTier === "advanced" || productTier === "lan" ? "node" : "wallet")}</span>
+                <span className="text-neutral-500">•</span>
+                <span>Storage: {identityDetail?.storage || "unknown"}</span>
+                <span className="text-neutral-500">•</span>
+                <span>Logged in as: {me?.email || "unknown"}</span>
+              </div>
             </div>
           ) : null}
         </header>
@@ -604,111 +667,154 @@ export default function App() {
             {lockReasons.advanced_splits} {lockReasons.derivatives} {lockReasons.public_share}
           </div>
         ) : null}
+        {advancedInactive ? (
+            <div className="mx-6 mt-4 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center gap-2">
+              <div className="flex-1 min-w-[200px]">
+                Advanced requires a permanent named link to activate sovereign features.
+              </div>
+              <button
+                onClick={() => setPage("config")}
+                className="text-xs rounded-lg border border-amber-800 px-2 py-1 hover:bg-amber-900/30"
+              >
+                {advancedCtaLabel}
+              </button>
+            </div>
+          ) : null}
 
         <main className="p-6 max-w-5xl">
-          {page === "library" && <LibraryPage />}
+          {showAdvancedLocked ? (
+            <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-6 text-sm text-amber-200">
+              <div className="text-lg font-semibold mb-2">Advanced not active</div>
+              <div className="mb-3">
+                Advanced requires a permanent named link to activate sovereign features.
+              </div>
+              <button
+                onClick={() => setPage("config")}
+                className="text-xs rounded-lg border border-amber-800 px-3 py-1 hover:bg-amber-900/30"
+              >
+                Configure named link
+              </button>
+            </div>
+          ) : (
+            <>
+              {page === "library" && <LibraryPage />}
 
-          {page === "store" && <StorePage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
+              {page === "store" && <StorePage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
 
-          {page === "participations" && (
-            <SplitParticipationsPage identityLevel={identityLevel} features={features} lockReasons={lockReasons} />
-          )}
+              {page === "participations" && (
+                <SplitParticipationsPage
+                  identityLevel={identityLevel}
+                  features={features}
+                  lockReasons={lockReasons}
+                  capabilities={capabilities}
+                />
+              )}
 
-          {page === "royalties-terms" && <RoyaltiesTermsPage contentId={selectedContentId} />}
+              {page === "royalties-terms" && <RoyaltiesTermsPage contentId={selectedContentId} />}
 
-          {page === "downloads" && <DownloadsPage />}
+              {page === "downloads" && <DownloadsPage />}
 
-          {page === "purchases" && <PurchasesPage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
+              {page === "purchases" && <PurchasesPage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
 
-          {page === "creator" && (
-            <CreatorToolsPage
-              onOpenContent={() => setPage("content")}
-              onOpenSplits={() => setPage("splits")}
-              onOpenSales={() => { setFinanceTab("ledger"); setPage("finance"); }}
-              onOpenPayments={() => { setFinanceTab("payouts"); setPage("finance"); }}
-            />
-          )}
+              {page === "creator" && (
+                <CreatorToolsPage
+                  onOpenContent={() => setPage("content")}
+                  onOpenSplits={() => setPage("splits")}
+                  onOpenSales={() => { setFinanceTab("ledger"); setPage("finance"); }}
+                  onOpenPayments={() => { setFinanceTab("payouts"); setPage("finance"); }}
+                />
+              )}
 
-          {page === "config" && <ConfigPage showAdvanced={showAdvancedNav} />}
-          {page === "diagnostics" && <DiagnosticsPage />}
+              {page === "config" && <ConfigPage showAdvanced={showAdvancedNav} />}
+              {page === "diagnostics" && <DiagnosticsPage />}
 
-          {page === "finance" && (
-            <ErrorBoundary>
-              <FinancePage initialTab={financeTab} />
-            </ErrorBoundary>
-          )}
+              {page === "finance" && (
+                <ErrorBoundary>
+                  <FinancePage initialTab={financeTab} />
+                </ErrorBoundary>
+              )}
 
-          {page === "sales" && <SalesPage />}
+              {page === "sales" && <SalesPage />}
 
-          {page === "receipt" && receiptToken && <ReceiptPage token={receiptToken} />}
+              {page === "receipt" && receiptToken && <ReceiptPage token={receiptToken} />}
 
-          {/* Render InvitePage if the page is 'invite' */}
-          {page === "invite" && (
-            <InvitePage
-              token={inviteToken ?? undefined}
-              onAccepted={onAccepted}
-              identityLevel={identityLevel}
-              features={features}
-              lockReasons={lockReasons}
-            />
-          )}
+              {/* Render InvitePage if the page is 'invite' */}
+              {page === "invite" && (
+                <InvitePage
+                  token={inviteToken ?? undefined}
+                  onAccepted={onAccepted}
+                  identityLevel={identityLevel}
+                  features={features}
+                  lockReasons={lockReasons}
+                  capabilities={capabilities}
+                  capabilityReasons={capabilityReasons}
+                />
+              )}
 
-          {page === "payouts" && <PayoutRailsPage />}
+              {page === "payouts" && <PayoutRailsPage />}
 
-          {page === "content" && (
-            <ContentLibraryPage
-              identityLevel={identityLevel}
-              features={features}
-              lockReasons={lockReasons}
-              currentUserEmail={me?.email || null}
-              onOpenSplits={(contentId) => {
-                window.history.pushState({}, "", `/splits/${contentId}`);
-                setSelectedContentId(contentId);
-                setPage("split-editor");
-              }}
-            />
-          )}
+              {page === "content" && (
+                <ContentLibraryPage
+                  identityLevel={identityLevel}
+                  features={features}
+                  lockReasons={lockReasons}
+                  capabilities={capabilities}
+                  capabilityReasons={capabilityReasons}
+                  currentUserEmail={me?.email || null}
+                  onOpenSplits={(contentId) => {
+                    window.history.pushState({}, "", `/splits/${contentId}`);
+                    setSelectedContentId(contentId);
+                    setPage("split-editor");
+                  }}
+                />
+              )}
 
-          {page === "splits" && (
-            <SplitsPage
-              identityLevel={identityLevel}
-              features={features}
-              lockReasons={lockReasons}
-              onEditContent={(id) => {
-                window.history.pushState({}, "", `/splits/${id}`);
-                setSelectedContentId(id);
-                setPage("split-editor");
-              }}
-            />
-          )}
+              {page === "splits" && (
+                <SplitsPage
+                  identityLevel={identityLevel}
+                  features={features}
+                  lockReasons={lockReasons}
+                  capabilities={capabilities}
+                  capabilityReasons={capabilityReasons}
+                  onEditContent={(id) => {
+                    window.history.pushState({}, "", `/splits/${id}`);
+                    setSelectedContentId(id);
+                    setPage("split-editor");
+                  }}
+                />
+              )}
 
-          {page === "split-editor" && (
-            <SplitEditorPage
-              identityLevel={identityLevel}
-              features={features}
-              lockReasons={lockReasons}
-              contentId={selectedContentId}
-              onGoToPayouts={() => setPage("payouts")}
-              onNotFound={() => {
-                window.history.pushState({}, "", "/content");
-                setSelectedContentId(null);
-                setPage("content");
-              }}
-            />
-          )}
+              {page === "split-editor" && (
+                <SplitEditorPage
+                  identityLevel={identityLevel}
+                  features={features}
+                  lockReasons={lockReasons}
+                  capabilities={capabilities}
+                  capabilityReasons={capabilityReasons}
+                  contentId={selectedContentId}
+                  onGoToPayouts={() => setPage("payouts")}
+                  onNotFound={() => {
+                    window.history.pushState({}, "", "/content");
+                    setSelectedContentId(null);
+                    setPage("content");
+                  }}
+                />
+              )}
 
-          {page === "profile" && (
-            <ProfilePage
-              me={me}
-              setMe={setMe}
-              identityDetail={identityDetail}
-              onOpenParticipations={() => {
-                window.history.pushState({}, "", "/participations");
-                setPage("participations");
-              }}
-              onIdentityRefresh={refreshIdentityDetail}
-              onForceLogin={forceLogin}
-            />
+              {page === "profile" && (
+                <ProfilePage
+                  me={me}
+                  setMe={setMe}
+                  identityDetail={identityDetail}
+                  onOpenParticipations={() => {
+                    window.history.pushState({}, "", "/participations");
+                    setPage("participations");
+                  }}
+                  onIdentityRefresh={refreshIdentityDetail}
+                  onForceLogin={forceLogin}
+                />
+              )}
+            </>
           )}
         </main>
       </div>

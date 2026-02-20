@@ -112,6 +112,13 @@ if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" EXPECT_IDENTI
 fi
 pass "identity gating test ok"
 
+echo "[smoke] Running product tier gating tests..."
+if ! (cd "$API_DIR" && API_BASE_URL="http://127.0.0.1:${API_PORT}" npx tsx src/scripts/product_tier_gating_test.ts) >/tmp/contentbox-product-tier.log 2>&1; then
+  cat /tmp/contentbox-product-tier.log >&2
+  fail "product tier gating test failed"
+fi
+pass "product tier gating test ok"
+
 echo "[smoke] Running node mode tests..."
 if ! (cd "$API_DIR" && npx tsx src/scripts/node_mode_test.ts) >/tmp/contentbox-node-mode.log 2>&1; then
   cat /tmp/contentbox-node-mode.log >&2

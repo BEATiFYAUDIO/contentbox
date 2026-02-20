@@ -83,6 +83,7 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
   const [namedTokenBusy, setNamedTokenBusy] = useState<boolean>(false);
   const [namedTokenMsg, setNamedTokenMsg] = useState<string | null>(null);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
+  const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
   const [publicBusy, setPublicBusy] = useState(false);
   const [publicMsg, setPublicMsg] = useState<string | null>(null);
   const [publicAdvancedOpen, setPublicAdvancedOpen] = useState(false);
@@ -160,6 +161,30 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
     };
   }, [apiBase, token]);
 
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/diagnostics/status`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json();
+        if (!cancelled) setDiagnosticsStatus(json || null);
+      } catch {
+        if (!cancelled) setDiagnosticsStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token]);
+
+  const productTier = diagnosticsStatus?.productTier || "basic";
+  const namedConfigured = Boolean(diagnosticsStatus?.publicStatus?.namedConfigured);
+  const quickDisabled = productTier === "advanced" && namedConfigured;
+
   const refreshPublicStatus = async () => {
     if (!token) return;
     try {
@@ -186,6 +211,12 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
       });
       const json = await res.json();
       setPublicStatus(json || null);
+      if (res.ok && json?.mode === "quick" && json?.publicOrigin) {
+        const ok = window.confirm("Temporary link created (testing only). Open in new tab?");
+        if (ok) {
+          window.open(String(json.publicOrigin), "_blank", "noopener,noreferrer");
+        }
+      }
       if (!res.ok) {
         setPublicMsg(json?.message || json?.error || "Failed to start public link.");
       }
@@ -572,11 +603,16 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             <button
               onClick={startPublicLink}
-              disabled={publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
+              disabled={quickDisabled || publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
               style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
             >
               Start temporary link
             </button>
+            {quickDisabled ? (
+              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
+                Advanced prefers named tunnel when configured. Temporary link is disabled.
+              </div>
+            ) : null}
             <button
               onClick={stopPublicLink}
               disabled={publicBusy || publicStatus?.status !== "online"}

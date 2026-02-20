@@ -1,6 +1,6 @@
 import React from "react";
 import { api } from "../lib/api";
-import type { FeatureMatrix } from "../lib/identity";
+import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 
@@ -127,9 +127,19 @@ export default function SplitEditorPage(props: {
   identityLevel?: string | null;
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
+  capabilities?: CapabilitySet;
+  capabilityReasons?: Record<string, string>;
 }) {
-  const { contentId, onGoToPayouts, onNotFound, features, lockReasons } = props;
+  const { contentId, onGoToPayouts, onNotFound, features, lockReasons, capabilities, capabilityReasons } = props;
   const canAdvancedSplits = features?.advancedSplits ?? false;
+  const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
+  const lockAllowed = capabilities?.lockSplits ?? canAdvancedSplits;
+  const crossNodeAllowed = capabilities?.requestClearance ?? true;
+  const lockReason =
+    capabilityReasons?.lock || capabilityReasons?.splits || lockReasons?.advanced_splits || "Split editing requires Advanced or LAN mode.";
+  const clearanceReason =
+    capabilityReasons?.clearance ||
+    "You can prepare this action, but a permanent named link must be online to perform it.";
 
   const [content, setContent] = React.useState<ContentItem | null>(null);
   const [versions, setVersions] = React.useState<SplitVersion[]>([]);
@@ -262,17 +272,17 @@ export default function SplitEditorPage(props: {
   }
 
   React.useEffect(() => {
-    if (!canAdvancedSplits) {
+    if (!splitsAllowed) {
       setPaymentsReadiness(null);
       return;
     }
     api<{ lightning: { ready: boolean; reason?: string | null } }>("/api/payments/readiness", "GET")
       .then((r) => setPaymentsReadiness(r))
       .catch(() => setPaymentsReadiness(null));
-  }, [canAdvancedSplits]);
+  }, [splitsAllowed]);
 
   React.useEffect(() => {
-    if (!canAdvancedSplits) {
+    if (!splitsAllowed) {
       setContent(null);
       setVersions([]);
       setSelectedVersionId(null);
@@ -329,7 +339,7 @@ export default function SplitEditorPage(props: {
         setUpstreamMultiParent(Boolean(e?.message && /multiple parent/i.test(e.message)));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentId, canAdvancedSplits]);
+  }, [contentId, splitsAllowed]);
 
   React.useEffect(() => {
     if (!contentId || !selectedVersion) return;
@@ -480,15 +490,15 @@ export default function SplitEditorPage(props: {
   const emailOnlyParticipants =
     selectedVersion?.participants?.filter((p) => !p.participantUserId && p.participantEmail) || [];
 
-  if (!canAdvancedSplits) {
+  if (!splitsAllowed) {
     return (
       <div className="space-y-4">
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          {lockReasons?.advanced_splits || "Split editing requires Advanced or LAN mode."}
+          {lockReason}
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
           <div className="text-lg font-semibold">Splits editor</div>
-          <div className="text-sm text-neutral-400 mt-1">{lockReasons?.advanced_splits || "Advanced splits are locked."}</div>
+          <div className="text-sm text-neutral-400 mt-1">{lockReason}</div>
         </div>
       </div>
     );
@@ -560,9 +570,10 @@ export default function SplitEditorPage(props: {
             </button>
 
             <button
-              disabled={busy || viewOnly || !latest || latest.status !== "draft"}
+              disabled={busy || viewOnly || !latest || latest.status !== "draft" || !lockAllowed}
               onClick={lockLatest}
               className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
+              title={!lockAllowed ? lockReason : "Lock split"}
             >
               Lock
             </button>
@@ -576,6 +587,7 @@ export default function SplitEditorPage(props: {
             </button>
           </div>
         </div>
+        {!lockAllowed ? <div className="mt-2 text-[11px] text-amber-300">{lockReason}</div> : null}
 
         {(upstreamInfo || ["derivative", "remix", "mashup"].includes(String(content?.type || ""))) && (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
@@ -607,74 +619,85 @@ export default function SplitEditorPage(props: {
                   </div>
                 ) : null}
                 {upstreamInfo.requiresApproval && !upstreamInfo.approvedAt ? (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {upstreamInfo.canRequestApproval ? (
-                      <button
-                        onClick={async () => {
-                          try {
-                            await api(`/content-links/${upstreamInfo.linkId}/request-approval`, "POST");
-                            const r: any = await api(`/content/${contentId}/parent-link`, "GET");
-                            setUpstreamInfo(r?.parentLink === null ? null : r);
-                          } catch (e: any) {
-                            setUpstreamError(e?.message || "Clearance request failed.");
-                          }
-                        }}
-                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                      >
-                        Request clearance
-                      </button>
-                    ) : null}
-                    {upstreamInfo.canVote ? (
-                      <>
-                        <div className="flex items-center gap-2">
-                          <label className="text-[11px] text-neutral-500">Upstream %</label>
-                          <input
-                            className="w-20 rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs"
-                            value={upstreamVotePct}
-                            onChange={(e) => setUpstreamVotePct(e.target.value.replace(/[^\d.]/g, ""))}
-                            inputMode="decimal"
-                            placeholder="10"
-                          />
-                        </div>
+                  <>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {upstreamInfo.canRequestApproval ? (
                         <button
                           onClick={async () => {
                             try {
-                              const pct = Number(upstreamVotePct || "0");
-                              if (!Number.isFinite(pct)) {
-                                setUpstreamError("Enter an upstream rate (0–100).");
-                                return;
+                              await api(`/content-links/${upstreamInfo.linkId}/request-approval`, "POST");
+                              const r: any = await api(`/content/${contentId}/parent-link`, "GET");
+                              setUpstreamInfo(r?.parentLink === null ? null : r);
+                            } catch (e: any) {
+                              setUpstreamError(e?.message || "Clearance request failed.");
+                            }
+                          }}
+                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                          disabled={!crossNodeAllowed}
+                          title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
+                        >
+                          Request clearance
+                        </button>
+                      ) : null}
+                      {upstreamInfo.canVote ? (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <label className="text-[11px] text-neutral-500">Upstream %</label>
+                            <input
+                              className="w-20 rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs"
+                              value={upstreamVotePct}
+                              onChange={(e) => setUpstreamVotePct(e.target.value.replace(/[^\d.]/g, ""))}
+                              inputMode="decimal"
+                              placeholder="10"
+                            />
+                          </div>
+                          <button
+                            onClick={async () => {
+                              try {
+                                const pct = Number(upstreamVotePct || "0");
+                                if (!Number.isFinite(pct)) {
+                                  setUpstreamError("Enter an upstream rate (0–100).");
+                                  return;
+                                }
+                                await api(`/content-links/${upstreamInfo.linkId}/vote`, "POST", {
+                                  decision: "approve",
+                                  upstreamRatePercent: pct
+                                });
+                                const r: any = await api(`/content/${contentId}/parent-link`, "GET");
+                                setUpstreamInfo(r?.parentLink === null ? null : r);
+                              } catch (e: any) {
+                                setUpstreamError(e?.message || "Vote failed.");
                               }
-                              await api(`/content-links/${upstreamInfo.linkId}/vote`, "POST", {
-                                decision: "approve",
-                                upstreamRatePercent: pct
-                              });
-                              const r: any = await api(`/content/${contentId}/parent-link`, "GET");
-                              setUpstreamInfo(r?.parentLink === null ? null : r);
-                            } catch (e: any) {
-                              setUpstreamError(e?.message || "Vote failed.");
-                            }
-                          }}
-                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                        >
-                          Grant clearance
-                        </button>
-                        <button
-                          onClick={async () => {
-                            try {
-                              await api(`/content-links/${upstreamInfo.linkId}/vote`, "POST", { decision: "reject" });
-                              const r: any = await api(`/content/${contentId}/parent-link`, "GET");
-                              setUpstreamInfo(r?.parentLink === null ? null : r);
-                            } catch (e: any) {
-                              setUpstreamError(e?.message || "Vote failed.");
-                            }
-                          }}
-                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                        >
-                          Reject
-                        </button>
-                      </>
+                            }}
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={!crossNodeAllowed}
+                            title={!crossNodeAllowed ? clearanceReason : "Grant clearance"}
+                          >
+                            Grant clearance
+                          </button>
+                          <button
+                            onClick={async () => {
+                              try {
+                                await api(`/content-links/${upstreamInfo.linkId}/vote`, "POST", { decision: "reject" });
+                                const r: any = await api(`/content/${contentId}/parent-link`, "GET");
+                                setUpstreamInfo(r?.parentLink === null ? null : r);
+                              } catch (e: any) {
+                                setUpstreamError(e?.message || "Vote failed.");
+                              }
+                            }}
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={!crossNodeAllowed}
+                            title={!crossNodeAllowed ? clearanceReason : "Reject"}
+                          >
+                            Reject
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                    {!crossNodeAllowed ? (
+                      <div className="mt-2 text-[11px] text-amber-300">{clearanceReason}</div>
                     ) : null}
-                  </div>
+                  </>
                 ) : null}
               </div>
             ) : (

@@ -3,7 +3,7 @@ import { api, getApiBase } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import { getToken } from "../lib/auth";
-import type { FeatureMatrix } from "../lib/identity";
+import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
 
 function getNodePublicOrigin(): string {
   const v = String((import.meta as any).env?.VITE_NODE_PUBLIC_ORIGIN || "").trim();
@@ -16,6 +16,8 @@ type InvitePageProps = {
   identityLevel?: string | null;
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
+  capabilities?: CapabilitySet;
+  capabilityReasons?: Record<string, string>;
 };
 
 type InviteGetResponse = {
@@ -77,8 +79,21 @@ function statusLabel(value?: string | null) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "—";
 }
 
-export default function InvitePage({ token, onAccepted, features, lockReasons }: InvitePageProps) {
+export default function InvitePage({
+  token,
+  onAccepted,
+  features,
+  lockReasons,
+  capabilities,
+  capabilityReasons
+}: InvitePageProps) {
   const canAdvancedSplits = features?.advancedSplits ?? false;
+  const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
+  const inviteAllowed = capabilities?.sendInvite ?? true;
+  const inviteReason =
+    capabilityReasons?.invite ||
+    capabilityReasons?.splits ||
+    "You can prepare this action, but a permanent named link must be online to perform it.";
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<InviteGetResponse | null>(null);
@@ -103,6 +118,12 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
   const [historyLoading, setHistoryLoading] = useState(false);
   const [pasteRaw, setPasteRaw] = useState<string>("");
   const [pasteMsg, setPasteMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!splitsAllowed && showTombstones) {
+      setShowTombstones(false);
+    }
+  }, [splitsAllowed, showTombstones]);
 
   function extractInviteTokenFromPaste(raw: string): string | null {
     const v = String(raw || "").trim();
@@ -262,7 +283,7 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
   }
 
   useEffect(() => {
-    if (!canAdvancedSplits) {
+    if (!splitsAllowed) {
       setLoading(false);
       setData(null);
       setMsg(null);
@@ -278,11 +299,11 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
         setMe(null);
       }
     })();
-  }, [tokenToUse, remoteOriginFromLocation, canAdvancedSplits]);
+  }, [tokenToUse, remoteOriginFromLocation, splitsAllowed]);
 
   // If this is a remote invite and the user is signed in locally, ingest it so it shows under Received invites.
   useEffect(() => {
-    if (!canAdvancedSplits) return;
+    if (!splitsAllowed) return;
     if (!me || !remoteOriginFromLocation || !tokenToUse || !data) return;
     (async () => {
       try {
@@ -301,11 +322,11 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
         setRemoteReceivedInvites(listRemote || []);
       } catch {}
     })();
-  }, [me, data, remoteOriginFromLocation, tokenToUse, canAdvancedSplits]);
+  }, [me, data, remoteOriginFromLocation, tokenToUse, splitsAllowed]);
 
   // Load outgoing invites for the signed-in owner (no token values are returned)
   useEffect(() => {
-    if (!canAdvancedSplits) return;
+    if (!splitsAllowed) return;
     if (!me) {
       setMyInvites(null);
       setReceivedInvites(null);
@@ -350,10 +371,10 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
         setHistoryLoading(false);
       }
     })();
-  }, [me, canAdvancedSplits]);
+  }, [me, splitsAllowed]);
 
   useEffect(() => {
-    if (!canAdvancedSplits) return;
+    if (!splitsAllowed) return;
     if (!me) {
       setContentList([]);
       return;
@@ -366,10 +387,10 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
         setContentList([]);
       }
     })();
-  }, [me, canAdvancedSplits]);
+  }, [me, splitsAllowed]);
 
   useEffect(() => {
-    if (!canAdvancedSplits) return;
+    if (!splitsAllowed) return;
     if (!selectedContentId) {
       setSelectedSplitId(null);
       return;
@@ -382,7 +403,7 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
         setSelectedSplitId(null);
       }
     })();
-  }, [selectedContentId, canAdvancedSplits]);
+  }, [selectedContentId, splitsAllowed]);
 
   // manual token loader removed — invite tab (owner view) now shows only invites lists; use direct invite URL for detail view.
 
@@ -594,12 +615,12 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
 
   return (
     <div className="space-y-4">
-      {!canAdvancedSplits ? (
+      {!splitsAllowed ? (
         <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          {lockReasons?.advanced_splits || "Split invites require Advanced or LAN mode."}
+          {capabilityReasons?.splits || lockReasons?.advanced_splits || "Split invites require Advanced or LAN mode."}
         </div>
       ) : null}
-      {canAdvancedSplits ? (
+      {splitsAllowed ? (
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Invite</div>
         {tokenToUse ? (
@@ -648,7 +669,7 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
               </select>
 
               <button
-                disabled={!selectedSplitId}
+                disabled={!selectedSplitId || !inviteAllowed}
                 onClick={async () => {
                   if (!selectedSplitId) return;
                   setCreateMsg(null);
@@ -660,11 +681,13 @@ export default function InvitePage({ token, onAccepted, features, lockReasons }:
                     setCreateMsg(e?.message || "Create invites failed");
                   }
                 }}
-                className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
+                className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                title={!inviteAllowed ? inviteReason : "Create invites"}
               >
                 Create invites
               </button>
             </div>
+            {!inviteAllowed ? <div className="mt-2 text-[11px] text-amber-300">{inviteReason}</div> : null}
 
             {createMsg ? <div className="mt-2 text-xs text-neutral-300">{createMsg}</div> : null}
 

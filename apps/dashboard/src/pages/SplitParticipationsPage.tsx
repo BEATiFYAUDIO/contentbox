@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
-import type { FeatureMatrix } from "../lib/identity";
+import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
 
 type WorkRoyaltyRow = {
   contentId: string;
@@ -68,8 +68,11 @@ export default function SplitParticipationsPage(props: {
   identityLevel?: string | null;
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
+  capabilities?: CapabilitySet;
 }) {
   const canAdvancedSplits = props.features?.advancedSplits ?? false;
+  const splitsAllowed = props.capabilities?.useSplits ?? canAdvancedSplits;
+  const derivativesAllowed = props.capabilities?.useDerivatives ?? canAdvancedSplits;
 
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);
@@ -83,14 +86,6 @@ export default function SplitParticipationsPage(props: {
   const [showAllUpstream, setShowAllUpstream] = useState(false);
 
   useEffect(() => {
-    if (!canAdvancedSplits) {
-      setLoading(false);
-      setWorks([]);
-      setUpstream([]);
-      setRemoteRoyalties([]);
-      setHistoryItems([]);
-      return;
-    }
     (async () => {
       try {
         setLoading(true);
@@ -118,25 +113,14 @@ export default function SplitParticipationsPage(props: {
 
   return (
     <div className="space-y-4">
-      {!canAdvancedSplits ? (
-        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          {props.lockReasons?.advanced_splits || "Splits and royalties require Advanced or LAN mode."}
-        </div>
-      ) : null}
       <div>
         <div className="text-lg font-semibold">My Royalties</div>
         <div className="text-sm text-neutral-400 mt-1">Entitlements from content splits (owned or invited).</div>
       </div>
 
-      {!canAdvancedSplits ? (
-        <div className="text-sm text-neutral-400">{props.lockReasons?.advanced_splits || "Advanced splits are locked."}</div>
-      ) : null}
-
       {loading ? <div className="text-sm text-neutral-400">Loading…</div> : null}
       {error ? <div className="text-sm text-amber-300">{error}</div> : null}
 
-      {canAdvancedSplits ? (
-        <>
       {!loading && works.length === 0 ? (
         <div className="text-sm text-neutral-500">No works yet.</div>
       ) : null}
@@ -173,7 +157,7 @@ export default function SplitParticipationsPage(props: {
                     Original creator: {p.ownerDisplayName || p.ownerEmail}
                   </div>
                 ) : null}
-                {p.splitSummary?.length ? (
+                {splitsAllowed && p.splitSummary?.length ? (
                   <details className="mt-2 text-xs text-neutral-400">
                     <summary className="cursor-pointer select-none">Split terms</summary>
                     <div className="mt-2 space-y-1">
@@ -209,93 +193,98 @@ export default function SplitParticipationsPage(props: {
         ))}
       </div>
 
-      <div className="text-sm text-neutral-300 mt-6">Upstream derivatives</div>
-      <div className="text-xs text-neutral-500 mt-1">Derivative royalties tied to your splits.</div>
-      <div className="mt-2 flex items-center justify-between">
-        <div className="text-xs text-neutral-500">Inactive items are tombstoned or deleted works.</div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowInactive((v) => !v)}
-            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-          >
-            {showInactive ? "Hide inactive" : "Show inactive"}
-          </button>
-          <button
-            onClick={() => setShowAllUpstream((v) => !v)}
-            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-          >
-            {showAllUpstream ? "Show less" : "Show all"}
-          </button>
-        </div>
-      </div>
-      {upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt)).length === 0 ? (
-        <div className="text-sm text-neutral-500 mt-3">No upstream derivatives yet.</div>
-      ) : (
-        <div className="mt-3 space-y-3">
-          {upstream
-            .filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt))
-            .slice(0, showAllUpstream ? upstream.length : 3)
-            .map((u, idx) => (
-              <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-                <div className="text-sm font-medium text-neutral-100">
-                  {u.parentTitle} → {u.childTitle}
-                  {u.childDeletedAt || u.parentDeletedAt ? (
-                    <span className="ml-2 text-[10px] text-amber-300">inactive</span>
-                  ) : null}
+      {derivativesAllowed ? (
+        <>
+          <div className="text-sm text-neutral-300 mt-6">Upstream derivatives</div>
+          <div className="text-xs text-neutral-500 mt-1">Derivative royalties tied to your splits.</div>
+          <div className="mt-2 flex items-center justify-between">
+            <div className="text-xs text-neutral-500">Inactive items are tombstoned or deleted works.</div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowInactive((v) => !v)}
+                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              >
+                {showInactive ? "Hide inactive" : "Show inactive"}
+              </button>
+              <button
+                onClick={() => setShowAllUpstream((v) => !v)}
+                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              >
+                {showAllUpstream ? "Show less" : "Show all"}
+              </button>
+            </div>
+          </div>
+          {upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt)).length === 0 ? (
+            <div className="text-sm text-neutral-500 mt-3">No upstream derivatives yet.</div>
+          ) : (
+            <div className="mt-3 space-y-3">
+              {upstream
+                .filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt))
+                .slice(0, showAllUpstream ? upstream.length : 3)
+                .map((u, idx) => (
+                  <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                    <div className="text-sm font-medium text-neutral-100">
+                      {u.parentTitle} → {u.childTitle}
+                      {u.childDeletedAt || u.parentDeletedAt ? (
+                        <span className="ml-2 text-[10px] text-amber-300">inactive</span>
+                      ) : null}
+                    </div>
+                    <div className="text-xs text-neutral-400 mt-1">
+                      Upstream rate: {(u.upstreamBps / 100).toFixed(u.upstreamBps % 100 ? 2 : 0)}% • My effective share:{" "}
+                      {(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%
+                    </div>
+                    <div className="text-xs text-neutral-400 mt-1">
+                      Earned: <span className="text-neutral-200">{u.earnedSatsToDate} sats</span>
+                      {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
+                      {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
+                        <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          <div className="text-sm text-neutral-300 mt-6">Remote royalties</div>
+          {remoteRoyalties.length === 0 ? (
+            <div className="text-sm text-neutral-500">No remote invites yet.</div>
+          ) : (
+            <div className="space-y-3">
+              {remoteRoyalties.map((r) => (
+                <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
+                      <div className="text-xs text-neutral-400 mt-1">
+                        {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • remote
+                      </div>
+                      <div className="text-xs text-neutral-400 mt-1">
+                        Role: <span className="text-neutral-200">{r.role || "participant"}</span>
+                        {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
+                      </div>
+                      <div className="text-xs text-neutral-500 mt-1">
+                        Remote: {r.remoteOrigin}
+                      </div>
+                      {r.acceptedAt ? (
+                        <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
+                      ) : null}
+                    </div>
+                    {r.inviteUrl ? (
+                      <button
+                        onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
+                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                      >
+                        Open
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
-                <div className="text-xs text-neutral-400 mt-1">
-                  Upstream rate: {(u.upstreamBps / 100).toFixed(u.upstreamBps % 100 ? 2 : 0)}% • My effective share:{" "}
-                  {(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%
-                </div>
-                <div className="text-xs text-neutral-400 mt-1">
-                  Earned: <span className="text-neutral-200">{u.earnedSatsToDate} sats</span>
-                  {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
-                  {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
-                    <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
-                  ) : null}
-                </div>
-              </div>
-            ))}
-        </div>
+              ))}
+            </div>
       )}
 
-      <div className="text-sm text-neutral-300 mt-6">Remote royalties</div>
-      {remoteRoyalties.length === 0 ? (
-        <div className="text-sm text-neutral-500">No remote invites yet.</div>
-      ) : (
-        <div className="space-y-3">
-          {remoteRoyalties.map((r) => (
-            <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • remote
-                  </div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    Role: <span className="text-neutral-200">{r.role || "participant"}</span>
-                    {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
-                  </div>
-                  <div className="text-xs text-neutral-500 mt-1">
-                    Remote: {r.remoteOrigin}
-                  </div>
-                  {r.acceptedAt ? (
-                    <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
-                  ) : null}
-                </div>
-                {r.inviteUrl ? (
-                  <button
-                    onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
-                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                  >
-                    Open
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+        </>
+      ) : null}
 
       <HistoryFeed
         title="Royalties history"
@@ -321,8 +310,6 @@ export default function SplitParticipationsPage(props: {
         title="Audit"
         exportName="royalty-audit.json"
       />
-        </>
-      ) : null}
     </div>
   );
 }
