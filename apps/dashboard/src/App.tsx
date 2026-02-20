@@ -764,6 +764,7 @@ export default function App() {
                   lockReasons={lockReasons}
                   capabilities={capabilities}
                   capabilityReasons={capabilityReasons}
+                  productTier={productTier}
                   currentUserEmail={me?.email || null}
                   onOpenSplits={(contentId) => {
                     window.history.pushState({}, "", `/splits/${contentId}`);

@@ -22,6 +22,7 @@ export default function LibraryPage() {
   const [previewLoading, setPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
+  const autoLoadedRef = React.useRef(false);
 
   React.useEffect(() => {
     (async () => {
@@ -44,6 +45,19 @@ export default function LibraryPage() {
       }
     })();
   }, []);
+
+  React.useEffect(() => {
+    if (!items.length || autoLoadedRef.current) return;
+    autoLoadedRef.current = true;
+    const limit = 6;
+    const toLoad = items.slice(0, limit);
+    toLoad.forEach((it) => {
+      if (!previewById[it.id] && !previewLoading[it.id]) {
+        loadPreview(it.id);
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items]);
 
   const groups = {
     owned: items.filter((i) => i.libraryAccess === "owned"),
@@ -97,74 +111,81 @@ export default function LibraryPage() {
             return (
               <div key={key} className="space-y-2">
                 <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
-                {list.map((it) => {
-                  const preview = previewById[it.id];
-                  const previewUrl = preview?.previewUrl || null;
-                  const pf = previewFileFor(previewUrl, preview?.files || []);
-                  const mime = String(pf?.mime || "").toLowerCase();
-                  const type = String(it.type || "").toLowerCase();
-                  const isVideo = mime.startsWith("video/") || type === "video";
-                  const isAudio = mime.startsWith("audio/") || type === "song";
-                  const isOpen = previewOpenById[it.id] ?? true;
-                  return (
-                    <div key={it.id} className="rounded-lg border border-neutral-800 bg-neutral-900/10 px-4 py-3">
-                      <div className="text-sm font-medium">{it.title || "Content"}</div>
-                      <div className="text-xs text-neutral-500">
-                        {String(it.type || "").toUpperCase()} · {it.status?.toUpperCase?.() || "STATUS"} ·{" "}
-                        {new Date(it.createdAt).toLocaleString()} · Storefront: {it.storefrontStatus || "DISABLED"}
-                      </div>
-                      <div className="mt-1 text-[11px] text-neutral-500 capitalize">
-                        Access: {it.libraryAccess || "preview"}
-                      </div>
-                      {it.owner?.displayName || it.owner?.email ? (
-                        <div className="text-[11px] text-neutral-500 mt-1">
-                          Owner: {it.owner?.displayName || it.owner?.email}
-                        </div>
-                      ) : null}
-
-                      <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
-                        <div className="flex items-center justify-between">
-                          <div className="text-sm font-semibold text-neutral-100">Preview</div>
-                          <button
-                            type="button"
-                            className="text-[11px] rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            onClick={() => setPreviewOpenById((m) => ({ ...m, [it.id]: !isOpen }))}
-                          >
-                            {isOpen ? "Hide" : "Show"}
-                          </button>
-                        </div>
-                        <div className="text-xs text-neutral-400">Click to load a read-only preview.</div>
-                        <div className="mt-2 flex items-center gap-2">
-                          <button
-                            type="button"
-                            className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            onClick={() => loadPreview(it.id)}
-                          >
-                            {previewLoading[it.id] ? "Loading…" : "Load preview"}
-                          </button>
-                        </div>
-                        {previewError[it.id] ? (
-                          <div className="mt-2 text-xs text-amber-300">{previewError[it.id]}</div>
-                        ) : null}
-                        {preview && isOpen ? (
-                          <div className="mt-2">
-                            {previewUrl && isVideo ? (
-                              <video className="w-full rounded-md" controls src={previewUrl} />
-                            ) : previewUrl && isAudio ? (
-                              <audio className="w-full" controls src={previewUrl} />
-                            ) : previewUrl ? (
-                              <a className="text-xs text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                Open preview
-                              </a>
-                            ) : (
-                              <div className="text-xs text-neutral-500">No preview available.</div>
-                            )}
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {list.map((it) => {
+                    const preview = previewById[it.id];
+                    const previewUrl = preview?.previewUrl || null;
+                    const pf = previewFileFor(previewUrl, preview?.files || []);
+                    const mime = String(pf?.mime || "").toLowerCase();
+                    const type = String(it.type || "").toLowerCase();
+                    const isVideo = mime.startsWith("video/") || type === "video";
+                    const isAudio = mime.startsWith("audio/") || type === "song";
+                    const isImage = mime.startsWith("image/");
+                    const isOpen = previewOpenById[it.id] ?? true;
+                    return (
+                      <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4 flex flex-col gap-3">
+                        <div>
+                          <div className="text-sm font-medium">{it.title || "Content"}</div>
+                          <div className="text-xs text-neutral-500">
+                            {String(it.type || "").toUpperCase()} · {it.status?.toUpperCase?.() || "STATUS"} ·{" "}
+                            {new Date(it.createdAt).toLocaleString()} · Storefront: {it.storefrontStatus || "DISABLED"}
                           </div>
-                        ) : null}
+                          <div className="mt-1 text-[11px] text-neutral-500 capitalize">
+                            Access: {it.libraryAccess || "preview"}
+                          </div>
+                          {it.owner?.displayName || it.owner?.email ? (
+                            <div className="text-[11px] text-neutral-500 mt-1">
+                              Owner: {it.owner?.displayName || it.owner?.email}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-semibold text-neutral-100">Preview</div>
+                            <button
+                              type="button"
+                              className="text-[11px] rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={() => setPreviewOpenById((m) => ({ ...m, [it.id]: !isOpen }))}
+                            >
+                              {isOpen ? "Hide" : "Show"}
+                            </button>
+                          </div>
+                          <div className="text-xs text-neutral-400">Click to load a read-only preview.</div>
+                          <div className="mt-2 flex items-center gap-2">
+                            <button
+                              type="button"
+                              className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={() => loadPreview(it.id)}
+                            >
+                              {previewLoading[it.id] ? "Loading…" : "Load preview"}
+                            </button>
+                          </div>
+                          {previewError[it.id] ? (
+                            <div className="mt-2 text-xs text-amber-300">{previewError[it.id]}</div>
+                          ) : null}
+                          {preview && isOpen ? (
+                            <div className="mt-2">
+                              {previewUrl && isVideo ? (
+                                <video className="w-full rounded-md" controls src={previewUrl} />
+                              ) : previewUrl && isAudio ? (
+                                <audio className="w-full" controls src={previewUrl} />
+                              ) : previewUrl && isImage ? (
+                                <img className="w-full rounded-md" src={previewUrl} alt={it.title || "Preview"} />
+                              ) : previewUrl ? (
+                                <a className="text-xs text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
+                                  Open preview
+                                </a>
+                              ) : (
+                                <div className="text-xs text-neutral-500">No preview available.</div>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             );
           })}

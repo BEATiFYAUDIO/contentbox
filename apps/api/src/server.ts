@@ -49,7 +49,8 @@ import {
   sortParticipants
 } from "./lib/proofs/proofBundle.js";
 import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
-import { buildCapabilitySet, canLock, canPublish, canPublicShare, canRequestClearance, canSendInvite, canUseDerivatives, canUseProofBundles, canUseSplits, capabilityReason, isAdvancedActive } from "./lib/capabilities.js";
+import { buildCapabilitySet, canLock, canPublicShare, canRequestClearance, canSendInvite, canUseDerivatives, canUseProofBundles, canUseSplits, capabilityReason, isAdvancedActive } from "./lib/capabilities.js";
+import { assertCanPublish, evaluatePublishGate } from "./lib/publishGate.js";
 import { dbModeCompatFromStorage, getNodeMode, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
 import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
 import { validateNodeMode, writeNodeConfig } from "./lib/nodeConfig.js";
@@ -1810,6 +1811,48 @@ app.get("/api/capabilities", async (_req: any, reply: any) => {
       quickTunnelSupported: true
     }
   });
+});
+
+// Public diagnostics (non-sensitive)
+app.get("/api/public/diagnostics", async (_req: any, reply: any) => {
+  const productTier = resolveProductTier().productTier;
+  const paymentsMode = getPaymentsMode(productTier);
+  const publicStatus = getPublicStatus();
+  const namedReady = publicStatus.mode === "named" && publicStatus.status === "online";
+  const url = publicStatus.canonicalOrigin || publicStatus.publicOrigin || null;
+  return reply.send({
+    productTier,
+    namedReady,
+    namedConfigured: publicStatus.namedConfigured,
+    publicStatus: {
+      mode: publicStatus.mode,
+      status: publicStatus.status,
+      url
+    },
+    paymentsMode
+  });
+});
+
+// Public PublishGate evaluator (no auth, no side effects)
+app.post("/api/public/can-publish", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as any;
+  try {
+    evaluatePublishGate({
+      productTier: body.productTier,
+      namedReady: Boolean(body.namedReady),
+      paymentsMode: body.paymentsMode,
+      publishKind: body.publishKind,
+      isDerivative: Boolean(body.isDerivative),
+      clearanceCleared: Boolean(body.clearanceCleared),
+      forSale: Boolean(body.forSale),
+      paymentsReady: Boolean(body.paymentsReady),
+      splitLocked: Boolean(body.splitLocked),
+      targetLocked: Boolean(body.targetLocked)
+    });
+    return reply.send({ ok: true });
+  } catch (e: any) {
+    return reply.code(403).send({ ok: false, code: e?.code || "publish_not_allowed", reason: e?.reason || "Not allowed" });
+  }
 });
 
 // Public node discovery endpoint to support basic P2P verification
@@ -5182,7 +5225,178 @@ async function handleGetManifest(req: any, reply: any) {
 app.get("/api/content/:contentId/manifest", { preHandler: requireAuth }, handleGetManifest);
 app.get("/content/:contentId/manifest", { preHandler: requireAuth }, handleGetManifest);
 
-// Publish content (locks split + validates upstream)
+function generateShareToken() {
+  return crypto.randomBytes(18).toString("hex");
+}
+
+async function getActiveShareLink(contentId: string, tx: PrismaClient = prisma) {
+  return tx.shareLink.findFirst({
+    where: { contentId, status: "ACTIVE" },
+    orderBy: { createdAt: "desc" }
+  });
+}
+
+async function rotateShareLink(contentId: string, tx: PrismaClient = prisma) {
+  const now = new Date();
+  await tx.shareLink.updateMany({
+    where: { contentId, status: "ACTIVE" },
+    data: { status: "REVOKED", revokedAt: now }
+  });
+  return tx.shareLink.create({
+    data: { contentId, token: generateShareToken(), status: "ACTIVE" }
+  });
+}
+
+async function getWalletReceiveReady(userId: string) {
+  const methods = await prisma.payoutMethod.findMany({
+    where: { code: { in: ["lightning_address", "lnurl", "btc_onchain"] as any } },
+    select: { id: true }
+  });
+  if (!methods.length) return false;
+  const identity = await prisma.identity.findFirst({
+    where: { userId, payoutMethodId: { in: methods.map((m) => m.id) } },
+    orderBy: { createdAt: "desc" }
+  });
+  return Boolean(identity?.value);
+}
+
+async function resolveDerivativeInfo(contentId: string, contentType: string | null) {
+  const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(contentType || ""));
+  const links = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+  const isDerivative = isDerivativeType || links.length > 0;
+  if (!isDerivative) return { isDerivative: false, clearanceCleared: true, clearanceId: null, link: null };
+  if (links.length !== 1) return { isDerivative: true, clearanceCleared: false, clearanceId: null, link: links[0] || null };
+  const link = links[0];
+  const clearanceCleared = !link.requiresApproval || Boolean(link.approvedAt);
+  let clearanceId: string | null = null;
+  if (clearanceCleared) {
+    const req = await prisma.clearanceRequest.findFirst({
+      where: { contentLinkId: link.id },
+      orderBy: { createdAt: "desc" }
+    });
+    clearanceId = req?.id || null;
+  }
+  return { isDerivative: true, clearanceCleared, clearanceId, link };
+}
+
+async function ensureManifestForContent(content: any) {
+  let manifest = await prisma.manifest.findUnique({ where: { contentId: content.id } });
+  if (manifest) return manifest;
+
+  const files = await prisma.contentFile.findMany({ where: { contentId: content.id }, orderBy: { createdAt: "asc" } });
+  const manifestJson = await buildManifestJson(content, files);
+  const previewObjectKey = await ensurePreviewFile(content, files);
+  if (previewObjectKey) {
+    (manifestJson as any).preview = previewObjectKey;
+  }
+  const manifestSha256 = hashManifestJson(manifestJson);
+
+  let parentManifestSha256: string | null = null;
+  let lineageRelation: any = null;
+  const parentLinks = await prisma.contentLink.findMany({ where: { childContentId: content.id } });
+  if (parentLinks.length === 1) {
+    const parentManifest = await prisma.manifest.findUnique({ where: { contentId: parentLinks[0].parentContentId } });
+    parentManifestSha256 = parentManifest?.sha256 || null;
+    lineageRelation = parentLinks[0].relation as any;
+  }
+
+  manifest = await prisma.manifest.upsert({
+    where: { contentId: content.id },
+    update: { json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation },
+    create: { contentId: content.id, json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation }
+  });
+
+  await prisma.contentItem.update({ where: { id: content.id }, data: { manifestId: manifest.id } });
+  return manifest;
+}
+
+app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).contentId);
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+
+  const shareLink = await getActiveShareLink(contentId);
+  if (!shareLink) return reply.send({ shareLink: null });
+  const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+  const url = `${base}/p/${shareLink.token}`;
+  return reply.send({
+    shareLink: {
+      id: shareLink.id,
+      token: shareLink.token,
+      status: shareLink.status,
+      createdAt: shareLink.createdAt,
+      revokedAt: shareLink.revokedAt,
+      url
+    }
+  });
+});
+
+app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).contentId);
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+
+  const ctx = getCapabilityContext();
+  const derivativeInfo = await resolveDerivativeInfo(contentId, content.type);
+  const forSale = content.priceSats != null && BigInt(content.priceSats as any) > 0n;
+  const paymentsReady = await getWalletReceiveReady(userId);
+  try {
+    assertCanPublish(
+      ctx,
+      { publishKind: "share_link", forSale },
+      {
+        isDerivative: derivativeInfo.isDerivative,
+        clearanceCleared: derivativeInfo.clearanceCleared,
+        splitLocked: true,
+        targetLocked: true,
+        paymentsReady
+      }
+    );
+  } catch (e: any) {
+    return reply.code(403).send({ code: e?.code || "share_link_not_allowed", reason: e?.reason || "Not allowed" });
+  }
+
+  const manifest = await ensureManifestForContent(content);
+  await prisma.contentItem.update({
+    where: { id: contentId },
+    data: { status: "published", manifestId: manifest.id }
+  });
+
+  const shareLink = await rotateShareLink(contentId);
+  const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+  const url = `${base}/p/${shareLink.token}`;
+  return reply.send({
+    ok: true,
+    shareLink: {
+      id: shareLink.id,
+      token: shareLink.token,
+      status: shareLink.status,
+      createdAt: shareLink.createdAt,
+      revokedAt: shareLink.revokedAt,
+      url
+    }
+  });
+});
+
+app.post("/api/content/:contentId/share-link/revoke", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).contentId);
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+  await prisma.shareLink.updateMany({
+    where: { contentId, status: "ACTIVE" },
+    data: { status: "REVOKED", revokedAt: new Date() }
+  });
+  return reply.send({ ok: true });
+});
+
+// Publish content (advanced canonical public buy link)
 app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).contentId);
@@ -5193,43 +5407,10 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     const ok = await isAcceptedParticipant(userId, contentId);
     if (!ok) return forbidden(reply);
   }
-  const publishCtx = getCapabilityContext();
-  if (sendAdvancedInactive(reply, publishCtx)) return;
-  if (!canPublish(publishCtx)) {
-    return reply.code(403).send({
-      code: "publish_not_allowed",
-      reason: capabilityReason(publishCtx, "publish", capabilityReasonContext(publishCtx))
-    });
-  }
 
-  let manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  if (!manifest) {
-    // Auto-generate manifest on publish for smoother UX
-    const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
-    const manifestJson = await buildManifestJson(content, files);
-    const previewObjectKey = await ensurePreviewFile(content, files);
-    if (previewObjectKey) {
-      (manifestJson as any).preview = previewObjectKey;
-    }
-    const manifestSha256 = hashManifestJson(manifestJson);
-
-    let parentManifestSha256: string | null = null;
-    let lineageRelation: any = null;
-    const parentLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
-    if (parentLinks.length === 1) {
-      const parentManifest = await prisma.manifest.findUnique({ where: { contentId: parentLinks[0].parentContentId } });
-      parentManifestSha256 = parentManifest?.sha256 || null;
-      lineageRelation = parentLinks[0].relation as any;
-    }
-
-    manifest = await prisma.manifest.upsert({
-      where: { contentId },
-      update: { json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation },
-      create: { contentId, json: manifestJson as any, sha256: manifestSha256, parentManifestSha256, lineageRelation }
-    });
-
-    await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id } });
-  }
+  const ctx = getCapabilityContext();
+  const derivativeInfo = await resolveDerivativeInfo(contentId, content.type);
+  const manifest = await ensureManifestForContent(content);
 
   const parents = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   const upstreamSum = sumBps(parents.map((p) => ({ bps: p.upstreamBps })));
@@ -5242,51 +5423,51 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   });
   if (!sv) return badRequest(reply, "Split version missing");
 
-  if (getIdentityLevel() === IdentityLevel.BASIC && sv.participants.length === 0) {
-    const owner = await prisma.user.findUnique({ where: { id: content.ownerUserId }, select: { email: true } });
-    const email = owner?.email || `${content.ownerUserId}@local`;
-    await prisma.splitParticipant.create({
-      data: {
-        splitVersionId: sv.id,
-        participantEmail: email,
-        participantUserId: content.ownerUserId,
-        role: "owner",
-        percent: 100,
-        bps: 10000
-      }
-    });
-    sv.participants = [
-      {
-        id: "auto",
-        splitVersionId: sv.id,
-        participantEmail: email,
-        participantUserId: content.ownerUserId,
-        role: "owner",
-        roleCode: "writer",
-        percent: 100,
-        bps: 10000,
-        payoutIdentityId: null,
-        payoutIdentity: null,
-        acceptedAt: null,
-        verifiedAt: null,
-        createdAt: new Date(),
-        invitations: []
-      } as any
-    ];
-  }
-
   const totalBps = sumBps(sv.participants.map((p) => ({ bps: toBps(p) })));
   if (totalBps !== 10000) return badRequest(reply, "Split bps must total 10000 to publish");
+
+  const readiness = ctx.paymentsMode === "node" ? await getPaymentsReadiness(content.ownerUserId) : null;
+  const paymentsReady = ctx.paymentsMode !== "node" ? false : Boolean(readiness?.lightning.ready || readiness?.onchain.ready);
+  const forSale = content.priceSats != null && BigInt(content.priceSats as any) > 0n;
+
+  try {
+    assertCanPublish(
+      ctx,
+      { publishKind: "public_buy_link", forSale },
+      {
+        isDerivative: derivativeInfo.isDerivative,
+        clearanceCleared: derivativeInfo.clearanceCleared,
+        splitLocked: sv.status === "locked",
+        targetLocked: Boolean(manifest?.sha256),
+        paymentsReady
+      }
+    );
+  } catch (e: any) {
+    return reply.code(403).send({ code: e?.code || "publish_not_allowed", reason: e?.reason || "Not allowed" });
+  }
 
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     await tx.splitVersion.update({
       where: { id: sv.id },
-      data: { status: "locked", lockedAt: now, lockedManifestSha256: manifest.sha256 }
+      data: { lockedManifestSha256: manifest.sha256 }
     });
     await tx.contentItem.update({
       where: { id: contentId },
       data: { status: "published", manifestId: manifest.id, currentSplitId: sv.id }
+    });
+    const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+    await tx.publishEvent.create({
+      data: {
+        contentId,
+        publicUrl: `${publicOrigin}/buy/${contentId}`,
+        targetHash: manifest.sha256,
+        splitVersionId: sv.id,
+        clearanceId: derivativeInfo.clearanceId,
+        priceSats: content.priceSats != null ? BigInt(content.priceSats as any) : null,
+        publisherNodeId: publicOrigin || null,
+        status: "PUBLISHED"
+      }
     });
   });
 
@@ -5295,7 +5476,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     await triggerPublicStartBestEffort();
   } catch {}
 
-  const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), "");
+  const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
   return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256, publicOrigin });
 });
 
@@ -6655,6 +6836,12 @@ app.get("/public/content/:id/credits", handlePublicCredits);
 async function handleShortPublicLink(req: any, reply: any) {
   const token = asString((req.params as any).token || "").trim();
   if (!token) return notFound(reply, "Not found");
+  const share = await prisma.shareLink.findUnique({ where: { token } });
+  if (share && share.status === "ACTIVE") {
+    const content = await prisma.contentItem.findUnique({ where: { id: share.contentId } });
+    if (!content || content.deletedAt) return notFound(reply, "Not found");
+    return reply.redirect(`/buy/${encodeURIComponent(content.id)}`);
+  }
   const content = await prisma.contentItem.findUnique({ where: { id: token } });
   if (!content) return notFound(reply, "Not found");
   if (content.status !== "published") return notFound(reply, "Not found");

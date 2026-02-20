@@ -90,6 +90,7 @@ type ContentLibraryPageProps = {
   lockReasons?: Record<string, string>;
   capabilities?: CapabilitySet;
   capabilityReasons?: Record<string, string>;
+  productTier?: "basic" | "advanced" | "lan";
   currentUserEmail?: string | null;
   onOpenSplits?: (contentId: string) => void;
 };
@@ -225,8 +226,11 @@ export default function ContentLibraryPage({
   lockReasons,
   capabilities,
   capabilityReasons,
-  currentUserEmail
+  currentUserEmail,
+  productTier
 }: ContentLibraryPageProps) {
+  const resolvedProductTier = productTier || "basic";
+  const isBasicTier = resolvedProductTier === "basic";
   const canAdvancedSplits = features?.advancedSplits ?? false;
   const canDerivatives = features?.derivatives ?? false;
   const canPublicShare = features?.publicShare ?? false;
@@ -340,6 +344,8 @@ export default function ContentLibraryPage({
   const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
+  const [shareLinkByContent, setShareLinkByContent] = React.useState<Record<string, any | null>>({});
+  const [shareLinkLoading, setShareLinkLoading] = React.useState<Record<string, boolean>>({});
   const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
@@ -382,14 +388,18 @@ export default function ContentLibraryPage({
     setError(null);
     try {
       const url = trashMode ? `/content?trash=1&scope=${contentScope}` : `/content?scope=${contentScope}`;
-      const data = await api<ContentItem[]>(url);
-      setItems(data);
+      const data = await api<ContentItem[] | any>(url);
+      const list = Array.isArray(data) ? data : [];
+      if (!Array.isArray(data)) {
+        setError("Failed to load content (unexpected response)");
+      }
+      setItems(list);
       const next: Record<string, string> = {};
-      for (const it of data || []) {
+      for (const it of list) {
         if (it.priceSats !== undefined && it.priceSats !== null) next[it.id] = String(it.priceSats);
       }
       setPriceDraft(next);
-      if (pendingOpenContentId && data.find((d) => d.id === pendingOpenContentId)) {
+      if (pendingOpenContentId && list.find((d) => d.id === pendingOpenContentId)) {
         setExpanded((m) => ({ ...m, [pendingOpenContentId]: true }));
         setPendingOpenContentId(null);
       }
@@ -621,6 +631,45 @@ export default function ContentLibraryPage({
     }
   }
 
+  async function loadShareLink(contentId: string) {
+    if (!isBasicTier) return;
+    setShareLinkLoading((m) => ({ ...m, [contentId]: true }));
+    try {
+      const data = await api<any>(`/api/content/${contentId}/share-link`, "GET");
+      setShareLinkByContent((m) => ({ ...m, [contentId]: data?.shareLink || null }));
+    } catch {
+      setShareLinkByContent((m) => ({ ...m, [contentId]: null }));
+    } finally {
+      setShareLinkLoading((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function rotateShareLink(contentId: string) {
+    try {
+      setPublishBusy((m) => ({ ...m, [contentId]: true }));
+      const res = await api<any>(`/api/content/${contentId}/share-link`, "POST", {});
+      setShareLinkByContent((m) => ({ ...m, [contentId]: res?.shareLink || null }));
+      setPublishMsg((m) => ({ ...m, [contentId]: "Share link created." }));
+    } catch (e: any) {
+      setPublishMsg((m) => ({ ...m, [contentId]: e?.message || "Failed to create share link." }));
+    } finally {
+      setPublishBusy((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function revokeShareLink(contentId: string) {
+    try {
+      setPublishBusy((m) => ({ ...m, [contentId]: true }));
+      await api(`/api/content/${contentId}/share-link/revoke`, "POST", {});
+      setShareLinkByContent((m) => ({ ...m, [contentId]: null }));
+      setPublishMsg((m) => ({ ...m, [contentId]: "Share link revoked." }));
+    } catch (e: any) {
+      setPublishMsg((m) => ({ ...m, [contentId]: e?.message || "Failed to revoke share link." }));
+    } finally {
+      setPublishBusy((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
   function hostPortFromOrigin(origin: string): { host: string; port: string } {
     if (!origin) return { host: "", port: "" };
     try {
@@ -714,6 +763,8 @@ export default function ContentLibraryPage({
 
   async function publishContent(contentId: string) {
     if (publishBusy[contentId]) return;
+    const currentItem = items.find((it) => it.id === contentId);
+    const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(currentItem?.type || ""));
     if (!publishAllowed) {
       setPublishMsg((m) => ({ ...m, [contentId]: publishReason }));
       return;
@@ -721,6 +772,23 @@ export default function ContentLibraryPage({
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
     setPublishMsg((m) => ({ ...m, [contentId]: "" }));
     try {
+      if (isBasicTier) {
+        if (isDerivativeType) {
+          setPublishMsg((m) => ({ ...m, [contentId]: "Derivatives require Advanced mode and clearance before publishing." }));
+          return;
+        }
+        const res = await api<any>(`/api/content/${contentId}/share-link`, "POST", {});
+        setShareLinkByContent((m) => ({ ...m, [contentId]: res?.shareLink || null }));
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === contentId
+              ? { ...it, status: "published", publishedAt: it.publishedAt || new Date().toISOString() }
+              : it
+          )
+        );
+        setPublishMsg((m) => ({ ...m, [contentId]: "Share link created." }));
+        return;
+      }
       if (!splitsAllowed) {
         await api(`/api/content/${contentId}/manifest`, "POST", {});
         const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
@@ -742,8 +810,12 @@ export default function ContentLibraryPage({
       }
       const versions = await api<any[]>(`/content/${contentId}/split-versions`, "GET");
       const latest = versions?.[0] || null;
-      if (!latest || (latest.status !== "draft" && latest.status !== "locked")) {
+      if (!latest) {
         setPublishMsg((m) => ({ ...m, [contentId]: "No split found. Open splits and save your 100% split." }));
+        return;
+      }
+      if (latest.status !== "locked") {
+        setPublishMsg((m) => ({ ...m, [contentId]: "Lock your split before publishing." }));
         return;
       }
       const participants = Array.isArray(latest.participants) ? latest.participants : [];
@@ -1810,7 +1882,8 @@ export default function ContentLibraryPage({
                                           parentLinkByContent[it.id] !== undefined ? Promise.resolve() : loadParentLink(it.id),
                                           derivativesByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativesForParent(it.id),
                                           creditsByContent[it.id] !== undefined ? Promise.resolve() : loadCredits(it.id),
-                                          auditByContent[it.id] !== undefined ? Promise.resolve() : loadAudit(it.id)
+                                          auditByContent[it.id] !== undefined ? Promise.resolve() : loadAudit(it.id),
+                                          shareLinkByContent[it.id] !== undefined ? Promise.resolve() : loadShareLink(it.id)
                                         ]);
                                       } else {
                                         await Promise.all([
@@ -1843,16 +1916,32 @@ export default function ContentLibraryPage({
                                 type="button"
                                 className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
                                 onClick={() => publishContent(it.id)}
-                                disabled={publishBusy[it.id] || it.status === "published" || !publishAllowed}
+                                disabled={
+                                  publishBusy[it.id] ||
+                                  !publishAllowed ||
+                                  (isBasicTier ? isDerivativeType : it.status === "published")
+                                }
                                 title={
-                                  it.status === "published"
-                                    ? "Already published"
-                                    : !publishAllowed
-                                      ? publishReason
-                                      : "Publish this content"
+                                  isBasicTier && isDerivativeType
+                                    ? "Derivatives require Advanced mode and clearance before publishing."
+                                    : it.status === "published" && !isBasicTier
+                                      ? "Already published"
+                                      : !publishAllowed
+                                        ? publishReason
+                                        : isBasicTier
+                                          ? "Create a share link"
+                                          : "Publish this content"
                                 }
                               >
-                                {it.status === "published" ? "Published" : publishBusy[it.id] ? "Publishing…" : "Publish"}
+                                {isBasicTier
+                                  ? publishBusy[it.id]
+                                    ? "Creating…"
+                                    : "Create share link"
+                                  : it.status === "published"
+                                    ? "Published"
+                                    : publishBusy[it.id]
+                                      ? "Publishing…"
+                                      : "Publish public buy link"}
                               </button>
 
                               <button
@@ -2882,7 +2971,9 @@ export default function ContentLibraryPage({
                                       <div className="text-xs text-neutral-500">{publicStatus.message}</div>
                                     ) : null}
                                     {it.status !== "published" ? (
-                                      <div className="text-xs text-neutral-500">Publish to generate a public buy link.</div>
+                                      <div className="text-xs text-neutral-500">
+                                        {isBasicTier ? "Create a share link to start sharing." : "Publish to generate a public buy link."}
+                                      </div>
                                     ) : null}
                                     {publicStatus?.mode === "quick" ? (
                                       <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
@@ -2927,7 +3018,9 @@ export default function ContentLibraryPage({
                                         </button>
                                       </div>
                                     ) : (
-                                      <div className="text-xs text-neutral-500">Publish this item to share it publicly.</div>
+                                      <div className="text-xs text-neutral-500">
+                                        {isBasicTier ? "Create a share link to share privately." : "Publish this item to share it publicly."}
+                                      </div>
                                     )}
                                     <div className="text-xs text-neutral-400">
                                       {publicStatus?.mode === "named"
@@ -3058,6 +3151,8 @@ export default function ContentLibraryPage({
                             const loopbackLink = `${loopbackBase}/buy/${it.id}`;
                             const hasPublicBuy = Boolean(buyBase);
                             const isLocalOnly = !hasPublicBuy;
+                            const shareLink = shareLinkByContent[it.id];
+                            const shareUrl = shareLink?.url || (shareLink?.token ? `${apiBase.replace(/\/$/, "")}/p/${shareLink.token}` : "");
                             let lanBase = "";
                             try {
                               const u = new URL(apiBase);
@@ -3068,122 +3163,173 @@ export default function ContentLibraryPage({
                             const lanLink = lanBase ? `${lanBase}/buy/${it.id}` : "";
                             return (
                               <>
-                                <div className="text-[11px] text-neutral-500">Buy links</div>
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="min-w-0">
-                                    Public buy link:{" "}
-                                    <span className="text-neutral-300 break-all">{hasPublicBuy ? buyLink : "Not available"}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                      onClick={() => {
-                                        if (hasPublicBuy) window.open(buyLink, "_blank", "noopener,noreferrer");
-                                      }}
-                                      disabled={!hasPublicBuy}
-                                    >
-                                      Open
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                      onClick={() => copyText(buyLink)}
-                                      disabled={!hasPublicBuy}
-                                    >
-                                      Copy link
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {lanBase ? (
-                                  <div className="flex items-center justify-between gap-3">
-                                    <div className="min-w-0">
-                                      LAN buy link:{" "}
-                                      <span className="text-neutral-300 break-all">{lanLink}</span>
-                                      <span className="text-neutral-500"> (same Wi‑Fi)</span>
-                                    </div>
-                                    <div className="flex items-center gap-2 shrink-0">
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={() => window.open(lanLink, "_blank", "noopener,noreferrer")}
-                                      >
-                                        Open
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                        onClick={() => copyText(lanLink)}
-                                      >
-                                        Copy link
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : null}
-
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="min-w-0">
-                                    Local loopback:{" "}
-                                    <span className="text-neutral-300 break-all">{loopbackLink}</span>
-                                    {isLocalOnly ? <span className="text-neutral-500"> (local only)</span> : null}
-                                  </div>
-                                  <div className="flex items-center gap-2 shrink-0">
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={() => window.open(loopbackLink, "_blank", "noopener,noreferrer")}
-                                    >
-                                      Open
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={() => copyText(loopbackLink)}
-                                    >
-                                      Copy link
-                                    </button>
-                                  </div>
-                                </div>
-
-                                {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
-
-                                <div className="text-[11px] text-neutral-500">Embed</div>
-                                {canEmbed ? (
+                                {isBasicTier ? (
                                   <>
+                                    <div className="text-[11px] text-neutral-500">Share link</div>
                                     <div className="flex items-center justify-between gap-3">
                                       <div className="min-w-0">
-                                        Script embed: <span className="text-neutral-300 break-all">{embedScript}</span>
+                                        <span className="text-neutral-300 break-all">{shareUrl || "No share link yet"}</span>
                                       </div>
                                       <div className="flex items-center gap-2 shrink-0">
                                         <button
                                           type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                          onClick={() => copyText(embedTag)}
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={() => shareUrl && window.open(shareUrl, "_blank", "noopener,noreferrer")}
+                                          disabled={!shareUrl}
                                         >
-                                          Copy snippet
+                                          Open
                                         </button>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-3">
-                                      <div className="min-w-0">
-                                        iFrame embed: <span className="text-neutral-300 break-all">{buyLink}</span>
-                                      </div>
-                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={() => copyText(shareUrl)}
+                                          disabled={!shareUrl}
+                                        >
+                                          Copy link
+                                        </button>
                                         <button
                                           type="button"
                                           className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                          onClick={() => copyText(embedIframe)}
+                                          onClick={() => rotateShareLink(it.id)}
+                                          disabled={publishBusy[it.id]}
                                         >
-                                          Copy iframe
+                                          Rotate
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                          onClick={() => revokeShareLink(it.id)}
+                                          disabled={publishBusy[it.id] || !shareUrl}
+                                        >
+                                          Revoke
                                         </button>
                                       </div>
                                     </div>
+                                    {shareLinkLoading[it.id] ? (
+                                      <div className="text-xs text-neutral-500">Loading share link…</div>
+                                    ) : null}
+                                    {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
                                   </>
                                 ) : (
-                                  <div className="text-xs text-neutral-500">
-                                    {lockReasons?.public_share || "Embeds require Advanced mode with public sharing."}
-                                  </div>
+                                  <>
+                                    <div className="text-[11px] text-neutral-500">Buy links</div>
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="min-w-0">
+                                        Public buy link:{" "}
+                                        <span className="text-neutral-300 break-all">{hasPublicBuy ? buyLink : "Not available"}</span>
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={() => {
+                                            if (hasPublicBuy) window.open(buyLink, "_blank", "noopener,noreferrer");
+                                          }}
+                                          disabled={!hasPublicBuy}
+                                        >
+                                          Open
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={() => copyText(buyLink)}
+                                          disabled={!hasPublicBuy}
+                                        >
+                                          Copy link
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {lanBase ? (
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                          LAN buy link:{" "}
+                                          <span className="text-neutral-300 break-all">{lanLink}</span>
+                                          <span className="text-neutral-500"> (same Wi‑Fi)</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 shrink-0">
+                                          <button
+                                            type="button"
+                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                            onClick={() => window.open(lanLink, "_blank", "noopener,noreferrer")}
+                                          >
+                                            Open
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                            onClick={() => copyText(lanLink)}
+                                          >
+                                            Copy link
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ) : null}
+
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="min-w-0">
+                                        Local loopback:{" "}
+                                        <span className="text-neutral-300 break-all">{loopbackLink}</span>
+                                        {isLocalOnly ? <span className="text-neutral-500"> (local only)</span> : null}
+                                      </div>
+                                      <div className="flex items-center gap-2 shrink-0">
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                          onClick={() => window.open(loopbackLink, "_blank", "noopener,noreferrer")}
+                                        >
+                                          Open
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                          onClick={() => copyText(loopbackLink)}
+                                        >
+                                          Copy link
+                                        </button>
+                                      </div>
+                                    </div>
+
+                                    {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
+
+                                    <div className="text-[11px] text-neutral-500">Embed</div>
+                                    {canEmbed ? (
+                                      <>
+                                        <div className="flex items-center justify-between gap-3">
+                                          <div className="min-w-0">
+                                            Script embed: <span className="text-neutral-300 break-all">{embedScript}</span>
+                                          </div>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                            <button
+                                              type="button"
+                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                              onClick={() => copyText(embedTag)}
+                                            >
+                                              Copy snippet
+                                            </button>
+                                          </div>
+                                        </div>
+                                        <div className="flex items-center justify-between gap-3">
+                                          <div className="min-w-0">
+                                            iFrame embed: <span className="text-neutral-300 break-all">{buyLink}</span>
+                                          </div>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                            <button
+                                              type="button"
+                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                              onClick={() => copyText(embedIframe)}
+                                            >
+                                              Copy iframe
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </>
+                                    ) : (
+                                      <div className="text-xs text-neutral-500">
+                                        {lockReasons?.public_share || "Embeds require Advanced mode with public sharing."}
+                                      </div>
+                                    )}
+                                  </>
                                 )}
 
                                 <div className="text-xs text-neutral-500">
