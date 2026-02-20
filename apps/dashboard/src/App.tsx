@@ -354,7 +354,6 @@ export default function App() {
     { key: "invite" as const, label: "Split Invites", hint: "Split requests", requiresSplits: true }
   ].filter((item) => {
     if (!item.requiresSplits) return true;
-    if (productTier === "basic") return false;
     if (advancedInactive) return false;
     return true;
   });
@@ -491,18 +490,9 @@ export default function App() {
                 );
               })}
               {productTier === "basic" ? (
-                <button
-                  type="button"
-                  onClick={() => setPage("profile")}
-                  className="w-full text-left rounded-lg px-3 py-2 transition border border-neutral-900 bg-neutral-950 text-neutral-500 cursor-not-allowed"
-                  disabled
-                >
-                  <div className="text-sm font-medium">Advanced features</div>
-                  <div className="text-xs text-neutral-400">
-                    Splits, invites, derivatives, and clearance are available in Advanced.
-                  </div>
-                  <div className="text-[11px] text-amber-300 mt-1">See Profile → Node Mode</div>
-                </button>
+                <div className="text-[11px] text-neutral-500 px-3 py-1">
+                  Advanced features are locked in Basic mode.
+                </div>
               ) : null}
               </div>
             </div>
