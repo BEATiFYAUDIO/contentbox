@@ -9,6 +9,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
@@ -77,6 +78,77 @@ function asString(x: unknown): string {
 
 function normalizeEmail(x: unknown): string {
   return asString(x).trim().toLowerCase();
+}
+
+function base32Encode(buf: Buffer): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = 0;
+  let value = 0;
+  let out = "";
+  for (const b of buf) {
+    value = (value << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      out += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) {
+    out += alphabet[(value << (5 - bits)) & 31];
+  }
+  return out;
+}
+
+function generateRecoveryKey(): string {
+  const raw = crypto.randomBytes(32);
+  return base32Encode(raw);
+}
+
+function hashRecoveryKey(recoveryKey: string): string {
+  const salt = crypto.randomBytes(16);
+  const hash = argon2id(new TextEncoder().encode(recoveryKey), salt, {
+    t: 2,
+    m: 65536,
+    p: 1,
+    dkLen: 32
+  });
+  return `argon2id$${salt.toString("base64url")}$${Buffer.from(hash).toString("base64url")}`;
+}
+
+function verifyRecoveryKey(recoveryKey: string, stored: string): boolean {
+  const parts = String(stored || "").split("$");
+  if (parts.length !== 3 || parts[0] !== "argon2id") return false;
+  const salt = Buffer.from(parts[1], "base64url");
+  const expected = Buffer.from(parts[2], "base64url");
+  const hash = Buffer.from(
+    argon2id(new TextEncoder().encode(recoveryKey), salt, {
+      t: 2,
+      m: 65536,
+      p: 1,
+      dkLen: expected.length
+    })
+  );
+  return hash.length === expected.length && crypto.timingSafeEqual(hash, expected);
+}
+
+function getClientIp(req: any): string {
+  const xf = String(req.headers?.["x-forwarded-for"] || "").split(",")[0].trim();
+  return xf || req.ip || req.socket?.remoteAddress || "unknown";
+}
+
+const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+function rateLimit(req: any, key: string, max: number, windowMs: number): boolean {
+  const now = Date.now();
+  const ip = getClientIp(req);
+  const k = `${key}:${ip}`;
+  const cur = rateBuckets.get(k);
+  if (!cur || cur.resetAt <= now) {
+    rateBuckets.set(k, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (cur.count >= max) return false;
+  cur.count += 1;
+  return true;
 }
 
 const RUNTIME_CONFIG = resolveRuntimeConfig();
@@ -1229,13 +1301,21 @@ app.addHook("onSend", async (_req, _reply, payload) => {
   return payload;
 });
 
-type JwtUser = { sub: string };
+type JwtUser = { sub: string; tokenVersion?: number };
 
 const requireAuth = async (req: any, reply: any) => {
   try {
     await req.jwtVerify();
   } catch {
     return reply.code(401).send({ error: "Unauthorized" });
+  }
+  const userId = (req.user as JwtUser)?.sub;
+  if (!userId) return reply.code(401).send({ error: "Unauthorized" });
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { tokenVersion: true } });
+  if (!user) return reply.code(401).send({ error: "Unauthorized" });
+  const tokenVersion = (req.user as JwtUser)?.tokenVersion ?? 0;
+  if ((user.tokenVersion ?? 0) !== tokenVersion) {
+    return reply.code(401).send({ error: "token_revoked" });
   }
 };
 
@@ -1246,6 +1326,14 @@ const optionalAuth = async (req: any, reply: any) => {
     await req.jwtVerify();
   } catch {
     return reply.code(401).send({ error: "Unauthorized" });
+  }
+  const userId = (req.user as JwtUser)?.sub;
+  if (!userId) return reply.code(401).send({ error: "Unauthorized" });
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { tokenVersion: true } });
+  if (!user) return reply.code(401).send({ error: "Unauthorized" });
+  const tokenVersion = (req.user as JwtUser)?.tokenVersion ?? 0;
+  if ((user.tokenVersion ?? 0) !== tokenVersion) {
+    return reply.code(401).send({ error: "token_revoked" });
   }
 };
 
@@ -2858,6 +2946,59 @@ app.get("/api/proofs/content/:contentId", { preHandler: requireAuth }, async (re
 /**
  * AUTH
  */
+app.get("/auth/recovery/status", async (_req, reply) => {
+  const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { recoveryKeyHash: true } });
+  return reply.send({ recoveryAvailable: Boolean(user?.recoveryKeyHash) });
+});
+
+app.post("/auth/recovery/reset", async (req, reply) => {
+  if (!rateLimit(req, "auth.recovery", 5, 5 * 60_000)) {
+    return reply.code(429).send({ error: "Too many attempts. Try again shortly." });
+  }
+  const body = (req.body ?? {}) as { email?: string; recoveryKey?: string; newPassword?: string };
+  const recoveryKey = String(body?.recoveryKey || "").trim();
+  const newPassword = String(body?.newPassword || "");
+  const email = body?.email ? normalizeEmail(body.email) : "";
+
+  if (!recoveryKey || !newPassword) return badRequest(reply, "recoveryKey and newPassword are required");
+  if (newPassword.length < 10) return badRequest(reply, "password must be at least 10 characters");
+
+  const nodeMode = getNodeMode();
+  let user = null as any;
+  if (nodeMode === "advanced" && !allowMultiUserOverride()) {
+    user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+    if (!user) return reply.code(404).send({ code: "user_not_found" });
+    if (email && normalizeEmail(email) !== normalizeEmail(user.email)) {
+      return reply.code(403).send({ code: "invalid_recovery_key" });
+    }
+  } else {
+    if (email) {
+      user = await prisma.user.findUnique({ where: { email } });
+    } else {
+      const count = await prisma.user.count();
+      if (count === 1) user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+    }
+    if (!user) return reply.code(404).send({ code: "user_not_found" });
+  }
+
+  if (!user.recoveryKeyHash) {
+    return reply.code(409).send({ code: "recovery_not_configured", reason: "Recovery is not configured for this user." });
+  }
+  if (!verifyRecoveryKey(recoveryKey, user.recoveryKeyHash)) {
+    return reply.code(403).send({ code: "invalid_recovery_key", reason: "Recovery key is invalid." });
+  }
+
+  const passwordHash = await bcrypt.hash(newPassword, 10);
+  const updated = await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash, tokenVersion: { increment: 1 } },
+    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
+  });
+
+  const token = app.jwt.sign({ sub: updated.id, tokenVersion: updated.tokenVersion ?? 0 });
+  return reply.send({ ok: true, token, user: { id: updated.id, email: updated.email, displayName: updated.displayName, createdAt: updated.createdAt } });
+});
+
 app.post("/auth/signup", async (req, reply) => {
   const body = (req.body ?? {}) as { email?: string; password?: string; displayName?: string };
 
@@ -2881,6 +3022,7 @@ app.post("/auth/signup", async (req, reply) => {
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
+  const userCount = await prisma.user.count();
 
   const user = await prisma.user.create({
     data: {
@@ -2888,11 +3030,21 @@ app.post("/auth/signup", async (req, reply) => {
       displayName: body.displayName?.trim() || null,
       passwordHash
     },
-    select: { id: true, email: true, displayName: true, createdAt: true }
+    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true, recoveryKeyHash: true }
   });
 
-  const token = app.jwt.sign({ sub: user.id });
-  return reply.send({ token, user });
+  let recoveryKey: string | null = null;
+  if (userCount === 0 && !user.recoveryKeyHash) {
+    recoveryKey = generateRecoveryKey();
+    const recoveryKeyHash = hashRecoveryKey(recoveryKey);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { recoveryKeyHash, recoveryKeyCreatedAt: new Date() }
+    });
+  }
+
+  const token = app.jwt.sign({ sub: user.id, tokenVersion: user.tokenVersion ?? 0 });
+  return reply.send({ token, user, recoveryKey: recoveryKey || undefined });
 });
 
 // List invitations for content owned by the authenticated user (no token values are returned)
@@ -3507,6 +3659,9 @@ app.delete("/invites/:id", { preHandler: requireAuth }, async (req: any, reply: 
 });
 
 app.post("/auth/login", async (req, reply) => {
+  if (!rateLimit(req, "auth.login", 10, 60_000)) {
+    return reply.code(429).send({ error: "Too many attempts. Try again shortly." });
+  }
   const body = (req.body ?? {}) as { email?: string; password?: string };
 
   const email = normalizeEmail(body?.email);
@@ -3531,7 +3686,7 @@ app.post("/auth/login", async (req, reply) => {
     }
   }
 
-  const token = app.jwt.sign({ sub: user.id });
+  const token = app.jwt.sign({ sub: user.id, tokenVersion: user.tokenVersion ?? 0 });
   return reply.send({
     token,
     user: { id: user.id, email: user.email, displayName: user.displayName, createdAt: user.createdAt }

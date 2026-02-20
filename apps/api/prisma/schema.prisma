@@ -99,6 +99,9 @@ model User {
   bio          String?
   avatarUrl    String?
   passwordHash String?
+  recoveryKeyHash      String?
+  recoveryKeyCreatedAt DateTime?
+  tokenVersion         Int      @default(0)
   createdAt    DateTime @default(now())
 
   identities           Identity[]

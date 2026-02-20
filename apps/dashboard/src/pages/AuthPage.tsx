@@ -16,6 +16,14 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
   const [nodeMode, setNodeMode] = React.useState<string | null>(null);
   const [ownerEmail, setOwnerEmail] = React.useState<string | null>(null);
   const [lockReasons, setLockReasons] = React.useState<Record<string, string> | null>(null);
+  const [recoveryAvailable, setRecoveryAvailable] = React.useState<boolean | null>(null);
+  const [showRecovery, setShowRecovery] = React.useState(false);
+  const [recoveryKey, setRecoveryKey] = React.useState("");
+  const [newPassword, setNewPassword] = React.useState("");
+  const [confirmPassword, setConfirmPassword] = React.useState("");
+  const [recoveryError, setRecoveryError] = React.useState<string | null>(null);
+  const [pendingToken, setPendingToken] = React.useState<string | null>(null);
+  const [newRecoveryKeyIssued, setNewRecoveryKeyIssued] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     try {
@@ -28,6 +36,17 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
     } catch {
       // ignore
     }
+  }, []);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await api<{ recoveryAvailable: boolean }>("/auth/recovery/status", "GET");
+        setRecoveryAvailable(Boolean(res?.recoveryAvailable));
+      } catch {
+        setRecoveryAvailable(null);
+      }
+    })();
   }, []);
 
   const isAdvanced = nodeMode === "advanced";
@@ -50,7 +69,12 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
           ? { email, password, displayName }
           : { email, password };
 
-      const resp = await api<{ token: string }>(path, "POST", payload);
+      const resp = await api<{ token: string; recoveryKey?: string }>(path, "POST", payload);
+      if (mode === "signup" && resp.recoveryKey) {
+        setPendingToken(resp.token);
+        setNewRecoveryKeyIssued(resp.recoveryKey);
+        return;
+      }
       setToken(resp.token);
       onAuthed();
     } catch (err: any) {
@@ -145,7 +169,129 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
             {loading ? "Working…" : mode === "signup" ? "Create account" : "Sign in"}
           </button>
         </form>
+
+        {mode === "login" ? (
+          <div className="mt-4 text-xs text-neutral-400">
+            {recoveryAvailable ? (
+              <button
+                className="text-xs text-neutral-300 hover:text-white"
+                type="button"
+                onClick={() => {
+                  setRecoveryError(null);
+                  setShowRecovery(true);
+                }}
+              >
+                Forgot password?
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
+
+      {showRecovery ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
+            <div className="text-sm font-medium">Reset password</div>
+            <div className="text-xs text-neutral-400 mt-1">Use your Recovery Key to set a new password.</div>
+            <div className="mt-3 space-y-2">
+              <input
+                placeholder="Recovery Key"
+                value={recoveryKey}
+                onChange={(e) => setRecoveryKey(e.target.value)}
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+              />
+              <input
+                placeholder="New password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                type="password"
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+              />
+              <input
+                placeholder="Confirm password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                type="password"
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+              />
+            </div>
+            {recoveryError ? (
+              <div className="mt-2 rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-xs">
+                {recoveryError}
+              </div>
+            ) : null}
+            <div className="mt-4 flex gap-2 justify-end">
+              <button
+                type="button"
+                onClick={() => setShowRecovery(false)}
+                className="text-xs rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="text-xs rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900"
+                onClick={async () => {
+                  if (newPassword !== confirmPassword) {
+                    setRecoveryError("Passwords do not match.");
+                    return;
+                  }
+                  try {
+                    setRecoveryError(null);
+                    const res = await api<{ token: string }>("/auth/recovery/reset", "POST", {
+                      email: email || undefined,
+                      recoveryKey,
+                      newPassword
+                    });
+                    setToken(res.token);
+                    setShowRecovery(false);
+                    onAuthed();
+                  } catch (e: any) {
+                    setRecoveryError(e?.message || "Failed to reset password.");
+                  }
+                }}
+              >
+                Reset password
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {newRecoveryKeyIssued && pendingToken ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
+            <div className="text-sm font-medium">Recovery key</div>
+            <div className="text-xs text-neutral-400 mt-1">Save this key. It will only be shown once.</div>
+            <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs break-all">
+              {newRecoveryKeyIssued}
+            </div>
+            <div className="mt-3 flex gap-2 justify-end">
+              <button
+                type="button"
+                className="text-xs rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900"
+                onClick={() => {
+                  navigator.clipboard.writeText(newRecoveryKeyIssued).catch(() => {});
+                }}
+              >
+                Copy
+              </button>
+              <button
+                type="button"
+                className="text-xs rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900"
+                onClick={() => {
+                  setToken(pendingToken);
+                  setNewRecoveryKeyIssued(null);
+                  setPendingToken(null);
+                  onAuthed();
+                }}
+              >
+                I saved it
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
