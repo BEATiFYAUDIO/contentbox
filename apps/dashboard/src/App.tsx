@@ -355,6 +355,7 @@ export default function App() {
   ].filter((item) => {
     if (!item.requiresSplits) return true;
     if (productTier === "basic") return false;
+    if (advancedInactive) return false;
     return true;
   });
 
@@ -588,7 +589,7 @@ export default function App() {
                   {(() => {
                     if (productTier === "advanced") {
                       if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
-                      if (publicStatus?.mode === "quick") return "Temporary (Quick — testing only)";
+                      if (publicStatus?.mode === "quick") return "Temporary (testing only — admin access only)";
                       return "Not configured";
                     }
                     if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;

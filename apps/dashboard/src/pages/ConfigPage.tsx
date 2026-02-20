@@ -212,7 +212,9 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
       const json = await res.json();
       setPublicStatus(json || null);
       if (res.ok && json?.mode === "quick" && json?.publicOrigin) {
-        const ok = window.confirm("Temporary link created (testing only). Open in new tab?");
+        const ok = window.confirm(
+          "Temporary link created (testing only). Use for admin access. It does not activate Advanced. Open in new tab?"
+        );
         if (ok) {
           window.open(String(json.publicOrigin), "_blank", "noopener,noreferrer");
         }
@@ -610,7 +612,25 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
             </button>
             {quickDisabled ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                Advanced prefers named tunnel when configured. Temporary link is disabled.
+                Temporary (testing only — admin access only). Advanced prefers named when configured.
+              </div>
+            ) : null}
+            {productTier === "advanced" && publicStatus?.mode === "quick" && publicStatus?.publicOrigin ? (
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  onClick={() => window.open(String(publicStatus.publicOrigin), "_blank", "noopener,noreferrer")}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Open temporary link
+                </button>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(String(publicStatus.publicOrigin)).catch(() => {});
+                  }}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Copy temporary link
+                </button>
               </div>
             ) : null}
             <button
@@ -877,7 +897,9 @@ export default function ConfigPage({ showAdvanced }: { showAdvanced?: boolean })
                   {publicStatus?.mode === "named"
                     ? `Permanent (${(publicStatus as any)?.tunnelName || "Named"})`
                     : publicStatus?.mode === "quick"
-                      ? "Temporary (Quick)"
+                      ? productTier === "advanced"
+                        ? "Temporary (testing only — admin access only)"
+                        : "Temporary (Quick)"
                       : "Local"}
                 </span>
               </div>
