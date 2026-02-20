@@ -6783,6 +6783,7 @@ app.get("/public/content/:id", handlePublicContent);
 async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const objectKey = asString((req.query || {})?.objectKey || "").trim();
+  const shareToken = asString((req.query || {})?.share || "").trim();
   if (!objectKey) return badRequest(reply, "objectKey required");
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
@@ -6798,7 +6799,14 @@ async function handlePublicPreviewFile(req: any, reply: any) {
       })
     : null;
   const allowReviewPreview = Boolean(reviewAccess?.reviewGrantedAt);
-  if (content.storefrontStatus === "DISABLED" && !allowReviewPreview) return notFound(reply, "Not found");
+  let allowSharePreview = false;
+  if (shareToken) {
+    const share = await prisma.shareLink.findUnique({ where: { token: shareToken } });
+    if (share && share.status === "ACTIVE" && share.contentId === contentId) {
+      allowSharePreview = true;
+    }
+  }
+  if (content.storefrontStatus === "DISABLED" && !allowReviewPreview && !allowSharePreview) return notFound(reply, "Not found");
   if (isDerivativeType || publicLinks.length > 0) {
     if (publicLinks.length === 0) return notFound(reply, "Not found");
     if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
@@ -6869,7 +6877,7 @@ async function handleShortPublicLink(req: any, reply: any) {
   if (share && share.status === "ACTIVE") {
     const content = await prisma.contentItem.findUnique({ where: { id: share.contentId } });
     if (!content || content.deletedAt) return notFound(reply, "Not found");
-    return reply.redirect(`/buy/${encodeURIComponent(content.id)}`);
+    return reply.redirect(`/buy/${encodeURIComponent(content.id)}?share=${encodeURIComponent(token)}`);
   }
   const content = await prisma.contentItem.findUnique({ where: { id: token } });
   if (!content) return notFound(reply, "Not found");
@@ -7158,9 +7166,14 @@ async function handleBuyPage(req: any, reply: any) {
     return url;
   }
 
+  const shareToken = (() => {
+    try { return new URLSearchParams(location.search || "").get("share") || ""; } catch { return ""; }
+  })();
+
   function previewFallbackUrl(offer){
     if (!offer?.previewObjectKey) return null;
-    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey);
+    const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
+    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
   }
 
   function renderOffer(offer, entitlement){
