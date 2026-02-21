@@ -2,20 +2,26 @@ import React from "react";
 import { api } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 
-type SaleRow = {
+type PendingRow = {
   id: string;
   contentId: string;
-  manifestSha256?: string | null;
   amountSats: string | number;
   status: string;
-  paidVia?: string | null;
-  createdAt: string;
-  receiptToken?: string | null;
   memo?: string | null;
-  bolt11?: string | null;
-  providerId?: string | null;
-  onchainAddress?: string | null;
+  createdAt: string;
   destination?: { type: string; value: string } | null;
+  content?: { id: string; title: string; type: string } | null;
+};
+
+type SaleRow = {
+  id: string;
+  intentId: string;
+  contentId: string;
+  amountSats: string | number;
+  currency: string;
+  rail: string;
+  memo?: string | null;
+  recognizedAt: string;
   content?: { id: string; title: string; type: string } | null;
 };
 
@@ -24,34 +30,35 @@ type SalesPageProps = {
 };
 
 export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
-  const [rows, setRows] = React.useState<SaleRow[]>([]);
-  const [msg, setMsg] = React.useState<string | null>(null);
+  const [pending, setPending] = React.useState<PendingRow[]>([]);
+  const [sales, setSales] = React.useState<SaleRow[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [confirmRow, setConfirmRow] = React.useState<SaleRow | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [confirmRow, setConfirmRow] = React.useState<PendingRow | null>(null);
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionLoading, setActionLoading] = React.useState(false);
   const [toastMsg, setToastMsg] = React.useState<string | null>(null);
 
-  React.useEffect(() => {
-    let active = true;
-    (async () => {
-      try {
-        setLoading(true);
-        setMsg(null);
-        const data = await api<SaleRow[]>("/me/sales/payment-intents", "GET");
-        if (!active) return;
-        setRows(data || []);
-      } catch (e: any) {
-        if (!active) return;
-        setMsg(e?.message || "Failed to load sales.");
-      } finally {
-        if (active) setLoading(false);
-      }
-    })();
-    return () => {
-      active = false;
-    };
+  const loadData = React.useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [pendingRes, salesRes] = await Promise.all([
+        api<PendingRow[]>("/api/revenue/pending-manual", "GET"),
+        api<SaleRow[]>("/api/revenue/sales", "GET")
+      ]);
+      setPending(pendingRes || []);
+      setSales(salesRes || []);
+    } catch (e: any) {
+      setError(e?.message || "Failed to load revenue data");
+    } finally {
+      setLoading(false);
+    }
   }, []);
+
+  React.useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   React.useEffect(() => {
     if (!toastMsg) return;
@@ -63,12 +70,6 @@ export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
     const n = Number(raw || 0);
     if (!Number.isFinite(n)) return "0";
     return Math.round(n).toLocaleString();
-  };
-
-  const isManualPending = (r: SaleRow) => {
-    if (productTier !== "basic") return false;
-    if (r.status === "paid") return false;
-    return !r.bolt11 && !r.providerId && !r.onchainAddress;
   };
 
   const copy = (text: string) => {
@@ -86,9 +87,8 @@ export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
         "POST"
       );
       if (res?.ok) {
-        setRows((prev) =>
-          prev.map((r) => (r.id === confirmRow.id ? { ...r, status: "paid", paidVia: r.paidVia || "lightning" } : r))
-        );
+        setPending((prev) => prev.filter((r) => r.id !== confirmRow.id));
+        await loadData();
         setToastMsg("Marked paid");
         setConfirmRow(null);
       }
@@ -103,42 +103,49 @@ export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Revenue Ledger</div>
-        <div className="text-sm text-neutral-400 mt-1">Track incoming payments and settle manual receipts.</div>
+        <div className="text-sm text-neutral-400 mt-1">Unified sales tracking across payment rails.</div>
       </div>
 
-      {msg ? <div className="text-sm text-red-300">{msg}</div> : null}
+      {error ? <div className="text-sm text-red-300">{error}</div> : null}
 
-      <div className="overflow-x-auto rounded-xl border border-neutral-800 bg-neutral-900/10">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-left text-neutral-400">
-              <th className="py-2 px-3">Date</th>
-              <th className="py-2 px-3">Item</th>
-              <th className="py-2 px-3">Amount (sats)</th>
-              <th className="py-2 px-3">Status</th>
-              <th className="py-2 px-3">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr>
-                <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
-                  Loading sales…
-                </td>
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+        <div className="text-base font-semibold">Pending manual payments</div>
+        <div className="text-sm text-neutral-400 mt-1">Basic manual Lightning confirmations.</div>
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-neutral-400">
+                <th className="py-2 px-3">Date</th>
+                <th className="py-2 px-3">Item</th>
+                <th className="py-2 px-3">Amount (sats)</th>
+                <th className="py-2 px-3">Memo</th>
+                <th className="py-2 px-3">Action</th>
               </tr>
-            ) : null}
-            {!loading &&
-              rows.map((r) => {
-                const manual = isManualPending(r);
-                const statusLabel = manual ? "Pending (Manual)" : r.status;
-                return (
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
+                    Loading pending payments…
+                  </td>
+                </tr>
+              ) : null}
+              {!loading && pending.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
+                    No pending manual payments.
+                  </td>
+                </tr>
+              ) : null}
+              {!loading &&
+                pending.map((r) => (
                   <tr key={r.id} className="border-t border-neutral-800">
                     <td className="py-2 px-3 text-xs text-neutral-400">{new Date(r.createdAt).toLocaleString()}</td>
                     <td className="py-2 px-3">{r.content?.title || "Content"}</td>
                     <td className="py-2 px-3">{formatSats(r.amountSats)}</td>
-                    <td className="py-2 px-3">{statusLabel}</td>
+                    <td className="py-2 px-3 font-mono text-xs">{r.memo || "—"}</td>
                     <td className="py-2 px-3">
-                      {manual ? (
+                      {productTier === "basic" ? (
                         <button
                           onClick={() => {
                             setActionError(null);
@@ -153,17 +160,54 @@ export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
                       )}
                     </td>
                   </tr>
-                );
-              })}
-            {!loading && rows.length === 0 && (
-              <tr>
-                <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
-                  No sales yet.
-                </td>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+        <div className="text-base font-semibold">Sales ledger</div>
+        <div className="text-sm text-neutral-400 mt-1">Recognized revenue events.</div>
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-neutral-400">
+                <th className="py-2 px-3">Recognized</th>
+                <th className="py-2 px-3">Item</th>
+                <th className="py-2 px-3">Amount</th>
+                <th className="py-2 px-3">Rail</th>
+                <th className="py-2 px-3">Memo</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
+                    Loading sales ledger…
+                  </td>
+                </tr>
+              ) : null}
+              {!loading && sales.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
+                    No sales recorded yet.
+                  </td>
+                </tr>
+              ) : null}
+              {!loading &&
+                sales.map((s) => (
+                  <tr key={s.id} className="border-t border-neutral-800">
+                    <td className="py-2 px-3 text-xs text-neutral-400">{new Date(s.recognizedAt).toLocaleString()}</td>
+                    <td className="py-2 px-3">{s.content?.title || "Content"}</td>
+                    <td className="py-2 px-3">{formatSats(s.amountSats)} {s.currency || "SAT"}</td>
+                    <td className="py-2 px-3">{s.rail}</td>
+                    <td className="py-2 px-3 font-mono text-xs">{s.memo || "—"}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <AuditPanel scopeType="royalty" title="Audit" exportName="royalty-audit.json" />
@@ -172,18 +216,14 @@ export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-950 p-5 text-neutral-100">
             <div className="text-lg font-semibold">Mark paid</div>
-            <div className="text-sm text-neutral-400 mt-1">
-              Confirm you received the manual payment before unlocking.
-            </div>
+            <div className="text-sm text-neutral-400 mt-1">Confirm you received the manual payment.</div>
             <div className="mt-4 space-y-2 text-sm">
               <div>
                 <span className="text-neutral-400">Amount:</span> {formatSats(confirmRow.amountSats)} sats
               </div>
               <div>
                 <span className="text-neutral-400">Memo:</span>{" "}
-                <span className="font-mono text-xs">
-                  {confirmRow.memo || `CBX-${confirmRow.id.slice(-6).toUpperCase()}`}
-                </span>
+                <span className="font-mono text-xs">{confirmRow.memo || `CBX-${confirmRow.id.slice(-6).toUpperCase()}`}</span>
                 <button
                   className="ml-2 text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                   onClick={() => copy(confirmRow.memo || `CBX-${confirmRow.id.slice(-6).toUpperCase()}`)}

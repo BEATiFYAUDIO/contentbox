@@ -7919,12 +7919,19 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   if (!onchain && !lightning && productTier === "basic" && lightningReason === "PROVIDER_NOT_CONFIGURED" && lightningAddress) {
     const shortIntentId = intent.id.slice(-6).toUpperCase();
+    const memo = `CBX-${shortIntentId}`;
+    try {
+      await prisma.paymentIntent.update({
+        where: { id: intent.id },
+        data: { memo }
+      });
+    } catch {}
     return reply.send({
       status: "manual_required",
       amountSats: Number(amountSats),
       intentId: intent.id,
       destination: { type: "lightning_address", value: lightningAddress },
-      memo: `CBX-${shortIntentId}`,
+      memo,
       message: "Send sats to the Lightning Address and include the memo."
     });
   }
@@ -9727,6 +9734,79 @@ async function settlePaymentIntent(paymentIntentId: string) {
   return settlement;
 }
 
+type FinalizePaymentIntentOptions = {
+  rail: "manual_lightning" | "provider_invoice" | "node_invoice";
+  confirmedByUserId?: string | null;
+};
+
+async function finalizePaymentIntent(intentId: string, options: FinalizePaymentIntentOptions) {
+  const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+  if (!intent) throw new Error("PaymentIntent not found");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  if (!content) throw new Error("Content not found");
+
+  const existingSale = await prisma.sale.findUnique({ where: { intentId } });
+  if (intent.status === "paid" && existingSale) {
+    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
+  }
+
+  const memo = intent.memo || (options.rail === "manual_lightning" ? `CBX-${intent.id.slice(-6).toUpperCase()}` : null);
+  const recognizedAt = intent.paidAt || new Date();
+
+  const sale = await prisma.$transaction(async (tx) => {
+    const fresh = await tx.paymentIntent.findUnique({ where: { id: intentId } });
+    if (!fresh) throw new Error("PaymentIntent not found");
+
+    if (fresh.status !== "paid") {
+      const paidVia = (fresh.paidVia || "lightning") as any;
+      await tx.paymentIntent.update({
+        where: { id: intentId },
+        data: {
+          status: "paid" as any,
+          paidAt: recognizedAt,
+          paidVia,
+          memo: memo || fresh.memo || null
+        }
+      });
+    } else if (!fresh.memo && memo) {
+      await tx.paymentIntent.update({
+        where: { id: intentId },
+        data: { memo }
+      });
+    }
+
+    return tx.sale.upsert({
+      where: { intentId },
+      update: {
+        amountSats: fresh.amountSats,
+        contentId: fresh.contentId,
+        sellerUserId: content.ownerUserId,
+        currency: "SAT",
+        rail: options.rail,
+        memo: memo || fresh.memo || null,
+        recognizedAt,
+        confirmedByUserId: options.confirmedByUserId || null
+      },
+      create: {
+        intentId,
+        contentId: fresh.contentId,
+        sellerUserId: content.ownerUserId,
+        amountSats: fresh.amountSats,
+        currency: "SAT",
+        rail: options.rail,
+        memo: memo || fresh.memo || null,
+        recognizedAt,
+        confirmedByUserId: options.confirmedByUserId || null
+      }
+    });
+  });
+
+  const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+  return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
+}
+
 // Lock a split version (owner only)
 app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
@@ -10210,6 +10290,74 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
   return reply.send(readiness);
 });
 
+app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+  if (contentIds.length === 0) return [];
+
+  let lightningAddress: string | null = null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId },
+        orderBy: { createdAt: "desc" }
+      });
+      const v = asString(identity?.value || "").trim();
+      if (v) lightningAddress = v;
+    }
+  } catch {
+    lightningAddress = null;
+  }
+
+  const intents = await prisma.paymentIntent.findMany({
+    where: {
+      contentId: { in: contentIds },
+      status: "pending" as any,
+      purpose: "CONTENT_PURCHASE" as any
+    },
+    include: { content: true },
+    orderBy: { createdAt: "desc" }
+  });
+
+  return intents
+    .filter((i) => !i.bolt11 && !i.providerId && !i.onchainAddress)
+    .map((i) => ({
+      id: i.id,
+      contentId: i.contentId,
+      amountSats: i.amountSats.toString(),
+      status: i.status,
+      memo: i.memo || `CBX-${i.id.slice(-6).toUpperCase()}`,
+      createdAt: i.createdAt.toISOString(),
+      destination: lightningAddress ? { type: "lightning_address", value: lightningAddress } : null,
+      content: i.content ? { id: i.content.id, title: i.content.title, type: i.content.type } : null
+    }));
+});
+
+app.get("/api/revenue/sales", { preHandler: requireAuth }, async (req: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const sales = await prisma.sale.findMany({
+    where: { sellerUserId: userId },
+    include: { content: true },
+    orderBy: { recognizedAt: "desc" }
+  });
+  return sales.map((s) => ({
+    id: s.id,
+    intentId: s.intentId,
+    contentId: s.contentId,
+    amountSats: s.amountSats.toString(),
+    currency: s.currency,
+    rail: s.rail,
+    memo: s.memo,
+    recognizedAt: s.recognizedAt.toISOString(),
+    content: s.content ? { id: s.content.id, title: s.content.title, type: s.content.type } : null
+  }));
+});
+
 // ------------------------------
 // Finance endpoints (read-only)
 // ------------------------------
@@ -10563,26 +10711,27 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     await prisma.paymentIntent.update({
       where: { id: intent.id },
       data: {
-        status: "paid" as any,
         paidVia: paidVia as any,
-        paidAt: paidAt ? new Date(paidAt) : new Date(),
+        paidAt: paidAt ? new Date(paidAt) : intent.paidAt,
         onchainTxid: onchainUpdate.txid ?? intent.onchainTxid,
         onchainVout: onchainUpdate.vout ?? intent.onchainVout,
         confirmations: onchainUpdate.confirmations ?? intent.confirmations
       }
     });
 
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-
+    const rail = intent.providerId
+      ? PAYMENT_PROVIDER.kind === "lnd"
+        ? "node_invoice"
+        : "provider_invoice"
+      : "node_invoice";
+    const finalized = await finalizePaymentIntent(intent.id, { rail });
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     return reply.send({
       ok: true,
       status: "paid",
       paidVia,
       paidAt,
-      receiptToken: updated?.receiptToken || null,
+      receiptToken: finalized?.receiptToken || updated?.receiptToken || null,
       receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
     });
   }
@@ -10608,41 +10757,14 @@ app.post("/api/payments/intents/:intentId/mark-paid", { preHandler: requireAuth 
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content || content.ownerUserId !== userId) return forbidden(reply);
 
-  if (intent.status !== "pending") return badRequest(reply, "PaymentIntent is not pending");
-
   const isManual = !intent.bolt11 && !intent.providerId && !intent.onchainAddress;
   if (!isManual) return badRequest(reply, "PaymentIntent is not manual");
 
-  const now = new Date();
-  await prisma.paymentIntent.update({
-    where: { id: intentId },
-    data: {
-      status: "paid" as any,
-      paidAt: now,
-      paidVia: (intent.paidVia || "lightning") as any
-    }
+  const finalized = await finalizePaymentIntent(intentId, {
+    rail: "manual_lightning",
+    confirmedByUserId: userId
   });
-
-  let receiptToken: string | null = intent.receiptToken || null;
-  try {
-    const finalized = await finalizePurchase(intentId, prisma);
-    receiptToken = finalized?.receiptToken || receiptToken;
-  } catch {
-    const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
-    const nowMs = Date.now();
-    const expired = intent.receiptTokenExpiresAt ? intent.receiptTokenExpiresAt.getTime() < nowMs : false;
-    if (!receiptToken || expired) {
-      const newToken = crypto.randomBytes(24).toString("hex");
-      const receiptTokenExpiresAt = new Date(nowMs + ttlSeconds * 1000);
-      await prisma.paymentIntent.update({
-        where: { id: intentId },
-        data: { receiptToken: newToken, receiptTokenExpiresAt }
-      });
-      receiptToken = newToken;
-    }
-  }
-
-  return reply.send({ ok: true, status: "paid", receiptToken });
+  return reply.send({ ok: true, status: "paid", receiptToken: finalized.receiptToken || null });
 });
 
 /**
@@ -10672,7 +10794,6 @@ if (process.env.NODE_ENV !== "production") {
     await prisma.paymentIntent.update({
       where: { id: paymentIntentId },
       data: {
-        status: "paid" as any,
         paidVia: paidVia as any,
         paidAt: new Date(),
         confirmations: paidVia === "onchain" ? ONCHAIN_MIN_CONFS : intent.confirmations,
@@ -10681,7 +10802,12 @@ if (process.env.NODE_ENV !== "production") {
       }
     });
 
-    await finalizePurchase(paymentIntentId, prisma);
+    const rail = intent.providerId
+      ? PAYMENT_PROVIDER.kind === "lnd"
+        ? "node_invoice"
+        : "provider_invoice"
+      : "node_invoice";
+    await finalizePaymentIntent(paymentIntentId, { rail });
 
     const afterSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId } });
     const afterEntitlement = await prisma.entitlement.findFirst({ where: { paymentIntentId } });
@@ -10775,8 +10901,6 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
   await prisma.paymentIntent.update({
     where: { id },
     data: {
-      status: "paid" as any,
-      paidAt: new Date(),
       onchainTxid: body.onchainTxid ? asString(body.onchainTxid) : intent.onchainTxid,
       onchainVout: Number.isFinite(Number(body.onchainVout)) ? Math.floor(Number(body.onchainVout)) : intent.onchainVout,
       confirmations: Number.isFinite(Number(body.confirmations)) ? Math.floor(Number(body.confirmations)) : intent.confirmations
@@ -10784,8 +10908,14 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
   });
 
   try {
-    const settlement = await settlePaymentIntent(id);
-    return reply.send({ ok: true, settlementId: settlement.id });
+    const rail = intent.providerId
+      ? PAYMENT_PROVIDER.kind === "lnd"
+        ? "node_invoice"
+        : "provider_invoice"
+      : "node_invoice";
+    const finalized = await finalizePaymentIntent(id, { rail, confirmedByUserId: userId });
+    const settlement = await prisma.settlement.findUnique({ where: { paymentIntentId: id } });
+    return reply.send({ ok: true, settlementId: settlement?.id || null, receiptToken: finalized.receiptToken || null });
   } catch (e: any) {
     const status = Number(e?.statusCode) || 500;
     const code = e?.code ? String(e.code) : undefined;
