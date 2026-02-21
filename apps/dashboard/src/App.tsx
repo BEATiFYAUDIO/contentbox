@@ -40,6 +40,16 @@ type Me = {
   useNodeRails?: boolean | null;
 };
 
+type WhoamiInfo = {
+  nodeId?: string | null;
+  startedAt?: string | null;
+  db?: {
+    name?: string | null;
+    addr?: string | null;
+    port?: number | null;
+  } | null;
+};
+
 type PageKey =
   | "library"
   | "store"
@@ -112,6 +122,7 @@ function getReceiptTokenFromLocation(): string | null {
 ======================= */
 
 export default function App() {
+  const devApiUrl = ((import.meta as any).env?.VITE_API_URL || "").toString().trim().replace(/\/$/, "");
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [authNotice, setAuthNotice] = useState<string | null>(() => {
@@ -131,6 +142,8 @@ export default function App() {
   const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(null);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
+  const [whoamiInfo, setWhoamiInfo] = useState<WhoamiInfo | null>(null);
+  const [whoamiStatus, setWhoamiStatus] = useState<"idle" | "disabled" | "ok" | "error">("idle");
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -145,6 +158,40 @@ export default function App() {
       setPage("profile");
     }
   }, []);
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (!devApiUrl) {
+      setWhoamiStatus("disabled");
+      return;
+    }
+    let cancelled = false;
+    fetch(`${devApiUrl}/__whoami`, { method: "GET" })
+      .then(async (res) => {
+        if (res.status === 404) {
+          if (!cancelled) setWhoamiStatus("disabled");
+          return null;
+        }
+        if (!res.ok) throw new Error(`whoami ${res.status}`);
+        const data = (await res.json()) as WhoamiInfo;
+        return data;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        if (data) {
+          setWhoamiInfo(data);
+          setWhoamiStatus("ok");
+        } else {
+          setWhoamiStatus("disabled");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setWhoamiStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [devApiUrl]);
 
   useEffect(() => {
     try {
@@ -555,6 +602,30 @@ export default function App() {
         <header className="px-6 py-4 border-b border-neutral-900 space-y-2">
           <div className="text-sm text-neutral-400">Dashboard</div>
           <div className="text-xl font-semibold">{pageTitle}</div>
+          {import.meta.env.DEV ? (
+            <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+              <span>Connected To:</span>
+              <span className="font-mono">{devApiUrl || "VITE_API_URL not set"}</span>
+              <span className="text-neutral-500">•</span>
+              {whoamiStatus === "ok" ? (
+                <span className="font-mono">
+                  {whoamiInfo?.nodeId || "unknown"} •{" "}
+                  {(whoamiInfo?.db?.name || "db?") +
+                    (whoamiInfo?.db?.addr
+                      ? `@${whoamiInfo.db.addr}${whoamiInfo.db.port ? `:${whoamiInfo.db.port}` : ""}`
+                      : "")}
+                </span>
+              ) : (
+                <span>
+                  {whoamiStatus === "disabled"
+                    ? "whoami disabled"
+                    : whoamiStatus === "error"
+                      ? "whoami error"
+                      : "whoami checking"}
+                </span>
+              )}
+            </div>
+          ) : null}
           {getToken() ? (
             <div className="flex flex-wrap items-center gap-2">
               <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">

@@ -461,6 +461,14 @@ function normalizeUrlString(u: string | null | undefined): string | null {
   }
 }
 
+function isLoopbackIp(ip: string): boolean {
+  const value = String(ip || "");
+  if (!value) return false;
+  if (value === "127.0.0.1" || value === "::1") return true;
+  if (value.startsWith("::ffff:127.0.0.1")) return true;
+  return false;
+}
+
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
@@ -635,6 +643,9 @@ const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
 const STARTED_AT = new Date().toISOString();
+const NODE_ID = (process.env.NODE_ID || "").trim() || os.hostname();
+const WHOAMI_ENABLED = process.env.WHOAMI_ENABLED === "1";
+const WHOAMI_ALLOW_REMOTE = process.env.WHOAMI_ALLOW_REMOTE === "1";
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -11557,6 +11568,39 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 }
 
 app.post("/invites/:token/accept", handlePublicInviteAccept);
+
+/**
+ * Dev-only API/DB identity signal (disabled by default).
+ */
+app.get("/__whoami", async (req: any, reply: any) => {
+  if (process.env.NODE_ENV === "production" || !WHOAMI_ENABLED) {
+    return reply.code(404).send({ error: "Not found" });
+  }
+
+  const ip = asString((req as any)?.ip || "");
+  if (!WHOAMI_ALLOW_REMOTE && !isLoopbackIp(ip)) {
+    return reply.code(404).send({ error: "Not found" });
+  }
+
+  let db: { name: string | null; addr: string | null; port: number | null } | null = null;
+  try {
+    const rows = await prisma.$queryRaw<
+      { name: string | null; addr: string | null; port: number | null }[]
+    >`select current_database() as name, inet_server_addr() as addr, inet_server_port() as port`;
+    const first = Array.isArray(rows) ? rows[0] : null;
+    if (first) {
+      db = { name: first.name ?? null, addr: first.addr ?? null, port: first.port ?? null };
+    }
+  } catch {
+    db = null;
+  }
+
+  return reply.send({
+    nodeId: NODE_ID,
+    startedAt: STARTED_AT,
+    db
+  });
+});
 
 /** ---------- boot ---------- */
 
