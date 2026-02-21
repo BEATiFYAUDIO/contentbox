@@ -9,8 +9,18 @@ ALTER TABLE IF EXISTS "ClearanceRequest"
 ADD COLUMN IF NOT EXISTS "reviewGrantedAt" TIMESTAMP(3),
 ADD COLUMN IF NOT EXISTS "reviewGrantedByUserId" TEXT;
 
--- AlterTable
-ALTER TABLE "ContentCredit" ALTER COLUMN "updatedAt" DROP DEFAULT;
+-- AlterTable (guard if table exists)
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = 'ContentCredit'
+  ) THEN
+    ALTER TABLE "ContentCredit" ALTER COLUMN "updatedAt" DROP DEFAULT;
+  END IF;
+END $$;
 
 -- AlterTable
 ALTER TABLE "ContentItem" ALTER COLUMN "updatedAt" DROP DEFAULT;
