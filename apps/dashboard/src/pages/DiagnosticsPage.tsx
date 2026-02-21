@@ -526,8 +526,10 @@ export default function DiagnosticsPage() {
             <div><b>Retention</b>: {backupRetentionDays ? `${backupRetentionDays} days` : "—"}</div>
             {backupsErr ? <div style={{ color: "#ffb4b4" }}>{backupsErr}</div> : null}
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6 }} htmlFor="backups-enabled">
                 <input
+                  id="backups-enabled"
+                  name="backupsEnabled"
                   type="checkbox"
                   checked={backupsEnabled}
                   onChange={(e) => toggleBackups(e.target.checked)}
@@ -570,13 +572,19 @@ export default function DiagnosticsPage() {
         <div style={{ opacity: 0.7, marginBottom: 8 }}>
           One host per line (e.g. buy.artist.com). Health path: <b>{healthPath}</b>
         </div>
+        <label htmlFor="diagnostics-test-hosts" style={{ display: "block", opacity: 0.7, marginBottom: 6 }}>
+          Hosts
+        </label>
         <textarea
+          id="diagnostics-test-hosts"
+          name="diagnosticsTestHosts"
           value={hostsText}
           onChange={(e) => setHostsText(e.target.value)}
           rows={3}
           className={inputClass}
           style={{ resize: "vertical" }}
           placeholder="buy.artist.com\nstudio.artist.com"
+          autoComplete="off"
         />
         <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
           <button

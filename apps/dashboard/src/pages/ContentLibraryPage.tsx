@@ -700,9 +700,20 @@ export default function ContentLibraryPage({
     manifestSha256: string | null,
     opts: { host?: string; port?: string; baseUrl?: string } = {}
   ) {
-    if (!manifestSha256) {
-      setShareMsg((m) => ({ ...m, [contentId]: "Publish to generate a manifest first." }));
-      return;
+    let manifestHash = manifestSha256 || "";
+    if (!manifestHash) {
+      try {
+        const res = await api<{ ok: boolean; sha256: string; manifest: any }>(`/content/${contentId}/manifest`, "GET");
+        manifestHash = res?.sha256 || "";
+      } catch (e: any) {
+        setShareMsg((m) => ({ ...m, [contentId]: e?.message || "Manifest unavailable." }));
+        return;
+      }
+      if (!manifestHash) {
+        setShareMsg((m) => ({ ...m, [contentId]: "Manifest unavailable." }));
+        return;
+      }
+      setShareMsg((m) => ({ ...m, [contentId]: "Manifest generated. Building P2P link…" }));
     }
     try {
       setShareBusy((m) => ({ ...m, [contentId]: true }));
@@ -717,7 +728,7 @@ export default function ContentLibraryPage({
       }
       const params = new URLSearchParams({
         v: "1",
-        manifestHash: manifestSha256,
+        manifestHash: manifestHash,
         primaryFileId,
         sellerPeerId
       });
@@ -1298,7 +1309,12 @@ export default function ContentLibraryPage({
 
     return (
       <>
+        <label className="sr-only" htmlFor={`upload-file-${contentId}`}>
+          Upload file
+        </label>
         <input
+          id={`upload-file-${contentId}`}
+          name={`uploadFile-${contentId}`}
           ref={inputRef}
           type="file"
           className="hidden"
@@ -1350,8 +1366,10 @@ export default function ContentLibraryPage({
               <div>It will be stored inside your ContentBox data folder and can be removed anytime.</div>
               <div>This link works while ContentBox is running and may change after restart.</div>
             </div>
-            <label className="mt-3 flex items-center gap-2 text-xs text-neutral-400">
+            <label className="mt-3 flex items-center gap-2 text-xs text-neutral-400" htmlFor="public-consent-dont-ask">
               <input
+                id="public-consent-dont-ask"
+                name="publicConsentDontAskAgain"
                 type="checkbox"
                 className="h-3 w-3"
                 checked={publicConsentDontAskAgain}
@@ -1467,18 +1485,27 @@ export default function ContentLibraryPage({
 
         <div className="grid gap-3 md:grid-cols-3">
           <div className="md:col-span-2">
-            <label className="block text-sm mb-1 text-neutral-300">Title</label>
+            <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-title">
+              Title
+            </label>
             <input
+              id="content-title"
+              name="title"
               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="e.g. Highway 11 Nights (Master)"
+              autoComplete="off"
             />
           </div>
 
           <div>
-            <label className="block text-sm mb-1 text-neutral-300">Type</label>
+            <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-type">
+              Type
+            </label>
             <select
+              id="content-type"
+              name="contentType"
               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
               value={type}
               onChange={(e) => setType(e.target.value as ContentType)}
@@ -1511,17 +1538,26 @@ export default function ContentLibraryPage({
 
           <div className="grid gap-3 md:grid-cols-3">
             <div className="md:col-span-2">
-              <label className="block text-sm mb-1 text-neutral-300">Original content ID</label>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-parent-id">
+                Original content ID
+              </label>
               <input
+                id="derivative-parent-id"
+                name="originalContentId"
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
                 value={requestParentId}
                 onChange={(e) => setRequestParentId(e.target.value)}
                 placeholder="e.g. cml7... or https://host/p/..."
+                autoComplete="off"
               />
             </div>
             <div>
-              <label className="block text-sm mb-1 text-neutral-300">Type</label>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-type">
+                Type
+              </label>
               <select
+                id="derivative-type"
+                name="derivativeType"
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
                 value={requestType}
                 onChange={(e) => setRequestType(e.target.value as ContentType)}
@@ -1534,12 +1570,17 @@ export default function ContentLibraryPage({
           </div>
 
           <div>
-            <label className="block text-sm mb-1 text-neutral-300">Derivative title</label>
+            <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-title">
+              Derivative title
+            </label>
             <input
+              id="derivative-title"
+              name="derivativeTitle"
               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
               value={requestTitle}
               onChange={(e) => setRequestTitle(e.target.value)}
               placeholder="e.g. OG Track (DJ Remix)"
+              autoComplete="off"
             />
           </div>
 
@@ -2879,8 +2920,12 @@ export default function ContentLibraryPage({
                         <div className="text-xs text-neutral-300 font-medium">Monetization</div>
                         <div className="mt-2 grid gap-3 md:grid-cols-3">
                           <div className="md:col-span-1">
-                            <label className="block text-xs text-neutral-400 mb-1">Price (sats)</label>
+                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`priceSats-${it.id}`}>
+                              Price (sats)
+                            </label>
                             <input
+                              id={`priceSats-${it.id}`}
+                              name={`priceSats-${it.id}`}
                               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
                               value={priceDraft[it.id] ?? ""}
                               onChange={(e) => {
@@ -2889,6 +2934,7 @@ export default function ContentLibraryPage({
                               }}
                               placeholder="1000"
                               inputMode="numeric"
+                              autoComplete="off"
                             />
                           </div>
                           <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
@@ -3015,13 +3061,18 @@ export default function ContentLibraryPage({
 
                                 {isOn ? (
                                   <>
-                                    <div className="text-xs text-neutral-400">Public link</div>
+                                    <label className="text-xs text-neutral-400" htmlFor={`public-link-${it.id}`}>
+                                      Public link
+                                    </label>
                                     {it.status === "published" ? (
                                       <div className="flex items-center gap-2">
                                         <input
+                                          id={`public-link-${it.id}`}
+                                          name={`publicLink-${it.id}`}
                                           readOnly
                                           className="w-full rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs text-neutral-200"
                                           value={publicUrl || "—"}
+                                          autoComplete="off"
                                         />
                                         <button
                                           type="button"
@@ -3110,8 +3161,10 @@ export default function ContentLibraryPage({
                                     <div>cloudflared available: <span className="text-neutral-300">{publicStatus?.cloudflared?.available ? "yes" : "no"}</span></div>
                                     <div>cloudflared path: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.managedPath || "—"}</span></div>
                                     <div>cloudflared version: <span className="text-neutral-300 break-all">{publicStatus?.cloudflared?.version || "—"}</span></div>
-                                    <label className="flex items-center gap-2">
+                                    <label className="flex items-center gap-2" htmlFor={`public-autostart-${it.id}`}>
                                       <input
+                                        id={`public-autostart-${it.id}`}
+                                        name={`publicAutostart-${it.id}`}
                                         type="checkbox"
                                         className="h-3 w-3"
                                         checked={Boolean(publicStatus?.autoStartEnabled)}
@@ -3397,7 +3450,7 @@ export default function ContentLibraryPage({
 
                                 {!manifestSha256 ? (
                                   <div className="text-xs text-amber-300">
-                                    Publish to generate a manifest before sharing P2P links.
+                                    P2P links require a manifest. We will generate it when you copy a link.
                                   </div>
                                 ) : null}
                               </>
@@ -3464,17 +3517,29 @@ export default function ContentLibraryPage({
                         ) : null}
 
                         <div className="mt-3 grid gap-2 md:grid-cols-2">
+                          <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
+                            Credit name
+                          </label>
                           <input
+                            id={`credit-name-${it.id}`}
+                            name={`creditName-${it.id}`}
                             className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
                             placeholder="Name"
                             value={creditNameDraft[it.id] || ""}
                             onChange={(e) => setCreditNameDraft((m) => ({ ...m, [it.id]: e.target.value }))}
+                            autoComplete="name"
                           />
+                          <label className="sr-only" htmlFor={`credit-role-${it.id}`}>
+                            Credit role
+                          </label>
                           <input
+                            id={`credit-role-${it.id}`}
+                            name={`creditRole-${it.id}`}
                             className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm"
                             placeholder="Role (Writer, Producer, Mix, Mastering, etc.)"
                             value={creditRoleDraft[it.id] || ""}
                             onChange={(e) => setCreditRoleDraft((m) => ({ ...m, [it.id]: e.target.value }))}
+                            autoComplete="off"
                           />
                         </div>
                         <button
@@ -3616,8 +3681,12 @@ export default function ContentLibraryPage({
 
                         <div className="mt-2 grid gap-3 md:grid-cols-3">
                           <div className="md:col-span-1">
-                            <label className="block text-xs text-neutral-400 mb-1">Status</label>
+                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`storefront-status-${it.id}`}>
+                              Status
+                            </label>
                             <select
+                              id={`storefront-status-${it.id}`}
+                              name={`storefrontStatus-${it.id}`}
                               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
                               value={storefrontStatus}
                               onChange={(e) =>

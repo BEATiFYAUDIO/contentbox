@@ -651,7 +651,12 @@ export default function InvitePage({
             </div>
 
             <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label className="sr-only" htmlFor="invite-content-select">
+                Select content
+              </label>
               <select
+                id="invite-content-select"
+                name="inviteContent"
                 value={selectedContentId}
                 onChange={(e) => {
                   setSelectedContentId(e.target.value);
@@ -720,13 +725,18 @@ export default function InvitePage({
             )}
 
             <div className="mt-4 border-t border-neutral-800 pt-3">
-              <div className="text-xs text-neutral-400">Paste invite link or token</div>
+              <label className="text-xs text-neutral-400" htmlFor="invite-paste-link">
+                Paste invite link or token
+              </label>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <input
+                  id="invite-paste-link"
+                  name="invitePaste"
                   value={pasteRaw}
                   onChange={(e) => setPasteRaw(e.target.value)}
                   placeholder="https://invites.contentbox.link/invite/<token> or token"
                   className="text-sm rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 w-full md:w-[420px]"
+                  autoComplete="off"
                 />
                 <button
                   onClick={openPastedInvite}

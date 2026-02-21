@@ -266,8 +266,12 @@ export default function PayoutRailsPage() {
 
           <div className="grid gap-4 md:grid-cols-2">
             <div>
-              <label className="block text-sm mb-1 text-neutral-300">Value</label>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="payout-value">
+                Value
+              </label>
               <input
+                id="payout-value"
+                name="payoutValue"
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
@@ -282,13 +286,16 @@ export default function PayoutRailsPage() {
                         ? "Email or phone for Interac e-Transfer (e.g., payments@myband.example or +14165551234)"
                           : "Enter payout identifier"
                 }
+                autoComplete="off"
               />
             </div>
             <div>
-              <label className="block text-sm mb-1 text-neutral-300">
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="payout-label">
                 {selected.code === "manual" ? "Label" : "Label (optional)"}
               </label>
               <input
+                id="payout-label"
+                name="payoutLabel"
                 className={[
                   "w-full rounded-lg bg-neutral-950 border px-3 py-2 outline-none focus:border-neutral-600",
                   labelError ? "border-red-600" : "border-neutral-800",
@@ -303,6 +310,7 @@ export default function PayoutRailsPage() {
                     ? "e.g. Interac (Band Wallet)"
                     : "e.g. Primary, Band wallet, Business account"
                 }
+                autoComplete="off"
               />
               {labelError ? (
                 <div className="mt-1 text-xs text-red-300">{labelError}</div>
@@ -323,8 +331,10 @@ export default function PayoutRailsPage() {
 
           {selected.code === "btc_onchain" ? (
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <label className="inline-flex items-center gap-2 text-sm text-neutral-300">
+              <label className="inline-flex items-center gap-2 text-sm text-neutral-300" htmlFor="payout-btc-enabled">
                 <input
+                  id="payout-btc-enabled"
+                  name="payoutBtcEnabled"
                   type="checkbox"
                   className="accent-emerald-500"
                   checked={btcEnabled}

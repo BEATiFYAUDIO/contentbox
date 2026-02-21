@@ -17,6 +17,8 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
   const [ownerEmail, setOwnerEmail] = React.useState<string | null>(null);
   const [lockReasons, setLockReasons] = React.useState<Record<string, string> | null>(null);
   const [recoveryAvailable, setRecoveryAvailable] = React.useState<boolean | null>(null);
+  const [recoveryProbeError, setRecoveryProbeError] = React.useState<string | null>(null);
+  const [bootstrapConfirmPassword, setBootstrapConfirmPassword] = React.useState("");
   const [showRecovery, setShowRecovery] = React.useState(false);
   const [recoveryKey, setRecoveryKey] = React.useState("");
   const [newPassword, setNewPassword] = React.useState("");
@@ -38,21 +40,26 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
     }
   }, []);
 
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const res = await api<{ recoveryAvailable: boolean }>("/auth/recovery/status", "GET");
-        setRecoveryAvailable(Boolean(res?.recoveryAvailable));
-      } catch {
-        setRecoveryAvailable(null);
-      }
-    })();
+  const probeRecovery = React.useCallback(async () => {
+    try {
+      const res = await api<{ recoveryAvailable: boolean }>("/auth/recovery/status", "GET");
+      setRecoveryAvailable(Boolean(res?.recoveryAvailable));
+      setRecoveryProbeError(null);
+    } catch (e: any) {
+      setRecoveryAvailable(null);
+      setRecoveryProbeError(e?.message || "API unreachable");
+    }
   }, []);
+
+  React.useEffect(() => {
+    probeRecovery();
+  }, [probeRecovery]);
 
   const isAdvanced = nodeMode === "advanced";
   const isLan = nodeMode === "lan";
   const isBasic = nodeMode === "basic";
   const signupAllowed = !isAdvanced || !ownerEmail;
+  const isBootstrap = recoveryAvailable === false;
 
   React.useEffect(() => {
     if (!signupAllowed && mode === "signup") setMode("login");
@@ -84,15 +91,45 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
     }
   }
 
+  async function submitBootstrap(e: React.FormEvent) {
+    e.preventDefault();
+    if (bootstrapConfirmPassword && password !== bootstrapConfirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setError(null);
+    setLoading(true);
+    try {
+      const resp = await api<{ token: string; recoveryKey?: string }>("/auth/signup", "POST", { email, password, displayName });
+      if (resp.recoveryKey) {
+        setPendingToken(resp.token);
+        setNewRecoveryKeyIssued(resp.recoveryKey);
+        return;
+      }
+      setToken(resp.token);
+      onAuthed();
+    } catch (err: any) {
+      const msg = String(err?.message || "Something went wrong");
+      if (msg.includes("SINGLE_IDENTITY_NODE")) {
+        setMode("login");
+        setError("This node already has an owner. Please log in.");
+      } else {
+        setError(msg);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-neutral-950 text-neutral-100 p-6">
       <div className="w-full max-w-md rounded-2xl border border-neutral-800 bg-neutral-900 p-6 shadow">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-xl font-semibold">
-            {mode === "signup" ? "Create account" : "Sign in"}
+            {isBootstrap ? "Create owner (first-run setup)" : mode === "signup" ? "Create account" : "Sign in"}
           </h1>
 
-          {signupAllowed ? (
+          {!isBootstrap && signupAllowed ? (
             <button
               className="text-sm text-neutral-300 hover:text-white"
               onClick={() => setMode(mode === "signup" ? "login" : "signup")}
@@ -109,6 +146,19 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
           </div>
         ) : null}
 
+        {recoveryProbeError ? (
+          <div className="mb-3 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-xs text-red-200 flex items-center justify-between gap-2">
+            <span>{recoveryProbeError}</span>
+            <button
+              className="text-xs rounded-lg border border-red-900 px-2 py-1 hover:bg-red-950/60"
+              type="button"
+              onClick={() => probeRecovery()}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+
         <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2 text-xs text-neutral-300 space-y-1">
           <div>Mode: {nodeMode ? modeLabel(nodeMode as any) : "Unknown"}</div>
           {isAdvanced && ownerEmail ? (
@@ -121,21 +171,30 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
           ) : null}
         </div>
 
-        <form onSubmit={submit} className="space-y-3">
-          {mode === "signup" && (
+        <form onSubmit={isBootstrap ? submitBootstrap : submit} className="space-y-3">
+          {(mode === "signup" || isBootstrap) && (
             <div>
-              <label className="block text-sm mb-1 text-neutral-300">Display name</label>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="auth-display-name">
+                Display name
+              </label>
               <input
+                id="auth-display-name"
+                name="displayName"
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
+                autoComplete="name"
               />
             </div>
           )}
 
           <div>
-            <label className="block text-sm mb-1 text-neutral-300">Email</label>
+            <label className="block text-sm mb-1 text-neutral-300" htmlFor="auth-email">
+              Email
+            </label>
             <input
+              id="auth-email"
+              name="email"
               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -145,16 +204,37 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
           </div>
 
           <div>
-            <label className="block text-sm mb-1 text-neutral-300">Password</label>
+            <label className="block text-sm mb-1 text-neutral-300" htmlFor="auth-password">
+              Password
+            </label>
             <input
+              id="auth-password"
+              name="password"
               className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               type="password"
-              autoComplete={mode === "signup" ? "new-password" : "current-password"}
+              autoComplete={mode === "signup" || isBootstrap ? "new-password" : "current-password"}
             />
             <div className="text-xs text-neutral-500 mt-1">Min 8 characters</div>
           </div>
+
+          {isBootstrap ? (
+            <div>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="auth-confirm-password">
+                Confirm password
+              </label>
+              <input
+                id="auth-confirm-password"
+                name="confirmPassword"
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={bootstrapConfirmPassword}
+                onChange={(e) => setBootstrapConfirmPassword(e.target.value)}
+                type="password"
+                autoComplete="new-password"
+              />
+            </div>
+          ) : null}
 
           {error && (
             <div className="rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-sm">
@@ -166,11 +246,11 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
             className="w-full rounded-lg bg-white text-black font-medium py-2 disabled:opacity-60"
             disabled={loading}
           >
-            {loading ? "Working…" : mode === "signup" ? "Create account" : "Sign in"}
+            {loading ? "Working…" : isBootstrap ? "Create owner" : mode === "signup" ? "Create account" : "Sign in"}
           </button>
         </form>
 
-        {mode === "login" ? (
+        {mode === "login" && !isBootstrap ? (
           <div className="mt-4 text-xs text-neutral-400">
             {recoveryAvailable ? (
               <button
@@ -194,25 +274,43 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
             <div className="text-sm font-medium">Reset password</div>
             <div className="text-xs text-neutral-400 mt-1">Use your Recovery Key to set a new password.</div>
             <div className="mt-3 space-y-2">
+              <label className="block text-xs text-neutral-400" htmlFor="recovery-key">
+                Recovery key
+              </label>
               <input
+                id="recovery-key"
+                name="recoveryKey"
                 placeholder="Recovery Key"
                 value={recoveryKey}
                 onChange={(e) => setRecoveryKey(e.target.value)}
                 className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                autoComplete="off"
               />
+              <label className="block text-xs text-neutral-400" htmlFor="recovery-new-password">
+                New password
+              </label>
               <input
+                id="recovery-new-password"
+                name="newPassword"
                 placeholder="New password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 type="password"
                 className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                autoComplete="new-password"
               />
+              <label className="block text-xs text-neutral-400" htmlFor="recovery-confirm-password">
+                Confirm password
+              </label>
               <input
+                id="recovery-confirm-password"
+                name="confirmPassword"
                 placeholder="Confirm password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 type="password"
                 className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                autoComplete="new-password"
               />
             </div>
             {recoveryError ? (

@@ -642,13 +642,18 @@ export default function SplitEditorPage(props: {
                       {upstreamInfo.canVote ? (
                         <>
                           <div className="flex items-center gap-2">
-                            <label className="text-[11px] text-neutral-500">Upstream %</label>
+                            <label className="text-[11px] text-neutral-500" htmlFor={`upstream-rate-${contentId}`}>
+                              Upstream %
+                            </label>
                             <input
+                              id={`upstream-rate-${contentId}`}
+                              name={`upstreamRate-${contentId}`}
                               className="w-20 rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs"
                               value={upstreamVotePct}
                               onChange={(e) => setUpstreamVotePct(e.target.value.replace(/[^\d.]/g, ""))}
                               inputMode="decimal"
                               placeholder="10"
+                              autoComplete="off"
                             />
                           </div>
                           <button
@@ -877,12 +882,18 @@ export default function SplitEditorPage(props: {
                             </div>
                           )}
                           <div className="flex items-center gap-2">
+                            <label className="sr-only" htmlFor={`playback-units-${contentId}`}>
+                              Playback units
+                            </label>
                             <input
+                              id={`playback-units-${contentId}`}
+                              name={`playbackUnits-${contentId}`}
                               value={payUnits}
                               onChange={(e) => setPayUnits(e.target.value)}
                               className="w-24 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs"
                               inputMode="numeric"
                               placeholder="units"
+                              autoComplete="off"
                             />
                             <button
                               disabled={lightningBlocked}
@@ -1004,7 +1015,12 @@ export default function SplitEditorPage(props: {
               {rows.map((r, idx) => (
                 <tr key={idx} className="border-t border-neutral-800">
                   <td className="py-2 pr-2">
+                    <label className="sr-only" htmlFor={`split-email-${idx}`}>
+                      Participant email
+                    </label>
                     <input
+                      id={`split-email-${idx}`}
+                      name={`splitEmail-${idx}`}
                       disabled={viewOnly || busy}
                       value={r.participantEmail}
                       onChange={(e) => {
@@ -1017,10 +1033,16 @@ export default function SplitEditorPage(props: {
                       autoCapitalize="none"
                       autoCorrect="off"
                       spellCheck={false}
+                      autoComplete="email"
                     />
                   </td>
                   <td className="py-2 pr-2">
+                    <label className="sr-only" htmlFor={`split-role-${idx}`}>
+                      Participant role
+                    </label>
                     <input
+                      id={`split-role-${idx}`}
+                      name={`splitRole-${idx}`}
                       disabled={viewOnly || busy}
                       value={r.role}
                       onChange={(e) => {
@@ -1030,13 +1052,20 @@ export default function SplitEditorPage(props: {
                       }}
                       className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
                       placeholder="writer, producer, publisher"
+                      autoComplete="off"
                     />
                   </td>
                   <td className="py-2 pr-2">
                     {(() => {
                       const displayPercent = percentToString(r.percent);
                       return (
+                    <>
+                    <label className="sr-only" htmlFor={`split-percent-${idx}`}>
+                      Participant percent
+                    </label>
                     <input
+                      id={`split-percent-${idx}`}
+                      name={`splitPercent-${idx}`}
                       disabled={viewOnly || busy}
                       value={displayPercent}
                       onChange={(e) => {
@@ -1047,7 +1076,9 @@ export default function SplitEditorPage(props: {
                       className="w-28 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
                       placeholder="50"
                       inputMode="decimal"
+                      autoComplete="off"
                     />
+                    </>
                       );
                     })()}
                   </td>
@@ -1119,8 +1150,12 @@ export default function SplitEditorPage(props: {
             <div className="text-sm font-medium">Link original</div>
             <div className="mt-3 space-y-3 text-xs text-neutral-400">
               <div>
-                <div className="text-neutral-300 mb-1">Original content</div>
+                <label className="text-neutral-300 mb-1" htmlFor={`link-parent-${contentId}`}>
+                  Original content
+                </label>
                 <select
+                  id={`link-parent-${contentId}`}
+                  name={`linkParent-${contentId}`}
                   className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
                   value={linkParentId}
                   onChange={(e) => setLinkParentId(normalizeParentInput(e.target.value))}
@@ -1133,11 +1168,17 @@ export default function SplitEditorPage(props: {
                   ))}
                 </select>
                 <div className="mt-2">
+                  <label className="sr-only" htmlFor={`link-parent-raw-${contentId}`}>
+                    Original content link or ID
+                  </label>
                   <input
+                    id={`link-parent-raw-${contentId}`}
+                    name={`linkParentRaw-${contentId}`}
                     className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs"
                     placeholder="Paste original link or content ID"
                     value={linkParentId}
                     onChange={(e) => setLinkParentId(normalizeParentInput(e.target.value))}
+                    autoComplete="off"
                   />
                 </div>
               </div>

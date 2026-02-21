@@ -203,12 +203,18 @@ export default function TestPurchaseModal({
 
           <div className="grid gap-3 md:grid-cols-3">
             <div className="md:col-span-2">
-              <label className="block text-xs text-neutral-400 mb-1">Amount (sats)</label>
+              <label className="block text-xs text-neutral-400 mb-1" htmlFor="test-purchase-amount">
+                Amount (sats)
+              </label>
               <input
+                id="test-purchase-amount"
+                name="testPurchaseAmount"
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
                 value={amountSats}
                 onChange={(e) => setAmountSats(e.target.value)}
                 placeholder="1000"
+                inputMode="numeric"
+                autoComplete="off"
               />
             </div>
             <div>

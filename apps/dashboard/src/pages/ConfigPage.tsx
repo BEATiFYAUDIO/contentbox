@@ -478,13 +478,16 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
         </div>
         {showAdvanced ? (
           <>
-            <label>
+            <label htmlFor="api-base-override">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
               <input
+                id="api-base-override"
+                name="apiBaseOverride"
                 value={apiBaseOverride}
                 onChange={(e) => setApiBaseOverride(e.target.value)}
                 placeholder="http://127.0.0.1:4000"
                 className={inputClass}
+                autoComplete="url"
               />
             </label>
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -519,62 +522,80 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
         </div>
 
         <div style={{ display: "grid", gap: 8 }}>
-          <label>
+          <label htmlFor="public-buy-origin">
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host (public)</div>
             <input
+              id="public-buy-origin"
+              name="publicBuyOrigin"
               value={publicBuyOrigin}
               onChange={(e) => setPublicBuyOrigin(e.target.value)}
               placeholder="https://buy.yourdomain.com"
               className={inputClass}
+              autoComplete="url"
             />
           </label>
-          <label>
+          <label htmlFor="public-studio-origin">
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host (public)</div>
             <input
+              id="public-studio-origin"
+              name="publicStudioOrigin"
               value={publicStudioOrigin}
               onChange={(e) => setPublicStudioOrigin(e.target.value)}
               placeholder="https://studio.yourdomain.com"
               className={inputClass}
+              autoComplete="url"
             />
           </label>
-          <label>
+          <label htmlFor="public-origin">
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Contentbox host (public)</div>
             <input
+              id="public-origin"
+              name="publicOrigin"
               value={publicOrigin}
               onChange={(e) => setPublicOrigin(e.target.value)}
               placeholder="https://contentbox.yourdomain.com"
               className={inputClass}
+              autoComplete="url"
             />
           </label>
         </div>
 
         <div style={{ marginTop: 12, fontWeight: 600 }}>Fallback hosts (optional)</div>
         <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-          <label>
+          <label htmlFor="public-buy-origin-fallback">
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy fallback</div>
             <input
+              id="public-buy-origin-fallback"
+              name="publicBuyOriginFallback"
               value={publicBuyOriginFallback}
               onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
               placeholder="https://buy.fallback.com"
               className={inputClass}
+              autoComplete="url"
             />
           </label>
-          <label>
+          <label htmlFor="public-studio-origin-fallback">
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio fallback</div>
             <input
+              id="public-studio-origin-fallback"
+              name="publicStudioOriginFallback"
               value={publicStudioOriginFallback}
               onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
               placeholder="https://studio.fallback.com"
               className={inputClass}
+              autoComplete="url"
             />
           </label>
-          <label>
+          <label htmlFor="public-origin-fallback">
             <div style={{ opacity: 0.7, marginBottom: 4 }}>Contentbox fallback</div>
             <input
+              id="public-origin-fallback"
+              name="publicOriginFallback"
               value={publicOriginFallback}
               onChange={(e) => setPublicOriginFallback(e.target.value)}
               placeholder="https://contentbox.fallback.com"
               className={inputClass}
+              autoComplete="url"
             />
           </label>
         </div>
@@ -675,8 +696,10 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
         <div style={{ opacity: 0.7, marginBottom: 10 }}>
           Advanced routing for public links.
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="tunnel-settings-enabled">
           <input
+            id="tunnel-settings-enabled"
+            name="tunnelSettingsEnabled"
             type="checkbox"
             checked={tunnelEnabled}
             onChange={async (e) => {
@@ -727,37 +750,46 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
                 Named tunnel settings apply only when PUBLIC_MODE=named.
               </div>
             ) : null}
-            <label>
+            <label htmlFor="tunnel-provider">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
               <input
+                id="tunnel-provider"
+                name="tunnelProvider"
                 value={tunnelProvider}
                 onChange={(e) => setTunnelProvider(e.target.value)}
                 placeholder="cloudflare"
                 className={inputClass}
                 disabled={!tunnelEnabled}
+                autoComplete="off"
               />
             </label>
-            <label>
+            <label htmlFor="tunnel-domain">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Public domain (base)</div>
               <input
+                id="tunnel-domain"
+                name="tunnelDomain"
                 value={tunnelDomain}
                 onChange={(e) => setTunnelDomain(e.target.value)}
                 placeholder="contentbox.link"
                 className={inputClass}
                 disabled={!tunnelEnabled}
+                autoComplete="off"
               />
               <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
                 Base domain for public links (e.g. <b>contentbox.link</b>). The tunnel list does not include domains.
               </div>
             </label>
-            <label>
+            <label htmlFor="tunnel-name">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
               <input
+                id="tunnel-name"
+                name="tunnelName"
                 value={tunnelName}
                 onChange={(e) => setTunnelName(e.target.value)}
                 placeholder="contentbox"
                 className={inputClass}
                 disabled={!tunnelEnabled}
+                autoComplete="off"
               />
             </label>
             {tunnelEnabled ? (
@@ -767,11 +799,14 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
                   Paste the Cloudflare connector token once. ContentBox will reuse it to start the tunnel.
                 </div>
                 <input
+                  id="tunnel-connector-token"
+                  name="tunnelConnectorToken"
                   value={namedTokenInput}
                   onChange={(e) => setNamedTokenInput(e.target.value)}
                   placeholder="Cloudflare connector token"
                   className={inputClass}
                   disabled={!tunnelEnabled}
+                  autoComplete="off"
                 />
                 <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                   <button
@@ -928,8 +963,10 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
                 <div><b>cloudflared</b>: {publicStatus?.cloudflared?.available ? "yes" : "no"}</div>
                 <div><b>cloudflared path</b>: {publicStatus?.cloudflared?.managedPath || "—"}</div>
                 <div><b>cloudflared version</b>: {publicStatus?.cloudflared?.version || "—"}</div>
-                <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="diagnostics-public-autostart">
                   <input
+                    id="diagnostics-public-autostart"
+                    name="diagnosticsPublicAutostart"
                     type="checkbox"
                     checked={Boolean(publicStatus?.autoStartEnabled)}
                     onChange={async (e) => {

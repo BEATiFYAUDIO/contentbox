@@ -66,24 +66,34 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </div>
 
         <div className="mt-4 space-y-2">
-          <div className="text-sm">Buy from a link</div>
+          <label className="text-sm" htmlFor="store-buy-link">
+            Buy from a link
+          </label>
           <input
+            id="store-buy-link"
+            name="storeBuyLink"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Paste a ContentBox link, receipt link/token, or content ID"
             className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+            autoComplete="off"
           />
           <div className="text-xs text-neutral-500">
             Examples: https://seller.site/buy/CONTENT_ID · https://seller.site/public/receipts/TOKEN · TOKEN
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-2">
             <div>
-              <div className="text-xs text-neutral-500">Seller host (if you pasted a content ID)</div>
+              <label className="text-xs text-neutral-500" htmlFor="store-seller-host">
+                Seller host (if you pasted a content ID)
+              </label>
               <input
+                id="store-seller-host"
+                name="storeSellerHost"
                 value={sellerHost}
                 onChange={(e) => setSellerHost(e.target.value)}
                 placeholder="https://seller.site"
                 className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
+                autoComplete="url"
               />
             </div>
             <div className="flex items-end">
@@ -105,10 +115,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           Discovery is coming soon. Creators opt-in by listing content. Direct links work today.
         </div>
         <div className="mt-4 grid gap-3">
+          <label className="sr-only" htmlFor="store-search">
+            Search
+          </label>
           <input
+            id="store-search"
+            name="storeSearch"
             disabled
             placeholder="Search"
             className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 opacity-50"
+            autoComplete="off"
           />
           <div className="grid grid-cols-2 gap-2">
             <button disabled className="rounded-lg border border-neutral-800 px-3 py-2 text-xs opacity-50">

@@ -53,6 +53,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [pendingMode, setPendingMode] = useState<"basic" | "advanced" | "lan" | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectMsg, setReconnectMsg] = useState<string | null>(null);
+  const [payoutLoading, setPayoutLoading] = useState(false);
 
   useEffect(() => {
     setBeatifyHandle(extractBeatifyHandle(me?.bio));
@@ -80,6 +81,23 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
     if (hash.includes("payments")) {
       paymentsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
+  }, []);
+
+  const loadPayoutSettings = async () => {
+    try {
+      setPayoutLoading(true);
+      const res = await api<{ lightningAddress: string; lnurl: string; btcAddress: string }>(`/api/me/payout`, "GET");
+      setPayoutSettings(res || { lightningAddress: "", lnurl: "", btcAddress: "" });
+    } catch {
+      setPayoutSettings({ lightningAddress: "", lnurl: "", btcAddress: "" });
+    } finally {
+      setPayoutLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPayoutSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const nodeMode = identityDetail?.nodeMode || "basic";
@@ -168,6 +186,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
               return (
                 <label key={opt} className={`flex items-center gap-2 ${lanDisabled ? "text-neutral-500" : ""}`}>
                   <input
+                    id={`node-mode-${opt}`}
                     type="radio"
                     name="node-mode"
                     value={opt}
@@ -299,12 +318,17 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
 
           <div className="mt-3 space-y-3">
             <div>
-              <div className="text-sm">Display name</div>
+              <label className="text-sm" htmlFor="profile-display-name">
+                Display name
+              </label>
               <div className="flex gap-2">
                 <input
+                  id="profile-display-name"
+                  name="displayName"
                   value={me?.displayName || ""}
                   onChange={(e) => setMe(me ? { ...me, displayName: e.target.value } : me)}
                   className="flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                  autoComplete="name"
                 />
                 <button
                   onClick={async () => {
@@ -325,22 +349,32 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
             </div>
 
             <div>
-              <div className="text-sm">Bio</div>
+              <label className="text-sm" htmlFor="profile-bio">
+                Bio
+              </label>
               <textarea
+                id="profile-bio"
+                name="bio"
                 value={me?.bio || ""}
                 onChange={(e) => setMe(me ? { ...me, bio: e.target.value } : me)}
                 className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 mt-1"
                 rows={3}
+                autoComplete="off"
               />
             </div>
 
             <div>
-              <div className="text-sm">Avatar URL</div>
+              <label className="text-sm" htmlFor="profile-avatar-url">
+                Avatar URL
+              </label>
               <div className="flex gap-2 items-center mt-1">
                 <input
+                  id="profile-avatar-url"
+                  name="avatarUrl"
                   value={me?.avatarUrl || ""}
                   onChange={(e) => setMe(me ? { ...me, avatarUrl: e.target.value } : me)}
                   className="flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                  autoComplete="url"
                 />
                 {me?.avatarUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -361,13 +395,18 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
           </div>
 
           <div className="mt-3">
-            <div className="text-sm">Beatify handle (optional)</div>
+            <label className="text-sm" htmlFor="beatify-handle">
+              Beatify handle (optional)
+            </label>
             <div className="flex gap-2 items-center mt-1">
               <input
+                id="beatify-handle"
+                name="beatifyHandle"
                 value={beatifyHandle}
                 onChange={(e) => setBeatifyHandle(e.target.value)}
                 placeholder="yourhandle"
                 className="flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                autoComplete="off"
               />
               {beatifyHandle ? (
                 <button
@@ -390,14 +429,19 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
           </div>
 
           <div className="mt-4">
-            <div className="text-sm">Import a public profile URL (optional)</div>
+            <label className="text-sm" htmlFor="import-profile-url">
+              Import a public profile URL (optional)
+            </label>
             <div className="text-xs text-neutral-500">Use a Beatify or other public profile to prefill display name, bio, and avatar.</div>
             <div className="mt-2 flex flex-wrap gap-2 items-center">
               <input
+                id="import-profile-url"
+                name="importProfileUrl"
                 placeholder="https://... or handle.eth"
                 value={importUrl}
                 onChange={(e) => setImportUrl(e.target.value)}
                 className="flex-1 min-w-0 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+                autoComplete="url"
               />
               <button
                 onClick={async () => {
@@ -485,28 +529,46 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
           <div className="text-sm font-medium">Payments</div>
           <div className="text-xs text-neutral-500">Where should earnings be sent?</div>
           <div className="mt-3 space-y-2">
+            <label className="text-xs text-neutral-400" htmlFor="payments-lightning-address">
+              Lightning Address
+            </label>
             <input
+              id="payments-lightning-address"
+              name="lightningAddress"
               placeholder="Lightning Address (name@domain.com)"
               value={payoutSettings?.lightningAddress || ""}
               onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: e.target.value, lnurl: s?.lnurl || "", btcAddress: s?.btcAddress || "" }))}
               className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+              autoComplete="off"
             />
             {isBasicTier && !(payoutSettings?.lightningAddress || "").trim() ? (
               <div className="text-xs text-amber-300">Lightning address required in Basic mode.</div>
             ) : null}
+            <label className="text-xs text-neutral-400" htmlFor="payments-lnurl">
+              LNURL (optional)
+            </label>
             <input
+              id="payments-lnurl"
+              name="lnurl"
               placeholder="LNURL (optional)"
               value={payoutSettings?.lnurl || ""}
               onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: s?.lightningAddress || "", lnurl: e.target.value, btcAddress: s?.btcAddress || "" }))}
               className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+              autoComplete="off"
             />
+            <label className="text-xs text-neutral-400" htmlFor="payments-btc-address">
+              BTC Address (optional)
+            </label>
             <input
+              id="payments-btc-address"
+              name="btcAddress"
               placeholder="BTC Address (optional)"
               value={payoutSettings?.btcAddress || ""}
               onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: s?.lightningAddress || "", lnurl: s?.lnurl || "", btcAddress: e.target.value }))}
               className={`w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 ${isBasicTier ? "opacity-50 cursor-not-allowed" : ""}`}
               disabled={isBasicTier}
               title={isBasicTier ? "On-chain BTC payments are not supported in Basic mode." : undefined}
+              autoComplete="off"
             />
             <button
               onClick={async () => {
@@ -521,6 +583,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                     lnurl: payoutSettings?.lnurl || "",
                     btcAddress: payoutSettings?.btcAddress || ""
                   });
+                  await loadPayoutSettings();
                   setPayoutMsg("Saved.");
                 } catch (e: any) {
                   setPayoutMsg(e?.message || "Failed to save payout settings.");
@@ -529,7 +592,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
               className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
               disabled={isBasicTier && !(payoutSettings?.lightningAddress || "").trim()}
             >
-              Save payout settings
+              {payoutLoading ? "Loading…" : "Save payout settings"}
             </button>
             {payoutMsg ? <div className="text-xs text-amber-300">{payoutMsg}</div> : null}
             <div className="text-xs text-neutral-500">Mode: {modeLabel(nodeMode)} • {PAYOUT_DESTINATIONS_LABEL}</div>
