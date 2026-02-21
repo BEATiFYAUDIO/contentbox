@@ -16,12 +16,14 @@ type ContentItem = {
   storefrontStatus?: "DISABLED" | "UNLISTED" | "LISTED";
   priceSats?: string | number | null;
   createdAt: string;
+  publishedAt?: string | null;
   repoPath?: string | null;
   deletedAt?: string | null;
   manifest?: { sha256: string };
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
+  childOrigin?: string | null;
   _count?: { files: number };
 };
 
@@ -102,6 +104,7 @@ type ParentLinkInfo = {
   requiresApproval: boolean;
   approvedAt?: string | null;
   clearance?: any;
+  clearanceRequest?: any;
   parent: {
     id: string;
     title: string;
@@ -2980,7 +2983,6 @@ export default function ContentLibraryPage({
                             const isOn = status === "online";
                             const isError = status === "error";
                             const isOffline = status === "offline";
-                            const canSharePublic = true;
                             const originBase = isOn ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const publicUrl = originBase ? `${originBase.replace(/\/$/, "")}/p/${it.id}` : "";
                             return (

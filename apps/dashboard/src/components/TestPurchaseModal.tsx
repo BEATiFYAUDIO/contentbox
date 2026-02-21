@@ -250,7 +250,7 @@ export default function TestPurchaseModal({
                 };
                 const headers: Record<string, string> = { "Content-Type": "application/json" };
                 if (authToken) headers.Authorization = `Bearer ${authToken}`;
-                const data = await fetchJson(`${API_BASE}/api/payments/intents`, {
+                const data = await fetchJson(`${apiBase()}/api/payments/intents`, {
                   method: "POST",
                   headers,
                   body: JSON.stringify(payload)
@@ -333,7 +333,7 @@ export default function TestPurchaseModal({
                     try {
                       const headers: Record<string, string> = { "Content-Type": "application/json" };
                       if (authToken) headers.Authorization = `Bearer ${authToken}`;
-                      await fetchJson(`${API_BASE}/api/dev/simulate-pay`, {
+                      await fetchJson(`${apiBase()}/api/dev/simulate-pay`, {
                         method: "POST",
                         headers,
                         body: JSON.stringify({ paymentIntentId: intentId, paidVia: "ONCHAIN" })

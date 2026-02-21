@@ -20,6 +20,7 @@ type SplitParticipant = {
   role: string;
   percent: any; // Decimal may serialize as string
   createdAt: string;
+  participantUserId?: string | null;
   payoutIdentityId?: string | null;
   acceptedAt?: string | null;
 };

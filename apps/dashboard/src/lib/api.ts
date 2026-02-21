@@ -122,6 +122,7 @@ type ApiOptions = {
 
 export async function api<T>(path: string, methodOrOptions: string | ApiOptions = "GET", bodyArg?: any): Promise<T> {
   const token = getToken();
+  const apiBase = getApiBase();
 
   // Determine method, body, and extra headers based on input
   let method: string;
@@ -158,7 +159,7 @@ export async function api<T>(path: string, methodOrOptions: string | ApiOptions 
   const requestBody = hasBody ? (body instanceof FormData ? body : JSON.stringify(body)) : undefined;
 
   const normalizedPath = path.startsWith("/api/auth") ? path.replace(/^\/api\/auth/, "/auth") : path;
-  const url = `${getApiBase()}${normalizedPath}`;
+  const url = `${apiBase}${normalizedPath}`;
   // Make the API request
   const res = await fetch(url, {
     method,
@@ -178,7 +179,7 @@ export async function api<T>(path: string, methodOrOptions: string | ApiOptions 
 
   // Handle non-2xx responses
   if (!res.ok) {
-    if (res.status === 401 && shouldAutoFixApiBase(API_BASE) && !alreadyAutoFixed()) {
+    if (res.status === 401 && shouldAutoFixApiBase(apiBase) && !alreadyAutoFixed()) {
       clearStoredApiBase();
       markAutoFix();
       try {
