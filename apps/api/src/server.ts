@@ -2054,6 +2054,16 @@ app.get("/content/:id/audit", { preHandler: requireAuth }, async (req: any, repl
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  const { productTier } = resolveProductTier();
+  if (productTier === "basic") {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    const identity = payoutMethod
+      ? await prisma.identity.findFirst({ where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId } })
+      : null;
+    if (!identity?.value) {
+      return reply.code(400).send({ code: "payments_not_configured", reason: "Lightning address required in Basic mode." });
+    }
+  }
   if (content.deletedAt) return notFound(reply, "Not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
 
@@ -4899,6 +4909,12 @@ app.get("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) =
 app.post("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const body = (req.body ?? {}) as { lightningAddress?: string; lnurl?: string; btcAddress?: string };
+  const productTier = resolveProductTier().productTier;
+  const lightningAddress = String(body?.lightningAddress || "").trim();
+
+  if (productTier === "basic" && !lightningAddress) {
+    return reply.code(400).send({ code: "lightning_required_basic", reason: "Lightning address required in Basic mode." });
+  }
 
   const methods = await prisma.payoutMethod.findMany({
     where: { code: { in: ["lightning_address", "lnurl", "btc_onchain"] as any } }
@@ -4925,9 +4941,11 @@ app.post("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) 
     }
   }
 
-  await upsert("lightning_address", body.lightningAddress);
+  await upsert("lightning_address", lightningAddress);
   await upsert("lnurl", body.lnurl);
-  await upsert("btc_onchain", body.btcAddress);
+  if (productTier !== "basic") {
+    await upsert("btc_onchain", body.btcAddress);
+  }
 
   return reply.send({ ok: true });
 });
@@ -5414,9 +5432,11 @@ async function rotateShareLink(contentId: string, tx: PrismaClient = prisma) {
   });
 }
 
-async function getWalletReceiveReady(userId: string) {
+async function getWalletReceiveReady(userId: string, productTier?: string) {
+  const isBasic = String(productTier || "").toLowerCase() === "basic";
+  const codes = isBasic ? ["lightning_address"] : ["lightning_address", "lnurl", "btc_onchain"];
   const methods = await prisma.payoutMethod.findMany({
-    where: { code: { in: ["lightning_address", "lnurl", "btc_onchain"] as any } },
+    where: { code: { in: codes as any } },
     select: { id: true }
   });
   if (!methods.length) return false;
@@ -5519,7 +5539,7 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
   const ctx = getCapabilityContext();
   const derivativeInfo = await resolveDerivativeInfo(contentId, content.type);
   const forSale = content.priceSats != null && BigInt(content.priceSats as any) > 0n;
-  const paymentsReady = await getWalletReceiveReady(userId);
+  const paymentsReady = await getWalletReceiveReady(userId, resolveProductTier().productTier);
   try {
     assertCanPublish(
       ctx,
@@ -7686,6 +7706,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  const { productTier } = resolveProductTier();
   if (content.priceSats == null) {
     return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
   }
@@ -7726,36 +7747,41 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   let onchainReason: string | null = null;
   let lightningReason: string | null = null;
 
-  try {
-    onchain = await createOnchainAddress(intent.id);
-  } catch {
-    onchain = null;
-    onchainReason = "TEMPORARILY_UNAVAILABLE";
-  }
-  if (!onchain) {
-    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
-    if (payoutMethod) {
-      const identity = await prisma.identity.findFirst({
-        where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
-        orderBy: { createdAt: "desc" }
-      });
-      if (identity?.value) {
-        const maxIdx = await prisma.paymentIntent.findFirst({
-          where: { contentId, onchainDerivationIndex: { not: null } },
-          orderBy: { onchainDerivationIndex: "desc" },
-          select: { onchainDerivationIndex: true }
+  if (productTier !== "basic") {
+    try {
+      onchain = await createOnchainAddress(intent.id);
+    } catch {
+      onchain = null;
+      onchainReason = "TEMPORARILY_UNAVAILABLE";
+    }
+    if (!onchain) {
+      const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
+      if (payoutMethod) {
+        const identity = await prisma.identity.findFirst({
+          where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
+          orderBy: { createdAt: "desc" }
         });
-        const nextIdx = (maxIdx?.onchainDerivationIndex ?? -1) + 1;
-        try {
-          const addr = await deriveFromXpub.addressAt(String(identity.value), nextIdx);
-          onchain = { address: addr, derivationIndex: nextIdx };
-        } catch {
-          onchain = null;
-          onchainReason = "ADDRESS_DERIVATION_FAILED";
+        if (identity?.value) {
+          const maxIdx = await prisma.paymentIntent.findFirst({
+            where: { contentId, onchainDerivationIndex: { not: null } },
+            orderBy: { onchainDerivationIndex: "desc" },
+            select: { onchainDerivationIndex: true }
+          });
+          const nextIdx = (maxIdx?.onchainDerivationIndex ?? -1) + 1;
+          try {
+            const addr = await deriveFromXpub.addressAt(String(identity.value), nextIdx);
+            onchain = { address: addr, derivationIndex: nextIdx };
+          } catch {
+            onchain = null;
+            onchainReason = "ADDRESS_DERIVATION_FAILED";
+          }
         }
       }
+      if (!onchain && !onchainReason) onchainReason = "XPUB_NOT_CONFIGURED";
     }
-    if (!onchain && !onchainReason) onchainReason = "XPUB_NOT_CONFIGURED";
+  } else {
+    onchain = null;
+    onchainReason = "NOT_SUPPORTED_BASIC";
   }
 
   try {
@@ -9967,6 +9993,28 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
 });
 
 async function getPaymentsReadiness(userId: string) {
+  const productTier = resolveProductTier().productTier;
+  if (productTier === "basic") {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    let lightningReady = false;
+    let lightningReason: string | null = "NOT_CONFIGURED";
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId }
+      });
+      if (identity?.value) {
+        lightningReady = true;
+        lightningReason = null;
+      }
+    }
+    return {
+      mode: "wallet",
+      ready: lightningReady,
+      lightning: { ready: lightningReady, reason: lightningReason },
+      onchain: { ready: false, reason: "NOT_SUPPORTED_BASIC" }
+    };
+  }
+
   let lightningReady = false;
   let lightningReason: string | null = "NOT_CONFIGURED";
 
@@ -10009,6 +10057,8 @@ async function getPaymentsReadiness(userId: string) {
   }
 
   return {
+    mode: getPaymentsMode(),
+    ready: lightningReady || onchainReady,
     lightning: { ready: lightningReady, reason: lightningReason },
     onchain: { ready: onchainReady, reason: onchainReason }
   };

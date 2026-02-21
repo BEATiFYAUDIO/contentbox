@@ -83,6 +83,8 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   }, []);
 
   const nodeMode = identityDetail?.nodeMode || "basic";
+  const productTier = identityDetail?.productTier || "basic";
+  const isBasicTier = productTier === "basic";
   const ownerEmail = identityDetail?.ownerEmail || null;
   const nodeBadge = nodeMode === "advanced" ? "Owner account" : nodeMode === "lan" ? "Shared node account" : "Trial account";
   const beatifyStatus = beatifyHandle ? "UNVERIFIED" : "UNLINKED";
@@ -489,6 +491,9 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
               onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: e.target.value, lnurl: s?.lnurl || "", btcAddress: s?.btcAddress || "" }))}
               className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
             />
+            {isBasicTier && !(payoutSettings?.lightningAddress || "").trim() ? (
+              <div className="text-xs text-amber-300">Lightning address required in Basic mode.</div>
+            ) : null}
             <input
               placeholder="LNURL (optional)"
               value={payoutSettings?.lnurl || ""}
@@ -499,10 +504,16 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
               placeholder="BTC Address (optional)"
               value={payoutSettings?.btcAddress || ""}
               onChange={(e) => setPayoutSettings((s) => ({ lightningAddress: s?.lightningAddress || "", lnurl: s?.lnurl || "", btcAddress: e.target.value }))}
-              className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
+              className={`w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 ${isBasicTier ? "opacity-50 cursor-not-allowed" : ""}`}
+              disabled={isBasicTier}
+              title={isBasicTier ? "On-chain BTC payments are not supported in Basic mode." : undefined}
             />
             <button
               onClick={async () => {
+                if (isBasicTier && !(payoutSettings?.lightningAddress || "").trim()) {
+                  setPayoutMsg("Lightning address required in Basic mode.");
+                  return;
+                }
                 try {
                   setPayoutMsg(null);
                   await api(`/api/me/payout`, "POST", {
@@ -515,7 +526,8 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                   setPayoutMsg(e?.message || "Failed to save payout settings.");
                 }
               }}
-              className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+              className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
+              disabled={isBasicTier && !(payoutSettings?.lightningAddress || "").trim()}
             >
               Save payout settings
             </button>
