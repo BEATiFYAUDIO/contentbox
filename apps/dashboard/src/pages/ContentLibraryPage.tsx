@@ -372,6 +372,7 @@ export default function ContentLibraryPage({
   const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
+  const [publicOriginFromApi, setPublicOriginFromApi] = React.useState<string>("");
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
@@ -456,6 +457,20 @@ export default function ContentLibraryPage({
       }
     })();
   }, []);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/public/origin`, { method: "GET" });
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.publicOrigin) {
+          setPublicOriginFromApi(String(data.publicOrigin).replace(/\/$/, ""));
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, [apiBase]);
 
   async function refreshPublicStatus() {
     try {
@@ -3213,8 +3228,8 @@ export default function ContentLibraryPage({
 
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
-                            const effectivePublicOrigin = (activeOrigin || "").trim();
-                            const effectiveBuyOrigin = (publicBuyOrigin || effectivePublicOrigin || "").trim();
+                            const effectivePublicOrigin = (publicOriginFromApi || activeOrigin || "").trim();
+                            const effectiveBuyOrigin = (publicOriginFromApi || publicBuyOrigin || activeOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");

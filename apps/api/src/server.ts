@@ -461,6 +461,37 @@ function normalizeUrlString(u: string | null | undefined): string | null {
   }
 }
 
+function normalizeOrigin(value: string | null | undefined): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  return `https://${raw.replace(/\/+$/, "")}`;
+}
+
+function getPublicOrigin(req: any): string {
+  const envOrigin =
+    normalizeOrigin(process.env.PUBLIC_ORIGIN) || normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
+  if (envOrigin) {
+    if (process.env.NODE_ENV === "production" && !envOrigin.startsWith("https://")) {
+      app.log.warn({ publicOrigin: envOrigin }, "PUBLIC_ORIGIN should be https in production");
+    }
+    return envOrigin;
+  }
+
+  const xfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim();
+  const xfHost = asString(req?.headers?.["x-forwarded-host"] || "").split(",")[0].trim();
+  if (xfProto && xfHost) return `${xfProto}://${xfHost}`.replace(/\/+$/, "");
+
+  const host = asString(req?.headers?.host || "").trim();
+  const proto =
+    xfProto ||
+    (req as any)?.protocol ||
+    (req?.raw?.socket?.encrypted ? "https" : "http");
+  if (host) return `${proto}://${host}`.replace(/\/+$/, "");
+
+  return APP_BASE_URL.replace(/\/+$/, "");
+}
+
 function isLoopbackIp(ip: string): boolean {
   const value = String(ip || "");
   if (!value) return false;
@@ -3984,6 +4015,12 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
   });
 });
 
+// Public-safe canonical origin for buy links (no auth required).
+app.get("/api/public/origin", async (req: any, reply: any) => {
+  const publicOrigin = getPublicOrigin(req);
+  return reply.send({ publicOrigin });
+});
+
 app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   if (!isAdvancedDb()) {
     return reply.code(400).send({ error: "Backups require STORAGE=postgres with Postgres." });
@@ -5574,7 +5611,7 @@ app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async
     throw e;
   }
   if (!shareLink) return reply.send({ shareLink: null });
-  const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+  const base = getPublicOrigin(req).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     shareLink: {
@@ -5631,7 +5668,7 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
     }
     throw e;
   }
-  const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+  const base = getPublicOrigin(req).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     ok: true,
@@ -5726,7 +5763,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       where: { id: contentId },
       data: { status: "published", manifestId: manifest.id, currentSplitId: sv.id }
     });
-    const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+    const publicOrigin = getPublicOrigin(req).replace(/\/$/, "");
     await tx.publishEvent.create({
       data: {
         contentId,
@@ -5746,7 +5783,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     await triggerPublicStartBestEffort();
   } catch {}
 
-  const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const publicOrigin = getPublicOrigin(req);
   return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256, publicOrigin });
 });
 
@@ -6394,7 +6431,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
   const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
 
-  const clearanceBase = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
     const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
     if (!email) continue;
@@ -6414,7 +6451,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const childPublicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const childPublicOrigin = getPublicOrigin(req);
   if (remoteOrigin) {
     try {
       const ctrl = new AbortController();
@@ -6578,7 +6615,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
   const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
 
-  const clearanceBase = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
     const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
     if (!email) continue;
