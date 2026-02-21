@@ -7461,6 +7461,26 @@ async function handleBuyPage(req: any, reply: any) {
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
   }
 
+  function renderManual(intent){
+    const rails = document.getElementById("rails");
+    const destination = intent.destination || {};
+    rails.innerHTML = \`
+      <div class="rail" style="border-color:#92400e;background:#1f140a;">
+        <div style="font-weight:600;">Manual payment required</div>
+        <div class="muted" style="margin-top:6px;">Amount: \${intent.amountSats || 0} sats</div>
+        <div class="muted">Send to: <span class="code">\${destination.value || ""}</span></div>
+        <div class="muted">Memo: <span class="code">\${intent.memo || ""}</span></div>
+        \${intent.message ? \`<div class="muted" style="margin-top:6px;">\${intent.message}</div>\` : ""}
+        <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="copy" data-copy="\${destination.value || ""}">Copy address</button>
+          <button class="copy" data-copy="\${intent.memo || ""}">Copy memo</button>
+        </div>
+        <div class="muted" style="margin-top:8px;font-size:12px;">This Basic link does not generate invoices. Send manually from your wallet.</div>
+      </div>
+    \`;
+    rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+  }
+
   function renderDownloads(payload){
     const downloads = document.getElementById("downloads");
     const list = payload.files || [];
@@ -7495,6 +7515,12 @@ async function handleBuyPage(req: any, reply: any) {
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    if (intent?.status === "manual_required") {
+      receiptToken = null;
+      renderManual(intent);
+      document.getElementById("status").textContent = "Manual payment required.";
+      return;
+    }
     receiptToken = intent.receiptToken;
     renderRails(intent);
     pollTimer = setInterval(pollStatus, 2000);
