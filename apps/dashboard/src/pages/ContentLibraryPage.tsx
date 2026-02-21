@@ -793,8 +793,18 @@ export default function ContentLibraryPage({
     if (publishBusy[contentId]) return;
     const currentItem = items.find((it) => it.id === contentId);
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(currentItem?.type || ""));
+    const lightningAvailable = identities.some(
+      (i) => (i.payoutMethod.code === "lightning_address" || i.payoutMethod.code === "lnurl") && i.value
+    );
     if (!publishAllowed) {
       setPublishMsg((m) => ({ ...m, [contentId]: publishReason }));
+      return;
+    }
+    if (isBasicTier && !lightningAvailable) {
+      setPublishMsg((m) => ({
+        ...m,
+        [contentId]: "Add a Lightning payout address (LNURL or Lightning address) in Profile → Payouts to create share links."
+      }));
       return;
     }
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
