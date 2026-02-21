@@ -4215,6 +4215,55 @@ app.get("/me/purchases/payment-intents", { preHandler: requireAuth }, async (req
   }));
 });
 
+// Seller payment intents (revenue ledger)
+app.get("/me/sales/payment-intents", { preHandler: requireAuth }, async (req: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+  if (contentIds.length === 0) return [];
+
+  let lightningAddress: string | null = null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId },
+        orderBy: { createdAt: "desc" }
+      });
+      const v = asString(identity?.value || "").trim();
+      if (v) lightningAddress = v;
+    }
+  } catch {
+    lightningAddress = null;
+  }
+
+  const intents = await prisma.paymentIntent.findMany({
+    where: { contentId: { in: contentIds }, purpose: "CONTENT_PURCHASE" as any },
+    include: { content: true },
+    orderBy: { createdAt: "desc" }
+  });
+
+  return intents.map((i) => ({
+    id: i.id,
+    contentId: i.contentId,
+    manifestSha256: i.manifestSha256,
+    amountSats: i.amountSats.toString(),
+    status: i.status,
+    paidVia: i.paidVia,
+    createdAt: i.createdAt.toISOString(),
+    receiptToken: i.receiptToken || null,
+    memo: i.memo || `CBX-${i.id.slice(-6).toUpperCase()}`,
+    bolt11: i.bolt11 || null,
+    providerId: i.providerId || null,
+    onchainAddress: i.onchainAddress || null,
+    destination: lightningAddress ? { type: "lightning_address", value: lightningAddress } : null,
+    content: i.content ? { id: i.content.id, title: i.content.title, type: i.content.type } : null
+  }));
+});
+
 // Update current user (partial update). Currently supports updating displayName.
 app.patch("/me", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
@@ -7333,6 +7382,20 @@ async function handleBuyPage(req: any, reply: any) {
     try { localStorage.removeItem(entKey(manifestHash)); } catch {}
   }
 
+  function manualKey(){ return "cb:manual-intent:" + contentId; }
+  function getManualIntent(){
+    try {
+      const raw = localStorage.getItem(manualKey());
+      return raw ? String(raw) : null;
+    } catch { return null; }
+  }
+  function setManualIntent(intentId){
+    try { if (intentId) localStorage.setItem(manualKey(), String(intentId)); } catch {}
+  }
+  function clearManualIntent(){
+    try { localStorage.removeItem(manualKey()); } catch {}
+  }
+
   async function fetchJson(path, opts){
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
     const data = await res.json().catch(()=>null);
@@ -7494,10 +7557,24 @@ async function handleBuyPage(req: any, reply: any) {
     \`;
   }
 
+  function checkManualStatus(){
+    const pendingIntent = getManualIntent();
+    if (!pendingIntent) return;
+    receiptToken = pendingIntent;
+    const statusEl = document.getElementById("status");
+    if (statusEl) statusEl.textContent = "Checking payment…";
+    pollStatus().catch(()=>{});
+  }
+
   async function pollStatus(){
     if (!receiptToken) return;
     const status = await fetchJson("/buy/receipts/" + receiptToken + "/status");
-    if (status.canFulfill) {
+    if (status?.receiptToken && status.receiptToken !== receiptToken) {
+      receiptToken = status.receiptToken;
+    }
+    const paid = status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
+    if (paid) {
+      clearManualIntent();
       clearInterval(pollTimer);
       const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
@@ -7516,7 +7593,9 @@ async function handleBuyPage(req: any, reply: any) {
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
     if (intent?.status === "manual_required") {
-      receiptToken = null;
+      const manualId = intent.intentId || null;
+      receiptToken = manualId;
+      if (manualId) setManualIntent(manualId);
       renderManual(intent);
       document.getElementById("status").textContent = "Manual payment required.";
       return;
@@ -7544,10 +7623,12 @@ async function handleBuyPage(req: any, reply: any) {
           previewSeconds = p.previewSeconds || previewSeconds;
           const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
           renderOffer(offer, next);
+          checkManualStatus();
           return;
         } catch {}
       }
       renderOffer(offer, null);
+      checkManualStatus();
     })
     .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
 })();
@@ -7959,17 +8040,23 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
 
-  const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
+  let intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
+  const matchedReceiptToken = Boolean(intent);
+  if (!intent) {
+    intent = await prisma.paymentIntent.findUnique({ where: { id: receiptToken } });
+  }
   if (!intent) return notFound(reply, "Receipt not found");
-  if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
+  if (matchedReceiptToken && intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
 
   return reply.send({
+    status: intent.status,
     paymentStatus: intent.status,
     paymentIntentId: intent.id,
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
+    receiptToken: intent.receiptToken || null,
     canFulfill: intent.status === "paid"
   });
 }
@@ -10508,6 +10595,54 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
   }
 
   return reply.send({ ok: true, status: intent.status, paidVia: intent.paidVia, confirmations: onchainUpdate.confirmations ?? intent.confirmations });
+});
+
+app.post("/api/payments/intents/:intentId/mark-paid", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const intentId = asString((req.params as any).intentId || "").trim();
+  if (!intentId) return badRequest(reply, "intentId required");
+
+  const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+  if (!intent) return notFound(reply, "PaymentIntent not found");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  if (!content || content.ownerUserId !== userId) return forbidden(reply);
+
+  if (intent.status !== "pending") return badRequest(reply, "PaymentIntent is not pending");
+
+  const isManual = !intent.bolt11 && !intent.providerId && !intent.onchainAddress;
+  if (!isManual) return badRequest(reply, "PaymentIntent is not manual");
+
+  const now = new Date();
+  await prisma.paymentIntent.update({
+    where: { id: intentId },
+    data: {
+      status: "paid" as any,
+      paidAt: now,
+      paidVia: (intent.paidVia || "lightning") as any
+    }
+  });
+
+  let receiptToken: string | null = intent.receiptToken || null;
+  try {
+    const finalized = await finalizePurchase(intentId, prisma);
+    receiptToken = finalized?.receiptToken || receiptToken;
+  } catch {
+    const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+    const nowMs = Date.now();
+    const expired = intent.receiptTokenExpiresAt ? intent.receiptTokenExpiresAt.getTime() < nowMs : false;
+    if (!receiptToken || expired) {
+      const newToken = crypto.randomBytes(24).toString("hex");
+      const receiptTokenExpiresAt = new Date(nowMs + ttlSeconds * 1000);
+      await prisma.paymentIntent.update({
+        where: { id: intentId },
+        data: { receiptToken: newToken, receiptTokenExpiresAt }
+      });
+      receiptToken = newToken;
+    }
+  }
+
+  return reply.send({ ok: true, status: "paid", receiptToken });
 });
 
 /**

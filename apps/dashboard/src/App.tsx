@@ -711,7 +711,7 @@ export default function App() {
                 </ErrorBoundary>
               )}
 
-              {page === "sales" && <SalesPage />}
+              {page === "sales" && <SalesPage productTier={productTier} />}
 
               {page === "receipt" && receiptToken && <ReceiptPage token={receiptToken} />}
 
