@@ -11291,7 +11291,40 @@ async function start() {
     }
   }
 
+  // Ensure core payout methods exist (prevents silent failures on /api/me/payout)
+  async function ensurePayoutMethods() {
+    const methods: Prisma.PayoutMethodCreateInput[] = [
+      { code: "manual", displayName: "Manual payout", isEnabled: true, isVisible: true, sortOrder: 10 },
+      { code: "lightning_address", displayName: "Lightning Address", isEnabled: true, isVisible: true, sortOrder: 20 },
+      { code: "lnurl", displayName: "LNURL-Pay", isEnabled: true, isVisible: true, sortOrder: 30 },
+      { code: "btc_onchain", displayName: "BTC On-chain (XPUB)", isEnabled: false, isVisible: true, sortOrder: 40 },
+      { code: "stripe_connect", displayName: "Stripe Connect (Coming soon)", isEnabled: false, isVisible: true, sortOrder: 90 },
+      { code: "paypal", displayName: "PayPal (Coming soon)", isEnabled: false, isVisible: true, sortOrder: 100 }
+    ];
+
+    app.log.info({ count: methods.length }, "ensurePayoutMethods.start");
+    try {
+      for (const m of methods) {
+        await prisma.payoutMethod.upsert({
+          where: { code: m.code },
+          update: {
+            displayName: m.displayName,
+            isEnabled: m.isEnabled,
+            isVisible: m.isVisible,
+            sortOrder: m.sortOrder
+          },
+          create: m
+        });
+      }
+    } catch (err) {
+      app.log.error({ err }, "ensurePayoutMethods.failed");
+      throw err;
+    }
+    app.log.info({ count: methods.length }, "ensurePayoutMethods.ok");
+  }
+
   await ensureNodeKeys();
+  await ensurePayoutMethods();
   await preflightDb();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
