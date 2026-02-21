@@ -25,6 +25,17 @@ const STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK = "contentbox.publicStudioOriginFall
 const STORAGE_TUNNEL_CONFIG_ENABLED = "contentbox.tunnelConfig.enabled";
 const STORAGE_API_BASE = "contentbox.apiBase";
 
+function isPrivateHost(hostname: string): boolean {
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return true;
+  const m = hostname.match(/^172\.(\d+)\./);
+  if (m) {
+    const n = Number(m[1]);
+    return n >= 16 && n <= 31;
+  }
+  return false;
+}
 
 function readStoredValue(key: string): string {
   if (typeof window === "undefined") return "";
@@ -87,6 +98,8 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
   const [publicBusy, setPublicBusy] = useState(false);
   const [publicMsg, setPublicMsg] = useState<string | null>(null);
   const [publicAdvancedOpen, setPublicAdvancedOpen] = useState(false);
+  const [publicOriginDetected, setPublicOriginDetected] = useState<string>("");
+  const [publicOriginWarn, setPublicOriginWarn] = useState<boolean>(false);
   const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
@@ -106,6 +119,30 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
         if (!cancelled) setHealth(json);
       } catch (e: any) {
         if (!cancelled) setErr(e?.message || String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/public/origin`, { method: "GET" });
+        const json = await res.json().catch(() => null);
+        const origin = String(json?.publicOrigin || "").trim().replace(/\/+$/, "");
+        if (!cancelled) {
+          setPublicOriginDetected(origin);
+          const host = safeHost(origin);
+          setPublicOriginWarn(!origin || isPrivateHost(host));
+        }
+      } catch {
+        if (!cancelled) {
+          setPublicOriginDetected("");
+          setPublicOriginWarn(true);
+        }
       }
     })();
     return () => {
@@ -950,6 +987,11 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
             <div><b>Studio origin</b>: {health.publicStudioOrigin || "—"}</div>
             <div><b>Contentbox origin</b>: {health.publicOrigin || "—"}</div>
             <div><b>Last seen</b>: {health.ts || "—"}</div>
+            <div>
+              <b>PUBLIC_ORIGIN detected</b>: {publicOriginWarn ? "WARN" : "OK"}{" "}
+              {publicOriginDetected || "—"}
+              {publicOriginWarn ? <span style={{ opacity: 0.7 }}> (links may use derived origin)</span> : null}
+            </div>
             {publicStatus ? (
               <div>
                 <b>Last check</b>:{" "}
