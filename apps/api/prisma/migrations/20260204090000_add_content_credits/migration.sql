@@ -1,4 +1,4 @@
-CREATE TABLE "ContentCredit" (
+CREATE TABLE IF NOT EXISTS "ContentCredit" (
     "id" TEXT NOT NULL,
     "contentId" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -11,6 +11,10 @@ CREATE TABLE "ContentCredit" (
     CONSTRAINT "ContentCredit_pkey" PRIMARY KEY ("id")
 );
 
-CREATE INDEX "ContentCredit_contentId_sortOrder_idx" ON "ContentCredit"("contentId", "sortOrder");
+CREATE INDEX IF NOT EXISTS "ContentCredit_contentId_sortOrder_idx" ON "ContentCredit"("contentId", "sortOrder");
 
-ALTER TABLE "ContentCredit" ADD CONSTRAINT "ContentCredit_contentId_fkey" FOREIGN KEY ("contentId") REFERENCES "ContentItem"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ContentCredit_contentId_fkey') THEN
+    ALTER TABLE "ContentCredit" ADD CONSTRAINT "ContentCredit_contentId_fkey" FOREIGN KEY ("contentId") REFERENCES "ContentItem"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  END IF;
+END $$;

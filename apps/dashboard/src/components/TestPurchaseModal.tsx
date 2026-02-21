@@ -51,6 +51,13 @@ export default function TestPurchaseModal({
   const [onchainAddress, setOnchainAddress] = React.useState<string | null>(null);
   const [onchainReason, setOnchainReason] = React.useState<string | null>(null);
   const [status, setStatus] = React.useState<string | null>(null);
+  const [manualPayment, setManualPayment] = React.useState<{
+    amountSats: number;
+    intentId: string;
+    destination: { type: string; value: string };
+    memo: string;
+    message?: string | null;
+  } | null>(null);
   const [receiptToken, setReceiptToken] = React.useState<string | null>(null);
   const [unlockPayload, setUnlockPayload] = React.useState<any | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -67,6 +74,7 @@ export default function TestPurchaseModal({
       setOnchainAddress(null);
       setOnchainReason(null);
       setStatus(null);
+      setManualPayment(null);
       setReceiptToken(null);
       setUnlockPayload(null);
       setError(null);
@@ -77,7 +85,7 @@ export default function TestPurchaseModal({
   }, [open, defaultAmountSats]);
 
   React.useEffect(() => {
-    if (!intentId) return;
+    if (!intentId || manualPayment) return;
 
     let statusTimer: number | null = null;
     let refreshTimer: number | null = null;
@@ -118,7 +126,7 @@ export default function TestPurchaseModal({
       if (statusTimer) window.clearInterval(statusTimer);
       if (refreshTimer) window.clearInterval(refreshTimer);
     };
-  }, [intentId, receiptToken]);
+  }, [intentId, receiptToken, manualPayment]);
 
   React.useEffect(() => {
     if (status !== "paid") return;
@@ -240,6 +248,7 @@ export default function TestPurchaseModal({
             onClick={async () => {
               setError(null);
               setLoading(true);
+              setManualPayment(null);
               try {
                 const payload = {
                   purpose: "CONTENT_PURCHASE",
@@ -255,11 +264,37 @@ export default function TestPurchaseModal({
                   headers,
                   body: JSON.stringify(payload)
                 });
-                setIntentId(String(data?.intentId || ""));
-                setBolt11(data?.lightning?.bolt11 || null);
-                setOnchainAddress(data?.onchain?.address || null);
-                setOnchainReason(data?.onchainReason || null);
-                setStatus("pending");
+                const nextIntentId = String(data?.intentId || "");
+                const responseError =
+                  data?.code || data?.error || (data?.message && !data?.lightning?.bolt11 && !data?.onchain?.address);
+                if (data?.status === "manual_required") {
+                  setIntentId(nextIntentId);
+                  setBolt11(null);
+                  setOnchainAddress(null);
+                  setOnchainReason(null);
+                  setStatus("manual_required");
+                  setManualPayment({
+                    amountSats: Number(data?.amountSats || 0),
+                    intentId: nextIntentId,
+                    destination: data?.destination || { type: "lightning_address", value: "" },
+                    memo: String(data?.memo || ""),
+                    message: data?.message || null
+                  });
+                } else if (responseError) {
+                  const msg =
+                    typeof responseError === "string"
+                      ? responseError
+                      : data?.code
+                        ? `${String(data.code)}${data?.lightningReason ? `: ${String(data.lightningReason)}` : ""}`
+                        : "Failed to create intent";
+                  setError(msg);
+                } else {
+                  setIntentId(nextIntentId);
+                  setBolt11(data?.lightning?.bolt11 || null);
+                  setOnchainAddress(data?.onchain?.address || null);
+                  setOnchainReason(data?.onchainReason || null);
+                  setStatus("pending");
+                }
               } catch (e: any) {
                 setError(e?.message || "Failed to create intent");
               } finally {
@@ -276,6 +311,39 @@ export default function TestPurchaseModal({
             <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 space-y-3">
               <div className="text-xs text-neutral-400">Intent: {intentId}</div>
               <div className="text-xs text-neutral-400">Payment status: {status || "pending"}</div>
+
+              {manualPayment && (
+                <div className="rounded-lg border border-amber-900/70 bg-amber-950/20 p-3 space-y-2">
+                  <div className="text-xs font-semibold text-amber-200">Manual payment required</div>
+                  <div className="text-xs text-amber-100">Amount: {manualPayment.amountSats} sats</div>
+                  <div className="text-xs text-amber-100">
+                    Send to: <code className="text-amber-100 break-all">{manualPayment.destination?.value || ""}</code>
+                  </div>
+                  <div className="text-xs text-amber-100">
+                    Memo: <code className="text-amber-100">{manualPayment.memo}</code>
+                  </div>
+                  {manualPayment.message ? (
+                    <div className="text-xs text-amber-200">{manualPayment.message}</div>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="text-xs rounded-lg border border-amber-800/60 px-2 py-1 hover:bg-amber-950/40"
+                      onClick={() => navigator.clipboard.writeText(manualPayment.destination?.value || "")}
+                    >
+                      Copy address
+                    </button>
+                    <button
+                      className="text-xs rounded-lg border border-amber-800/60 px-2 py-1 hover:bg-amber-950/40"
+                      onClick={() => navigator.clipboard.writeText(manualPayment.memo)}
+                    >
+                      Copy memo
+                    </button>
+                  </div>
+                  <div className="text-[11px] text-amber-300/80">
+                    This Basic link does not generate invoices. Send manually from your wallet.
+                  </div>
+                </div>
+              )}
 
               {bolt11 && (
                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">

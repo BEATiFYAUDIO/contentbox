@@ -30,7 +30,6 @@ import { createLightningInvoice, checkLightningInvoice } from "./payments/lightn
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
 import {
-  canonicalOriginForLinks,
   computePublicLinkState,
   getNamedTunnelConfig,
   isNamedConfigured,
@@ -461,6 +460,70 @@ function normalizeUrlString(u: string | null | undefined): string | null {
   }
 }
 
+function normalizeOrigin(value: string | null | undefined): string | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  const isLocal =
+    raw.startsWith("localhost") ||
+    raw.startsWith("127.0.0.1") ||
+    raw === "localhost" ||
+    raw === "127.0.0.1";
+  if (process.env.NODE_ENV !== "production" && isLocal) {
+    return `http://${raw.replace(/\/+$/, "")}`;
+  }
+  return `https://${raw.replace(/\/+$/, "")}`;
+}
+
+function getPublicOrigin(req: any): string {
+  const envOrigin =
+    normalizeOrigin(process.env.PUBLIC_ORIGIN) || normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
+  if (envOrigin) {
+    if (process.env.NODE_ENV === "production" && !envOrigin.startsWith("https://")) {
+      app.log.warn({ publicOrigin: envOrigin }, "PUBLIC_ORIGIN should be https in production");
+    }
+    return envOrigin;
+  }
+
+  const xfProtoRaw = asString(req?.headers?.["x-forwarded-proto"] || "");
+  const xfHostRaw = asString(req?.headers?.["x-forwarded-host"] || "");
+  const xfProto = xfProtoRaw.split(",")[0].trim().toLowerCase();
+  const xfHost = xfHostRaw.split(",")[0].trim();
+  const protoOk = xfProto === "http" || xfProto === "https";
+  const hostOk = xfHost && !/[\s]/.test(xfHost) && /^[a-z0-9.\-:\[\]]+$/i.test(xfHost);
+  if (protoOk && hostOk) return `${xfProto}://${xfHost}`.replace(/\/+$/, "");
+
+  const host = asString(req?.headers?.host || "").trim();
+  const proto =
+    (protoOk ? xfProto : "") ||
+    (req as any)?.protocol ||
+    (req?.raw?.socket?.encrypted ? "https" : "http");
+  if (host) return `${proto}://${host}`.replace(/\/+$/, "");
+
+  return APP_BASE_URL.replace(/\/+$/, "");
+}
+
+function isLoopbackIp(ip: string): boolean {
+  const value = String(ip || "");
+  if (!value) return false;
+  if (value === "127.0.0.1" || value === "::1") return true;
+  if (value.startsWith("::ffff:127.0.0.1")) return true;
+  return false;
+}
+
+function setPublicDebugHeaders(req: any, reply: any): void {
+  try {
+    const origin = getPublicOrigin(req);
+    if (origin) {
+      reply.header("X-ContentBox-Origin", String(origin).replace(/\/+$/, ""));
+    }
+  } catch {}
+  try {
+    const node = String(process.env.NODE_ID || os.hostname() || "").trim();
+    if (node) reply.header("X-ContentBox-Node", node);
+  } catch {}
+}
+
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
@@ -635,6 +698,9 @@ const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
 const STARTED_AT = new Date().toISOString();
+const NODE_ID = (process.env.NODE_ID || "").trim() || os.hostname();
+const WHOAMI_ENABLED = process.env.WHOAMI_ENABLED === "1";
+const WHOAMI_ALLOW_REMOTE = process.env.WHOAMI_ALLOW_REMOTE === "1";
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -1848,6 +1914,14 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
 /** ---------- routes ---------- */
 
 function registerPublicRoutes(appPublic: any) {
+  appPublic.addHook("onRequest", (req: any, reply: any, done: any) => {
+    const url = asString(req?.raw?.url || req?.url || "");
+    const path = url.split("?")[0] || "";
+    if (path === "/buy" || path.startsWith("/buy/")) {
+      setPublicDebugHeaders(req, reply);
+    }
+    done();
+  });
   appPublic.get("/", async (_req: any, reply: any) => {
     return reply.send({
       ok: true,
@@ -1886,6 +1960,15 @@ function handlePublicPing(_req: any, reply: any) {
 app.get("/health", async () => ({ ok: true }));
 app.get("/public/ping", async (_req: any, reply: any) => {
   return reply.send({ ok: true, ts: new Date().toISOString() });
+});
+
+app.addHook("onRequest", (req: any, reply: any, done: any) => {
+  const url = asString(req?.raw?.url || req?.url || "");
+  const path = url.split("?")[0] || "";
+  if (path === "/api/public" || path.startsWith("/api/public/")) {
+    setPublicDebugHeaders(req, reply);
+  }
+  done();
 });
 
 // Public capabilities (non-sensitive)
@@ -3973,6 +4056,12 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
   });
 });
 
+// Public-safe canonical origin for buy links (no auth required).
+app.get("/api/public/origin", async (req: any, reply: any) => {
+  const publicOrigin = getPublicOrigin(req);
+  return reply.send({ publicOrigin });
+});
+
 app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   if (!isAdvancedDb()) {
     return reply.code(400).send({ error: "Backups require STORAGE=postgres with Postgres." });
@@ -4211,6 +4300,55 @@ app.get("/me/purchases/payment-intents", { preHandler: requireAuth }, async (req
     paidVia: i.paidVia,
     createdAt: i.createdAt.toISOString(),
     receiptToken: i.receiptToken || null,
+    content: i.content ? { id: i.content.id, title: i.content.title, type: i.content.type } : null
+  }));
+});
+
+// Seller payment intents (revenue ledger)
+app.get("/me/sales/payment-intents", { preHandler: requireAuth }, async (req: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+  if (contentIds.length === 0) return [];
+
+  let lightningAddress: string | null = null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId },
+        orderBy: { createdAt: "desc" }
+      });
+      const v = asString(identity?.value || "").trim();
+      if (v) lightningAddress = v;
+    }
+  } catch {
+    lightningAddress = null;
+  }
+
+  const intents = await prisma.paymentIntent.findMany({
+    where: { contentId: { in: contentIds }, purpose: "CONTENT_PURCHASE" as any },
+    include: { content: true },
+    orderBy: { createdAt: "desc" }
+  });
+
+  return intents.map((i) => ({
+    id: i.id,
+    contentId: i.contentId,
+    manifestSha256: i.manifestSha256,
+    amountSats: i.amountSats.toString(),
+    status: i.status,
+    paidVia: i.paidVia,
+    createdAt: i.createdAt.toISOString(),
+    receiptToken: i.receiptToken || null,
+    memo: i.memo || `CBX-${i.id.slice(-6).toUpperCase()}`,
+    bolt11: i.bolt11 || null,
+    providerId: i.providerId || null,
+    onchainAddress: i.onchainAddress || null,
+    destination: lightningAddress ? { type: "lightning_address", value: lightningAddress } : null,
     content: i.content ? { id: i.content.id, title: i.content.title, type: i.content.type } : null
   }));
 });
@@ -5514,7 +5652,7 @@ app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async
     throw e;
   }
   if (!shareLink) return reply.send({ shareLink: null });
-  const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+  const base = getPublicOrigin(req).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     shareLink: {
@@ -5571,7 +5709,7 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
     }
     throw e;
   }
-  const base = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+  const base = getPublicOrigin(req).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     ok: true,
@@ -5666,7 +5804,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       where: { id: contentId },
       data: { status: "published", manifestId: manifest.id, currentSplitId: sv.id }
     });
-    const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL).replace(/\/$/, "");
+    const publicOrigin = getPublicOrigin(req).replace(/\/$/, "");
     await tx.publishEvent.create({
       data: {
         contentId,
@@ -5686,7 +5824,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     await triggerPublicStartBestEffort();
   } catch {}
 
-  const publicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const publicOrigin = getPublicOrigin(req);
   return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256, publicOrigin });
 });
 
@@ -6334,7 +6472,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
   const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
 
-  const clearanceBase = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
     const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
     if (!email) continue;
@@ -6354,7 +6492,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const childPublicOrigin = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const childPublicOrigin = getPublicOrigin(req);
   if (remoteOrigin) {
     try {
       const ctrl = new AbortController();
@@ -6518,7 +6656,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
   const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
 
-  const clearanceBase = canonicalOriginForLinks(getPublicLinkState(), APP_BASE_URL);
+  const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
     const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
     if (!email) continue;
@@ -7024,6 +7162,15 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   return reply.send(fsSync.createReadStream(absPath));
 }
 
+app.addHook("onRequest", (req: any, reply: any, done: any) => {
+  const url = asString(req?.raw?.url || req?.url || "");
+  const path = url.split("?")[0] || "";
+  if (path === "/buy" || path.startsWith("/buy/")) {
+    setPublicDebugHeaders(req, reply);
+  }
+  done();
+});
+
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
 app.get("/buy/content/:id/preview-file", handlePublicPreviewFile);
 
@@ -7333,6 +7480,20 @@ async function handleBuyPage(req: any, reply: any) {
     try { localStorage.removeItem(entKey(manifestHash)); } catch {}
   }
 
+  function manualKey(){ return "cb:manual-intent:" + contentId; }
+  function getManualIntent(){
+    try {
+      const raw = localStorage.getItem(manualKey());
+      return raw ? String(raw) : null;
+    } catch { return null; }
+  }
+  function setManualIntent(intentId){
+    try { if (intentId) localStorage.setItem(manualKey(), String(intentId)); } catch {}
+  }
+  function clearManualIntent(){
+    try { localStorage.removeItem(manualKey()); } catch {}
+  }
+
   async function fetchJson(path, opts){
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
     const data = await res.json().catch(()=>null);
@@ -7461,6 +7622,26 @@ async function handleBuyPage(req: any, reply: any) {
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
   }
 
+  function renderManual(intent){
+    const rails = document.getElementById("rails");
+    const destination = intent.destination || {};
+    rails.innerHTML = \`
+      <div class="rail" style="border-color:#92400e;background:#1f140a;">
+        <div style="font-weight:600;">Manual payment required</div>
+        <div class="muted" style="margin-top:6px;">Amount: \${intent.amountSats || 0} sats</div>
+        <div class="muted">Send to: <span class="code">\${destination.value || ""}</span></div>
+        <div class="muted">Memo: <span class="code">\${intent.memo || ""}</span></div>
+        \${intent.message ? \`<div class="muted" style="margin-top:6px;">\${intent.message}</div>\` : ""}
+        <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="copy" data-copy="\${destination.value || ""}">Copy address</button>
+          <button class="copy" data-copy="\${intent.memo || ""}">Copy memo</button>
+        </div>
+        <div class="muted" style="margin-top:8px;font-size:12px;">This Basic link does not generate invoices. Send manually from your wallet.</div>
+      </div>
+    \`;
+    rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+  }
+
   function renderDownloads(payload){
     const downloads = document.getElementById("downloads");
     const list = payload.files || [];
@@ -7474,10 +7655,24 @@ async function handleBuyPage(req: any, reply: any) {
     \`;
   }
 
+  function checkManualStatus(){
+    const pendingIntent = getManualIntent();
+    if (!pendingIntent) return;
+    receiptToken = pendingIntent;
+    const statusEl = document.getElementById("status");
+    if (statusEl) statusEl.textContent = "Checking payment…";
+    pollStatus().catch(()=>{});
+  }
+
   async function pollStatus(){
     if (!receiptToken) return;
     const status = await fetchJson("/buy/receipts/" + receiptToken + "/status");
-    if (status.canFulfill) {
+    if (status?.receiptToken && status.receiptToken !== receiptToken) {
+      receiptToken = status.receiptToken;
+    }
+    const paid = status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
+    if (paid) {
+      clearManualIntent();
       clearInterval(pollTimer);
       const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
@@ -7495,6 +7690,14 @@ async function handleBuyPage(req: any, reply: any) {
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    if (intent?.status === "manual_required") {
+      const manualId = intent.intentId || null;
+      receiptToken = manualId;
+      if (manualId) setManualIntent(manualId);
+      renderManual(intent);
+      document.getElementById("status").textContent = "Manual payment required.";
+      return;
+    }
     receiptToken = intent.receiptToken;
     renderRails(intent);
     pollTimer = setInterval(pollStatus, 2000);
@@ -7518,10 +7721,12 @@ async function handleBuyPage(req: any, reply: any) {
           previewSeconds = p.previewSeconds || previewSeconds;
           const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
           renderOffer(offer, next);
+          checkManualStatus();
           return;
         } catch {}
       }
       renderOffer(offer, null);
+      checkManualStatus();
     })
     .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
 })();
@@ -7742,6 +7947,21 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     }
   });
 
+  let lightningAddress: string | null = null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
+        orderBy: { createdAt: "desc" }
+      });
+      const v = asString(identity?.value || "").trim();
+      if (v) lightningAddress = v;
+    }
+  } catch {
+    lightningAddress = null;
+  }
+
   let onchain: { address: string; derivationIndex?: number | null } | null = null;
   let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
   let onchainReason: string | null = null;
@@ -7793,6 +8013,25 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   }
   if (!lightning?.bolt11 && !lightningReason) {
     lightningReason = "PROVIDER_NOT_CONFIGURED";
+  }
+
+  if (!onchain && !lightning && productTier === "basic" && lightningReason === "PROVIDER_NOT_CONFIGURED" && lightningAddress) {
+    const shortIntentId = intent.id.slice(-6).toUpperCase();
+    const memo = `CBX-${shortIntentId}`;
+    try {
+      await prisma.paymentIntent.update({
+        where: { id: intent.id },
+        data: { memo }
+      });
+    } catch {}
+    return reply.send({
+      status: "manual_required",
+      amountSats: Number(amountSats),
+      intentId: intent.id,
+      destination: { type: "lightning_address", value: lightningAddress },
+      memo,
+      message: "Send sats to the Lightning Address and include the memo."
+    });
   }
 
   if (!onchain && !lightning) {
@@ -7906,17 +8145,23 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
 
-  const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
+  let intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
+  const matchedReceiptToken = Boolean(intent);
+  if (!intent) {
+    intent = await prisma.paymentIntent.findUnique({ where: { id: receiptToken } });
+  }
   if (!intent) return notFound(reply, "Receipt not found");
-  if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
+  if (matchedReceiptToken && intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
 
   return reply.send({
+    status: intent.status,
     paymentStatus: intent.status,
     paymentIntentId: intent.id,
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
+    receiptToken: intent.receiptToken || null,
     canFulfill: intent.status === "paid"
   });
 }
@@ -9587,6 +9832,79 @@ async function settlePaymentIntent(paymentIntentId: string) {
   return settlement;
 }
 
+type FinalizePaymentIntentOptions = {
+  rail: "manual_lightning" | "provider_invoice" | "node_invoice";
+  confirmedByUserId?: string | null;
+};
+
+async function finalizePaymentIntent(intentId: string, options: FinalizePaymentIntentOptions) {
+  const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+  if (!intent) throw new Error("PaymentIntent not found");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  if (!content) throw new Error("Content not found");
+
+  const existingSale = await prisma.sale.findUnique({ where: { intentId } });
+  if (intent.status === "paid" && existingSale) {
+    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
+  }
+
+  const memo = intent.memo || (options.rail === "manual_lightning" ? `CBX-${intent.id.slice(-6).toUpperCase()}` : null);
+  const recognizedAt = intent.paidAt || new Date();
+
+  const sale = await prisma.$transaction(async (tx) => {
+    const fresh = await tx.paymentIntent.findUnique({ where: { id: intentId } });
+    if (!fresh) throw new Error("PaymentIntent not found");
+
+    if (fresh.status !== "paid") {
+      const paidVia = (fresh.paidVia || "lightning") as any;
+      await tx.paymentIntent.update({
+        where: { id: intentId },
+        data: {
+          status: "paid" as any,
+          paidAt: recognizedAt,
+          paidVia,
+          memo: memo || fresh.memo || null
+        }
+      });
+    } else if (!fresh.memo && memo) {
+      await tx.paymentIntent.update({
+        where: { id: intentId },
+        data: { memo }
+      });
+    }
+
+    return tx.sale.upsert({
+      where: { intentId },
+      update: {
+        amountSats: fresh.amountSats,
+        contentId: fresh.contentId,
+        sellerUserId: content.ownerUserId,
+        currency: "SAT",
+        rail: options.rail,
+        memo: memo || fresh.memo || null,
+        recognizedAt,
+        confirmedByUserId: options.confirmedByUserId || null
+      },
+      create: {
+        intentId,
+        contentId: fresh.contentId,
+        sellerUserId: content.ownerUserId,
+        amountSats: fresh.amountSats,
+        currency: "SAT",
+        rail: options.rail,
+        memo: memo || fresh.memo || null,
+        recognizedAt,
+        confirmedByUserId: options.confirmedByUserId || null
+      }
+    });
+  });
+
+  const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+  return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
+}
+
 // Lock a split version (owner only)
 app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
@@ -10070,6 +10388,74 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
   return reply.send(readiness);
 });
 
+app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const contents = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId },
+    select: { id: true }
+  });
+  const contentIds = contents.map((c) => c.id);
+  if (contentIds.length === 0) return [];
+
+  let lightningAddress: string | null = null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId },
+        orderBy: { createdAt: "desc" }
+      });
+      const v = asString(identity?.value || "").trim();
+      if (v) lightningAddress = v;
+    }
+  } catch {
+    lightningAddress = null;
+  }
+
+  const intents = await prisma.paymentIntent.findMany({
+    where: {
+      contentId: { in: contentIds },
+      status: "pending" as any,
+      purpose: "CONTENT_PURCHASE" as any
+    },
+    include: { content: true },
+    orderBy: { createdAt: "desc" }
+  });
+
+  return intents
+    .filter((i) => !i.bolt11 && !i.providerId && !i.onchainAddress)
+    .map((i) => ({
+      id: i.id,
+      contentId: i.contentId,
+      amountSats: i.amountSats.toString(),
+      status: i.status,
+      memo: i.memo || `CBX-${i.id.slice(-6).toUpperCase()}`,
+      createdAt: i.createdAt.toISOString(),
+      destination: lightningAddress ? { type: "lightning_address", value: lightningAddress } : null,
+      content: i.content ? { id: i.content.id, title: i.content.title, type: i.content.type } : null
+    }));
+});
+
+app.get("/api/revenue/sales", { preHandler: requireAuth }, async (req: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const sales = await prisma.sale.findMany({
+    where: { sellerUserId: userId },
+    include: { content: true },
+    orderBy: { recognizedAt: "desc" }
+  });
+  return sales.map((s) => ({
+    id: s.id,
+    intentId: s.intentId,
+    contentId: s.contentId,
+    amountSats: s.amountSats.toString(),
+    currency: s.currency,
+    rail: s.rail,
+    memo: s.memo,
+    recognizedAt: s.recognizedAt.toISOString(),
+    content: s.content ? { id: s.content.id, title: s.content.title, type: s.content.type } : null
+  }));
+});
+
 // ------------------------------
 // Finance endpoints (read-only)
 // ------------------------------
@@ -10423,26 +10809,27 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     await prisma.paymentIntent.update({
       where: { id: intent.id },
       data: {
-        status: "paid" as any,
         paidVia: paidVia as any,
-        paidAt: paidAt ? new Date(paidAt) : new Date(),
+        paidAt: paidAt ? new Date(paidAt) : intent.paidAt,
         onchainTxid: onchainUpdate.txid ?? intent.onchainTxid,
         onchainVout: onchainUpdate.vout ?? intent.onchainVout,
         confirmations: onchainUpdate.confirmations ?? intent.confirmations
       }
     });
 
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-
+    const rail = intent.providerId
+      ? PAYMENT_PROVIDER.kind === "lnd"
+        ? "node_invoice"
+        : "provider_invoice"
+      : "node_invoice";
+    const finalized = await finalizePaymentIntent(intent.id, { rail });
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     return reply.send({
       ok: true,
       status: "paid",
       paidVia,
       paidAt,
-      receiptToken: updated?.receiptToken || null,
+      receiptToken: finalized?.receiptToken || updated?.receiptToken || null,
       receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
     });
   }
@@ -10455,6 +10842,27 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
   }
 
   return reply.send({ ok: true, status: intent.status, paidVia: intent.paidVia, confirmations: onchainUpdate.confirmations ?? intent.confirmations });
+});
+
+app.post("/api/payments/intents/:intentId/mark-paid", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const intentId = asString((req.params as any).intentId || "").trim();
+  if (!intentId) return badRequest(reply, "intentId required");
+
+  const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+  if (!intent) return notFound(reply, "PaymentIntent not found");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  if (!content || content.ownerUserId !== userId) return forbidden(reply);
+
+  const isManual = !intent.bolt11 && !intent.providerId && !intent.onchainAddress;
+  if (!isManual) return badRequest(reply, "PaymentIntent is not manual");
+
+  const finalized = await finalizePaymentIntent(intentId, {
+    rail: "manual_lightning",
+    confirmedByUserId: userId
+  });
+  return reply.send({ ok: true, status: "paid", receiptToken: finalized.receiptToken || null });
 });
 
 /**
@@ -10484,7 +10892,6 @@ if (process.env.NODE_ENV !== "production") {
     await prisma.paymentIntent.update({
       where: { id: paymentIntentId },
       data: {
-        status: "paid" as any,
         paidVia: paidVia as any,
         paidAt: new Date(),
         confirmations: paidVia === "onchain" ? ONCHAIN_MIN_CONFS : intent.confirmations,
@@ -10493,7 +10900,12 @@ if (process.env.NODE_ENV !== "production") {
       }
     });
 
-    await finalizePurchase(paymentIntentId, prisma);
+    const rail = intent.providerId
+      ? PAYMENT_PROVIDER.kind === "lnd"
+        ? "node_invoice"
+        : "provider_invoice"
+      : "node_invoice";
+    await finalizePaymentIntent(paymentIntentId, { rail });
 
     const afterSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId } });
     const afterEntitlement = await prisma.entitlement.findFirst({ where: { paymentIntentId } });
@@ -10587,8 +10999,6 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
   await prisma.paymentIntent.update({
     where: { id },
     data: {
-      status: "paid" as any,
-      paidAt: new Date(),
       onchainTxid: body.onchainTxid ? asString(body.onchainTxid) : intent.onchainTxid,
       onchainVout: Number.isFinite(Number(body.onchainVout)) ? Math.floor(Number(body.onchainVout)) : intent.onchainVout,
       confirmations: Number.isFinite(Number(body.confirmations)) ? Math.floor(Number(body.confirmations)) : intent.confirmations
@@ -10596,8 +11006,14 @@ app.post("/api/payment-intents/:id/mark-paid", { preHandler: requireAuth }, asyn
   });
 
   try {
-    const settlement = await settlePaymentIntent(id);
-    return reply.send({ ok: true, settlementId: settlement.id });
+    const rail = intent.providerId
+      ? PAYMENT_PROVIDER.kind === "lnd"
+        ? "node_invoice"
+        : "provider_invoice"
+      : "node_invoice";
+    const finalized = await finalizePaymentIntent(id, { rail, confirmedByUserId: userId });
+    const settlement = await prisma.settlement.findUnique({ where: { paymentIntentId: id } });
+    return reply.send({ ok: true, settlementId: settlement?.id || null, receiptToken: finalized.receiptToken || null });
   } catch (e: any) {
     const status = Number(e?.statusCode) || 500;
     const code = e?.code ? String(e.code) : undefined;
@@ -10820,9 +11236,9 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
       });
 
     const inviteBase = (() => {
-      const state = getPublicLinkState();
-      const canonical = canonicalOriginForLinks(state, `http://127.0.0.1:${NODE_HTTP_PORT}`);
-      const override = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
+      const canonical = getPublicOrigin(req);
+      const overrideRaw = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
+      const override = normalizeOrigin(overrideRaw);
       if (override) {
         try {
           const host = new URL(override).hostname.toLowerCase();
@@ -11239,6 +11655,39 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 }
 
 app.post("/invites/:token/accept", handlePublicInviteAccept);
+
+/**
+ * Dev-only API/DB identity signal (disabled by default).
+ */
+app.get("/__whoami", async (req: any, reply: any) => {
+  if (process.env.NODE_ENV === "production" || !WHOAMI_ENABLED) {
+    return reply.code(404).send({ error: "Not found" });
+  }
+
+  const ip = asString((req as any)?.ip || "");
+  if (!WHOAMI_ALLOW_REMOTE && !isLoopbackIp(ip)) {
+    return reply.code(404).send({ error: "Not found" });
+  }
+
+  let db: { name: string | null; addr: string | null; port: number | null } | null = null;
+  try {
+    const rows = await prisma.$queryRaw<
+      { name: string | null; addr: string | null; port: number | null }[]
+    >`select current_database() as name, inet_server_addr() as addr, inet_server_port() as port`;
+    const first = Array.isArray(rows) ? rows[0] : null;
+    if (first) {
+      db = { name: first.name ?? null, addr: first.addr ?? null, port: first.port ?? null };
+    }
+  } catch {
+    db = null;
+  }
+
+  return reply.send({
+    nodeId: NODE_ID,
+    startedAt: STARTED_AT,
+    db
+  });
+});
 
 /** ---------- boot ---------- */
 

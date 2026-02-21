@@ -110,6 +110,8 @@ model User {
   paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
   entitlements         Entitlement[] @relation("EntitlementBuyer")
   remoteInvites        RemoteInvite[]
+  salesAsSeller        Sale[] @relation("SaleSeller")
+  salesConfirmed       Sale[] @relation("SaleConfirmer")
 
   @@index([email])
 }
@@ -172,6 +174,7 @@ model ContentItem {
   parentLinks   ContentLink[] @relation("ParentContent")
   childLinks    ContentLink[] @relation("ChildContent")
   paymentIntents PaymentIntent[] @relation("PaymentIntentContent")
+  sales          Sale[]
   entitlements   Entitlement[] @relation("EntitlementContent")
   settlements    Settlement[] @relation("SettlementContent")
 
@@ -524,6 +527,7 @@ model PaymentIntent {
   content  ContentItem @relation("PaymentIntentContent", fields: [contentId], references: [id], onDelete: Cascade)
   settlement Settlement? @relation("SettlementPayment")
   entitlements Entitlement[] @relation("EntitlementPayment")
+  sale        Sale?
 
   @@index([contentId])
   @@index([buyerUserId])
@@ -531,6 +535,28 @@ model PaymentIntent {
   @@index([status])
   @@index([receiptToken])
   @@index([purpose, subjectType, subjectId])
+}
+
+model Sale {
+  id                String   @id @default(cuid())
+  intentId          String   @unique
+  contentId         String
+  sellerUserId      String
+  amountSats        BigInt
+  currency          String   @default("SAT")
+  rail              String
+  memo              String?
+  recognizedAt      DateTime
+  confirmedByUserId String?
+  createdAt         DateTime @default(now())
+
+  intent    PaymentIntent @relation(fields: [intentId], references: [id], onDelete: Cascade)
+  content   ContentItem   @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  seller    User          @relation("SaleSeller", fields: [sellerUserId], references: [id], onDelete: Cascade)
+  confirmer User?         @relation("SaleConfirmer", fields: [confirmedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([sellerUserId, recognizedAt])
+  @@index([contentId])
 }
 
 model Entitlement {
