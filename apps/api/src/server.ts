@@ -7742,6 +7742,21 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     }
   });
 
+  let lightningAddress: string | null = null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
+        orderBy: { createdAt: "desc" }
+      });
+      const v = asString(identity?.value || "").trim();
+      if (v) lightningAddress = v;
+    }
+  } catch {
+    lightningAddress = null;
+  }
+
   let onchain: { address: string; derivationIndex?: number | null } | null = null;
   let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
   let onchainReason: string | null = null;
@@ -7793,6 +7808,18 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   }
   if (!lightning?.bolt11 && !lightningReason) {
     lightningReason = "PROVIDER_NOT_CONFIGURED";
+  }
+
+  if (!onchain && !lightning && productTier === "basic" && lightningReason === "PROVIDER_NOT_CONFIGURED" && lightningAddress) {
+    const shortIntentId = intent.id.slice(-6).toUpperCase();
+    return reply.send({
+      status: "manual_required",
+      amountSats: Number(amountSats),
+      intentId: intent.id,
+      destination: { type: "lightning_address", value: lightningAddress },
+      memo: `CBX-${shortIntentId}`,
+      message: "Send sats to the Lightning Address and include the memo."
+    });
   }
 
   if (!onchain && !lightning) {
