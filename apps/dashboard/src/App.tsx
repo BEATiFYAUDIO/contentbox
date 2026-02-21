@@ -598,7 +598,7 @@ export default function App() {
       )}
 
       {/* Main content */}
-      <div className="flex-1 min-w-0 overflow-y-auto">
+      <div className="flex-1 min-w-0 overflow-y-auto overscroll-none">
         <header className="px-6 py-4 border-b border-neutral-900 space-y-2">
           <div className="text-sm text-neutral-400">Dashboard</div>
           <div className="text-xl font-semibold">{pageTitle}</div>

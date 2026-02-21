@@ -7162,6 +7162,15 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   return reply.send(fsSync.createReadStream(absPath));
 }
 
+app.addHook("onRequest", (req: any, reply: any, done: any) => {
+  const url = asString(req?.raw?.url || req?.url || "");
+  const path = url.split("?")[0] || "";
+  if (path === "/buy" || path.startsWith("/buy/")) {
+    setPublicDebugHeaders(req, reply);
+  }
+  done();
+});
+
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
 app.get("/buy/content/:id/preview-file", handlePublicPreviewFile);
 
