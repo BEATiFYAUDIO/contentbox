@@ -30,7 +30,6 @@ import { createLightningInvoice, checkLightningInvoice } from "./payments/lightn
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
 import {
-  canonicalOriginForLinks,
   computePublicLinkState,
   getNamedTunnelConfig,
   isNamedConfigured,
@@ -465,6 +464,14 @@ function normalizeOrigin(value: string | null | undefined): string | null {
   const raw = String(value || "").trim();
   if (!raw) return null;
   if (/^https?:\/\//i.test(raw)) return raw.replace(/\/+$/, "");
+  const isLocal =
+    raw.startsWith("localhost") ||
+    raw.startsWith("127.0.0.1") ||
+    raw === "localhost" ||
+    raw === "127.0.0.1";
+  if (process.env.NODE_ENV !== "production" && isLocal) {
+    return `http://${raw.replace(/\/+$/, "")}`;
+  }
   return `https://${raw.replace(/\/+$/, "")}`;
 }
 
@@ -478,13 +485,17 @@ function getPublicOrigin(req: any): string {
     return envOrigin;
   }
 
-  const xfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim();
-  const xfHost = asString(req?.headers?.["x-forwarded-host"] || "").split(",")[0].trim();
-  if (xfProto && xfHost) return `${xfProto}://${xfHost}`.replace(/\/+$/, "");
+  const xfProtoRaw = asString(req?.headers?.["x-forwarded-proto"] || "");
+  const xfHostRaw = asString(req?.headers?.["x-forwarded-host"] || "");
+  const xfProto = xfProtoRaw.split(",")[0].trim().toLowerCase();
+  const xfHost = xfHostRaw.split(",")[0].trim();
+  const protoOk = xfProto === "http" || xfProto === "https";
+  const hostOk = xfHost && !/[\s]/.test(xfHost) && /^[a-z0-9.\-:\[\]]+$/i.test(xfHost);
+  if (protoOk && hostOk) return `${xfProto}://${xfHost}`.replace(/\/+$/, "");
 
   const host = asString(req?.headers?.host || "").trim();
   const proto =
-    xfProto ||
+    (protoOk ? xfProto : "") ||
     (req as any)?.protocol ||
     (req?.raw?.socket?.encrypted ? "https" : "http");
   if (host) return `${proto}://${host}`.replace(/\/+$/, "");
@@ -11186,9 +11197,9 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
       });
 
     const inviteBase = (() => {
-      const state = getPublicLinkState();
-      const canonical = canonicalOriginForLinks(state, `http://127.0.0.1:${NODE_HTTP_PORT}`);
-      const override = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
+      const canonical = getPublicOrigin(req);
+      const overrideRaw = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
+      const override = normalizeOrigin(overrideRaw);
       if (override) {
         try {
           const host = new URL(override).hostname.toLowerCase();

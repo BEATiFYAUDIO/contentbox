@@ -988,7 +988,7 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
             <div><b>Contentbox origin</b>: {health.publicOrigin || "—"}</div>
             <div><b>Last seen</b>: {health.ts || "—"}</div>
             <div>
-              <b>PUBLIC_ORIGIN detected</b>: {publicOriginWarn ? "WARN" : "OK"}{" "}
+              <b>PUBLIC_ORIGIN detected</b>: {publicOriginWarn ? "⚠️" : "✅"}{" "}
               {publicOriginDetected || "—"}
               {publicOriginWarn ? <span style={{ opacity: 0.7 }}> (links may use derived origin)</span> : null}
             </div>

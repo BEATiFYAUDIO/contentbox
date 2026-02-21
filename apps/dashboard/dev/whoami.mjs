@@ -37,5 +37,7 @@ if (!apiBase) {
 
 execSync(`curl -sS ${apiBase}/health`, { stdio: "inherit" });
 console.log("");
+execSync(`curl -sS ${apiBase}/api/public/origin`, { stdio: "inherit" });
+console.log("");
 execSync(`curl -sS ${apiBase}/__whoami`, { stdio: "inherit" });
 console.log("");

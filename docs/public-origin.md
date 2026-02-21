@@ -10,3 +10,4 @@ PUBLIC_ORIGIN=https://buy.example.com
 Notes:
 - `PUBLIC_ORIGIN` is preferred; `APP_PUBLIC_ORIGIN` is accepted as a fallback.
 - When set, buy links and snippets will use this origin.
+- Public buy links remain public; this only changes which base URL is generated.

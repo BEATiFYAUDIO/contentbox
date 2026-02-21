@@ -35,5 +35,7 @@ console.log(`WHOAMI_ALLOW_REMOTE=${env.WHOAMI_ALLOW_REMOTE || ""}`);
 
 execSync(`curl -sS ${base}/health`, { stdio: "inherit" });
 console.log("");
+execSync(`curl -sS ${base}/api/public/origin`, { stdio: "inherit" });
+console.log("");
 execSync(`curl -sS ${base}/__whoami`, { stdio: "inherit" });
 console.log("");

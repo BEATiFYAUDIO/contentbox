@@ -3246,7 +3246,8 @@ export default function ContentLibraryPage({
                             const hasPublicBuy = Boolean(buyBase);
                             const isLocalOnly = !hasPublicBuy;
                             const shareLink = shareLinkByContent[it.id];
-                            const shareUrl = shareLink?.url || (shareLink?.token ? `${apiBase.replace(/\/$/, "")}/p/${shareLink.token}` : "");
+                            const shareBase = (effectivePublicOrigin || apiBase || "").replace(/\/$/, "");
+                            const shareUrl = shareLink?.url || (shareLink?.token ? `${shareBase}/p/${shareLink.token}` : "");
                             let lanBase = "";
                             try {
                               const u = new URL(apiBase);
