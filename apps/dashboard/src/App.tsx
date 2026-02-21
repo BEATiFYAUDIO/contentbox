@@ -22,6 +22,7 @@ import { api } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
 import { fetchIdentityDetail, type IdentityDetail } from "./lib/identity";
 import { modeLabel } from "./lib/nodeMode";
+import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
 import logo from "./assets/InShot_20260201_011901479.png";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -106,41 +107,6 @@ function getReceiptTokenFromLocation(): string | null {
   return null;
 }
 
-function getSplitContentIdFromLocation(): string | null {
-  const parts = window.location.pathname.split("/").filter(Boolean);
-  if (parts[0] === "splits" && typeof parts[1] === "string") {
-    return parts[1];
-  }
-  try {
-    const h = window.location.hash || "";
-    if (h.startsWith("#")) {
-      const hash = h.slice(1);
-      const hp = hash.split("/").filter(Boolean);
-      if (hp[0] === "splits" && typeof hp[1] === "string") return decodeURIComponent(hp[1]);
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
-
-function getRoyaltiesContentIdFromLocation(): string | null {
-  const parts = window.location.pathname.split("/").filter(Boolean);
-  if (parts[0] === "royalties" && typeof parts[1] === "string") {
-    return parts[1];
-  }
-  try {
-    const h = window.location.hash || "";
-    if (h.startsWith("#")) {
-      const hash = h.slice(1);
-      const hp = hash.split("/").filter(Boolean);
-      if (hp[0] === "royalties" && typeof hp[1] === "string") return decodeURIComponent(hp[1]);
-    }
-  } catch {
-    // ignore
-  }
-  return null;
-}
 /* =======================
    App Component
 ======================= */
@@ -255,8 +221,6 @@ export default function App() {
       setReceiptToken(receiptFromUrl);
       setPage("receipt");
     }
-    const splitFromUrl = getSplitContentIdFromLocation();
-    const royaltiesFromUrl = getRoyaltiesContentIdFromLocation();
     const parts = window.location.pathname.split("/").filter(Boolean);
     if (!tokenFromUrl && !receiptFromUrl) {
       if (parts[0] === "config") setPage("config");
@@ -339,7 +303,6 @@ export default function App() {
     proofBundles: features.advancedSplits
   };
   const capabilityReasons = identityDetail?.capabilityReasons || {};
-  const isBasicMode = productTier === "basic";
   const namedReady = diagnosticsStatus?.namedReady ?? identityDetail?.namedReady;
   const advancedInactive = productTier === "advanced" && !namedReady;
 
