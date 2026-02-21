@@ -511,6 +511,19 @@ function isLoopbackIp(ip: string): boolean {
   return false;
 }
 
+function setPublicDebugHeaders(req: any, reply: any): void {
+  try {
+    const origin = getPublicOrigin(req);
+    if (origin) {
+      reply.header("X-ContentBox-Origin", String(origin).replace(/\/+$/, ""));
+    }
+  } catch {}
+  try {
+    const node = String(process.env.NODE_ID || os.hostname() || "").trim();
+    if (node) reply.header("X-ContentBox-Node", node);
+  } catch {}
+}
+
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
@@ -1901,6 +1914,14 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
 /** ---------- routes ---------- */
 
 function registerPublicRoutes(appPublic: any) {
+  appPublic.addHook("onRequest", (req: any, reply: any, done: any) => {
+    const url = asString(req?.raw?.url || req?.url || "");
+    const path = url.split("?")[0] || "";
+    if (path === "/buy" || path.startsWith("/buy/")) {
+      setPublicDebugHeaders(req, reply);
+    }
+    done();
+  });
   appPublic.get("/", async (_req: any, reply: any) => {
     return reply.send({
       ok: true,
@@ -1939,6 +1960,15 @@ function handlePublicPing(_req: any, reply: any) {
 app.get("/health", async () => ({ ok: true }));
 app.get("/public/ping", async (_req: any, reply: any) => {
   return reply.send({ ok: true, ts: new Date().toISOString() });
+});
+
+app.addHook("onRequest", (req: any, reply: any, done: any) => {
+  const url = asString(req?.raw?.url || req?.url || "");
+  const path = url.split("?")[0] || "";
+  if (path === "/api/public" || path.startsWith("/api/public/")) {
+    setPublicDebugHeaders(req, reply);
+  }
+  done();
 });
 
 // Public capabilities (non-sensitive)
