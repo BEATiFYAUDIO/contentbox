@@ -2063,7 +2063,8 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
-appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+  appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+  appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
