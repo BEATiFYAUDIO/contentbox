@@ -2063,7 +2063,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
-  appPublic.get("/buy/content/:id/preview-file", handlePublicPreviewFile);
+appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
@@ -7679,6 +7679,15 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   return reply.send(fsSync.createReadStream(absPath));
 }
 
+// Redirect legacy /buy/content preview URLs to the public preview endpoint.
+async function handleBuyPreviewRedirect(req: any, reply: any) {
+  const contentId = asString((req.params as any).id);
+  const rawUrl = asString(req?.raw?.url || req?.url || "");
+  const qs = rawUrl.includes("?") ? rawUrl.split("?").slice(1).join("?") : "";
+  const target = `/public/content/${encodeURIComponent(contentId)}/preview-file${qs ? `?${qs}` : ""}`;
+  return reply.redirect(302, target);
+}
+
 app.addHook("onRequest", (req: any, reply: any, done: any) => {
   const url = asString(req?.raw?.url || req?.url || "");
   const path = url.split("?")[0] || "";
@@ -7689,7 +7698,7 @@ app.addHook("onRequest", (req: any, reply: any, done: any) => {
 });
 
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
-app.get("/buy/content/:id/preview-file", handlePublicPreviewFile);
+app.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
 
 // Public credits (only when content is publicly visible)
 async function handlePublicCredits(req: any, reply: any) {
@@ -8123,13 +8132,13 @@ async function handleBuyPage(req: any, reply: any) {
   function previewFallbackUrl(offer){
     if (!offer?.previewObjectKey) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
   }
 
   function basicPrimaryUrl(offer){
     if (!offer?.primaryFileId) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
-    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
   }
 
   function renderBasicOffer(offer){
