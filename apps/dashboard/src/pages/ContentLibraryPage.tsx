@@ -2023,20 +2023,20 @@ export default function ContentLibraryPage({
                                       ? "Already published"
                                       : !publishAllowed
                                         ? publishReason
-                                        : isBasicTier
-                                          ? "Create a share link"
-                                          : "Publish this content"
+                                          : isBasicTier
+                                            ? "Publish this content"
+                                            : "Publish this content"
                                 }
                               >
                                 {isBasicTier
                                   ? publishBusy[it.id]
-                                    ? "Creating…"
-                                    : "Create share link"
+                                    ? "Publishing…"
+                                    : "Publish"
                                   : it.status === "published"
-                                    ? "Published"
-                                    : publishBusy[it.id]
-                                      ? "Publishing…"
-                                      : "Publish public buy link"}
+                                      ? "Published"
+                                      : publishBusy[it.id]
+                                        ? "Publishing…"
+                                        : "Publish public buy link"}
                               </button>
 
                               <button
@@ -3280,54 +3280,7 @@ export default function ContentLibraryPage({
                             const lanLink = lanBase ? `${lanBase}/buy/${it.id}` : "";
                             return (
                               <>
-                                {isBasicTier ? (
-                                  <>
-                                    <div className="text-[11px] text-neutral-500">Share link</div>
-                                    <div className="flex items-center justify-between gap-3">
-                                      <div className="min-w-0">
-                                        <span className="text-neutral-300 break-all">{shareUrl || "No share link yet"}</span>
-                                      </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => shareUrl && window.open(shareUrl, "_blank", "noopener,noreferrer")}
-                                          disabled={!shareUrl}
-                                        >
-                                          Open
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => copyText(shareUrl)}
-                                          disabled={!shareUrl}
-                                        >
-                                          Copy link
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                          onClick={() => rotateShareLink(it.id)}
-                                          disabled={publishBusy[it.id]}
-                                        >
-                                          Rotate
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                          onClick={() => revokeShareLink(it.id)}
-                                          disabled={publishBusy[it.id] || !shareUrl}
-                                        >
-                                          Revoke
-                                        </button>
-                                      </div>
-                                    </div>
-                                    {shareLinkLoading[it.id] ? (
-                                      <div className="text-xs text-neutral-500">Loading share link…</div>
-                                    ) : null}
-                                    {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
-                                  </>
-                                ) : (
+                                {isBasicTier ? null : (
                                   <>
                                     <div className="flex items-center justify-between gap-2">
                                       <div className="text-[11px] text-neutral-500">Buy links</div>
