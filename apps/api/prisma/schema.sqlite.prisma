@@ -56,6 +56,7 @@ enum PaymentRail {
 enum PaymentIntentStatus {
   pending
   paid
+  self_claimed
   failed
   expired
 }
@@ -114,6 +115,43 @@ model User {
   salesConfirmed       Sale[] @relation("SaleConfirmer")
 
   @@index([email])
+}
+
+model Buyer {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  createdAt    DateTime @default(now())
+  lastLoginAt  DateTime?
+
+  sessions BuyerSession[]
+  entitlements Entitlement[]
+
+  @@index([email])
+}
+
+model BuyerOtp {
+  id         String   @id @default(cuid())
+  email      String
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int      @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([expiresAt])
+}
+
+model BuyerSession {
+  id        String   @id @default(cuid())
+  buyerId   String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  buyer Buyer @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+
+  @@index([buyerId])
+  @@index([expiresAt])
 }
 
 model PayoutMethod {
@@ -561,17 +599,21 @@ model Sale {
 
 model Entitlement {
   id              String   @id @default(cuid())
+  buyerId         String?
   buyerUserId     String?
   contentId       String
   manifestSha256  String
   paymentIntentId String?
   grantedAt       DateTime @default(now())
 
-  buyer    User?       @relation("EntitlementBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
+  buyerAccount Buyer?  @relation(fields: [buyerId], references: [id], onDelete: SetNull)
+  buyerUser    User?   @relation("EntitlementBuyer", fields: [buyerUserId], references: [id], onDelete: SetNull)
   content  ContentItem @relation("EntitlementContent", fields: [contentId], references: [id], onDelete: Cascade)
   payment  PaymentIntent? @relation("EntitlementPayment", fields: [paymentIntentId], references: [id], onDelete: SetNull)
 
   @@unique([buyerUserId, contentId, manifestSha256])
+  @@unique([buyerId, contentId, manifestSha256])
+  @@index([buyerId])
 }
 
 model Settlement {

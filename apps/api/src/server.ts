@@ -638,6 +638,73 @@ function forbidden(reply: any) {
   return reply.code(403).send({ error: "Forbidden" });
 }
 
+const BUYER_SESSION_COOKIE = "cb_buyer_session";
+const BUYER_SESSION_DAYS = 30;
+const BUYER_OTP_TTL_MS = 10 * 60 * 1000;
+const BUYER_OTP_MAX_ATTEMPTS = 5;
+
+function isProbablyEmail(email: string): boolean {
+  return /.+@.+/.test(String(email || "").trim());
+}
+
+function hashOtp(code: string): string {
+  return crypto.createHash("sha256").update(String(code)).digest("hex");
+}
+
+function getCookie(req: any, name: string): string | null {
+  try {
+    const raw = String(req?.headers?.cookie || "");
+    if (!raw) return null;
+    const parts = raw.split(";").map((p) => p.trim());
+    for (const p of parts) {
+      const idx = p.indexOf("=");
+      if (idx === -1) continue;
+      const k = p.slice(0, idx).trim();
+      if (k === name) return decodeURIComponent(p.slice(idx + 1));
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isSecureRequest(req: any): boolean {
+  try {
+    const xf = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
+    if (xf.includes("https")) return true;
+    const proto = String(req?.protocol || "").toLowerCase();
+    if (proto === "https") return true;
+  } catch {}
+  return false;
+}
+
+function buildBuyerSessionCookie(sessionId: string, req: any, maxAgeSeconds: number): string {
+  const secure = isSecureRequest(req);
+  const parts = [
+    `${BUYER_SESSION_COOKIE}=${encodeURIComponent(sessionId)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.max(1, Math.floor(maxAgeSeconds))}`
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+function buildBuyerClearCookie(req: any): string {
+  const secure = isSecureRequest(req);
+  const parts = [
+    `${BUYER_SESSION_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    "Max-Age=0",
+    "Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
 /** ---------- app init ---------- */
 
 const app = Fastify({
@@ -1954,6 +2021,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/ping", handlePublicPing);
   appPublic.get("/p/:token", handleShortPublicLink);
   appPublic.get("/buy/:contentId", handleBuyPage);
+  appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handlePublicPreviewFile);
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
@@ -3798,6 +3866,237 @@ app.post("/auth/login", async (req, reply) => {
     token,
     user: { id: user.id, email: user.email, displayName: user.displayName, createdAt: user.createdAt }
   });
+});
+
+/**
+ * Buyer lightweight auth (public)
+ */
+app.post("/api/buyer/start", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { email?: string };
+  const email = normalizeEmail(body?.email);
+  if (!email || !isProbablyEmail(email)) return badRequest(reply, "valid email required");
+
+  await prisma.buyer.upsert({
+    where: { email },
+    create: { email },
+    update: {}
+  });
+
+  const code = String(Math.floor(Math.random() * 1000000)).padStart(6, "0");
+  const codeHash = hashOtp(code);
+  const expiresAt = new Date(Date.now() + BUYER_OTP_TTL_MS);
+
+  await prisma.buyerOtp.create({
+    data: {
+      email,
+      codeHash,
+      expiresAt
+    }
+  });
+
+  return reply.send({ ok: true, devCode: code });
+});
+
+app.post("/api/buyer/verify", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { email?: string; code?: string };
+  const email = normalizeEmail(body?.email);
+  const code = asString(body?.code || "").trim();
+  if (!email || !isProbablyEmail(email)) return badRequest(reply, "valid email required");
+  if (!code || code.length < 4) return badRequest(reply, "code required");
+
+  const otp = await prisma.buyerOtp.findFirst({
+    where: { email, consumedAt: null },
+    orderBy: { createdAt: "desc" }
+  });
+  if (!otp) return reply.code(400).send({ error: "Invalid or expired code" });
+
+  const now = new Date();
+  if (otp.expiresAt.getTime() < Date.now()) {
+    await prisma.buyerOtp.update({ where: { id: otp.id }, data: { consumedAt: now } }).catch(() => {});
+    return reply.code(400).send({ error: "Invalid or expired code" });
+  }
+  if (otp.attempts >= BUYER_OTP_MAX_ATTEMPTS) {
+    await prisma.buyerOtp.update({ where: { id: otp.id }, data: { consumedAt: now } }).catch(() => {});
+    return reply.code(400).send({ error: "Invalid or expired code" });
+  }
+
+  const nextAttempts = otp.attempts + 1;
+  const matches = hashOtp(code) === otp.codeHash;
+  if (!matches) {
+    await prisma.buyerOtp.update({
+      where: { id: otp.id },
+      data: { attempts: nextAttempts, consumedAt: nextAttempts >= BUYER_OTP_MAX_ATTEMPTS ? now : null }
+    });
+    return reply.code(400).send({ error: "Invalid or expired code" });
+  }
+
+  await prisma.buyerOtp.update({
+    where: { id: otp.id },
+    data: { attempts: nextAttempts, consumedAt: now }
+  });
+
+  const buyer = await prisma.buyer.upsert({
+    where: { email },
+    create: { email, lastLoginAt: now },
+    update: { lastLoginAt: now }
+  });
+
+  const expiresAt = new Date(Date.now() + BUYER_SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const session = await prisma.buyerSession.create({
+    data: {
+      buyerId: buyer.id,
+      expiresAt
+    }
+  });
+
+  reply.header("Set-Cookie", buildBuyerSessionCookie(session.id, req, BUYER_SESSION_DAYS * 24 * 60 * 60));
+  return reply.send({ ok: true, buyer: { email: buyer.email } });
+});
+
+app.get("/api/buyer/me", async (req: any, reply: any) => {
+  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
+  if (!sessionId) return reply.send({ buyer: null });
+
+  const session = await prisma.buyerSession.findUnique({
+    where: { id: sessionId },
+    include: { buyer: true }
+  });
+  if (!session || session.expiresAt.getTime() < Date.now()) {
+    if (session?.id) {
+      await prisma.buyerSession.delete({ where: { id: session.id } }).catch(() => {});
+    }
+    reply.header("Set-Cookie", buildBuyerClearCookie(req));
+    return reply.send({ buyer: null });
+  }
+
+  return reply.send({ buyer: { id: session.buyer.id, email: session.buyer.email } });
+});
+
+app.post("/api/buyer/logout", async (req: any, reply: any) => {
+  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
+  if (sessionId) {
+    await prisma.buyerSession.delete({ where: { id: sessionId } }).catch(() => {});
+  }
+  reply.header("Set-Cookie", buildBuyerClearCookie(req));
+  return reply.send({ ok: true });
+});
+
+async function requireBuyerSession(req: any, reply: any) {
+  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
+  if (!sessionId) {
+    reply.code(401).send({ error: "Buyer session required" });
+    return null;
+  }
+
+  const session = await prisma.buyerSession.findUnique({
+    where: { id: sessionId },
+    include: { buyer: true }
+  });
+  if (!session || session.expiresAt.getTime() < Date.now()) {
+    if (session?.id) {
+      await prisma.buyerSession.delete({ where: { id: session.id } }).catch(() => {});
+    }
+    reply.header("Set-Cookie", buildBuyerClearCookie(req));
+    reply.code(401).send({ error: "Buyer session expired" });
+    return null;
+  }
+
+  return session;
+}
+
+// Record a self-claimed purchase for Basic mode buyers
+app.post("/api/buyer/buys", async (req: any, reply: any) => {
+  const session = await requireBuyerSession(req, reply);
+  if (!session) return;
+
+  const body = (req.body ?? {}) as { contentId?: string; amountSats?: unknown };
+  const contentId = asString(body.contentId || "").trim();
+  if (!contentId) return badRequest(reply, "contentId required");
+
+  const { productTier } = resolveProductTier();
+  if (productTier !== "basic") {
+    return reply.code(409).send({ code: "PAYMENT_REQUIRED", error: "Payment required in this mode" });
+  }
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+
+  const manifest = await ensureManifestForContent(content);
+  if (!manifest?.sha256) return notFound(reply, "Manifest not found");
+
+  if (content.priceSats == null || content.priceSats < 1n) {
+    return reply.code(409).send({ code: "PRICE_NOT_SET", error: "Creator has not set a price yet." });
+  }
+
+  const amountSats = parseSats(body.amountSats ?? content.priceSats);
+  if (amountSats <= 0n) return badRequest(reply, "amountSats must be > 0");
+  if (amountSats !== content.priceSats) {
+    return reply.code(409).send({ code: "AMOUNT_MISMATCH", error: "Amount must match creator price." });
+  }
+
+  const buyerEmail = session.buyer.email;
+  const existing = await prisma.entitlement.findUnique({
+    where: {
+      buyerId_contentId_manifestSha256: {
+        buyerId: session.buyer.id,
+        contentId,
+        manifestSha256: manifest.sha256
+      }
+    }
+  });
+  if (existing) {
+    return reply.send({ ok: true, buyId: existing.paymentIntentId || existing.id, alreadyOwned: true, redirectUrl: "/library" });
+  }
+
+  const now = new Date();
+  const intent = await prisma.paymentIntent.create({
+    data: {
+      buyerUserId: null,
+      contentId,
+      manifestSha256: manifest.sha256,
+      amountSats,
+      status: "self_claimed" as any,
+      purpose: "CONTENT_PURCHASE" as any,
+      subjectType: "CONTENT" as any,
+      subjectId: contentId,
+      memo: "SELF_CLAIM",
+      paidAt: null
+    }
+  });
+
+  await prisma.entitlement.create({
+    data: {
+      buyerId: session.buyer.id,
+      buyerUserId: null,
+      contentId,
+      manifestSha256: manifest.sha256,
+      paymentIntentId: intent.id
+    }
+  });
+
+  return reply.send({ ok: true, buyId: intent.id, selfClaimed: true, redirectUrl: "/library" });
+});
+
+// List buyer entitlements (buyer-session scoped)
+app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
+  const session = await requireBuyerSession(req, reply);
+  if (!session) return;
+
+  const entitlements = await prisma.entitlement.findMany({
+    where: { buyerId: session.buyer.id },
+    include: { content: true },
+    orderBy: { grantedAt: "desc" }
+  });
+
+  return reply.send(
+    entitlements.map((e) => ({
+      id: e.id,
+      contentId: e.contentId,
+      manifestSha256: e.manifestSha256,
+      grantedAt: e.grantedAt.toISOString(),
+      content: e.content ? { id: e.content.id, title: e.content.title, type: e.content.type } : null
+    }))
+  );
 });
 
 app.get("/me", { preHandler: requireAuth }, async (req: any) => {
@@ -5650,6 +5949,10 @@ async function ensureManifestForContent(content: any) {
 }
 
 app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async (req: any, reply) => {
+  const tier = resolveProductTier().productTier;
+  if (tier === "basic") {
+    return reply.code(403).send({ code: "basic_public_only", reason: "Share links require Advanced." });
+  }
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).contentId);
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
@@ -5681,6 +5984,10 @@ app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async
 });
 
 app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, async (req: any, reply) => {
+  const tier = resolveProductTier().productTier;
+  if (tier === "basic") {
+    return reply.code(403).send({ code: "basic_public_only", reason: "Share links require Advanced." });
+  }
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).contentId);
 
@@ -5691,7 +5998,11 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
   const ctx = getCapabilityContext();
   const derivativeInfo = await resolveDerivativeInfo(contentId, content.type);
   const forSale = content.priceSats != null && BigInt(content.priceSats as any) > 0n;
-  const paymentsReady = await getWalletReceiveReady(userId, resolveProductTier().productTier);
+  const readiness = ctx.paymentsMode === "node" ? await getPaymentsReadiness(userId) : null;
+  const paymentsReady =
+    ctx.paymentsMode === "node"
+      ? Boolean(readiness?.lightning.ready || readiness?.onchain.ready)
+      : await getWalletReceiveReady(userId, resolveProductTier().productTier);
   try {
     assertCanPublish(
       ctx,
@@ -5739,6 +6050,10 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
 });
 
 app.post("/api/content/:contentId/share-link/revoke", { preHandler: requireAuth }, async (req: any, reply) => {
+  const tier = resolveProductTier().productTier;
+  if (tier === "basic") {
+    return reply.code(403).send({ code: "basic_public_only", reason: "Share links require Advanced." });
+  }
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).contentId);
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
@@ -5778,18 +6093,75 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   const upstreamSum = sumBps(parents.map((p) => ({ bps: p.upstreamBps })));
   if (upstreamSum > 10000) return badRequest(reply, "upstreamBps sum must be <= 10000");
 
-  const sv = await prisma.splitVersion.findFirst({
+  let sv = await prisma.splitVersion.findFirst({
     where: { contentId },
     orderBy: { versionNumber: "desc" },
     include: { participants: true }
   });
   if (!sv) return badRequest(reply, "Split version missing");
 
+  if (ctx.productTier === "basic") {
+    const owner = await prisma.user.findUnique({
+      where: { id: content.ownerUserId },
+      select: { email: true }
+    });
+    const ownerEmail = normalizeEmail(owner?.email);
+    if (!ownerEmail) return badRequest(reply, "Owner email missing");
+
+    const curTotalBps = sumBps(sv.participants.map((p) => ({ bps: toBps(p) })));
+    const ownerOnly =
+      sv.participants.length === 1 && normalizeEmail(sv.participants[0]?.participantEmail || "") === ownerEmail;
+    const needsBasicSplit = sv.status !== "locked" || curTotalBps !== 10000 || !ownerOnly;
+
+    if (needsBasicSplit) {
+      const now = new Date();
+      const created = await prisma.$transaction(async (tx) => {
+        const newSv = await tx.splitVersion.create({
+          data: {
+            contentId,
+            versionNumber: sv.versionNumber + 1,
+            createdByUserId: content.ownerUserId,
+            status: "locked",
+            lockedAt: now
+          }
+        });
+        await tx.splitParticipant.create({
+          data: {
+            splitVersionId: newSv.id,
+            participantEmail: ownerEmail,
+            role: "owner",
+            percent: "100"
+          }
+        });
+        await tx.auditEvent.create({
+          data: {
+            userId: content.ownerUserId,
+            action: "split.lock",
+            entityType: "SplitVersion",
+            entityId: newSv.id,
+            payloadJson: { lockedAt: now, reason: "basic_publish" } as any
+          }
+        });
+        return newSv;
+      });
+
+      const refreshed = await prisma.splitVersion.findUnique({
+        where: { id: created.id },
+        include: { participants: true }
+      });
+      if (!refreshed) return badRequest(reply, "Split version missing");
+      sv = refreshed;
+    }
+  }
+
   const totalBps = sumBps(sv.participants.map((p) => ({ bps: toBps(p) })));
   if (totalBps !== 10000) return badRequest(reply, "Split bps must total 10000 to publish");
 
   const readiness = ctx.paymentsMode === "node" ? await getPaymentsReadiness(content.ownerUserId) : null;
-  const paymentsReady = ctx.paymentsMode !== "node" ? false : Boolean(readiness?.lightning.ready || readiness?.onchain.ready);
+  const paymentsReady =
+    ctx.paymentsMode === "node"
+      ? Boolean(readiness?.lightning.ready || readiness?.onchain.ready)
+      : await getWalletReceiveReady(content.ownerUserId, resolveProductTier().productTier);
   const forSale = content.priceSats != null && BigInt(content.priceSats as any) > 0n;
 
   try {
@@ -7461,6 +7833,10 @@ async function handleBuyPage(req: any, reply: any) {
     .rail { flex:1 1 280px; border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f10; }
     .btn { background:#fff; color:#000; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
     .btn:disabled { opacity:0.6; cursor:not-allowed; }
+    .input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #333; background:#0b0b0b; color:#fff; }
+    .field { margin-top:10px; }
+    .step { margin-top:14px; padding:12px; border:1px solid #222; border-radius:12px; background:#0f0f10; }
+    .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
     .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
     .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
     .preview { margin-top:14px; }
@@ -7488,6 +7864,7 @@ async function handleBuyPage(req: any, reply: any) {
   let refreshTimer = null;
   let currentOffer = null;
   let previewSeconds = 20;
+  let buyer = null;
   const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
 
   function qs(v){ return encodeURIComponent(v); }
@@ -7537,10 +7914,29 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   async function fetchJson(path, opts){
-    const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
+    const res = await fetch(apiBase + path, { method: opts?.method || "GET", credentials: "include", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
     const data = await res.json().catch(()=>null);
     if (!res.ok) throw new Error((data && (data.error || data.message)) || "Request failed");
     return data;
+  }
+
+  async function fetchBuyerMe(){
+    try {
+      const res = await fetchJson("/api/buyer/me");
+      buyer = res?.buyer || null;
+    } catch {
+      buyer = null;
+    }
+  }
+
+  function setBuyerStatus(text){
+    const el = document.getElementById("buyerStatus");
+    if (el) el.textContent = text || "";
+  }
+
+  function toggleDisplay(id, show){
+    const el = document.getElementById(id);
+    if (el) el.style.display = show ? "" : "none";
   }
 
   function streamUrl(offer, token){
@@ -7563,6 +7959,8 @@ async function handleBuyPage(req: any, reply: any) {
   function renderOffer(offer, entitlement){
     const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
     const isPaid = Number(offer.priceSats || 0) > 0;
+    const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
+    const hasBuyer = Boolean(buyer && buyer.email);
     const token = entitlement?.token || receiptToken || null;
     const mediaSrc = token ? streamUrl(offer, token) : previewFallbackUrl(offer) || streamUrl(offer, token);
     const mime = String(offer.primaryFileMime || "");
@@ -7583,8 +7981,35 @@ async function handleBuyPage(req: any, reply: any) {
           </div>
         \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         <div style="margin-top:8px;font-size:18px;">\${price}</div>
-        <button id="buyBtn" class="btn" style="margin-top:12px; \${hidePay ? "display:none;" : ""}">Pay</button>
-        <div id="status" class="muted" style="margin-top:8px;"></div>
+        \${(isPaid && !hidePay) ? \`
+          <div class="step" id="stepContinue" style="\${hasBuyer ? "display:none;" : ""}">
+            <h3>Step 1</h3>
+            <div class="muted">Continue to payment.</div>
+            <button id="continueBtn" class="btn" style="margin-top:10px;">Continue</button>
+            <div id="buyerStatus" class="muted" style="margin-top:6px;"></div>
+          </div>
+          <div class="step" id="buyerAuth" style="display:none;">
+            <h3>Step 2</h3>
+            <div class="muted">Sign in to continue.</div>
+            <div class="field">
+              <input id="buyerEmail" class="input" type="email" placeholder="you@example.com" />
+            </div>
+            <button id="buyerStart" class="btn" style="margin-top:10px;">Send code</button>
+            <div id="buyerDevCode" class="muted" style="margin-top:8px;"></div>
+            <div id="buyerCodeWrap" style="display:none; margin-top:8px;">
+              <input id="buyerCode" class="input" type="text" placeholder="Enter 6-digit code" />
+              <button id="buyerVerify" class="btn" style="margin-top:10px;">Verify</button>
+            </div>
+            <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
+          </div>
+          <div class="step" id="paySection" style="\${hasBuyer ? "" : "display:none;"}">
+            <h3>Payment</h3>
+            <button id="buyBtn" class="btn" style="margin-top:6px;">Confirm payment / Unlock</button>
+            <div id="status" class="muted" style="margin-top:8px;"></div>
+          </div>
+        \` : \`
+          <div id="status" class="muted" style="margin-top:8px;"></div>
+        \`}
         \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
         \${entitlement?.token ? \`<button id="resetEnt" class="copy" style="margin-top:8px;">Reset entitlement</button>\` : ""}
         <div id="rails" style="margin-top:16px;"></div>
@@ -7593,6 +8018,84 @@ async function handleBuyPage(req: any, reply: any) {
     \`;
     const btn = document.getElementById("buyBtn");
     if (btn) btn.onclick = async () => startPurchase(offer);
+    if (requiresPayment) {
+      const continueBtn = document.getElementById("continueBtn");
+      if (buyer && buyer.email) {
+        setBuyerStatus("Signed in as " + buyer.email);
+        toggleDisplay("buyerAuth", false);
+        toggleDisplay("paySection", true);
+        toggleDisplay("stepContinue", false);
+      } else {
+        setBuyerStatus("Sign in required to pay.");
+      }
+
+      if (continueBtn && !(buyer && buyer.email)) {
+        continueBtn.onclick = () => {
+          if (buyer && buyer.email) {
+            toggleDisplay("buyerAuth", false);
+            toggleDisplay("paySection", true);
+            setBuyerStatus("Signed in as " + buyer.email);
+          } else {
+            toggleDisplay("buyerAuth", true);
+          }
+        };
+      }
+
+      const emailInput = document.getElementById("buyerEmail");
+      if (emailInput) {
+        const cached = window.localStorage.getItem("cb:buyer:email") || "";
+        emailInput.value = buyer?.email || cached;
+      }
+
+      const startBtn = document.getElementById("buyerStart");
+      const verifyBtn = document.getElementById("buyerVerify");
+      const codeWrap = document.getElementById("buyerCodeWrap");
+      const devCodeEl = document.getElementById("buyerDevCode");
+      const errorEl = document.getElementById("buyerError");
+
+      if (startBtn) {
+        startBtn.onclick = async () => {
+          const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
+          if (!email) {
+            if (errorEl) errorEl.textContent = "Email required.";
+            return;
+          }
+          window.localStorage.setItem("cb:buyer:email", email);
+          if (errorEl) errorEl.textContent = "";
+          if (devCodeEl) devCodeEl.textContent = "";
+          if (codeWrap) codeWrap.style.display = "none";
+          try {
+            const res = await fetchJson("/api/buyer/start", { method: "POST", body: { email } });
+            if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
+            if (codeWrap) codeWrap.style.display = "";
+          } catch (e) {
+            if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Unable to start.";
+          }
+        };
+      }
+
+      if (verifyBtn) {
+        verifyBtn.onclick = async () => {
+          const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
+          const codeInput = document.getElementById("buyerCode");
+          const code = String(codeInput && codeInput.value ? codeInput.value : "").trim();
+          if (!email || !code) {
+            if (errorEl) errorEl.textContent = "Email and code required.";
+            return;
+          }
+          if (errorEl) errorEl.textContent = "";
+          try {
+            const res = await fetchJson("/api/buyer/verify", { method: "POST", body: { email, code } });
+            buyer = res?.buyer || { email };
+            toggleDisplay("buyerAuth", false);
+            toggleDisplay("paySection", true);
+            setBuyerStatus("Signed in as " + buyer.email);
+          } catch (e) {
+            if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Invalid code.";
+          }
+        };
+      }
+    }
     if (entitlement?.status === "preview" && isPaid) {
       document.getElementById("status").textContent = "Preview playing…";
       const player = document.getElementById("player");
@@ -7729,6 +8232,41 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   async function startPurchase(offer){
+    if (!buyer || !buyer.email) {
+      const statusEl = document.getElementById("status");
+      if (statusEl) statusEl.textContent = "Sign in required to pay.";
+      toggleDisplay("buyerAuth", true);
+      return;
+    }
+    const statusEl = document.getElementById("status");
+    const trySelfClaim = async () => {
+      try {
+        const res = await fetch(apiBase + "/api/buyer/buys", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contentId: contentId, amountSats: offer.priceSats })
+        });
+        const text = await res.text();
+        let json = null;
+        try { json = text ? JSON.parse(text) : null; } catch {}
+        if (res.ok && json && json.ok) {
+          if (statusEl) statusEl.textContent = "Unlocked. Redirecting…";
+          const redirectUrl = json.redirectUrl || "/library";
+          window.location.assign(redirectUrl);
+          return true;
+        }
+        if (json && json.code === "PAYMENT_REQUIRED") return false;
+        if (res.status === 409 && json && json.code === "PAYMENT_REQUIRED") return false;
+        if (statusEl) statusEl.textContent = (json && (json.error || json.message)) ? (json.error || json.message) : "Unable to unlock.";
+        return true;
+      } catch (e) {
+        if (statusEl) statusEl.textContent = (e && e.message) ? e.message : "Unable to unlock.";
+        return true;
+      }
+    };
+    const selfClaimed = await trySelfClaim();
+    if (selfClaimed) return;
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
@@ -7746,31 +8284,34 @@ async function handleBuyPage(req: any, reply: any) {
     pollStatus().catch(()=>{});
   }
 
-  fetchJson("/buy/content/" + contentId + "/offer")
-    .then(async (offer)=> {
-      currentOffer = offer;
-      const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
-      if (ent && ent.token) {
-        renderOffer(offer, ent);
-        return;
-      }
-      if (Number(offer.priceSats || 0) > 0) {
-        try {
-          const p = await fetchJson("/buy/permits", {
-            method: "POST",
-            body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
-          });
-          previewSeconds = p.previewSeconds || previewSeconds;
-          const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
-          renderOffer(offer, next);
+  fetchBuyerMe()
+    .finally(() => {
+      fetchJson("/buy/content/" + contentId + "/offer")
+        .then(async (offer)=> {
+          currentOffer = offer;
+          const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
+          if (ent && ent.token) {
+            renderOffer(offer, ent);
+            return;
+          }
+          if (Number(offer.priceSats || 0) > 0) {
+            try {
+              const p = await fetchJson("/buy/permits", {
+                method: "POST",
+                body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
+              });
+              previewSeconds = p.previewSeconds || previewSeconds;
+              const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
+              renderOffer(offer, next);
+              checkManualStatus();
+              return;
+            } catch {}
+          }
+          renderOffer(offer, null);
           checkManualStatus();
-          return;
-        } catch {}
-      }
-      renderOffer(offer, null);
-      checkManualStatus();
-    })
-    .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
+        })
+        .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
+    });
 })();
 </script>
 </body>
@@ -7781,6 +8322,210 @@ async function handleBuyPage(req: any, reply: any) {
 }
 
 app.get("/buy/:contentId", handleBuyPage);
+
+async function handleBuyerLibraryPage(_req: any, reply: any) {
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Library</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin:0; background:#0b0b0b; color:#f4f4f5; }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 24px; }
+    .card { background:#111; border:1px solid #222; border-radius:16px; padding:20px; }
+    .muted { color:#a1a1aa; font-size:14px; }
+    .row { display:flex; gap:16px; flex-wrap:wrap; }
+    .btn { background:#fff; color:#000; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
+    .btn.secondary { background:#151515; color:#fff; border:1px solid #333; }
+    .input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #333; background:#0b0b0b; color:#fff; }
+    .field { margin-top:10px; }
+    .step { margin-top:14px; padding:12px; border:1px solid #222; border-radius:12px; background:#0f0f10; }
+    .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
+    .item { border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f10; margin-top:10px; }
+    a { color:#93c5fd; }
+    .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div id="app">Loading…</div>
+      <div class="footer">
+        <a href="https://beatifyaudio.github.io/contentbox/index.html#mission" target="_blank" rel="noreferrer">Mission</a>
+      </div>
+    </div>
+  </div>
+<script>
+(function(){
+  const app = document.getElementById("app");
+  const apiBase = location.origin;
+  let buyer = null;
+  let entitlements = [];
+
+  async function fetchJson(path, opts){
+    const res = await fetch(apiBase + path, { method: opts?.method || "GET", credentials: "include", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
+    const data = await res.json().catch(()=>null);
+    if (!res.ok) throw new Error((data && (data.error || data.message)) || "Request failed");
+    return data;
+  }
+
+  async function fetchBuyerMe(){
+    try {
+      const res = await fetchJson("/api/buyer/me");
+      buyer = res?.buyer || null;
+    } catch {
+      buyer = null;
+    }
+  }
+
+  async function fetchEntitlements(){
+    if (!buyer || !buyer.id) {
+      entitlements = [];
+      return;
+    }
+    try {
+      const res = await fetchJson("/api/buyer/entitlements");
+      entitlements = Array.isArray(res) ? res : [];
+    } catch {
+      entitlements = [];
+    }
+  }
+
+  function render(){
+    if (!buyer || !buyer.email) {
+      renderAuth();
+      return;
+    }
+
+    const list = entitlements || [];
+    const listHtml = list.length
+      ? list
+          .map((e) =>
+            '<div class="item">' +
+              '<div style="font-weight:600;">' + (e.content?.title || e.contentId || "Untitled") + '</div>' +
+              '<div class="muted">Content ID: ' + e.contentId + '</div>' +
+              '<div class="muted" style="margin-top:6px;"><a href="/buy/' + encodeURIComponent(e.contentId) + '">Open buy page</a></div>' +
+            '</div>'
+          )
+          .join("")
+      : '<div class="muted">No purchases yet.</div>';
+    app.innerHTML = \`
+      <div>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+          <div>
+            <div style="font-size:22px;font-weight:700;">Library</div>
+            <div class="muted">Signed in as \${buyer.email}</div>
+          </div>
+          <button id="logoutBtn" class="btn secondary">Sign out</button>
+        </div>
+        <div class="step">
+          <h3>Purchased</h3>
+          \${listHtml}
+        </div>
+      </div>
+    \`;
+
+    const logoutBtn = document.getElementById("logoutBtn");
+    if (logoutBtn) {
+      logoutBtn.onclick = async () => {
+        try { await fetchJson("/api/buyer/logout", { method: "POST" }); } catch {}
+        buyer = null;
+        entitlements = [];
+        render();
+      };
+    }
+  }
+
+  function renderAuth(){
+    app.innerHTML = \`
+      <div>
+        <div style="font-size:22px;font-weight:700;">Library</div>
+        <div class="muted">Sign in to view your purchases.</div>
+        <div class="step" id="buyerAuth">
+          <h3>Sign in</h3>
+          <div class="field">
+            <input id="buyerEmail" class="input" type="email" placeholder="you@example.com" />
+          </div>
+          <button id="buyerStart" class="btn" style="margin-top:10px;">Send code</button>
+          <div id="buyerDevCode" class="muted" style="margin-top:8px;"></div>
+          <div id="buyerCodeWrap" style="display:none; margin-top:8px;">
+            <input id="buyerCode" class="input" type="text" placeholder="Enter 6-digit code" />
+            <button id="buyerVerify" class="btn" style="margin-top:10px;">Verify</button>
+          </div>
+          <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
+        </div>
+      </div>
+    \`;
+
+    const emailInput = document.getElementById("buyerEmail");
+    if (emailInput) {
+      const cached = window.localStorage.getItem("cb:buyer:email") || "";
+      emailInput.value = cached;
+    }
+
+    const startBtn = document.getElementById("buyerStart");
+    const verifyBtn = document.getElementById("buyerVerify");
+    const codeWrap = document.getElementById("buyerCodeWrap");
+    const devCodeEl = document.getElementById("buyerDevCode");
+    const errorEl = document.getElementById("buyerError");
+
+    if (startBtn) {
+      startBtn.onclick = async () => {
+        const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
+        if (!email) {
+          if (errorEl) errorEl.textContent = "Email required.";
+          return;
+        }
+        window.localStorage.setItem("cb:buyer:email", email);
+        if (errorEl) errorEl.textContent = "";
+        if (devCodeEl) devCodeEl.textContent = "";
+        if (codeWrap) codeWrap.style.display = "none";
+        try {
+          const res = await fetchJson("/api/buyer/start", { method: "POST", body: { email } });
+          if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
+          if (codeWrap) codeWrap.style.display = "";
+        } catch (e) {
+          if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Unable to start.";
+        }
+      };
+    }
+
+    if (verifyBtn) {
+      verifyBtn.onclick = async () => {
+        const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
+        const codeInput = document.getElementById("buyerCode");
+        const code = String(codeInput && codeInput.value ? codeInput.value : "").trim();
+        if (!email || !code) {
+          if (errorEl) errorEl.textContent = "Email and code required.";
+          return;
+        }
+        if (errorEl) errorEl.textContent = "";
+        try {
+          const res = await fetchJson("/api/buyer/verify", { method: "POST", body: { email, code } });
+          buyer = res?.buyer || { email };
+          fetchEntitlements().then(render);
+        } catch (e) {
+          if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Invalid code.";
+        }
+      };
+    }
+  }
+
+  fetchBuyerMe()
+    .then(fetchEntitlements)
+    .finally(render);
+})();
+</script>
+</body>
+</html>`;
+
+  reply.type("text/html; charset=utf-8");
+  return reply.send(html);
+}
+
+app.get("/library", handleBuyerLibraryPage);
 
 app.get("/embed.js", async (req: any, reply) => {
   if (getIdentityLevel() !== IdentityLevel.PERSISTENT) {

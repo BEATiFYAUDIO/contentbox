@@ -25,7 +25,7 @@ export type PublishGateError = {
 };
 
 const ADVANCED_INACTIVE_REASON = "Advanced requires a permanent named link to activate sovereign features.";
-const BASIC_SHARE_ONLY_REASON = "Basic can only create share links. Public publishing requires Advanced.";
+const BASIC_SHARE_ONLY_REASON = "Basic can only publish public links. Share links require Advanced.";
 const DERIVATIVE_ADVANCED_REASON = "Derivatives require Advanced mode and clearance before publishing.";
 const PAYMENTS_REASON = "Local node payments must be configured to use this feature.";
 const WALLET_REASON = "A wallet receive endpoint is required to publish for sale.";
@@ -56,8 +56,8 @@ export function assertCanPublish(ctx: CapabilityContext, intent: PublishIntent, 
   }
 
   if (ctx.productTier === "basic") {
-    if (intent.publishKind !== "share_link") {
-      throw { code: "basic_share_link_only", reason: BASIC_SHARE_ONLY_REASON } satisfies PublishGateError;
+    if (intent.publishKind !== "public_buy_link") {
+      throw { code: "basic_public_only", reason: BASIC_SHARE_ONLY_REASON } satisfies PublishGateError;
     }
     if (intent.forSale && !state.paymentsReady) {
       throw { code: "wallet_not_configured", reason: WALLET_REASON } satisfies PublishGateError;
@@ -66,19 +66,25 @@ export function assertCanPublish(ctx: CapabilityContext, intent: PublishIntent, 
   }
 
   if (ctx.productTier === "advanced") {
-    if (intent.publishKind !== "public_buy_link") {
-      throw { code: "advanced_public_only", reason: BASIC_SHARE_ONLY_REASON } satisfies PublishGateError;
+    if (intent.publishKind === "public_buy_link") {
+      if (!state.targetLocked) {
+        throw { code: "target_not_locked", reason: TARGET_LOCK_REASON } satisfies PublishGateError;
+      }
+      if (!state.splitLocked) {
+        throw { code: "split_not_locked", reason: SPLIT_LOCK_REASON } satisfies PublishGateError;
+      }
+      if (ctx.paymentsMode !== "node" || (intent.forSale && !state.paymentsReady)) {
+        throw { code: "payments_not_configured", reason: PAYMENTS_REASON } satisfies PublishGateError;
+      }
+      return { publishKind: intent.publishKind };
     }
-    if (!state.targetLocked) {
-      throw { code: "target_not_locked", reason: TARGET_LOCK_REASON } satisfies PublishGateError;
+
+    if (intent.publishKind === "share_link") {
+      if (ctx.paymentsMode !== "node" || (intent.forSale && !state.paymentsReady)) {
+        throw { code: "payments_not_configured", reason: PAYMENTS_REASON } satisfies PublishGateError;
+      }
+      return { publishKind: intent.publishKind };
     }
-    if (!state.splitLocked) {
-      throw { code: "split_not_locked", reason: SPLIT_LOCK_REASON } satisfies PublishGateError;
-    }
-    if (ctx.paymentsMode !== "node" || (intent.forSale && !state.paymentsReady)) {
-      throw { code: "payments_not_configured", reason: PAYMENTS_REASON } satisfies PublishGateError;
-    }
-    return { publishKind: intent.publishKind };
   }
 
   // LAN: allow all actions regardless of namedReady

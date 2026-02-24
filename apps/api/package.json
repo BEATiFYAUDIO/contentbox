@@ -11,21 +11,23 @@
     "prisma:check": "prisma validate && prisma generate",
     "prisma:seed": "prisma db seed",
     "test:storefront-gating": "API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 npx tsx src/scripts/storefront_gating_test.ts",
-    "test:identity-gating": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/identity_gating_test.ts"
+    "test:identity-gating": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/identity_gating_test.ts",
+    "test:buyer-auth": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/buyer_auth_test.ts"
   },
   "dependencies": {
-    "ethers": "^6.9.0",
-  "cheerio": "^1.0.0-rc.12",
     "@fastify/cors": "^11.2.0",
     "@fastify/jwt": "^10.0.0",
     "@fastify/multipart": "^9.4.0",
+    "@prisma/adapter-pg": "^7.4.1",
     "@prisma/client": "^6.9.0",
     "bcrypt": "^6.0.0",
+    "bip32": "^4.0.0",
+    "bitcoinjs-lib": "^6.1.0",
+    "cheerio": "^1.0.0-rc.12",
     "dotenv": "^16.4.5",
+    "ethers": "^6.9.0",
     "fastify": "^5.7.2",
     "pg": "^8.17.2",
-    "bitcoinjs-lib": "^6.1.0",
-    "bip32": "^4.0.0",
     "tiny-secp256k1": "^2.2.3"
   },
   "devDependencies": {

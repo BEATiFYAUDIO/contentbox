@@ -675,7 +675,7 @@ export default function ContentLibraryPage({
   }
 
   async function loadShareLink(contentId: string) {
-    if (!isBasicTier) return;
+    if (isBasicTier) return;
     setShareLinkLoading((m) => ({ ...m, [contentId]: true }));
     try {
       const data = await api<any>(`/api/content/${contentId}/share-link`, "GET");
@@ -688,6 +688,7 @@ export default function ContentLibraryPage({
   }
 
   async function rotateShareLink(contentId: string) {
+    if (isBasicTier) return;
     try {
       setPublishBusy((m) => ({ ...m, [contentId]: true }));
       const res = await api<any>(`/api/content/${contentId}/share-link`, "POST", {});
@@ -702,6 +703,7 @@ export default function ContentLibraryPage({
   }
 
   async function revokeShareLink(contentId: string) {
+    if (isBasicTier) return;
     try {
       setPublishBusy((m) => ({ ...m, [contentId]: true }));
       await api(`/api/content/${contentId}/share-link/revoke`, "POST", {});
@@ -830,7 +832,7 @@ export default function ContentLibraryPage({
     if (isBasicTier && !lightningAvailable) {
       setPublishMsg((m) => ({
         ...m,
-        [contentId]: "Add a Lightning payout address (LNURL or Lightning address) in Profile → Payouts to create share links."
+        [contentId]: "Add a Lightning payout address (LNURL or Lightning address) in Profile → Payouts to publish."
       }));
       return;
     }
@@ -842,16 +844,22 @@ export default function ContentLibraryPage({
           setPublishMsg((m) => ({ ...m, [contentId]: "Derivatives require Advanced mode and clearance before publishing." }));
           return;
         }
-        const res = await api<any>(`/api/content/${contentId}/share-link`, "POST", {});
-        setShareLinkByContent((m) => ({ ...m, [contentId]: res?.shareLink || null }));
+        await api(`/api/content/${contentId}/manifest`, "POST", {});
+        const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
         setItems((prev) =>
           prev.map((it) =>
             it.id === contentId
-              ? { ...it, status: "published", publishedAt: it.publishedAt || new Date().toISOString() }
+              ? {
+                  ...it,
+                  status: "published",
+                  publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString(),
+                  manifest: res?.manifestSha256 ? { sha256: res.manifestSha256 } : it.manifest
+                }
               : it
           )
         );
-        setPublishMsg((m) => ({ ...m, [contentId]: "Share link created." }));
+        await load(false);
+        setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
         return;
       }
       if (!splitsAllowed) {
@@ -3070,9 +3078,7 @@ export default function ContentLibraryPage({
                                       <div className="text-xs text-neutral-500">{publicStatus.message}</div>
                                     ) : null}
                                     {it.status !== "published" ? (
-                                      <div className="text-xs text-neutral-500">
-                                        {isBasicTier ? "Create a share link to start sharing." : "Publish to generate a public buy link."}
-                                      </div>
+                                      <div className="text-xs text-neutral-500">Publish to generate a public buy link.</div>
                                     ) : null}
                                     {publicStatus?.mode === "quick" ? (
                                       <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>
@@ -3131,9 +3137,7 @@ export default function ContentLibraryPage({
                                         </button>
                                       </div>
                                     ) : (
-                                      <div className="text-xs text-neutral-500">
-                                        {isBasicTier ? "Create a share link to share privately." : "Publish this item to share it publicly."}
-                                      </div>
+                                      <div className="text-xs text-neutral-500">Publish this item to share it publicly.</div>
                                     )}
                                     <div className="text-xs text-neutral-400">
                                       {publicStatus?.mode === "named"

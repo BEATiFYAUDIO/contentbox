@@ -248,7 +248,7 @@ async function run() {
         paymentsReady: true,
         splitLocked: false,
         targetLocked: false,
-        publishKind: "share_link"
+        publishKind: "public_buy_link"
       },
       "derivative_requires_advanced_clearance"
     );
@@ -274,32 +274,26 @@ async function run() {
   if (probeResult.effectiveTier === "basic") {
     if (token && derivativeId) {
       try {
-        await expect403Code(`/api/content/${derivativeId}/share-link`, "derivative_requires_advanced_clearance", token);
-        checks.push({ name: "basic derivative share-link blocked", status: "PASS" });
+        await expect403Code(`/api/content/${derivativeId}/share-link`, "basic_public_only", token);
+        checks.push({ name: "basic share-link blocked", status: "PASS" });
       } catch (e: any) {
-        checks.push({ name: "basic derivative share-link blocked", status: "FAIL", reason: e?.message || String(e) });
+        checks.push({ name: "basic share-link blocked", status: "FAIL", reason: e?.message || String(e) });
       }
     } else {
-      checks.push({ name: "basic derivative share-link blocked", status: "SKIP", reason: "no token/content" });
+      checks.push({ name: "basic share-link blocked", status: "SKIP", reason: "no token/content" });
     }
   }
 
   if (probeResult.effectiveTier === "basic") {
     if (token && contentId) {
       try {
-        const share = await postJson(`${baseUrl}/api/content/${contentId}/share-link`, {}, token);
-        assert.equal(share.status, 200, `share-link failed: ${share.status}`);
-        const tokenVal = share.json?.shareLink?.token;
-        if (tokenVal) {
-          const res = await fetch(`${baseUrl}/p/${tokenVal}`);
-          if (!res.ok) throw new Error(`/p/${tokenVal} returned ${res.status}`);
-        }
-        checks.push({ name: "basic share-link create + resolve", status: "PASS" });
+        await expect403Code(`/api/content/${contentId}/share-link`, "basic_public_only", token);
+        checks.push({ name: "basic share-link create blocked", status: "PASS" });
       } catch (e: any) {
-        checks.push({ name: "basic share-link create + resolve", status: "FAIL", reason: e?.message || String(e) });
+        checks.push({ name: "basic share-link create blocked", status: "FAIL", reason: e?.message || String(e) });
       }
     } else {
-      checks.push({ name: "basic share-link create + resolve", status: "SKIP", reason: "no token/content" });
+      checks.push({ name: "basic share-link create blocked", status: "SKIP", reason: "no token/content" });
     }
   }
 
