@@ -597,6 +597,7 @@ model PaymentIntent {
   confirmations   Int?
   receiptToken    String?
   receiptTokenExpiresAt DateTime?
+  ipHash          String?
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
   paidAt          DateTime?
@@ -612,6 +613,7 @@ model PaymentIntent {
   @@index([manifestSha256])
   @@index([status])
   @@index([receiptToken])
+  @@index([ipHash])
   @@index([purpose, subjectType, subjectId])
 }
 
@@ -652,6 +654,7 @@ model Entitlement {
   payment  PaymentIntent? @relation("EntitlementPayment", fields: [paymentIntentId], references: [id], onDelete: SetNull)
 
   @@unique([buyerUserId, contentId, manifestSha256])
+  @@unique([buyerId, contentId])
   @@unique([buyerId, contentId, manifestSha256])
   @@index([buyerId])
 }

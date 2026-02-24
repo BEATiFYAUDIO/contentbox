@@ -4004,6 +4004,35 @@ async function requireBuyerSession(req: any, reply: any) {
   return session;
 }
 
+const SELF_CLAIM_PER_BUYER_PER_HOUR = Math.max(
+  1,
+  Number(process.env.SELF_CLAIM_PER_BUYER_PER_HOUR || 10)
+);
+const SELF_CLAIM_PER_IP_PER_HOUR = Math.max(
+  1,
+  Number(process.env.SELF_CLAIM_PER_IP_PER_HOUR || 30)
+);
+const SELF_CLAIM_IP_SALT = String(process.env.SELF_CLAIM_IP_SALT || JWT_SECRET || "").trim();
+if (!String(process.env.SELF_CLAIM_IP_SALT || "").trim()) {
+  app.log.warn("SELF_CLAIM_IP_SALT not set; falling back to JWT_SECRET for IP hashing.");
+}
+
+function getRequestIp(req: any): string | null {
+  const headers = req?.headers || {};
+  const cf = asString(headers["cf-connecting-ip"]);
+  if (cf) return cf;
+  const xff = asString(headers["x-forwarded-for"]);
+  if (xff) return xff.split(",")[0].trim();
+  const sock = req?.socket?.remoteAddress || req?.connection?.remoteAddress;
+  return sock ? String(sock) : null;
+}
+
+function hashIp(ip: string | null): string | null {
+  if (!ip) return null;
+  if (!SELF_CLAIM_IP_SALT) return crypto.createHash("sha256").update(ip).digest("hex");
+  return crypto.createHmac("sha256", SELF_CLAIM_IP_SALT).update(ip).digest("hex");
+}
+
 // Record a self-claimed purchase for Basic mode buyers
 app.post("/api/buyer/buys", async (req: any, reply: any) => {
   const session = await requireBuyerSession(req, reply);
@@ -4034,47 +4063,86 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
     return reply.code(409).send({ code: "AMOUNT_MISMATCH", error: "Amount must match creator price." });
   }
 
-  const buyerEmail = session.buyer.email;
-  const existing = await prisma.entitlement.findUnique({
-    where: {
-      buyerId_contentId_manifestSha256: {
-        buyerId: session.buyer.id,
-        contentId,
-        manifestSha256: manifest.sha256
-      }
-    }
+  const existing = await prisma.entitlement.findFirst({
+    where: { buyerId: session.buyer.id, contentId }
   });
   if (existing) {
-    return reply.send({ ok: true, buyId: existing.paymentIntentId || existing.id, alreadyOwned: true, redirectUrl: "/library" });
+    return reply.send({ ok: true, alreadyOwned: true, entitlementId: existing.id, redirectUrl: "/library" });
   }
 
-  const now = new Date();
-  const intent = await prisma.paymentIntent.create({
-    data: {
-      buyerUserId: null,
-      contentId,
-      manifestSha256: manifest.sha256,
-      amountSats,
-      status: "self_claimed" as any,
-      purpose: "CONTENT_PURCHASE" as any,
-      subjectType: "CONTENT" as any,
-      subjectId: contentId,
-      memo: "SELF_CLAIM",
-      paidAt: null
+  const ipHash = hashIp(getRequestIp(req));
+  const since = new Date(Date.now() - 60 * 60 * 1000);
+
+  const buyerCount = await prisma.paymentIntent.count({
+    where: {
+      status: "self_claimed",
+      createdAt: { gte: since },
+      entitlements: { some: { buyerId: session.buyer.id } }
     }
   });
+  if (buyerCount >= SELF_CLAIM_PER_BUYER_PER_HOUR) {
+    return reply.code(429).send({ error: "Too many self-claims. Try again later." });
+  }
 
-  await prisma.entitlement.create({
-    data: {
-      buyerId: session.buyer.id,
-      buyerUserId: null,
-      contentId,
-      manifestSha256: manifest.sha256,
-      paymentIntentId: intent.id
+  if (ipHash) {
+    const ipCount = await prisma.paymentIntent.count({
+      where: { status: "self_claimed", createdAt: { gte: since }, ipHash }
+    });
+    if (ipCount >= SELF_CLAIM_PER_IP_PER_HOUR) {
+      return reply.code(429).send({ error: "Too many self-claims. Try again later." });
     }
-  });
+  }
 
-  return reply.send({ ok: true, buyId: intent.id, selfClaimed: true, redirectUrl: "/library" });
+  try {
+    const created = await prisma.$transaction(async (tx) => {
+      const existingInside = await tx.entitlement.findFirst({
+        where: { buyerId: session.buyer.id, contentId }
+      });
+      if (existingInside) {
+        return { alreadyOwned: true, entitlementId: existingInside.id };
+      }
+
+      const intent = await tx.paymentIntent.create({
+        data: {
+          buyerUserId: null,
+          contentId,
+          manifestSha256: manifest.sha256,
+          amountSats,
+          status: "self_claimed" as any,
+          purpose: "CONTENT_PURCHASE" as any,
+          subjectType: "CONTENT" as any,
+          subjectId: contentId,
+          memo: "SELF_CLAIM",
+          paidAt: null,
+          ipHash
+        }
+      });
+
+      const entitlement = await tx.entitlement.create({
+        data: {
+          buyerId: session.buyer.id,
+          buyerUserId: null,
+          contentId,
+          manifestSha256: manifest.sha256,
+          paymentIntentId: intent.id
+        }
+      });
+
+      return { alreadyOwned: false, entitlementId: entitlement.id };
+    });
+
+    return reply.send({ ok: true, alreadyOwned: created.alreadyOwned, entitlementId: created.entitlementId, redirectUrl: "/library" });
+  } catch (e: any) {
+    if (e?.code === "P2002") {
+      const fallback = await prisma.entitlement.findFirst({
+        where: { buyerId: session.buyer.id, contentId }
+      });
+      if (fallback) {
+        return reply.send({ ok: true, alreadyOwned: true, entitlementId: fallback.id, redirectUrl: "/library" });
+      }
+    }
+    throw e;
+  }
 });
 
 // List buyer entitlements (buyer-session scoped)
@@ -4082,8 +4150,13 @@ app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
   const session = await requireBuyerSession(req, reply);
   if (!session) return;
 
+  const contentId = asString((req.query as any)?.contentId || "").trim();
+
   const entitlements = await prisma.entitlement.findMany({
-    where: { buyerId: session.buyer.id },
+    where: {
+      buyerId: session.buyer.id,
+      ...(contentId ? { contentId } : {})
+    },
     include: { content: true },
     orderBy: { grantedAt: "desc" }
   });
@@ -7816,6 +7889,27 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
 async function handleBuyPage(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   if (!contentId) return notFound(reply, "Not found");
+  const productTier = resolveProductTier().productTier;
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    include: { owner: { select: { displayName: true, email: true } } }
+  });
+  if (!content) return notFound(reply, "Not found");
+  const sellerDisplayName = content.owner?.displayName || content.owner?.email || null;
+  let sellerLightningAddress: string | null = null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    const identity = payoutMethod
+      ? await prisma.identity.findFirst({
+          where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
+          orderBy: { createdAt: "desc" }
+        })
+      : null;
+    const v = asString(identity?.value || "").trim();
+    if (v) sellerLightningAddress = v;
+  } catch {
+    sellerLightningAddress = null;
+  }
 
   const html = `<!doctype html>
 <html lang="en">
@@ -7857,6 +7951,10 @@ async function handleBuyPage(req: any, reply: any) {
 <script>
 (function(){
   const contentId = ${JSON.stringify(contentId)};
+  const productTier = ${JSON.stringify(productTier)};
+  const sellerLightningAddress = ${JSON.stringify(sellerLightningAddress)};
+  const sellerDisplayName = ${JSON.stringify(sellerDisplayName)};
+  const priceSats = ${content.priceSats != null ? Number(content.priceSats) : "null"};
   const app = document.getElementById("app");
   const apiBase = location.origin;
   let receiptToken = null;
@@ -7865,6 +7963,7 @@ async function handleBuyPage(req: any, reply: any) {
   let currentOffer = null;
   let previewSeconds = 20;
   let buyer = null;
+  let alreadyOwned = false;
   const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
 
   function qs(v){ return encodeURIComponent(v); }
@@ -7929,6 +8028,18 @@ async function handleBuyPage(req: any, reply: any) {
     }
   }
 
+  async function fetchOwnedEntitlement(){
+    alreadyOwned = false;
+    if (!buyer || !buyer.id) return;
+    try {
+      const res = await fetchJson("/api/buyer/entitlements?contentId=" + qs(contentId));
+      const list = Array.isArray(res) ? res : [];
+      alreadyOwned = list.length > 0;
+    } catch {
+      alreadyOwned = false;
+    }
+  }
+
   function setBuyerStatus(text){
     const el = document.getElementById("buyerStatus");
     if (el) el.textContent = text || "";
@@ -7956,7 +8067,8 @@ async function handleBuyPage(req: any, reply: any) {
     return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
   }
 
-  function renderOffer(offer, entitlement){
+  function renderOffer(offer, entitlement, owned){
+    const already = Boolean(owned);
     const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
     const isPaid = Number(offer.priceSats || 0) > 0;
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
@@ -7967,11 +8079,40 @@ async function handleBuyPage(req: any, reply: any) {
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
-    const hidePay = !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
+    const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
+    const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Seller: " + sellerDisplayName + "</div>" : "";
+    const amountLabel = offer.priceSats ? "<div class=\\"muted\\">Amount: " + offer.priceSats + " sats</div>" : (priceSats ? "<div class=\\"muted\\">Amount: " + priceSats + " sats</div>" : "");
+    const basicBlock = productTier === "basic" ? \`
+      <div class="rail" style="margin-top:10px;">
+        <div style="font-weight:600;">Pay with Lightning</div>
+        \${sellerLabel}\${amountLabel}
+        \${sellerLightningAddress ? \`
+          <div class="muted" style="margin-top:6px;">Pay to:</div>
+          <div class="code">\${sellerLightningAddress}</div>
+          <div style="margin-top:8px;">
+            <img alt="Lightning QR" src="\${qrUrl('lightning:' + sellerLightningAddress)}" />
+          </div>
+          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="copy" data-copy="\${sellerLightningAddress}">Copy</button>
+          </div>
+          <div class="muted" style="margin-top:8px;font-size:12px;">After paying, click Confirm to unlock.</div>
+        \` : \`
+          <div class="muted" style="margin-top:6px;">Seller hasn't enabled Lightning payments yet.</div>
+        \`}
+        <div class="muted" style="margin-top:8px;font-size:12px;">This shop uses manual confirmation in Basic mode.</div>
+      </div>
+    \` : "";
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
+        \${already ? \`
+          <div class="step" style="border-color:#14532d;background:#0b1f14;">
+            <div style="font-weight:600;">Already owned</div>
+            <div class="muted" style="margin-top:6px;">This item is in your library.</div>
+            <a class="btn" href="/library" style="display:inline-block;margin-top:10px;text-decoration:none;">Go to library</a>
+          </div>
+        \` : ""}
         \${mediaSrc && canStream ? \`
           <div class="preview">
             \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview</div>\` : ""}
@@ -8004,7 +8145,8 @@ async function handleBuyPage(req: any, reply: any) {
           </div>
           <div class="step" id="paySection" style="\${hasBuyer ? "" : "display:none;"}">
             <h3>Payment</h3>
-            <button id="buyBtn" class="btn" style="margin-top:6px;">Confirm payment / Unlock</button>
+            ${"${basicBlock}"}
+            <button id="buyBtn" class="btn" style="margin-top:6px;" ${productTier === "basic" && !sellerLightningAddress ? "disabled" : ""}>Confirm payment / Unlock</button>
             <div id="status" class="muted" style="margin-top:8px;"></div>
           </div>
         \` : \`
@@ -8018,6 +8160,7 @@ async function handleBuyPage(req: any, reply: any) {
     \`;
     const btn = document.getElementById("buyBtn");
     if (btn) btn.onclick = async () => startPurchase(offer);
+    app.querySelectorAll("button[data-copy]").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
     if (requiresPayment) {
       const continueBtn = document.getElementById("continueBtn");
       if (buyer && buyer.email) {
@@ -8131,7 +8274,7 @@ async function handleBuyPage(req: any, reply: any) {
       resetBtn.onclick = () => {
         clearEntitlement(offer.manifestSha256);
         receiptToken = null;
-        renderOffer(offer, null);
+        renderOffer(offer, null, alreadyOwned);
       };
     }
   }
@@ -8223,7 +8366,7 @@ async function handleBuyPage(req: any, reply: any) {
       renderDownloads(payload);
       if (currentOffer?.manifestSha256) {
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
-        renderOffer(currentOffer, ent);
+        renderOffer(currentOffer, ent, alreadyOwned);
       }
       document.getElementById("status").textContent = "Payment received. Download is ready.";
     } else {
@@ -8239,6 +8382,10 @@ async function handleBuyPage(req: any, reply: any) {
       return;
     }
     const statusEl = document.getElementById("status");
+    if (productTier === "basic" && !sellerLightningAddress) {
+      if (statusEl) statusEl.textContent = "Seller hasn't enabled Lightning payments yet.";
+      return;
+    }
     const trySelfClaim = async () => {
       try {
         const res = await fetch(apiBase + "/api/buyer/buys", {
@@ -8267,6 +8414,10 @@ async function handleBuyPage(req: any, reply: any) {
     };
     const selfClaimed = await trySelfClaim();
     if (selfClaimed) return;
+    if (productTier === "basic") {
+      if (statusEl) statusEl.textContent = "This shop uses manual confirmation in Basic mode.";
+      return;
+    }
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
     const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
@@ -8286,31 +8437,34 @@ async function handleBuyPage(req: any, reply: any) {
 
   fetchBuyerMe()
     .finally(() => {
-      fetchJson("/buy/content/" + contentId + "/offer")
-        .then(async (offer)=> {
-          currentOffer = offer;
-          const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
-          if (ent && ent.token) {
-            renderOffer(offer, ent);
-            return;
-          }
-          if (Number(offer.priceSats || 0) > 0) {
-            try {
-              const p = await fetchJson("/buy/permits", {
-                method: "POST",
-                body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
-              });
-              previewSeconds = p.previewSeconds || previewSeconds;
-              const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
-              renderOffer(offer, next);
+      fetchOwnedEntitlement()
+        .finally(() => {
+          fetchJson("/buy/content/" + contentId + "/offer")
+            .then(async (offer)=> {
+              currentOffer = offer;
+              const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
+              if (ent && ent.token) {
+                renderOffer(offer, ent, alreadyOwned);
+                return;
+              }
+              if (Number(offer.priceSats || 0) > 0) {
+                try {
+                  const p = await fetchJson("/buy/permits", {
+                    method: "POST",
+                    body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
+                  });
+                  previewSeconds = p.previewSeconds || previewSeconds;
+                  const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
+                  renderOffer(offer, next, alreadyOwned);
+                  checkManualStatus();
+                  return;
+                } catch {}
+              }
+              renderOffer(offer, null, alreadyOwned);
               checkManualStatus();
-              return;
-            } catch {}
-          }
-          renderOffer(offer, null);
-          checkManualStatus();
-        })
-        .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
+            })
+            .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
+        });
     });
 })();
 </script>
