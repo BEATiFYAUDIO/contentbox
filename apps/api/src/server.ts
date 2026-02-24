@@ -8138,27 +8138,25 @@ async function handleBuyPage(req: any, reply: any) {
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
     const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "";
-    const tipBlock = sellerLightningAddress ? `
-      <div class="rail" style="margin-top:10px;">
-        <div style="font-weight:600;">Tip the creator</div>
-        ${sellerLabel}
-        ${suggestedTipSats ? `<div class=\"muted\" style=\"margin-top:6px;\">Suggested tip: ${suggestedTipSats} sats</div>` : ""}
-        <div class="muted" style="margin-top:6px;">Pay to:</div>
-        <div class="code">${sellerLightningAddress}</div>
-        <div style="margin-top:8px;">
-          <img alt="Lightning QR" src="${qrUrl("lightning:" + sellerLightningAddress)}" />
-        </div>
-        <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-          <button class="copy" data-copy="${sellerLightningAddress}">Copy</button>
-        </div>
-        <div class="muted" style="margin-top:8px;font-size:12px;">Tips support the creator (no unlock required in Basic).</div>
-      </div>
-    ` : `
-      <div class="rail" style="margin-top:10px; opacity:0.7;">
-        <div style="font-weight:600;">Tip the creator</div>
-        <div class="muted" style="margin-top:6px;">Creator hasn't enabled tips yet.</div>
-      </div>
-    `;
+    const tipBlock = sellerLightningAddress
+      ? "<div class=\\"rail\\" style=\\"margin-top:10px;\\">" +
+          "<div style=\\"font-weight:600;\\">Tip the creator</div>" +
+          sellerLabel +
+          (suggestedTipSats ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Suggested tip: " + suggestedTipSats + " sats</div>" : "") +
+          "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Pay to:</div>" +
+          "<div class=\\"code\\">" + sellerLightningAddress + "</div>" +
+          "<div style=\\"margin-top:8px;\\">" +
+            "<img alt=\\"Lightning QR\\" src=\\"" + qrUrl("lightning:" + sellerLightningAddress) + "\\" />" +
+          "</div>" +
+          "<div style=\\"margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;\\">" +
+            "<button class=\\"copy\\" data-copy=\\"" + sellerLightningAddress + "\\">Copy</button>" +
+          "</div>" +
+          "<div class=\\"muted\\" style=\\"margin-top:8px;font-size:12px;\\">Tips support the creator (no unlock required in Basic).</div>" +
+        "</div>"
+      : "<div class=\\"rail\\" style=\\"margin-top:10px; opacity:0.7;\\">" +
+          "<div style=\\"font-weight:600;\\">Tip the creator</div>" +
+          "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator hasn't enabled tips yet.</div>" +
+        "</div>";
     app.innerHTML = `
       <div>
         <div style="font-size:22px;font-weight:700;">${offer.title || "Content"}</div>
