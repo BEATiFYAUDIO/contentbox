@@ -8141,11 +8141,24 @@ async function handleBuyPage(req: any, reply: any) {
     return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
   }
 
+  function resolveBasicDeliveryMode(offer){
+    const explicit = (offer && typeof offer.deliveryMode === "string" && offer.deliveryMode.trim()) ? offer.deliveryMode.trim() : "";
+    if (explicit) return explicit;
+    const mime = String(offer?.primaryFileMime || "");
+    const isVideo = offer?.type === "video" || mime.startsWith("video/");
+    const isAudio = offer?.type === "song" || mime.startsWith("audio/");
+    if (isVideo || isAudio) return "stream_only";
+    if (mime === "application/pdf" || offer?.type === "book") return "download_only";
+    return "stream_only";
+  }
+
   function renderBasicOffer(offer){
     const mediaSrc = basicPrimaryUrl(offer) || previewFallbackUrl(offer);
     const mime = String(offer.primaryFileMime || "");
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const deliveryMode = resolveBasicDeliveryMode(offer);
+    const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
     const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "";
     const tipBlock = sellerLightningAddress
       ? "<div class=\\"rail\\" style=\\"margin-top:10px;\\">" +
@@ -8178,7 +8191,8 @@ async function handleBuyPage(req: any, reply: any) {
             "</div>"
           : "") +
         "<div style=\\"margin-top:8px;font-size:18px;\\">Free access</div>" +
-        (mediaSrc ? "<div style=\\"margin-top:8px;\\"><a class=\\"btn\\" href=\\"" + mediaSrc + "\\" download>Download</a></div>" : "") +
+        (!allowDownload ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Streaming only</div>" : "") +
+        (allowDownload && mediaSrc ? "<div style=\\"margin-top:8px;\\"><a class=\\"btn\\" href=\\"" + mediaSrc + "\\" download>Download</a></div>" : "") +
         tipBlock +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
@@ -8954,6 +8968,7 @@ async function handlePublicOffer(req: any, reply: any) {
     primaryFileId,
     primaryFileMime,
     previewObjectKey,
+    deliveryMode: (content as any).deliveryMode || null,
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
     fulfillment: { mode: "receiptToken", ttlSeconds }
