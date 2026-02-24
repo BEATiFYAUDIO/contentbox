@@ -8118,11 +8118,64 @@ async function handleBuyPage(req: any, reply: any) {
   const shareToken = (() => {
     try { return new URLSearchParams(location.search || "").get("share") || ""; } catch { return ""; }
   })();
+  const suggestedTipSats = (priceSats && Number(priceSats) > 0) ? Number(priceSats) : null;
 
   function previewFallbackUrl(offer){
     if (!offer?.previewObjectKey) return null;
     const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
     return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.previewObjectKey) + shareQ;
+  }
+
+  function basicPrimaryUrl(offer){
+    if (!offer?.primaryFileId) return null;
+    const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
+    return apiBase + "/buy/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
+  }
+
+  function renderBasicOffer(offer){
+    const mediaSrc = basicPrimaryUrl(offer) || previewFallbackUrl(offer);
+    const mime = String(offer.primaryFileMime || "");
+    const isVideo = offer.type === "video" || mime.startsWith("video/");
+    const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "";
+    const tipBlock = sellerLightningAddress ? `
+      <div class="rail" style="margin-top:10px;">
+        <div style="font-weight:600;">Tip the creator</div>
+        ${sellerLabel}
+        ${suggestedTipSats ? `<div class=\"muted\" style=\"margin-top:6px;\">Suggested tip: ${suggestedTipSats} sats</div>` : ""}
+        <div class="muted" style="margin-top:6px;">Pay to:</div>
+        <div class="code">${sellerLightningAddress}</div>
+        <div style="margin-top:8px;">
+          <img alt="Lightning QR" src="${qrUrl("lightning:" + sellerLightningAddress)}" />
+        </div>
+        <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="copy" data-copy="${sellerLightningAddress}">Copy</button>
+        </div>
+        <div class="muted" style="margin-top:8px;font-size:12px;">Tips support the creator (no unlock required in Basic).</div>
+      </div>
+    ` : `
+      <div class="rail" style="margin-top:10px; opacity:0.7;">
+        <div style="font-weight:600;">Tip the creator</div>
+        <div class="muted" style="margin-top:6px;">Creator hasn't enabled tips yet.</div>
+      </div>
+    `;
+    app.innerHTML = `
+      <div>
+        <div style="font-size:22px;font-weight:700;">${offer.title || "Content"}</div>
+        <div class="muted">${offer.description || ""}</div>
+        ${mediaSrc ? `
+          <div class="preview">
+            ${isVideo ? `<video id="player" controls preload="metadata" src="${mediaSrc}"></video>` : ""}
+            ${isAudio ? `<audio id="player" controls preload="metadata" src="${mediaSrc}"></audio>` : ""}
+            ${!isVideo && !isAudio ? `<a class="muted" href="${mediaSrc}" target="_blank" rel="noreferrer">Open file</a>` : ""}
+          </div>
+        ` : ""}
+        <div style="margin-top:8px;font-size:18px;">Free access</div>
+        ${mediaSrc ? `<div style=\"margin-top:8px;\"><a class=\"btn\" href=\"${mediaSrc}\" download>Download</a></div>` : ""}
+        ${tipBlock}
+      </div>
+    `;
+    app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
   }
 
   function renderOffer(offer, entitlement, owned){
@@ -8138,28 +8191,6 @@ async function handleBuyPage(req: any, reply: any) {
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
     const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
-    const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Seller: " + sellerDisplayName + "</div>" : "";
-    const amountLabel = offer.priceSats ? "<div class=\\"muted\\">Amount: " + offer.priceSats + " sats</div>" : (priceSats ? "<div class=\\"muted\\">Amount: " + priceSats + " sats</div>" : "");
-    const basicBlock = productTier === "basic" ? \`
-      <div class="rail" style="margin-top:10px;">
-        <div style="font-weight:600;">Pay with Lightning</div>
-        \${sellerLabel}\${amountLabel}
-        \${sellerLightningAddress ? \`
-          <div class="muted" style="margin-top:6px;">Pay to:</div>
-          <div class="code">\${sellerLightningAddress}</div>
-          <div style="margin-top:8px;">
-            <img alt="Lightning QR" src="\${qrUrl('lightning:' + sellerLightningAddress)}" />
-          </div>
-          <div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="copy" data-copy="\${sellerLightningAddress}">Copy</button>
-          </div>
-          <div class="muted" style="margin-top:8px;font-size:12px;">After paying, click Confirm to unlock.</div>
-        \` : \`
-          <div class="muted" style="margin-top:6px;">Seller hasn't enabled Lightning payments yet.</div>
-        \`}
-        <div class="muted" style="margin-top:8px;font-size:12px;">This shop uses manual confirmation in Basic mode.</div>
-      </div>
-    \` : "";
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
@@ -8203,8 +8234,7 @@ async function handleBuyPage(req: any, reply: any) {
           </div>
           <div class="step" id="paySection" style="\${hasBuyer ? "" : "display:none;"}">
             <h3>Payment</h3>
-            ${"${basicBlock}"}
-            <button id="buyBtn" class="btn" style="margin-top:6px;" ${productTier === "basic" && !sellerLightningAddress ? "disabled" : ""}>Confirm payment / Unlock</button>
+            <button id="buyBtn" class="btn" style="margin-top:6px;">Confirm payment / Unlock</button>
             <div id="status" class="muted" style="margin-top:8px;"></div>
           </div>
         \` : \`
@@ -8505,6 +8535,13 @@ async function handleBuyPage(req: any, reply: any) {
     renderRails(intent);
     pollTimer = setInterval(pollStatus, 2000);
     pollStatus().catch(()=>{});
+  }
+
+  if (productTier === "basic") {
+    fetchJson("/buy/content/" + contentId + "/offer")
+      .then((offer) => renderBasicOffer(offer))
+      .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
+    return;
   }
 
   fetchBuyerMe()
