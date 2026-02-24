@@ -8159,18 +8159,18 @@ async function handleBuyPage(req: any, reply: any) {
         "</div>";
     app.innerHTML = `
       <div>
-        <div style="font-size:22px;font-weight:700;">${offer.title || "Content"}</div>
-        <div class="muted">${offer.description || ""}</div>
-        ${mediaSrc ? `
+        <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
+        <div class="muted">\${offer.description || ""}</div>
+        \${mediaSrc ? \`
           <div class="preview">
-            ${isVideo ? `<video id="player" controls preload="metadata" src="${mediaSrc}"></video>` : ""}
-            ${isAudio ? `<audio id="player" controls preload="metadata" src="${mediaSrc}"></audio>` : ""}
-            ${!isVideo && !isAudio ? `<a class="muted" href="${mediaSrc}" target="_blank" rel="noreferrer">Open file</a>` : ""}
+            \${isVideo ? \`<video id="player" controls preload="metadata" src="\${mediaSrc}"></video>\` : ""}
+            \${isAudio ? \`<audio id="player" controls preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
+            \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open file</a>\` : ""}
           </div>
-        ` : ""}
+        \` : ""}
         <div style="margin-top:8px;font-size:18px;">Free access</div>
-        ${mediaSrc ? `<div style=\"margin-top:8px;\"><a class=\"btn\" href=\"${mediaSrc}\" download>Download</a></div>` : ""}
-        ${tipBlock}
+        \${mediaSrc ? \`<div style=\\\"margin-top:8px;\\\"><a class=\\\"btn\\\" href=\\\"\${mediaSrc}\\\" download>Download</a></div>\` : ""}
+        \${tipBlock}
       </div>
     `;
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
