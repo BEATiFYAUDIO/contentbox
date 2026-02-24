@@ -13,6 +13,7 @@ import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
+import nodemailer from "nodemailer";
 import * as cheerio from "cheerio";
 import { initContentRepo, addFileToContentRepo, commitAll } from "./lib/repo.js";
 import {
@@ -651,6 +652,28 @@ function hashOtp(code: string): string {
   return crypto.createHash("sha256").update(String(code)).digest("hex");
 }
 
+async function sendOtpEmail(toEmail: string, code: string, expiryMinutes: number) {
+  if (!smtpConfigured()) throw new Error("SMTP_NOT_CONFIGURED");
+  const transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
+    auth: {
+      user: SMTP_USER,
+      pass: SMTP_PASS
+    }
+  });
+  const subject = "Your ContentBox sign-in code";
+  const text = `Your ContentBox sign-in code is ${code}. It expires in ${expiryMinutes} minutes.`;
+  await transporter.sendMail({
+    from: SMTP_FROM,
+    to: toEmail,
+    replyTo: SMTP_REPLY_TO || undefined,
+    subject,
+    text
+  });
+}
+
 function getCookie(req: any, name: string): string | null {
   try {
     const raw = String(req?.headers?.cookie || "");
@@ -776,6 +799,23 @@ const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .map((v) => v.trim())
   .filter(Boolean);
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
+const isProd = String(process.env.NODE_ENV || "").trim() === "production";
+const SMTP_HOST = String(process.env.SMTP_HOST || "").trim();
+const SMTP_PORT = Number(process.env.SMTP_PORT || "");
+const SMTP_USER = String(process.env.SMTP_USER || "").trim();
+const SMTP_PASS = String(process.env.SMTP_PASS || "").trim();
+const SMTP_FROM = String(process.env.SMTP_FROM || "").trim();
+const SMTP_REPLY_TO = String(process.env.SMTP_REPLY_TO || "").trim();
+const SMTP_SECURE = (() => {
+  const raw = String(process.env.SMTP_SECURE || "").trim().toLowerCase();
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  return Number(SMTP_PORT) === 465;
+})();
+
+function smtpConfigured(): boolean {
+  return Boolean(SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS && SMTP_FROM);
+}
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
 const STARTED_AT = new Date().toISOString();
@@ -3885,6 +3925,7 @@ app.post("/api/buyer/start", async (req: any, reply: any) => {
   const code = String(Math.floor(Math.random() * 1000000)).padStart(6, "0");
   const codeHash = hashOtp(code);
   const expiresAt = new Date(Date.now() + BUYER_OTP_TTL_MS);
+  const expiryMinutes = Math.max(1, Math.floor(BUYER_OTP_TTL_MS / 60000));
 
   await prisma.buyerOtp.create({
     data: {
@@ -3893,6 +3934,23 @@ app.post("/api/buyer/start", async (req: any, reply: any) => {
       expiresAt
     }
   });
+
+  if (smtpConfigured()) {
+    try {
+      await sendOtpEmail(email, code, expiryMinutes);
+      if (isProd) return reply.send({ ok: true });
+      return reply.send({ ok: true, devCode: code });
+    } catch {
+      if (isProd) {
+        return reply.code(503).send({ error: "Email delivery is temporarily unavailable." });
+      }
+      return reply.send({ ok: true, devCode: code });
+    }
+  }
+
+  if (isProd) {
+    return reply.code(503).send({ error: "Email login is not enabled for this shop yet." });
+  }
 
   return reply.send({ ok: true, devCode: code });
 });
@@ -8195,6 +8253,15 @@ async function handleBuyPage(req: any, reply: any) {
       const codeWrap = document.getElementById("buyerCodeWrap");
       const devCodeEl = document.getElementById("buyerDevCode");
       const errorEl = document.getElementById("buyerError");
+      const statusEl = document.getElementById("status");
+      const disableBuyerLogin = (msg) => {
+        if (errorEl) errorEl.textContent = msg || "";
+        if (statusEl) statusEl.textContent = msg || "";
+        if (startBtn) startBtn.disabled = true;
+        if (verifyBtn) verifyBtn.disabled = true;
+        const buyBtn = document.getElementById("buyBtn");
+        if (buyBtn) buyBtn.disabled = true;
+      };
 
       if (startBtn) {
         startBtn.onclick = async () => {
@@ -8212,7 +8279,12 @@ async function handleBuyPage(req: any, reply: any) {
             if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
             if (codeWrap) codeWrap.style.display = "";
           } catch (e) {
-            if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Unable to start.";
+            const msg = (e && e.message) ? e.message : "Unable to start.";
+            if (msg.includes("Email login is not enabled")) {
+              disableBuyerLogin("This shop hasn't enabled email login yet.");
+              return;
+            }
+            if (errorEl) errorEl.textContent = msg;
           }
         };
       }
@@ -8624,6 +8696,11 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     const codeWrap = document.getElementById("buyerCodeWrap");
     const devCodeEl = document.getElementById("buyerDevCode");
     const errorEl = document.getElementById("buyerError");
+    const disableBuyerLogin = (msg) => {
+      if (errorEl) errorEl.textContent = msg || "";
+      if (startBtn) startBtn.disabled = true;
+      if (verifyBtn) verifyBtn.disabled = true;
+    };
 
     if (startBtn) {
       startBtn.onclick = async () => {
@@ -8641,7 +8718,12 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
           if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
           if (codeWrap) codeWrap.style.display = "";
         } catch (e) {
-          if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Unable to start.";
+          const msg = (e && e.message) ? e.message : "Unable to start.";
+          if (msg.includes("Email login is not enabled")) {
+            disableBuyerLogin("This shop hasn't enabled email login yet.");
+            return;
+          }
+          if (errorEl) errorEl.textContent = msg;
         }
       };
     }
