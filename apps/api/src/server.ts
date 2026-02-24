@@ -7619,9 +7619,8 @@ app.get("/public/content/:id", handlePublicContent);
 // Public preview file (no auth; only when content is publicly visible)
 async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
-  const objectKey = asString((req.query || {})?.objectKey || "").trim();
+  const objectKeyRaw = asString((req.query || {})?.objectKey || "").trim();
   const shareToken = asString((req.query || {})?.share || "").trim();
-  if (!objectKey) return badRequest(reply, "objectKey required");
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
@@ -7647,6 +7646,21 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   if (isDerivativeType || publicLinks.length > 0) {
     if (publicLinks.length === 0) return notFound(reply, "Not found");
     if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
+  }
+
+  let objectKey = objectKeyRaw;
+  if (!objectKey) {
+    const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+    const manifestJson = (manifest?.json || {}) as any;
+    const primaryFileId =
+      (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+      (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
+      null;
+    objectKey =
+      (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+      (typeof primaryFileId === "string" && primaryFileId) ||
+      "";
+    if (!objectKey) return notFound(reply, "preview not available");
   }
 
   if (!content.repoPath) return notFound(reply, "Content not found");
