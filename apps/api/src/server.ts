@@ -477,13 +477,27 @@ function normalizeOrigin(value: string | null | undefined): string | null {
 
 function getPublicOrigin(req: any): string {
   const envOrigin =
-    normalizeOrigin(process.env.PUBLIC_ORIGIN) || normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
+    normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
   if (envOrigin) {
     if (process.env.NODE_ENV === "production" && !envOrigin.startsWith("https://")) {
       app.log.warn({ publicOrigin: envOrigin }, "PUBLIC_ORIGIN should be https in production");
     }
     return envOrigin;
   }
+
+  // BASIC mode: prefer public link (tunnel) when available.
+  try {
+    const nodeMode = resolveRuntimeConfig().nodeMode;
+    if (nodeMode === "basic") {
+      const state = getPublicLinkState();
+      const hasPublicOrigin = Boolean(state.canonicalOrigin);
+      if (hasPublicOrigin) {
+        return String(state.canonicalOrigin).replace(/\/+$/, "");
+      }
+    }
+  } catch {}
 
   const xfProtoRaw = asString(req?.headers?.["x-forwarded-proto"] || "");
   const xfHostRaw = asString(req?.headers?.["x-forwarded-host"] || "");
@@ -7207,10 +7221,38 @@ async function handleShortPublicLink(req: any, reply: any) {
     if (!content || content.deletedAt) return notFound(reply, "Not found");
     return reply.redirect(`/buy/${encodeURIComponent(content.id)}?share=${encodeURIComponent(token)}`);
   }
+
+  const sendNotAvailable = (content?: { title?: string | null }) => {
+    const safeTitle = (content?.title || "This content").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Not Available</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #0b0b0b; color: #eee; padding: 24px; }
+    .card { max-width: 720px; margin: 0 auto; background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; }
+    .muted { color: #9aa0a6; font-size: 13px; }
+    a { color: #9bdcff; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Not Available</h2>
+    <p><strong>${safeTitle}</strong> isn’t publicly available yet.</p>
+    <p class="muted">If you expected access, ask the owner to share a private link (e.g. <code>/p/&lt;token&gt;</code>) or publish the content.</p>
+    <p class="muted"><a href="${APP_BASE_URL}">Return to ContentBox</a></p>
+  </div>
+</body>
+</html>`;
+    return reply.type("text/html").send(html);
+  };
+
   const content = await prisma.contentItem.findUnique({ where: { id: token } });
   if (!content) return notFound(reply, "Not found");
-  if (content.status !== "published") return notFound(reply, "Not found");
-  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+  if (content.status !== "published") return sendNotAvailable(content);
   return reply.redirect(`/buy/${encodeURIComponent(token)}`);
 }
 
@@ -7746,9 +7788,9 @@ app.get("/embed.js", async (req: any, reply) => {
     reply.type("application/javascript; charset=utf-8");
     return reply.send("console.error('ContentBox embed requires persistent identity (named tunnel).');");
   }
+  const publicOrigin = getPublicOrigin(req).replace(/\/+$/, "");
   const js = `(function(){
-  const script = document.currentScript;
-  const base = script ? new URL(script.src).origin : "";
+  const base = ${JSON.stringify(publicOrigin)};
   function makeOverlay(url){
     const overlay = document.createElement("div");
     overlay.style.position = "fixed";

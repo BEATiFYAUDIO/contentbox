@@ -65,6 +65,17 @@ function readStoredValue(key: string): string {
   }
 }
 
+function isLoopbackUrl(u?: string | null): boolean {
+  if (!u) return false;
+  try {
+    const url = new URL(u);
+    const h = url.hostname.toLowerCase();
+    return h === "localhost" || h === "127.0.0.1" || h === "0.0.0.0" || h === "::1";
+  } catch {
+    return false;
+  }
+}
+
 type SplitVersion = {
   id: string;
   contentId: string;
@@ -317,6 +328,7 @@ export default function ContentLibraryPage({
     }
   }, [derivativesAllowed, showClearance]);
   const [busyAction, setBusyAction] = React.useState<Record<string, boolean>>({});
+  const [buyLinksTabByContent, setBuyLinksTabByContent] = React.useState<Record<string, "public" | "config">>({});
   const [requestParentId, setRequestParentId] = React.useState("");
   const [requestTitle, setRequestTitle] = React.useState("");
   const [requestType, setRequestType] = React.useState<ContentType>("remix");
@@ -3103,8 +3115,17 @@ export default function ContentLibraryPage({
                                         />
                                         <button
                                           type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                          onClick={() => publicUrl && window.open(publicUrl, "_blank", "noopener,noreferrer")}
+                                          disabled={!publicUrl}
+                                        >
+                                          Open
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
                                           onClick={() => publicUrl && copyText(publicUrl)}
+                                          disabled={!publicUrl}
                                         >
                                           Copy link
                                         </button>
@@ -3243,7 +3264,8 @@ export default function ContentLibraryPage({
                               : "";
                             const loopbackBase = "http://127.0.0.1:4000";
                             const loopbackLink = `${loopbackBase}/buy/${it.id}`;
-                            const hasPublicBuy = Boolean(buyBase);
+                            const isBuyLoopback = isLoopbackUrl(buyLink);
+                            const hasPublicBuy = Boolean(buyBase) && !isBuyLoopback;
                             const isLocalOnly = !hasPublicBuy;
                             const shareLink = shareLinkByContent[it.id];
                             const shareBase = (effectivePublicOrigin || apiBase || "").replace(/\/$/, "");
@@ -3307,180 +3329,222 @@ export default function ContentLibraryPage({
                                   </>
                                 ) : (
                                   <>
-                                    <div className="text-[11px] text-neutral-500">Buy links</div>
-                                    <div className="flex items-center justify-between gap-3">
-                                      <div className="min-w-0">
-                                        Public buy link:{" "}
-                                        <span className="text-neutral-300 break-all">{hasPublicBuy ? buyLink : "Not available"}</span>
-                                      </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => {
-                                            if (hasPublicBuy) window.open(buyLink, "_blank", "noopener,noreferrer");
-                                          }}
-                                          disabled={!hasPublicBuy}
-                                        >
-                                          Open
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                          onClick={() => copyText(buyLink)}
-                                          disabled={!hasPublicBuy}
-                                        >
-                                          Copy link
-                                        </button>
-                                      </div>
-                                    </div>
-
-                                    {lanBase ? (
-                                      <div className="flex items-center justify-between gap-3">
-                                        <div className="min-w-0">
-                                          LAN buy link:{" "}
-                                          <span className="text-neutral-300 break-all">{lanLink}</span>
-                                          <span className="text-neutral-500"> (same Wi‑Fi)</span>
-                                        </div>
-                                        <div className="flex items-center gap-2 shrink-0">
-                                          <button
-                                            type="button"
-                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                            onClick={() => window.open(lanLink, "_blank", "noopener,noreferrer")}
-                                          >
-                                            Open
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                            onClick={() => copyText(lanLink)}
-                                          >
-                                            Copy link
-                                          </button>
-                                        </div>
-                                      </div>
-                                    ) : null}
-
-                                    <div className="flex items-center justify-between gap-3">
-                                      <div className="min-w-0">
-                                        Local loopback:{" "}
-                                        <span className="text-neutral-300 break-all">{loopbackLink}</span>
-                                        {isLocalOnly ? <span className="text-neutral-500"> (local only)</span> : null}
-                                      </div>
-                                      <div className="flex items-center gap-2 shrink-0">
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                          onClick={() => window.open(loopbackLink, "_blank", "noopener,noreferrer")}
-                                        >
-                                          Open
-                                        </button>
-                                        <button
-                                          type="button"
-                                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                          onClick={() => copyText(loopbackLink)}
-                                        >
-                                          Copy link
-                                        </button>
+                                    <div className="flex items-center justify-between gap-2">
+                                      <div className="text-[11px] text-neutral-500">Buy links</div>
+                                      <div className="flex items-center gap-2">
+                                        {(["public", "config"] as const).map((tab) => {
+                                          const active = (buyLinksTabByContent[it.id] || "public") === tab;
+                                          return (
+                                            <button
+                                              key={tab}
+                                              type="button"
+                                              className={`text-[11px] rounded border px-2 py-0.5 ${
+                                                active
+                                                  ? "border-neutral-700 bg-neutral-900 text-neutral-200"
+                                                  : "border-neutral-800 text-neutral-500 hover:bg-neutral-900"
+                                              }`}
+                                              onClick={() =>
+                                                setBuyLinksTabByContent((m) => ({
+                                                  ...m,
+                                                  [it.id]: tab
+                                                }))
+                                              }
+                                            >
+                                              {tab === "public" ? "Hide" : "Show"}
+                                            </button>
+                                          );
+                                        })}
                                       </div>
                                     </div>
 
-                                    {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
-
-                                    <div className="text-[11px] text-neutral-500">Embed</div>
-                                    {canEmbed ? (
+                                    {(buyLinksTabByContent[it.id] || "public") === "public" ? (
                                       <>
                                         <div className="flex items-center justify-between gap-3">
                                           <div className="min-w-0">
-                                            Script embed: <span className="text-neutral-300 break-all">{embedScript}</span>
+                                            {hasPublicBuy ? (
+                                              <>
+                                                Public buy link: <span className="text-neutral-300 break-all">{buyLink}</span>
+                                              </>
+                                            ) : (
+                                              <span className="text-neutral-500">
+                                                Public buy link not available. Set up public links in Config.
+                                              </span>
+                                            )}
                                           </div>
                                           <div className="flex items-center gap-2 shrink-0">
                                             <button
                                               type="button"
-                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                              onClick={() => copyText(embedTag)}
+                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                              onClick={() => {
+                                                if (hasPublicBuy) window.open(buyLink, "_blank", "noopener,noreferrer");
+                                              }}
+                                              disabled={!hasPublicBuy}
                                             >
-                                              Copy snippet
+                                              Open
                                             </button>
-                                          </div>
-                                        </div>
-                                        <div className="flex items-center justify-between gap-3">
-                                          <div className="min-w-0">
-                                            iFrame embed: <span className="text-neutral-300 break-all">{buyLink}</span>
-                                          </div>
-                                          <div className="flex items-center gap-2 shrink-0">
                                             <button
                                               type="button"
-                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                              onClick={() => copyText(embedIframe)}
+                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                              onClick={() => copyText(buyLink)}
+                                              disabled={!hasPublicBuy}
                                             >
-                                              Copy iframe
+                                              Copy link
                                             </button>
                                           </div>
                                         </div>
+
+                                        {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
                                       </>
                                     ) : (
-                                      <div className="text-xs text-neutral-500">
-                                        {lockReasons?.public_share || "Embeds require Advanced mode with public sharing."}
-                                      </div>
+                                      <>
+                                        {lanBase ? (
+                                          <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                              LAN buy link:{" "}
+                                              <span className="text-neutral-300 break-all">{lanLink}</span>
+                                              <span className="text-neutral-500"> (same Wi‑Fi)</span>
+                                            </div>
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <button
+                                                type="button"
+                                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                                onClick={() => window.open(lanLink, "_blank", "noopener,noreferrer")}
+                                              >
+                                                Open
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                                onClick={() => copyText(lanLink)}
+                                              >
+                                                Copy link
+                                              </button>
+                                            </div>
+                                          </div>
+                                        ) : null}
+
+                                        <div className="flex items-center justify-between gap-3">
+                                          <div className="min-w-0">
+                                            Local loopback:{" "}
+                                            <span className="text-neutral-300 break-all">{loopbackLink}</span>
+                                            {isLocalOnly ? <span className="text-neutral-500"> (local only)</span> : null}
+                                          </div>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                            <button
+                                              type="button"
+                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                              onClick={() => window.open(loopbackLink, "_blank", "noopener,noreferrer")}
+                                            >
+                                              Open
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                              onClick={() => copyText(loopbackLink)}
+                                            >
+                                              Copy link
+                                            </button>
+                                          </div>
+                                        </div>
+
+                                        {shareMsg[it.id] ? <div className="text-xs text-amber-300">{shareMsg[it.id]}</div> : null}
+
+                                        <div className="text-[11px] text-neutral-500">Embed</div>
+                                        {canEmbed ? (
+                                          <>
+                                            <div className="flex items-center justify-between gap-3">
+                                              <div className="min-w-0">
+                                                Script embed: <span className="text-neutral-300 break-all">{embedScript}</span>
+                                              </div>
+                                              <div className="flex items-center gap-2 shrink-0">
+                                                <button
+                                                  type="button"
+                                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                                  onClick={() => copyText(embedTag)}
+                                                >
+                                                  Copy snippet
+                                                </button>
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center justify-between gap-3">
+                                              <div className="min-w-0">
+                                                iFrame embed: <span className="text-neutral-300 break-all">{buyLink}</span>
+                                              </div>
+                                              <div className="flex items-center gap-2 shrink-0">
+                                                <button
+                                                  type="button"
+                                                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                                  onClick={() => copyText(embedIframe)}
+                                                >
+                                                  Copy iframe
+                                                </button>
+                                              </div>
+                                            </div>
+                                          </>
+                                        ) : (
+                                          <div className="text-xs text-neutral-500">
+                                            {lockReasons?.public_share || "Embeds require Advanced mode with public sharing."}
+                                          </div>
+                                        )}
+
+                                        <div className="text-xs text-neutral-500">
+                                          Content ID: <span className="text-neutral-300">{it.id}</span>{" "}
+                                          <button
+                                            type="button"
+                                            className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 ml-2"
+                                            onClick={() => copyText(it.id)}
+                                          >
+                                            Copy
+                                          </button>
+                                        </div>
+
+                                        {shareP2PLink[it.id] ? (
+                                          <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
+                                            <div className="min-w-0 break-all">
+                                              Last P2P link: <span className="text-neutral-300">{shareP2PLink[it.id]}</span>
+                                            </div>
+                                            <button
+                                              type="button"
+                                              className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                              onClick={() => copyText(shareP2PLink[it.id])}
+                                            >
+                                              Copy
+                                            </button>
+                                          </div>
+                                        ) : null}
+
+                                        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                                          <button
+                                            type="button"
+                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                            onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
+                                            disabled={!!shareBusy[it.id]}
+                                          >
+                                            Copy LAN P2P Link
+                                          </button>
+                                          <button
+                                            type="button"
+                                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                                            onClick={() => {
+                                              const { host, port } = hostPortFromOrigin(effectiveBuyOrigin);
+                                              const baseUrl = effectiveBuyOrigin ? effectiveBuyOrigin : "";
+                                              return buildP2PLink(it.id, manifestSha256 || null, { host, port, baseUrl });
+                                            }}
+                                            disabled={!effectiveBuyOrigin || !!shareBusy[it.id]}
+                                          >
+                                            Copy Buy P2P Link
+                                          </button>
+                                        </div>
+
+                                        {!manifestSha256 ? (
+                                          <div className="text-xs text-amber-300">
+                                            P2P links require a manifest. We will generate it when you copy a link.
+                                          </div>
+                                        ) : null}
+                                      </>
                                     )}
                                   </>
                                 )}
-
-                                <div className="text-xs text-neutral-500">
-                                  Content ID: <span className="text-neutral-300">{it.id}</span>{" "}
-                                  <button
-                                    type="button"
-                                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 ml-2"
-                                    onClick={() => copyText(it.id)}
-                                  >
-                                    Copy
-                                  </button>
-                                </div>
-
-                                {shareP2PLink[it.id] ? (
-                                  <div className="flex items-start justify-between gap-2 text-xs text-neutral-500">
-                                    <div className="min-w-0 break-all">
-                                      Last P2P link: <span className="text-neutral-300">{shareP2PLink[it.id]}</span>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      className="shrink-0 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      onClick={() => copyText(shareP2PLink[it.id])}
-                                    >
-                                      Copy
-                                    </button>
-                                  </div>
-                                ) : null}
-
-                                <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                                  <button
-                                    type="button"
-                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                    onClick={() => buildP2PLink(it.id, manifestSha256 || null)}
-                                    disabled={!!shareBusy[it.id]}
-                                  >
-                                    Copy LAN P2P Link
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
-                                    onClick={() => {
-                                      const { host, port } = hostPortFromOrigin(effectiveBuyOrigin);
-                                      const baseUrl = effectiveBuyOrigin ? effectiveBuyOrigin : "";
-                                      return buildP2PLink(it.id, manifestSha256 || null, { host, port, baseUrl });
-                                    }}
-                                    disabled={!effectiveBuyOrigin || !!shareBusy[it.id]}
-                                  >
-                                    Copy Buy P2P Link
-                                  </button>
-                                </div>
-
-                                {!manifestSha256 ? (
-                                  <div className="text-xs text-amber-300">
-                                    P2P links require a manifest. We will generate it when you copy a link.
-                                  </div>
-                                ) : null}
                               </>
                             );
                           })()}
