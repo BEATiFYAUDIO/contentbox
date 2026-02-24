@@ -2064,7 +2064,10 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+  appPublic.get("/public/content/:id", handlePublicContent);
+  appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
+  appPublic.get("/public/content/:id/credits", handlePublicCredits);
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
@@ -10192,6 +10195,31 @@ app.patch("/content/:id/price", { preHandler: requireAuth }, async (req: any, re
     data: { priceSats: sats }
   });
   return reply.send({ ok: true, priceSats: updated.priceSats?.toString() ?? null });
+});
+
+// Set delivery mode for content (Basic: streaming vs download)
+app.patch("/content/:id/delivery-mode", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).id);
+  if (!contentId) return badRequest(reply, "contentId required");
+
+  const rawMode = (req.body ?? {}).deliveryMode;
+  const mode = rawMode === null ? null : asString(rawMode).trim();
+  const allowed = new Set(["stream_only", "download_only", "stream_and_download"]);
+  if (mode && !allowed.has(mode)) {
+    return badRequest(reply, "deliveryMode must be stream_only, download_only, or stream_and_download");
+  }
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+
+  const updated = await prisma.contentItem.update({
+    where: { id: contentId },
+    data: { deliveryMode: mode || null }
+  });
+
+  return reply.send({ ok: true, deliveryMode: updated.deliveryMode || null });
 });
 
 // Sales summary for a content item (creator)
