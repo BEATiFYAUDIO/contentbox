@@ -14,6 +14,7 @@ type ContentItem = {
   type: ContentType;
   status: "draft" | "published";
   storefrontStatus?: "DISABLED" | "UNLISTED" | "LISTED";
+  deliveryMode?: "stream_only" | "download_only" | "stream_and_download" | null;
   priceSats?: string | number | null;
   createdAt: string;
   publishedAt?: string | null;
@@ -369,6 +370,8 @@ export default function ContentLibraryPage({
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [priceDraft, setPriceDraft] = React.useState<Record<string, string>>({});
   const [priceMsg, setPriceMsg] = React.useState<Record<string, string>>({});
+  const [deliveryDraft, setDeliveryDraft] = React.useState<Record<string, string>>({});
+  const [deliveryMsg, setDeliveryMsg] = React.useState<Record<string, string>>({});
   const [shareMsg, setShareMsg] = React.useState<Record<string, string>>({});
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
@@ -424,10 +427,13 @@ export default function ContentLibraryPage({
       }
       setItems(list);
       const next: Record<string, string> = {};
+      const nextDelivery: Record<string, string> = {};
       for (const it of list) {
         if (it.priceSats !== undefined && it.priceSats !== null) next[it.id] = String(it.priceSats);
+        if (it.deliveryMode) nextDelivery[it.id] = String(it.deliveryMode);
       }
       setPriceDraft(next);
+      setDeliveryDraft(nextDelivery);
       if (pendingOpenContentId && list.find((d) => d.id === pendingOpenContentId)) {
         setExpanded((m) => ({ ...m, [pendingOpenContentId]: true }));
         setPendingOpenContentId(null);
@@ -1528,142 +1534,148 @@ export default function ContentLibraryPage({
         </div>
       )}
 
-      <form onSubmit={createContent} className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
-        <div className="font-medium">New content item</div>
-
-        <div className="grid gap-3 md:grid-cols-3">
-          <div className="md:col-span-2">
-            <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-title">
-              Title
-            </label>
-            <input
-              id="content-title"
-              name="title"
-              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. Highway 11 Nights (Master)"
-              autoComplete="off"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-type">
-              Type
-            </label>
-            <select
-              id="content-type"
-              name="contentType"
-              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-              value={type}
-              onChange={(e) => setType(e.target.value as ContentType)}
-            >
-              <option value="song">Song</option>
-              <option value="book">Book</option>
-              <option value="video">Video</option>
-              <option value="file">File</option>
-            </select>
-          </div>
-        </div>
-
-        {currentUserEmail ? (
-          <div className="text-xs text-neutral-500">Creating as: <span className="text-neutral-300">{currentUserEmail}</span></div>
-        ) : null}
-
-        <button className="rounded-lg bg-white text-black font-medium px-4 py-2 disabled:opacity-60" disabled={creating}>
-          {creating ? "Creating…" : "Create"}
-        </button>
-
-        <div className="text-xs text-neutral-500">Upload sets the master file and updates manifest.json.primaryFile automatically.</div>
-      </form>
-
-      {derivativesAllowed ? (
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
-          <div className="font-medium">Create derivative (from OG content ID)</div>
-          <div className="text-xs text-neutral-500">
-            Use this if the original isn’t publicly visible. You’ll create a private derivative, then request clearance from its page.
+      <div className="grid gap-6 lg:grid-cols-2">
+        <form onSubmit={createContent} className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="font-medium">New content item</div>
+            {currentUserEmail ? (
+              <div className="text-[11px] text-neutral-500">Creating as: <span className="text-neutral-300">{currentUserEmail}</span></div>
+            ) : null}
           </div>
 
           <div className="grid gap-3 md:grid-cols-3">
             <div className="md:col-span-2">
-              <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-parent-id">
-                Original content ID
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-title">
+                Title
               </label>
               <input
-                id="derivative-parent-id"
-                name="originalContentId"
+                id="content-title"
+                name="title"
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-                value={requestParentId}
-                onChange={(e) => setRequestParentId(e.target.value)}
-                placeholder="e.g. cml7... or https://host/p/..."
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="e.g. Highway 11 Nights (Master)"
                 autoComplete="off"
               />
             </div>
+
             <div>
-              <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-type">
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="content-type">
                 Type
               </label>
               <select
-                id="derivative-type"
-                name="derivativeType"
+                id="content-type"
+                name="contentType"
                 className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-                value={requestType}
-                onChange={(e) => setRequestType(e.target.value as ContentType)}
+                value={type}
+                onChange={(e) => setType(e.target.value as ContentType)}
               >
-                <option value="remix">Remix</option>
-                <option value="mashup">Mashup</option>
-                <option value="derivative">Derivative</option>
+                <option value="song">Song</option>
+                <option value="book">Book</option>
+                <option value="video">Video</option>
+                <option value="file">File</option>
               </select>
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-title">
-              Derivative title
-            </label>
-            <input
-              id="derivative-title"
-              name="derivativeTitle"
-              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
-              value={requestTitle}
-              onChange={(e) => setRequestTitle(e.target.value)}
-              placeholder="e.g. OG Track (DJ Remix)"
-              autoComplete="off"
-            />
+          <div className="flex flex-wrap items-center gap-3">
+            <button className="rounded-lg bg-white text-black font-medium px-4 py-2 disabled:opacity-60" disabled={creating}>
+              {creating ? "Creating…" : "Create"}
+            </button>
+            <div className="text-xs text-neutral-500">Upload sets the master file and updates manifest.json.primaryFile automatically.</div>
           </div>
+        </form>
 
-          <button
-            type="button"
-            className="rounded-lg border border-neutral-800 px-4 py-2 hover:bg-neutral-900"
-            onClick={requestDerivativeFromId}
-          >
-            Create derivative
-          </button>
-
-          {requestMsg ? <div className="text-xs text-neutral-400">{requestMsg}</div> : null}
-          {requestLinks?.length ? (
-            <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
-              <div className="text-neutral-500">Clearance links to share:</div>
-              {requestLinks.map((l, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <span className="truncate">{l.email}</span>
-                  <button
-                    type="button"
-                    className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                    onClick={() => navigator.clipboard.writeText(l.url)}
-                  >
-                    Copy link
-                  </button>
-                </div>
-              ))}
+        {derivativesAllowed ? (
+          <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 space-y-3">
+            <div className="font-medium">Create derivative (from OG content ID)</div>
+            <div className="text-xs text-neutral-500">
+              Use this if the original isn’t publicly visible. You’ll create a private derivative, then request clearance from its page.
             </div>
-          ) : null}
-        </div>
-      ) : (
-        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          {lockReasons?.derivatives || "Derivatives require Advanced or LAN mode."}
-        </div>
-      )}
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="md:col-span-2">
+                <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-parent-id">
+                  Original content ID
+                </label>
+                <input
+                  id="derivative-parent-id"
+                  name="originalContentId"
+                  className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                  value={requestParentId}
+                  onChange={(e) => setRequestParentId(e.target.value)}
+                  placeholder="e.g. cml7... or https://host/p/..."
+                  autoComplete="off"
+                />
+              </div>
+              <div>
+                <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-type">
+                  Type
+                </label>
+                <select
+                  id="derivative-type"
+                  name="derivativeType"
+                  className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                  value={requestType}
+                  onChange={(e) => setRequestType(e.target.value as ContentType)}
+                >
+                  <option value="remix">Remix</option>
+                  <option value="mashup">Mashup</option>
+                  <option value="derivative">Derivative</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-title">
+                Derivative title
+              </label>
+              <input
+                id="derivative-title"
+                name="derivativeTitle"
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={requestTitle}
+                onChange={(e) => setRequestTitle(e.target.value)}
+                placeholder="e.g. OG Track (DJ Remix)"
+                autoComplete="off"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                className="rounded-lg border border-neutral-800 px-4 py-2 hover:bg-neutral-900"
+                onClick={requestDerivativeFromId}
+              >
+                Create derivative
+              </button>
+              {requestMsg ? <div className="text-xs text-neutral-400">{requestMsg}</div> : null}
+            </div>
+
+            {requestLinks?.length ? (
+              <div className="mt-1 space-y-1 text-[11px] text-neutral-400">
+                <div className="text-neutral-500">Clearance links to share:</div>
+                {requestLinks.map((l, idx) => (
+                  <div key={idx} className="flex items-center gap-2">
+                    <span className="truncate">{l.email}</span>
+                    <button
+                      type="button"
+                      className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
+                      onClick={() => navigator.clipboard.writeText(l.url)}
+                    >
+                      Copy link
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
+            {lockReasons?.derivatives || "Derivatives require Advanced or LAN mode."}
+          </div>
+        )}
+      </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4">
         <div className="flex flex-wrap items-center justify-between mb-3 gap-3">
@@ -3013,6 +3025,59 @@ export default function ContentLibraryPage({
                               Save price
                             </button>
                             {priceMsg[it.id] ? <div className="text-xs text-amber-300">{priceMsg[it.id]}</div> : null}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="text-xs text-neutral-300 font-medium">Delivery</div>
+                        <div className="mt-2 grid gap-3 md:grid-cols-3">
+                          <div className="md:col-span-1">
+                            <label className="block text-xs text-neutral-400 mb-1" htmlFor={`deliveryMode-${it.id}`}>
+                              Denotation
+                            </label>
+                            <select
+                              id={`deliveryMode-${it.id}`}
+                              name={`deliveryMode-${it.id}`}
+                              className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+                              value={deliveryDraft[it.id] ?? ""}
+                              onChange={(e) =>
+                                setDeliveryDraft((m) => ({
+                                  ...m,
+                                  [it.id]: e.target.value
+                                }))
+                              }
+                            >
+                              <option value="">Auto (default)</option>
+                              <option value="stream_only">Streaming only</option>
+                              <option value="download_only">Download only</option>
+                              <option value="stream_and_download">Stream + download</option>
+                            </select>
+                          </div>
+                          <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
+                            <div>Controls how Basic buyers access the content.</div>
+                            <button
+                              type="button"
+                              className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-60"
+                              disabled={!!busyAction[it.id]}
+                              onClick={async () => {
+                                const raw = (deliveryDraft[it.id] || "").trim();
+                                try {
+                                  setBusyAction((m) => ({ ...m, [it.id]: true }));
+                                  setDeliveryMsg((m) => ({ ...m, [it.id]: "" }));
+                                  await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
+                                  await load(showTrash);
+                                  setDeliveryMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                                } catch (e: any) {
+                                  setDeliveryMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save delivery mode." }));
+                                } finally {
+                                  setBusyAction((m) => ({ ...m, [it.id]: false }));
+                                }
+                              }}
+                            >
+                              Save delivery
+                            </button>
+                            {deliveryMsg[it.id] ? <div className="text-xs text-amber-300">{deliveryMsg[it.id]}</div> : null}
                           </div>
                         </div>
                       </div>

@@ -599,112 +599,114 @@ export default function App() {
 
       {/* Main content */}
       <div className="flex-1 min-w-0 overflow-y-auto overscroll-none">
-        <header className="px-6 py-4 border-b border-neutral-900 space-y-2">
-          <div className="text-sm text-neutral-400">Dashboard</div>
-          <div className="text-xl font-semibold">{pageTitle}</div>
-          {import.meta.env.DEV ? (
-            <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
-              <span>Connected To:</span>
-              <span className="font-mono">{devApiUrl || "VITE_API_URL not set"}</span>
-              <span className="text-neutral-500">•</span>
-              {whoamiStatus === "ok" ? (
-                <span className="font-mono">
-                  {whoamiInfo?.nodeId || "unknown"} •{" "}
-                  {(whoamiInfo?.db?.name || "db?") +
-                    (whoamiInfo?.db?.addr
-                      ? `@${whoamiInfo.db.addr}${whoamiInfo.db.port ? `:${whoamiInfo.db.port}` : ""}`
-                      : "")}
-                </span>
-              ) : (
-                <span>
-                  {whoamiStatus === "disabled"
-                    ? "whoami disabled"
-                    : whoamiStatus === "error"
-                      ? "whoami error"
-                      : "whoami checking"}
-                </span>
-              )}
-            </div>
-          ) : null}
-          {getToken() ? (
-            <div className="flex flex-wrap items-center gap-2">
+        <header className="border-b border-neutral-900">
+          <div className="mx-auto max-w-5xl px-6 py-4 space-y-2">
+            <div className="text-sm text-neutral-400">Dashboard</div>
+            <div className="text-xl font-semibold">{pageTitle}</div>
+            {import.meta.env.DEV ? (
               <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
-                <span>
-                  Public:{" "}
-                  {(() => {
-                    if (productTier === "advanced") {
+                <span>Connected To:</span>
+                <span className="font-mono">{devApiUrl || "VITE_API_URL not set"}</span>
+                <span className="text-neutral-500">•</span>
+                {whoamiStatus === "ok" ? (
+                  <span className="font-mono">
+                    {whoamiInfo?.nodeId || "unknown"} •{" "}
+                    {(whoamiInfo?.db?.name || "db?") +
+                      (whoamiInfo?.db?.addr
+                        ? `@${whoamiInfo.db.addr}${whoamiInfo.db.port ? `:${whoamiInfo.db.port}` : ""}`
+                        : "")}
+                  </span>
+                ) : (
+                  <span>
+                    {whoamiStatus === "disabled"
+                      ? "whoami disabled"
+                      : whoamiStatus === "error"
+                        ? "whoami error"
+                        : "whoami checking"}
+                  </span>
+                )}
+              </div>
+            ) : null}
+            {getToken() ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+                  <span>
+                    Public:{" "}
+                    {(() => {
+                      if (productTier === "advanced") {
+                        if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
+                        if (publicStatus?.mode === "quick") return "Temporary (testing only — admin access only)";
+                        return "Not configured";
+                      }
                       if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
-                      if (publicStatus?.mode === "quick") return "Temporary (testing only — admin access only)";
+                      if (publicStatus?.mode === "quick") return "Temporary (Quick)";
                       return "Not configured";
-                    }
-                    if (publicStatus?.mode === "named") return `Permanent (${publicStatus?.tunnelName || "Named"})`;
-                    if (publicStatus?.mode === "quick") return "Temporary (Quick)";
-                    return "Not configured";
-                  })()}
-                </span>
-                {productTier === "advanced" && publicStatus?.mode !== "named" ? (
+                    })()}
+                  </span>
+                  {productTier === "advanced" && publicStatus?.mode !== "named" ? (
+                    <>
+                      <span className="text-neutral-500">•</span>
+                      <span className="text-amber-300">Advanced requires a permanent named link to activate sovereign features</span>
+                    </>
+                  ) : null}
+                  <span className="text-neutral-500">•</span>
+                  <span>
+                    {publicStatus?.status === "online"
+                      ? "ONLINE"
+                      : publicStatus?.status === "starting"
+                        ? "STARTING"
+                        : publicStatus?.status === "error"
+                          ? "ERROR"
+                          : publicStatus?.status === "offline"
+                            ? "OFFLINE"
+                        : "SEARCHING"}
+                  </span>
+                  <span className="text-neutral-500">•</span>
+                  <span className="truncate max-w-[380px]">{publicStatus?.url || publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
+                </div>
+                {publicStatus?.url ? (
                   <>
-                    <span className="text-neutral-500">•</span>
-                    <span className="text-amber-300">Advanced requires a permanent named link to activate sovereign features</span>
+                    <button
+                      onClick={() => window.open(String(publicStatus.url), "_blank", "noopener,noreferrer")}
+                      className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                    >
+                      Open public link
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (publicStatus?.url) {
+                          navigator.clipboard.writeText(String(publicStatus.url)).catch(() => {});
+                        }
+                      }}
+                      className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                    >
+                      Copy public link
+                    </button>
                   </>
                 ) : null}
-                <span className="text-neutral-500">•</span>
-                <span>
-                  {publicStatus?.status === "online"
-                    ? "ONLINE"
-                    : publicStatus?.status === "starting"
-                      ? "STARTING"
-                      : publicStatus?.status === "error"
-                        ? "ERROR"
-                        : publicStatus?.status === "offline"
-                          ? "OFFLINE"
-                      : "SEARCHING"}
-                </span>
-                <span className="text-neutral-500">•</span>
-                <span className="truncate max-w-[380px]">{publicStatus?.url || publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
-              </div>
-              {publicStatus?.url ? (
-                <>
+                {productTier === "advanced" && publicStatus?.mode !== "named" ? (
                   <button
-                    onClick={() => window.open(String(publicStatus.url), "_blank", "noopener,noreferrer")}
+                    onClick={() => setPage("config")}
                     className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
                   >
-                    Open public link
+                    Set up named link
                   </button>
-                  <button
-                    onClick={() => {
-                      if (publicStatus?.url) {
-                        navigator.clipboard.writeText(String(publicStatus.url)).catch(() => {});
-                      }
-                    }}
-                    className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
-                  >
-                    Copy public link
-                  </button>
-                </>
-              ) : null}
-              {productTier === "advanced" && publicStatus?.mode !== "named" ? (
-                <button
-                  onClick={() => setPage("config")}
-                  className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
-                >
-                  Set up named link
-                </button>
-              ) : null}
-              <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
-                <span>
-                  Product: {modeLabel(productTier as any)}
-                  {advancedInactive ? " (inactive)" : ""}
-                </span>
-                <span className="text-neutral-500">•</span>
-                <span>Payments: {diagnosticsStatus?.paymentsMode || identityDetail?.paymentsMode || (productTier === "advanced" || productTier === "lan" ? "node" : "wallet")}</span>
-                <span className="text-neutral-500">•</span>
-                <span>Storage: {identityDetail?.storage || "unknown"}</span>
-                <span className="text-neutral-500">•</span>
-                <span>Logged in as: {me?.email || "unknown"}</span>
+                ) : null}
+                <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+                  <span>
+                    Product: {modeLabel(productTier as any)}
+                    {advancedInactive ? " (inactive)" : ""}
+                  </span>
+                  <span className="text-neutral-500">•</span>
+                  <span>Payments: {diagnosticsStatus?.paymentsMode || identityDetail?.paymentsMode || (productTier === "advanced" || productTier === "lan" ? "node" : "wallet")}</span>
+                  <span className="text-neutral-500">•</span>
+                  <span>Storage: {identityDetail?.storage || "unknown"}</span>
+                  <span className="text-neutral-500">•</span>
+                  <span>Logged in as: {me?.email || "unknown"}</span>
+                </div>
               </div>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </header>
 
         {advancedInactive ? (
@@ -721,7 +723,7 @@ export default function App() {
             </div>
           ) : null}
 
-        <main className="p-6 max-w-5xl">
+        <main className="p-6 max-w-5xl mx-auto">
           {showAdvancedLocked ? (
             <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-6 text-sm text-amber-200">
               <div className="text-lg font-semibold mb-2">Advanced not active</div>

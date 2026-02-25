@@ -5610,6 +5610,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
     type: true,
     status: true,
     storefrontStatus: true,
+    deliveryMode: true,
     priceSats: true,
     createdAt: true,
     repoPath: true,
@@ -7582,13 +7583,16 @@ async function handlePublicContent(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
-  const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
-  if (publicLinks.length > 1) return notFound(reply, "Not found");
-  const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
-  if (isDerivativeType || publicLinks.length > 0) {
-    if (publicLinks.length === 0) return notFound(reply, "Not found");
-    if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt) return notFound(reply, "Not found");
+  const isBasic = resolveProductTier().productTier === "basic";
+  if (!isBasic) {
+    if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+    const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+    if (publicLinks.length > 1) return notFound(reply, "Not found");
+    const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
+    if (isDerivativeType || publicLinks.length > 0) {
+      if (publicLinks.length === 0) return notFound(reply, "Not found");
+      if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt) return notFound(reply, "Not found");
+    }
   }
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
@@ -7627,28 +7631,31 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
-  if (publicLinks.length > 1) return notFound(reply, "Not found");
-  const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
-  const reviewLinkId = publicLinks[0]?.id || null;
-  const reviewAccess = reviewLinkId
-    ? await prisma.clearanceRequest.findFirst({
-        where: { contentLinkId: reviewLinkId },
-        orderBy: { createdAt: "desc" }
-      })
-    : null;
-  const allowReviewPreview = Boolean(reviewAccess?.reviewGrantedAt);
-  let allowSharePreview = false;
-  if (shareToken) {
-    const share = await prisma.shareLink.findUnique({ where: { token: shareToken } });
-    if (share && share.status === "ACTIVE" && share.contentId === contentId) {
-      allowSharePreview = true;
+  const isBasic = resolveProductTier().productTier === "basic";
+  if (!isBasic) {
+    const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+    if (publicLinks.length > 1) return notFound(reply, "Not found");
+    const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
+    const reviewLinkId = publicLinks[0]?.id || null;
+    const reviewAccess = reviewLinkId
+      ? await prisma.clearanceRequest.findFirst({
+          where: { contentLinkId: reviewLinkId },
+          orderBy: { createdAt: "desc" }
+        })
+      : null;
+    const allowReviewPreview = Boolean(reviewAccess?.reviewGrantedAt);
+    let allowSharePreview = false;
+    if (shareToken) {
+      const share = await prisma.shareLink.findUnique({ where: { token: shareToken } });
+      if (share && share.status === "ACTIVE" && share.contentId === contentId) {
+        allowSharePreview = true;
+      }
     }
-  }
-  if (content.storefrontStatus === "DISABLED" && !allowReviewPreview && !allowSharePreview) return notFound(reply, "Not found");
-  if (isDerivativeType || publicLinks.length > 0) {
-    if (publicLinks.length === 0) return notFound(reply, "Not found");
-    if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
+    if (content.storefrontStatus === "DISABLED" && !allowReviewPreview && !allowSharePreview) return notFound(reply, "Not found");
+    if (isDerivativeType || publicLinks.length > 0) {
+      if (publicLinks.length === 0) return notFound(reply, "Not found");
+      if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
+    }
   }
 
   let objectKey = objectKeyRaw;
@@ -8166,8 +8173,8 @@ async function handleBuyPage(req: any, reply: any) {
     const isVideo = offer?.type === "video" || mime.startsWith("video/");
     const isAudio = offer?.type === "song" || mime.startsWith("audio/");
     if (isVideo || isAudio) return "stream_only";
-    if (mime === "application/pdf" || offer?.type === "book") return "download_only";
-    return "stream_only";
+    if (mime === "application/pdf" || offer?.type === "book" || offer?.type === "file") return "download_only";
+    return "download_only";
   }
 
   function renderBasicOffer(offer){
@@ -8209,7 +8216,9 @@ async function handleBuyPage(req: any, reply: any) {
             "</div>"
           : "") +
         "<div style=\\"margin-top:8px;font-size:18px;\\">Free access</div>" +
-        (!allowDownload ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Streaming only</div>" : "") +
+        "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Delivery: " +
+          (deliveryMode === "stream_and_download" ? "Stream + Download" : (allowDownload ? "Download only" : "Streaming only")) +
+        "</div>" +
         (allowDownload && mediaSrc ? "<div style=\\"margin-top:8px;\\"><a class=\\"btn\\" href=\\"" + mediaSrc + "\\" download>Download</a></div>" : "") +
         tipBlock +
       "</div>";
