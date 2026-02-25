@@ -481,7 +481,7 @@ export default function App() {
               <div className="space-y-1">
               {royaltiesNav.map((item: any) => {
                 const active = item.key === page;
-                const locked = item.requiresSplits && !capabilities.useSplits;
+                const locked = nodeMode === "basic" || (item.requiresSplits && !capabilities.useSplits);
                 return (
                   <button
                     key={item.key}
@@ -501,7 +501,9 @@ export default function App() {
                   >
                     <div className="text-sm font-medium">{item.label}</div>
                     <div className="text-xs text-neutral-400">
-                      {locked ? (capabilityReasons.splits || lockReasons.advanced_splits) : item.hint}
+                      {locked
+                        ? (nodeMode === "basic" ? "This feature is not available in Basic edition." : (capabilityReasons.splits || lockReasons.advanced_splits))
+                        : item.hint}
                     </div>
                   </button>
                 );
@@ -543,19 +545,28 @@ export default function App() {
                 <div className="space-y-1">
                 {advancedNav.map((item) => {
                   const active = item.key === page;
+                  const locked = item.key === "finance" && nodeMode === "basic";
                   return (
                     <button
                       key={item.key}
-                      onClick={() => setPage(item.key)}
+                      onClick={() => {
+                        if (locked) return;
+                        setPage(item.key);
+                      }}
+                      disabled={locked}
                       className={[
                         "w-full text-left rounded-lg px-3 py-2 transition border",
-                        active
-                          ? "border-white/30 bg-white/5"
-                          : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                        locked
+                          ? "border-neutral-900 bg-neutral-950 text-neutral-600 cursor-not-allowed"
+                          : active
+                            ? "border-white/30 bg-white/5"
+                            : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
                       ].join(" ")}
                     >
                       <div className="text-sm font-medium">{item.label}</div>
-                      <div className="text-xs text-neutral-400">{item.hint}</div>
+                      <div className="text-xs text-neutral-400">
+                        {locked ? "This feature is not available in Basic edition." : item.hint}
+                      </div>
                     </button>
                   );
                 })}
@@ -749,6 +760,7 @@ export default function App() {
                   features={features}
                   lockReasons={lockReasons}
                   capabilities={capabilities}
+                  nodeMode={nodeMode}
                 />
               )}
 
@@ -798,6 +810,7 @@ export default function App() {
                   lockReasons={lockReasons}
                   capabilities={capabilities}
                   capabilityReasons={capabilityReasons}
+                  nodeMode={nodeMode}
                 />
               )}
 
@@ -827,6 +840,7 @@ export default function App() {
                   lockReasons={lockReasons}
                   capabilities={capabilities}
                   capabilityReasons={capabilityReasons}
+                  nodeMode={nodeMode}
                   onEditContent={(id) => {
                     window.history.pushState({}, "", `/splits/${id}`);
                     setSelectedContentId(id);

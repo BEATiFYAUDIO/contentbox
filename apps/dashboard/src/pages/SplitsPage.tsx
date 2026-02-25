@@ -1,6 +1,7 @@
 import React from "react";
 import { api } from "../lib/api";
-import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
+import LockedFeaturePanel from "../components/LockedFeaturePanel";
+import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
 import AuditPanel from "../components/AuditPanel";
 
 type ContentItem = {
@@ -63,12 +64,14 @@ export default function SplitsPage(props: {
   lockReasons?: Record<string, string>;
   capabilities?: CapabilitySet;
   capabilityReasons?: Record<string, string>;
+  nodeMode?: NodeMode | null;
 }) {
   const { onEditContent, features, lockReasons, capabilities, capabilityReasons } = props;
   const canAdvancedSplits = features?.advancedSplits ?? false;
   const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
   const splitsReason =
     capabilityReasons?.splits || lockReasons?.advanced_splits || "Splits require Advanced or LAN mode.";
+  const isBasic = props.nodeMode === "basic";
 
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -182,6 +185,7 @@ export default function SplitsPage(props: {
   }
 
   React.useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) {
       setContentList([]);
       setSplitSummaryByContent({});
@@ -190,15 +194,17 @@ export default function SplitsPage(props: {
     }
     loadContentList(showTombstones).catch(() => {});
     loadRemoteInvites().catch(() => {});
-  }, [splitsAllowed]);
+  }, [splitsAllowed, isBasic]);
 
   React.useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) return;
     loadContentList(showTombstones).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showTombstones, splitsAllowed]);
+  }, [showTombstones, splitsAllowed, isBasic]);
 
   React.useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) return;
     if (!contentList.length) return;
     for (const c of contentList) {
@@ -207,7 +213,11 @@ export default function SplitsPage(props: {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentList, splitsAllowed]);
+  }, [contentList, splitsAllowed, isBasic]);
+
+  if (isBasic) {
+    return <LockedFeaturePanel title="Manage Splits" />;
+  }
 
   function shouldShowContent(c: ContentItem) {
     const summary = splitSummaryByContent[c.id];

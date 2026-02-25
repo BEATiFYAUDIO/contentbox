@@ -3,7 +3,8 @@ import { api, getApiBase } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import { getToken } from "../lib/auth";
-import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
+import LockedFeaturePanel from "../components/LockedFeaturePanel";
+import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
 
 function getNodePublicOrigin(): string {
   const v = String((import.meta as any).env?.VITE_NODE_PUBLIC_ORIGIN || "").trim();
@@ -18,6 +19,7 @@ type InvitePageProps = {
   lockReasons?: Record<string, string>;
   capabilities?: CapabilitySet;
   capabilityReasons?: Record<string, string>;
+  nodeMode?: NodeMode | null;
 };
 
 type InviteGetResponse = {
@@ -85,7 +87,8 @@ export default function InvitePage({
   features,
   lockReasons,
   capabilities,
-  capabilityReasons
+  capabilityReasons,
+  nodeMode
 }: InvitePageProps) {
   const canAdvancedSplits = features?.advancedSplits ?? false;
   const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
@@ -94,6 +97,7 @@ export default function InvitePage({
     capabilityReasons?.invite ||
     capabilityReasons?.splits ||
     "You can prepare this action, but a permanent named link must be online to perform it.";
+  const isBasic = nodeMode === "basic";
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<InviteGetResponse | null>(null);
@@ -120,10 +124,11 @@ export default function InvitePage({
   const [pasteMsg, setPasteMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed && showTombstones) {
       setShowTombstones(false);
     }
-  }, [splitsAllowed, showTombstones]);
+  }, [splitsAllowed, showTombstones, isBasic]);
 
   function extractInviteTokenFromPaste(raw: string): string | null {
     const v = String(raw || "").trim();
@@ -283,6 +288,7 @@ export default function InvitePage({
   }
 
   useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) {
       setLoading(false);
       setData(null);
@@ -299,10 +305,11 @@ export default function InvitePage({
         setMe(null);
       }
     })();
-  }, [tokenToUse, remoteOriginFromLocation, splitsAllowed]);
+  }, [tokenToUse, remoteOriginFromLocation, splitsAllowed, isBasic]);
 
   // If this is a remote invite and the user is signed in locally, ingest it so it shows under Received invites.
   useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) return;
     if (!me || !remoteOriginFromLocation || !tokenToUse || !data) return;
     (async () => {
@@ -322,10 +329,11 @@ export default function InvitePage({
         setRemoteReceivedInvites(listRemote || []);
       } catch {}
     })();
-  }, [me, data, remoteOriginFromLocation, tokenToUse, splitsAllowed]);
+  }, [me, data, remoteOriginFromLocation, tokenToUse, splitsAllowed, isBasic]);
 
   // Load outgoing invites for the signed-in owner (no token values are returned)
   useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) return;
     if (!me) {
       setMyInvites(null);
@@ -371,9 +379,10 @@ export default function InvitePage({
         setHistoryLoading(false);
       }
     })();
-  }, [me, splitsAllowed]);
+  }, [me, splitsAllowed, isBasic]);
 
   useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) return;
     if (!me) {
       setContentList([]);
@@ -387,9 +396,10 @@ export default function InvitePage({
         setContentList([]);
       }
     })();
-  }, [me, splitsAllowed]);
+  }, [me, splitsAllowed, isBasic]);
 
   useEffect(() => {
+    if (isBasic) return;
     if (!splitsAllowed) return;
     if (!selectedContentId) {
       setSelectedSplitId(null);
@@ -403,7 +413,7 @@ export default function InvitePage({
         setSelectedSplitId(null);
       }
     })();
-  }, [selectedContentId, splitsAllowed]);
+  }, [selectedContentId, splitsAllowed, isBasic]);
 
   // manual token loader removed — invite tab (owner view) now shows only invites lists; use direct invite URL for detail view.
 
@@ -611,6 +621,10 @@ export default function InvitePage({
     } finally {
       setRemoteSyncBusy((m) => ({ ...m, [inv.id]: false }));
     }
+  }
+
+  if (isBasic) {
+    return <LockedFeaturePanel title="Split Invites" />;
   }
 
   return (

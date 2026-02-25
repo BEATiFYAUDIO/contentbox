@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
-import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
+import LockedFeaturePanel from "../components/LockedFeaturePanel";
+import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
 
 type WorkRoyaltyRow = {
   contentId: string;
@@ -69,10 +70,12 @@ export default function SplitParticipationsPage(props: {
   features?: FeatureMatrix;
   lockReasons?: Record<string, string>;
   capabilities?: CapabilitySet;
+  nodeMode?: NodeMode | null;
 }) {
   const canAdvancedSplits = props.features?.advancedSplits ?? false;
   const splitsAllowed = props.capabilities?.useSplits ?? canAdvancedSplits;
   const derivativesAllowed = props.capabilities?.useDerivatives ?? canAdvancedSplits;
+  const isBasic = props.nodeMode === "basic";
 
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);
@@ -86,6 +89,7 @@ export default function SplitParticipationsPage(props: {
   const [showAllUpstream, setShowAllUpstream] = useState(false);
 
   useEffect(() => {
+    if (isBasic) return;
     (async () => {
       try {
         setLoading(true);
@@ -109,7 +113,11 @@ export default function SplitParticipationsPage(props: {
         setHistoryLoading(false);
       }
     })();
-  }, []);
+  }, [isBasic]);
+
+  if (isBasic) {
+    return <LockedFeaturePanel title="My Royalties" />;
+  }
 
   return (
     <div className="space-y-4">

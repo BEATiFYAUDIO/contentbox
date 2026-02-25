@@ -7,6 +7,7 @@ import PaymentRailsPage from "./PaymentRailsPage";
 import FinanceTransactionsPage from "./FinanceTransactionsPage";
 import { api } from "../lib/api";
 import type { NodeMode } from "../lib/identity";
+import LockedFeaturePanel from "../components/LockedFeaturePanel";
 
 export type FinanceTab = "overview" | "ledger" | "royalties" | "payouts" | "rails" | "transactions";
 
@@ -78,14 +79,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
   );
 
   if (isBasic) {
-    return (
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-6 text-neutral-400">
-        <div className="text-lg font-semibold text-neutral-200">Revenue</div>
-        <div className="text-sm mt-2">
-          Available in Advanced mode. Tips in Basic are paid directly to your wallet and are not tracked.
-        </div>
-      </div>
-    );
+    return <LockedFeaturePanel title="Revenue" />;
   }
 
   return (
