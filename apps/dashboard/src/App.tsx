@@ -780,11 +780,11 @@ export default function App() {
 
               {page === "finance" && (
                 <ErrorBoundary>
-                  <FinancePage initialTab={financeTab} />
+                  <FinancePage initialTab={financeTab} nodeMode={nodeMode} />
                 </ErrorBoundary>
               )}
 
-              {page === "sales" && <SalesPage productTier={productTier} />}
+              {page === "sales" && <SalesPage productTier={productTier} disabled={nodeMode === "basic"} />}
 
               {page === "receipt" && receiptToken && <ReceiptPage token={receiptToken} />}
 

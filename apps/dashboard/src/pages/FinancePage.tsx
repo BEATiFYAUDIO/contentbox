@@ -6,14 +6,17 @@ import PayoutRailsPage from "./PayoutRailsPage";
 import PaymentRailsPage from "./PaymentRailsPage";
 import FinanceTransactionsPage from "./FinanceTransactionsPage";
 import { api } from "../lib/api";
+import type { NodeMode } from "../lib/identity";
 
 export type FinanceTab = "overview" | "ledger" | "royalties" | "payouts" | "rails" | "transactions";
 
 type FinancePageProps = {
   initialTab?: FinanceTab;
+  nodeMode?: NodeMode | null;
 };
 
-export default function FinancePage({ initialTab = "overview" }: FinancePageProps) {
+export default function FinancePage({ initialTab = "overview", nodeMode }: FinancePageProps) {
+  const isBasic = nodeMode === "basic";
   const [tab, setTab] = useState<FinanceTab>(initialTab);
   const [tabRefresh, setTabRefresh] = useState<Record<FinanceTab, number>>({
     overview: 0,
@@ -34,14 +37,16 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
   }, [initialTab]);
 
   useEffect(() => {
+    if (isBasic) return;
     const timer = setInterval(() => {
       setSummaryRefresh((s) => s + 1);
       setTabRefresh((prev) => ({ ...prev, [tab]: (prev[tab] || 0) + 1 }));
     }, 8000);
     return () => clearInterval(timer);
-  }, [tab]);
+  }, [tab, isBasic]);
 
   useEffect(() => {
+    if (isBasic) return;
     let active = true;
     (async () => {
       try {
@@ -58,7 +63,7 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
     return () => {
       active = false;
     };
-  }, [summaryRefresh]);
+  }, [summaryRefresh, isBasic]);
 
   const tabs = useMemo(
     () => [
@@ -71,6 +76,17 @@ export default function FinancePage({ initialTab = "overview" }: FinancePageProp
     ],
     []
   );
+
+  if (isBasic) {
+    return (
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-6 text-neutral-400">
+        <div className="text-lg font-semibold text-neutral-200">Revenue</div>
+        <div className="text-sm mt-2">
+          Available in Advanced mode. Tips in Basic are paid directly to your wallet and are not tracked.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

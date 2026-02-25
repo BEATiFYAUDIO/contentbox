@@ -27,9 +27,10 @@ type SaleRow = {
 
 type SalesPageProps = {
   productTier?: string;
+  disabled?: boolean;
 };
 
-export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
+export default function SalesPage({ productTier = "basic", disabled = false }: SalesPageProps) {
   const [pending, setPending] = React.useState<PendingRow[]>([]);
   const [sales, setSales] = React.useState<SaleRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -57,8 +58,9 @@ export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
   }, []);
 
   React.useEffect(() => {
+    if (disabled) return;
     loadData();
-  }, [loadData]);
+  }, [loadData, disabled]);
 
   React.useEffect(() => {
     if (!toastMsg) return;
@@ -98,6 +100,17 @@ export default function SalesPage({ productTier = "basic" }: SalesPageProps) {
       setActionLoading(false);
     }
   };
+
+  if (disabled) {
+    return (
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-6 text-neutral-400">
+        <div className="text-lg font-semibold text-neutral-200">Revenue</div>
+        <div className="text-sm mt-2">
+          Available in Advanced mode. Tips in Basic are paid directly to your wallet and are not tracked.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
