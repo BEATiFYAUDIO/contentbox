@@ -1825,6 +1825,91 @@ async function ensurePreviewFile(content: any, files: any[]) {
   }
 }
 
+async function ensureCoverImage(content: any, files: any[]) {
+  try {
+    if (!content?.repoPath) return null;
+    if (!Array.isArray(files) || files.length === 0) return null;
+    const primary = files[files.length - 1];
+    const mime = String(primary?.mime || "").toLowerCase();
+    if (!mime.startsWith("video/") && !mime.startsWith("image/")) return null;
+
+    if (mime.startsWith("image/")) {
+      return primary?.objectKey || null;
+    }
+
+    const coverDir = "previews";
+    const coverName = `${content.id}-cover.jpg`;
+    const coverObjectKey = `${coverDir}/${coverName}`;
+
+    const repoRoot = path.resolve(content.repoPath);
+    const coverAbs = path.resolve(repoRoot, coverObjectKey);
+    if (fsSync.existsSync(coverAbs)) return coverObjectKey;
+
+    const inputAbs = path.resolve(repoRoot, primary.objectKey || "");
+    if (!inputAbs.startsWith(repoRoot)) return null;
+    if (!fsSync.existsSync(inputAbs)) return null;
+
+    const tmpOut = path.join(os.tmpdir(), `contentbox-cover-${content.id}.jpg`);
+    const ffmpegArgs = [
+      "-y",
+      "-ss",
+      "1",
+      "-i",
+      inputAbs,
+      "-frames:v",
+      "1",
+      "-vf",
+      "scale='min(1280,iw)':-2",
+      "-q:v",
+      "3",
+      tmpOut
+    ];
+
+    await execFileAsync("ffmpeg", ffmpegArgs);
+
+    const stream = fsSync.createReadStream(tmpOut);
+    const fileEntry = await addFileToContentRepo({
+      repoPath: content.repoPath,
+      contentTitle: content.title,
+      originalName: coverName,
+      mime: "image/jpeg",
+      stream,
+      setAsPrimary: false,
+      preferMasterName: false
+    });
+
+    await prisma.contentFile.upsert({
+      where: { contentId_objectKey: { contentId: content.id, objectKey: fileEntry.path } },
+      update: {
+        originalName: coverName,
+        mime: "image/jpeg",
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        createdAt: new Date(fileEntry.committedAt)
+      },
+      create: {
+        contentId: content.id,
+        objectKey: fileEntry.path,
+        originalName: coverName,
+        mime: "image/jpeg",
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        encDek: "",
+        encAlg: ""
+      }
+    });
+
+    try {
+      fsSync.unlinkSync(tmpOut);
+    } catch {}
+
+    return fileEntry.path || coverObjectKey;
+  } catch (e: any) {
+    app.log.warn({ err: e }, "cover.generate.failed");
+    return null;
+  }
+}
+
 function hashManifestJson(manifestJson: any): string {
   return crypto.createHash("sha256").update(stableStringify(manifestJson)).digest("hex");
 }
@@ -4207,6 +4292,45 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
   }
 });
 
+// Claim a free entitlement (for library) when content is free in Basic mode
+app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
+  const session = await requireBuyerSession(req, reply);
+  if (!session) return;
+
+  const body = (req.body ?? {}) as { contentId?: string };
+  const contentId = asString(body.contentId || "").trim();
+  if (!contentId) return badRequest(reply, "contentId required");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+
+  if (content.priceSats != null && content.priceSats > 0n) {
+    return reply.code(409).send({ error: "Payment required" });
+  }
+
+  const manifest = await ensureManifestForContent(content);
+  if (!manifest?.sha256) return notFound(reply, "Manifest not found");
+
+  const existing = await prisma.entitlement.findFirst({
+    where: { buyerId: session.buyer.id, contentId }
+  });
+  if (existing) {
+    return reply.send({ ok: true, alreadyOwned: true, entitlementId: existing.id });
+  }
+
+  const created = await prisma.entitlement.create({
+    data: {
+      buyerId: session.buyer.id,
+      buyerUserId: null,
+      contentId,
+      manifestSha256: manifest.sha256,
+      paymentIntentId: null
+    }
+  });
+
+  return reply.send({ ok: true, entitlementId: created.id });
+});
+
 // List buyer entitlements (buyer-session scoped)
 app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
   const session = await requireBuyerSession(req, reply);
@@ -4219,7 +4343,23 @@ app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
       buyerId: session.buyer.id,
       ...(contentId ? { contentId } : {})
     },
-    include: { content: true },
+    include: {
+      content: {
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          type: true,
+          status: true,
+          storefrontStatus: true,
+          deliveryMode: true,
+          priceSats: true,
+          createdAt: true,
+          repoPath: true,
+          owner: { select: { id: true, displayName: true, email: true } }
+        }
+      }
+    },
     orderBy: { grantedAt: "desc" }
   });
 
@@ -4229,9 +4369,104 @@ app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
       contentId: e.contentId,
       manifestSha256: e.manifestSha256,
       grantedAt: e.grantedAt.toISOString(),
-      content: e.content ? { id: e.content.id, title: e.content.title, type: e.content.type } : null
+      content: e.content
+        ? (() => {
+            const coverUrl = `${APP_BASE_URL}/api/buyer/content/${encodeURIComponent(e.content.id)}/cover`;
+            let primaryFile: { path: string; mime?: string; sizeBytes?: number; sha256?: string } | null = null;
+            try {
+              if (e.content.repoPath) {
+                // Best-effort read of manifest to expose primary file metadata.
+                // Avoid heavy joins here; manifest is already stored on disk.
+                const manifest = fsSync.existsSync(path.join(e.content.repoPath, "manifest.json"))
+                  ? JSON.parse(fsSync.readFileSync(path.join(e.content.repoPath, "manifest.json"), "utf8"))
+                  : null;
+                const primaryKey = getPrimaryObjectKey(manifest || null);
+                if (primaryKey && Array.isArray((manifest as any)?.files)) {
+                  const entry = (manifest as any).files.find((f: any) => f?.path === primaryKey) || null;
+                  primaryFile = {
+                    path: primaryKey,
+                    mime: entry?.mime,
+                    sizeBytes: entry?.sizeBytes,
+                    sha256: entry?.sha256
+                  };
+                }
+              }
+            } catch {
+              primaryFile = null;
+            }
+
+            return {
+              id: e.content.id,
+              title: e.content.title,
+              description: e.content.description || null,
+              type: e.content.type,
+              status: e.content.status,
+              storefrontStatus: e.content.storefrontStatus,
+              deliveryMode: e.content.deliveryMode || null,
+              priceSats: e.content.priceSats != null ? String(e.content.priceSats) : null,
+              createdAt: e.content.createdAt.toISOString(),
+              coverUrl,
+              primaryFile,
+              owner: e.content.owner
+                ? {
+                    id: e.content.owner.id,
+                    displayName: e.content.owner.displayName,
+                    email: e.content.owner.email
+                  }
+                : null
+            };
+          })()
+        : null
     }))
   );
+});
+
+// Buyer cover image for library cards (entitlement-gated)
+app.get("/api/buyer/content/:id/cover", async (req: any, reply: any) => {
+  const session = await requireBuyerSession(req, reply);
+  if (!session) return;
+
+  const contentId = asString((req.params as any).id || "").trim();
+  if (!contentId) return notFound(reply, "Not found");
+
+  const entitlement = await prisma.entitlement.findFirst({
+    where: { buyerId: session.buyer.id, contentId }
+  });
+  if (!entitlement) return forbidden(reply);
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content?.repoPath) {
+    return reply.redirect(`/card/${encodeURIComponent(contentId)}`);
+  }
+
+  const repoRoot = path.resolve(content.repoPath);
+  const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+
+  let coverKey: string | null = null;
+  try {
+    const manifest = await readManifest(content.repoPath);
+    const fromManifest = (manifest as any)?.cover || null;
+    if (fromManifest && typeof fromManifest === "string") {
+      coverKey = String(fromManifest);
+    }
+  } catch {}
+
+  if (!coverKey) {
+    coverKey = await ensureCoverImage(content, files);
+  }
+
+  if (!coverKey) {
+    return reply.redirect(`/card/${encodeURIComponent(contentId)}`);
+  }
+
+  const absPath = path.resolve(repoRoot, coverKey);
+  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  if (!fsSync.existsSync(absPath)) return notFound(reply, "Not found");
+
+  const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey: coverKey } });
+  if (file?.mime) reply.type(file.mime);
+  const stream = fsSync.createReadStream(absPath);
+  return reply.send(stream);
 });
 
 app.get("/me", { preHandler: requireAuth }, async (req: any) => {
@@ -8017,7 +8252,11 @@ async function handleBuyPage(req: any, reply: any) {
     .muted { color:#a1a1aa; font-size:14px; }
     .row { display:flex; gap:16px; flex-wrap:wrap; }
     .rail { flex:1 1 280px; border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f10; }
-    .btn { background:#fff; color:#000; border:none; border-radius:10px; padding:10px 14px; font-weight:600; cursor:pointer; }
+    .btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; background:#fff; color:#0b0b0b; border:none; border-radius:12px; padding:11px 16px; font-weight:600; cursor:pointer; text-decoration:none; }
+    .btn.primary { background:linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%); box-shadow:0 6px 20px rgba(15, 23, 42, 0.25); }
+    .btn.outline { background:#0f0f10; color:#f8fafc; border:1px solid #2a2a2a; }
+    .btn.full { width:100%; }
+    .btn.small { padding:6px 10px; font-size:13px; border-radius:10px; }
     .btn:disabled { opacity:0.6; cursor:not-allowed; }
     .input { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #333; background:#0b0b0b; color:#fff; }
     .field { margin-top:10px; }
@@ -8025,6 +8264,8 @@ async function handleBuyPage(req: any, reply: any) {
     .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
     .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
     .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
+    .section-title { margin-top:12px; font-size:16px; font-weight:600; }
+    .download-row { margin-top:10px; }
     .preview { margin-top:14px; }
     .preview img, .preview video, .preview audio { width:100%; max-width:820px; border-radius:12px; border:1px solid #222; background:#0b0b0b; }
     a { color:#93c5fd; }
@@ -8215,11 +8456,11 @@ async function handleBuyPage(req: any, reply: any) {
               (!isVideo && !isAudio ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
             "</div>"
           : "") +
-        "<div style=\\"margin-top:8px;font-size:18px;\\">Free access</div>" +
+        "<div class=\\"section-title\\">Free access</div>" +
         "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Delivery: " +
           (deliveryMode === "stream_and_download" ? "Stream + Download" : (allowDownload ? "Download only" : "Streaming only")) +
         "</div>" +
-        (allowDownload && mediaSrc ? "<div style=\\"margin-top:8px;\\"><a class=\\"btn\\" href=\\"" + mediaSrc + "\\" download>Download</a></div>" : "") +
+        (allowDownload && mediaSrc ? "<div class=\\"download-row\\"><a class=\\"btn primary full\\" href=\\"" + mediaSrc + "\\" download>Download file</a></div>" : "") +
         tipBlock +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
