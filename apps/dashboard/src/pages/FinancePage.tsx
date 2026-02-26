@@ -41,7 +41,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
     const timer = setInterval(() => {
       setSummaryRefresh((s) => s + 1);
       setTabRefresh((prev) => ({ ...prev, [tab]: (prev[tab] || 0) + 1 }));
-    }, 8000);
+    }, 30000);
     return () => clearInterval(timer);
   }, [tab, isBasic]);
 
