@@ -27,7 +27,23 @@ import { createPaymentProvider } from "./lib/payments.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
-import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
+import {
+  createLightningInvoice,
+  checkLightningInvoice,
+  deleteLightningNodeConfig,
+  getLndConfig as getStoredLndConfig,
+  getLightningChannelGuidanceSteps,
+  getLightningChannelStatus,
+  getLightningNodeConfigMeta,
+  getLightningReadiness,
+  openLightningChannel,
+  type LightningDiscoveryCandidate,
+  interpretLightningDiscoveryError,
+  interpretLightningDiscoveryHttpProbe,
+  probeLndConnection,
+  saveLightningNodeConfig,
+  testLightningNodeConnection
+} from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
 import {
@@ -374,45 +390,22 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000
 }
 
 async function lndHealthCheck() {
-  const baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
-  const macVal =
-    process.env.LND_MACAROON_PATH ||
-    process.env.LND_INVOICE_MACAROON_PATH ||
-    process.env.LND_MACAROON_HEX ||
-    process.env.LND_MACAROON ||
-    "";
-  const macaroon = readMacaroon(macVal);
-  const cert = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
-
-  if (!baseUrl || !macaroon) {
+  const cfg = await getStoredLndConfig(prisma).catch(() => null);
+  if (!cfg) {
     return {
       status: "missing",
-      message: "LND env not configured",
-      endpoint: baseUrl || null,
-      hint: "Set LND_REST_URL and LND_MACAROON_PATH"
+      message: "Lightning node not configured",
+      endpoint: null,
+      hint: null
     };
   }
 
   try {
-    const dispatcher = cert ? new (await import("undici")).Agent({ connect: { ca: cert } }) : undefined;
-    const res = await fetchWithTimeout(
-      `${baseUrl}/v1/getinfo`,
-      {
-        method: "GET",
-        headers: { "Grpc-Metadata-Macaroon": macaroon },
-        dispatcher
-      } as any,
-      4000
-    );
-    if (!res.ok) {
-      const text = await res.text();
-      const mapped = mapLightningErrorMessage(text || `LND error ${res.status}`);
-      return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
-    }
-    return { status: "healthy", message: "LND reachable", endpoint: baseUrl, hint: null };
+    await probeLndConnection({ restUrl: cfg.restUrl, network: cfg.network, macaroon: cfg.macaroon, tlsCert: cfg.tlsCert || null });
+    return { status: "healthy", message: "LND reachable", endpoint: cfg.restUrl, hint: null };
   } catch (e: any) {
     const mapped = mapLightningErrorMessage(String(e?.message || e));
-    return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+    return { status: mapped.status, message: mapped.reason, endpoint: cfg.restUrl, hint: null };
   }
 }
 
@@ -9354,7 +9347,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   }
 
   try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
+    const invoice = await createLightningInvoice(prisma as any, amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
     if (invoice) lightning = invoice;
   } catch (e: any) {
     app.log.warn({ err: e }, "lnbits invoice failed");
@@ -11207,7 +11200,7 @@ async function settlePaymentIntent(paymentIntentId: string) {
 }
 
 type FinalizePaymentIntentOptions = {
-  rail: "manual_lightning" | "provider_invoice" | "node_invoice";
+  rail: "manual_lightning" | "provider_invoice" | "node_invoice" | "onchain";
   confirmedByUserId?: string | null;
 };
 
@@ -11655,7 +11648,7 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
 
   let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
   try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${subjectId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
+    const invoice = await createLightningInvoice(prisma as any, amountSats, `Contentbox ${subjectId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
     if (invoice) lightning = invoice;
   } catch (e: any) {
     app.log.warn({ err: e }, "lnbits invoice failed; continuing with on-chain only");
@@ -11762,7 +11755,230 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
   return reply.send(readiness);
 });
 
-app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any) => {
+function normalizeLightningNetwork(value: unknown): "mainnet" | "testnet" | "regtest" | null {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "mainnet" || v === "bitcoin") return "mainnet";
+  if (v === "testnet" || v === "testnet3") return "testnet";
+  if (v === "regtest") return "regtest";
+  return null;
+}
+
+async function readMultipartPartBuffer(part: any, maxBytes = 1024 * 1024) {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of part.file) {
+    const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += b.length;
+    if (total > maxBytes) throw new Error("uploaded file too large");
+    chunks.push(b);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function parseLightningAdminRequest(req: any) {
+  const isMultipart = typeof req.isMultipart === "function" ? req.isMultipart() : false;
+  if (!isMultipart) {
+    throw new Error("multipart/form-data required");
+  }
+
+  let restUrl = "";
+  let networkRaw: unknown = "";
+  let macaroonBase64 = "";
+  let tlsCertPem: string | null = null;
+
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      const field = String(part.fieldname || "");
+      if (field === "macaroonFile" || field === "macaroon") {
+        const buf = await readMultipartPartBuffer(part, 512 * 1024);
+        macaroonBase64 = buf.toString("base64");
+      } else if (field === "tlsCertFile" || field === "tlsCert") {
+        const buf = await readMultipartPartBuffer(part, 512 * 1024);
+        tlsCertPem = buf.toString("utf8");
+      } else {
+        // drain unknown file parts to avoid hanging requests
+        await readMultipartPartBuffer(part, 512 * 1024).catch(() => {});
+      }
+      continue;
+    }
+
+    const field = String(part.fieldname || "");
+    const value = typeof part.value === "string" ? part.value : String(part.value ?? "");
+    if (field === "restUrl") restUrl = value.trim();
+    if (field === "network") networkRaw = value;
+  }
+
+  return { restUrl, networkRaw, macaroonBase64, tlsCertPem };
+}
+
+async function probeLightningDiscoverCandidate(restUrl: string): Promise<LightningDiscoverCandidate | null> {
+  const target = `${restUrl.replace(/\/$/, "")}/v1/getinfo`;
+  try {
+    const res = await fetchWithTimeout(target, { method: "GET", headers: { Accept: "application/json" } as any } as any, 1500);
+    const text = await res.text();
+    let body: any = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+
+    return interpretLightningDiscoveryHttpProbe({ restUrl, status: res.status, text, json: body });
+  } catch (e: any) {
+    return interpretLightningDiscoveryError(restUrl, e);
+  }
+}
+
+function lightningDiscoveryTargets(): string[] {
+  const ports = [8080, 10009, 8443];
+  const hosts = ["127.0.0.1", "localhost"];
+  const out: string[] = [];
+  for (const host of hosts) {
+    for (const port of ports) {
+      out.push(`https://${host}:${port}`);
+      out.push(`http://${host}:${port}`);
+    }
+  }
+
+  const hints = [
+    String(process.env.LND_REST_URL || "").trim(),
+    String(process.env.CONTENTBOX_LND_REST_URL || "").trim()
+  ].filter(Boolean);
+  for (const h of hints) out.push(h.replace(/\/v1\/getinfo$/i, "").replace(/\/$/, ""));
+  return Array.from(new Set(out));
+}
+
+app.get("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    return reply.send(await getLightningNodeConfigMeta(prisma as any));
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+// Quick curl test:
+// curl -X POST http://127.0.0.1:4000/api/admin/lightning/discover -H "Authorization: Bearer <JWT>"
+app.post("/api/admin/lightning/discover", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const candidates = (
+      await Promise.all(lightningDiscoveryTargets().map((u) => probeLightningDiscoverCandidate(u)))
+    ).filter((x): x is LightningDiscoverCandidate => Boolean(x));
+
+    const deduped = Array.from(new Map(candidates.map((c) => [c.restUrl, c])).values());
+    if (!deduped.length) return reply.send({ ok: false, error: "No local LND REST endpoint found at default ports." });
+    return reply.send({ ok: true, candidates: deduped });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const readiness = await getLightningReadiness(prisma as any);
+    return reply.send(readiness);
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/channel-guidance", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    return reply.send({ ok: true, steps: getLightningChannelGuidanceSteps() });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/open-channel", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { peerPubKey?: string; capacitySats?: number | string; peerHost?: string | null };
+    const peerPubKey = asString(body.peerPubKey || "").trim();
+    const capacitySats = Math.floor(Number(body.capacitySats || 0));
+    const peerHost = body.peerHost == null ? null : asString(body.peerHost).trim() || null;
+    if (!peerPubKey) return badRequest(reply, "peerPubKey required");
+    if (!Number.isFinite(capacitySats) || capacitySats <= 0) return badRequest(reply, "capacitySats required");
+
+    const result = await openLightningChannel(prisma as any, { peerPubKey, capacitySats, host: peerHost });
+    return reply.send(result);
+  } catch (e: any) {
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/channel-status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { channelId?: string; peerPubKey?: string | null };
+    const channelId = asString(body.channelId || "").trim();
+    const peerPubKey = body.peerPubKey == null ? null : asString(body.peerPubKey).trim() || null;
+    if (!channelId && !peerPubKey) return badRequest(reply, "channelId or peerPubKey required");
+    const result = await getLightningChannelStatus(prisma as any, { channelId, peerPubKey });
+    return reply.send(result);
+  } catch (e: any) {
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/test", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  try {
+    parsed = await parseLightningAdminRequest(req);
+  } catch (e: any) {
+    return badRequest(reply, String(e?.message || e));
+  }
+  const restUrl = parsed.restUrl;
+  const network = normalizeLightningNetwork(parsed.networkRaw);
+  const macaroonBase64 = parsed.macaroonBase64;
+  const tlsCertPem = parsed.tlsCertPem;
+  if (!restUrl) return badRequest(reply, "restUrl required");
+  if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
+  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+
+  const result = await testLightningNodeConnection({ restUrl, network, macaroonBase64, tlsCertPem });
+  if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
+  return reply.send({
+    ok: true,
+    info: {
+      alias: result.info.alias || "",
+      version: result.info.version || "",
+      identityPubkey: result.info.identityPubkey || ""
+    }
+  });
+});
+
+app.post("/api/admin/lightning", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  try {
+    parsed = await parseLightningAdminRequest(req);
+  } catch (e: any) {
+    return badRequest(reply, String(e?.message || e));
+  }
+  const restUrl = parsed.restUrl;
+  const network = normalizeLightningNetwork(parsed.networkRaw);
+  const macaroonBase64 = parsed.macaroonBase64;
+  const tlsCertPem = parsed.tlsCertPem;
+  if (!restUrl) return badRequest(reply, "restUrl required");
+  if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
+  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+
+  try {
+    const result = await saveLightningNodeConfig(prisma as any, { restUrl, network, macaroonBase64, tlsCertPem });
+    if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
+    return reply.send({ ok: true });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    await deleteLightningNodeConfig(prisma as any);
+    return reply.send({ ok: true });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contents = await prisma.contentItem.findMany({
     where: { ownerUserId: userId },
@@ -12154,7 +12370,7 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
 
   if (intent.providerId) {
     try {
-      const res = await checkLightningInvoice(intent.providerId);
+      const res = await checkLightningInvoice(prisma as any, intent.providerId);
       if (res.paid) {
         paidVia = "lightning";
         paidAt = res.paidAt || new Date().toISOString();
