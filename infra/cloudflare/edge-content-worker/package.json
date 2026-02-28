@@ -1,0 +1,10 @@
+{
+  "name": "contentbox-edge-content-worker",
+  "private": true,
+  "version": "0.0.1",
+  "scripts": {
+    "edge:worker:dev": "npx wrangler dev",
+    "edge:worker:deploy": "npx wrangler deploy",
+    "edge:worker:secret": "npx wrangler secret put EDGE_TICKET_SECRET"
+  }
+}
