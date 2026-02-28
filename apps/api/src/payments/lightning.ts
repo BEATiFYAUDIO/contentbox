@@ -1678,7 +1678,7 @@ export async function refreshIntentFromLnd(
 export async function createLightningInvoice(prisma: PrismaLike, amountSats: bigint, memo: string) {
   const lnd = (await getLndConfig(prisma)) || getLegacyEnvLndConfig();
   if (lnd) {
-    const expirySeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+    const expirySeconds = Math.max(60, Math.floor(Number(process.env.LIGHTNING_INVOICE_EXPIRY_SECONDS || "3600")));
 
     const data = await lndFetchJson(lnd, "/v1/invoices", {
       method: "POST",
