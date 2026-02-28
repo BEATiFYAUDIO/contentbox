@@ -30,6 +30,7 @@ import {
   createLightningInvoice,
   checkLightningInvoice,
   getLightningBalances,
+  getLightningReceiveCapacity,
   getLightningInvoices,
   closeLightningChannel,
   deleteLightningNodeConfig,
@@ -84,6 +85,8 @@ import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
 import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSessionToken } from "./lib/buyerSession.js";
 import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
+import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
+import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -783,6 +786,10 @@ const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
 const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60 * 60 * 24 * 7, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || String(60 * 60 * 24 * 7))));
+const EDGE_DELIVERY_ENABLED = String(process.env.EDGE_DELIVERY_ENABLED || "false").toLowerCase() === "true";
+const EDGE_TICKET_TTL_SECONDS = Math.max(5, Math.floor(Number(process.env.EDGE_TICKET_TTL_SECONDS || "60")));
+const EDGE_TICKET_SECRET = String(process.env.EDGE_TICKET_SECRET || "").trim();
+const EDGE_BASE_URL = String(process.env.EDGE_BASE_URL || APP_BASE_URL).replace(/\/$/, "");
 if (!fsSync.existsSync(QUICK_TUNNEL_CONFIG_PATH)) {
   try {
     fsSync.writeFileSync(QUICK_TUNNEL_CONFIG_PATH, "");
@@ -2107,6 +2114,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.get("/public/content/:id", handlePublicContent);
+  appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
@@ -4230,12 +4238,38 @@ app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
   return reply.send({ ok: true, entitlementId: created.id });
 });
 
+// Debug-only entitlement reset. Disabled in production.
+app.post("/api/buyer/entitlements/reset", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const enabled = shouldAllowDebugEntitlementReset({
+    nodeEnv: process.env.NODE_ENV,
+    isAdmin: true
+  });
+  if (!enabled) return notFound(reply, "Not found");
+
+  const body = (req.body ?? {}) as { buyerId?: string; contentId?: string };
+  const buyerId = asString(body.buyerId || "").trim();
+  const contentId = asString(body.contentId || "").trim();
+  if (!buyerId || !contentId) return badRequest(reply, "buyerId and contentId required");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId }, select: { ownerUserId: true } });
+  if (!content) return notFound(reply, "Not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+
+  const deleted = await prisma.entitlement.deleteMany({ where: { buyerId, contentId } });
+  return reply.send({ ok: true, deleted: deleted.count });
+});
+
 // List buyer entitlements (buyer-session scoped)
 app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
   const session = await requireBuyerSession(req, reply);
   if (!session) return;
 
   const contentId = asString((req.query as any)?.contentId || "").trim();
+  await reconcileBuyerEntitlementsFromPurchaseHistory({
+    buyerId: session.buyer.id,
+    contentId: contentId || undefined
+  }).catch(() => {});
 
   const entitlements = await prisma.entitlement.findMany({
     where: {
@@ -7756,6 +7790,155 @@ async function handlePublicContent(req: any, reply: any) {
 }
 
 app.get("/public/content/:id", handlePublicContent);
+app.get("/public/content/:id/attribution", handlePublicAttribution);
+
+function hasBeatifyLinkInText(v: unknown): boolean {
+  const s = asString(v || "").trim();
+  if (!s) return false;
+  const m = s.match(/https?:\/\/[^\s)]+/gi) || [];
+  for (const raw of m) {
+    try {
+      const h = new URL(raw).hostname.toLowerCase();
+      if (h === "beatify.audio" || h === "www.beatify.audio") return true;
+    } catch {
+      continue;
+    }
+  }
+  return false;
+}
+
+function toPublicCreator(u: { displayName?: string | null; bio?: string | null } | null | undefined) {
+  if (!u) return null;
+  const displayName = asString(u.displayName || "").trim() || "Creator";
+  const hasBeatify = hasBeatifyLinkInText(u.bio);
+  return {
+    displayName,
+    handle: null,
+    verification: { badge: hasBeatify ? ("beatify_heart" as string) : (null as string | null) }
+  };
+}
+
+async function getPublicOfferGate(contentId: string): Promise<{ content: any | null; allowDraftPreview: boolean }> {
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    include: { owner: { select: { displayName: true, bio: true } } }
+  });
+  if (!content) return { content: null, allowDraftPreview: false };
+  if (content.deletedAt) return { content: null, allowDraftPreview: false };
+
+  let allowDraftPreview = false;
+  if (content.status !== "published") {
+    const links = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
+    if (links.length === 1) {
+      const review = await (prisma as any).clearanceRequest?.findFirst?.({
+        where: { contentLinkId: links[0].id },
+        orderBy: { createdAt: "desc" }
+      });
+      if (review?.reviewGrantedAt) {
+        allowDraftPreview = true;
+      }
+    }
+    if (!allowDraftPreview) return { content: null, allowDraftPreview: false };
+  }
+  return { content, allowDraftPreview };
+}
+
+async function handlePublicAttribution(req: any, reply: any) {
+  const contentId = asString((req.params as any).id);
+  const gated = await getPublicOfferGate(contentId);
+  const content = gated.content;
+  if (!content) return notFound(reply, "Not found");
+
+  const primaryCreator = toPublicCreator(content.owner) || {
+    displayName: "Creator",
+    handle: null,
+    verification: { badge: null as string | null }
+  };
+
+  const [latestSplit, lockedSplit, parentLinks] = await Promise.all([
+    prisma.splitVersion.findFirst({
+      where: { contentId },
+      orderBy: { versionNumber: "desc" },
+      include: { participants: true }
+    }),
+    getLockedSplitForContent(contentId),
+    prisma.contentLink.findMany({
+      where: { childContentId: contentId },
+      include: { parentContent: { include: { owner: { select: { displayName: true, bio: true } } } } },
+      orderBy: { id: "asc" }
+    })
+  ]);
+
+  const splitState: "active" | "draft" | "none" =
+    latestSplit?.status === "draft" && (!lockedSplit || (latestSplit.versionNumber > (lockedSplit.versionNumber || 0)))
+      ? "draft"
+      : lockedSplit
+        ? "active"
+        : "none";
+
+  let contributors: Array<{ displayName: string; handle: string | null; bps: number; verification: { badge: string | null } }> = [];
+  if (splitState === "active" && lockedSplit?.participants?.length) {
+    const byUserId = new Map<string, { displayName?: string | null; bio?: string | null }>();
+    const ids = Array.from(new Set(lockedSplit.participants.map((p: any) => asString(p.participantUserId || "").trim()).filter(Boolean)));
+    if (ids.length) {
+      const users = await prisma.user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, displayName: true, bio: true }
+      });
+      for (const u of users) byUserId.set(u.id, u);
+    }
+
+    contributors = lockedSplit.participants
+      .map((p: any) => {
+        const u = p.participantUserId ? byUserId.get(String(p.participantUserId)) : null;
+        const creator = toPublicCreator(u);
+        const displayName =
+          asString(u?.displayName || "").trim() ||
+          asString((p as any)?.participantDisplayName || "").trim() ||
+          "Contributor";
+        const bps = Number.isFinite(Number((p as any)?.bps))
+          ? Math.max(0, Math.round(Number((p as any).bps)))
+          : Math.max(0, Math.round(num((p as any)?.percent) * 100));
+        return {
+          displayName,
+          handle: null,
+          bps,
+          verification: { badge: creator?.verification?.badge || null }
+        };
+      })
+      .filter((c) => c.bps > 0);
+  }
+
+  let upstream: {
+    kind: "derivative";
+    items: Array<{ title: string | null; primaryCreator: { displayName: string; handle: string | null; verification: { badge: string | null } } }>;
+    truncated: boolean;
+  } | null = null;
+  if (parentLinks.length > 0) {
+    const maxItems = 5;
+    const items = parentLinks.slice(0, maxItems).map((l) => ({
+      title: l.parentContent?.title || null,
+      primaryCreator:
+        toPublicCreator(l.parentContent?.owner) || {
+          displayName: "Creator",
+          handle: null,
+          verification: { badge: null as string | null }
+        }
+    }));
+    upstream = {
+      kind: "derivative",
+      items,
+      truncated: parentLinks.length > maxItems
+    };
+  }
+
+  return reply.send({
+    primaryCreator,
+    contributors,
+    split: { state: splitState },
+    upstream
+  });
+}
 
 // Public preview file (no auth; only when content is publicly visible)
 async function handlePublicPreviewFile(req: any, reply: any) {
@@ -8186,6 +8369,7 @@ async function handleBuyPage(req: any, reply: any) {
   const productTier = ${JSON.stringify(productTier)};
   const sellerLightningAddress = ${JSON.stringify(sellerLightningAddress)};
   const sellerDisplayName = ${JSON.stringify(sellerDisplayName)};
+  const edgeDeliveryEnabled = ${JSON.stringify(EDGE_DELIVERY_ENABLED)};
   const priceSats = ${content.priceSats != null ? Number(content.priceSats) : "null"};
   const app = document.getElementById("app");
   const apiBase = location.origin;
@@ -8196,11 +8380,111 @@ async function handleBuyPage(req: any, reply: any) {
   let previewSeconds = 20;
   let buyer = null;
   let alreadyOwned = false;
+  const edgeUrlCache = new Map();
+  let attributionData = null;
   const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
 
   function qs(v){ return encodeURIComponent(v); }
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
+  function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function heartFor(c){
+    return c?.verification?.badge === "beatify_heart"
+      ? " <span aria-label=\\"Verified\\">♥</span>"
+      : "";
+  }
+
+  function resolveAttributionContentId(){
+    const direct = String(contentId || "").trim();
+    if (direct) return direct;
+    try {
+      const m = String(location.pathname || "").match(/\\/buy\\/([^/?#]+)/);
+      return m ? decodeURIComponent(m[1]) : "";
+    } catch { return ""; }
+  }
+
+  function renderAttribution(){
+    const mounts = document.querySelectorAll("#cb-attribution");
+    if (!mounts.length) return;
+    const data = attributionData;
+    const primary = data && data.primaryCreator ? data.primaryCreator : null;
+    if (!primary) return;
+    const name = esc(primary.displayName || primary.name || primary.handle || "Creator");
+    const handleRaw = String(primary.handle || "").trim();
+    const handle = handleRaw ? (" @" + esc(handleRaw.replace(/^@/, ""))) : "";
+    const badge = heartFor(primary);
+
+    let splitHtml = "";
+    const split = data?.split || null;
+    const contributors =
+      Array.isArray(data?.contributors) ? data.contributors :
+      Array.isArray(split?.contributors) ? split.contributors :
+      [];
+    if (split?.state === "active" && contributors.length > 0) {
+      splitHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Contributors:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
+        contributors.map((c) => {
+          const cn = esc(c?.displayName || c?.name || c?.handle || "Contributor");
+          const chRaw = String(c?.handle || "").trim();
+          const ch = chRaw ? (" @" + esc(chRaw.replace(/^@/, ""))) : "";
+          const bps = Number(c?.bps);
+          const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
+          return "<li>" + cn + ch + (pct ? (" — " + pct) : "") + "</li>";
+        }).join("") +
+      "</ul>";
+    } else if (split?.state === "draft") {
+      splitHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Split update pending (not applied yet).</div>";
+    }
+
+    let upstreamHtml = "";
+    const upstream = data?.upstream || null;
+    if (upstream?.kind === "derivative") {
+      const items = Array.isArray(upstream?.items) ? upstream.items : [];
+      if (items.length > 0) {
+        upstreamHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Upstream creators:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
+          items.map((it) => {
+            const t = it?.title ? (esc(it.title) + " — ") : "";
+            const pc = it?.primaryCreator || {};
+            const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
+            const phRaw = String(pc.handle || "").trim();
+            const ph = phRaw ? (" @" + esc(phRaw.replace(/^@/, ""))) : "";
+            return "<li>" + t + pn + ph + "</li>";
+          }).join("") +
+        "</ul>" +
+        (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">…and more</div>" : "");
+      }
+    }
+
+    mounts.forEach((mount) => {
+      mount.innerHTML = "<div class=\\"step\\" style=\\"margin-top:10px;\\">" +
+        "<div style=\\"font-weight:600;\\">Creator: " + name + handle + badge + "</div>" +
+        splitHtml +
+        upstreamHtml +
+        "<div class=\\"muted\\" style=\\"margin-top:8px;\\">You're buying access. Proceeds are shared with the creators shown.</div>" +
+      "</div>";
+      mount.style.display = "";
+    });
+  }
+
+  async function loadAttribution(){
+    const cid = resolveAttributionContentId();
+    if (!cid) return;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2500);
+    try {
+      const res = await fetch("/public/content/" + encodeURIComponent(cid) + "/attribution", {
+        method: "GET",
+        signal: ctl.signal
+      });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => null);
+      if (!data || !data.primaryCreator) return;
+      attributionData = data;
+      renderAttribution();
+    } catch {}
+    finally {
+      clearTimeout(timer);
+    }
+  }
 
   function entKey(manifestHash){ return "cb:entitlement:" + manifestHash; }
   function getEntitlement(manifestHash){
@@ -8289,6 +8573,54 @@ async function handleBuyPage(req: any, reply: any) {
     return url;
   }
 
+  function edgeKey(offer, token){
+    return [offer?.manifestSha256 || "", offer?.primaryFileId || "", token || ""].join("|");
+  }
+
+  async function resolveEdgeStreamUrl(offer, token){
+    if (!edgeDeliveryEnabled) return null;
+    if (!offer?.manifestSha256 || !offer?.primaryFileId || !token) return null;
+    const key = edgeKey(offer, token);
+    if (edgeUrlCache.has(key)) return edgeUrlCache.get(key);
+    try {
+      const out = await fetchJson("/api/public/edge-ticket", {
+        method: "POST",
+        body: {
+          manifestHash: offer.manifestSha256,
+          fileId: offer.primaryFileId,
+          receiptToken: token
+        }
+      });
+      const url = out?.url ? String(out.url) : null;
+      if (url) edgeUrlCache.set(key, url);
+      return url;
+    } catch {
+      return null;
+    }
+  }
+
+  function maybeUpgradeRenderedMediaToEdge(offer, token){
+    if (!edgeDeliveryEnabled) return;
+    if (!offer?.manifestSha256 || !offer?.primaryFileId || !token) return;
+    const player = document.getElementById("player");
+    const originUrl = streamUrl(offer, token);
+    if (!player || !originUrl) return;
+    const currentSrc = String(player.getAttribute("src") || "");
+    if (!currentSrc || currentSrc !== originUrl) return;
+
+    resolveEdgeStreamUrl(offer, token).then((edgeUrl) => {
+      if (!edgeUrl) return;
+      const freshPlayer = document.getElementById("player");
+      if (!freshPlayer) return;
+      const freshSrc = String(freshPlayer.getAttribute("src") || "");
+      if (freshSrc !== originUrl) return;
+      if (typeof freshPlayer.currentTime === "number" && freshPlayer.currentTime > 0) return;
+      if (typeof freshPlayer.paused === "boolean" && freshPlayer.paused === false) return;
+      freshPlayer.setAttribute("src", edgeUrl);
+      try { if (typeof freshPlayer.load === "function") freshPlayer.load(); } catch {}
+    }).catch(()=>{});
+  }
+
   const shareToken = (() => {
     try { return new URLSearchParams(location.search || "").get("share") || ""; } catch { return ""; }
   })();
@@ -8348,6 +8680,7 @@ async function handleBuyPage(req: any, reply: any) {
       "<div>" +
         "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
         "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
+        "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
         (mediaSrc
           ? "<div class=\\"preview\\">" +
               (isVideo ? "<video id=\\"player\\" controls preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
@@ -8363,6 +8696,7 @@ async function handleBuyPage(req: any, reply: any) {
         tipBlock +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+    renderAttribution();
   }
 
   function renderOffer(offer, entitlement, owned){
@@ -8382,6 +8716,7 @@ async function handleBuyPage(req: any, reply: any) {
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
+        <section id="cb-attribution" style="display:none"></section>
         \${already ? \`
           <div class="step" style="border-color:#14532d;background:#0b1f14;">
             <div style="font-weight:600;">Already owned</div>
@@ -8421,7 +8756,6 @@ async function handleBuyPage(req: any, reply: any) {
           <div id="status" class="muted" style="margin-top:8px;"></div>
         \`}
         \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
-        \${entitlement?.token ? \`<button id="resetEnt" class="copy" style="margin-top:8px;">Reset entitlement</button>\` : ""}
         <div id="rails" style="margin-top:16px;"></div>
         <div id="downloads" style="margin-top:16px;"></div>
       </div>
@@ -8503,13 +8837,9 @@ async function handleBuyPage(req: any, reply: any) {
         });
       }
     }
-    const resetBtn = document.getElementById("resetEnt");
-    if (resetBtn) {
-      resetBtn.onclick = () => {
-        clearEntitlement(offer.manifestSha256);
-        receiptToken = null;
-        renderOffer(offer, null, alreadyOwned);
-      };
+    renderAttribution();
+    if (token) {
+      maybeUpgradeRenderedMediaToEdge(offer, token);
     }
   }
 
@@ -8520,6 +8850,13 @@ async function handleBuyPage(req: any, reply: any) {
     const receiptLink = apiBase + "/buy/receipts/" + intent.receiptToken + "/status";
     const lightningInvoice = String(lightning.bolt11 || "");
     const hasLightningInvoice = Boolean(lightningInvoice);
+    const onchainAddress = String(onchain.address || "");
+    const hasOnchainAddress = Boolean(onchain.available && onchainAddress);
+    const sats = Number(intent.amountSats || 0);
+    const btcAmount = Number.isFinite(sats) && sats > 0 ? (sats / 100000000).toFixed(8).replace(/0+$/, "").replace(/\\.$/, "") : "";
+    const unifiedUri = hasLightningInvoice && hasOnchainAddress
+      ? ("bitcoin:" + onchainAddress + (btcAmount ? ("?amount=" + btcAmount + "&lightning=" + encodeURIComponent(lightningInvoice)) : ("?lightning=" + encodeURIComponent(lightningInvoice))))
+      : "";
     rails.innerHTML = \`
       <div class="row">
         <div class="rail">
@@ -8528,9 +8865,10 @@ async function handleBuyPage(req: any, reply: any) {
             <img alt="Lightning QR" src="\${qrUrl(lightning.bolt11)}" />
             <div class="code">\${lightning.bolt11}</div>
             <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
-              <button id="openWalletBtn" class="btn">\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</button>
+              <a id="openWalletBtn" class="btn" href="\${hasLightningInvoice ? ("lightning:" + lightningInvoice) : "#"}" \${hasLightningInvoice ? "" : "aria-disabled=\\"true\\" style=\\"pointer-events:none;opacity:0.6;\\""}>\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</a>
               <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
             </div>
+            <div class="muted" style="margin-top:6px;">If your wallet didn’t open, copy or scan the invoice.</div>
           \` : \`<div class="muted">Unavailable: \${lightning.reason || "Not available"}</div>\`}
         </div>
         <div class="rail">
@@ -8543,16 +8881,25 @@ async function handleBuyPage(req: any, reply: any) {
           \` : \`<div class="muted">Unavailable: \${onchain.reason || "Not available"}</div>\`}
         </div>
       </div>
+      \${unifiedUri ? \`
+        <div class="rail" style="margin-top:10px;">
+          <div style="font-weight:600;">Unified (on-chain fallback)</div>
+          <img alt="Unified payment QR" src="\${qrUrl(unifiedUri)}" />
+          <div class="code">\${unifiedUri}</div>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+            <a id="openUnifiedBtn" class="btn" href="\${unifiedUri}">Open unified link</a>
+            <button class="copy" data-copy="\${unifiedUri}">Copy unified link</button>
+          </div>
+        </div>
+      \` : ""}
       <div class="muted" style="margin-top:10px;">Save your receipt link to download again:</div>
       <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
     \`;
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
     const openWalletBtn = document.getElementById("openWalletBtn");
     if (openWalletBtn) {
-      if (!hasLightningInvoice) openWalletBtn.setAttribute("disabled", "disabled");
       openWalletBtn.addEventListener("click", () => {
         if (!hasLightningInvoice) return;
-        try { window.location.href = "lightning:" + lightningInvoice; } catch {}
         startReceiptPolling(60_000, 2_000);
       });
     }
@@ -8740,6 +9087,7 @@ async function handleBuyPage(req: any, reply: any) {
             .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
         });
     });
+  loadAttribution().catch(()=>{});
 })();
 </script>
 </body>
@@ -8991,23 +9339,10 @@ async function handlePublicOffer(req: any, reply: any) {
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
 
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
-  if (content.deletedAt) return notFound(reply, "Not found");
-  let allowDraftPreview = false;
-  if (content.status !== "published") {
-    const links = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
-    if (links.length === 1) {
-      const review = await (prisma as any).clearanceRequest?.findFirst?.({
-        where: { contentLinkId: links[0].id },
-        orderBy: { createdAt: "desc" }
-      });
-      if (review?.reviewGrantedAt) {
-        allowDraftPreview = true;
-      }
-    }
-    if (!allowDraftPreview) return notFound(reply, "Not found");
-  }
+  const gated = await getPublicOfferGate(contentId);
+  if (!gated.content) return notFound(reply, "Not found");
+  const content = gated.content;
+  const allowDraftPreview = gated.allowDraftPreview;
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest && !allowDraftPreview) return notFound(reply, "Manifest not found");
@@ -9343,6 +9678,41 @@ async function hasAccess(buyerId: string | null | undefined, contentId: string):
   return Boolean(hit);
 }
 
+async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: string; contentId?: string }) {
+  const buyerId = asString(input.buyerId || "").trim();
+  if (!buyerId) return { healedCount: 0 };
+  return reconcileMissingEntitlementsForBuyer(
+    {
+      listPaidIntents: async (bid: string, contentFilter?: string) =>
+        prisma.paymentIntent.findMany({
+          where: {
+            buyerId: bid,
+            status: "paid",
+            ...(contentFilter ? { contentId: contentFilter } : {})
+          },
+          select: { id: true, buyerId: true, contentId: true, manifestSha256: true, status: true },
+          orderBy: { paidAt: "desc" }
+        }) as any,
+      getEntitlement: async (bid: string, cid: string) =>
+        prisma.entitlement.findFirst({ where: { buyerId: bid, contentId: cid }, select: { id: true, buyerId: true, contentId: true } }),
+      upsertEntitlement: async ({ buyerId: bid, contentId, manifestSha256, paymentIntentId }) => {
+        await prisma.entitlement.upsert({
+          where: { buyerId_contentId: { buyerId: bid, contentId } },
+          update: { paymentIntentId, manifestSha256: manifestSha256 || "" },
+          create: {
+            buyerId: bid,
+            buyerUserId: null,
+            contentId,
+            manifestSha256: manifestSha256 || "",
+            paymentIntentId
+          }
+        });
+      }
+    },
+    { buyerId, contentId: input.contentId || undefined }
+  );
+}
+
 function buyerIdFromIntent(intent: any): string | null {
   const v = String(intent?.buyerId || "").trim();
   return v || null;
@@ -9356,6 +9726,108 @@ function resolveAccessBuyerId(intent: any, cookieBuyerId: string | null): { buye
   }
   return { buyerId: intentBuyerId || cookieId, warning: null };
 }
+
+function resolveObjectKeyFromManifest(manifestJson: any, fileId: string): string | null {
+  const files = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
+  if (fileId === "primary" || fileId === "main") {
+    const primary = manifestJson?.primaryFile;
+    const primaryKey =
+      typeof primary === "string"
+        ? primary
+        : primary && typeof primary === "object"
+          ? primary.path || primary.filename || primary.objectKey
+          : null;
+    if (primaryKey) return String(primaryKey);
+  }
+  const found =
+    files.find(
+      (f: any) =>
+        f?.objectKey === fileId ||
+        f?.path === fileId ||
+        f?.filename === fileId ||
+        f?.sha256 === fileId ||
+        f?.originalName === fileId
+    ) || null;
+  if (found) return String(found.objectKey || found.path || found.filename || "").trim() || null;
+  return null;
+}
+
+app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
+  if (!EDGE_DELIVERY_ENABLED || !EDGE_TICKET_SECRET) return notFound(reply, "Not found");
+
+  const body = (req.body ?? {}) as { manifestHash?: string; fileId?: string; receiptToken?: string };
+  const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
+  const fileId = asString(body.fileId || "").trim();
+  const receiptToken = asString(body.receiptToken || "").trim();
+  if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Not found");
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content || content.deletedAt || !content.repoPath) return notFound(reply, "Not found");
+
+  const objectKey = resolveObjectKeyFromManifest(manifest.json as any, fileId)
+    || (await prisma.contentFile.findFirst({
+      where: { contentId: content.id, OR: [{ objectKey: fileId }, { sha256: fileId }] },
+      select: { objectKey: true }
+    }))?.objectKey
+    || null;
+  if (!objectKey) return notFound(reply, "Not found");
+
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  if (cookieBuyerId) {
+    await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: cookieBuyerId, contentId: content.id }).catch(() => {});
+  }
+
+  const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
+  let entitled = priceSats <= 0n;
+  let bindBuyerId: string | null = cookieBuyerId;
+
+  if (!entitled && cookieBuyerId) {
+    entitled = await hasAccess(cookieBuyerId, content.id);
+  }
+
+  if (!entitled && receiptToken) {
+    const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
+    if (intent && intent.contentId === content.id && intent.status === "paid") {
+      const accessBuyer = resolveAccessBuyerId(intent, cookieBuyerId);
+      bindBuyerId = bindBuyerId || accessBuyer.buyerId || null;
+      if (accessBuyer.buyerId) {
+        await prisma.entitlement.upsert({
+          where: { buyerId_contentId: { buyerId: accessBuyer.buyerId, contentId: content.id } },
+          update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
+          create: {
+            buyerId: accessBuyer.buyerId,
+            buyerUserId: null,
+            contentId: content.id,
+            manifestSha256: intent.manifestSha256 || "",
+            paymentIntentId: intent.id
+          }
+        }).catch(() => {});
+      }
+      entitled = true;
+    }
+  }
+
+  if (!entitled) return notFound(reply, "Not found");
+
+  const exp = Math.floor(Date.now() / 1000) + EDGE_TICKET_TTL_SECONDS;
+  const token = mintEdgeTicketToken(
+    {
+      mh: manifestHash,
+      fid: fileId,
+      exp,
+      ...(bindBuyerId ? { b: bindBuyerId } : {})
+    },
+    EDGE_TICKET_SECRET
+  );
+
+  return reply.send({
+    url: `${EDGE_BASE_URL}/edge/content/${encodeURIComponent(manifestHash)}/${encodeURIComponent(fileId)}?t=${encodeURIComponent(token)}`,
+    expiresAt: new Date(exp * 1000).toISOString()
+  });
+});
 
 async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
@@ -10100,6 +10572,9 @@ async function handlePublicContentFile(req: any, reply: any) {
   const buyerId = buyerSession?.buyer?.id || null;
 
   if (priceSats > 0n) {
+    if (buyerId) {
+      await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId: content.id }).catch(() => {});
+    }
     let entitlementOk = false;
     if (token) {
       if (token.startsWith("permit_")) {
@@ -11997,6 +12472,20 @@ app.get("/api/admin/lightning/balances", { preHandler: requireAuth }, async (_re
     if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
     if (msg.includes("LND ")) {
       return reply.code(502).send({ error: "Failed to query LND balances right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.get("/api/admin/lightning/receive-capacity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const out = await getLightningReceiveCapacity(prisma as any);
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND receive capacity right now. Check Lightning node connectivity." });
     }
     return reply.code(500).send({ error: msg });
   }
