@@ -13,7 +13,6 @@ import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
-import nodemailer from "nodemailer";
 import * as cheerio from "cheerio";
 import { initContentRepo, addFileToContentRepo, commitAll } from "./lib/repo.js";
 import {
@@ -27,7 +26,31 @@ import { createPaymentProvider } from "./lib/payments.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
-import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
+import {
+  createLightningInvoice,
+  checkLightningInvoice,
+  getLightningBalances,
+  getLightningInvoices,
+  closeLightningChannel,
+  deleteLightningNodeConfig,
+  getPeerSuggestions,
+  getLndConfig as getStoredLndConfig,
+  getLightningChannels,
+  getLightningChannelGuidanceSteps,
+  getLightningChannelStatus,
+  getLightningNodeConfigStatus,
+  getLightningNodeConfigMeta,
+  getLightningReadiness,
+  openLightningChannel,
+  parseChannelPoint,
+  probePeer,
+  type LightningDiscoveryCandidate,
+  interpretLightningDiscoveryError,
+  interpretLightningDiscoveryHttpProbe,
+  probeLndConnection,
+  saveLightningNodeConfig,
+  testLightningNodeConnection
+} from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
 import {
@@ -58,6 +81,9 @@ import { validateNodeMode, writeNodeConfig } from "./lib/nodeConfig.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
+import { SingleFlight } from "./lib/asyncPrimitives.js";
+import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSessionToken } from "./lib/buyerSession.js";
+import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -374,45 +400,22 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000
 }
 
 async function lndHealthCheck() {
-  const baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
-  const macVal =
-    process.env.LND_MACAROON_PATH ||
-    process.env.LND_INVOICE_MACAROON_PATH ||
-    process.env.LND_MACAROON_HEX ||
-    process.env.LND_MACAROON ||
-    "";
-  const macaroon = readMacaroon(macVal);
-  const cert = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
-
-  if (!baseUrl || !macaroon) {
+  const cfg = await getStoredLndConfig(prisma).catch(() => null);
+  if (!cfg) {
     return {
       status: "missing",
-      message: "LND env not configured",
-      endpoint: baseUrl || null,
-      hint: "Set LND_REST_URL and LND_MACAROON_PATH"
+      message: "Lightning node not configured",
+      endpoint: null,
+      hint: null
     };
   }
 
   try {
-    const dispatcher = cert ? new (await import("undici")).Agent({ connect: { ca: cert } }) : undefined;
-    const res = await fetchWithTimeout(
-      `${baseUrl}/v1/getinfo`,
-      {
-        method: "GET",
-        headers: { "Grpc-Metadata-Macaroon": macaroon },
-        dispatcher
-      } as any,
-      4000
-    );
-    if (!res.ok) {
-      const text = await res.text();
-      const mapped = mapLightningErrorMessage(text || `LND error ${res.status}`);
-      return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
-    }
-    return { status: "healthy", message: "LND reachable", endpoint: baseUrl, hint: null };
+    await probeLndConnection({ restUrl: cfg.restUrl, network: cfg.network, macaroonHex: cfg.macaroonHex, tlsCert: cfg.tlsCert || null });
+    return { status: "healthy", message: "LND reachable", endpoint: cfg.restUrl, hint: null };
   } catch (e: any) {
     const mapped = mapLightningErrorMessage(String(e?.message || e));
-    return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+    return { status: mapped.status, message: mapped.reason, endpoint: cfg.restUrl, hint: null };
   }
 }
 
@@ -641,38 +644,6 @@ function forbidden(reply: any) {
 
 const BUYER_SESSION_COOKIE = "cb_buyer_session";
 const BUYER_SESSION_DAYS = 30;
-const BUYER_OTP_TTL_MS = 10 * 60 * 1000;
-const BUYER_OTP_MAX_ATTEMPTS = 5;
-
-function isProbablyEmail(email: string): boolean {
-  return /.+@.+/.test(String(email || "").trim());
-}
-
-function hashOtp(code: string): string {
-  return crypto.createHash("sha256").update(String(code)).digest("hex");
-}
-
-async function sendOtpEmail(toEmail: string, code: string, expiryMinutes: number) {
-  if (!smtpConfigured()) throw new Error("SMTP_NOT_CONFIGURED");
-  const transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS
-    }
-  });
-  const subject = "Your ContentBox sign-in code";
-  const text = `Your ContentBox sign-in code is ${code}. It expires in ${expiryMinutes} minutes.`;
-  await transporter.sendMail({
-    from: SMTP_FROM,
-    to: toEmail,
-    replyTo: SMTP_REPLY_TO || undefined,
-    subject,
-    text
-  });
-}
 
 function getCookie(req: any, name: string): string | null {
   try {
@@ -702,20 +673,23 @@ function isSecureRequest(req: any): boolean {
 }
 
 function buildBuyerSessionCookie(sessionId: string, req: any, maxAgeSeconds: number): string {
-  const secure = isSecureRequest(req);
+  const maxAge = Math.max(1, Math.floor(maxAgeSeconds));
+  const expMs = Date.now() + maxAge * 1000;
+  const token = createBuyerSessionToken(sessionId, JWT_SECRET, expMs);
+  const secure = isSecureRequest(req) || String(process.env.NODE_ENV || "").trim() === "production";
   const parts = [
-    `${BUYER_SESSION_COOKIE}=${encodeURIComponent(sessionId)}`,
+    `${BUYER_SESSION_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    `Max-Age=${Math.max(1, Math.floor(maxAgeSeconds))}`
+    `Max-Age=${maxAge}`
   ];
   if (secure) parts.push("Secure");
   return parts.join("; ");
 }
 
 function buildBuyerClearCookie(req: any): string {
-  const secure = isSecureRequest(req);
+  const secure = isSecureRequest(req) || String(process.env.NODE_ENV || "").trim() === "production";
   const parts = [
     `${BUYER_SESSION_COOKIE}=`,
     "Path=/",
@@ -799,23 +773,6 @@ const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .map((v) => v.trim())
   .filter(Boolean);
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
-const isProd = String(process.env.NODE_ENV || "").trim() === "production";
-const SMTP_HOST = String(process.env.SMTP_HOST || "").trim();
-const SMTP_PORT = Number(process.env.SMTP_PORT || "");
-const SMTP_USER = String(process.env.SMTP_USER || "").trim();
-const SMTP_PASS = String(process.env.SMTP_PASS || "").trim();
-const SMTP_FROM = String(process.env.SMTP_FROM || "").trim();
-const SMTP_REPLY_TO = String(process.env.SMTP_REPLY_TO || "").trim();
-const SMTP_SECURE = (() => {
-  const raw = String(process.env.SMTP_SECURE || "").trim().toLowerCase();
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  return Number(SMTP_PORT) === 465;
-})();
-
-function smtpConfigured(): boolean {
-  return Boolean(SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS && SMTP_FROM);
-}
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
 const STARTED_AT = new Date().toISOString();
@@ -825,7 +782,7 @@ const WHOAMI_ALLOW_REMOTE = process.env.WHOAMI_ALLOW_REMOTE === "1";
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
-const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60 * 60 * 24 * 7, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || String(60 * 60 * 24 * 7))));
 if (!fsSync.existsSync(QUICK_TUNNEL_CONFIG_PATH)) {
   try {
     fsSync.writeFileSync(QUICK_TUNNEL_CONFIG_PATH, "");
@@ -4000,110 +3957,15 @@ app.post("/auth/login", async (req, reply) => {
 /**
  * Buyer lightweight auth (public)
  */
-app.post("/api/buyer/start", async (req: any, reply: any) => {
-  const body = (req.body ?? {}) as { email?: string };
-  const email = normalizeEmail(body?.email);
-  if (!email || !isProbablyEmail(email)) return badRequest(reply, "valid email required");
-
-  await prisma.buyer.upsert({
-    where: { email },
-    create: { email },
-    update: {}
-  });
-
-  const code = String(Math.floor(Math.random() * 1000000)).padStart(6, "0");
-  const codeHash = hashOtp(code);
-  const expiresAt = new Date(Date.now() + BUYER_OTP_TTL_MS);
-  const expiryMinutes = Math.max(1, Math.floor(BUYER_OTP_TTL_MS / 60000));
-
-  await prisma.buyerOtp.create({
-    data: {
-      email,
-      codeHash,
-      expiresAt
-    }
-  });
-
-  if (smtpConfigured()) {
-    try {
-      await sendOtpEmail(email, code, expiryMinutes);
-      if (isProd) return reply.send({ ok: true });
-      return reply.send({ ok: true, devCode: code });
-    } catch {
-      if (isProd) {
-        return reply.code(503).send({ error: "Email delivery is temporarily unavailable." });
-      }
-      return reply.send({ ok: true, devCode: code });
-    }
+async function resolveBuyerSession(req: any, reply: any): Promise<{ id: string; buyer: { id: string; email: string } } | null> {
+  const rawToken = getCookie(req, BUYER_SESSION_COOKIE);
+  if (!rawToken) return null;
+  const verified = verifyBuyerSessionToken(rawToken, JWT_SECRET);
+  if (!verified) {
+    reply.header("Set-Cookie", buildBuyerClearCookie(req));
+    return null;
   }
-
-  if (isProd) {
-    return reply.code(503).send({ error: "Email login is not enabled for this shop yet." });
-  }
-
-  return reply.send({ ok: true, devCode: code });
-});
-
-app.post("/api/buyer/verify", async (req: any, reply: any) => {
-  const body = (req.body ?? {}) as { email?: string; code?: string };
-  const email = normalizeEmail(body?.email);
-  const code = asString(body?.code || "").trim();
-  if (!email || !isProbablyEmail(email)) return badRequest(reply, "valid email required");
-  if (!code || code.length < 4) return badRequest(reply, "code required");
-
-  const otp = await prisma.buyerOtp.findFirst({
-    where: { email, consumedAt: null },
-    orderBy: { createdAt: "desc" }
-  });
-  if (!otp) return reply.code(400).send({ error: "Invalid or expired code" });
-
-  const now = new Date();
-  if (otp.expiresAt.getTime() < Date.now()) {
-    await prisma.buyerOtp.update({ where: { id: otp.id }, data: { consumedAt: now } }).catch(() => {});
-    return reply.code(400).send({ error: "Invalid or expired code" });
-  }
-  if (otp.attempts >= BUYER_OTP_MAX_ATTEMPTS) {
-    await prisma.buyerOtp.update({ where: { id: otp.id }, data: { consumedAt: now } }).catch(() => {});
-    return reply.code(400).send({ error: "Invalid or expired code" });
-  }
-
-  const nextAttempts = otp.attempts + 1;
-  const matches = hashOtp(code) === otp.codeHash;
-  if (!matches) {
-    await prisma.buyerOtp.update({
-      where: { id: otp.id },
-      data: { attempts: nextAttempts, consumedAt: nextAttempts >= BUYER_OTP_MAX_ATTEMPTS ? now : null }
-    });
-    return reply.code(400).send({ error: "Invalid or expired code" });
-  }
-
-  await prisma.buyerOtp.update({
-    where: { id: otp.id },
-    data: { attempts: nextAttempts, consumedAt: now }
-  });
-
-  const buyer = await prisma.buyer.upsert({
-    where: { email },
-    create: { email, lastLoginAt: now },
-    update: { lastLoginAt: now }
-  });
-
-  const expiresAt = new Date(Date.now() + BUYER_SESSION_DAYS * 24 * 60 * 60 * 1000);
-  const session = await prisma.buyerSession.create({
-    data: {
-      buyerId: buyer.id,
-      expiresAt
-    }
-  });
-
-  reply.header("Set-Cookie", buildBuyerSessionCookie(session.id, req, BUYER_SESSION_DAYS * 24 * 60 * 60));
-  return reply.send({ ok: true, buyer: { email: buyer.email } });
-});
-
-app.get("/api/buyer/me", async (req: any, reply: any) => {
-  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
-  if (!sessionId) return reply.send({ buyer: null });
-
+  const sessionId = verified.sid;
   const session = await prisma.buyerSession.findUnique({
     where: { id: sessionId },
     include: { buyer: true }
@@ -4113,14 +3975,65 @@ app.get("/api/buyer/me", async (req: any, reply: any) => {
       await prisma.buyerSession.delete({ where: { id: session.id } }).catch(() => {});
     }
     reply.header("Set-Cookie", buildBuyerClearCookie(req));
-    return reply.send({ buyer: null });
+    return null;
+  }
+  return session as any;
+}
+
+async function getOrCreateBuyerSession(req: any, reply: any) {
+  const existing = await resolveBuyerSession(req, reply);
+  if (existing) {
+    await prisma.buyer.update({
+      where: { id: existing.buyer.id },
+      data: { lastLoginAt: new Date() }
+    }).catch(() => {});
+    return existing;
   }
 
-  return reply.send({ buyer: { id: session.buyer.id, email: session.buyer.email } });
+  const now = new Date();
+  const buyer = await prisma.buyer.create({
+    data: {
+      email: `local+${crypto.randomUUID()}@contentbox.local`,
+      lastLoginAt: now
+    }
+  });
+  const expiresAt = new Date(Date.now() + BUYER_SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const session = await prisma.buyerSession.create({
+    data: {
+      buyerId: buyer.id,
+      expiresAt
+    },
+    include: { buyer: true }
+  });
+  reply.header("Set-Cookie", buildBuyerSessionCookie(session.id, req, BUYER_SESSION_DAYS * 24 * 60 * 60));
+  return session;
+}
+
+app.post("/api/buyer/bootstrap", async (req: any, reply: any) => {
+  const session = await getOrCreateBuyerSession(req, reply);
+  return reply.send({ ok: true, buyer: { id: session.buyer.id } });
+});
+
+// Backward-compatible endpoints intentionally do not create sessions.
+app.post("/api/buyer/start", async (req: any, reply: any) => {
+  const session = await getOrCreateBuyerSession(req, reply);
+  return reply.send({ ok: true, buyer: { id: session.buyer.id } });
+});
+
+app.post("/api/buyer/verify", async (req: any, reply: any) => {
+  const session = await getOrCreateBuyerSession(req, reply);
+  return reply.send({ ok: true, buyer: { id: session.buyer.id } });
+});
+
+app.get("/api/buyer/me", async (req: any, reply: any) => {
+  const session = await resolveBuyerSession(req, reply);
+  if (!session) return reply.send({ buyer: null });
+  return reply.send({ buyer: { id: session.buyer.id } });
 });
 
 app.post("/api/buyer/logout", async (req: any, reply: any) => {
-  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
+  const rawToken = getCookie(req, BUYER_SESSION_COOKIE);
+  const sessionId = verifyBuyerSessionToken(rawToken, JWT_SECRET)?.sid || resolveBuyerSessionIdFromToken(rawToken, JWT_SECRET);
   if (sessionId) {
     await prisma.buyerSession.delete({ where: { id: sessionId } }).catch(() => {});
   }
@@ -4129,25 +4042,11 @@ app.post("/api/buyer/logout", async (req: any, reply: any) => {
 });
 
 async function requireBuyerSession(req: any, reply: any) {
-  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
-  if (!sessionId) {
+  const session = await resolveBuyerSession(req, reply);
+  if (!session) {
     reply.code(401).send({ error: "Buyer session required" });
     return null;
   }
-
-  const session = await prisma.buyerSession.findUnique({
-    where: { id: sessionId },
-    include: { buyer: true }
-  });
-  if (!session || session.expiresAt.getTime() < Date.now()) {
-    if (session?.id) {
-      await prisma.buyerSession.delete({ where: { id: session.id } }).catch(() => {});
-    }
-    reply.header("Set-Cookie", buildBuyerClearCookie(req));
-    reply.code(401).send({ error: "Buyer session expired" });
-    return null;
-  }
-
   return session;
 }
 
@@ -8471,7 +8370,7 @@ async function handleBuyPage(req: any, reply: any) {
     const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
     const isPaid = Number(offer.priceSats || 0) > 0;
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
-    const hasBuyer = Boolean(buyer && buyer.email);
+    const hasBuyer = Boolean(buyer && buyer.id);
     const token = entitlement?.token || receiptToken || null;
     const mediaSrc = token ? streamUrl(offer, token) : previewFallbackUrl(offer) || streamUrl(offer, token);
     const mime = String(offer.primaryFileMime || "");
@@ -8498,6 +8397,7 @@ async function handleBuyPage(req: any, reply: any) {
             \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
         \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
+        \${entitlement?.status === "paid" || entitlement?.status === "bypassed" ? \`<div id="unlockBanner" class="step" style="border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\` : \`<div id="unlockBanner" class="step" style="display:none;border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\`}
         <div style="margin-top:8px;font-size:18px;">\${price}</div>
         \${(isPaid && !hidePay) ? \`
           <div class="step" id="stepContinue" style="\${hasBuyer ? "display:none;" : ""}">
@@ -8508,16 +8408,8 @@ async function handleBuyPage(req: any, reply: any) {
           </div>
           <div class="step" id="buyerAuth" style="display:none;">
             <h3>Step 2</h3>
-            <div class="muted">Sign in to continue.</div>
-            <div class="field">
-              <input id="buyerEmail" class="input" type="email" placeholder="you@example.com" />
-            </div>
-            <button id="buyerStart" class="btn" style="margin-top:10px;">Send code</button>
-            <div id="buyerDevCode" class="muted" style="margin-top:8px;"></div>
-            <div id="buyerCodeWrap" style="display:none; margin-top:8px;">
-              <input id="buyerCode" class="input" type="text" placeholder="Enter 6-digit code" />
-              <button id="buyerVerify" class="btn" style="margin-top:10px;">Verify</button>
-            </div>
+            <div class="muted">Start a local session to continue.</div>
+            <button id="buyerStart" class="btn" style="margin-top:10px;">Continue</button>
             <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
           </div>
           <div class="step" id="paySection" style="\${hasBuyer ? "" : "display:none;"}">
@@ -8539,92 +8431,44 @@ async function handleBuyPage(req: any, reply: any) {
     app.querySelectorAll("button[data-copy]").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
     if (requiresPayment) {
       const continueBtn = document.getElementById("continueBtn");
-      if (buyer && buyer.email) {
-        setBuyerStatus("Signed in as " + buyer.email);
+      if (buyer && buyer.id) {
+        setBuyerStatus("Signed in locally");
         toggleDisplay("buyerAuth", false);
         toggleDisplay("paySection", true);
         toggleDisplay("stepContinue", false);
       } else {
-        setBuyerStatus("Sign in required to pay.");
+        setBuyerStatus("Local session required to pay.");
       }
 
-      if (continueBtn && !(buyer && buyer.email)) {
-        continueBtn.onclick = () => {
-          if (buyer && buyer.email) {
+      if (continueBtn && !(buyer && buyer.id)) {
+        continueBtn.onclick = async () => {
+          try {
+            const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+            buyer = res?.buyer || null;
             toggleDisplay("buyerAuth", false);
             toggleDisplay("paySection", true);
-            setBuyerStatus("Signed in as " + buyer.email);
-          } else {
-            toggleDisplay("buyerAuth", true);
+            setBuyerStatus("Signed in locally");
+          } catch (e) {
+            setBuyerStatus((e && e.message) ? e.message : "Unable to start local session.");
           }
         };
-      }
-
-      const emailInput = document.getElementById("buyerEmail");
-      if (emailInput) {
-        const cached = window.localStorage.getItem("cb:buyer:email") || "";
-        emailInput.value = buyer?.email || cached;
       }
 
       const startBtn = document.getElementById("buyerStart");
-      const verifyBtn = document.getElementById("buyerVerify");
-      const codeWrap = document.getElementById("buyerCodeWrap");
-      const devCodeEl = document.getElementById("buyerDevCode");
       const errorEl = document.getElementById("buyerError");
-      const statusEl = document.getElementById("status");
-      const disableBuyerLogin = (msg) => {
-        if (errorEl) errorEl.textContent = msg || "";
-        if (statusEl) statusEl.textContent = msg || "";
-        if (startBtn) startBtn.disabled = true;
-        if (verifyBtn) verifyBtn.disabled = true;
-        const buyBtn = document.getElementById("buyBtn");
-        if (buyBtn) buyBtn.disabled = true;
-      };
 
       if (startBtn) {
         startBtn.onclick = async () => {
-          const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-          if (!email) {
-            if (errorEl) errorEl.textContent = "Email required.";
-            return;
-          }
-          window.localStorage.setItem("cb:buyer:email", email);
-          if (errorEl) errorEl.textContent = "";
-          if (devCodeEl) devCodeEl.textContent = "";
-          if (codeWrap) codeWrap.style.display = "none";
-          try {
-            const res = await fetchJson("/api/buyer/start", { method: "POST", body: { email } });
-            if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
-            if (codeWrap) codeWrap.style.display = "";
-          } catch (e) {
-            const msg = (e && e.message) ? e.message : "Unable to start.";
-            if (msg.includes("Email login is not enabled")) {
-              disableBuyerLogin("This shop hasn't enabled email login yet.");
-              return;
-            }
-            if (errorEl) errorEl.textContent = msg;
-          }
-        };
-      }
-
-      if (verifyBtn) {
-        verifyBtn.onclick = async () => {
-          const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-          const codeInput = document.getElementById("buyerCode");
-          const code = String(codeInput && codeInput.value ? codeInput.value : "").trim();
-          if (!email || !code) {
-            if (errorEl) errorEl.textContent = "Email and code required.";
-            return;
-          }
           if (errorEl) errorEl.textContent = "";
           try {
-            const res = await fetchJson("/api/buyer/verify", { method: "POST", body: { email, code } });
-            buyer = res?.buyer || { email };
+            const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+            buyer = res?.buyer || null;
             toggleDisplay("buyerAuth", false);
             toggleDisplay("paySection", true);
-            setBuyerStatus("Signed in as " + buyer.email);
+            setBuyerStatus("Signed in locally");
           } catch (e) {
-            if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Invalid code.";
+            const msg = (e && e.message) ? e.message : "Unable to start.";
+            if (errorEl) errorEl.textContent = msg;
           }
         };
       }
@@ -8674,6 +8518,8 @@ async function handleBuyPage(req: any, reply: any) {
     const lightning = intent.paymentOptions?.lightning || {};
     const onchain = intent.paymentOptions?.onchain || {};
     const receiptLink = apiBase + "/buy/receipts/" + intent.receiptToken + "/status";
+    const lightningInvoice = String(lightning.bolt11 || "");
+    const hasLightningInvoice = Boolean(lightningInvoice);
     rails.innerHTML = \`
       <div class="row">
         <div class="rail">
@@ -8681,7 +8527,10 @@ async function handleBuyPage(req: any, reply: any) {
           \${lightning.available ? \`
             <img alt="Lightning QR" src="\${qrUrl(lightning.bolt11)}" />
             <div class="code">\${lightning.bolt11}</div>
-            <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+              <button id="openWalletBtn" class="btn">\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</button>
+              <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
+            </div>
           \` : \`<div class="muted">Unavailable: \${lightning.reason || "Not available"}</div>\`}
         </div>
         <div class="rail">
@@ -8698,6 +8547,15 @@ async function handleBuyPage(req: any, reply: any) {
       <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
     \`;
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+    const openWalletBtn = document.getElementById("openWalletBtn");
+    if (openWalletBtn) {
+      if (!hasLightningInvoice) openWalletBtn.setAttribute("disabled", "disabled");
+      openWalletBtn.addEventListener("click", () => {
+        if (!hasLightningInvoice) return;
+        try { window.location.href = "lightning:" + lightningInvoice; } catch {}
+        startReceiptPolling(60_000, 2_000);
+      });
+    }
   }
 
   function renderManual(intent){
@@ -8742,22 +8600,38 @@ async function handleBuyPage(req: any, reply: any) {
     pollStatus().catch(()=>{});
   }
 
+  function startReceiptPolling(maxDurationMs, intervalMs){
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    const startedAt = Date.now();
+    pollTimer = setInterval(async () => {
+      if (Date.now() - startedAt > maxDurationMs) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        return;
+      }
+      await pollStatus().catch(()=>{});
+    }, intervalMs);
+    pollStatus().catch(()=>{});
+  }
+
   async function pollStatus(){
     if (!receiptToken) return;
     const status = await fetchJson("/buy/receipts/" + receiptToken + "/status");
     if (status?.receiptToken && status.receiptToken !== receiptToken) {
       receiptToken = status.receiptToken;
     }
-    const paid = status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
+    const paid = status.access === "unlocked" || status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
     if (paid) {
       clearManualIntent();
-      clearInterval(pollTimer);
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
       if (currentOffer?.manifestSha256) {
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
         renderOffer(currentOffer, ent, alreadyOwned);
       }
+      const banner = document.getElementById("unlockBanner");
+      if (banner) banner.style.display = "";
       document.getElementById("status").textContent = "Payment received. Download is ready.";
     } else {
       document.getElementById("status").textContent = "Waiting for payment…";
@@ -8765,11 +8639,15 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   async function startPurchase(offer){
-    if (!buyer || !buyer.email) {
-      const statusEl = document.getElementById("status");
-      if (statusEl) statusEl.textContent = "Sign in required to pay.";
-      toggleDisplay("buyerAuth", true);
-      return;
+    if (!buyer || !buyer.id) {
+      try {
+        const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+        buyer = res?.buyer || null;
+      } catch {
+        const statusEl = document.getElementById("status");
+        if (statusEl) statusEl.textContent = "Unable to initialize buyer session.";
+        return;
+      }
     }
     const statusEl = document.getElementById("status");
     if (productTier === "basic" && !sellerLightningAddress) {
@@ -8821,8 +8699,7 @@ async function handleBuyPage(req: any, reply: any) {
     }
     receiptToken = intent.receiptToken;
     renderRails(intent);
-    pollTimer = setInterval(pollStatus, 2000);
-    pollStatus().catch(()=>{});
+    startReceiptPolling(60_000, 2_000);
   }
 
   if (productTier === "basic") {
@@ -8945,7 +8822,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
   }
 
   function render(){
-    if (!buyer || !buyer.email) {
+    if (!buyer || !buyer.id) {
       renderAuth();
       return;
     }
@@ -8967,7 +8844,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
           <div>
             <div style="font-size:22px;font-weight:700;">Library</div>
-            <div class="muted">Signed in as \${buyer.email}</div>
+            <div class="muted">Signed in locally</div>
           </div>
           <button id="logoutBtn" class="btn secondary">Sign out</button>
         </div>
@@ -8993,82 +8870,28 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">Library</div>
-        <div class="muted">Sign in to view your purchases.</div>
+        <div class="muted">Start local session to view your purchases.</div>
         <div class="step" id="buyerAuth">
-          <h3>Sign in</h3>
-          <div class="field">
-            <input id="buyerEmail" class="input" type="email" placeholder="you@example.com" />
-          </div>
-          <button id="buyerStart" class="btn" style="margin-top:10px;">Send code</button>
-          <div id="buyerDevCode" class="muted" style="margin-top:8px;"></div>
-          <div id="buyerCodeWrap" style="display:none; margin-top:8px;">
-            <input id="buyerCode" class="input" type="text" placeholder="Enter 6-digit code" />
-            <button id="buyerVerify" class="btn" style="margin-top:10px;">Verify</button>
-          </div>
+          <h3>Local session</h3>
+          <button id="buyerStart" class="btn" style="margin-top:10px;">Continue</button>
           <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
         </div>
       </div>
     \`;
 
-    const emailInput = document.getElementById("buyerEmail");
-    if (emailInput) {
-      const cached = window.localStorage.getItem("cb:buyer:email") || "";
-      emailInput.value = cached;
-    }
-
     const startBtn = document.getElementById("buyerStart");
-    const verifyBtn = document.getElementById("buyerVerify");
-    const codeWrap = document.getElementById("buyerCodeWrap");
-    const devCodeEl = document.getElementById("buyerDevCode");
     const errorEl = document.getElementById("buyerError");
-    const disableBuyerLogin = (msg) => {
-      if (errorEl) errorEl.textContent = msg || "";
-      if (startBtn) startBtn.disabled = true;
-      if (verifyBtn) verifyBtn.disabled = true;
-    };
 
     if (startBtn) {
       startBtn.onclick = async () => {
-        const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-        if (!email) {
-          if (errorEl) errorEl.textContent = "Email required.";
-          return;
-        }
-        window.localStorage.setItem("cb:buyer:email", email);
-        if (errorEl) errorEl.textContent = "";
-        if (devCodeEl) devCodeEl.textContent = "";
-        if (codeWrap) codeWrap.style.display = "none";
-        try {
-          const res = await fetchJson("/api/buyer/start", { method: "POST", body: { email } });
-          if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
-          if (codeWrap) codeWrap.style.display = "";
-        } catch (e) {
-          const msg = (e && e.message) ? e.message : "Unable to start.";
-          if (msg.includes("Email login is not enabled")) {
-            disableBuyerLogin("This shop hasn't enabled email login yet.");
-            return;
-          }
-          if (errorEl) errorEl.textContent = msg;
-        }
-      };
-    }
-
-    if (verifyBtn) {
-      verifyBtn.onclick = async () => {
-        const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-        const codeInput = document.getElementById("buyerCode");
-        const code = String(codeInput && codeInput.value ? codeInput.value : "").trim();
-        if (!email || !code) {
-          if (errorEl) errorEl.textContent = "Email and code required.";
-          return;
-        }
         if (errorEl) errorEl.textContent = "";
         try {
-          const res = await fetchJson("/api/buyer/verify", { method: "POST", body: { email, code } });
-          buyer = res?.buyer || { email };
+          const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+          buyer = res?.buyer || null;
           fetchEntitlements().then(render);
         } catch (e) {
-          if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Invalid code.";
+          const msg = (e && e.message) ? e.message : "Unable to start.";
+          if (errorEl) errorEl.textContent = msg;
         }
       };
     }
@@ -9217,7 +9040,7 @@ async function handlePublicOffer(req: any, reply: any) {
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const baseUrl = host ? `${proto}://${host}` : null;
-  const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+  const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
   const priceSats = content.priceSats ?? null;
   if (!allowDraftPreview) {
@@ -9260,6 +9083,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const buyerId = buyerSession?.buyer?.id || null;
   const { productTier } = resolveProductTier();
   if (content.priceSats == null) {
     return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
@@ -9277,13 +9102,29 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   const manifestSha256 = asString(body.manifestSha256 || manifest.sha256).trim();
   if (manifest.sha256 !== manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
 
-  const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+  if (buyerId) {
+    const owned = await prisma.entitlement.findFirst({
+      where: { buyerId, contentId },
+      orderBy: { grantedAt: "desc" }
+    });
+    if (owned) {
+      return reply.send({
+        ok: true,
+        alreadyOwned: true,
+        contentId,
+        manifestSha256: owned.manifestSha256 || manifestSha256
+      });
+    }
+  }
+
+  const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
   const receiptToken = crypto.randomBytes(24).toString("hex");
   const receiptTokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
   const intent = await prisma.paymentIntent.create({
     data: {
       buyerUserId: null,
+      buyerId,
       contentId,
       manifestSha256,
       amountSats,
@@ -9354,7 +9195,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   }
 
   try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
+    const invoice = await createLightningInvoice(prisma as any, amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
     if (invoice) lightning = invoice;
   } catch (e: any) {
     app.log.warn({ err: e }, "lnbits invoice failed");
@@ -9405,6 +9246,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   return reply.send({
     ok: true,
+    buyerId,
     paymentIntentId: intent.id,
     status: intent.status,
     amountSats: intent.amountSats.toString(),
@@ -9490,6 +9332,31 @@ app.post("/p2p/permits", handlePublicPermits);
 app.post("/public/permits", handlePublicPermits);
 app.post("/buy/permits", handlePublicPermits);
 
+async function hasAccess(buyerId: string | null | undefined, contentId: string): Promise<boolean> {
+  const bid = String(buyerId || "").trim();
+  if (!bid) return false;
+  const hit = await prisma.entitlement.findFirst({
+    where: { buyerId: bid, contentId },
+    select: { id: true }
+  });
+  // TODO(model-b): extend with time-pass entitlement checks when that model is introduced.
+  return Boolean(hit);
+}
+
+function buyerIdFromIntent(intent: any): string | null {
+  const v = String(intent?.buyerId || "").trim();
+  return v || null;
+}
+
+function resolveAccessBuyerId(intent: any, cookieBuyerId: string | null): { buyerId: string | null; warning: string | null } {
+  const intentBuyerId = buyerIdFromIntent(intent);
+  const cookieId = String(cookieBuyerId || "").trim() || null;
+  if (intentBuyerId && cookieId && intentBuyerId !== cookieId) {
+    return { buyerId: intentBuyerId, warning: "BUYER_SESSION_MISMATCH_USING_INTENT_BUYER" };
+  }
+  return { buyerId: intentBuyerId || cookieId, warning: null };
+}
+
 async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
@@ -9504,6 +9371,32 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
 
+  if (intent.status !== "paid") {
+    try {
+      const refreshed = await settlePaymentIntentFromRails(intent.id);
+      if (refreshed?.intent) intent = refreshed.intent;
+    } catch {}
+  }
+
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const accessBuyer = resolveAccessBuyerId(intent, cookieBuyerId);
+  const buyerId = accessBuyer.buyerId;
+  if (buyerId && intent.status === "paid") {
+    await prisma.entitlement.upsert({
+      where: { buyerId_contentId: { buyerId, contentId: intent.contentId } },
+      update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
+      create: {
+        buyerId,
+        buyerUserId: null,
+        contentId: intent.contentId,
+        manifestSha256: intent.manifestSha256 || "",
+        paymentIntentId: intent.id
+      }
+    }).catch(() => {});
+  }
+  const accessUnlocked = intent.status === "paid" || (buyerId ? await hasAccess(buyerId, intent.contentId) : false);
+
   return reply.send({
     status: intent.status,
     paymentStatus: intent.status,
@@ -9511,7 +9404,9 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
     receiptToken: intent.receiptToken || null,
-    canFulfill: intent.status === "paid"
+    canFulfill: accessUnlocked,
+    access: accessUnlocked ? "unlocked" : "pending",
+    warning: accessBuyer.warning || undefined
   });
 }
 
@@ -9527,43 +9422,54 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
   if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
-  if (intent.status !== "paid") return reply.code(402).send({ error: "Payment not settled" });
-  if (!intent.manifestSha256) return badRequest(reply, "manifestSha256 required");
+  let latestIntent = intent;
+  if (latestIntent.status !== "paid") {
+    try {
+      const refreshed = await settlePaymentIntentFromRails(latestIntent.id);
+      if (refreshed?.intent) latestIntent = refreshed.intent as any;
+    } catch {}
+  }
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const accessBuyer = resolveAccessBuyerId(latestIntent, cookieBuyerId);
+  const buyerId = accessBuyer.buyerId;
+  const canAccess = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
+  if (!canAccess && latestIntent.status === "paid" && buyerId) {
+    await prisma.entitlement.upsert({
+      where: { buyerId_contentId: { buyerId, contentId: latestIntent.contentId } },
+      update: { paymentIntentId: latestIntent.id, manifestSha256: latestIntent.manifestSha256 || "" },
+      create: {
+        buyerId,
+        buyerUserId: null,
+        contentId: latestIntent.contentId,
+        manifestSha256: latestIntent.manifestSha256 || "",
+        paymentIntentId: latestIntent.id
+      }
+    }).catch(() => {});
+  }
+  const canAccessAfterGrant = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
+  if (!canAccessAfterGrant) return reply.code(402).send({ error: "Payment not settled" });
+  if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
 
-  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content) return notFound(reply, "Content not found");
-  const manifest = await prisma.manifest.findUnique({ where: { contentId: intent.contentId } });
-  if (!manifest || manifest.sha256 !== intent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
+  const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
+  if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
 
   try {
-    await finalizePurchase(intent.id, prisma);
+    await finalizePurchase(latestIntent.id, prisma);
   } catch {}
 
-  if (intent.buyerUserId) {
-    await prisma.entitlement.upsert({
-      where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId: intent.contentId, manifestSha256: intent.manifestSha256 } },
-      update: { paymentIntentId: intent.id },
-      create: { buyerUserId: intent.buyerUserId, contentId: intent.contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
-    }).catch(() => {});
-  } else {
-    const existingEntitlement = await prisma.entitlement.findFirst({
-      where: { buyerUserId: null, contentId: intent.contentId, manifestSha256: intent.manifestSha256 }
-    });
-    if (!existingEntitlement) {
-      await prisma.entitlement.create({
-        data: { buyerUserId: null, contentId: intent.contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
-      }).catch(() => {});
-    }
-  }
+  // Entitlement is now keyed by buyerId from cookie session.
 
   const files = await prisma.contentFile.findMany({
-    where: { contentId: intent.contentId },
+    where: { contentId: latestIntent.contentId },
     orderBy: { createdAt: "asc" }
   });
   const manifestJson = manifest.json as any;
   return reply.send({
     ok: true,
-    contentId: intent.contentId,
+    contentId: latestIntent.contentId,
     manifestSha256: manifest.sha256,
     manifest: manifestJson,
     manifestJson,
@@ -9596,20 +9502,32 @@ async function handlePublicReceiptFile(req: any, reply: any) {
   if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
-  if (intent.status !== "paid") return reply.code(402).send({ error: "Payment not settled" });
-  if (!intent.manifestSha256) return badRequest(reply, "manifestSha256 required");
+  let latestIntent = intent;
+  if (latestIntent.status !== "paid") {
+    try {
+      const refreshed = await settlePaymentIntentFromRails(latestIntent.id);
+      if (refreshed?.intent) latestIntent = refreshed.intent as any;
+    } catch {}
+  }
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const accessBuyer = resolveAccessBuyerId(latestIntent, cookieBuyerId);
+  const buyerId = accessBuyer.buyerId;
+  const canAccess = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
+  if (!canAccess) return reply.code(402).send({ error: "Payment not settled" });
+  if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
 
-  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content || !content.repoPath) return notFound(reply, "Content not found");
 
-  const manifest = await prisma.manifest.findUnique({ where: { contentId: intent.contentId } });
-  if (!manifest || manifest.sha256 !== intent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
+  const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
+  if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
   const manifestJson = manifest.json as any;
   const manifestFiles = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
   const inManifest = manifestFiles.some((f: any) => f?.path === objectKey || f?.filename === objectKey);
 
   const file = await prisma.contentFile.findFirst({
-    where: { contentId: intent.contentId, objectKey }
+    where: { contentId: latestIntent.contentId, objectKey }
   });
   if (!file) return notFound(reply, "File not found");
   if (manifestFiles.length > 0 && !inManifest) return forbidden(reply);
@@ -10178,6 +10096,8 @@ async function handlePublicContentFile(req: any, reply: any) {
   let accessMode: "preview" | "stream" = "stream";
   let preview: { maxBytes: number } | null = null;
   const previewEnabled = String(process.env.PREVIEW_ENABLED || "1") !== "0";
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const buyerId = buyerSession?.buyer?.id || null;
 
   if (priceSats > 0n) {
     let entitlementOk = false;
@@ -10206,8 +10126,23 @@ async function handlePublicContentFile(req: any, reply: any) {
         }
       } else {
         const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken: token } });
-        if (intent && intent.contentId === content.id && intent.status === "paid") {
-          entitlementOk = true;
+        if (intent && intent.contentId === content.id) {
+          const accessBuyer = resolveAccessBuyerId(intent, buyerId);
+          const targetBuyerId = accessBuyer.buyerId;
+          if (intent.status === "paid" && targetBuyerId) {
+            await prisma.entitlement.upsert({
+              where: { buyerId_contentId: { buyerId: targetBuyerId, contentId: content.id } },
+              update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
+              create: {
+                buyerId: targetBuyerId,
+                buyerUserId: null,
+                contentId: content.id,
+                manifestSha256: intent.manifestSha256 || "",
+                paymentIntentId: intent.id
+              }
+            }).catch(() => {});
+          }
+          entitlementOk = intent.status === "paid" || (targetBuyerId ? await hasAccess(targetBuyerId, content.id) : false);
         }
       }
     }
@@ -10217,6 +10152,10 @@ async function handlePublicContentFile(req: any, reply: any) {
         accessMode = "preview";
         if (!preview) preview = { maxBytes: previewMaxBytesFor(mime, content.type) };
       } else {
+        if (token) {
+          reply.code(403);
+          return reply.send({ error: "Access denied", code: "ACCESS_NOT_ENTITLED" });
+        }
         reply.code(402);
         return reply.send({ error: "Payment required", code: "PAYMENT_REQUIRED" });
       }
@@ -11207,7 +11146,7 @@ async function settlePaymentIntent(paymentIntentId: string) {
 }
 
 type FinalizePaymentIntentOptions = {
-  rail: "manual_lightning" | "provider_invoice" | "node_invoice";
+  rail: "manual_lightning" | "provider_invoice" | "node_invoice" | "onchain";
   confirmedByUserId?: string | null;
 };
 
@@ -11615,7 +11554,9 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
       status: "pending" as any,
       purpose: "CONTENT_PURCHASE" as any,
       subjectType: "CONTENT" as any,
-      subjectId
+      subjectId,
+      receiptToken: crypto.randomBytes(24).toString("hex"),
+      receiptTokenExpiresAt: new Date(Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000)
     }
   });
 
@@ -11653,39 +11594,37 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
     if (!onchain && !onchainReason) onchainReason = "On-chain not configured";
   }
 
-  let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
-  try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${subjectId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
-    if (invoice) lightning = invoice;
-  } catch (e: any) {
-    app.log.warn({ err: e }, "lnbits invoice failed; continuing with on-chain only");
-  }
-
-  if (onchain?.address || lightning?.bolt11) {
+  if (onchain?.address) {
     await prisma.paymentIntent.update({
       where: { id: intent.id },
       data: {
-        onchainAddress: onchain?.address || null,
-        onchainDerivationIndex: onchain?.derivationIndex ?? null,
-        bolt11: lightning?.bolt11 || null,
-        providerId: lightning?.providerId || null,
-        lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null
+        onchainAddress: onchain.address,
+        onchainDerivationIndex: onchain?.derivationIndex ?? null
       }
     });
   }
 
+  let refreshedIntent = await ensureOrRotateLightningInvoiceForIntent(intent.id).catch(() => intent);
+  if (refreshedIntent.id !== intent.id) refreshedIntent = intent;
+
   return reply.send({
     ok: true,
     intentId: intent.id,
-    status: intent.status,
+    status: refreshedIntent.status,
     onchain: onchain ? { address: onchain.address } : null,
-    lightning: lightning ? { bolt11: lightning.bolt11, expiresAt: lightning.expiresAt } : null,
+    lightning: refreshedIntent.bolt11
+      ? {
+          bolt11: refreshedIntent.bolt11,
+          expiresAt: refreshedIntent.lightningExpiresAt ? refreshedIntent.lightningExpiresAt.toISOString() : null
+        }
+      : null,
     onchainReason
   });
 });
 
 async function getPaymentsReadiness(userId: string) {
   const productTier = resolveProductTier().productTier;
+  const paymentsMode = getPaymentsMode(productTier);
   if (productTier === "basic") {
     const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
     let lightningReady = false;
@@ -11704,6 +11643,53 @@ async function getPaymentsReadiness(userId: string) {
       ready: lightningReady,
       lightning: { ready: lightningReady, reason: lightningReason },
       onchain: { ready: false, reason: "NOT_SUPPORTED_BASIC" }
+    };
+  }
+
+  if (paymentsMode === "node") {
+    const lndStatus = await getLightningNodeConfigStatus(prisma as any);
+    let lightningReady = false;
+    let lightningReason: string | null = "NODE_NOT_CONFIGURED";
+    if (!lndStatus.endpoint) {
+      lightningReason = "NODE_ENDPOINT_MISSING";
+    } else if (!lndStatus.hasMacaroon) {
+      lightningReason = "NODE_NOT_CONFIGURED";
+    } else if (!lndStatus.decryptOk) {
+      lightningReason = "NODE_KEY_MISMATCH";
+    } else {
+      try {
+        const lndReadiness = await getLightningReadiness(prisma as any);
+        if (lndReadiness.nodeReachable) {
+          lightningReady = true;
+          lightningReason = null;
+        } else {
+          lightningReady = false;
+          lightningReason = "NODE_UNREACHABLE";
+        }
+      } catch {
+        lightningReady = false;
+        lightningReason = "NODE_UNREACHABLE";
+      }
+    }
+
+    let onchainReady = false;
+    let onchainReason: string | null = "NOT_CONFIGURED";
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId }
+      });
+      if (identity?.value) {
+        onchainReady = true;
+        onchainReason = null;
+      }
+    }
+
+    return {
+      mode: "node",
+      ready: lightningReady || onchainReady,
+      lightning: { ready: lightningReady, reason: lightningReason },
+      onchain: { ready: onchainReady, reason: onchainReason }
     };
   }
 
@@ -11749,7 +11735,7 @@ async function getPaymentsReadiness(userId: string) {
   }
 
   return {
-    mode: getPaymentsMode(),
+    mode: paymentsMode,
     ready: lightningReady || onchainReady,
     lightning: { ready: lightningReady, reason: lightningReason },
     onchain: { ready: onchainReady, reason: onchainReason }
@@ -11762,7 +11748,392 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
   return reply.send(readiness);
 });
 
-app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any) => {
+function normalizeLightningNetwork(value: unknown): "mainnet" | "testnet" | "regtest" | null {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "mainnet" || v === "bitcoin") return "mainnet";
+  if (v === "testnet" || v === "testnet3") return "testnet";
+  if (v === "regtest") return "regtest";
+  return null;
+}
+
+async function readMultipartPartBuffer(part: any, maxBytes = 1024 * 1024) {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of part.file) {
+    const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += b.length;
+    if (total > maxBytes) throw new Error("uploaded file too large");
+    chunks.push(b);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function parseLightningAdminRequest(req: any) {
+  const isMultipart = typeof req.isMultipart === "function" ? req.isMultipart() : false;
+  if (!isMultipart) {
+    throw new Error("multipart/form-data required");
+  }
+
+  let restUrl = "";
+  let networkRaw: unknown = "";
+  let macaroonBase64 = "";
+  let tlsCertPem: string | null = null;
+
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      const field = String(part.fieldname || "");
+      if (field === "macaroonFile" || field === "macaroon") {
+        const buf = await readMultipartPartBuffer(part, 512 * 1024);
+        macaroonBase64 = buf.toString("base64");
+      } else if (field === "tlsCertFile" || field === "tlsCert") {
+        const buf = await readMultipartPartBuffer(part, 512 * 1024);
+        tlsCertPem = buf.toString("utf8");
+      } else {
+        // drain unknown file parts to avoid hanging requests
+        await readMultipartPartBuffer(part, 512 * 1024).catch(() => {});
+      }
+      continue;
+    }
+
+    const field = String(part.fieldname || "");
+    const value = typeof part.value === "string" ? part.value : String(part.value ?? "");
+    if (field === "restUrl") restUrl = value.trim();
+    if (field === "network") networkRaw = value;
+  }
+
+  return { restUrl, networkRaw, macaroonBase64, tlsCertPem };
+}
+
+async function probeLightningDiscoverCandidate(restUrl: string): Promise<LightningDiscoveryCandidate | null> {
+  const target = `${restUrl.replace(/\/$/, "")}/v1/getinfo`;
+  try {
+    const res = await fetchWithTimeout(target, { method: "GET", headers: { Accept: "application/json" } as any } as any, 1500);
+    const text = await res.text();
+    let body: any = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+
+    return interpretLightningDiscoveryHttpProbe({ restUrl, status: res.status, text, json: body });
+  } catch (e: any) {
+    return interpretLightningDiscoveryError(restUrl, e);
+  }
+}
+
+function lightningDiscoveryTargets(): string[] {
+  const ports = [8080, 10009, 8443];
+  const hosts = ["127.0.0.1", "localhost"];
+  const out: string[] = [];
+  for (const host of hosts) {
+    for (const port of ports) {
+      out.push(`https://${host}:${port}`);
+      out.push(`http://${host}:${port}`);
+    }
+  }
+
+  const hints = [
+    String(process.env.LND_REST_URL || "").trim(),
+    String(process.env.CONTENTBOX_LND_REST_URL || "").trim()
+  ].filter(Boolean);
+  for (const h of hints) out.push(h.replace(/\/v1\/getinfo$/i, "").replace(/\/$/, ""));
+  return Array.from(new Set(out));
+}
+
+app.get("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    return reply.send(await getLightningNodeConfigMeta(prisma as any));
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/config/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const status = await getLightningNodeConfigStatus(prisma as any);
+    return reply.send({
+      configured: status.configured,
+      hasTlsCert: status.hasTlsCert,
+      hasMacaroon: status.hasMacaroon,
+      decryptOk: status.decryptOk,
+      endpoint: status.endpoint,
+      network: status.network,
+      lastUpdated: status.lastUpdated,
+      lastTestedAt: status.lastTestedAt,
+      lastStatus: status.lastStatus,
+      lastError: status.lastError,
+      warnings: status.warnings
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+// Quick curl test:
+// curl -X POST http://127.0.0.1:4000/api/admin/lightning/discover -H "Authorization: Bearer <JWT>"
+app.post("/api/admin/lightning/discover", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const candidates = (
+      await Promise.all(lightningDiscoveryTargets().map((u) => probeLightningDiscoverCandidate(u)))
+    ).filter((x): x is LightningDiscoveryCandidate => Boolean(x));
+
+    const deduped = Array.from(new Map(candidates.map((c) => [c.restUrl, c])).values());
+    if (!deduped.length) return reply.send({ ok: false, error: "No local LND REST endpoint found at default ports." });
+    return reply.send({ ok: true, candidates: deduped });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const readiness = await getLightningReadiness(prisma as any);
+    return reply.send(readiness);
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/channel-guidance", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    return reply.send({ ok: true, steps: getLightningChannelGuidanceSteps() });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/peers/suggestions", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const limitRaw = Number((req.query || {}).limit ?? 20);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
+    const out = await getPeerSuggestions(prisma as any, { limit, probeTop: 12 });
+    return reply.send({ status: "ok", peers: out.peers, meta: out.meta });
+  } catch (e: any) {
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/peers/probe", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { pubkey?: string; hostPort?: string };
+    const pubkey = asString(body.pubkey || "").trim();
+    const hostPort = asString(body.hostPort || "").trim();
+    if (!pubkey) return badRequest(reply, "pubkey required");
+    if (!hostPort) return badRequest(reply, "hostPort required");
+    const result = await probePeer(prisma as any, { pubkey, hostPort });
+    return reply.send({ status: "ok", ...result });
+  } catch (e: any) {
+    const code = String(e?.message || "");
+    if (code === "INVALID_PUBKEY" || code === "INVALID_HOSTPORT") return badRequest(reply, code);
+    if (code.startsWith("CONNECT_") || code === "NOT_CONNECTED_AFTER_CONNECT") {
+      return reply.code(502).send({ status: "error", error: "Peer unreachable right now. Pick another.", reason: code });
+    }
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/open-channel", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { peerPubKey?: string; capacitySats?: number | string; peerHost?: string | null };
+    const peerPubKey = asString(body.peerPubKey || "").trim();
+    const capacitySats = Math.floor(Number(body.capacitySats || 0));
+    const peerHost = body.peerHost == null ? null : asString(body.peerHost).trim() || null;
+    if (!peerPubKey) return badRequest(reply, "peerPubKey required");
+    if (!Number.isFinite(capacitySats) || capacitySats <= 0) return badRequest(reply, "capacitySats required");
+
+    const result = await openLightningChannel(prisma as any, { peerPubKey, capacitySats, host: peerHost });
+    return reply.send(result);
+  } catch (e: any) {
+    const code = String(e?.message || "");
+    if (code === "INVALID_PUBKEY" || code === "INVALID_HOSTPORT") return badRequest(reply, code);
+    if (code === "MIN_CHAN_SIZE") return reply.code(400).send({ status: "error", error: "Channel amount is below peer minimum.", reason: code });
+    if (code === "INSUFFICIENT_FUNDS") return reply.code(400).send({ status: "error", error: "Insufficient wallet balance for this channel.", reason: code });
+    if (code === "WALLET_LOCKED") return reply.code(400).send({ status: "error", error: "Wallet is locked. Unlock LND and retry.", reason: code });
+    if (code === "NOT_SYNCED") return reply.code(502).send({ status: "error", error: "Node is not synced yet. Wait for sync and retry.", reason: code });
+    if (code === "PEER_REJECTED") return reply.code(502).send({ status: "error", error: "Peer rejected this channel request. Pick another peer.", reason: code });
+    if (code === "PEER_OFFLINE") return reply.code(502).send({ status: "error", error: "Peer appears offline right now. Pick another.", reason: code });
+    if (code === "PEER_NOT_READY" || code === "peer_not_ready" || code === "connect_cooldown") {
+      return reply.code(502).send({ status: "error", error: "Peer unreachable right now. Pick another.", reason: "PEER_NOT_READY" });
+    }
+    if (code.startsWith("CONNECT_")) return reply.code(502).send({ status: "error", error: "Peer unreachable right now. Pick another.", reason: code });
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/channel-status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { channelId?: string; peerPubKey?: string | null };
+    const channelId = asString(body.channelId || "").trim();
+    const peerPubKey = body.peerPubKey == null ? null : asString(body.peerPubKey).trim() || null;
+    if (!channelId && !peerPubKey) return badRequest(reply, "channelId or peerPubKey required");
+    const result = await getLightningChannelStatus(prisma as any, { channelId, peerPubKey });
+    return reply.send(result);
+  } catch (e: any) {
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/channels", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const out = await getLightningChannels(prisma as any);
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND channels right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.get("/api/admin/lightning/balances", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const out = await getLightningBalances(prisma as any);
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND balances right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.get("/api/admin/lightning/invoices", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const limitRaw = Number((req.query || {}).limit ?? 50);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 50;
+    const out = await getLightningInvoices(prisma as any, { limit });
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND invoices right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.post("/api/admin/lightning/close-channel", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { channelPoint?: string; force?: boolean };
+    const channelPoint = asString(body.channelPoint || "").trim();
+    const force = Boolean(body.force);
+    if (!channelPoint) return badRequest(reply, "channelPoint required");
+    if (!parseChannelPoint(channelPoint)) return badRequest(reply, "Invalid channelPoint. Expected txid:index");
+
+    const out = await closeLightningChannel(prisma as any, { channelPoint, force });
+    return reply.send(out);
+  } catch (e: any) {
+    const code = String(e?.message || "");
+    if (code === "INVALID_CHANNEL_POINT") return badRequest(reply, "Invalid channelPoint. Expected txid:index");
+    if (code === "PEER_OFFLINE") {
+      return reply.code(502).send({ status: "error", error: "PEER_OFFLINE", message: "Peer appears offline or unreachable right now." });
+    }
+    if (code === "CHANNEL_NOT_FOUND") {
+      return reply.code(502).send({ status: "error", error: "CHANNEL_NOT_FOUND", message: "Channel not found on this node." });
+    }
+    if (code === "ALREADY_CLOSING") {
+      return reply.code(502).send({ status: "error", error: "ALREADY_CLOSING", message: "This channel is already closing." });
+    }
+    if (code === "UNKNOWN") {
+      return reply.code(500).send({ status: "error", error: "UNKNOWN", message: "LND returned an unexpected error while closing channel." });
+    }
+    return reply.code(500).send({ status: "error", error: code || String(e || "Unknown error") });
+  }
+});
+
+app.post("/api/admin/lightning/test", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  try {
+    parsed = await parseLightningAdminRequest(req);
+  } catch (e: any) {
+    return badRequest(reply, String(e?.message || e));
+  }
+  const restUrl = parsed.restUrl;
+  const network = normalizeLightningNetwork(parsed.networkRaw);
+  const macaroonBase64 = parsed.macaroonBase64;
+  const tlsCertPem = parsed.tlsCertPem;
+  if (!restUrl) return badRequest(reply, "restUrl required");
+  if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
+  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+  try {
+    const u = new URL(restUrl);
+    app.log.info(
+      {
+        endpoint: `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ""}`,
+        protocolUsed: u.protocol.replace(":", ""),
+        restPort: u.port || null,
+        tlsLen: (tlsCertPem || "").length || 0,
+        macaroonLen: macaroonBase64.length
+      },
+      "lightning.config.test"
+    );
+  } catch {}
+
+  const result = await testLightningNodeConnection({ restUrl, network, macaroonBase64, tlsCertPem });
+  if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
+  return reply.send({
+    ok: true,
+    info: {
+      alias: result.info.alias || "",
+      version: result.info.version || "",
+      identityPubkey: result.info.identityPubkey || ""
+    }
+  });
+});
+
+app.post("/api/admin/lightning", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  try {
+    parsed = await parseLightningAdminRequest(req);
+  } catch (e: any) {
+    return badRequest(reply, String(e?.message || e));
+  }
+  const restUrl = parsed.restUrl;
+  const network = normalizeLightningNetwork(parsed.networkRaw);
+  const macaroonBase64 = parsed.macaroonBase64;
+  const tlsCertPem = parsed.tlsCertPem;
+  if (!restUrl) return badRequest(reply, "restUrl required");
+  if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
+  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+  try {
+    const u = new URL(restUrl);
+    app.log.info(
+      {
+        endpoint: `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ""}`,
+        protocolUsed: u.protocol.replace(":", ""),
+        restPort: u.port || null,
+        tlsLen: (tlsCertPem || "").length || 0,
+        macaroonLen: macaroonBase64.length
+      },
+      "lightning.config.save"
+    );
+  } catch {}
+
+  try {
+    const result = await saveLightningNodeConfig(prisma as any, { restUrl, network, macaroonBase64, tlsCertPem });
+    if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
+    return reply.send({ ok: true });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    await deleteLightningNodeConfig(prisma as any);
+    return reply.send({ ok: true });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contents = await prisma.contentItem.findMany({
     where: { ownerUserId: userId },
@@ -12076,6 +12447,179 @@ app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth
   return reply.code(404).send({ error: "Unknown rail" });
 });
 
+function lndRHashB64FromProviderId(providerId?: string | null): string | null {
+  const p = String(providerId || "").trim();
+  if (!p.startsWith("lnd:")) return null;
+  const v = p.slice("lnd:".length).trim();
+  return v || null;
+}
+
+function normalizeRemoteInvoiceState(input: unknown): "SETTLED" | "OPEN" | "ACCEPTED" | "CANCELED" | "UNKNOWN" {
+  const s = String(input || "").trim().toUpperCase();
+  if (s === "SETTLED" || s === "PAID") return "SETTLED";
+  if (s === "OPEN") return "OPEN";
+  if (s === "ACCEPTED") return "ACCEPTED";
+  if (s === "CANCELED" || s === "CANCELLED" || s === "EXPIRED") return "CANCELED";
+  return "UNKNOWN";
+}
+
+function pickIntentRail(intent: any): "manual_lightning" | "provider_invoice" | "node_invoice" | "onchain" {
+  if (intent.providerId?.startsWith("lnd:")) return "node_invoice";
+  if (intent.providerId) return "provider_invoice";
+  if (intent.onchainAddress) return "onchain";
+  return "manual_lightning";
+}
+
+const invoiceIntentSingleFlight = new SingleFlight();
+
+async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
+  return await invoiceIntentSingleFlight.do(`intent-invoice:${intentId}`, async () => {
+    const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+    if (!intent) throw new Error("PaymentIntent not found");
+    if (intent.status === "paid") return intent;
+
+    const memo = `Contentbox ${intent.subjectId.slice(0, 8)} ${String(intent.manifestSha256 || "").slice(0, 8)}`;
+    const hasExisting = Boolean(intent.bolt11 && intent.providerId);
+
+    if (hasExisting && intent.providerId?.startsWith("lnd:")) {
+      try {
+        const chk = await checkLightningInvoice(prisma as any, intent.providerId);
+        const st = normalizeRemoteInvoiceState((chk as any)?.state);
+        if (chk.paid || st === "SETTLED") return intent;
+        if (st === "OPEN" || st === "ACCEPTED") return intent;
+        if (st === "CANCELED") {
+          // rotate below
+        } else {
+          return intent;
+        }
+      } catch {
+        const createdAtMs = intent.createdAt ? new Date(intent.createdAt).getTime() : 0;
+        const ageMs = createdAtMs > 0 ? Date.now() - createdAtMs : Number.MAX_SAFE_INTEGER;
+        if (ageMs < 2 * 60 * 1000) return intent;
+      }
+    } else if (hasExisting) {
+      return intent;
+    }
+
+    const created = await createLightningInvoice(prisma as any, intent.amountSats, memo);
+    if (!created) return intent;
+    const minExpiryMs = Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000;
+    const existingExpiryMs = intent.receiptTokenExpiresAt ? new Date(intent.receiptTokenExpiresAt).getTime() : 0;
+    const nextExpiry = existingExpiryMs >= minExpiryMs ? new Date(existingExpiryMs) : new Date(minExpiryMs);
+    await prisma.paymentIntent.update({
+      where: { id: intent.id },
+      data: {
+        bolt11: created.bolt11,
+        providerId: created.providerId,
+        lightningExpiresAt: created.expiresAt ? new Date(created.expiresAt) : null,
+        receiptToken: intent.receiptToken || crypto.randomBytes(24).toString("hex"),
+        receiptTokenExpiresAt: nextExpiry
+      }
+    });
+    return (await prisma.paymentIntent.findUnique({ where: { id: intent.id } })) || intent;
+  });
+}
+
+async function settlePaymentIntentFromRails(intentId: string) {
+  const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+  if (!intent) return null;
+
+  if (intent.status === "paid") {
+    try {
+      await finalizePurchase(intent.id, prisma);
+    } catch {}
+    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+    return { intent: updated || intent, paid: true, paidVia: updated?.paidVia || intent.paidVia || null };
+  }
+
+  let paidVia: "lightning" | "onchain" | null = null;
+  let paidAt: string | null = null;
+  let onchainUpdate: { txid?: string | null; vout?: number | null; confirmations?: number | null } = {};
+
+  if (intent.providerId && lndRHashB64FromProviderId(intent.providerId)) {
+    const res = await checkLightningInvoice(prisma as any, intent.providerId);
+    if (res.paid) {
+      paidVia = "lightning";
+      paidAt = res.paidAt || new Date().toISOString();
+    } else {
+      const state = normalizeRemoteInvoiceState((res as any)?.state);
+      if (state === "CANCELED") {
+        await ensureOrRotateLightningInvoiceForIntent(intent.id);
+      }
+    }
+  }
+
+  if (!paidVia && intent.onchainAddress) {
+    const res = await checkOnchainPayment(intent.onchainAddress, intent.amountSats, ONCHAIN_MIN_CONFS);
+    if (res.paid) {
+      paidVia = "onchain";
+      paidAt = new Date().toISOString();
+      onchainUpdate = { txid: res.txid || null, vout: res.vout ?? null, confirmations: res.confirmations ?? ONCHAIN_MIN_CONFS };
+    } else if (res.confirmations !== undefined) {
+      onchainUpdate = { confirmations: res.confirmations };
+    }
+  }
+
+  if (paidVia) {
+    await prisma.$transaction(async (tx) => {
+      const updatedIntent = await tx.paymentIntent.update({
+        where: { id: intent.id },
+        data: {
+          status: "paid" as any,
+          paidVia: paidVia as any,
+          paidAt: paidAt ? new Date(paidAt) : intent.paidAt,
+          onchainTxid: onchainUpdate.txid ?? intent.onchainTxid,
+          onchainVout: onchainUpdate.vout ?? intent.onchainVout,
+          confirmations: onchainUpdate.confirmations ?? intent.confirmations
+        }
+      });
+
+      const buyerId = buyerIdFromIntent(updatedIntent);
+      if (buyerId) {
+        const existing = await tx.entitlement.findFirst({
+          where: { buyerId, contentId: updatedIntent.contentId },
+          orderBy: { grantedAt: "asc" }
+        });
+        if (existing) {
+          await tx.entitlement.update({
+            where: { id: existing.id },
+            data: { paymentIntentId: updatedIntent.id }
+          });
+        } else {
+          await tx.entitlement.create({
+            data: {
+              buyerId,
+              buyerUserId: updatedIntent.buyerUserId,
+              contentId: updatedIntent.contentId,
+              manifestSha256: updatedIntent.manifestSha256 || "",
+              paymentIntentId: updatedIntent.id
+            }
+          });
+        }
+      }
+    });
+    const finalized = await finalizePaymentIntent(intent.id, { rail: pickIntentRail(intent) });
+    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+    return {
+      intent: updated || intent,
+      paid: true,
+      paidVia,
+      paidAt,
+      finalized
+    };
+  }
+
+  if (onchainUpdate.confirmations !== undefined) {
+    await prisma.paymentIntent.update({
+      where: { id: intent.id },
+      data: { confirmations: onchainUpdate.confirmations ?? intent.confirmations }
+    });
+  }
+
+  const refreshed = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+  return { intent: refreshed || intent, paid: false, paidVia: null, paidAt: null };
+}
+
 app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser | undefined)?.sub || null;
   const id = asString((req.params as any).id || "").trim();
@@ -12089,30 +12633,31 @@ app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: a
     if (!content || content.ownerUserId !== userId) return forbidden(reply);
   }
   if (!userId) {
-    const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
-    if (!content || content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+    if (!authorizeIntentByReceiptToken(req, intent, Date.now())) return notFound(reply, "Not found");
   }
 
+  const refreshed = intent.status === "pending" ? await ensureOrRotateLightningInvoiceForIntent(intent.id).catch(() => intent) : intent;
   return reply.send({
-    id: intent.id,
-    status: intent.status,
-    paidVia: intent.paidVia,
-    amountSats: intent.amountSats.toString(),
-    purpose: intent.purpose,
-    subjectType: intent.subjectType,
-    subjectId: intent.subjectId,
-    manifestSha256: intent.manifestSha256,
-    paidAt: intent.paidAt ? intent.paidAt.toISOString() : null,
-    onchain: intent.onchainAddress
+    id: refreshed.id,
+    status: refreshed.status,
+    paidVia: refreshed.paidVia,
+    amountSats: refreshed.amountSats.toString(),
+    purpose: refreshed.purpose,
+    subjectType: refreshed.subjectType,
+    subjectId: refreshed.subjectId,
+    manifestSha256: refreshed.manifestSha256,
+    paidAt: refreshed.paidAt ? refreshed.paidAt.toISOString() : null,
+    receiptTokenExpiresAt: refreshed.receiptTokenExpiresAt ? refreshed.receiptTokenExpiresAt.toISOString() : null,
+    onchain: refreshed.onchainAddress
       ? {
-          address: intent.onchainAddress,
-          txid: intent.onchainTxid,
-          vout: intent.onchainVout,
-          confirmations: intent.confirmations
+          address: refreshed.onchainAddress,
+          txid: refreshed.onchainTxid,
+          vout: refreshed.onchainVout,
+          confirmations: refreshed.confirmations
         }
       : null,
-    lightning: intent.bolt11
-      ? { bolt11: intent.bolt11, expiresAt: intent.lightningExpiresAt ? intent.lightningExpiresAt.toISOString() : null }
+    lightning: refreshed.bolt11
+      ? { bolt11: refreshed.bolt11, expiresAt: refreshed.lightningExpiresAt ? refreshed.lightningExpiresAt.toISOString() : null }
       : null
   });
 });
@@ -12130,92 +12675,31 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     if (!content || content.ownerUserId !== userId) return forbidden(reply);
   }
   if (!userId) {
-    const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
-    if (!content || content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+    if (!authorizeIntentByReceiptToken(req, intent, Date.now())) return notFound(reply, "Not found");
   }
 
-  if (intent.status === "paid") {
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+  try {
+    const refreshed = await settlePaymentIntentFromRails(intent.id);
+    if (!refreshed) return notFound(reply, "PaymentIntent not found");
+    if (refreshed.paid) {
+      return reply.send({
+        ok: true,
+        status: "paid",
+        paidVia: refreshed.paidVia,
+        paidAt: refreshed.paidAt,
+        receiptToken: (refreshed as any)?.finalized?.receiptToken || refreshed.intent.receiptToken || null,
+        receiptTokenExpiresAt: refreshed.intent.receiptTokenExpiresAt ? refreshed.intent.receiptTokenExpiresAt.toISOString() : null
+      });
+    }
     return reply.send({
       ok: true,
-      status: intent.status,
-      paidAt: intent.paidAt?.toISOString() || null,
-      receiptToken: updated?.receiptToken || null,
-      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
+      status: refreshed.intent.status,
+      paidVia: refreshed.intent.paidVia,
+      confirmations: refreshed.intent.confirmations ?? null
     });
+  } catch (e: any) {
+    return reply.code(400).send({ error: String(e?.message || e) });
   }
-
-  let paidVia: "lightning" | "onchain" | null = null;
-  let paidAt: string | null = null;
-  let onchainUpdate: { txid?: string | null; vout?: number | null; confirmations?: number | null } = {};
-
-  if (intent.providerId) {
-    try {
-      const res = await checkLightningInvoice(intent.providerId);
-      if (res.paid) {
-        paidVia = "lightning";
-        paidAt = res.paidAt || new Date().toISOString();
-      }
-    } catch (e: any) {
-      return reply.code(400).send({ error: String(e?.message || e) });
-    }
-  }
-
-  if (!paidVia && intent.onchainAddress) {
-    try {
-      const res = await checkOnchainPayment(intent.onchainAddress, intent.amountSats, ONCHAIN_MIN_CONFS);
-      if (res.paid) {
-        paidVia = "onchain";
-        paidAt = new Date().toISOString();
-        onchainUpdate = { txid: res.txid || null, vout: res.vout ?? null, confirmations: res.confirmations ?? ONCHAIN_MIN_CONFS };
-      } else if (res.confirmations !== undefined) {
-        onchainUpdate = { confirmations: res.confirmations };
-      }
-    } catch (e: any) {
-      return reply.code(400).send({ error: String(e?.message || e) });
-    }
-  }
-
-  if (paidVia) {
-    await prisma.paymentIntent.update({
-      where: { id: intent.id },
-      data: {
-        paidVia: paidVia as any,
-        paidAt: paidAt ? new Date(paidAt) : intent.paidAt,
-        onchainTxid: onchainUpdate.txid ?? intent.onchainTxid,
-        onchainVout: onchainUpdate.vout ?? intent.onchainVout,
-        confirmations: onchainUpdate.confirmations ?? intent.confirmations
-      }
-    });
-
-    const rail = intent.providerId
-      ? PAYMENT_PROVIDER.kind === "lnd"
-        ? "node_invoice"
-        : "provider_invoice"
-      : "node_invoice";
-    const finalized = await finalizePaymentIntent(intent.id, { rail });
-    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
-    return reply.send({
-      ok: true,
-      status: "paid",
-      paidVia,
-      paidAt,
-      receiptToken: finalized?.receiptToken || updated?.receiptToken || null,
-      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
-    });
-  }
-
-  if (onchainUpdate.confirmations !== undefined) {
-    await prisma.paymentIntent.update({
-      where: { id: intent.id },
-      data: { confirmations: onchainUpdate.confirmations ?? intent.confirmations }
-    });
-  }
-
-  return reply.send({ ok: true, status: intent.status, paidVia: intent.paidVia, confirmations: onchainUpdate.confirmations ?? intent.confirmations });
 });
 
 app.post("/api/payments/intents/:intentId/mark-paid", { preHandler: requireAuth }, async (req: any, reply) => {
