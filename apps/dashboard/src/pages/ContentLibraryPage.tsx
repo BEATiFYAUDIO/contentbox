@@ -202,7 +202,8 @@ async function uploadToRepo(contentId: string, file: File, idempotencyKey: strin
   } catch {}
 
   if (!res.ok) {
-    const msg = json?.error || json?.message || text || `Upload failed (${res.status})`;
+    const code = json?.code ? ` (${json.code})` : "";
+    const msg = `${json?.error || json?.message || text || `Upload failed (${res.status})`}${code}`;
     throw new Error(msg);
   }
   return json;
@@ -236,7 +237,8 @@ async function uploadSongCover(contentId: string, file: File) {
   } catch {}
 
   if (!res.ok) {
-    const msg = json?.error || json?.message || text || `Cover upload failed (${res.status})`;
+    const code = json?.code ? ` (${json.code})` : "";
+    const msg = `${json?.error || json?.message || text || `Cover upload failed (${res.status})`}${code}`;
     throw new Error(msg);
   }
   return json;

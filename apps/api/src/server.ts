@@ -10763,6 +10763,15 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
+  if (content.deletedAt && content.status === "published") {
+    return reply.code(409).send({ error: "Removed from store.", code: "TOMBSTONED_CONTENT" });
+  }
+  if (content.deletedAt && content.status !== "published") {
+    return reply.code(409).send({ error: "Restore this item from Trash before uploading.", code: "TRASHED_CONTENT" });
+  }
+  if (content.status === "published") {
+    return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
+  }
 
   const uploadReqCheck = validateUploadRequest({
     isMultipart: typeof req.isMultipart === "function" ? req.isMultipart() : false,
@@ -10858,7 +10867,12 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       });
     } catch {}
 
+    const filesCount = await prisma.contentFile.count({ where: { contentId } });
     const payload = {
+      ok: true,
+      contentId,
+      filesCount,
+      manifestSha: manifestHash,
       id: created.id,
       objectKey: created.objectKey,
       originalName: created.originalName,
@@ -10927,6 +10941,15 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
+  if (content.deletedAt && content.status === "published") {
+    return reply.code(409).send({ error: "Removed from store.", code: "TOMBSTONED_CONTENT" });
+  }
+  if (content.deletedAt && content.status !== "published") {
+    return reply.code(409).send({ error: "Restore this item from Trash before uploading.", code: "TRASHED_CONTENT" });
+  }
+  if (content.status === "published") {
+    return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
+  }
   if (String(content.type || "").toLowerCase() !== "song") {
     return reply.code(400).send({ error: "Cover upload is only supported for songs" });
   }
