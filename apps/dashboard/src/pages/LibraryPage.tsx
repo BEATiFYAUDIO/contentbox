@@ -12,6 +12,7 @@ type LibraryItem = {
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
   libraryAccess?: "owned" | "purchased" | "preview" | "local";
+  coverUrl?: string | null;
   _count?: { files: number };
 };
 
@@ -22,6 +23,7 @@ export default function LibraryPage() {
   const [previewLoading, setPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
+  const [coverLoadErrorById, setCoverLoadErrorById] = React.useState<Record<string, boolean>>({});
   const autoLoadedRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -97,6 +99,15 @@ export default function LibraryPage() {
     return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
   }
 
+  function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | null): string | null {
+    const preferred = String(itemCoverUrl || "").trim();
+    if (preferred) return preferred;
+    const coverObjectKey = String(preview?.manifest?.cover || "").trim();
+    if (!coverObjectKey) return null;
+    const base = window.location.origin;
+    return `${base}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
+  }
+
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
@@ -127,6 +138,7 @@ export default function LibraryPage() {
                     const isVideo = mime.startsWith("video/") || type === "video";
                     const isAudio = mime.startsWith("audio/") || type === "song";
                     const isImage = mime.startsWith("image/");
+                    const coverUrl = isAudio ? songCoverUrl(it.id, preview, it.coverUrl || null) : null;
                     const isOpen = previewOpenById[it.id] ?? true;
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4 flex flex-col gap-3">
@@ -145,6 +157,36 @@ export default function LibraryPage() {
                             </div>
                           ) : null}
                         </div>
+
+                        {isAudio ? (
+                          coverUrl ? (
+                            <div>
+                              <div className="w-full max-w-[320px] aspect-square rounded-md overflow-hidden border border-neutral-800 bg-neutral-950">
+                                <img
+                                  className="w-full h-full object-cover"
+                                  src={coverUrl}
+                                  alt={`${it.title || "Song"} cover`}
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    setCoverLoadErrorById((m) => ({ ...m, [it.id]: true }));
+                                    const el = e.currentTarget;
+                                    const parent = el.parentElement;
+                                    if (!parent) return;
+                                    parent.innerHTML = '<div class="w-full h-full flex items-center justify-center text-xs text-neutral-500">No cover</div>';
+                                  }}
+                                  onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
+                                />
+                              </div>
+                              {coverLoadErrorById[it.id] ? (
+                                <div className="mt-1 text-[11px] text-amber-300">Cover missing on disk or not set in manifest.</div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className="w-full max-w-[320px] aspect-square rounded-md border border-neutral-800 bg-neutral-950/60 flex items-center justify-center text-xs text-neutral-500">
+                              No cover
+                            </div>
+                          )
+                        ) : null}
 
                         <div className="rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
                           <div className="flex items-center justify-between">

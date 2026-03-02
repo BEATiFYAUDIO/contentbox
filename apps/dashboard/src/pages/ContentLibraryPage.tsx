@@ -167,11 +167,20 @@ type ParentLinkInfo = {
 
 type UploadState =
   | { status: "idle" }
+  | { status: "preparing"; contentId: string; filename: string }
   | { status: "uploading"; contentId: string; filename: string }
   | { status: "done"; contentId: string; filename: string }
   | { status: "error"; contentId: string; message: string };
 
-async function uploadToRepo(contentId: string, file: File) {
+function uploadIdempotencyKey(contentId: string, file: File) {
+  const suffix =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `upl-${contentId.slice(0, 8)}-${file.size}-${suffix}`;
+}
+
+async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
 
@@ -182,7 +191,7 @@ async function uploadToRepo(contentId: string, file: File) {
 
   const res = await fetch(`${base}/content/${contentId}/files`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
     body: form
   });
 
@@ -194,6 +203,40 @@ async function uploadToRepo(contentId: string, file: File) {
 
   if (!res.ok) {
     const msg = json?.error || json?.message || text || `Upload failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
+async function uploadSongCover(contentId: string, file: File) {
+  const token = getToken();
+  if (!token) throw new Error("Not signed in");
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+  if (!allowed.has(file.type)) {
+    throw new Error("Cover must be a jpg, png, or webp image");
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("Cover image exceeds 5MB limit");
+  }
+
+  const base = getApiBase();
+  const idempotencyKey = uploadIdempotencyKey(contentId, file);
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetch(`${base}/content/${contentId}/cover`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
+    body: form
+  });
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!res.ok) {
+    const msg = json?.error || json?.message || text || `Cover upload failed (${res.status})`;
     throw new Error(msg);
   }
   return json;
@@ -323,6 +366,7 @@ export default function ContentLibraryPage({
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [filesByContent, setFilesByContent] = React.useState<Record<string, ContentFile[]>>({});
   const [filesLoading, setFilesLoading] = React.useState<Record<string, boolean>>({});
+  const [coverLoadErrorByContent, setCoverLoadErrorByContent] = React.useState<Record<string, boolean>>({});
 
   // NEW: latest split (so we can show lock notarization when locked)
   const [splitByContent, setSplitByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -1399,8 +1443,9 @@ export default function ContentLibraryPage({
 
   function UploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
-    const busy = upload.status === "uploading" && upload.contentId === contentId;
+    const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const err = upload.status === "error" && upload.contentId === contentId;
+    const authReady = Boolean(getToken());
 
     return (
       <>
@@ -1416,13 +1461,28 @@ export default function ContentLibraryPage({
           onChange={async (e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
-            if (!file) return;
+            if (!file) {
+              setUpload({ status: "error", contentId, message: "No file selected" });
+              return;
+            }
 
             setError(null);
-            setUpload({ status: "uploading", contentId, filename: file.name });
+            setUpload({ status: "preparing", contentId, filename: file.name });
+            const idempotencyKey = uploadIdempotencyKey(contentId, file);
+            if (import.meta.env.DEV) {
+              console.log("[upload] click", {
+                hasFile: true,
+                fileName: file.name,
+                size: file.size,
+                isUploading: busy,
+                authReady,
+                idempotencyKey
+              });
+            }
 
             try {
-              await uploadToRepo(contentId, file);
+              setUpload({ status: "uploading", contentId, filename: file.name });
+              await uploadToRepo(contentId, file, idempotencyKey);
               setUpload({ status: "done", contentId, filename: file.name });
 
               await load();
@@ -1438,14 +1498,66 @@ export default function ContentLibraryPage({
 
         <button
           type="button"
-          disabled={disabled || busy}
+          disabled={disabled || busy || !authReady}
           className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60"
           onClick={() => inputRef.current?.click()}
           title="Upload into this content repo and commit"
         >
-          {busy ? "Uploading…" : "Upload"}
+          {upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : "Upload"}
         </button>
+        {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
+      </>
+    );
+  }
+
+  function CoverUploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
+    const inputRef = React.useRef<HTMLInputElement | null>(null);
+    const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
+    const authReady = Boolean(getToken());
+
+    return (
+      <>
+        <label className="sr-only" htmlFor={`upload-cover-${contentId}`}>
+          Upload song cover
+        </label>
+        <input
+          id={`upload-cover-${contentId}`}
+          name={`uploadCover-${contentId}`}
+          ref={inputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          className="hidden"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) {
+              setUpload({ status: "error", contentId, message: "No cover selected" });
+              return;
+            }
+
+            setError(null);
+            setUpload({ status: "preparing", contentId, filename: file.name });
+            try {
+              setUpload({ status: "uploading", contentId, filename: file.name });
+              await uploadSongCover(contentId, file);
+              setUpload({ status: "done", contentId, filename: file.name });
+              await load();
+            } catch (err: any) {
+              setUpload({ status: "error", contentId, message: err?.message || "Cover upload failed" });
+            }
+          }}
+        />
+
+        <button
+          type="button"
+          disabled={disabled || busy || !authReady}
+          className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60"
+          onClick={() => inputRef.current?.click()}
+          title="Upload album cover (jpg, png, webp)"
+        >
+          {busy ? "Uploading…" : "Upload cover"}
+        </button>
       </>
     );
   }
@@ -1565,6 +1677,14 @@ export default function ContentLibraryPage({
 
       {error && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-sm">{error}</div>
+      )}
+
+      {(upload.status === "preparing" || upload.status === "uploading") && (
+        <div className="rounded-lg border border-neutral-800 bg-neutral-900/30 text-neutral-200 px-3 py-2 text-sm">
+          {upload.status === "preparing"
+            ? `Preparing upload… ${upload.filename}`
+            : `Uploading… ${upload.filename}`}
+        </div>
       )}
 
       {upload.status === "error" && (
@@ -2035,6 +2155,29 @@ export default function ContentLibraryPage({
                       {!isOwner ? (
                         <div className="text-xs text-amber-300 mt-1">Read-only • Owner: {ownerLabel}</div>
                       ) : null}
+                      {String(it.type || "").toLowerCase() === "song" ? (
+                        <div className="mt-2">
+                          <div className="w-20 h-20 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900">
+                            <img
+                              src={`${apiBase}/public/content/${encodeURIComponent(it.id)}/cover`}
+                              alt={`${it.title || "Song"} cover`}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                              onError={(e) => {
+                                setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: true }));
+                                const el = e.currentTarget;
+                                const parent = el.parentElement;
+                                if (!parent) return;
+                                parent.innerHTML = '<div class="w-full h-full flex items-center justify-center text-[10px] text-neutral-500">No cover</div>';
+                              }}
+                              onLoad={() => setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: false }))}
+                            />
+                          </div>
+                          {coverLoadErrorByContent[it.id] ? (
+                            <div className="mt-1 text-[10px] text-amber-300">Cover missing on disk or not set in manifest.</div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
@@ -2078,6 +2221,9 @@ export default function ContentLibraryPage({
                               </button>
 
                               {isOwner ? <UploadButton contentId={it.id} disabled={busy} /> : null}
+                              {isOwner && String(it.type || "").toLowerCase() === "song" ? (
+                                <CoverUploadButton contentId={it.id} disabled={busy} />
+                              ) : null}
 
                               {splitsAllowed && isOwner ? (
                                 <button

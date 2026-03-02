@@ -9,6 +9,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
 import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
@@ -87,6 +88,9 @@ import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSes
 import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
 import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
 import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
+import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
+import { validateUploadRequest } from "./lib/contentUploadValidation.js";
+import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -275,6 +279,9 @@ const previewTokens = new Map<
   { manifestHash: string; fileId: string; expiresAt: number; maxBytes: number }
 >();
 const previewRate = new Map<string, { count: number; resetAt: number }>();
+const uploadIdempotency = new Map<string, { status: "inflight" | "done"; response?: any; expiresAt: number }>();
+const UPLOAD_IDEMPOTENCY_INFLIGHT_TTL_MS = 2 * 60 * 1000;
+const UPLOAD_IDEMPOTENCY_DONE_TTL_MS = 30 * 1000;
 
 function isPreviewToken(token: string | null | undefined): boolean {
   return Boolean(token && token.startsWith("preview_"));
@@ -1422,7 +1429,7 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
   credentials: false,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -1627,6 +1634,33 @@ function getPrimaryFileInfo(manifest: Manifest | null): { objectKey: string | nu
     objectKey: (f?.path as string) || (f?.filename as string) || null,
     sha256: (f?.sha256 as string) || null,
     originalName: (f?.originalName as string) || null
+  };
+}
+
+function getCoverAssetFromManifest(manifest: any): { path: string; sha256: string | null; mime: string | null } | null {
+  const json = (manifest || {}) as any;
+  const coverRaw = json?.cover;
+  const files = Array.isArray(json?.files) ? json.files : [];
+  let objectKey: string | null = null;
+  if (typeof coverRaw === "string" && coverRaw.trim()) {
+    objectKey = coverRaw.trim();
+  } else if (coverRaw && typeof coverRaw === "object") {
+    const p = typeof coverRaw.path === "string" ? coverRaw.path : typeof coverRaw.objectKey === "string" ? coverRaw.objectKey : "";
+    if (p.trim()) objectKey = p.trim();
+  }
+  if (!objectKey) return null;
+  const file = files.find((f: any) => {
+    const candidate =
+      (typeof f?.path === "string" && f.path) ||
+      (typeof f?.objectKey === "string" && f.objectKey) ||
+      (typeof f?.filename === "string" && f.filename) ||
+      "";
+    return candidate === objectKey;
+  });
+  return {
+    path: objectKey,
+    sha256: file?.sha256 ? String(file.sha256) : null,
+    mime: file?.mime ? String(file.mime) : null
   };
 }
 
@@ -1874,6 +1908,41 @@ async function ensureCoverImage(content: any, files: any[]) {
   }
 }
 
+async function buildManifestWithDerivedAssets(content: any, files: any[], opts?: { coverObjectKey?: string | null }) {
+  // Cover is a manifest attachment on the same content item (never a separate content record).
+  const manifestJson = await buildManifestJson(content, files);
+  const previewObjectKey = await ensurePreviewFile(content, files);
+  if (previewObjectKey) {
+    (manifestJson as any).preview = previewObjectKey;
+  }
+
+  const explicitCover = String(opts?.coverObjectKey || "").trim();
+  if (explicitCover) {
+    (manifestJson as any).cover = explicitCover;
+    return manifestJson;
+  }
+
+  try {
+    if (content?.repoPath) {
+      const existingManifest = await readManifest(content.repoPath);
+      const existingCover = getCoverAssetFromManifest(existingManifest);
+      if (existingCover?.path) {
+        const hasFile = files.some((f: any) => String(f?.objectKey || "") === existingCover.path);
+        if (hasFile) {
+          (manifestJson as any).cover = existingCover.path;
+          return manifestJson;
+        }
+      }
+    }
+  } catch {}
+
+  const derivedCover = await ensureCoverImage(content, files);
+  if (derivedCover) {
+    (manifestJson as any).cover = derivedCover;
+  }
+  return manifestJson;
+}
+
 function hashManifestJson(manifestJson: any): string {
   return crypto.createHash("sha256").update(stableStringify(manifestJson)).digest("hex");
 }
@@ -2109,14 +2178,18 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/health", handlePublicPing);
   appPublic.get("/public/ping", handlePublicPing);
   appPublic.get("/p/:token", handleShortPublicLink);
+  appPublic.get("/u/:handle", handlePublicNodeProfilePage);
+  appPublic.get("/profile", handlePublicProfileRedirect);
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+  appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id", handlePublicContent);
   appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
+  appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
@@ -2202,15 +2275,48 @@ app.post("/api/public/can-publish", async (req: any, reply: any) => {
   }
 });
 
-// Public node discovery endpoint to support basic P2P verification
-app.get("/.well-known/contentbox", async (req: any, reply: any) => {
-  // include node public key for verification
+async function buildWellKnownContentboxPayload(req: any): Promise<{ nodeUrl: string; version: string; publicKeyPem?: string; publicKeyPemSha256?: string }> {
+  const xfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  const proto = xfProto === "http" || xfProto === "https" ? xfProto : "https";
+  const host = getPublicHostnameFromReq(req);
+  const fallbackPublicOrigin =
+    normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
+  const nodeUrl = host ? `${proto}://${host}` : (fallbackPublicOrigin || "https://contentbox.local");
+
   try {
     const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
-    const pub = await fs.readFile(pubPath, "utf8");
-    return reply.send({ nodeUrl: APP_BASE_URL, version: "1", publicKeyPem: pub });
+    const pubBuf = await fs.readFile(pubPath);
+    const pub = pubBuf.toString("utf8");
+    const publicKeyPemSha256 = crypto.createHash("sha256").update(pubBuf).digest("hex");
+    return { nodeUrl, version: "1", publicKeyPem: pub, publicKeyPemSha256 };
   } catch {
-    return reply.send({ nodeUrl: APP_BASE_URL, version: "1" });
+    return { nodeUrl, version: "1" };
+  }
+}
+
+// Public node discovery endpoint to support basic P2P verification
+app.get("/.well-known/contentbox", async (req: any, reply: any) => {
+  return reply.send(await buildWellKnownContentboxPayload(req));
+});
+
+app.get("/.well-known/beatify", async (_req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    const proofUrl = asString(conf?.proofUrl || "").trim();
+    const beatifyHandle = asString(conf?.beatifyHandle || "").trim().replace(/^@+/, "");
+    if (!proofUrl || !beatifyHandle || conf?.revokedAt) return notFound(reply, "Not found");
+
+    const signatureId = extractSignatureIdFromProofUrl(proofUrl) || "";
+    if (!signatureId) return notFound(reply, "Not found");
+
+    reply.type("text/plain; charset=utf-8");
+    return reply.send(
+      `beatify_signature_id=${signatureId}\nbeatify_profile=https://www.beatify.audio/${beatifyHandle}`
+    );
+  } catch {
+    return notFound(reply, "Not found");
   }
 });
 
@@ -4103,6 +4209,10 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  await reconcileBuyerEntitlementsFromPurchaseHistory({
+    buyerId: session.buyer.id,
+    contentId
+  }).catch(() => {});
 
   const manifest = await ensureManifestForContent(content);
   if (!manifest?.sha256) return notFound(reply, "Manifest not found");
@@ -4211,12 +4321,10 @@ app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
 
-  if (content.priceSats != null && content.priceSats > 0n) {
-    return reply.code(409).send({ error: "Payment required" });
-  }
-
-  const manifest = await ensureManifestForContent(content);
-  if (!manifest?.sha256) return notFound(reply, "Manifest not found");
+  await reconcileBuyerEntitlementsFromPurchaseHistory({
+    buyerId: session.buyer.id,
+    contentId
+  }).catch(() => {});
 
   const existing = await prisma.entitlement.findFirst({
     where: { buyerId: session.buyer.id, contentId }
@@ -4224,6 +4332,13 @@ app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
   if (existing) {
     return reply.send({ ok: true, alreadyOwned: true, entitlementId: existing.id });
   }
+
+  if (content.priceSats != null && content.priceSats > 0n) {
+    return reply.code(409).send({ error: "Payment required" });
+  }
+
+  const manifest = await ensureManifestForContent(content);
+  if (!manifest?.sha256) return notFound(reply, "Manifest not found");
 
   const created = await prisma.entitlement.create({
     data: {
@@ -4304,7 +4419,7 @@ app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
       grantedAt: e.grantedAt.toISOString(),
       content: e.content
         ? (() => {
-            const coverUrl = `${APP_BASE_URL}/api/buyer/content/${encodeURIComponent(e.content.id)}/cover`;
+            const coverUrl = `${APP_BASE_URL}/public/content/${encodeURIComponent(e.content.id)}/cover`;
             let primaryFile: { path: string; mime?: string; sizeBytes?: number; sha256?: string } | null = null;
             try {
               if (e.content.repoPath) {
@@ -5894,7 +6009,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 
   return unique.map((i: any) => ({
     ...i,
-    priceSats: i.priceSats != null ? i.priceSats.toString() : null
+    priceSats: i.priceSats != null ? i.priceSats.toString() : null,
+    coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`
   }));
 });
 
@@ -6124,11 +6240,7 @@ app.post("/api/content/:contentId/manifest", { preHandler: requireAuth }, async 
   }
 
   const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
-  const manifestJson = await buildManifestJson(content, files);
-  const previewObjectKey = await ensurePreviewFile(content, files);
-  if (previewObjectKey) {
-    (manifestJson as any).preview = previewObjectKey;
-  }
+  const manifestJson = await buildManifestWithDerivedAssets(content, files);
   const manifestSha256 = hashManifestJson(manifestJson);
 
   let parentManifestSha256: string | null = null;
@@ -6245,11 +6357,7 @@ async function ensureManifestForContent(content: any) {
   if (manifest) return manifest;
 
   const files = await prisma.contentFile.findMany({ where: { contentId: content.id }, orderBy: { createdAt: "asc" } });
-  const manifestJson = await buildManifestJson(content, files);
-  const previewObjectKey = await ensurePreviewFile(content, files);
-  if (previewObjectKey) {
-    (manifestJson as any).preview = previewObjectKey;
-  }
+  const manifestJson = await buildManifestWithDerivedAssets(content, files);
   const manifestSha256 = hashManifestJson(manifestJson);
 
   let parentManifestSha256: string | null = null;
@@ -7811,36 +7919,308 @@ async function handlePublicContent(req: any, reply: any) {
 app.get("/public/content/:id", handlePublicContent);
 app.get("/public/content/:id/attribution", handlePublicAttribution);
 
-function hasBeatifyLinkInText(v: unknown): boolean {
-  const s = asString(v || "").trim();
-  if (!s) return false;
-  const m = s.match(/https?:\/\/[^\s)]+/gi) || [];
-  for (const raw of m) {
-    try {
-      const h = new URL(raw).hostname.toLowerCase();
-      if (h === "beatify.audio" || h === "www.beatify.audio") return true;
-    } catch {
-      continue;
-    }
-  }
-  return false;
+const BEATIFY_PROOF_CACHE_VALID_TTL_MS = 5 * 60 * 1000;
+const BEATIFY_PROOF_CACHE_INVALID_TTL_MS = 60 * 1000;
+const BEATIFY_PROOF_TIMEOUT_MS = 2000;
+const beatifyProofCache = new Map<string, { valid: boolean; reason: string; lastCheck: number; expiresAt: number; handle: string | null }>();
+
+type BeatifyNodeProofConfig = {
+  proofUrl: string | null;
+  beatifyHandle: string | null;
+  signatureId: string | null;
+  revokedAt: number | null;
+  setAt: number | null;
+  publicProofText: string | null;
+};
+
+function beatifyProofPath() {
+  return path.join(CONTENTBOX_ROOT, ".node", "beatify-node-proof.json");
 }
 
-function toPublicCreator(u: { displayName?: string | null; bio?: string | null } | null | undefined) {
+async function readBeatifyNodeProof(): Promise<BeatifyNodeProofConfig> {
+  try {
+    const raw = await fs.readFile(beatifyProofPath(), "utf8");
+    const j = JSON.parse(raw || "{}");
+    const proofUrl = asString((j as any)?.proofUrl || "").trim() || null;
+    const signatureIdStored = asString((j as any)?.signatureId || "").trim() || null;
+    const signatureIdDerived = proofUrl ? extractSignatureIdFromProofUrl(proofUrl) : null;
+    return {
+      proofUrl,
+      beatifyHandle: asString((j as any)?.beatifyHandle || "").trim() || null,
+      signatureId: signatureIdStored || signatureIdDerived,
+      revokedAt: Number((j as any)?.revokedAt || 0) || null,
+      setAt: Number((j as any)?.setAt || 0) || null,
+      publicProofText: asString((j as any)?.publicProofText || "").trim() || null
+    };
+  } catch {
+    return { proofUrl: null, beatifyHandle: null, signatureId: null, revokedAt: null, setAt: null, publicProofText: null };
+  }
+}
+
+async function writeBeatifyNodeProof(next: BeatifyNodeProofConfig) {
+  const p = beatifyProofPath();
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, JSON.stringify(next, null, 2), "utf8");
+}
+
+function getPublicHostnameFromReq(req: any): string | null {
+  const fromForward = asString(req?.headers?.["x-forwarded-host"] || "").split(",")[0].trim().toLowerCase();
+  const fromHost = asString(req?.headers?.host || "").split(",")[0].trim().toLowerCase();
+  const fromHostname = asString(req?.hostname || "").trim().toLowerCase();
+  const raw = fromForward || fromHostname || fromHost;
+  if (!raw) return null;
+  const host = raw.replace(/^\[|\]$/g, "").replace(/:\d+$/, "");
+  if (!host) return null;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return null;
+  return host;
+}
+
+async function computeNodePemSha256(): Promise<string | null> {
+  try {
+    const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
+    const pubBuf = await fs.readFile(pubPath);
+    if (!pubBuf?.length) return null;
+    return crypto.createHash("sha256").update(pubBuf).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBeatifyHandle(v: unknown): string | null {
+  const h = asString(v || "").trim().replace(/^@+/, "");
+  return h || null;
+}
+
+function normalizePublicProfileHandle(v: unknown): string | null {
+  const raw = asString(v || "").trim().toLowerCase();
+  if (!raw) return null;
+  const collapsed = raw.replace(/\s+/g, "-");
+  const clean = collapsed.replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-").replace(/^[-._]+|[-._]+$/g, "");
+  return clean || null;
+}
+
+function normalizeBeatifyProofUrl(raw: string): string | null {
+  try {
+    const u = new URL(asString(raw || "").trim());
+    if (u.protocol !== "https:") return null;
+    const host = u.hostname.toLowerCase();
+    const allow = new Set(["www.beatify.audio", "beatify.audio", "www.beatify.me", "beatify.me"]);
+    if (!allow.has(host)) return null;
+    const p = u.pathname || "/";
+    if (!/^\/[^\/?#]+\/signature\/[^\/?#]+\/?$/i.test(p)) return null;
+    const out = new URL(`https://www.beatify.audio${u.pathname}${u.search}`);
+    out.hash = "";
+    return out.toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractSignatureIdFromProofUrl(proofUrl: string): string | null {
+  try {
+    const u = new URL(proofUrl);
+    const parts = String(u.pathname || "").split("/").filter(Boolean);
+    const id = asString(parts[parts.length - 1] || "").trim();
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) return null;
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+function parseBeatifyProofSignals(html: string): { wellKnown: string | null; sha: string | null } {
+  const src = String(html || "");
+  const shaMatch = src.match(/contentbox_public_key_sha256\s*[:=]\s*([a-f0-9]{64})/i);
+  const wkMatch = src.match(/contentbox_well_known\s*[:=]\s*(https?:\/\/[^\s"'<>]+)/i);
+  const refMatch = src.match(/reference\s*[:=]\s*(https?:\/\/[^\s"'<>]+)/i);
+  const sha = shaMatch ? shaMatch[1].toLowerCase() : null;
+  const wellKnown = wkMatch ? String(wkMatch[1]).trim() : (refMatch ? String(refMatch[1]).trim() : null);
+  return { wellKnown, sha };
+}
+
+function parseWellKnownBeatifyText(text: string): { signatureId: string | null } {
+  const src = String(text || "");
+  const m = src.match(/^\s*beatify_signature_id\s*=\s*([A-Za-z0-9_-]{8,64})\s*$/im);
+  return { signatureId: m ? m[1] : null };
+}
+
+function escHtml(v: unknown): string {
+  return asString(v || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function fetchProofWithTimeout(url: string, responseType: "text" | "json"): Promise<{ ok: boolean; status: number; finalUrl: string; data: any }> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), BEATIFY_PROOF_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { method: "GET", redirect: "follow", signal: ctl.signal } as any);
+    const finalUrl = res.url || url;
+    if (!res.ok) return { ok: false, status: res.status, finalUrl, data: null };
+    const data = responseType === "json" ? await res.json().catch(() => null) : await res.text();
+    return { ok: true, status: res.status, finalUrl, data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBeatifyProofValidation(opts: {
+  proofUrl: string;
+  signatureId: string;
+  expectedSha: string;
+  expectedWellKnown: string;
+  expectedBeatifyWellKnown: string;
+  beatifyHandle: string | null;
+}): Promise<{ valid: boolean; reason: string; handle: string | null; lastCheck: number }> {
+  const now = Date.now();
+  const proofUrl = normalizeBeatifyProofUrl(opts.proofUrl || "");
+  if (!proofUrl) return { valid: false, reason: "invalid_proof_url", handle: null, lastCheck: now };
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(asString(opts.signatureId || ""))) return { valid: false, reason: "invalid_signature_id", handle: null, lastCheck: now };
+  const expectedSha = asString(opts.expectedSha || "").trim().toLowerCase();
+  const expectedWellKnown = asString(opts.expectedWellKnown || "").trim();
+  const expectedBeatifyWellKnown = asString(opts.expectedBeatifyWellKnown || "").trim();
+  if (!expectedSha || !expectedWellKnown || !expectedBeatifyWellKnown) return { valid: false, reason: "missing_expected_values", handle: null, lastCheck: now };
+
+  const key = `${proofUrl}|${opts.signatureId}|${expectedSha}|${expectedWellKnown}`;
+  const cached = beatifyProofCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return { valid: cached.valid, reason: cached.reason, handle: cached.handle, lastCheck: cached.lastCheck };
+  }
+
+  let result: { valid: boolean; reason: string; handle: string | null; lastCheck: number } = { valid: false, reason: "proof_fetch_failed", handle: null, lastCheck: now };
+  try {
+    const proofRes = await fetchProofWithTimeout(proofUrl, "text");
+    if (!proofRes.ok) {
+      result = { valid: false, reason: `proof_http_${proofRes.status}`, handle: null, lastCheck: Date.now() };
+    } else {
+      const finalUrl = new URL(proofRes.finalUrl || proofUrl);
+      const finalHost = finalUrl.hostname.toLowerCase();
+      const allow = new Set(["www.beatify.audio", "beatify.audio", "www.beatify.me", "beatify.me"]);
+      if (!allow.has(finalHost)) {
+        result = { valid: false, reason: "proof_final_host_not_allowed", handle: null, lastCheck: Date.now() };
+      } else {
+        const html = asString(proofRes.data || "");
+        const parsed = parseBeatifyProofSignals(html);
+        if (!parsed.sha) {
+          result = { valid: false, reason: "sha_missing", handle: null, lastCheck: Date.now() };
+        } else if (parsed.sha.toLowerCase() !== expectedSha) {
+          result = { valid: false, reason: "sha_mismatch", handle: null, lastCheck: Date.now() };
+        } else if (!parsed.wellKnown || parsed.wellKnown !== expectedWellKnown) {
+          result = { valid: false, reason: "well_known_mismatch", handle: null, lastCheck: Date.now() };
+        } else {
+          const wkBeatify = await fetchProofWithTimeout(expectedBeatifyWellKnown, "text");
+          if (!wkBeatify.ok) {
+            result = { valid: false, reason: `well_known_beatify_http_${wkBeatify.status}`, handle: null, lastCheck: Date.now() };
+          } else {
+            const parsedBeatify = parseWellKnownBeatifyText(asString(wkBeatify.data || ""));
+            if (!parsedBeatify.signatureId || parsedBeatify.signatureId !== opts.signatureId) {
+              result = { valid: false, reason: "signature_id_mismatch", handle: null, lastCheck: Date.now() };
+            } else {
+              const wkCb = await fetchProofWithTimeout(expectedWellKnown, "json");
+              if (!wkCb.ok) {
+                result = { valid: false, reason: `well_known_contentbox_http_${wkCb.status}`, handle: null, lastCheck: Date.now() };
+              } else {
+                const publicSha = asString((wkCb.data || {})?.publicKeyPemSha256 || "").trim().toLowerCase();
+                if (!publicSha || publicSha !== expectedSha) {
+                  result = { valid: false, reason: "well_known_sha_mismatch", handle: null, lastCheck: Date.now() };
+                } else {
+                  result = { valid: true, reason: "ok", handle: opts.beatifyHandle, lastCheck: Date.now() };
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    const isAbort = String(e?.name || "").toLowerCase().includes("abort");
+    result = { valid: false, reason: isAbort ? "proof_timeout" : "proof_fetch_failed", handle: null, lastCheck: Date.now() };
+  }
+
+  const ttl = result.valid ? BEATIFY_PROOF_CACHE_VALID_TTL_MS : BEATIFY_PROOF_CACHE_INVALID_TTL_MS;
+  beatifyProofCache.set(key, {
+    valid: result.valid,
+    reason: result.reason,
+    handle: result.handle,
+    lastCheck: result.lastCheck,
+    expiresAt: Date.now() + ttl
+  });
+  return result;
+}
+
+async function getBeatifyNodeBadgeStatus(req: any): Promise<{
+  linked: boolean;
+  valid: boolean;
+  revoked: boolean;
+  handle?: string;
+  tier?: "grey" | "gold";
+  expiresAt?: number;
+  nodePubkeyPemSha256?: string;
+  proofUrlSet?: boolean;
+  reason?: string;
+  lastCheck?: number;
+}> {
+  const conf = await readBeatifyNodeProof();
+  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
+  const proofUrl = asString(conf.proofUrl || "").trim() || null;
+  const revoked = Boolean(conf.revokedAt);
+  const nodePubkeyPemSha256 = await computeNodePemSha256();
+
+  if (!proofUrl || !beatifyHandle) {
+    return {
+      linked: false,
+      valid: false,
+      revoked,
+      tier: "grey",
+      nodePubkeyPemSha256: nodePubkeyPemSha256 || undefined,
+      proofUrlSet: false,
+      reason: !beatifyHandle ? "handle_not_set" : "proof_not_set"
+    };
+  }
+  if (revoked) {
+    return {
+      linked: true,
+      valid: false,
+      revoked: true,
+      handle: beatifyHandle || undefined,
+      tier: "grey",
+      nodePubkeyPemSha256: nodePubkeyPemSha256 || undefined,
+      proofUrlSet: true,
+      reason: "revoked"
+    };
+  }
+  const linked = Boolean(beatifyHandle && proofUrl && !revoked);
+  return {
+    linked: true,
+    valid: linked,
+    revoked: false,
+    handle: beatifyHandle || undefined,
+    tier: linked ? "gold" : "grey",
+    nodePubkeyPemSha256: nodePubkeyPemSha256 || undefined,
+    proofUrlSet: true,
+    reason: linked ? "linked" : "not_linked",
+    lastCheck: Date.now()
+  };
+}
+
+function toPublicCreator(u: { displayName?: string | null } | null | undefined) {
   if (!u) return null;
   const displayName = asString(u.displayName || "").trim() || "Creator";
-  const hasBeatify = hasBeatifyLinkInText(u.bio);
+  const handle = normalizePublicProfileHandle(displayName);
   return {
     displayName,
-    handle: null,
-    verification: { badge: hasBeatify ? ("beatify_heart" as string) : (null as string | null) }
+    handle: handle || null,
+    verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
   };
 }
 
 async function getPublicOfferGate(contentId: string): Promise<{ content: any | null; allowDraftPreview: boolean }> {
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    include: { owner: { select: { displayName: true, bio: true } } }
+    include: { owner: { select: { displayName: true } } }
   });
   if (!content) return { content: null, allowDraftPreview: false };
   if (content.deletedAt) return { content: null, allowDraftPreview: false };
@@ -7867,12 +8247,18 @@ async function handlePublicAttribution(req: any, reply: any) {
   const gated = await getPublicOfferGate(contentId);
   const content = gated.content;
   if (!content) return notFound(reply, "Not found");
+  const beatifyNodeStatus = await getBeatifyNodeBadgeStatus(req);
 
   const primaryCreator = toPublicCreator(content.owner) || {
     displayName: "Creator",
     handle: null,
-    verification: { badge: null as string | null }
+    verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
   };
+  if (beatifyNodeStatus.valid) {
+    (primaryCreator as any).beatifyHandle = beatifyNodeStatus.handle ? `@${asString(beatifyNodeStatus.handle).replace(/^@+/, "")}` : null;
+    primaryCreator.verification.badge = "beatify_heart";
+    primaryCreator.verification.tier = "gold";
+  }
 
   const [latestSplit, lockedSplit, parentLinks] = await Promise.all([
     prisma.splitVersion.findFirst({
@@ -7883,7 +8269,7 @@ async function handlePublicAttribution(req: any, reply: any) {
     getLockedSplitForContent(contentId),
     prisma.contentLink.findMany({
       where: { childContentId: contentId },
-      include: { parentContent: { include: { owner: { select: { displayName: true, bio: true } } } } },
+      include: { parentContent: { include: { owner: { select: { displayName: true } } } } },
       orderBy: { id: "asc" }
     })
   ]);
@@ -7897,12 +8283,12 @@ async function handlePublicAttribution(req: any, reply: any) {
 
   let contributors: Array<{ displayName: string; handle: string | null; bps: number; verification: { badge: string | null } }> = [];
   if (splitState === "active" && lockedSplit?.participants?.length) {
-    const byUserId = new Map<string, { displayName?: string | null; bio?: string | null }>();
+    const byUserId = new Map<string, { displayName?: string | null }>();
     const ids = Array.from(new Set(lockedSplit.participants.map((p: any) => asString(p.participantUserId || "").trim()).filter(Boolean)));
     if (ids.length) {
       const users = await prisma.user.findMany({
         where: { id: { in: ids } },
-        select: { id: true, displayName: true, bio: true }
+        select: { id: true, displayName: true }
       });
       for (const u of users) byUserId.set(u.id, u);
     }
@@ -7910,7 +8296,6 @@ async function handlePublicAttribution(req: any, reply: any) {
     contributors = lockedSplit.participants
       .map((p: any) => {
         const u = p.participantUserId ? byUserId.get(String(p.participantUserId)) : null;
-        const creator = toPublicCreator(u);
         const displayName =
           asString(u?.displayName || "").trim() ||
           asString((p as any)?.participantDisplayName || "").trim() ||
@@ -7922,7 +8307,7 @@ async function handlePublicAttribution(req: any, reply: any) {
           displayName,
           handle: null,
           bps,
-          verification: { badge: creator?.verification?.badge || null }
+          verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
         };
       })
       .filter((c) => c.bps > 0);
@@ -8040,6 +8425,35 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   return reply.send(fsSync.createReadStream(absPath));
 }
 
+async function handlePublicCoverFile(req: any, reply: any) {
+  const contentId = asString((req.params as any).id);
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Not found");
+  if (!content?.repoPath) return notFound(reply, "Not found");
+  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+  let cover = getCoverAssetFromManifest(manifest?.json as any);
+  if (!cover?.path) {
+    const latestImage = await prisma.contentFile.findFirst({
+      where: { contentId, mime: { startsWith: "image/" } as any },
+      orderBy: { createdAt: "desc" }
+    });
+    if (latestImage?.objectKey) {
+      cover = { path: latestImage.objectKey, sha256: latestImage.sha256 || null, mime: latestImage.mime || null };
+    }
+  }
+  if (!cover?.path) return notFound(reply, "Not found");
+
+  const repoRoot = path.resolve(content.repoPath);
+  const absPath = path.resolve(repoRoot, cover.path);
+  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  if (!fsSync.existsSync(absPath)) return notFound(reply, "Not found");
+
+  const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey: cover.path } });
+  reply.type(file?.mime || cover.mime || "image/jpeg");
+  reply.header("Cache-Control", "public, max-age=3600");
+  return reply.send(fsSync.createReadStream(absPath));
+}
+
 // Redirect legacy /buy/content preview URLs to the public preview endpoint.
 async function handleBuyPreviewRedirect(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
@@ -8060,6 +8474,8 @@ app.addHook("onRequest", (req: any, reply: any, done: any) => {
 
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
 app.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+app.get("/public/content/:id/cover", handlePublicCoverFile);
+app.get("/buy/content/:id/cover", handlePublicCoverFile);
 
 // Public credits (only when content is publicly visible)
 async function handlePublicCredits(req: any, reply: any) {
@@ -8084,10 +8500,107 @@ async function handlePublicCredits(req: any, reply: any) {
 
 app.get("/public/content/:id/credits", handlePublicCredits);
 
+async function handlePublicNodeProfilePage(req: any, reply: any) {
+  const matchedHandle = asString((req.params as any).handle || "").trim();
+  const requested = normalizePublicProfileHandle(matchedHandle);
+  if (!requested) return notFound(reply, "Not found");
+
+  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
+  const user =
+    await prisma.user.findFirst({
+      where: { displayName: { equals: requested, mode: "insensitive" } as any },
+      select: { id: true, displayName: true, bio: true, avatarUrl: true }
+    }) ||
+    await prisma.user.findFirst({
+      where: { displayName: { equals: maybeName, mode: "insensitive" } as any },
+      select: { id: true, displayName: true, bio: true, avatarUrl: true }
+    });
+  if (!user) return notFound(reply, "Not found");
+
+  const wk = await buildWellKnownContentboxPayload(req);
+  const nodeUrl = wk.nodeUrl || "";
+  if (!nodeUrl) return notFound(reply, "Not found");
+  const nodeSha = wk.publicKeyPemSha256 || null;
+  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}…${nodeSha.slice(-8)}` : null;
+
+  const conf = await readBeatifyNodeProof();
+  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
+  const proofUrl = asString(conf.proofUrl || "").trim();
+  const signatureId = asString(conf.signatureId || (proofUrl ? extractSignatureIdFromProofUrl(proofUrl) : "") || "").trim();
+  const revoked = Boolean(conf.revokedAt);
+  const beatifyMatches = Boolean(
+    beatifyHandle &&
+    normalizePublicProfileHandle(beatifyHandle) === requested
+  );
+  const beatifyVerified = Boolean(beatifyMatches && beatifyHandle && proofUrl && !revoked);
+  const beatifyLinkedUnverified = Boolean(beatifyMatches && (revoked || !proofUrl));
+  const publicProofText = asString(conf.publicProofText || "").trim();
+  let lightningConfigured = false;
+  try {
+    const lnd = await getLightningNodeConfigStatus(prisma as any);
+    lightningConfigured = Boolean(lnd.endpoint && lnd.hasMacaroon && lnd.decryptOk);
+  } catch {
+    lightningConfigured = false;
+  }
+
+  const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
+  const safeBio = escHtml(asString(user.bio || ""));
+  const safeAvatar = asString(user.avatarUrl || "").trim();
+  const safeAvatarUrl = /^https?:\/\//i.test(safeAvatar) ? escHtml(safeAvatar) : "";
+  const safeHandle = escHtml(`@${requested}`);
+  const safeProofUrl = escHtml(proofUrl || "");
+  const safeSig = escHtml(signatureId || "");
+  const safeNodeUrl = escHtml(nodeUrl);
+  const safeNodeSha = escHtml(nodeSha || "Unavailable");
+  const safeShortSha = escHtml(shortSha || "Unavailable");
+  const safeProofText = escHtml(publicProofText || "");
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ContentBox Node Profile</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
+    .card { width:min(760px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:12px; padding:20px; overflow:hidden; }
+    .muted { color:#9aa0a6; font-size:13px; }
+    .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
+    pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+    a { color:#9bdcff; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>ContentBox Node Profile</h2>
+    ${safeAvatarUrl ? `<div class="line"><img src="${safeAvatarUrl}" alt="avatar" style="width:72px;height:72px;border-radius:9999px;object-fit:cover;border:1px solid #222;" /></div>` : ""}
+    <div class="line"><strong>Name:</strong> ${safeDisplayName}${beatifyVerified ? " ♥" : ""}</div>
+    <div class="line"><strong>Handle:</strong> <span class="mono">${safeHandle}</span></div>
+    ${safeBio ? `<div class="line"><strong>Bio:</strong> <span>${safeBio}</span></div>` : ""}
+    <div class="line"><strong>Node URL:</strong> <span class="mono">${safeNodeUrl}</span></div>
+    <div class="line"><strong>ContentBox public key hash:</strong> <span class="mono">${safeNodeSha}</span></div>
+    <div class="line muted">Short: <span class="mono">${safeShortSha}</span></div>
+    ${beatifyVerified ? `<div class="line"><strong>Beatify:</strong> Verified ♥</div>` : beatifyLinkedUnverified ? `<div class="line"><strong>Beatify:</strong> linked (unverified)</div>` : `<div class="line"><strong>Beatify:</strong> not linked</div>`}
+    ${beatifyMatches && proofUrl ? `<div class="line"><strong>Beatify proof:</strong> <a href="${safeProofUrl}" target="_blank" rel="noreferrer">${safeProofUrl}</a></div>` : ""}
+    ${beatifyMatches && signatureId ? `<div class="line"><strong>Signature ID:</strong> <span class="mono">${safeSig}</span></div><pre class="line mono">beatify_signature_id=${safeSig}</pre>` : ""}
+    ${safeProofText ? `<div class="line"><strong>Beatify Proof (public):</strong></div><pre class="line mono">${safeProofText}</pre>` : ""}
+    <div class="line"><strong>Lightning:</strong> <span class="muted">${lightningConfigured ? "configured" : "not configured"}</span></div>
+  </div>
+</body>
+</html>`;
+
+  reply.type("text/html; charset=utf-8");
+  return reply.send(html);
+}
+
 // Short public link -> buy page
 async function handleShortPublicLink(req: any, reply: any) {
   const token = asString((req.params as any).token || "").trim();
   if (!token) return notFound(reply, "Not found");
+
   const share = await prisma.shareLink.findUnique({ where: { token } });
   if (share && share.status === "ACTIVE") {
     const content = await prisma.contentItem.findUnique({ where: { id: share.contentId } });
@@ -8130,6 +8643,15 @@ async function handleShortPublicLink(req: any, reply: any) {
 }
 
 app.get("/p/:token", handleShortPublicLink);
+app.get("/u/:handle", handlePublicNodeProfilePage);
+async function handlePublicProfileRedirect(req: any, reply: any) {
+  const conf = await readBeatifyNodeProof();
+  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
+  if (!beatifyHandle) return notFound(reply, "Not found");
+  return reply.redirect(302, `/u/${encodeURIComponent(beatifyHandle)}`);
+}
+
+app.get("/profile", handlePublicProfileRedirect);
 
 // External clearance page (no login required)
 app.get("/clearance/:token", async (req: any, reply) => {
@@ -8369,8 +8891,14 @@ async function handleBuyPage(req: any, reply: any) {
     .download-row { margin-top:10px; }
     .preview { margin-top:14px; }
     .preview img, .preview video, .preview audio { width:100%; max-width:820px; border-radius:12px; border:1px solid #222; background:#0b0b0b; }
+    .song-cover { margin-top:14px; max-width:420px; aspect-ratio:1/1; border-radius:12px; border:1px solid #222; overflow:hidden; background:#0f0f10; }
+    .song-cover img { width:100%; height:100%; object-fit:cover; display:block; }
+    .song-cover.placeholder { display:flex; align-items:center; justify-content:center; color:#71717a; font-size:12px; }
     a { color:#93c5fd; }
     .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
+    .cb-heart { margin-left:4px; font-weight:700; }
+    .cb-heart--grey { color:#cbd5e1; }
+    .cb-heart--gold { color:#fbbf24; }
   </style>
 </head>
 <body>
@@ -8408,9 +8936,9 @@ async function handleBuyPage(req: any, reply: any) {
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
   function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   function heartFor(c){
-    return c?.verification?.badge === "beatify_heart"
-      ? " <span aria-label=\\"Verified\\">♥</span>"
-      : "";
+    if (c?.verification?.badge !== "beatify_heart") return "";
+    const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
+    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">♥</span>";
   }
 
   function resolveAttributionContentId(){
@@ -8430,7 +8958,13 @@ async function handleBuyPage(req: any, reply: any) {
     if (!primary) return;
     const name = esc(primary.displayName || primary.name || primary.handle || "Creator");
     const handleRaw = String(primary.handle || "").trim();
-    const handle = handleRaw ? (" @" + esc(handleRaw.replace(/^@/, ""))) : "";
+    const profilePath = handleRaw ? ("/u/" + encodeURIComponent(handleRaw.replace(/^@/, ""))) : "";
+    const nameHtml = profilePath
+      ? ("<a href=\\"" + profilePath + "\\" style=\\"text-decoration:underline;\\">" + name + "</a>")
+      : name;
+    const contentboxHandle = handleRaw ? (" @" + esc(handleRaw.replace(/^@/, ""))) : "";
+    const beatifyHandleRaw = String(primary.beatifyHandle || "").trim();
+    const beatifyHandle = beatifyHandleRaw ? (" @" + esc(beatifyHandleRaw)) : "";
     const badge = heartFor(primary);
 
     let splitHtml = "";
@@ -8475,7 +9009,7 @@ async function handleBuyPage(req: any, reply: any) {
 
     mounts.forEach((mount) => {
       mount.innerHTML = "<div class=\\"step\\" style=\\"margin-top:10px;\\">" +
-        "<div style=\\"font-weight:600;\\">Creator: " + name + handle + badge + "</div>" +
+        "<div style=\\"font-weight:600;\\">Creator: " + nameHtml + contentboxHandle + beatifyHandle + badge + "</div>" +
         splitHtml +
         upstreamHtml +
         "<div class=\\"muted\\" style=\\"margin-top:8px;\\">You're buying access. Proceeds are shared with the creators shown.</div>" +
@@ -8657,6 +9191,15 @@ async function handleBuyPage(req: any, reply: any) {
     return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
   }
 
+  function offerCoverUrl(offer){
+    const direct = String(offer?.coverUrl || "").trim();
+    if (direct) return direct;
+    const coverObjectKey = String(offer?.coverObjectKey || "").trim();
+    if (!coverObjectKey) return null;
+    const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(coverObjectKey) + shareQ;
+  }
+
   function resolveBasicDeliveryMode(offer){
     const explicit = (offer && typeof offer.deliveryMode === "string" && offer.deliveryMode.trim()) ? offer.deliveryMode.trim() : "";
     if (explicit) return explicit;
@@ -8668,13 +9211,20 @@ async function handleBuyPage(req: any, reply: any) {
     return "download_only";
   }
 
+  function allowDownloadForOffer(offer){
+    const mode = resolveBasicDeliveryMode(offer);
+    return mode === "download_only" || mode === "stream_and_download";
+  }
+
   function renderBasicOffer(offer){
     const mediaSrc = basicPrimaryUrl(offer) || previewFallbackUrl(offer);
     const mime = String(offer.primaryFileMime || "");
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
+    const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "";
     const tipBlock = sellerLightningAddress
       ? "<div class=\\"rail\\" style=\\"margin-top:10px;\\">" +
@@ -8700,10 +9250,15 @@ async function handleBuyPage(req: any, reply: any) {
         "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
         "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
         "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
+        (isAudio
+          ? (coverSrc
+              ? "<div class=\\"song-cover\\"><img src=\\"" + coverSrc + "\\" alt=\\"Album cover\\" loading=\\"lazy\\" onerror=\\"var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}\\" /></div>"
+              : "<div class=\\"song-cover placeholder\\">No cover</div>")
+          : "") +
         (mediaSrc
           ? "<div class=\\"preview\\">" +
-              (isVideo ? "<video id=\\"player\\" controls preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
-              (isAudio ? "<audio id=\\"player\\" controls preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
+              (isVideo ? "<video id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
+              (isAudio ? "<audio id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
               (!isVideo && !isAudio ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
             "</div>"
           : "") +
@@ -8729,6 +9284,9 @@ async function handleBuyPage(req: any, reply: any) {
     const mime = String(offer.primaryFileMime || "");
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
+    const deliveryMode = resolveBasicDeliveryMode(offer);
+    const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
     const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
     app.innerHTML = \`
@@ -8736,6 +9294,7 @@ async function handleBuyPage(req: any, reply: any) {
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
         <section id="cb-attribution" style="display:none"></section>
+        \${isAudio ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${already ? \`
           <div class="step" style="border-color:#14532d;background:#0b1f14;">
             <div style="font-weight:600;">Already owned</div>
@@ -8746,8 +9305,8 @@ async function handleBuyPage(req: any, reply: any) {
         \${mediaSrc && canStream ? \`
           <div class="preview">
             \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview</div>\` : ""}
-            \${isVideo ? \`<video id="player" controls preload="metadata" src="\${mediaSrc}"></video>\` : ""}
-            \${isAudio ? \`<audio id="player" controls preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
+            \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></video>\` : ""}
+            \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
             \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
         \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
@@ -8946,6 +9505,10 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderDownloads(payload){
     const downloads = document.getElementById("downloads");
+    if (!allowDownloadForOffer(currentOffer)) {
+      downloads.innerHTML = "";
+      return;
+    }
     const list = payload.files || [];
     if (!list.length) {
       downloads.innerHTML = "<div class='muted'>No files available.</div>";
@@ -9083,18 +9646,27 @@ async function handleBuyPage(req: any, reply: any) {
             .then(async (offer)=> {
               currentOffer = offer;
               const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
-              if (ent && ent.token) {
+              const shouldUpgradeOwnedFromPreview = Boolean(
+                alreadyOwned &&
+                Number(offer.priceSats || 0) > 0 &&
+                ent &&
+                ent.token &&
+                ent.status === "preview"
+              );
+              if (ent && ent.token && !shouldUpgradeOwnedFromPreview) {
                 renderOffer(offer, ent, alreadyOwned);
                 return;
               }
               if (Number(offer.priceSats || 0) > 0) {
                 try {
+                  const desiredScope = alreadyOwned ? "stream" : "preview";
                   const p = await fetchJson("/buy/permits", {
                     method: "POST",
-                    body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
+                    body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: (buyer && buyer.id) ? buyer.id : "guest", requestedScope: desiredScope }
                   });
                   previewSeconds = p.previewSeconds || previewSeconds;
-                  const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
+                  const nextStatus = p.accessMode === "stream" ? "paid" : "preview";
+                  const next = setEntitlement(offer.manifestSha256, p.permit, nextStatus, Date.parse(p.expiresAt));
                   renderOffer(offer, next, alreadyOwned);
                   checkManualStatus();
                   return;
@@ -9390,10 +9962,13 @@ async function handlePublicOffer(req: any, reply: any) {
     (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
     (typeof primaryFileId === "string" && primaryFileId) ||
     null;
+  const coverAsset = getCoverAssetFromManifest(manifestJson);
+  const coverObjectKey = coverAsset?.path || null;
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const baseUrl = host ? `${proto}://${host}` : null;
+  const coverUrl = coverObjectKey ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/cover` : null;
   const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
   const priceSats = content.priceSats ?? null;
@@ -9413,6 +9988,8 @@ async function handlePublicOffer(req: any, reply: any) {
     primaryFileId,
     primaryFileMime,
     previewObjectKey,
+    coverObjectKey,
+    coverUrl,
     deliveryMode: (content as any).deliveryMode || null,
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
@@ -9645,7 +10222,7 @@ async function handlePublicPermits(req: any, reply: any) {
 
   const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
   const fileId = asString(body.fileId || "").trim();
-  const buyerId = asString(body.buyerId || "").trim() || "guest";
+  const requestedBuyerId = asString(body.buyerId || "").trim() || "guest";
   const requestedScope = body.requestedScope === "stream" ? "stream" : "preview";
 
   if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
@@ -9655,8 +10232,22 @@ async function handlePublicPermits(req: any, reply: any) {
   const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
   if (!content) return notFound(reply, "Content not found");
 
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const sessionBuyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
+  if (sessionBuyerId) {
+    await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: sessionBuyerId, contentId: content.id }).catch(() => {});
+  }
+
+  const hasPaidAccess = sessionBuyerId ? await hasAccess(sessionBuyerId, content.id) : false;
+  const paidContent = content.priceSats != null && content.priceSats > 0n;
   const devUnlock = String(process.env.DEV_P2P_UNLOCK || "").trim() === "1" || PAYMENT_PROVIDER.kind === "none";
-  const accessMode = devUnlock ? "stream" : requestedScope;
+  const accessMode = resolveBuyPermitAccessMode({
+    requestedScope,
+    devUnlock,
+    paidContent,
+    hasPaidAccess
+  });
+  const buyerId = sessionBuyerId || requestedBuyerId || "guest";
   const scopes = accessMode === "stream" ? ["stream"] : ["preview"];
   const now = Date.now();
   const ttlMs = accessMode === "stream" ? 24 * 60 * 60 * 1000 : 30 * 60 * 1000;
@@ -10010,6 +10601,9 @@ async function handlePublicReceiptFile(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content || !content.repoPath) return notFound(reply, "Content not found");
+  if (content.deliveryMode === "stream_only") {
+    return reply.code(403).send({ error: "DOWNLOAD_DISABLED" });
+  }
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
   if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
@@ -10074,21 +10668,59 @@ app.get("/content/:id/files", { preHandler: requireAuth }, async (req: any, repl
 app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
+  req.log.info(
+    {
+      ct: req.headers["content-type"],
+      route: req.routerPath || req.routeOptions?.url || "/content/:id/files",
+      contentId
+    },
+    "upload start"
+  );
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
 
-  // fastify multipart
-  const mp = await req.file();
-  if (!mp) return badRequest(reply, "file is required");
+  const uploadReqCheck = validateUploadRequest({
+    isMultipart: typeof req.isMultipart === "function" ? req.isMultipart() : false,
+    hasFile: true
+  });
+  if (!uploadReqCheck.ok) {
+    return reply.code(uploadReqCheck.status).send({ error: uploadReqCheck.error });
+  }
 
-  const fileStream = mp.file as NodeJS.ReadableStream;
-  const originalName = mp.filename || "upload";
-  const mime = mp.mimetype || "application/octet-stream";
+  const rawIdempotencyKey = asString(req.headers["x-idempotency-key"] || "").trim();
+  const idempotencyKey = rawIdempotencyKey ? `${userId}:${contentId}:${rawIdempotencyKey}` : null;
+  const now = Date.now();
+  if (idempotencyKey) {
+    const existing = uploadIdempotency.get(idempotencyKey);
+    if (existing && existing.expiresAt > now) {
+      if (existing.status === "done" && existing.response) return reply.send(existing.response);
+      const retryAfterMs = Math.max(250, existing.expiresAt - now);
+      reply.header("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+      return reply.code(409).send({ error: "Upload already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
+    }
+    uploadIdempotency.delete(idempotencyKey);
+  }
 
-  try {
+  const execute = async () => {
+    const mp = await req.file();
+    const validation = validateUploadRequest({ isMultipart: true, hasFile: Boolean(mp) });
+    if (!validation.ok) {
+      const err: any = new Error(validation.error);
+      err.statusCode = validation.status;
+      throw err;
+    }
+    const fileStream = mp.file as NodeJS.ReadableStream;
+    const originalName = mp.filename || "upload";
+    const mime = mp.mimetype || "application/octet-stream";
+    if (!mime || !String(mime).trim()) {
+      const err: any = new Error("invalid file type");
+      err.statusCode = 415;
+      throw err;
+    }
+
     const fileEntry = await addFileToContentRepo({
       repoPath: content.repoPath,
       contentTitle: content.title,
@@ -10144,7 +10776,7 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       });
     } catch {}
 
-    return reply.send({
+    const payload = {
       id: created.id,
       objectKey: created.objectKey,
       originalName: created.originalName,
@@ -10154,9 +10786,193 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       createdAt: created.createdAt,
       manifestSha256: manifestSha,
       sha256MatchesManifest: manifestSha ? manifestSha.toLowerCase() === (created.sha256 || "").toLowerCase() : null
+    };
+    if (idempotencyKey) {
+      uploadIdempotency.set(idempotencyKey, {
+        status: "done",
+        response: payload,
+        expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_DONE_TTL_MS
+      });
+    }
+    return payload;
+  };
+
+  if (idempotencyKey) {
+    uploadIdempotency.set(idempotencyKey, {
+      status: "inflight",
+      expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_INFLIGHT_TTL_MS
     });
+  }
+
+  try {
+    const payload = await execute();
+    return reply.send(payload);
   } catch (e: any) {
-    return reply.code(500).send({ error: String((e as any)?.message || String(e)) });
+    if (idempotencyKey) uploadIdempotency.delete(idempotencyKey);
+    const code = Number(e?.statusCode || e?.status || 0);
+    const msg = String(e?.message || e || "Upload failed");
+    if (code === 413 || String(e?.code || "").includes("FST_REQ_FILE_TOO_LARGE") || msg.toLowerCase().includes("too large")) {
+      return reply.code(413).send({ error: "uploaded file too large" });
+    }
+    if (code === 401 || code === 403) {
+      return reply.code(code).send({ error: code === 401 ? "Unauthorized" : "Forbidden" });
+    }
+    if (code === 400 || msg === "file is required") {
+      return reply.code(400).send({ error: "file is required" });
+    }
+    if (code === 415 || msg.toLowerCase().includes("multipart/form-data")) {
+      return reply.code(415).send({ error: "multipart/form-data required" });
+    }
+    req.log.error({ err: e, contentId }, "upload failed");
+    return reply.code(500).send({ error: "Upload failed" });
+  }
+});
+
+// Upload or replace song cover artwork (image only)
+app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).id);
+  req.log.info(
+    {
+      ct: req.headers["content-type"],
+      route: req.routerPath || req.routeOptions?.url || "/content/:id/cover",
+      contentId
+    },
+    "cover upload start"
+  );
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
+  if (String(content.type || "").toLowerCase() !== "song") {
+    return reply.code(400).send({ error: "Cover upload is only supported for songs" });
+  }
+
+  const uploadReqCheck = validateUploadRequest({
+    isMultipart: typeof req.isMultipart === "function" ? req.isMultipart() : false,
+    hasFile: true
+  });
+  if (!uploadReqCheck.ok) {
+    return reply.code(uploadReqCheck.status).send({ error: uploadReqCheck.error });
+  }
+
+  const rawIdempotencyKey = asString(req.headers["x-idempotency-key"] || "").trim();
+  const idempotencyKey = rawIdempotencyKey ? `cover:${userId}:${contentId}:${rawIdempotencyKey}` : null;
+  const now = Date.now();
+  if (idempotencyKey) {
+    const existing = uploadIdempotency.get(idempotencyKey);
+    if (existing && existing.expiresAt > now) {
+      if (existing.status === "done" && existing.response) return reply.send(existing.response);
+      const retryAfterMs = Math.max(250, existing.expiresAt - now);
+      reply.header("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+      return reply.code(409).send({ error: "Cover upload already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
+    }
+    uploadIdempotency.delete(idempotencyKey);
+  }
+
+  try {
+    if (idempotencyKey) {
+      uploadIdempotency.set(idempotencyKey, {
+        status: "inflight",
+        expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_INFLIGHT_TTL_MS
+      });
+    }
+    const mp = await req.file();
+    const validation = validateUploadRequest({ isMultipart: true, hasFile: Boolean(mp) });
+    if (!validation.ok) return reply.code(validation.status).send({ error: validation.error });
+
+    const mime = String(mp.mimetype || "").toLowerCase();
+    const allowedMimes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+    if (!allowedMimes.has(mime)) {
+      return reply.code(415).send({ error: "Cover must be a jpg, png, or webp image" });
+    }
+
+    const buf = await readMultipartPartBuffer(mp, 5 * 1024 * 1024);
+    const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+    const fileName = `${content.id}-cover.${ext}`;
+
+    const stream = Readable.from(buf);
+
+    const fileEntry = await addFileToContentRepo({
+      repoPath: content.repoPath,
+      contentTitle: content.title,
+      originalName: fileName,
+      mime: mime === "image/jpg" ? "image/jpeg" : mime,
+      stream,
+      setAsPrimary: false,
+      preferMasterName: false
+    });
+
+    await prisma.contentFile.upsert({
+      where: { contentId_objectKey: { contentId, objectKey: fileEntry.path } },
+      update: {
+        originalName: fileName,
+        mime: mime === "image/jpg" ? "image/jpeg" : mime,
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        createdAt: new Date(fileEntry.committedAt)
+      },
+      create: {
+        contentId,
+        objectKey: fileEntry.path,
+        originalName: fileName,
+        mime: mime === "image/jpg" ? "image/jpeg" : mime,
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        encDek: "",
+        encAlg: ""
+      }
+    });
+
+    const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+    const manifestJson = await buildManifestWithDerivedAssets(content, files, { coverObjectKey: fileEntry.path });
+    const manifestSha256 = hashManifestJson(manifestJson);
+
+    const existingManifest = await prisma.manifest.findUnique({ where: { contentId } });
+    const manifest = await prisma.manifest.upsert({
+      where: { contentId },
+      update: {
+        json: manifestJson as any,
+        sha256: manifestSha256,
+        parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+        lineageRelation: existingManifest?.lineageRelation || null
+      },
+      create: {
+        contentId,
+        json: manifestJson as any,
+        sha256: manifestSha256,
+        parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+        lineageRelation: existingManifest?.lineageRelation || null
+      }
+    });
+    await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id } });
+
+    const coverUrl = `${APP_BASE_URL}/public/content/${encodeURIComponent(contentId)}/cover`;
+    const payload = { ok: true, coverObjectKey: fileEntry.path, coverUrl, manifestSha256 };
+    if (idempotencyKey) {
+      uploadIdempotency.set(idempotencyKey, {
+        status: "done",
+        response: payload,
+        expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_DONE_TTL_MS
+      });
+    }
+    return reply.send(payload);
+  } catch (e: any) {
+    if (idempotencyKey) uploadIdempotency.delete(idempotencyKey);
+    const code = Number(e?.statusCode || e?.status || 0);
+    const msg = String(e?.message || e || "Cover upload failed");
+    if (code === 413 || msg.toLowerCase().includes("too large")) {
+      return reply.code(413).send({ error: "Cover image exceeds 5MB limit" });
+    }
+    if (code === 409 || msg.includes("UPLOAD_IN_PROGRESS")) {
+      return reply.code(409).send({ error: "Cover upload already in progress", code: "UPLOAD_IN_PROGRESS" });
+    }
+    if (code === 415 || msg.toLowerCase().includes("multipart/form-data")) {
+      return reply.code(415).send({ error: "multipart/form-data required" });
+    }
+    req.log.error({ err: e, contentId }, "cover upload failed");
+    return reply.code(500).send({ error: "Cover upload failed" });
   }
 });
 
@@ -12343,6 +13159,161 @@ app.get("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any, r
   }
 });
 
+app.get("/api/admin/external-claims/beatify/node", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const status = await getBeatifyNodeBadgeStatus(req);
+    const conf = await readBeatifyNodeProof();
+    return reply.send({
+      linked: status.linked,
+      proofUrlSet: Boolean(status.proofUrlSet),
+      valid: status.valid,
+      revoked: status.revoked,
+      lastCheck: status.lastCheck || null,
+      reason: status.reason || null,
+      beatifyHandle: normalizeBeatifyHandle(conf.beatifyHandle),
+      proofUrl: asString(conf.proofUrl || "").trim() || null,
+      signatureId: asString(conf.signatureId || "").trim() || null,
+      revokedAt: conf.revokedAt || null,
+      publicProofText: conf.publicProofText || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/node/set-proof", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { proofUrl?: string; beatifyHandle?: string };
+    const proofUrlRaw = asString(body.proofUrl || "").trim();
+    const proofUrl = proofUrlRaw || null;
+    if (!proofUrl) return badRequest(reply, "invalid proofUrl");
+    const beatifyHandle = normalizeBeatifyHandle(body.beatifyHandle);
+    const signatureId = extractSignatureIdFromProofUrl(proofUrl) || null;
+    const next: BeatifyNodeProofConfig = {
+      proofUrl,
+      beatifyHandle,
+      signatureId,
+      revokedAt: null,
+      setAt: Date.now(),
+      publicProofText: null
+    };
+    const existing = await readBeatifyNodeProof();
+    next.publicProofText = existing.publicProofText || null;
+    await writeBeatifyNodeProof(next);
+    beatifyProofCache.clear();
+    const status = await getBeatifyNodeBadgeStatus(req);
+    return reply.send({
+      linked: status.linked,
+      proofUrlSet: Boolean(status.proofUrlSet),
+      valid: status.valid,
+      revoked: status.revoked,
+      lastCheck: status.lastCheck || null,
+      reason: status.reason || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/profile-text", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { publicProofText?: string };
+    const trimmed = asString(body.publicProofText || "").trim();
+    if (trimmed.length > 4000) return badRequest(reply, "publicProofText too long (max 4000 chars)");
+    const conf = await readBeatifyNodeProof();
+    await writeBeatifyNodeProof({
+      ...conf,
+      publicProofText: trimmed || null
+    });
+    return reply.send({ ok: true, publicProofText: trimmed || null });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/node/revoke", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    await writeBeatifyNodeProof({ ...conf, revokedAt: Date.now() });
+    beatifyProofCache.clear();
+    const status = await getBeatifyNodeBadgeStatus(req);
+    return reply.send({
+      linked: status.linked,
+      proofUrlSet: Boolean(status.proofUrlSet),
+      valid: status.valid,
+      revoked: status.revoked,
+      lastCheck: status.lastCheck || null,
+      reason: status.reason || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/external-claims/beatify/profile", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    return reply.send({
+      beatifyHandle: normalizeBeatifyHandle(conf.beatifyHandle),
+      proofUrl: asString(conf.proofUrl || "").trim() || null,
+      signatureId: asString(conf.signatureId || "").trim() || null,
+      publicProofText: conf.publicProofText || null,
+      revokedAt: conf.revokedAt || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/profile", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { beatifyHandle?: string; proofUrl?: string; publicProofText?: string };
+    const conf = await readBeatifyNodeProof();
+    const beatifyHandle = body.beatifyHandle === undefined ? normalizeBeatifyHandle(conf.beatifyHandle) : normalizeBeatifyHandle(body.beatifyHandle);
+    const proofUrl = body.proofUrl === undefined ? (asString(conf.proofUrl || "").trim() || null) : (asString(body.proofUrl || "").trim() || null);
+    const signatureId = proofUrl ? (extractSignatureIdFromProofUrl(proofUrl) || null) : null;
+    const trimmed = body.publicProofText === undefined ? (conf.publicProofText || null) : (asString(body.publicProofText || "").trim() || null);
+    if (trimmed && trimmed.length > 4000) return badRequest(reply, "publicProofText too long (max 4000 chars)");
+
+    await writeBeatifyNodeProof({
+      proofUrl,
+      beatifyHandle,
+      signatureId,
+      publicProofText: trimmed,
+      revokedAt: conf.revokedAt || null,
+      setAt: conf.setAt || Date.now()
+    });
+    return reply.send({
+      beatifyHandle,
+      proofUrl,
+      signatureId,
+      publicProofText: trimmed,
+      revokedAt: conf.revokedAt || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/revoke", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    await writeBeatifyNodeProof({ ...conf, revokedAt: Date.now() });
+    const status = await getBeatifyNodeBadgeStatus(req);
+    return reply.send({
+      beatifyHandle: normalizeBeatifyHandle(conf.beatifyHandle),
+      proofUrl: asString(conf.proofUrl || "").trim() || null,
+      signatureId: asString(conf.signatureId || "").trim() || null,
+      publicProofText: conf.publicProofText || null,
+      revokedAt: Date.now(),
+      linked: status.linked,
+      valid: status.valid
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
 app.get("/api/admin/lightning/config/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   try {
     const status = await getLightningNodeConfigStatus(prisma as any);
@@ -12725,60 +13696,53 @@ function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reas
 
 app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const contents = await prisma.contentItem.findMany({
-    where: { ownerUserId: userId },
-    select: { id: true }
-  });
-  const contentIds = contents.map((c) => c.id);
-
-  const settlements = await prisma.settlement.findMany({
-    where: { contentId: { in: contentIds } }
-  });
-
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  let salesSats = 0n;
-  let salesSatsLast30d = 0n;
-  const seriesMap = new Map<string, bigint>();
-
-  for (const s of settlements) {
-    const amt = BigInt(s.netAmountSats as any);
-    salesSats += amt;
-    if (s.createdAt >= since) {
-      salesSatsLast30d += amt;
-      const key = s.createdAt.toISOString().slice(0, 10);
-      const prev = seriesMap.get(key) || 0n;
-      seriesMap.set(key, prev + amt);
+  const intents = await prisma.paymentIntent.findMany({
+    where: {
+      purpose: "CONTENT_PURCHASE" as any,
+      content: { ownerUserId: userId }
+    },
+    select: {
+      amountSats: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      paidAt: true,
+      lightningExpiresAt: true
     }
-  }
-
-  const revenueSeries: Array<{ date: string; amountSats: string }> = [];
-  for (let i = 29; i >= 0; i -= 1) {
-    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-    const key = d.toISOString().slice(0, 10);
-    revenueSeries.push({ date: key, amountSats: (seriesMap.get(key) || 0n).toString() });
-  }
+  });
+  const computed = computeFinanceOverviewFromIntents({
+    now,
+    intents: intents.map((i) => ({
+      amountSats: BigInt(i.amountSats as any),
+      status: String(i.status || ""),
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+      paidAt: i.paidAt || null,
+      lightningExpiresAt: i.lightningExpiresAt || null
+    }))
+  });
 
   // Reuse readiness logic
   const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
   const health = { lightning: lnd, onchain };
+  req.log.info(
+    {
+      sellerUserId: userId,
+      from: since.toISOString(),
+      to: now.toISOString(),
+      matchedPaymentIntents: intents.length,
+      paidCount: computed.totals.invoicesPaid,
+      pendingCount: computed.totals.invoicesPending,
+      salesSats: computed.totals.salesSats
+    },
+    "finance.overview computed"
+  );
 
   return reply.send({
-    totals: {
-      salesSats: salesSats.toString(),
-      salesSatsLast30d: salesSatsLast30d.toString(),
-      invoicesTotal: 0,
-      invoicesPaid: 0,
-      invoicesPending: 0,
-      invoicesFailed: 0,
-      invoicesExpired: 0,
-      paymentsReceivedSats: "0",
-      paymentsPendingSats: "0",
-      paymentsReceivedCount: 0,
-      paymentsPendingCount: 0,
-      paymentsLast30d: 0
-    },
-    revenueSeries,
+    totals: computed.totals,
+    revenueSeries: computed.revenueSeries,
     health,
     lastUpdatedAt: new Date().toISOString()
   });
