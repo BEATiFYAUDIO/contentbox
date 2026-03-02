@@ -5877,7 +5877,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string };
   const trash = q.trash === "1";
   const tombstones = q.tombstones === "1";
-  const scope = String(q.scope || "library").toLowerCase();
+  const scope = String(q.scope || "mine").toLowerCase();
   const requestedType = String(q.type || "all").toLowerCase();
   const allowedTypeFilters = new Set(["all", "songs", "videos", "books", "files"]);
   if (!allowedTypeFilters.has(requestedType)) {
@@ -5896,14 +5896,19 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           : requestedType === "files"
             ? { type: "file" as const }
             : {};
-  const trashWhere = trash
-    ? tombstones
-      ? { deletedAt: { not: null } }
-      : {
-          deletedAt: { not: null },
-          deletedReason: { not: "hard" }
+  const stateWhere =
+    tombstones
+      ? {
+          deletedAt: { not: null as any },
+          status: "published" as const
         }
-    : { deletedAt: null };
+      : trash
+        ? {
+            deletedAt: { not: null as any },
+            status: { not: "published" as const },
+            deletedReason: { not: "hard" }
+          }
+        : { deletedAt: null as any };
 
   const selectBase = {
     id: true,
@@ -5919,21 +5924,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
-    _count: { select: { files: true } }
+    _count: { select: { files: true, entitlements: true } }
   } as const;
 
   const items: any[] = [];
 
   if (scope === "local") {
     const local = await prisma.contentItem.findMany({
-      where: { ...trashWhere, ...contentTypeWhere },
+      where: { ...stateWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
     items.push(...local.map((i) => ({ ...i, libraryAccess: i.ownerUserId === userId ? "owned" : "local" })));
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
-      where: { ownerUserId: userId, ...trashWhere, ...contentTypeWhere },
+      where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -5944,12 +5949,20 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const meEmail = (me?.email || "").toLowerCase();
     const [owned, purchased, publicPreview, participantLinks] = await prisma.$transaction([
       prisma.contentItem.findMany({
-        where: { ownerUserId: userId, ...trashWhere, ...contentTypeWhere },
+        where: {
+          ownerUserId: userId,
+          status: "published",
+          deletedAt: null,
+          ...contentTypeWhere
+        },
         orderBy: { createdAt: "desc" },
         select: selectBase
       }),
       prisma.entitlement.findMany({
-        where: { buyerUserId: userId, content: { is: { ...trashWhere, ...contentTypeWhere } } as any },
+        where: {
+          buyerUserId: userId,
+          content: { is: { status: "published", ...contentTypeWhere } } as any
+        },
         include: { content: { select: selectBase } },
         orderBy: { grantedAt: "desc" }
       }),
@@ -5957,7 +5970,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         where: {
           storefrontStatus: { in: ["LISTED", "UNLISTED"] },
           status: "published",
-          ...trashWhere,
+          deletedAt: null,
           ...contentTypeWhere
         },
         orderBy: { createdAt: "desc" },
@@ -5990,7 +6003,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       );
       if (participantIds.length > 0) {
         const participantContent = await prisma.contentItem.findMany({
-          where: { id: { in: participantIds }, ...trashWhere, ...contentTypeWhere },
+          where: {
+            id: { in: participantIds },
+            status: "published",
+            deletedAt: null,
+            ...contentTypeWhere
+          },
           orderBy: { createdAt: "desc" },
           select: selectBase
         });
@@ -6010,7 +6028,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   return unique.map((i: any) => ({
     ...i,
     priceSats: i.priceSats != null ? i.priceSats.toString() : null,
-    coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`
+    coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`,
+    tombstoned: Boolean(i.deletedAt) && String(i.status || "").toLowerCase() === "published"
   }));
 });
 
