@@ -4209,6 +4209,13 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  if (
+    content.deletedAt ||
+    String(content.status || "").toLowerCase() !== "published" ||
+    String(content.storefrontStatus || "").toUpperCase() === "DISABLED"
+  ) {
+    return reply.code(409).send({ code: "NOT_FOR_SALE", error: "This content is no longer for sale." });
+  }
   await reconcileBuyerEntitlementsFromPurchaseHistory({
     buyerId: session.buyer.id,
     contentId
@@ -6534,6 +6541,9 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     const ok = await isAcceptedParticipant(userId, contentId);
     if (!ok) return forbidden(reply);
   }
+  if (content.deletedAt) {
+    return reply.code(409).send({ code: "TRASHED_CONTENT", message: "Restore this content before publishing." });
+  }
 
   const ctx = getCapabilityContext();
   const derivativeInfo = await resolveDerivativeInfo(contentId, content.type);
@@ -7895,11 +7905,17 @@ app.get("/public/content/:id/access", handlePublicContentAccess);
 // Public storefront content metadata (no auth)
 async function handlePublicContent(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) {
+      return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+    }
+    return notFound(reply, "Content not found");
+  }
+  const content = gated.content;
   const isBasic = resolveProductTier().productTier === "basic";
   if (!isBasic) {
-    if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+    if (content.storefrontStatus === "DISABLED" && !gated.entitled) return notFound(reply, "Not found");
     const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
     if (publicLinks.length > 1) return notFound(reply, "Not found");
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -7928,6 +7944,8 @@ async function handlePublicContent(req: any, reply: any) {
     title: content.title,
     description: content.description || null,
     storefrontStatus: content.storefrontStatus,
+    tombstoned: gated.tombstoned,
+    owned: gated.entitled,
     manifestSha256: manifest.sha256,
     priceSats: content.priceSats != null ? content.priceSats.toString() : null,
     cover: normalizePreview((manifest.json as any)?.cover || null),
@@ -8236,13 +8254,40 @@ function toPublicCreator(u: { displayName?: string | null } | null | undefined) 
   };
 }
 
-async function getPublicOfferGate(contentId: string): Promise<{ content: any | null; allowDraftPreview: boolean }> {
+async function getPublicOfferGate(
+  contentId: string,
+  req?: any,
+  reply?: any
+): Promise<{ content: any | null; allowDraftPreview: boolean; tombstoned: boolean; entitled: boolean }> {
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
     include: { owner: { select: { displayName: true } } }
   });
-  if (!content) return { content: null, allowDraftPreview: false };
-  if (content.deletedAt) return { content: null, allowDraftPreview: false };
+  if (!content) return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
+
+  const isPublished = String(content.status || "").toLowerCase() === "published";
+  const isTombstoned = Boolean(content.deletedAt) && isPublished;
+
+  let entitled = false;
+  if (isTombstoned && req && reply) {
+    try {
+      const buyerSession = await resolveBuyerSession(req, reply);
+      const buyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
+      if (buyerId) {
+        await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
+        entitled = await hasAccess(buyerId, contentId);
+      }
+    } catch {
+      entitled = false;
+    }
+  }
+
+  if (isTombstoned && !entitled) {
+    return { content: null, allowDraftPreview: false, tombstoned: true, entitled: false };
+  }
+  if (content.deletedAt && !isPublished) {
+    return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
+  }
 
   let allowDraftPreview = false;
   if (content.status !== "published") {
@@ -8256,14 +8301,14 @@ async function getPublicOfferGate(contentId: string): Promise<{ content: any | n
         allowDraftPreview = true;
       }
     }
-    if (!allowDraftPreview) return { content: null, allowDraftPreview: false };
+    if (!allowDraftPreview) return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
   }
-  return { content, allowDraftPreview };
+  return { content, allowDraftPreview, tombstoned: isTombstoned, entitled };
 }
 
 async function handlePublicAttribution(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
-  const gated = await getPublicOfferGate(contentId);
+  const gated = await getPublicOfferGate(contentId, req, reply);
   const content = gated.content;
   if (!content) return notFound(reply, "Not found");
   const beatifyNodeStatus = await getBeatifyNodeBadgeStatus(req);
@@ -8369,8 +8414,12 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const objectKeyRaw = asString((req.query || {})?.objectKey || "").trim();
   const shareToken = asString((req.query || {})?.share || "").trim();
 
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+    return notFound(reply, "Content not found");
+  }
+  const content = gated.content;
   const isBasic = resolveProductTier().productTier === "basic";
   if (!isBasic) {
     const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
@@ -8391,7 +8440,9 @@ async function handlePublicPreviewFile(req: any, reply: any) {
         allowSharePreview = true;
       }
     }
-    if (content.storefrontStatus === "DISABLED" && !allowReviewPreview && !allowSharePreview) return notFound(reply, "Not found");
+    if (content.storefrontStatus === "DISABLED" && !allowReviewPreview && !allowSharePreview && !gated.entitled) {
+      return notFound(reply, "Not found");
+    }
     if (isDerivativeType || publicLinks.length > 0) {
       if (publicLinks.length === 0) return notFound(reply, "Not found");
       if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
@@ -9949,10 +10000,13 @@ async function handlePublicOffer(req: any, reply: any) {
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
 
-  const gated = await getPublicOfferGate(contentId);
+  const gated = await getPublicOfferGate(contentId, req, reply);
   if (!gated.content) return notFound(reply, "Not found");
   const content = gated.content;
   const allowDraftPreview = gated.allowDraftPreview;
+  if (String(content.storefrontStatus || "").toUpperCase() === "DISABLED" && !gated.entitled && !allowDraftPreview) {
+    return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+  }
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest && !allowDraftPreview) return notFound(reply, "Manifest not found");
@@ -10010,6 +10064,8 @@ async function handlePublicOffer(req: any, reply: any) {
     coverObjectKey,
     coverUrl,
     deliveryMode: (content as any).deliveryMode || null,
+    tombstoned: gated.tombstoned,
+    owned: gated.entitled,
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
     fulfillment: { mode: "receiptToken", ttlSeconds }
@@ -10033,6 +10089,13 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  if (
+    content.deletedAt ||
+    String(content.status || "").toLowerCase() !== "published" ||
+    String(content.storefrontStatus || "").toUpperCase() === "DISABLED"
+  ) {
+    return reply.code(409).send({ code: "NOT_FOR_SALE", message: "This content is no longer for sale." });
+  }
   const buyerSession = await resolveBuyerSession(req, reply);
   const buyerId = buyerSession?.buyer?.id || null;
   const { productTier } = resolveProductTier();
@@ -11005,6 +11068,35 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
   if (content.ownerUserId !== userId) return forbidden(reply);
 
   const deletedAt = new Date();
+  if (content.status === "published") {
+    const [entitlementsCount, paidCount] = await prisma.$transaction([
+      prisma.entitlement.count({ where: { contentId } }),
+      prisma.paymentIntent.count({ where: { contentId, status: "paid" as any } })
+    ]);
+    const tombstone = entitlementsCount > 0 || paidCount > 0;
+    await prisma.contentItem.update({
+      where: { id: contentId },
+      data: { deletedAt, deletedReason: tombstone ? "tombstone" : "soft" }
+    });
+    try {
+      await prisma.auditEvent.create({
+        data: {
+          userId,
+          action: tombstone ? "content.tombstone" : "content.delete",
+          entityType: "ContentItem",
+          entityId: contentId,
+          payloadJson: {
+            deletedAt: deletedAt.toISOString(),
+            deletedReason: tombstone ? "tombstone" : "soft",
+            entitlementsCount,
+            paidCount
+          } as any
+        }
+      });
+    } catch {}
+    return reply.send({ ok: true, tombstoned: tombstone });
+  }
+
   await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt, deletedReason: "soft" } });
   try {
     await prisma.auditEvent.create({
@@ -11031,6 +11123,12 @@ app.post("/content/:id/restore", { preHandler: requireAuth }, async (req: any, r
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  if (content.status === "published") {
+    return reply.code(409).send({
+      code: "TOMBSTONED_CONTENT",
+      error: "Published tombstones cannot be restored from Trash."
+    });
+  }
 
   await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt: null, deletedReason: null } });
   return reply.send({ ok: true });
@@ -11044,6 +11142,12 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  if (content.status === "published") {
+    return reply.code(409).send({
+      code: "PUBLISHED_DELETE_BLOCKED",
+      error: "Published content cannot be permanently deleted from this action."
+    });
+  }
 
   const repoPath = content.repoPath;
   const deletedAt = content.deletedAt || new Date();
