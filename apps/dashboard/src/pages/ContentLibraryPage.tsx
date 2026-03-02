@@ -397,6 +397,7 @@ export default function ContentLibraryPage({
   >({});
 
   const [showTrash, setShowTrash] = React.useState(false);
+  const [showTombstones, setShowTombstones] = React.useState(false);
   const [showClearance, setShowClearance] = React.useState(false);
   const [clearanceScope, setClearanceScope] = React.useState<"pending" | "voted" | "cleared">("pending");
   const [pendingClearanceCount, setPendingClearanceCount] = React.useState(0);
@@ -443,7 +444,7 @@ export default function ContentLibraryPage({
   const openManifestEntry = Object.entries(manifestPreviewByContent).find(([, v]) => v?.open);
   const openManifestId = openManifestEntry?.[0] || null;
   const openManifest = openManifestEntry?.[1] || null;
-  const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("library");
+  const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("mine");
   const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
   const [storefrontPreview, setStorefrontPreview] = React.useState<Record<string, any | null>>({});
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
@@ -494,12 +495,16 @@ export default function ContentLibraryPage({
     contentStatus?: string | null;
   } | null>(null);
 
-  async function load(trashMode: boolean = showTrash) {
+  async function load(trashMode: boolean = showTrash, tombstoneMode: boolean = showTombstones) {
     setLoading(true);
     setError(null);
     try {
       const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
-      const url = trashMode ? `/content?trash=1&scope=${contentScope}${typeQuery}` : `/content?scope=${contentScope}${typeQuery}`;
+      const url = tombstoneMode
+        ? `/content?tombstones=1&scope=${contentScope}${typeQuery}`
+        : trashMode
+          ? `/content?trash=1&scope=${contentScope}${typeQuery}`
+          : `/content?scope=${contentScope}${typeQuery}`;
       const data = await api<ContentItem[] | any>(url);
       const list = Array.isArray(data) ? data : [];
       if (!Array.isArray(data)) {
@@ -530,6 +535,8 @@ export default function ContentLibraryPage({
     load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [contentScope, libraryTypeFilter]);
+
+  const refreshCurrentView = React.useCallback(() => load(showTrash, showTombstones), [showTrash, showTombstones]);
 
   React.useEffect(() => {
     const onPopState = () => setLibraryTypeFilter(readLibraryTypeFromUrl());
@@ -1304,6 +1311,7 @@ export default function ContentLibraryPage({
 
       // Ensure we land back in the active view after creating
       setShowTrash(false);
+      setShowTombstones(false);
       await load(false);
 
       setPendingOpenContentId(created.id);
@@ -1333,7 +1341,7 @@ export default function ContentLibraryPage({
         return next;
       });
 
-      await load(false);
+      await refreshCurrentView();
     } catch (e: any) {
       setError(e?.message || "Failed to move item to trash");
     } finally {
@@ -1406,7 +1414,7 @@ export default function ContentLibraryPage({
         return next;
       });
 
-      await load(true);
+      await refreshCurrentView();
     } catch (e: any) {
       setError(e?.message || "Failed to restore item");
     } finally {
@@ -1435,7 +1443,7 @@ export default function ContentLibraryPage({
         return next;
       });
 
-      await load(true);
+      await refreshCurrentView();
     } catch (e: any) {
       setError(e?.message || "Failed to delete forever");
     } finally {
@@ -1870,10 +1878,11 @@ export default function ContentLibraryPage({
             <div className="ml-2 inline-flex rounded-lg border border-neutral-800 overflow-hidden">
               <button
                 type="button"
-                className={`text-sm px-3 py-1 whitespace-nowrap ${!showTrash && !showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                className={`text-sm px-3 py-1 whitespace-nowrap ${!showTrash && !showTombstones && !showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
                 onClick={async () => {
                   setShowClearance(false);
                   setShowTrash(false);
+                  setShowTombstones(false);
                   await load(false);
                 }}
               >
@@ -1885,10 +1894,23 @@ export default function ContentLibraryPage({
                 onClick={async () => {
                   setShowClearance(false);
                   setShowTrash(true);
+                  setShowTombstones(false);
                   await load(true);
                 }}
               >
                 Trash
+              </button>
+              <button
+                type="button"
+                className={`text-sm px-3 py-1 whitespace-nowrap ${showTombstones ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                onClick={async () => {
+                  setShowClearance(false);
+                  setShowTrash(false);
+                  setShowTombstones(true);
+                  await load(false, true);
+                }}
+              >
+                Removed
               </button>
               {derivativesAllowed ? (
                 <button
@@ -1896,6 +1918,7 @@ export default function ContentLibraryPage({
                   className={`text-sm px-3 py-1 whitespace-nowrap ${showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
                   onClick={async () => {
                     setShowTrash(false);
+                    setShowTombstones(false);
                     setShowClearance(true);
                     await loadApprovals(clearanceScope);
                     await loadPendingClearanceCount();
@@ -1921,7 +1944,7 @@ export default function ContentLibraryPage({
                 loadApprovals(clearanceScope);
                 loadPendingClearanceCount();
               } else {
-                load();
+                refreshCurrentView();
                 loadPendingClearanceCount();
               }
             }}
@@ -2113,7 +2136,9 @@ export default function ContentLibraryPage({
         ) : loading ? (
           <div className="text-sm text-neutral-400">Loading…</div>
         ) : items.length === 0 ? (
-          <div className="text-sm text-neutral-400">{showTrash ? "Trash is empty." : "No content yet."}</div>
+          <div className="text-sm text-neutral-400">
+            {showTrash ? "Trash is empty." : showTombstones ? "No removed items." : "No content yet."}
+          </div>
         ) : (
           <div className="space-y-2">
             {items.map((it) => {
@@ -2151,7 +2176,7 @@ export default function ContentLibraryPage({
                         {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateLabel(it.createdAt)} • {filesCount} file
                         {filesCount === 1 ? "" : "s"}
                         • Storefront: {(it.storefrontStatus || "DISABLED").toString()}
-                        {showTrash && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
+                        {(showTrash || showTombstones) && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
                       </div>
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
                       {!isOwner ? (
@@ -2183,7 +2208,7 @@ export default function ContentLibraryPage({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      {!showTrash ? (
+                      {!showTrash && !showTombstones ? (
                         <>
                           {canInspect ? (
                             <>
@@ -2290,7 +2315,7 @@ export default function ContentLibraryPage({
                             </button>
                           )}
                         </>
-                      ) : (
+                      ) : showTrash ? (
                         <>
                           <button
                             type="button"
@@ -2311,6 +2336,8 @@ export default function ContentLibraryPage({
                             Delete forever
                           </button>
                         </>
+                      ) : (
+                        <div className="text-xs text-amber-300">Removed from store</div>
                       )}
                     </div>
                     {!publishAllowed ? (
@@ -2330,7 +2357,7 @@ export default function ContentLibraryPage({
                     ) : null}
                   </div>
 
-                  {!showTrash && isOpen && (
+                  {!showTrash && !showTombstones && isOpen && (
                     <div className="border-t border-neutral-800 px-3 py-3 space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="text-xs text-neutral-400">
@@ -3224,7 +3251,7 @@ export default function ContentLibraryPage({
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPriceMsg((m) => ({ ...m, [it.id]: "" }));
                                   await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
-                                  await load(showTrash);
+                                  await refreshCurrentView();
                                   setPriceMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setPriceMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save price." }));
@@ -3277,7 +3304,7 @@ export default function ContentLibraryPage({
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "" }));
                                   await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
-                                  await load(showTrash);
+                                  await refreshCurrentView();
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save delivery mode." }));
