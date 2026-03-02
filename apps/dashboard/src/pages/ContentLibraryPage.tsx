@@ -7,6 +7,38 @@ import AuditPanel from "../components/AuditPanel";
 import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
+type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
+const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
+const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
+  all: "All",
+  songs: "Songs",
+  videos: "Videos",
+  books: "Books",
+  files: "Files"
+};
+
+function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
+  const v = String(raw || "").toLowerCase();
+  return (LIBRARY_TYPE_FILTERS as string[]).includes(v) ? (v as LibraryTypeFilter) : "all";
+}
+
+function readLibraryTypeFromUrl(): LibraryTypeFilter {
+  if (typeof window === "undefined") return "all";
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeLibraryTypeFilter(params.get("type"));
+  } catch {
+    return "all";
+  }
+}
+
+function writeLibraryTypeToUrl(next: LibraryTypeFilter) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (next === "all") url.searchParams.delete("type");
+  else url.searchParams.set("type", next);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 type ContentItem = {
   id: string;
@@ -366,6 +398,7 @@ export default function ContentLibraryPage({
   const openManifestId = openManifestEntry?.[0] || null;
   const openManifest = openManifestEntry?.[1] || null;
   const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("library");
+  const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
   const [storefrontPreview, setStorefrontPreview] = React.useState<Record<string, any | null>>({});
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [priceDraft, setPriceDraft] = React.useState<Record<string, string>>({});
@@ -419,7 +452,8 @@ export default function ContentLibraryPage({
     setLoading(true);
     setError(null);
     try {
-      const url = trashMode ? `/content?trash=1&scope=${contentScope}` : `/content?scope=${contentScope}`;
+      const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
+      const url = trashMode ? `/content?trash=1&scope=${contentScope}${typeQuery}` : `/content?scope=${contentScope}${typeQuery}`;
       const data = await api<ContentItem[] | any>(url);
       const list = Array.isArray(data) ? data : [];
       if (!Array.isArray(data)) {
@@ -439,7 +473,8 @@ export default function ContentLibraryPage({
         setPendingOpenContentId(null);
       }
     } catch (e: any) {
-      setError(e?.message || "Failed to load content");
+      const msg = String(e?.message || "Failed to load content");
+      setError(msg.includes("INVALID_TYPE") ? "Invalid library type filter." : msg);
     } finally {
       setLoading(false);
     }
@@ -448,7 +483,13 @@ export default function ContentLibraryPage({
   React.useEffect(() => {
     load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentScope]);
+  }, [contentScope, libraryTypeFilter]);
+
+  React.useEffect(() => {
+    const onPopState = () => setLibraryTypeFilter(readLibraryTypeFromUrl());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   React.useEffect(() => {
     (async () => {
@@ -1491,6 +1532,28 @@ export default function ContentLibraryPage({
             Authored
           </button>
         </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-neutral-500">Type:</span>
+          {LIBRARY_TYPE_FILTERS.map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={libraryTypeFilter === value}
+              className={`rounded-full border px-2 py-1 ${
+                libraryTypeFilter === value
+                  ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                  : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+              }`}
+              onClick={() => {
+                setLibraryTypeFilter(value);
+                writeLibraryTypeToUrl(value);
+              }}
+            >
+              {LIBRARY_TYPE_LABEL[value]}
+            </button>
+          ))}
+        </div>
+        <div className="text-xs text-neutral-500 mt-2">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
         <div className="text-xs text-neutral-500 mt-2">
           {contentScope === "library"
             ? "Access: everything you can open (owned, purchased, preview)."

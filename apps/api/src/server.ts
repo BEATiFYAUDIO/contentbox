@@ -5756,13 +5756,31 @@ app.get("/api/payout-methods", { preHandler: requireAuth }, async () => {
 /**
  * CONTENT (auth)
  */
-app.get("/content", { preHandler: requireAuth }, async (req: any) => {
+app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
 
-  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string };
+  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string };
   const trash = q.trash === "1";
   const tombstones = q.tombstones === "1";
   const scope = String(q.scope || "library").toLowerCase();
+  const requestedType = String(q.type || "all").toLowerCase();
+  const allowedTypeFilters = new Set(["all", "songs", "videos", "books", "files"]);
+  if (!allowedTypeFilters.has(requestedType)) {
+    return reply.code(400).send({
+      error: "INVALID_TYPE",
+      message: "Invalid type filter. Use one of: all, songs, videos, books, files."
+    });
+  }
+  const contentTypeWhere =
+    requestedType === "songs"
+      ? { type: "song" as const }
+      : requestedType === "videos"
+        ? { type: "video" as const }
+        : requestedType === "books"
+          ? { type: "book" as const }
+          : requestedType === "files"
+            ? { type: "file" as const }
+            : {};
   const trashWhere = trash
     ? tombstones
       ? { deletedAt: { not: null } }
@@ -5793,14 +5811,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
 
   if (scope === "local") {
     const local = await prisma.contentItem.findMany({
-      where: trashWhere,
+      where: { ...trashWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
     items.push(...local.map((i) => ({ ...i, libraryAccess: i.ownerUserId === userId ? "owned" : "local" })));
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
-      where: { ownerUserId: userId, ...trashWhere },
+      where: { ownerUserId: userId, ...trashWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -5811,12 +5829,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
     const meEmail = (me?.email || "").toLowerCase();
     const [owned, purchased, publicPreview, participantLinks] = await prisma.$transaction([
       prisma.contentItem.findMany({
-        where: { ownerUserId: userId, ...trashWhere },
+        where: { ownerUserId: userId, ...trashWhere, ...contentTypeWhere },
         orderBy: { createdAt: "desc" },
         select: selectBase
       }),
       prisma.entitlement.findMany({
-        where: { buyerUserId: userId },
+        where: { buyerUserId: userId, content: { is: { ...trashWhere, ...contentTypeWhere } } as any },
         include: { content: { select: selectBase } },
         orderBy: { grantedAt: "desc" }
       }),
@@ -5824,7 +5842,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
         where: {
           storefrontStatus: { in: ["LISTED", "UNLISTED"] },
           status: "published",
-          ...trashWhere
+          ...trashWhere,
+          ...contentTypeWhere
         },
         orderBy: { createdAt: "desc" },
         select: selectBase
@@ -5856,7 +5875,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
       );
       if (participantIds.length > 0) {
         const participantContent = await prisma.contentItem.findMany({
-          where: { id: { in: participantIds }, ...trashWhere },
+          where: { id: { in: participantIds }, ...trashWhere, ...contentTypeWhere },
           orderBy: { createdAt: "desc" },
           select: selectBase
         });
