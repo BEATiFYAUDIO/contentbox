@@ -1,5 +1,5 @@
 import React from "react";
-import { api } from "../lib/api";
+import { api, getApiBase } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 
 type LibraryItem = {
@@ -9,16 +9,53 @@ type LibraryItem = {
   status: string;
   storefrontStatus?: string | null;
   createdAt: string;
+  updatedAt?: string | null;
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
   libraryAccess?: "owned" | "purchased" | "preview" | "local";
   coverUrl?: string | null;
+  manifest?: { sha256?: string | null } | null;
   _count?: { files: number };
 };
 
+type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
+const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
+const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
+  all: "All",
+  songs: "Songs",
+  videos: "Videos",
+  books: "Books",
+  files: "Files"
+};
+
+function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
+  const v = String(raw || "").toLowerCase();
+  return (LIBRARY_TYPE_FILTERS as string[]).includes(v) ? (v as LibraryTypeFilter) : "all";
+}
+
+function readLibraryTypeFromUrl(): LibraryTypeFilter {
+  if (typeof window === "undefined") return "all";
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeLibraryTypeFilter(params.get("type"));
+  } catch {
+    return "all";
+  }
+}
+
+function writeLibraryTypeToUrl(next: LibraryTypeFilter) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (next === "all") url.searchParams.delete("type");
+  else url.searchParams.set("type", next);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 export default function LibraryPage() {
+  const apiBase = getApiBase();
   const [items, setItems] = React.useState<LibraryItem[]>([]);
   const [msg, setMsg] = React.useState<string | null>(null);
+  const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
   const [previewById, setPreviewById] = React.useState<Record<string, any | null>>({});
   const [previewLoading, setPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
@@ -34,18 +71,26 @@ export default function LibraryPage() {
             ...i,
             libraryAccess: i.libraryAccess || (i.ownerUserId ? "owned" : "preview")
           }));
+        const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
 
-        const lib = await api<LibraryItem[]>("/content?scope=library", "GET");
+        const lib = await api<LibraryItem[]>(`/content?scope=library${typeQuery}`, "GET");
         if (Array.isArray(lib) && lib.length > 0) {
           setItems(normalize(lib));
           return;
         }
-        const mine = await api<LibraryItem[]>("/content?scope=mine", "GET");
+        const mine = await api<LibraryItem[]>(`/content?scope=mine${typeQuery}`, "GET");
         setItems(normalize(mine || []));
       } catch (e: any) {
-        setMsg(e?.message || "Failed to load library");
+        const err = String(e?.message || "Failed to load library");
+        setMsg(err.includes("INVALID_TYPE") ? "Invalid type filter." : err);
       }
     })();
+  }, [libraryTypeFilter]);
+
+  React.useEffect(() => {
+    const onPopState = () => setLibraryTypeFilter(readLibraryTypeFromUrl());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   React.useEffect(() => {
@@ -100,12 +145,24 @@ export default function LibraryPage() {
   }
 
   function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | null): string | null {
-    const preferred = String(itemCoverUrl || "").trim();
+    const normalizeToApiBase = (raw: string): string | null => {
+      const source = String(raw || "").trim();
+      if (!source) return null;
+      try {
+        const asUrl = new URL(source, apiBase);
+        // Force API origin to avoid localhost/127.0.0.1 drift across UI/API hosts.
+        const pathAndQuery = `${asUrl.pathname}${asUrl.search}`;
+        return `${apiBase.replace(/\/$/, "")}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
+      } catch {
+        return `${apiBase.replace(/\/$/, "")}/${source.replace(/^\/+/, "")}`;
+      }
+    };
+
+    const preferred = normalizeToApiBase(String(itemCoverUrl || "").trim());
     if (preferred) return preferred;
     const coverObjectKey = String(preview?.manifest?.cover || "").trim();
     if (!coverObjectKey) return null;
-    const base = window.location.origin;
-    return `${base}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
+    return `${apiBase.replace(/\/$/, "")}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
   }
 
   return (
@@ -113,6 +170,26 @@ export default function LibraryPage() {
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Library</div>
         <div className="text-sm text-neutral-400 mt-1">Private, content-rich library (owned + purchased + preview).</div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <div className="text-xs text-neutral-500 mr-1">Type:</div>
+          {LIBRARY_TYPE_FILTERS.map((value) => {
+            const active = libraryTypeFilter === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                className={`text-xs rounded-full border px-3 py-1 ${active ? "border-white/30 bg-white/5 text-white" : "border-neutral-800 text-neutral-300 hover:bg-neutral-900"}`}
+                onClick={() => {
+                  setLibraryTypeFilter(value);
+                  writeLibraryTypeToUrl(value);
+                }}
+              >
+                {LIBRARY_TYPE_LABEL[value]}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-2 text-xs text-neutral-500">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
       </div>
 
       {msg ? <div className="text-sm text-red-300">{msg}</div> : null}
@@ -138,7 +215,16 @@ export default function LibraryPage() {
                     const isVideo = mime.startsWith("video/") || type === "video";
                     const isAudio = mime.startsWith("audio/") || type === "song";
                     const isImage = mime.startsWith("image/");
-                    const coverUrl = isAudio ? songCoverUrl(it.id, preview, it.coverUrl || null) : null;
+                    const version =
+                      String(it.manifest?.sha256 || "").trim() ||
+                      String(preview?.manifest?.sha256 || "").trim() ||
+                      String(it.updatedAt || "").trim() ||
+                      String(it.createdAt || "").trim();
+                    const rawCoverUrl = isAudio ? songCoverUrl(it.id, preview, it.coverUrl || null) : null;
+                    const coverUrl =
+                      rawCoverUrl && version
+                        ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
+                        : rawCoverUrl;
                     const isOpen = previewOpenById[it.id] ?? true;
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4 flex flex-col gap-3">
