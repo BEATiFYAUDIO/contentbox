@@ -113,6 +113,34 @@ export type LightningBalancesResponse = {
   };
 };
 
+export type LightningReceiveCapacityResponse = {
+  inboundSats: number;
+  outboundSats: number;
+  channels: {
+    total: number;
+    active: number;
+    inactive: number;
+    pending: number;
+  };
+  largestInboundSats: number;
+  thresholds: {
+    receiveReadyFor10k: boolean;
+    receiveReadyFor100k: boolean;
+    receiveReadyFor1m: boolean;
+  };
+  riskLevel: "green" | "yellow" | "red";
+  onchain: {
+    totalSats: number;
+    confirmedSats: number;
+    unconfirmedSats: number;
+  } | null;
+  trend: {
+    points: Array<{ at: string; inboundSats: number }>;
+    windowMinutes: number;
+  };
+  updatedAt: string;
+};
+
 export type LightningInvoiceRow = {
   state: "OPEN" | "SETTLED" | "CANCELED" | "ACCEPTED" | "UNKNOWN";
   valueSats: number;
@@ -190,6 +218,9 @@ const connectSemaphore = new Semaphore(2);
 const probeCooldown = new Cooldown();
 const connectCooldown = new Cooldown();
 const invoiceLifecycleSingleFlight = new SingleFlight();
+const receiveCapacityTrend: Array<{ atMs: number; inboundSats: number }> = [];
+const RECEIVE_CAPACITY_TREND_MAX_POINTS = 45;
+const RECEIVE_CAPACITY_TREND_WINDOW_MS = 15 * 60 * 1000;
 
 function stripTrailingSlash(s: string) {
   return s.replace(/\/+$/, "");
@@ -1410,6 +1441,77 @@ export async function getLightningBalances(prisma: PrismaLike): Promise<Lightnin
       outboundSats,
       inboundSats
     }
+  };
+}
+
+function computeRiskLevel(input: { inboundSats: number; activeChannels: number }): "green" | "yellow" | "red" {
+  if (input.activeChannels <= 0 || input.inboundSats < 100_000) return "red";
+  if (input.inboundSats < 1_000_000) return "yellow";
+  return "green";
+}
+
+function updateInboundTrend(inboundSats: number, nowMs: number) {
+  receiveCapacityTrend.push({ atMs: nowMs, inboundSats });
+  const minMs = nowMs - RECEIVE_CAPACITY_TREND_WINDOW_MS;
+  while (receiveCapacityTrend.length > RECEIVE_CAPACITY_TREND_MAX_POINTS || (receiveCapacityTrend[0] && receiveCapacityTrend[0].atMs < minMs)) {
+    receiveCapacityTrend.shift();
+  }
+}
+
+export async function getLightningReceiveCapacity(prisma: PrismaLike): Promise<LightningReceiveCapacityResponse> {
+  const lnd = await getLndConfig(prisma);
+  if (!lnd) throw new Error("Lightning node not configured");
+
+  const [openRes, pendingRes, wallet] = await Promise.all([
+    lndFetchJson(lnd, "/v1/channels", { method: "GET" }),
+    lndFetchJson(lnd, "/v1/channels/pending", { method: "GET" }).catch(() => ({})),
+    lndFetchJson(lnd, "/v1/balance/blockchain", { method: "GET" }).catch(() => null)
+  ]);
+
+  const openChannels = Array.isArray((openRes as any)?.channels) ? (openRes as any).channels : [];
+  const inboundSats = openChannels.reduce((sum: number, c: any) => sum + numberField(c?.remote_balance), 0);
+  const outboundSats = openChannels.reduce((sum: number, c: any) => sum + numberField(c?.local_balance), 0);
+  const active = openChannels.filter((c: any) => Boolean(c?.active)).length;
+  const inactive = Math.max(0, openChannels.length - active);
+  const pending = (
+    (Array.isArray((pendingRes as any)?.pending_open_channels) ? (pendingRes as any).pending_open_channels.length : 0) +
+    (Array.isArray((pendingRes as any)?.pending_closing_channels) ? (pendingRes as any).pending_closing_channels.length : 0) +
+    (Array.isArray((pendingRes as any)?.pending_force_closing_channels) ? (pendingRes as any).pending_force_closing_channels.length : 0) +
+    (Array.isArray((pendingRes as any)?.waiting_close_channels) ? (pendingRes as any).waiting_close_channels.length : 0)
+  );
+  const largestInboundSats = openChannels.reduce((max: number, c: any) => Math.max(max, numberField(c?.remote_balance)), 0);
+
+  const nowMs = Date.now();
+  updateInboundTrend(inboundSats, nowMs);
+
+  return {
+    inboundSats,
+    outboundSats,
+    channels: {
+      total: openChannels.length,
+      active,
+      inactive,
+      pending
+    },
+    largestInboundSats,
+    thresholds: {
+      receiveReadyFor10k: inboundSats >= 10_000,
+      receiveReadyFor100k: inboundSats >= 100_000,
+      receiveReadyFor1m: inboundSats >= 1_000_000
+    },
+    riskLevel: computeRiskLevel({ inboundSats, activeChannels: active }),
+    onchain: wallet
+      ? {
+          totalSats: numberField((wallet as any)?.total_balance),
+          confirmedSats: numberField((wallet as any)?.confirmed_balance),
+          unconfirmedSats: numberField((wallet as any)?.unconfirmed_balance)
+        }
+      : null,
+    trend: {
+      points: receiveCapacityTrend.map((p) => ({ at: new Date(p.atMs).toISOString(), inboundSats: p.inboundSats })),
+      windowMinutes: 15
+    },
+    updatedAt: new Date(nowMs).toISOString()
   };
 }
 
