@@ -182,7 +182,7 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
       }
     }
 
-    const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+    const ttlSeconds = Math.max(60 * 60 * 24 * 7, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || String(60 * 60 * 24 * 7))));
     const now = Date.now();
     const tokenExpired = intent.receiptTokenExpiresAt ? intent.receiptTokenExpiresAt.getTime() < now : false;
     const storefrontEnabled = content.storefrontStatus && content.storefrontStatus !== "DISABLED";

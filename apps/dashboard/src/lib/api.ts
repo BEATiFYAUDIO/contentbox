@@ -70,12 +70,15 @@ function isPrivateHost(hostname: string): boolean {
 function shouldAutoFixApiBase(currentBase: string): boolean {
   if (typeof window === "undefined") return false;
   const uiHost = window.location.hostname || "";
-  if (!isLocalHost(uiHost)) return false;
-  if (isAdvancedEnabled()) return false;
   const stored = readStoredApiBase();
   if (!stored) return false;
   try {
     const apiHost = new URL(currentBase).hostname;
+    // If UI is opened from a non-loopback host (LAN/public), never keep a loopback API base.
+    if (!isLocalHost(uiHost) && isLocalHost(apiHost)) return true;
+    // Existing basic-mode safeguard: when UI is local-only, avoid stale remote private API bases.
+    if (!isLocalHost(uiHost)) return false;
+    if (isAdvancedEnabled()) return false;
     return isPrivateHost(apiHost) && !isLocalHost(apiHost);
   } catch {
     return false;

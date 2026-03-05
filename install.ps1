@@ -136,9 +136,13 @@ function Prompt-InstallCloudflared {
   New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
   $versionLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CLOUDFLARED_VERSION=" } | Select-Object -First 1)
-  $version = $versionLine -replace "^CLOUDFLARED_VERSION=", ""
-  $version = $version.Trim('"')
-  if (-not $version) { $version = "latest" }
+  $version = ($versionLine -replace "^CLOUDFLARED_VERSION=", "" | Select-Object -First 1)
+  if ($null -eq $version) {
+    $version = "latest"
+  } else {
+    $version = $version.ToString().Trim('"')
+    if (-not $version) { $version = "latest" }
+  }
   if ($version -eq "latest") {
     $base = "https://github.com/cloudflare/cloudflared/releases/latest/download"
   } else {
@@ -204,6 +208,15 @@ $schemaPath = "prisma/schema.sqlite.prisma"
 if ($dbMode -eq "advanced") { $schemaPath = "prisma/schema.prisma" }
 npx prisma validate --schema $schemaPath
 npx prisma generate --schema $schemaPath
+if ($dbMode -eq "basic") {
+  npx prisma db push --schema $schemaPath
+} else {
+  if ((Test-Path "prisma/migrations") -and ((Get-ChildItem "prisma/migrations" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)) {
+    npx prisma migrate deploy --schema $schemaPath
+  } else {
+    npx prisma db push --schema $schemaPath
+  }
+}
 Pop-Location
 
 Push-Location $dashDir
@@ -216,3 +229,4 @@ Write-Host "  Terminal 2: cd apps/dashboard && npm run dev"
 Write-Host "  API: http://127.0.0.1:4000"
 Write-Host "  Dashboard: http://127.0.0.1:5173"
 Write-Host "  Public server: http://127.0.0.1:4010 (PUBLIC_PORT)"
+Write-Host "  Quickstart: docs/QUICKSTART.md"

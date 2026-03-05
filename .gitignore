@@ -1,1 +1,10 @@
 state.json
+
+# Local env files
+**/.env
+**/.env.*
+!.env.example
+
+# Local Cloudflare worker config (routes/account-specific)
+infra/cloudflare/edge-content-worker/wrangler.toml
+infra/cloudflare/edge-content-worker/.wrangler/

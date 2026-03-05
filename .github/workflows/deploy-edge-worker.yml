@@ -1,0 +1,28 @@
+name: Deploy Edge Worker
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/cloudflare/edge-content-worker
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Deploy Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EDGE_TICKET_SECRET: ${{ secrets.EDGE_TICKET_SECRET }}
+        run: |
+          npx wrangler secret put EDGE_TICKET_SECRET --config wrangler.toml --text "$EDGE_TICKET_SECRET"
+          npx wrangler deploy --config wrangler.toml

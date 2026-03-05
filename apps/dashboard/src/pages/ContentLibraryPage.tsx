@@ -7,6 +7,38 @@ import AuditPanel from "../components/AuditPanel";
 import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
+type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
+const LIBRARY_TYPE_FILTERS: LibraryTypeFilter[] = ["all", "songs", "videos", "books", "files"];
+const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
+  all: "All",
+  songs: "Songs",
+  videos: "Videos",
+  books: "Books",
+  files: "Files"
+};
+
+function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
+  const v = String(raw || "").toLowerCase();
+  return (LIBRARY_TYPE_FILTERS as string[]).includes(v) ? (v as LibraryTypeFilter) : "all";
+}
+
+function readLibraryTypeFromUrl(): LibraryTypeFilter {
+  if (typeof window === "undefined") return "all";
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeLibraryTypeFilter(params.get("type"));
+  } catch {
+    return "all";
+  }
+}
+
+function writeLibraryTypeToUrl(next: LibraryTypeFilter) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (next === "all") url.searchParams.delete("type");
+  else url.searchParams.set("type", next);
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
 
 type ContentItem = {
   id: string;
@@ -135,11 +167,20 @@ type ParentLinkInfo = {
 
 type UploadState =
   | { status: "idle" }
+  | { status: "preparing"; contentId: string; filename: string }
   | { status: "uploading"; contentId: string; filename: string }
   | { status: "done"; contentId: string; filename: string }
   | { status: "error"; contentId: string; message: string };
 
-async function uploadToRepo(contentId: string, file: File) {
+function uploadIdempotencyKey(contentId: string, file: File) {
+  const suffix =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `upl-${contentId.slice(0, 8)}-${file.size}-${suffix}`;
+}
+
+async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
 
@@ -150,7 +191,7 @@ async function uploadToRepo(contentId: string, file: File) {
 
   const res = await fetch(`${base}/content/${contentId}/files`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
     body: form
   });
 
@@ -161,7 +202,43 @@ async function uploadToRepo(contentId: string, file: File) {
   } catch {}
 
   if (!res.ok) {
-    const msg = json?.error || json?.message || text || `Upload failed (${res.status})`;
+    const code = json?.code ? ` (${json.code})` : "";
+    const msg = `${json?.error || json?.message || text || `Upload failed (${res.status})`}${code}`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
+async function uploadSongCover(contentId: string, file: File) {
+  const token = getToken();
+  if (!token) throw new Error("Not signed in");
+  const allowed = new Set(["image/jpeg", "image/png", "image/webp"]);
+  if (!allowed.has(file.type)) {
+    throw new Error("Cover must be a jpg, png, or webp image");
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    throw new Error("Cover image exceeds 5MB limit");
+  }
+
+  const base = getApiBase();
+  const idempotencyKey = uploadIdempotencyKey(contentId, file);
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await fetch(`${base}/content/${contentId}/cover`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "x-idempotency-key": idempotencyKey },
+    body: form
+  });
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {}
+
+  if (!res.ok) {
+    const code = json?.code ? ` (${json.code})` : "";
+    const msg = `${json?.error || json?.message || text || `Cover upload failed (${res.status})`}${code}`;
     throw new Error(msg);
   }
   return json;
@@ -291,6 +368,7 @@ export default function ContentLibraryPage({
   const [expanded, setExpanded] = React.useState<Record<string, boolean>>({});
   const [filesByContent, setFilesByContent] = React.useState<Record<string, ContentFile[]>>({});
   const [filesLoading, setFilesLoading] = React.useState<Record<string, boolean>>({});
+  const [coverLoadErrorByContent, setCoverLoadErrorByContent] = React.useState<Record<string, boolean>>({});
 
   // NEW: latest split (so we can show lock notarization when locked)
   const [splitByContent, setSplitByContent] = React.useState<Record<string, SplitVersion | null>>({});
@@ -319,6 +397,7 @@ export default function ContentLibraryPage({
   >({});
 
   const [showTrash, setShowTrash] = React.useState(false);
+  const [showTombstones, setShowTombstones] = React.useState(false);
   const [showClearance, setShowClearance] = React.useState(false);
   const [clearanceScope, setClearanceScope] = React.useState<"pending" | "voted" | "cleared">("pending");
   const [pendingClearanceCount, setPendingClearanceCount] = React.useState(0);
@@ -365,7 +444,8 @@ export default function ContentLibraryPage({
   const openManifestEntry = Object.entries(manifestPreviewByContent).find(([, v]) => v?.open);
   const openManifestId = openManifestEntry?.[0] || null;
   const openManifest = openManifestEntry?.[1] || null;
-  const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("library");
+  const [contentScope, setContentScope] = React.useState<"library" | "mine" | "local">("mine");
+  const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
   const [storefrontPreview, setStorefrontPreview] = React.useState<Record<string, any | null>>({});
   const [storefrontPreviewLoading, setStorefrontPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [priceDraft, setPriceDraft] = React.useState<Record<string, string>>({});
@@ -415,11 +495,16 @@ export default function ContentLibraryPage({
     contentStatus?: string | null;
   } | null>(null);
 
-  async function load(trashMode: boolean = showTrash) {
+  async function load(trashMode: boolean = showTrash, tombstoneMode: boolean = showTombstones) {
     setLoading(true);
     setError(null);
     try {
-      const url = trashMode ? `/content?trash=1&scope=${contentScope}` : `/content?scope=${contentScope}`;
+      const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
+      const url = tombstoneMode
+        ? `/content?tombstones=1&scope=${contentScope}${typeQuery}`
+        : trashMode
+          ? `/content?trash=1&scope=${contentScope}${typeQuery}`
+          : `/content?scope=${contentScope}${typeQuery}`;
       const data = await api<ContentItem[] | any>(url);
       const list = Array.isArray(data) ? data : [];
       if (!Array.isArray(data)) {
@@ -439,7 +524,8 @@ export default function ContentLibraryPage({
         setPendingOpenContentId(null);
       }
     } catch (e: any) {
-      setError(e?.message || "Failed to load content");
+      const msg = String(e?.message || "Failed to load content");
+      setError(msg.includes("INVALID_TYPE") ? "Invalid library type filter." : msg);
     } finally {
       setLoading(false);
     }
@@ -448,7 +534,15 @@ export default function ContentLibraryPage({
   React.useEffect(() => {
     load(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentScope]);
+  }, [contentScope, libraryTypeFilter]);
+
+  const refreshCurrentView = React.useCallback(() => load(showTrash, showTombstones), [showTrash, showTombstones]);
+
+  React.useEffect(() => {
+    const onPopState = () => setLibraryTypeFilter(readLibraryTypeFromUrl());
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   React.useEffect(() => {
     (async () => {
@@ -1217,6 +1311,7 @@ export default function ContentLibraryPage({
 
       // Ensure we land back in the active view after creating
       setShowTrash(false);
+      setShowTombstones(false);
       await load(false);
 
       setPendingOpenContentId(created.id);
@@ -1246,7 +1341,7 @@ export default function ContentLibraryPage({
         return next;
       });
 
-      await load(false);
+      await refreshCurrentView();
     } catch (e: any) {
       setError(e?.message || "Failed to move item to trash");
     } finally {
@@ -1319,7 +1414,7 @@ export default function ContentLibraryPage({
         return next;
       });
 
-      await load(true);
+      await refreshCurrentView();
     } catch (e: any) {
       setError(e?.message || "Failed to restore item");
     } finally {
@@ -1348,7 +1443,7 @@ export default function ContentLibraryPage({
         return next;
       });
 
-      await load(true);
+      await refreshCurrentView();
     } catch (e: any) {
       setError(e?.message || "Failed to delete forever");
     } finally {
@@ -1358,8 +1453,9 @@ export default function ContentLibraryPage({
 
   function UploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
-    const busy = upload.status === "uploading" && upload.contentId === contentId;
+    const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const err = upload.status === "error" && upload.contentId === contentId;
+    const authReady = Boolean(getToken());
 
     return (
       <>
@@ -1375,13 +1471,28 @@ export default function ContentLibraryPage({
           onChange={async (e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
-            if (!file) return;
+            if (!file) {
+              setUpload({ status: "error", contentId, message: "No file selected" });
+              return;
+            }
 
             setError(null);
-            setUpload({ status: "uploading", contentId, filename: file.name });
+            setUpload({ status: "preparing", contentId, filename: file.name });
+            const idempotencyKey = uploadIdempotencyKey(contentId, file);
+            if (import.meta.env.DEV) {
+              console.log("[upload] click", {
+                hasFile: true,
+                fileName: file.name,
+                size: file.size,
+                isUploading: busy,
+                authReady,
+                idempotencyKey
+              });
+            }
 
             try {
-              await uploadToRepo(contentId, file);
+              setUpload({ status: "uploading", contentId, filename: file.name });
+              await uploadToRepo(contentId, file, idempotencyKey);
               setUpload({ status: "done", contentId, filename: file.name });
 
               await load();
@@ -1397,14 +1508,66 @@ export default function ContentLibraryPage({
 
         <button
           type="button"
-          disabled={disabled || busy}
+          disabled={disabled || busy || !authReady}
           className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60"
           onClick={() => inputRef.current?.click()}
           title="Upload into this content repo and commit"
         >
-          {busy ? "Uploading…" : "Upload"}
+          {upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : "Upload"}
         </button>
+        {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
+      </>
+    );
+  }
+
+  function CoverUploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
+    const inputRef = React.useRef<HTMLInputElement | null>(null);
+    const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
+    const authReady = Boolean(getToken());
+
+    return (
+      <>
+        <label className="sr-only" htmlFor={`upload-cover-${contentId}`}>
+          Upload song cover
+        </label>
+        <input
+          id={`upload-cover-${contentId}`}
+          name={`uploadCover-${contentId}`}
+          ref={inputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          className="hidden"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) {
+              setUpload({ status: "error", contentId, message: "No cover selected" });
+              return;
+            }
+
+            setError(null);
+            setUpload({ status: "preparing", contentId, filename: file.name });
+            try {
+              setUpload({ status: "uploading", contentId, filename: file.name });
+              await uploadSongCover(contentId, file);
+              setUpload({ status: "done", contentId, filename: file.name });
+              await load();
+            } catch (err: any) {
+              setUpload({ status: "error", contentId, message: err?.message || "Cover upload failed" });
+            }
+          }}
+        />
+
+        <button
+          type="button"
+          disabled={disabled || busy || !authReady}
+          className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60"
+          onClick={() => inputRef.current?.click()}
+          title="Upload album cover (jpg, png, webp)"
+        >
+          {busy ? "Uploading…" : "Upload cover"}
+        </button>
       </>
     );
   }
@@ -1491,6 +1654,28 @@ export default function ContentLibraryPage({
             Authored
           </button>
         </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-neutral-500">Type:</span>
+          {LIBRARY_TYPE_FILTERS.map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={libraryTypeFilter === value}
+              className={`rounded-full border px-2 py-1 ${
+                libraryTypeFilter === value
+                  ? "border-emerald-900 text-emerald-200 bg-emerald-950/30"
+                  : "border-neutral-700 text-neutral-400 bg-neutral-950/60"
+              }`}
+              onClick={() => {
+                setLibraryTypeFilter(value);
+                writeLibraryTypeToUrl(value);
+              }}
+            >
+              {LIBRARY_TYPE_LABEL[value]}
+            </button>
+          ))}
+        </div>
+        <div className="text-xs text-neutral-500 mt-2">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
         <div className="text-xs text-neutral-500 mt-2">
           {contentScope === "library"
             ? "Access: everything you can open (owned, purchased, preview)."
@@ -1502,6 +1687,14 @@ export default function ContentLibraryPage({
 
       {error && (
         <div className="rounded-lg border border-red-900 bg-red-950/50 text-red-200 px-3 py-2 text-sm">{error}</div>
+      )}
+
+      {(upload.status === "preparing" || upload.status === "uploading") && (
+        <div className="rounded-lg border border-neutral-800 bg-neutral-900/30 text-neutral-200 px-3 py-2 text-sm">
+          {upload.status === "preparing"
+            ? `Preparing upload… ${upload.filename}`
+            : `Uploading… ${upload.filename}`}
+        </div>
       )}
 
       {upload.status === "error" && (
@@ -1685,10 +1878,11 @@ export default function ContentLibraryPage({
             <div className="ml-2 inline-flex rounded-lg border border-neutral-800 overflow-hidden">
               <button
                 type="button"
-                className={`text-sm px-3 py-1 whitespace-nowrap ${!showTrash && !showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                className={`text-sm px-3 py-1 whitespace-nowrap ${!showTrash && !showTombstones && !showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
                 onClick={async () => {
                   setShowClearance(false);
                   setShowTrash(false);
+                  setShowTombstones(false);
                   await load(false);
                 }}
               >
@@ -1700,10 +1894,23 @@ export default function ContentLibraryPage({
                 onClick={async () => {
                   setShowClearance(false);
                   setShowTrash(true);
+                  setShowTombstones(false);
                   await load(true);
                 }}
               >
                 Trash
+              </button>
+              <button
+                type="button"
+                className={`text-sm px-3 py-1 whitespace-nowrap ${showTombstones ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                onClick={async () => {
+                  setShowClearance(false);
+                  setShowTrash(false);
+                  setShowTombstones(true);
+                  await load(false, true);
+                }}
+              >
+                Removed
               </button>
               {derivativesAllowed ? (
                 <button
@@ -1711,6 +1918,7 @@ export default function ContentLibraryPage({
                   className={`text-sm px-3 py-1 whitespace-nowrap ${showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
                   onClick={async () => {
                     setShowTrash(false);
+                    setShowTombstones(false);
                     setShowClearance(true);
                     await loadApprovals(clearanceScope);
                     await loadPendingClearanceCount();
@@ -1736,7 +1944,7 @@ export default function ContentLibraryPage({
                 loadApprovals(clearanceScope);
                 loadPendingClearanceCount();
               } else {
-                load();
+                refreshCurrentView();
                 loadPendingClearanceCount();
               }
             }}
@@ -1928,7 +2136,9 @@ export default function ContentLibraryPage({
         ) : loading ? (
           <div className="text-sm text-neutral-400">Loading…</div>
         ) : items.length === 0 ? (
-          <div className="text-sm text-neutral-400">{showTrash ? "Trash is empty." : "No content yet."}</div>
+          <div className="text-sm text-neutral-400">
+            {showTrash ? "Trash is empty." : showTombstones ? "No removed items." : "No content yet."}
+          </div>
         ) : (
           <div className="space-y-2">
             {items.map((it) => {
@@ -1966,16 +2176,39 @@ export default function ContentLibraryPage({
                         {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateLabel(it.createdAt)} • {filesCount} file
                         {filesCount === 1 ? "" : "s"}
                         • Storefront: {(it.storefrontStatus || "DISABLED").toString()}
-                        {showTrash && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
+                        {(showTrash || showTombstones) && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
                       </div>
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
                       {!isOwner ? (
                         <div className="text-xs text-amber-300 mt-1">Read-only • Owner: {ownerLabel}</div>
                       ) : null}
+                      {String(it.type || "").toLowerCase() === "song" ? (
+                        <div className="mt-2">
+                          <div className="w-20 h-20 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900">
+                            <img
+                              src={`${apiBase}/public/content/${encodeURIComponent(it.id)}/cover`}
+                              alt={`${it.title || "Song"} cover`}
+                              className="w-full h-full object-cover"
+                              loading="lazy"
+                              onError={(e) => {
+                                setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: true }));
+                                const el = e.currentTarget;
+                                const parent = el.parentElement;
+                                if (!parent) return;
+                                parent.innerHTML = '<div class="w-full h-full flex items-center justify-center text-[10px] text-neutral-500">No cover</div>';
+                              }}
+                              onLoad={() => setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: false }))}
+                            />
+                          </div>
+                          {coverLoadErrorByContent[it.id] ? (
+                            <div className="mt-1 text-[10px] text-amber-300">Cover missing on disk or not set in manifest.</div>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2">
-                      {!showTrash ? (
+                      {!showTrash && !showTombstones ? (
                         <>
                           {canInspect ? (
                             <>
@@ -2015,6 +2248,9 @@ export default function ContentLibraryPage({
                               </button>
 
                               {isOwner ? <UploadButton contentId={it.id} disabled={busy} /> : null}
+                              {isOwner && String(it.type || "").toLowerCase() === "song" ? (
+                                <CoverUploadButton contentId={it.id} disabled={busy} />
+                              ) : null}
 
                               {splitsAllowed && isOwner ? (
                                 <button
@@ -2079,7 +2315,7 @@ export default function ContentLibraryPage({
                             </button>
                           )}
                         </>
-                      ) : (
+                      ) : showTrash ? (
                         <>
                           <button
                             type="button"
@@ -2100,6 +2336,8 @@ export default function ContentLibraryPage({
                             Delete forever
                           </button>
                         </>
+                      ) : (
+                        <div className="text-xs text-amber-300">Removed from store</div>
                       )}
                     </div>
                     {!publishAllowed ? (
@@ -2119,7 +2357,7 @@ export default function ContentLibraryPage({
                     ) : null}
                   </div>
 
-                  {!showTrash && isOpen && (
+                  {!showTrash && !showTombstones && isOpen && (
                     <div className="border-t border-neutral-800 px-3 py-3 space-y-3">
                       <div className="flex items-center justify-between">
                         <div className="text-xs text-neutral-400">
@@ -3013,7 +3251,7 @@ export default function ContentLibraryPage({
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPriceMsg((m) => ({ ...m, [it.id]: "" }));
                                   await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
-                                  await load(showTrash);
+                                  await refreshCurrentView();
                                   setPriceMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setPriceMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save price." }));
@@ -3066,7 +3304,7 @@ export default function ContentLibraryPage({
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "" }));
                                   await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
-                                  await load(showTrash);
+                                  await refreshCurrentView();
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save delivery mode." }));

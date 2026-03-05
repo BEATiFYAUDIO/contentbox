@@ -9,11 +9,11 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
 import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
-import nodemailer from "nodemailer";
 import * as cheerio from "cheerio";
 import { initContentRepo, addFileToContentRepo, commitAll } from "./lib/repo.js";
 import {
@@ -27,7 +27,32 @@ import { createPaymentProvider } from "./lib/payments.js";
 import { allocateByBps, sumBps } from "./lib/settlement.js";
 import { createOnchainAddress, checkOnchainPayment } from "./payments/onchain.js";
 import { deriveFromXpub } from "./payments/xpub.js";
-import { createLightningInvoice, checkLightningInvoice } from "./payments/lightning.js";
+import {
+  createLightningInvoice,
+  checkLightningInvoice,
+  getLightningBalances,
+  getLightningReceiveCapacity,
+  getLightningInvoices,
+  closeLightningChannel,
+  deleteLightningNodeConfig,
+  getPeerSuggestions,
+  getLndConfig as getStoredLndConfig,
+  getLightningChannels,
+  getLightningChannelGuidanceSteps,
+  getLightningChannelStatus,
+  getLightningNodeConfigStatus,
+  getLightningNodeConfigMeta,
+  getLightningReadiness,
+  openLightningChannel,
+  parseChannelPoint,
+  probePeer,
+  type LightningDiscoveryCandidate,
+  interpretLightningDiscoveryError,
+  interpretLightningDiscoveryHttpProbe,
+  probeLndConnection,
+  saveLightningNodeConfig,
+  testLightningNodeConnection
+} from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
 import { getPublicOriginConfig, setPublicOriginConfig } from "./lib/publicOriginStore.js";
 import {
@@ -54,10 +79,28 @@ import { buildCapabilitySet, canLock, canPublicShare, canRequestClearance, canSe
 import { assertCanPublish, evaluatePublishGate } from "./lib/publishGate.js";
 import { dbModeCompatFromStorage, getNodeMode, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
 import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
-import { validateNodeMode, writeNodeConfig } from "./lib/nodeConfig.js";
+import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeConfig.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
+import { SingleFlight } from "./lib/asyncPrimitives.js";
+import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSessionToken } from "./lib/buyerSession.js";
+import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
+import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
+import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
+import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
+import { validateUploadRequest } from "./lib/contentUploadValidation.js";
+import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
+import {
+  assertCanPublish as assertLifecycleCanPublish,
+  assertCanRestore as assertLifecycleCanRestore,
+  assertCanUpload as assertLifecycleCanUpload,
+  evaluatePublicBuyAccess,
+  isArchivedPublished,
+  isPublished,
+  isSaleable,
+  shouldTombstoneOnDelete
+} from "./lib/contentLifecycle.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -246,6 +289,9 @@ const previewTokens = new Map<
   { manifestHash: string; fileId: string; expiresAt: number; maxBytes: number }
 >();
 const previewRate = new Map<string, { count: number; resetAt: number }>();
+const uploadIdempotency = new Map<string, { status: "inflight" | "done"; response?: any; expiresAt: number }>();
+const UPLOAD_IDEMPOTENCY_INFLIGHT_TTL_MS = 2 * 60 * 1000;
+const UPLOAD_IDEMPOTENCY_DONE_TTL_MS = 30 * 1000;
 
 function isPreviewToken(token: string | null | undefined): boolean {
   return Boolean(token && token.startsWith("preview_"));
@@ -374,45 +420,22 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000
 }
 
 async function lndHealthCheck() {
-  const baseUrl = String(process.env.LND_REST_URL || "").replace(/\/$/, "");
-  const macVal =
-    process.env.LND_MACAROON_PATH ||
-    process.env.LND_INVOICE_MACAROON_PATH ||
-    process.env.LND_MACAROON_HEX ||
-    process.env.LND_MACAROON ||
-    "";
-  const macaroon = readMacaroon(macVal);
-  const cert = readPemMaybeFile(process.env.LND_TLS_CERT_PATH || process.env.LND_TLS_CERT_PEM || "");
-
-  if (!baseUrl || !macaroon) {
+  const cfg = await getStoredLndConfig(prisma).catch(() => null);
+  if (!cfg) {
     return {
       status: "missing",
-      message: "LND env not configured",
-      endpoint: baseUrl || null,
-      hint: "Set LND_REST_URL and LND_MACAROON_PATH"
+      message: "Lightning node not configured",
+      endpoint: null,
+      hint: null
     };
   }
 
   try {
-    const dispatcher = cert ? new (await import("undici")).Agent({ connect: { ca: cert } }) : undefined;
-    const res = await fetchWithTimeout(
-      `${baseUrl}/v1/getinfo`,
-      {
-        method: "GET",
-        headers: { "Grpc-Metadata-Macaroon": macaroon },
-        dispatcher
-      } as any,
-      4000
-    );
-    if (!res.ok) {
-      const text = await res.text();
-      const mapped = mapLightningErrorMessage(text || `LND error ${res.status}`);
-      return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
-    }
-    return { status: "healthy", message: "LND reachable", endpoint: baseUrl, hint: null };
+    await probeLndConnection({ restUrl: cfg.restUrl, network: cfg.network, macaroonHex: cfg.macaroonHex, tlsCert: cfg.tlsCert || null });
+    return { status: "healthy", message: "LND reachable", endpoint: cfg.restUrl, hint: null };
   } catch (e: any) {
     const mapped = mapLightningErrorMessage(String(e?.message || e));
-    return { status: mapped.status, message: mapped.reason, endpoint: baseUrl, hint: mapped.hint || null };
+    return { status: mapped.status, message: mapped.reason, endpoint: cfg.restUrl, hint: null };
   }
 }
 
@@ -641,38 +664,6 @@ function forbidden(reply: any) {
 
 const BUYER_SESSION_COOKIE = "cb_buyer_session";
 const BUYER_SESSION_DAYS = 30;
-const BUYER_OTP_TTL_MS = 10 * 60 * 1000;
-const BUYER_OTP_MAX_ATTEMPTS = 5;
-
-function isProbablyEmail(email: string): boolean {
-  return /.+@.+/.test(String(email || "").trim());
-}
-
-function hashOtp(code: string): string {
-  return crypto.createHash("sha256").update(String(code)).digest("hex");
-}
-
-async function sendOtpEmail(toEmail: string, code: string, expiryMinutes: number) {
-  if (!smtpConfigured()) throw new Error("SMTP_NOT_CONFIGURED");
-  const transporter = nodemailer.createTransport({
-    host: SMTP_HOST,
-    port: SMTP_PORT,
-    secure: SMTP_SECURE,
-    auth: {
-      user: SMTP_USER,
-      pass: SMTP_PASS
-    }
-  });
-  const subject = "Your ContentBox sign-in code";
-  const text = `Your ContentBox sign-in code is ${code}. It expires in ${expiryMinutes} minutes.`;
-  await transporter.sendMail({
-    from: SMTP_FROM,
-    to: toEmail,
-    replyTo: SMTP_REPLY_TO || undefined,
-    subject,
-    text
-  });
-}
 
 function getCookie(req: any, name: string): string | null {
   try {
@@ -702,20 +693,23 @@ function isSecureRequest(req: any): boolean {
 }
 
 function buildBuyerSessionCookie(sessionId: string, req: any, maxAgeSeconds: number): string {
-  const secure = isSecureRequest(req);
+  const maxAge = Math.max(1, Math.floor(maxAgeSeconds));
+  const expMs = Date.now() + maxAge * 1000;
+  const token = createBuyerSessionToken(sessionId, JWT_SECRET, expMs);
+  const secure = isSecureRequest(req) || String(process.env.NODE_ENV || "").trim() === "production";
   const parts = [
-    `${BUYER_SESSION_COOKIE}=${encodeURIComponent(sessionId)}`,
+    `${BUYER_SESSION_COOKIE}=${encodeURIComponent(token)}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Lax",
-    `Max-Age=${Math.max(1, Math.floor(maxAgeSeconds))}`
+    `Max-Age=${maxAge}`
   ];
   if (secure) parts.push("Secure");
   return parts.join("; ");
 }
 
 function buildBuyerClearCookie(req: any): string {
-  const secure = isSecureRequest(req);
+  const secure = isSecureRequest(req) || String(process.env.NODE_ENV || "").trim() === "production";
   const parts = [
     `${BUYER_SESSION_COOKIE}=`,
     "Path=/",
@@ -799,23 +793,6 @@ const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .map((v) => v.trim())
   .filter(Boolean);
 const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
-const isProd = String(process.env.NODE_ENV || "").trim() === "production";
-const SMTP_HOST = String(process.env.SMTP_HOST || "").trim();
-const SMTP_PORT = Number(process.env.SMTP_PORT || "");
-const SMTP_USER = String(process.env.SMTP_USER || "").trim();
-const SMTP_PASS = String(process.env.SMTP_PASS || "").trim();
-const SMTP_FROM = String(process.env.SMTP_FROM || "").trim();
-const SMTP_REPLY_TO = String(process.env.SMTP_REPLY_TO || "").trim();
-const SMTP_SECURE = (() => {
-  const raw = String(process.env.SMTP_SECURE || "").trim().toLowerCase();
-  if (raw === "true") return true;
-  if (raw === "false") return false;
-  return Number(SMTP_PORT) === 465;
-})();
-
-function smtpConfigured(): boolean {
-  return Boolean(SMTP_HOST && SMTP_PORT && SMTP_USER && SMTP_PASS && SMTP_FROM);
-}
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
 const STARTED_AT = new Date().toISOString();
@@ -825,7 +802,11 @@ const WHOAMI_ALLOW_REMOTE = process.env.WHOAMI_ALLOW_REMOTE === "1";
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
-const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60 * 60 * 24 * 7, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || String(60 * 60 * 24 * 7))));
+const EDGE_DELIVERY_ENABLED = String(process.env.EDGE_DELIVERY_ENABLED || "false").toLowerCase() === "true";
+const EDGE_TICKET_TTL_SECONDS = Math.max(5, Math.floor(Number(process.env.EDGE_TICKET_TTL_SECONDS || "60")));
+const EDGE_TICKET_SECRET = String(process.env.EDGE_TICKET_SECRET || "").trim();
+const EDGE_BASE_URL = String(process.env.EDGE_BASE_URL || APP_BASE_URL).replace(/\/$/, "");
 if (!fsSync.existsSync(QUICK_TUNNEL_CONFIG_PATH)) {
   try {
     fsSync.writeFileSync(QUICK_TUNNEL_CONFIG_PATH, "");
@@ -1122,6 +1103,24 @@ function requireFeature(featureName: string) {
       reason,
       feature: featureName,
       message: reason
+    });
+  };
+}
+
+function requireAdvancedTier(feature: "lightning" | "revenue" | "finance") {
+  return async (_req: any, reply: any) => {
+    const ctx = getCapabilityContext();
+    if (ctx.productTier !== "basic") return;
+    const reason =
+      feature === "lightning"
+        ? "Lightning admin APIs require Advanced or LAN mode."
+        : feature === "revenue"
+          ? "Revenue APIs require Advanced or LAN mode."
+          : "Finance APIs require Advanced or LAN mode.";
+    return reply.code(403).send({
+      error: "FEATURE_LOCKED",
+      feature,
+      reason
     });
   };
 }
@@ -1458,7 +1457,7 @@ app.register(cors, {
     return cb(null, false);
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
   credentials: false,
   preflightContinue: false,
   optionsSuccessStatus: 204
@@ -1663,6 +1662,33 @@ function getPrimaryFileInfo(manifest: Manifest | null): { objectKey: string | nu
     objectKey: (f?.path as string) || (f?.filename as string) || null,
     sha256: (f?.sha256 as string) || null,
     originalName: (f?.originalName as string) || null
+  };
+}
+
+function getCoverAssetFromManifest(manifest: any): { path: string; sha256: string | null; mime: string | null } | null {
+  const json = (manifest || {}) as any;
+  const coverRaw = json?.cover;
+  const files = Array.isArray(json?.files) ? json.files : [];
+  let objectKey: string | null = null;
+  if (typeof coverRaw === "string" && coverRaw.trim()) {
+    objectKey = coverRaw.trim();
+  } else if (coverRaw && typeof coverRaw === "object") {
+    const p = typeof coverRaw.path === "string" ? coverRaw.path : typeof coverRaw.objectKey === "string" ? coverRaw.objectKey : "";
+    if (p.trim()) objectKey = p.trim();
+  }
+  if (!objectKey) return null;
+  const file = files.find((f: any) => {
+    const candidate =
+      (typeof f?.path === "string" && f.path) ||
+      (typeof f?.objectKey === "string" && f.objectKey) ||
+      (typeof f?.filename === "string" && f.filename) ||
+      "";
+    return candidate === objectKey;
+  });
+  return {
+    path: objectKey,
+    sha256: file?.sha256 ? String(file.sha256) : null,
+    mime: file?.mime ? String(file.mime) : null
   };
 }
 
@@ -1910,6 +1936,41 @@ async function ensureCoverImage(content: any, files: any[]) {
   }
 }
 
+async function buildManifestWithDerivedAssets(content: any, files: any[], opts?: { coverObjectKey?: string | null }) {
+  // Cover is a manifest attachment on the same content item (never a separate content record).
+  const manifestJson = await buildManifestJson(content, files);
+  const previewObjectKey = await ensurePreviewFile(content, files);
+  if (previewObjectKey) {
+    (manifestJson as any).preview = previewObjectKey;
+  }
+
+  const explicitCover = String(opts?.coverObjectKey || "").trim();
+  if (explicitCover) {
+    (manifestJson as any).cover = explicitCover;
+    return manifestJson;
+  }
+
+  try {
+    if (content?.repoPath) {
+      const existingManifest = await readManifest(content.repoPath);
+      const existingCover = getCoverAssetFromManifest(existingManifest);
+      if (existingCover?.path) {
+        const hasFile = files.some((f: any) => String(f?.objectKey || "") === existingCover.path);
+        if (hasFile) {
+          (manifestJson as any).cover = existingCover.path;
+          return manifestJson;
+        }
+      }
+    }
+  } catch {}
+
+  const derivedCover = await ensureCoverImage(content, files);
+  if (derivedCover) {
+    (manifestJson as any).cover = derivedCover;
+  }
+  return manifestJson;
+}
+
 function hashManifestJson(manifestJson: any): string {
   return crypto.createHash("sha256").update(stableStringify(manifestJson)).digest("hex");
 }
@@ -2145,13 +2206,18 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/health", handlePublicPing);
   appPublic.get("/public/ping", handlePublicPing);
   appPublic.get("/p/:token", handleShortPublicLink);
+  appPublic.get("/u/:handle", handlePublicNodeProfilePage);
+  appPublic.get("/profile", handlePublicProfileRedirect);
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+  appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id", handlePublicContent);
+  appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
+  appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
@@ -2237,15 +2303,48 @@ app.post("/api/public/can-publish", async (req: any, reply: any) => {
   }
 });
 
-// Public node discovery endpoint to support basic P2P verification
-app.get("/.well-known/contentbox", async (req: any, reply: any) => {
-  // include node public key for verification
+async function buildWellKnownContentboxPayload(req: any): Promise<{ nodeUrl: string; version: string; publicKeyPem?: string; publicKeyPemSha256?: string }> {
+  const xfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  const proto = xfProto === "http" || xfProto === "https" ? xfProto : "https";
+  const host = getPublicHostnameFromReq(req);
+  const fallbackPublicOrigin =
+    normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
+  const nodeUrl = host ? `${proto}://${host}` : (fallbackPublicOrigin || "https://contentbox.local");
+
   try {
     const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
-    const pub = await fs.readFile(pubPath, "utf8");
-    return reply.send({ nodeUrl: APP_BASE_URL, version: "1", publicKeyPem: pub });
+    const pubBuf = await fs.readFile(pubPath);
+    const pub = pubBuf.toString("utf8");
+    const publicKeyPemSha256 = crypto.createHash("sha256").update(pubBuf).digest("hex");
+    return { nodeUrl, version: "1", publicKeyPem: pub, publicKeyPemSha256 };
   } catch {
-    return reply.send({ nodeUrl: APP_BASE_URL, version: "1" });
+    return { nodeUrl, version: "1" };
+  }
+}
+
+// Public node discovery endpoint to support basic P2P verification
+app.get("/.well-known/contentbox", async (req: any, reply: any) => {
+  return reply.send(await buildWellKnownContentboxPayload(req));
+});
+
+app.get("/.well-known/beatify", async (_req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    const proofUrl = asString(conf?.proofUrl || "").trim();
+    const beatifyHandle = asString(conf?.beatifyHandle || "").trim().replace(/^@+/, "");
+    if (!proofUrl || !beatifyHandle || conf?.revokedAt) return notFound(reply, "Not found");
+
+    const signatureId = extractSignatureIdFromProofUrl(proofUrl) || "";
+    if (!signatureId) return notFound(reply, "Not found");
+
+    reply.type("text/plain; charset=utf-8");
+    return reply.send(
+      `beatify_signature_id=${signatureId}\nbeatify_profile=https://www.beatify.audio/${beatifyHandle}`
+    );
+  } catch {
+    return notFound(reply, "Not found");
   }
 });
 
@@ -3251,11 +3350,19 @@ app.get("/api/proofs/content/:contentId", { preHandler: requireAuth }, async (re
  * AUTH
  */
 app.get("/auth/recovery/status", async (_req, reply) => {
+  if (!isAdvancedDb()) {
+    return reply.send({ recoveryAvailable: false });
+  }
   const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { recoveryKeyHash: true } });
   return reply.send({ recoveryAvailable: Boolean(user?.recoveryKeyHash) });
 });
 
 app.post("/auth/recovery/reset", async (req, reply) => {
+  if (!isAdvancedDb()) {
+    return reply
+      .code(409)
+      .send({ code: "recovery_not_configured", reason: "Recovery is not configured in basic mode." });
+  }
   if (!rateLimit(req, "auth.recovery", 5, 5 * 60_000)) {
     return reply.code(429).send({ error: "Too many attempts. Try again shortly." });
   }
@@ -3334,11 +3441,11 @@ app.post("/auth/signup", async (req, reply) => {
       displayName: body.displayName?.trim() || null,
       passwordHash
     },
-    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true, recoveryKeyHash: true }
+    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
   });
 
   let recoveryKey: string | null = null;
-  if (userCount === 0 && !user.recoveryKeyHash) {
+  if (isAdvancedDb() && userCount === 0) {
     recoveryKey = generateRecoveryKey();
     const recoveryKeyHash = hashRecoveryKey(recoveryKey);
     await prisma.user.update({
@@ -4000,110 +4107,15 @@ app.post("/auth/login", async (req, reply) => {
 /**
  * Buyer lightweight auth (public)
  */
-app.post("/api/buyer/start", async (req: any, reply: any) => {
-  const body = (req.body ?? {}) as { email?: string };
-  const email = normalizeEmail(body?.email);
-  if (!email || !isProbablyEmail(email)) return badRequest(reply, "valid email required");
-
-  await prisma.buyer.upsert({
-    where: { email },
-    create: { email },
-    update: {}
-  });
-
-  const code = String(Math.floor(Math.random() * 1000000)).padStart(6, "0");
-  const codeHash = hashOtp(code);
-  const expiresAt = new Date(Date.now() + BUYER_OTP_TTL_MS);
-  const expiryMinutes = Math.max(1, Math.floor(BUYER_OTP_TTL_MS / 60000));
-
-  await prisma.buyerOtp.create({
-    data: {
-      email,
-      codeHash,
-      expiresAt
-    }
-  });
-
-  if (smtpConfigured()) {
-    try {
-      await sendOtpEmail(email, code, expiryMinutes);
-      if (isProd) return reply.send({ ok: true });
-      return reply.send({ ok: true, devCode: code });
-    } catch {
-      if (isProd) {
-        return reply.code(503).send({ error: "Email delivery is temporarily unavailable." });
-      }
-      return reply.send({ ok: true, devCode: code });
-    }
+async function resolveBuyerSession(req: any, reply: any): Promise<{ id: string; buyer: { id: string; email: string } } | null> {
+  const rawToken = getCookie(req, BUYER_SESSION_COOKIE);
+  if (!rawToken) return null;
+  const verified = verifyBuyerSessionToken(rawToken, JWT_SECRET);
+  if (!verified) {
+    reply.header("Set-Cookie", buildBuyerClearCookie(req));
+    return null;
   }
-
-  if (isProd) {
-    return reply.code(503).send({ error: "Email login is not enabled for this shop yet." });
-  }
-
-  return reply.send({ ok: true, devCode: code });
-});
-
-app.post("/api/buyer/verify", async (req: any, reply: any) => {
-  const body = (req.body ?? {}) as { email?: string; code?: string };
-  const email = normalizeEmail(body?.email);
-  const code = asString(body?.code || "").trim();
-  if (!email || !isProbablyEmail(email)) return badRequest(reply, "valid email required");
-  if (!code || code.length < 4) return badRequest(reply, "code required");
-
-  const otp = await prisma.buyerOtp.findFirst({
-    where: { email, consumedAt: null },
-    orderBy: { createdAt: "desc" }
-  });
-  if (!otp) return reply.code(400).send({ error: "Invalid or expired code" });
-
-  const now = new Date();
-  if (otp.expiresAt.getTime() < Date.now()) {
-    await prisma.buyerOtp.update({ where: { id: otp.id }, data: { consumedAt: now } }).catch(() => {});
-    return reply.code(400).send({ error: "Invalid or expired code" });
-  }
-  if (otp.attempts >= BUYER_OTP_MAX_ATTEMPTS) {
-    await prisma.buyerOtp.update({ where: { id: otp.id }, data: { consumedAt: now } }).catch(() => {});
-    return reply.code(400).send({ error: "Invalid or expired code" });
-  }
-
-  const nextAttempts = otp.attempts + 1;
-  const matches = hashOtp(code) === otp.codeHash;
-  if (!matches) {
-    await prisma.buyerOtp.update({
-      where: { id: otp.id },
-      data: { attempts: nextAttempts, consumedAt: nextAttempts >= BUYER_OTP_MAX_ATTEMPTS ? now : null }
-    });
-    return reply.code(400).send({ error: "Invalid or expired code" });
-  }
-
-  await prisma.buyerOtp.update({
-    where: { id: otp.id },
-    data: { attempts: nextAttempts, consumedAt: now }
-  });
-
-  const buyer = await prisma.buyer.upsert({
-    where: { email },
-    create: { email, lastLoginAt: now },
-    update: { lastLoginAt: now }
-  });
-
-  const expiresAt = new Date(Date.now() + BUYER_SESSION_DAYS * 24 * 60 * 60 * 1000);
-  const session = await prisma.buyerSession.create({
-    data: {
-      buyerId: buyer.id,
-      expiresAt
-    }
-  });
-
-  reply.header("Set-Cookie", buildBuyerSessionCookie(session.id, req, BUYER_SESSION_DAYS * 24 * 60 * 60));
-  return reply.send({ ok: true, buyer: { email: buyer.email } });
-});
-
-app.get("/api/buyer/me", async (req: any, reply: any) => {
-  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
-  if (!sessionId) return reply.send({ buyer: null });
-
+  const sessionId = verified.sid;
   const session = await prisma.buyerSession.findUnique({
     where: { id: sessionId },
     include: { buyer: true }
@@ -4113,14 +4125,65 @@ app.get("/api/buyer/me", async (req: any, reply: any) => {
       await prisma.buyerSession.delete({ where: { id: session.id } }).catch(() => {});
     }
     reply.header("Set-Cookie", buildBuyerClearCookie(req));
-    return reply.send({ buyer: null });
+    return null;
+  }
+  return session as any;
+}
+
+async function getOrCreateBuyerSession(req: any, reply: any) {
+  const existing = await resolveBuyerSession(req, reply);
+  if (existing) {
+    await prisma.buyer.update({
+      where: { id: existing.buyer.id },
+      data: { lastLoginAt: new Date() }
+    }).catch(() => {});
+    return existing;
   }
 
-  return reply.send({ buyer: { id: session.buyer.id, email: session.buyer.email } });
+  const now = new Date();
+  const buyer = await prisma.buyer.create({
+    data: {
+      email: `local+${crypto.randomUUID()}@contentbox.local`,
+      lastLoginAt: now
+    }
+  });
+  const expiresAt = new Date(Date.now() + BUYER_SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const session = await prisma.buyerSession.create({
+    data: {
+      buyerId: buyer.id,
+      expiresAt
+    },
+    include: { buyer: true }
+  });
+  reply.header("Set-Cookie", buildBuyerSessionCookie(session.id, req, BUYER_SESSION_DAYS * 24 * 60 * 60));
+  return session;
+}
+
+app.post("/api/buyer/bootstrap", async (req: any, reply: any) => {
+  const session = await getOrCreateBuyerSession(req, reply);
+  return reply.send({ ok: true, buyer: { id: session.buyer.id } });
+});
+
+// Backward-compatible endpoints intentionally do not create sessions.
+app.post("/api/buyer/start", async (req: any, reply: any) => {
+  const session = await getOrCreateBuyerSession(req, reply);
+  return reply.send({ ok: true, buyer: { id: session.buyer.id } });
+});
+
+app.post("/api/buyer/verify", async (req: any, reply: any) => {
+  const session = await getOrCreateBuyerSession(req, reply);
+  return reply.send({ ok: true, buyer: { id: session.buyer.id } });
+});
+
+app.get("/api/buyer/me", async (req: any, reply: any) => {
+  const session = await resolveBuyerSession(req, reply);
+  if (!session) return reply.send({ buyer: null });
+  return reply.send({ buyer: { id: session.buyer.id } });
 });
 
 app.post("/api/buyer/logout", async (req: any, reply: any) => {
-  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
+  const rawToken = getCookie(req, BUYER_SESSION_COOKIE);
+  const sessionId = verifyBuyerSessionToken(rawToken, JWT_SECRET)?.sid || resolveBuyerSessionIdFromToken(rawToken, JWT_SECRET);
   if (sessionId) {
     await prisma.buyerSession.delete({ where: { id: sessionId } }).catch(() => {});
   }
@@ -4129,25 +4192,11 @@ app.post("/api/buyer/logout", async (req: any, reply: any) => {
 });
 
 async function requireBuyerSession(req: any, reply: any) {
-  const sessionId = getCookie(req, BUYER_SESSION_COOKIE);
-  if (!sessionId) {
+  const session = await resolveBuyerSession(req, reply);
+  if (!session) {
     reply.code(401).send({ error: "Buyer session required" });
     return null;
   }
-
-  const session = await prisma.buyerSession.findUnique({
-    where: { id: sessionId },
-    include: { buyer: true }
-  });
-  if (!session || session.expiresAt.getTime() < Date.now()) {
-    if (session?.id) {
-      await prisma.buyerSession.delete({ where: { id: session.id } }).catch(() => {});
-    }
-    reply.header("Set-Cookie", buildBuyerClearCookie(req));
-    reply.code(401).send({ error: "Buyer session expired" });
-    return null;
-  }
-
   return session;
 }
 
@@ -4196,6 +4245,13 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  if (!isSaleable(content)) {
+    return reply.code(409).send({ code: "NOT_FOR_SALE", error: "This content is no longer for sale." });
+  }
+  await reconcileBuyerEntitlementsFromPurchaseHistory({
+    buyerId: session.buyer.id,
+    contentId
+  }).catch(() => {});
 
   const manifest = await ensureManifestForContent(content);
   if (!manifest?.sha256) return notFound(reply, "Manifest not found");
@@ -4304,12 +4360,10 @@ app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
 
-  if (content.priceSats != null && content.priceSats > 0n) {
-    return reply.code(409).send({ error: "Payment required" });
-  }
-
-  const manifest = await ensureManifestForContent(content);
-  if (!manifest?.sha256) return notFound(reply, "Manifest not found");
+  await reconcileBuyerEntitlementsFromPurchaseHistory({
+    buyerId: session.buyer.id,
+    contentId
+  }).catch(() => {});
 
   const existing = await prisma.entitlement.findFirst({
     where: { buyerId: session.buyer.id, contentId }
@@ -4317,6 +4371,13 @@ app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
   if (existing) {
     return reply.send({ ok: true, alreadyOwned: true, entitlementId: existing.id });
   }
+
+  if (content.priceSats != null && content.priceSats > 0n) {
+    return reply.code(409).send({ error: "Payment required" });
+  }
+
+  const manifest = await ensureManifestForContent(content);
+  if (!manifest?.sha256) return notFound(reply, "Manifest not found");
 
   const created = await prisma.entitlement.create({
     data: {
@@ -4331,12 +4392,38 @@ app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
   return reply.send({ ok: true, entitlementId: created.id });
 });
 
+// Debug-only entitlement reset. Disabled in production.
+app.post("/api/buyer/entitlements/reset", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const enabled = shouldAllowDebugEntitlementReset({
+    nodeEnv: process.env.NODE_ENV,
+    isAdmin: true
+  });
+  if (!enabled) return notFound(reply, "Not found");
+
+  const body = (req.body ?? {}) as { buyerId?: string; contentId?: string };
+  const buyerId = asString(body.buyerId || "").trim();
+  const contentId = asString(body.contentId || "").trim();
+  if (!buyerId || !contentId) return badRequest(reply, "buyerId and contentId required");
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId }, select: { ownerUserId: true } });
+  if (!content) return notFound(reply, "Not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+
+  const deleted = await prisma.entitlement.deleteMany({ where: { buyerId, contentId } });
+  return reply.send({ ok: true, deleted: deleted.count });
+});
+
 // List buyer entitlements (buyer-session scoped)
 app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
   const session = await requireBuyerSession(req, reply);
   if (!session) return;
 
   const contentId = asString((req.query as any)?.contentId || "").trim();
+  await reconcileBuyerEntitlementsFromPurchaseHistory({
+    buyerId: session.buyer.id,
+    contentId: contentId || undefined
+  }).catch(() => {});
 
   const entitlements = await prisma.entitlement.findMany({
     where: {
@@ -4371,7 +4458,7 @@ app.get("/api/buyer/entitlements", async (req: any, reply: any) => {
       grantedAt: e.grantedAt.toISOString(),
       content: e.content
         ? (() => {
-            const coverUrl = `${APP_BASE_URL}/api/buyer/content/${encodeURIComponent(e.content.id)}/cover`;
+            const coverUrl = `${APP_BASE_URL}/public/content/${encodeURIComponent(e.content.id)}/cover`;
             let primaryFile: { path: string; mime?: string; sizeBytes?: number; sha256?: string } | null = null;
             try {
               if (e.content.repoPath) {
@@ -4498,11 +4585,22 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
 
 function getNodeModeStatus() {
   const runtime = resolveRuntimeConfig();
-  const source = runtime.nodeModeSource;
+  const productTierInfo = resolveProductTier();
+  const lockVars: string[] = [];
+  if (runtime.nodeModeSource === "env") lockVars.push("NODE_MODE");
+  if (productTierInfo.source === "env") lockVars.push("PRODUCT_TIER");
+  const tierLocked = lockVars.length > 0;
+  const lockReason = tierLocked
+    ? `Locked by environment variable ${lockVars.join(" and ")}`
+    : "";
   return {
     nodeMode: runtime.nodeMode,
-    source,
-    restartRequired: true
+    nodeModeSource: runtime.nodeModeSource,
+    productTier: productTierInfo.productTier,
+    productTierSource: productTierInfo.source,
+    tierLocked,
+    lockReason,
+    restartRequired: false
   };
 }
 
@@ -4511,11 +4609,12 @@ app.get("/api/node/mode", { preHandler: requireAuth }, async (_req: any, reply: 
 });
 
 app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  const runtime = resolveRuntimeConfig();
-  if (runtime.nodeModeSource === "env") {
+  const modeStatus = getNodeModeStatus();
+  if (modeStatus.tierLocked) {
     return reply.code(403).send({
       error: "NODE_MODE_LOCKED",
-      message: "Mode is locked by server environment settings."
+      reason: modeStatus.lockReason,
+      message: modeStatus.lockReason
     });
   }
   const body = (req.body ?? {}) as { nodeMode?: string };
@@ -4523,6 +4622,7 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   if (!next) return badRequest(reply, "Invalid node mode");
   try {
     await writeNodeConfig(next);
+    await writeProductTier(next);
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to persist node mode", message: String(e?.message || e) });
   }
@@ -5823,21 +5923,44 @@ app.get("/api/payout-methods", { preHandler: requireAuth }, async () => {
 /**
  * CONTENT (auth)
  */
-app.get("/content", { preHandler: requireAuth }, async (req: any) => {
+app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
 
-  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string };
+  const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string };
   const trash = q.trash === "1";
   const tombstones = q.tombstones === "1";
-  const scope = String(q.scope || "library").toLowerCase();
-  const trashWhere = trash
-    ? tombstones
-      ? { deletedAt: { not: null } }
-      : {
-          deletedAt: { not: null },
-          deletedReason: { not: "hard" }
+  const scope = String(q.scope || "mine").toLowerCase();
+  const requestedType = String(q.type || "all").toLowerCase();
+  const allowedTypeFilters = new Set(["all", "songs", "videos", "books", "files"]);
+  if (!allowedTypeFilters.has(requestedType)) {
+    return reply.code(400).send({
+      error: "INVALID_TYPE",
+      message: "Invalid type filter. Use one of: all, songs, videos, books, files."
+    });
+  }
+  const contentTypeWhere =
+    requestedType === "songs"
+      ? { type: "song" as const }
+      : requestedType === "videos"
+        ? { type: "video" as const }
+        : requestedType === "books"
+          ? { type: "book" as const }
+          : requestedType === "files"
+            ? { type: "file" as const }
+            : {};
+  const stateWhere =
+    tombstones
+      ? {
+          deletedAt: { not: null as any },
+          status: "published" as const
         }
-    : { deletedAt: null };
+      : trash
+        ? {
+            deletedAt: { not: null as any },
+            status: { not: "published" as const },
+            deletedReason: { not: "hard" }
+          }
+        : { deletedAt: null as any };
 
   const selectBase = {
     id: true,
@@ -5853,21 +5976,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
-    _count: { select: { files: true } }
+    _count: { select: { files: true, entitlements: true } }
   } as const;
 
   const items: any[] = [];
 
   if (scope === "local") {
     const local = await prisma.contentItem.findMany({
-      where: trashWhere,
+      where: { ...stateWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
     items.push(...local.map((i) => ({ ...i, libraryAccess: i.ownerUserId === userId ? "owned" : "local" })));
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
-      where: { ownerUserId: userId, ...trashWhere },
+      where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
@@ -5878,12 +6001,20 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
     const meEmail = (me?.email || "").toLowerCase();
     const [owned, purchased, publicPreview, participantLinks] = await prisma.$transaction([
       prisma.contentItem.findMany({
-        where: { ownerUserId: userId, ...trashWhere },
+        where: {
+          ownerUserId: userId,
+          status: "published",
+          deletedAt: null,
+          ...contentTypeWhere
+        },
         orderBy: { createdAt: "desc" },
         select: selectBase
       }),
       prisma.entitlement.findMany({
-        where: { buyerUserId: userId },
+        where: {
+          buyerUserId: userId,
+          content: { is: { status: "published", ...contentTypeWhere } } as any
+        },
         include: { content: { select: selectBase } },
         orderBy: { grantedAt: "desc" }
       }),
@@ -5891,7 +6022,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
         where: {
           storefrontStatus: { in: ["LISTED", "UNLISTED"] },
           status: "published",
-          ...trashWhere
+          deletedAt: null,
+          ...contentTypeWhere
         },
         orderBy: { createdAt: "desc" },
         select: selectBase
@@ -5923,7 +6055,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
       );
       if (participantIds.length > 0) {
         const participantContent = await prisma.contentItem.findMany({
-          where: { id: { in: participantIds }, ...trashWhere },
+          where: {
+            id: { in: participantIds },
+            status: "published",
+            deletedAt: null,
+            ...contentTypeWhere
+          },
           orderBy: { createdAt: "desc" },
           select: selectBase
         });
@@ -5942,7 +6079,9 @@ app.get("/content", { preHandler: requireAuth }, async (req: any) => {
 
   return unique.map((i: any) => ({
     ...i,
-    priceSats: i.priceSats != null ? i.priceSats.toString() : null
+    priceSats: i.priceSats != null ? i.priceSats.toString() : null,
+    coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`,
+    tombstoned: isArchivedPublished(i)
   }));
 });
 
@@ -6172,11 +6311,7 @@ app.post("/api/content/:contentId/manifest", { preHandler: requireAuth }, async 
   }
 
   const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
-  const manifestJson = await buildManifestJson(content, files);
-  const previewObjectKey = await ensurePreviewFile(content, files);
-  if (previewObjectKey) {
-    (manifestJson as any).preview = previewObjectKey;
-  }
+  const manifestJson = await buildManifestWithDerivedAssets(content, files);
   const manifestSha256 = hashManifestJson(manifestJson);
 
   let parentManifestSha256: string | null = null;
@@ -6293,11 +6428,7 @@ async function ensureManifestForContent(content: any) {
   if (manifest) return manifest;
 
   const files = await prisma.contentFile.findMany({ where: { contentId: content.id }, orderBy: { createdAt: "asc" } });
-  const manifestJson = await buildManifestJson(content, files);
-  const previewObjectKey = await ensurePreviewFile(content, files);
-  if (previewObjectKey) {
-    (manifestJson as any).preview = previewObjectKey;
-  }
+  const manifestJson = await buildManifestWithDerivedAssets(content, files);
   const manifestSha256 = hashManifestJson(manifestJson);
 
   let parentManifestSha256: string | null = null;
@@ -6454,6 +6585,10 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   if (content.ownerUserId !== userId) {
     const ok = await isAcceptedParticipant(userId, contentId);
     if (!ok) return forbidden(reply);
+  }
+  const publishGuard = assertLifecycleCanPublish(content);
+  if (!publishGuard.ok) {
+    return reply.code(409).send({ code: publishGuard.code, message: publishGuard.message });
   }
 
   const ctx = getCapabilityContext();
@@ -7778,7 +7913,8 @@ async function handlePublicContentAccess(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+  if (!isPublished(content)) return notFound(reply, "Not found");
+  if (isArchivedPublished(content)) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
   const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   if (publicLinks.length > 1) return notFound(reply, "Not found");
   const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -7816,11 +7952,16 @@ app.get("/public/content/:id/access", handlePublicContentAccess);
 // Public storefront content metadata (no auth)
 async function handlePublicContent(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) {
+      return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+    }
+    return notFound(reply, "Content not found");
+  }
+  const content = gated.content;
   const isBasic = resolveProductTier().productTier === "basic";
   if (!isBasic) {
-    if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
     const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
     if (publicLinks.length > 1) return notFound(reply, "Not found");
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -7849,6 +7990,8 @@ async function handlePublicContent(req: any, reply: any) {
     title: content.title,
     description: content.description || null,
     storefrontStatus: content.storefrontStatus,
+    tombstoned: gated.tombstoned,
+    owned: gated.entitled,
     manifestSha256: manifest.sha256,
     priceSats: content.priceSats != null ? content.priceSats.toString() : null,
     cover: normalizePreview((manifest.json as any)?.cover || null),
@@ -7857,6 +8000,444 @@ async function handlePublicContent(req: any, reply: any) {
 }
 
 app.get("/public/content/:id", handlePublicContent);
+app.get("/public/content/:id/attribution", handlePublicAttribution);
+
+const BEATIFY_PROOF_CACHE_VALID_TTL_MS = 5 * 60 * 1000;
+const BEATIFY_PROOF_CACHE_INVALID_TTL_MS = 60 * 1000;
+const BEATIFY_PROOF_TIMEOUT_MS = 2000;
+const beatifyProofCache = new Map<string, { valid: boolean; reason: string; lastCheck: number; expiresAt: number; handle: string | null }>();
+
+type BeatifyNodeProofConfig = {
+  proofUrl: string | null;
+  beatifyHandle: string | null;
+  signatureId: string | null;
+  revokedAt: number | null;
+  setAt: number | null;
+  publicProofText: string | null;
+};
+
+function beatifyProofPath() {
+  return path.join(CONTENTBOX_ROOT, ".node", "beatify-node-proof.json");
+}
+
+async function readBeatifyNodeProof(): Promise<BeatifyNodeProofConfig> {
+  try {
+    const raw = await fs.readFile(beatifyProofPath(), "utf8");
+    const j = JSON.parse(raw || "{}");
+    const proofUrl = asString((j as any)?.proofUrl || "").trim() || null;
+    const signatureIdStored = asString((j as any)?.signatureId || "").trim() || null;
+    const signatureIdDerived = proofUrl ? extractSignatureIdFromProofUrl(proofUrl) : null;
+    return {
+      proofUrl,
+      beatifyHandle: asString((j as any)?.beatifyHandle || "").trim() || null,
+      signatureId: signatureIdStored || signatureIdDerived,
+      revokedAt: Number((j as any)?.revokedAt || 0) || null,
+      setAt: Number((j as any)?.setAt || 0) || null,
+      publicProofText: asString((j as any)?.publicProofText || "").trim() || null
+    };
+  } catch {
+    return { proofUrl: null, beatifyHandle: null, signatureId: null, revokedAt: null, setAt: null, publicProofText: null };
+  }
+}
+
+async function writeBeatifyNodeProof(next: BeatifyNodeProofConfig) {
+  const p = beatifyProofPath();
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, JSON.stringify(next, null, 2), "utf8");
+}
+
+function getPublicHostnameFromReq(req: any): string | null {
+  const fromForward = asString(req?.headers?.["x-forwarded-host"] || "").split(",")[0].trim().toLowerCase();
+  const fromHost = asString(req?.headers?.host || "").split(",")[0].trim().toLowerCase();
+  const fromHostname = asString(req?.hostname || "").trim().toLowerCase();
+  const raw = fromForward || fromHostname || fromHost;
+  if (!raw) return null;
+  const host = raw.replace(/^\[|\]$/g, "").replace(/:\d+$/, "");
+  if (!host) return null;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return null;
+  return host;
+}
+
+async function computeNodePemSha256(): Promise<string | null> {
+  try {
+    const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
+    const pubBuf = await fs.readFile(pubPath);
+    if (!pubBuf?.length) return null;
+    return crypto.createHash("sha256").update(pubBuf).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function normalizeBeatifyHandle(v: unknown): string | null {
+  const h = asString(v || "").trim().replace(/^@+/, "");
+  return h || null;
+}
+
+function normalizePublicProfileHandle(v: unknown): string | null {
+  const raw = asString(v || "").trim().toLowerCase();
+  if (!raw) return null;
+  const collapsed = raw.replace(/\s+/g, "-");
+  const clean = collapsed.replace(/[^a-z0-9._-]/g, "").replace(/-+/g, "-").replace(/^[-._]+|[-._]+$/g, "");
+  return clean || null;
+}
+
+function normalizeBeatifyProofUrl(raw: string): string | null {
+  try {
+    const u = new URL(asString(raw || "").trim());
+    if (u.protocol !== "https:") return null;
+    const host = u.hostname.toLowerCase();
+    const allow = new Set(["www.beatify.audio", "beatify.audio", "www.beatify.me", "beatify.me"]);
+    if (!allow.has(host)) return null;
+    const p = u.pathname || "/";
+    if (!/^\/[^\/?#]+\/signature\/[^\/?#]+\/?$/i.test(p)) return null;
+    const out = new URL(`https://www.beatify.audio${u.pathname}${u.search}`);
+    out.hash = "";
+    return out.toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractSignatureIdFromProofUrl(proofUrl: string): string | null {
+  try {
+    const u = new URL(proofUrl);
+    const parts = String(u.pathname || "").split("/").filter(Boolean);
+    const id = asString(parts[parts.length - 1] || "").trim();
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(id)) return null;
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+function parseBeatifyProofSignals(html: string): { wellKnown: string | null; sha: string | null } {
+  const src = String(html || "");
+  const shaMatch = src.match(/contentbox_public_key_sha256\s*[:=]\s*([a-f0-9]{64})/i);
+  const wkMatch = src.match(/contentbox_well_known\s*[:=]\s*(https?:\/\/[^\s"'<>]+)/i);
+  const refMatch = src.match(/reference\s*[:=]\s*(https?:\/\/[^\s"'<>]+)/i);
+  const sha = shaMatch ? shaMatch[1].toLowerCase() : null;
+  const wellKnown = wkMatch ? String(wkMatch[1]).trim() : (refMatch ? String(refMatch[1]).trim() : null);
+  return { wellKnown, sha };
+}
+
+function parseWellKnownBeatifyText(text: string): { signatureId: string | null } {
+  const src = String(text || "");
+  const m = src.match(/^\s*beatify_signature_id\s*=\s*([A-Za-z0-9_-]{8,64})\s*$/im);
+  return { signatureId: m ? m[1] : null };
+}
+
+function escHtml(v: unknown): string {
+  return asString(v || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+async function fetchProofWithTimeout(url: string, responseType: "text" | "json"): Promise<{ ok: boolean; status: number; finalUrl: string; data: any }> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), BEATIFY_PROOF_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { method: "GET", redirect: "follow", signal: ctl.signal } as any);
+    const finalUrl = res.url || url;
+    if (!res.ok) return { ok: false, status: res.status, finalUrl, data: null };
+    const data = responseType === "json" ? await res.json().catch(() => null) : await res.text();
+    return { ok: true, status: res.status, finalUrl, data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchBeatifyProofValidation(opts: {
+  proofUrl: string;
+  signatureId: string;
+  expectedSha: string;
+  expectedWellKnown: string;
+  expectedBeatifyWellKnown: string;
+  beatifyHandle: string | null;
+}): Promise<{ valid: boolean; reason: string; handle: string | null; lastCheck: number }> {
+  const now = Date.now();
+  const proofUrl = normalizeBeatifyProofUrl(opts.proofUrl || "");
+  if (!proofUrl) return { valid: false, reason: "invalid_proof_url", handle: null, lastCheck: now };
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(asString(opts.signatureId || ""))) return { valid: false, reason: "invalid_signature_id", handle: null, lastCheck: now };
+  const expectedSha = asString(opts.expectedSha || "").trim().toLowerCase();
+  const expectedWellKnown = asString(opts.expectedWellKnown || "").trim();
+  const expectedBeatifyWellKnown = asString(opts.expectedBeatifyWellKnown || "").trim();
+  if (!expectedSha || !expectedWellKnown || !expectedBeatifyWellKnown) return { valid: false, reason: "missing_expected_values", handle: null, lastCheck: now };
+
+  const key = `${proofUrl}|${opts.signatureId}|${expectedSha}|${expectedWellKnown}`;
+  const cached = beatifyProofCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return { valid: cached.valid, reason: cached.reason, handle: cached.handle, lastCheck: cached.lastCheck };
+  }
+
+  let result: { valid: boolean; reason: string; handle: string | null; lastCheck: number } = { valid: false, reason: "proof_fetch_failed", handle: null, lastCheck: now };
+  try {
+    const proofRes = await fetchProofWithTimeout(proofUrl, "text");
+    if (!proofRes.ok) {
+      result = { valid: false, reason: `proof_http_${proofRes.status}`, handle: null, lastCheck: Date.now() };
+    } else {
+      const finalUrl = new URL(proofRes.finalUrl || proofUrl);
+      const finalHost = finalUrl.hostname.toLowerCase();
+      const allow = new Set(["www.beatify.audio", "beatify.audio", "www.beatify.me", "beatify.me"]);
+      if (!allow.has(finalHost)) {
+        result = { valid: false, reason: "proof_final_host_not_allowed", handle: null, lastCheck: Date.now() };
+      } else {
+        const html = asString(proofRes.data || "");
+        const parsed = parseBeatifyProofSignals(html);
+        if (!parsed.sha) {
+          result = { valid: false, reason: "sha_missing", handle: null, lastCheck: Date.now() };
+        } else if (parsed.sha.toLowerCase() !== expectedSha) {
+          result = { valid: false, reason: "sha_mismatch", handle: null, lastCheck: Date.now() };
+        } else if (!parsed.wellKnown || parsed.wellKnown !== expectedWellKnown) {
+          result = { valid: false, reason: "well_known_mismatch", handle: null, lastCheck: Date.now() };
+        } else {
+          const wkBeatify = await fetchProofWithTimeout(expectedBeatifyWellKnown, "text");
+          if (!wkBeatify.ok) {
+            result = { valid: false, reason: `well_known_beatify_http_${wkBeatify.status}`, handle: null, lastCheck: Date.now() };
+          } else {
+            const parsedBeatify = parseWellKnownBeatifyText(asString(wkBeatify.data || ""));
+            if (!parsedBeatify.signatureId || parsedBeatify.signatureId !== opts.signatureId) {
+              result = { valid: false, reason: "signature_id_mismatch", handle: null, lastCheck: Date.now() };
+            } else {
+              const wkCb = await fetchProofWithTimeout(expectedWellKnown, "json");
+              if (!wkCb.ok) {
+                result = { valid: false, reason: `well_known_contentbox_http_${wkCb.status}`, handle: null, lastCheck: Date.now() };
+              } else {
+                const publicSha = asString((wkCb.data || {})?.publicKeyPemSha256 || "").trim().toLowerCase();
+                if (!publicSha || publicSha !== expectedSha) {
+                  result = { valid: false, reason: "well_known_sha_mismatch", handle: null, lastCheck: Date.now() };
+                } else {
+                  result = { valid: true, reason: "ok", handle: opts.beatifyHandle, lastCheck: Date.now() };
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (e: any) {
+    const isAbort = String(e?.name || "").toLowerCase().includes("abort");
+    result = { valid: false, reason: isAbort ? "proof_timeout" : "proof_fetch_failed", handle: null, lastCheck: Date.now() };
+  }
+
+  const ttl = result.valid ? BEATIFY_PROOF_CACHE_VALID_TTL_MS : BEATIFY_PROOF_CACHE_INVALID_TTL_MS;
+  beatifyProofCache.set(key, {
+    valid: result.valid,
+    reason: result.reason,
+    handle: result.handle,
+    lastCheck: result.lastCheck,
+    expiresAt: Date.now() + ttl
+  });
+  return result;
+}
+
+async function getBeatifyNodeBadgeStatus(req: any): Promise<{
+  linked: boolean;
+  valid: boolean;
+  revoked: boolean;
+  handle?: string;
+  tier?: "grey" | "gold";
+  expiresAt?: number;
+  nodePubkeyPemSha256?: string;
+  proofUrlSet?: boolean;
+  reason?: string;
+  lastCheck?: number;
+}> {
+  const conf = await readBeatifyNodeProof();
+  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
+  const proofUrl = asString(conf.proofUrl || "").trim() || null;
+  const revoked = Boolean(conf.revokedAt);
+  const nodePubkeyPemSha256 = await computeNodePemSha256();
+
+  if (!proofUrl || !beatifyHandle) {
+    return {
+      linked: false,
+      valid: false,
+      revoked,
+      tier: "grey",
+      nodePubkeyPemSha256: nodePubkeyPemSha256 || undefined,
+      proofUrlSet: false,
+      reason: !beatifyHandle ? "handle_not_set" : "proof_not_set"
+    };
+  }
+  if (revoked) {
+    return {
+      linked: true,
+      valid: false,
+      revoked: true,
+      handle: beatifyHandle || undefined,
+      tier: "grey",
+      nodePubkeyPemSha256: nodePubkeyPemSha256 || undefined,
+      proofUrlSet: true,
+      reason: "revoked"
+    };
+  }
+  const linked = Boolean(beatifyHandle && proofUrl && !revoked);
+  return {
+    linked: true,
+    valid: linked,
+    revoked: false,
+    handle: beatifyHandle || undefined,
+    tier: linked ? "gold" : "grey",
+    nodePubkeyPemSha256: nodePubkeyPemSha256 || undefined,
+    proofUrlSet: true,
+    reason: linked ? "linked" : "not_linked",
+    lastCheck: Date.now()
+  };
+}
+
+function toPublicCreator(u: { displayName?: string | null } | null | undefined) {
+  if (!u) return null;
+  const displayName = asString(u.displayName || "").trim() || "Creator";
+  const handle = normalizePublicProfileHandle(displayName);
+  return {
+    displayName,
+    handle: handle || null,
+    verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
+  };
+}
+
+async function getPublicOfferGate(
+  contentId: string,
+  req?: any,
+  reply?: any
+): Promise<{ content: any | null; allowDraftPreview: boolean; tombstoned: boolean; entitled: boolean }> {
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    include: { owner: { select: { displayName: true } } }
+  });
+  if (!content) return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
+
+  const isTombstoned = isArchivedPublished(content);
+
+  let entitled = false;
+  if (isTombstoned && req && reply) {
+    try {
+      const buyerSession = await resolveBuyerSession(req, reply);
+      const buyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
+      if (buyerId) {
+        await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
+        entitled = await hasAccess(buyerId, contentId);
+      }
+    } catch {
+      entitled = false;
+    }
+  }
+
+  const access = evaluatePublicBuyAccess(content, entitled);
+  if (access === "saleable") {
+    return { content, allowDraftPreview: false, tombstoned: isTombstoned, entitled };
+  }
+  if (access === "removed") {
+    return { content: null, allowDraftPreview: false, tombstoned: true, entitled: false };
+  }
+  return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
+}
+
+async function handlePublicAttribution(req: any, reply: any) {
+  const contentId = asString((req.params as any).id);
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  const content = gated.content;
+  if (!content) return notFound(reply, "Not found");
+  const beatifyNodeStatus = await getBeatifyNodeBadgeStatus(req);
+
+  const primaryCreator = toPublicCreator(content.owner) || {
+    displayName: "Creator",
+    handle: null,
+    verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
+  };
+  if (beatifyNodeStatus.valid) {
+    (primaryCreator as any).beatifyHandle = beatifyNodeStatus.handle ? `@${asString(beatifyNodeStatus.handle).replace(/^@+/, "")}` : null;
+    primaryCreator.verification.badge = "beatify_heart";
+    primaryCreator.verification.tier = "gold";
+  }
+
+  const [latestSplit, lockedSplit, parentLinks] = await Promise.all([
+    prisma.splitVersion.findFirst({
+      where: { contentId },
+      orderBy: { versionNumber: "desc" },
+      include: { participants: true }
+    }),
+    getLockedSplitForContent(contentId),
+    prisma.contentLink.findMany({
+      where: { childContentId: contentId },
+      include: { parentContent: { include: { owner: { select: { displayName: true } } } } },
+      orderBy: { id: "asc" }
+    })
+  ]);
+
+  const splitState: "active" | "draft" | "none" =
+    latestSplit?.status === "draft" && (!lockedSplit || (latestSplit.versionNumber > (lockedSplit.versionNumber || 0)))
+      ? "draft"
+      : lockedSplit
+        ? "active"
+        : "none";
+
+  let contributors: Array<{ displayName: string; handle: string | null; bps: number; verification: { badge: string | null } }> = [];
+  if (splitState === "active" && lockedSplit?.participants?.length) {
+    const byUserId = new Map<string, { displayName?: string | null }>();
+    const ids = Array.from(new Set(lockedSplit.participants.map((p: any) => asString(p.participantUserId || "").trim()).filter(Boolean)));
+    if (ids.length) {
+      const users = await prisma.user.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, displayName: true }
+      });
+      for (const u of users) byUserId.set(u.id, u);
+    }
+
+    contributors = lockedSplit.participants
+      .map((p: any) => {
+        const u = p.participantUserId ? byUserId.get(String(p.participantUserId)) : null;
+        const displayName =
+          asString(u?.displayName || "").trim() ||
+          asString((p as any)?.participantDisplayName || "").trim() ||
+          "Contributor";
+        const bps = Number.isFinite(Number((p as any)?.bps))
+          ? Math.max(0, Math.round(Number((p as any).bps)))
+          : Math.max(0, Math.round(num((p as any)?.percent) * 100));
+        return {
+          displayName,
+          handle: null,
+          bps,
+          verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
+        };
+      })
+      .filter((c) => c.bps > 0);
+  }
+
+  let upstream: {
+    kind: "derivative";
+    items: Array<{ title: string | null; primaryCreator: { displayName: string; handle: string | null; verification: { badge: string | null } } }>;
+    truncated: boolean;
+  } | null = null;
+  if (parentLinks.length > 0) {
+    const maxItems = 5;
+    const items = parentLinks.slice(0, maxItems).map((l) => ({
+      title: l.parentContent?.title || null,
+      primaryCreator:
+        toPublicCreator(l.parentContent?.owner) || {
+          displayName: "Creator",
+          handle: null,
+          verification: { badge: null as string | null }
+        }
+    }));
+    upstream = {
+      kind: "derivative",
+      items,
+      truncated: parentLinks.length > maxItems
+    };
+  }
+
+  return reply.send({
+    primaryCreator,
+    contributors,
+    split: { state: splitState },
+    upstream
+  });
+}
 
 // Public preview file (no auth; only when content is publicly visible)
 async function handlePublicPreviewFile(req: any, reply: any) {
@@ -7864,8 +8445,12 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const objectKeyRaw = asString((req.query || {})?.objectKey || "").trim();
   const shareToken = asString((req.query || {})?.share || "").trim();
 
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+    return notFound(reply, "Content not found");
+  }
+  const content = gated.content;
   const isBasic = resolveProductTier().productTier === "basic";
   if (!isBasic) {
     const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
@@ -7886,7 +8471,6 @@ async function handlePublicPreviewFile(req: any, reply: any) {
         allowSharePreview = true;
       }
     }
-    if (content.storefrontStatus === "DISABLED" && !allowReviewPreview && !allowSharePreview) return notFound(reply, "Not found");
     if (isDerivativeType || publicLinks.length > 0) {
       if (publicLinks.length === 0) return notFound(reply, "Not found");
       if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
@@ -7939,6 +8523,35 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   return reply.send(fsSync.createReadStream(absPath));
 }
 
+async function handlePublicCoverFile(req: any, reply: any) {
+  const contentId = asString((req.params as any).id);
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Not found");
+  if (!content?.repoPath) return notFound(reply, "Not found");
+  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+  let cover = getCoverAssetFromManifest(manifest?.json as any);
+  if (!cover?.path) {
+    const latestImage = await prisma.contentFile.findFirst({
+      where: { contentId, mime: { startsWith: "image/" } as any },
+      orderBy: { createdAt: "desc" }
+    });
+    if (latestImage?.objectKey) {
+      cover = { path: latestImage.objectKey, sha256: latestImage.sha256 || null, mime: latestImage.mime || null };
+    }
+  }
+  if (!cover?.path) return notFound(reply, "Not found");
+
+  const repoRoot = path.resolve(content.repoPath);
+  const absPath = path.resolve(repoRoot, cover.path);
+  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  if (!fsSync.existsSync(absPath)) return notFound(reply, "Not found");
+
+  const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey: cover.path } });
+  reply.type(file?.mime || cover.mime || "image/jpeg");
+  reply.header("Cache-Control", "public, max-age=3600");
+  return reply.send(fsSync.createReadStream(absPath));
+}
+
 // Redirect legacy /buy/content preview URLs to the public preview endpoint.
 async function handleBuyPreviewRedirect(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
@@ -7959,13 +8572,15 @@ app.addHook("onRequest", (req: any, reply: any, done: any) => {
 
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
 app.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+app.get("/public/content/:id/cover", handlePublicCoverFile);
+app.get("/buy/content/:id/cover", handlePublicCoverFile);
 
 // Public credits (only when content is publicly visible)
 async function handlePublicCredits(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+  if (!isSaleable(content)) return notFound(reply, "Not found");
   const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   if (publicLinks.length > 1) return notFound(reply, "Not found");
   const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -7983,10 +8598,107 @@ async function handlePublicCredits(req: any, reply: any) {
 
 app.get("/public/content/:id/credits", handlePublicCredits);
 
+async function handlePublicNodeProfilePage(req: any, reply: any) {
+  const matchedHandle = asString((req.params as any).handle || "").trim();
+  const requested = normalizePublicProfileHandle(matchedHandle);
+  if (!requested) return notFound(reply, "Not found");
+
+  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
+  const user =
+    await prisma.user.findFirst({
+      where: { displayName: { equals: requested, mode: "insensitive" } as any },
+      select: { id: true, displayName: true, bio: true, avatarUrl: true }
+    }) ||
+    await prisma.user.findFirst({
+      where: { displayName: { equals: maybeName, mode: "insensitive" } as any },
+      select: { id: true, displayName: true, bio: true, avatarUrl: true }
+    });
+  if (!user) return notFound(reply, "Not found");
+
+  const wk = await buildWellKnownContentboxPayload(req);
+  const nodeUrl = wk.nodeUrl || "";
+  if (!nodeUrl) return notFound(reply, "Not found");
+  const nodeSha = wk.publicKeyPemSha256 || null;
+  const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}…${nodeSha.slice(-8)}` : null;
+
+  const conf = await readBeatifyNodeProof();
+  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
+  const proofUrl = asString(conf.proofUrl || "").trim();
+  const signatureId = asString(conf.signatureId || (proofUrl ? extractSignatureIdFromProofUrl(proofUrl) : "") || "").trim();
+  const revoked = Boolean(conf.revokedAt);
+  const beatifyMatches = Boolean(
+    beatifyHandle &&
+    normalizePublicProfileHandle(beatifyHandle) === requested
+  );
+  const beatifyVerified = Boolean(beatifyMatches && beatifyHandle && proofUrl && !revoked);
+  const beatifyLinkedUnverified = Boolean(beatifyMatches && (revoked || !proofUrl));
+  const publicProofText = asString(conf.publicProofText || "").trim();
+  let lightningConfigured = false;
+  try {
+    const lnd = await getLightningNodeConfigStatus(prisma as any);
+    lightningConfigured = Boolean(lnd.endpoint && lnd.hasMacaroon && lnd.decryptOk);
+  } catch {
+    lightningConfigured = false;
+  }
+
+  const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
+  const safeBio = escHtml(asString(user.bio || ""));
+  const safeAvatar = asString(user.avatarUrl || "").trim();
+  const safeAvatarUrl = /^https?:\/\//i.test(safeAvatar) ? escHtml(safeAvatar) : "";
+  const safeHandle = escHtml(`@${requested}`);
+  const safeProofUrl = escHtml(proofUrl || "");
+  const safeSig = escHtml(signatureId || "");
+  const safeNodeUrl = escHtml(nodeUrl);
+  const safeNodeSha = escHtml(nodeSha || "Unavailable");
+  const safeShortSha = escHtml(shortSha || "Unavailable");
+  const safeProofText = escHtml(publicProofText || "");
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ContentBox Node Profile</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
+    .card { width:min(760px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:12px; padding:20px; overflow:hidden; }
+    .muted { color:#9aa0a6; font-size:13px; }
+    .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
+    pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
+    a { color:#9bdcff; text-decoration:none; }
+    a:hover { text-decoration:underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>ContentBox Node Profile</h2>
+    ${safeAvatarUrl ? `<div class="line"><img src="${safeAvatarUrl}" alt="avatar" style="width:72px;height:72px;border-radius:9999px;object-fit:cover;border:1px solid #222;" /></div>` : ""}
+    <div class="line"><strong>Name:</strong> ${safeDisplayName}${beatifyVerified ? " ♥" : ""}</div>
+    <div class="line"><strong>Handle:</strong> <span class="mono">${safeHandle}</span></div>
+    ${safeBio ? `<div class="line"><strong>Bio:</strong> <span>${safeBio}</span></div>` : ""}
+    <div class="line"><strong>Node URL:</strong> <span class="mono">${safeNodeUrl}</span></div>
+    <div class="line"><strong>ContentBox public key hash:</strong> <span class="mono">${safeNodeSha}</span></div>
+    <div class="line muted">Short: <span class="mono">${safeShortSha}</span></div>
+    ${beatifyVerified ? `<div class="line"><strong>Beatify:</strong> Verified ♥</div>` : beatifyLinkedUnverified ? `<div class="line"><strong>Beatify:</strong> linked (unverified)</div>` : `<div class="line"><strong>Beatify:</strong> not linked</div>`}
+    ${beatifyMatches && proofUrl ? `<div class="line"><strong>Beatify proof:</strong> <a href="${safeProofUrl}" target="_blank" rel="noreferrer">${safeProofUrl}</a></div>` : ""}
+    ${beatifyMatches && signatureId ? `<div class="line"><strong>Signature ID:</strong> <span class="mono">${safeSig}</span></div><pre class="line mono">beatify_signature_id=${safeSig}</pre>` : ""}
+    ${safeProofText ? `<div class="line"><strong>Beatify Proof (public):</strong></div><pre class="line mono">${safeProofText}</pre>` : ""}
+    <div class="line"><strong>Lightning:</strong> <span class="muted">${lightningConfigured ? "configured" : "not configured"}</span></div>
+  </div>
+</body>
+</html>`;
+
+  reply.type("text/html; charset=utf-8");
+  return reply.send(html);
+}
+
 // Short public link -> buy page
 async function handleShortPublicLink(req: any, reply: any) {
   const token = asString((req.params as any).token || "").trim();
   if (!token) return notFound(reply, "Not found");
+
   const share = await prisma.shareLink.findUnique({ where: { token } });
   if (share && share.status === "ACTIVE") {
     const content = await prisma.contentItem.findUnique({ where: { id: share.contentId } });
@@ -8029,6 +8741,15 @@ async function handleShortPublicLink(req: any, reply: any) {
 }
 
 app.get("/p/:token", handleShortPublicLink);
+app.get("/u/:handle", handlePublicNodeProfilePage);
+async function handlePublicProfileRedirect(req: any, reply: any) {
+  const conf = await readBeatifyNodeProof();
+  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
+  if (!beatifyHandle) return notFound(reply, "Not found");
+  return reply.redirect(302, `/u/${encodeURIComponent(beatifyHandle)}`);
+}
+
+app.get("/profile", handlePublicProfileRedirect);
 
 // External clearance page (no login required)
 app.get("/clearance/:token", async (req: any, reply) => {
@@ -8268,8 +8989,14 @@ async function handleBuyPage(req: any, reply: any) {
     .download-row { margin-top:10px; }
     .preview { margin-top:14px; }
     .preview img, .preview video, .preview audio { width:100%; max-width:820px; border-radius:12px; border:1px solid #222; background:#0b0b0b; }
+    .song-cover { margin-top:14px; max-width:420px; aspect-ratio:1/1; border-radius:12px; border:1px solid #222; overflow:hidden; background:#0f0f10; }
+    .song-cover img { width:100%; height:100%; object-fit:cover; display:block; }
+    .song-cover.placeholder { display:flex; align-items:center; justify-content:center; color:#71717a; font-size:12px; }
     a { color:#93c5fd; }
     .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
+    .cb-heart { margin-left:4px; font-weight:700; }
+    .cb-heart--grey { color:#cbd5e1; }
+    .cb-heart--gold { color:#fbbf24; }
   </style>
 </head>
 <body>
@@ -8287,6 +9014,7 @@ async function handleBuyPage(req: any, reply: any) {
   const productTier = ${JSON.stringify(productTier)};
   const sellerLightningAddress = ${JSON.stringify(sellerLightningAddress)};
   const sellerDisplayName = ${JSON.stringify(sellerDisplayName)};
+  const edgeDeliveryEnabled = ${JSON.stringify(EDGE_DELIVERY_ENABLED)};
   const priceSats = ${content.priceSats != null ? Number(content.priceSats) : "null"};
   const app = document.getElementById("app");
   const apiBase = location.origin;
@@ -8297,11 +9025,117 @@ async function handleBuyPage(req: any, reply: any) {
   let previewSeconds = 20;
   let buyer = null;
   let alreadyOwned = false;
+  const edgeUrlCache = new Map();
+  let attributionData = null;
   const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
 
   function qs(v){ return encodeURIComponent(v); }
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
+  function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function heartFor(c){
+    if (c?.verification?.badge !== "beatify_heart") return "";
+    const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
+    return " <span class=\\"cb-heart cb-heart--" + tier + "\\" title=\\"Verified on Beatify (node operator)\\" aria-label=\\"Verified on Beatify (node operator)\\">♥</span>";
+  }
+
+  function resolveAttributionContentId(){
+    const direct = String(contentId || "").trim();
+    if (direct) return direct;
+    try {
+      const m = String(location.pathname || "").match(/\\/buy\\/([^/?#]+)/);
+      return m ? decodeURIComponent(m[1]) : "";
+    } catch { return ""; }
+  }
+
+  function renderAttribution(){
+    const mounts = document.querySelectorAll("#cb-attribution");
+    if (!mounts.length) return;
+    const data = attributionData;
+    const primary = data && data.primaryCreator ? data.primaryCreator : null;
+    if (!primary) return;
+    const name = esc(primary.displayName || primary.name || primary.handle || "Creator");
+    const handleRaw = String(primary.handle || "").trim();
+    const profilePath = handleRaw ? ("/u/" + encodeURIComponent(handleRaw.replace(/^@/, ""))) : "";
+    const nameHtml = profilePath
+      ? ("<a href=\\"" + profilePath + "\\" style=\\"text-decoration:underline;\\">" + name + "</a>")
+      : name;
+    const contentboxHandle = handleRaw ? (" @" + esc(handleRaw.replace(/^@/, ""))) : "";
+    const beatifyHandleRaw = String(primary.beatifyHandle || "").trim();
+    const beatifyHandle = beatifyHandleRaw ? (" @" + esc(beatifyHandleRaw)) : "";
+    const badge = heartFor(primary);
+
+    let splitHtml = "";
+    const split = data?.split || null;
+    const contributors =
+      Array.isArray(data?.contributors) ? data.contributors :
+      Array.isArray(split?.contributors) ? split.contributors :
+      [];
+    if (split?.state === "active" && contributors.length > 0) {
+      splitHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Contributors:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
+        contributors.map((c) => {
+          const cn = esc(c?.displayName || c?.name || c?.handle || "Contributor");
+          const chRaw = String(c?.handle || "").trim();
+          const ch = chRaw ? (" @" + esc(chRaw.replace(/^@/, ""))) : "";
+          const bps = Number(c?.bps);
+          const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
+          return "<li>" + cn + ch + (pct ? (" — " + pct) : "") + "</li>";
+        }).join("") +
+      "</ul>";
+    } else if (split?.state === "draft") {
+      splitHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Split update pending (not applied yet).</div>";
+    }
+
+    let upstreamHtml = "";
+    const upstream = data?.upstream || null;
+    if (upstream?.kind === "derivative") {
+      const items = Array.isArray(upstream?.items) ? upstream.items : [];
+      if (items.length > 0) {
+        upstreamHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Upstream creators:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
+          items.map((it) => {
+            const t = it?.title ? (esc(it.title) + " — ") : "";
+            const pc = it?.primaryCreator || {};
+            const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
+            const phRaw = String(pc.handle || "").trim();
+            const ph = phRaw ? (" @" + esc(phRaw.replace(/^@/, ""))) : "";
+            return "<li>" + t + pn + ph + "</li>";
+          }).join("") +
+        "</ul>" +
+        (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">…and more</div>" : "");
+      }
+    }
+
+    mounts.forEach((mount) => {
+      mount.innerHTML = "<div class=\\"step\\" style=\\"margin-top:10px;\\">" +
+        "<div style=\\"font-weight:600;\\">Creator: " + nameHtml + contentboxHandle + beatifyHandle + badge + "</div>" +
+        splitHtml +
+        upstreamHtml +
+        "<div class=\\"muted\\" style=\\"margin-top:8px;\\">You're buying access. Proceeds are shared with the creators shown.</div>" +
+      "</div>";
+      mount.style.display = "";
+    });
+  }
+
+  async function loadAttribution(){
+    const cid = resolveAttributionContentId();
+    if (!cid) return;
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2500);
+    try {
+      const res = await fetch("/public/content/" + encodeURIComponent(cid) + "/attribution", {
+        method: "GET",
+        signal: ctl.signal
+      });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => null);
+      if (!data || !data.primaryCreator) return;
+      attributionData = data;
+      renderAttribution();
+    } catch {}
+    finally {
+      clearTimeout(timer);
+    }
+  }
 
   function entKey(manifestHash){ return "cb:entitlement:" + manifestHash; }
   function getEntitlement(manifestHash){
@@ -8390,6 +9224,54 @@ async function handleBuyPage(req: any, reply: any) {
     return url;
   }
 
+  function edgeKey(offer, token){
+    return [offer?.manifestSha256 || "", offer?.primaryFileId || "", token || ""].join("|");
+  }
+
+  async function resolveEdgeStreamUrl(offer, token){
+    if (!edgeDeliveryEnabled) return null;
+    if (!offer?.manifestSha256 || !offer?.primaryFileId || !token) return null;
+    const key = edgeKey(offer, token);
+    if (edgeUrlCache.has(key)) return edgeUrlCache.get(key);
+    try {
+      const out = await fetchJson("/api/public/edge-ticket", {
+        method: "POST",
+        body: {
+          manifestHash: offer.manifestSha256,
+          fileId: offer.primaryFileId,
+          receiptToken: token
+        }
+      });
+      const url = out?.url ? String(out.url) : null;
+      if (url) edgeUrlCache.set(key, url);
+      return url;
+    } catch {
+      return null;
+    }
+  }
+
+  function maybeUpgradeRenderedMediaToEdge(offer, token){
+    if (!edgeDeliveryEnabled) return;
+    if (!offer?.manifestSha256 || !offer?.primaryFileId || !token) return;
+    const player = document.getElementById("player");
+    const originUrl = streamUrl(offer, token);
+    if (!player || !originUrl) return;
+    const currentSrc = String(player.getAttribute("src") || "");
+    if (!currentSrc || currentSrc !== originUrl) return;
+
+    resolveEdgeStreamUrl(offer, token).then((edgeUrl) => {
+      if (!edgeUrl) return;
+      const freshPlayer = document.getElementById("player");
+      if (!freshPlayer) return;
+      const freshSrc = String(freshPlayer.getAttribute("src") || "");
+      if (freshSrc !== originUrl) return;
+      if (typeof freshPlayer.currentTime === "number" && freshPlayer.currentTime > 0) return;
+      if (typeof freshPlayer.paused === "boolean" && freshPlayer.paused === false) return;
+      freshPlayer.setAttribute("src", edgeUrl);
+      try { if (typeof freshPlayer.load === "function") freshPlayer.load(); } catch {}
+    }).catch(()=>{});
+  }
+
   const shareToken = (() => {
     try { return new URLSearchParams(location.search || "").get("share") || ""; } catch { return ""; }
   })();
@@ -8407,6 +9289,15 @@ async function handleBuyPage(req: any, reply: any) {
     return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(offer.primaryFileId) + shareQ;
   }
 
+  function offerCoverUrl(offer){
+    const direct = String(offer?.coverUrl || "").trim();
+    if (direct) return direct;
+    const coverObjectKey = String(offer?.coverObjectKey || "").trim();
+    if (!coverObjectKey) return null;
+    const shareQ = shareToken ? "&share=" + qs(shareToken) : "";
+    return apiBase + "/public/content/" + contentId + "/preview-file?objectKey=" + qs(coverObjectKey) + shareQ;
+  }
+
   function resolveBasicDeliveryMode(offer){
     const explicit = (offer && typeof offer.deliveryMode === "string" && offer.deliveryMode.trim()) ? offer.deliveryMode.trim() : "";
     if (explicit) return explicit;
@@ -8418,13 +9309,20 @@ async function handleBuyPage(req: any, reply: any) {
     return "download_only";
   }
 
+  function allowDownloadForOffer(offer){
+    const mode = resolveBasicDeliveryMode(offer);
+    return mode === "download_only" || mode === "stream_and_download";
+  }
+
   function renderBasicOffer(offer){
     const mediaSrc = basicPrimaryUrl(offer) || previewFallbackUrl(offer);
     const mime = String(offer.primaryFileMime || "");
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
+    const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const sellerLabel = sellerDisplayName ? "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator: " + sellerDisplayName + "</div>" : "";
     const tipBlock = sellerLightningAddress
       ? "<div class=\\"rail\\" style=\\"margin-top:10px;\\">" +
@@ -8449,10 +9347,16 @@ async function handleBuyPage(req: any, reply: any) {
       "<div>" +
         "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
         "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
+        "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
+        (isAudio
+          ? (coverSrc
+              ? "<div class=\\"song-cover\\"><img src=\\"" + coverSrc + "\\" alt=\\"Album cover\\" loading=\\"lazy\\" onerror=\\"var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}\\" /></div>"
+              : "<div class=\\"song-cover placeholder\\">No cover</div>")
+          : "") +
         (mediaSrc
           ? "<div class=\\"preview\\">" +
-              (isVideo ? "<video id=\\"player\\" controls preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
-              (isAudio ? "<audio id=\\"player\\" controls preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
+              (isVideo ? "<video id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></video>" : "") +
+              (isAudio ? "<audio id=\\"player\\" controls" + mediaControlsList + " preload=\\"metadata\\" src=\\"" + mediaSrc + "\\"></audio>" : "") +
               (!isVideo && !isAudio ? "<a class=\\"muted\\" href=\\"" + mediaSrc + "\\" target=\\"_blank\\" rel=\\"noreferrer\\">Open file</a>" : "") +
             "</div>"
           : "") +
@@ -8464,6 +9368,7 @@ async function handleBuyPage(req: any, reply: any) {
         tipBlock +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+    renderAttribution();
   }
 
   function renderOffer(offer, entitlement, owned){
@@ -8471,18 +9376,23 @@ async function handleBuyPage(req: any, reply: any) {
     const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
     const isPaid = Number(offer.priceSats || 0) > 0;
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
-    const hasBuyer = Boolean(buyer && buyer.email);
+    const hasBuyer = Boolean(buyer && buyer.id);
     const token = entitlement?.token || receiptToken || null;
     const mediaSrc = token ? streamUrl(offer, token) : previewFallbackUrl(offer) || streamUrl(offer, token);
     const mime = String(offer.primaryFileMime || "");
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const coverSrc = isAudio ? offerCoverUrl(offer) : null;
+    const deliveryMode = resolveBasicDeliveryMode(offer);
+    const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
     const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
+        <section id="cb-attribution" style="display:none"></section>
+        \${isAudio ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${already ? \`
           <div class="step" style="border-color:#14532d;background:#0b1f14;">
             <div style="font-weight:600;">Already owned</div>
@@ -8493,11 +9403,12 @@ async function handleBuyPage(req: any, reply: any) {
         \${mediaSrc && canStream ? \`
           <div class="preview">
             \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview</div>\` : ""}
-            \${isVideo ? \`<video id="player" controls preload="metadata" src="\${mediaSrc}"></video>\` : ""}
-            \${isAudio ? \`<audio id="player" controls preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
+            \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></video>\` : ""}
+            \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
             \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
         \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
+        \${entitlement?.status === "paid" || entitlement?.status === "bypassed" ? \`<div id="unlockBanner" class="step" style="border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\` : \`<div id="unlockBanner" class="step" style="display:none;border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\`}
         <div style="margin-top:8px;font-size:18px;">\${price}</div>
         \${(isPaid && !hidePay) ? \`
           <div class="step" id="stepContinue" style="\${hasBuyer ? "display:none;" : ""}">
@@ -8508,16 +9419,8 @@ async function handleBuyPage(req: any, reply: any) {
           </div>
           <div class="step" id="buyerAuth" style="display:none;">
             <h3>Step 2</h3>
-            <div class="muted">Sign in to continue.</div>
-            <div class="field">
-              <input id="buyerEmail" class="input" type="email" placeholder="you@example.com" />
-            </div>
-            <button id="buyerStart" class="btn" style="margin-top:10px;">Send code</button>
-            <div id="buyerDevCode" class="muted" style="margin-top:8px;"></div>
-            <div id="buyerCodeWrap" style="display:none; margin-top:8px;">
-              <input id="buyerCode" class="input" type="text" placeholder="Enter 6-digit code" />
-              <button id="buyerVerify" class="btn" style="margin-top:10px;">Verify</button>
-            </div>
+            <div class="muted">Start a local session to continue.</div>
+            <button id="buyerStart" class="btn" style="margin-top:10px;">Continue</button>
             <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
           </div>
           <div class="step" id="paySection" style="\${hasBuyer ? "" : "display:none;"}">
@@ -8529,7 +9432,6 @@ async function handleBuyPage(req: any, reply: any) {
           <div id="status" class="muted" style="margin-top:8px;"></div>
         \`}
         \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
-        \${entitlement?.token ? \`<button id="resetEnt" class="copy" style="margin-top:8px;">Reset entitlement</button>\` : ""}
         <div id="rails" style="margin-top:16px;"></div>
         <div id="downloads" style="margin-top:16px;"></div>
       </div>
@@ -8539,92 +9441,44 @@ async function handleBuyPage(req: any, reply: any) {
     app.querySelectorAll("button[data-copy]").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
     if (requiresPayment) {
       const continueBtn = document.getElementById("continueBtn");
-      if (buyer && buyer.email) {
-        setBuyerStatus("Signed in as " + buyer.email);
+      if (buyer && buyer.id) {
+        setBuyerStatus("Signed in locally");
         toggleDisplay("buyerAuth", false);
         toggleDisplay("paySection", true);
         toggleDisplay("stepContinue", false);
       } else {
-        setBuyerStatus("Sign in required to pay.");
+        setBuyerStatus("Local session required to pay.");
       }
 
-      if (continueBtn && !(buyer && buyer.email)) {
-        continueBtn.onclick = () => {
-          if (buyer && buyer.email) {
+      if (continueBtn && !(buyer && buyer.id)) {
+        continueBtn.onclick = async () => {
+          try {
+            const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+            buyer = res?.buyer || null;
             toggleDisplay("buyerAuth", false);
             toggleDisplay("paySection", true);
-            setBuyerStatus("Signed in as " + buyer.email);
-          } else {
-            toggleDisplay("buyerAuth", true);
+            setBuyerStatus("Signed in locally");
+          } catch (e) {
+            setBuyerStatus((e && e.message) ? e.message : "Unable to start local session.");
           }
         };
-      }
-
-      const emailInput = document.getElementById("buyerEmail");
-      if (emailInput) {
-        const cached = window.localStorage.getItem("cb:buyer:email") || "";
-        emailInput.value = buyer?.email || cached;
       }
 
       const startBtn = document.getElementById("buyerStart");
-      const verifyBtn = document.getElementById("buyerVerify");
-      const codeWrap = document.getElementById("buyerCodeWrap");
-      const devCodeEl = document.getElementById("buyerDevCode");
       const errorEl = document.getElementById("buyerError");
-      const statusEl = document.getElementById("status");
-      const disableBuyerLogin = (msg) => {
-        if (errorEl) errorEl.textContent = msg || "";
-        if (statusEl) statusEl.textContent = msg || "";
-        if (startBtn) startBtn.disabled = true;
-        if (verifyBtn) verifyBtn.disabled = true;
-        const buyBtn = document.getElementById("buyBtn");
-        if (buyBtn) buyBtn.disabled = true;
-      };
 
       if (startBtn) {
         startBtn.onclick = async () => {
-          const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-          if (!email) {
-            if (errorEl) errorEl.textContent = "Email required.";
-            return;
-          }
-          window.localStorage.setItem("cb:buyer:email", email);
-          if (errorEl) errorEl.textContent = "";
-          if (devCodeEl) devCodeEl.textContent = "";
-          if (codeWrap) codeWrap.style.display = "none";
-          try {
-            const res = await fetchJson("/api/buyer/start", { method: "POST", body: { email } });
-            if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
-            if (codeWrap) codeWrap.style.display = "";
-          } catch (e) {
-            const msg = (e && e.message) ? e.message : "Unable to start.";
-            if (msg.includes("Email login is not enabled")) {
-              disableBuyerLogin("This shop hasn't enabled email login yet.");
-              return;
-            }
-            if (errorEl) errorEl.textContent = msg;
-          }
-        };
-      }
-
-      if (verifyBtn) {
-        verifyBtn.onclick = async () => {
-          const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-          const codeInput = document.getElementById("buyerCode");
-          const code = String(codeInput && codeInput.value ? codeInput.value : "").trim();
-          if (!email || !code) {
-            if (errorEl) errorEl.textContent = "Email and code required.";
-            return;
-          }
           if (errorEl) errorEl.textContent = "";
           try {
-            const res = await fetchJson("/api/buyer/verify", { method: "POST", body: { email, code } });
-            buyer = res?.buyer || { email };
+            const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+            buyer = res?.buyer || null;
             toggleDisplay("buyerAuth", false);
             toggleDisplay("paySection", true);
-            setBuyerStatus("Signed in as " + buyer.email);
+            setBuyerStatus("Signed in locally");
           } catch (e) {
-            if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Invalid code.";
+            const msg = (e && e.message) ? e.message : "Unable to start.";
+            if (errorEl) errorEl.textContent = msg;
           }
         };
       }
@@ -8659,13 +9513,9 @@ async function handleBuyPage(req: any, reply: any) {
         });
       }
     }
-    const resetBtn = document.getElementById("resetEnt");
-    if (resetBtn) {
-      resetBtn.onclick = () => {
-        clearEntitlement(offer.manifestSha256);
-        receiptToken = null;
-        renderOffer(offer, null, alreadyOwned);
-      };
+    renderAttribution();
+    if (token) {
+      maybeUpgradeRenderedMediaToEdge(offer, token);
     }
   }
 
@@ -8674,6 +9524,15 @@ async function handleBuyPage(req: any, reply: any) {
     const lightning = intent.paymentOptions?.lightning || {};
     const onchain = intent.paymentOptions?.onchain || {};
     const receiptLink = apiBase + "/buy/receipts/" + intent.receiptToken + "/status";
+    const lightningInvoice = String(lightning.bolt11 || "");
+    const hasLightningInvoice = Boolean(lightningInvoice);
+    const onchainAddress = String(onchain.address || "");
+    const hasOnchainAddress = Boolean(onchain.available && onchainAddress);
+    const sats = Number(intent.amountSats || 0);
+    const btcAmount = Number.isFinite(sats) && sats > 0 ? (sats / 100000000).toFixed(8).replace(/0+$/, "").replace(/\\.$/, "") : "";
+    const unifiedUri = hasLightningInvoice && hasOnchainAddress
+      ? ("bitcoin:" + onchainAddress + (btcAmount ? ("?amount=" + btcAmount + "&lightning=" + encodeURIComponent(lightningInvoice)) : ("?lightning=" + encodeURIComponent(lightningInvoice))))
+      : "";
     rails.innerHTML = \`
       <div class="row">
         <div class="rail">
@@ -8681,7 +9540,11 @@ async function handleBuyPage(req: any, reply: any) {
           \${lightning.available ? \`
             <img alt="Lightning QR" src="\${qrUrl(lightning.bolt11)}" />
             <div class="code">\${lightning.bolt11}</div>
-            <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+              <a id="openWalletBtn" class="btn" href="\${hasLightningInvoice ? ("lightning:" + lightningInvoice) : "#"}" \${hasLightningInvoice ? "" : "aria-disabled=\\"true\\" style=\\"pointer-events:none;opacity:0.6;\\""}>\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</a>
+              <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
+            </div>
+            <div class="muted" style="margin-top:6px;">If your wallet didn’t open, copy or scan the invoice.</div>
           \` : \`<div class="muted">Unavailable: \${lightning.reason || "Not available"}</div>\`}
         </div>
         <div class="rail">
@@ -8694,10 +9557,28 @@ async function handleBuyPage(req: any, reply: any) {
           \` : \`<div class="muted">Unavailable: \${onchain.reason || "Not available"}</div>\`}
         </div>
       </div>
+      \${unifiedUri ? \`
+        <div class="rail" style="margin-top:10px;">
+          <div style="font-weight:600;">Unified (on-chain fallback)</div>
+          <img alt="Unified payment QR" src="\${qrUrl(unifiedUri)}" />
+          <div class="code">\${unifiedUri}</div>
+          <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+            <a id="openUnifiedBtn" class="btn" href="\${unifiedUri}">Open unified link</a>
+            <button class="copy" data-copy="\${unifiedUri}">Copy unified link</button>
+          </div>
+        </div>
+      \` : ""}
       <div class="muted" style="margin-top:10px;">Save your receipt link to download again:</div>
       <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
     \`;
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
+    const openWalletBtn = document.getElementById("openWalletBtn");
+    if (openWalletBtn) {
+      openWalletBtn.addEventListener("click", () => {
+        if (!hasLightningInvoice) return;
+        startReceiptPolling(60_000, 2_000);
+      });
+    }
   }
 
   function renderManual(intent){
@@ -8722,6 +9603,10 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderDownloads(payload){
     const downloads = document.getElementById("downloads");
+    if (!allowDownloadForOffer(currentOffer)) {
+      downloads.innerHTML = "";
+      return;
+    }
     const list = payload.files || [];
     if (!list.length) {
       downloads.innerHTML = "<div class='muted'>No files available.</div>";
@@ -8742,22 +9627,38 @@ async function handleBuyPage(req: any, reply: any) {
     pollStatus().catch(()=>{});
   }
 
+  function startReceiptPolling(maxDurationMs, intervalMs){
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    const startedAt = Date.now();
+    pollTimer = setInterval(async () => {
+      if (Date.now() - startedAt > maxDurationMs) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        return;
+      }
+      await pollStatus().catch(()=>{});
+    }, intervalMs);
+    pollStatus().catch(()=>{});
+  }
+
   async function pollStatus(){
     if (!receiptToken) return;
     const status = await fetchJson("/buy/receipts/" + receiptToken + "/status");
     if (status?.receiptToken && status.receiptToken !== receiptToken) {
       receiptToken = status.receiptToken;
     }
-    const paid = status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
+    const paid = status.access === "unlocked" || status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
     if (paid) {
       clearManualIntent();
-      clearInterval(pollTimer);
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
       renderDownloads(payload);
       if (currentOffer?.manifestSha256) {
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
         renderOffer(currentOffer, ent, alreadyOwned);
       }
+      const banner = document.getElementById("unlockBanner");
+      if (banner) banner.style.display = "";
       document.getElementById("status").textContent = "Payment received. Download is ready.";
     } else {
       document.getElementById("status").textContent = "Waiting for payment…";
@@ -8765,11 +9666,15 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   async function startPurchase(offer){
-    if (!buyer || !buyer.email) {
-      const statusEl = document.getElementById("status");
-      if (statusEl) statusEl.textContent = "Sign in required to pay.";
-      toggleDisplay("buyerAuth", true);
-      return;
+    if (!buyer || !buyer.id) {
+      try {
+        const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+        buyer = res?.buyer || null;
+      } catch {
+        const statusEl = document.getElementById("status");
+        if (statusEl) statusEl.textContent = "Unable to initialize buyer session.";
+        return;
+      }
     }
     const statusEl = document.getElementById("status");
     if (productTier === "basic" && !sellerLightningAddress) {
@@ -8821,8 +9726,7 @@ async function handleBuyPage(req: any, reply: any) {
     }
     receiptToken = intent.receiptToken;
     renderRails(intent);
-    pollTimer = setInterval(pollStatus, 2000);
-    pollStatus().catch(()=>{});
+    startReceiptPolling(60_000, 2_000);
   }
 
   if (productTier === "basic") {
@@ -8840,18 +9744,27 @@ async function handleBuyPage(req: any, reply: any) {
             .then(async (offer)=> {
               currentOffer = offer;
               const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
-              if (ent && ent.token) {
+              const shouldUpgradeOwnedFromPreview = Boolean(
+                alreadyOwned &&
+                Number(offer.priceSats || 0) > 0 &&
+                ent &&
+                ent.token &&
+                ent.status === "preview"
+              );
+              if (ent && ent.token && !shouldUpgradeOwnedFromPreview) {
                 renderOffer(offer, ent, alreadyOwned);
                 return;
               }
               if (Number(offer.priceSats || 0) > 0) {
                 try {
+                  const desiredScope = alreadyOwned ? "stream" : "preview";
                   const p = await fetchJson("/buy/permits", {
                     method: "POST",
-                    body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: "guest", requestedScope: "preview" }
+                    body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: (buyer && buyer.id) ? buyer.id : "guest", requestedScope: desiredScope }
                   });
                   previewSeconds = p.previewSeconds || previewSeconds;
-                  const next = setEntitlement(offer.manifestSha256, p.permit, "preview", Date.parse(p.expiresAt));
+                  const nextStatus = p.accessMode === "stream" ? "paid" : "preview";
+                  const next = setEntitlement(offer.manifestSha256, p.permit, nextStatus, Date.parse(p.expiresAt));
                   renderOffer(offer, next, alreadyOwned);
                   checkManualStatus();
                   return;
@@ -8863,6 +9776,7 @@ async function handleBuyPage(req: any, reply: any) {
             .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
         });
     });
+  loadAttribution().catch(()=>{});
 })();
 </script>
 </body>
@@ -8945,7 +9859,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
   }
 
   function render(){
-    if (!buyer || !buyer.email) {
+    if (!buyer || !buyer.id) {
       renderAuth();
       return;
     }
@@ -8967,7 +9881,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
           <div>
             <div style="font-size:22px;font-weight:700;">Library</div>
-            <div class="muted">Signed in as \${buyer.email}</div>
+            <div class="muted">Signed in locally</div>
           </div>
           <button id="logoutBtn" class="btn secondary">Sign out</button>
         </div>
@@ -8993,82 +9907,28 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">Library</div>
-        <div class="muted">Sign in to view your purchases.</div>
+        <div class="muted">Start local session to view your purchases.</div>
         <div class="step" id="buyerAuth">
-          <h3>Sign in</h3>
-          <div class="field">
-            <input id="buyerEmail" class="input" type="email" placeholder="you@example.com" />
-          </div>
-          <button id="buyerStart" class="btn" style="margin-top:10px;">Send code</button>
-          <div id="buyerDevCode" class="muted" style="margin-top:8px;"></div>
-          <div id="buyerCodeWrap" style="display:none; margin-top:8px;">
-            <input id="buyerCode" class="input" type="text" placeholder="Enter 6-digit code" />
-            <button id="buyerVerify" class="btn" style="margin-top:10px;">Verify</button>
-          </div>
+          <h3>Local session</h3>
+          <button id="buyerStart" class="btn" style="margin-top:10px;">Continue</button>
           <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
         </div>
       </div>
     \`;
 
-    const emailInput = document.getElementById("buyerEmail");
-    if (emailInput) {
-      const cached = window.localStorage.getItem("cb:buyer:email") || "";
-      emailInput.value = cached;
-    }
-
     const startBtn = document.getElementById("buyerStart");
-    const verifyBtn = document.getElementById("buyerVerify");
-    const codeWrap = document.getElementById("buyerCodeWrap");
-    const devCodeEl = document.getElementById("buyerDevCode");
     const errorEl = document.getElementById("buyerError");
-    const disableBuyerLogin = (msg) => {
-      if (errorEl) errorEl.textContent = msg || "";
-      if (startBtn) startBtn.disabled = true;
-      if (verifyBtn) verifyBtn.disabled = true;
-    };
 
     if (startBtn) {
       startBtn.onclick = async () => {
-        const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-        if (!email) {
-          if (errorEl) errorEl.textContent = "Email required.";
-          return;
-        }
-        window.localStorage.setItem("cb:buyer:email", email);
-        if (errorEl) errorEl.textContent = "";
-        if (devCodeEl) devCodeEl.textContent = "";
-        if (codeWrap) codeWrap.style.display = "none";
-        try {
-          const res = await fetchJson("/api/buyer/start", { method: "POST", body: { email } });
-          if (devCodeEl) devCodeEl.textContent = "Dev code: " + (res?.devCode || "");
-          if (codeWrap) codeWrap.style.display = "";
-        } catch (e) {
-          const msg = (e && e.message) ? e.message : "Unable to start.";
-          if (msg.includes("Email login is not enabled")) {
-            disableBuyerLogin("This shop hasn't enabled email login yet.");
-            return;
-          }
-          if (errorEl) errorEl.textContent = msg;
-        }
-      };
-    }
-
-    if (verifyBtn) {
-      verifyBtn.onclick = async () => {
-        const email = String(emailInput && emailInput.value ? emailInput.value : "").trim().toLowerCase();
-        const codeInput = document.getElementById("buyerCode");
-        const code = String(codeInput && codeInput.value ? codeInput.value : "").trim();
-        if (!email || !code) {
-          if (errorEl) errorEl.textContent = "Email and code required.";
-          return;
-        }
         if (errorEl) errorEl.textContent = "";
         try {
-          const res = await fetchJson("/api/buyer/verify", { method: "POST", body: { email, code } });
-          buyer = res?.buyer || { email };
+          const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+          buyer = res?.buyer || null;
           fetchEntitlements().then(render);
         } catch (e) {
-          if (errorEl) errorEl.textContent = (e && e.message) ? e.message : "Invalid code.";
+          const msg = (e && e.message) ? e.message : "Unable to start.";
+          if (errorEl) errorEl.textContent = msg;
         }
       };
     }
@@ -9167,24 +10027,27 @@ async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
-
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
-  if (content.deletedAt) return notFound(reply, "Not found");
-  let allowDraftPreview = false;
-  if (content.status !== "published") {
-    const links = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
-    if (links.length === 1) {
-      const review = await (prisma as any).clearanceRequest?.findFirst?.({
-        where: { contentLinkId: links[0].id },
-        orderBy: { createdAt: "desc" }
-      });
-      if (review?.reviewGrantedAt) {
-        allowDraftPreview = true;
-      }
-    }
-    if (!allowDraftPreview) return notFound(reply, "Not found");
+  if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
+    const dbg = await prisma.contentItem.findUnique({
+      where: { id: contentId },
+      select: { status: true, deletedAt: true }
+    });
+    const status = String(dbg?.status || "");
+    const deletedAt = dbg?.deletedAt ? new Date(dbg.deletedAt).toISOString() : null;
+    const saleable = Boolean(dbg && isSaleable(dbg as any));
+    const removed = Boolean(dbg && isArchivedPublished(dbg as any));
+    req.log.info({ contentId, status, deletedAt, saleable, removed }, "buy.gate");
   }
+
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) {
+      return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+    }
+    return notFound(reply, "Not found");
+  }
+  const content = gated.content;
+  const allowDraftPreview = false;
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest && !allowDraftPreview) return notFound(reply, "Manifest not found");
@@ -9213,11 +10076,14 @@ async function handlePublicOffer(req: any, reply: any) {
     (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
     (typeof primaryFileId === "string" && primaryFileId) ||
     null;
+  const coverAsset = getCoverAssetFromManifest(manifestJson);
+  const coverObjectKey = coverAsset?.path || null;
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const baseUrl = host ? `${proto}://${host}` : null;
-  const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+  const coverUrl = coverObjectKey ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/cover` : null;
+  const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
   const priceSats = content.priceSats ?? null;
   if (!allowDraftPreview) {
@@ -9236,7 +10102,11 @@ async function handlePublicOffer(req: any, reply: any) {
     primaryFileId,
     primaryFileMime,
     previewObjectKey,
+    coverObjectKey,
+    coverUrl,
     deliveryMode: (content as any).deliveryMode || null,
+    tombstoned: gated.tombstoned,
+    owned: gated.entitled,
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
     fulfillment: { mode: "receiptToken", ttlSeconds }
@@ -9260,6 +10130,11 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
+  if (!isSaleable(content)) {
+    return reply.code(409).send({ code: "NOT_FOR_SALE", message: "This content is no longer for sale." });
+  }
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const buyerId = buyerSession?.buyer?.id || null;
   const { productTier } = resolveProductTier();
   if (content.priceSats == null) {
     return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
@@ -9277,13 +10152,29 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   const manifestSha256 = asString(body.manifestSha256 || manifest.sha256).trim();
   if (manifest.sha256 !== manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
 
-  const ttlSeconds = Math.max(60, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || "3600")));
+  if (buyerId) {
+    const owned = await prisma.entitlement.findFirst({
+      where: { buyerId, contentId },
+      orderBy: { grantedAt: "desc" }
+    });
+    if (owned) {
+      return reply.send({
+        ok: true,
+        alreadyOwned: true,
+        contentId,
+        manifestSha256: owned.manifestSha256 || manifestSha256
+      });
+    }
+  }
+
+  const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
   const receiptToken = crypto.randomBytes(24).toString("hex");
   const receiptTokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
 
   const intent = await prisma.paymentIntent.create({
     data: {
       buyerUserId: null,
+      buyerId,
       contentId,
       manifestSha256,
       amountSats,
@@ -9354,7 +10245,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   }
 
   try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
+    const invoice = await createLightningInvoice(prisma as any, amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
     if (invoice) lightning = invoice;
   } catch (e: any) {
     app.log.warn({ err: e }, "lnbits invoice failed");
@@ -9405,6 +10296,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   return reply.send({
     ok: true,
+    buyerId,
     paymentIntentId: intent.id,
     status: intent.status,
     amountSats: intent.amountSats.toString(),
@@ -9449,7 +10341,7 @@ async function handlePublicPermits(req: any, reply: any) {
 
   const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
   const fileId = asString(body.fileId || "").trim();
-  const buyerId = asString(body.buyerId || "").trim() || "guest";
+  const requestedBuyerId = asString(body.buyerId || "").trim() || "guest";
   const requestedScope = body.requestedScope === "stream" ? "stream" : "preview";
 
   if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
@@ -9459,8 +10351,22 @@ async function handlePublicPermits(req: any, reply: any) {
   const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
   if (!content) return notFound(reply, "Content not found");
 
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const sessionBuyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
+  if (sessionBuyerId) {
+    await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: sessionBuyerId, contentId: content.id }).catch(() => {});
+  }
+
+  const hasPaidAccess = sessionBuyerId ? await hasAccess(sessionBuyerId, content.id) : false;
+  const paidContent = content.priceSats != null && content.priceSats > 0n;
   const devUnlock = String(process.env.DEV_P2P_UNLOCK || "").trim() === "1" || PAYMENT_PROVIDER.kind === "none";
-  const accessMode = devUnlock ? "stream" : requestedScope;
+  const accessMode = resolveBuyPermitAccessMode({
+    requestedScope,
+    devUnlock,
+    paidContent,
+    hasPaidAccess
+  });
+  const buyerId = sessionBuyerId || requestedBuyerId || "guest";
   const scopes = accessMode === "stream" ? ["stream"] : ["preview"];
   const now = Date.now();
   const ttlMs = accessMode === "stream" ? 24 * 60 * 60 * 1000 : 30 * 60 * 1000;
@@ -9490,6 +10396,168 @@ app.post("/p2p/permits", handlePublicPermits);
 app.post("/public/permits", handlePublicPermits);
 app.post("/buy/permits", handlePublicPermits);
 
+async function hasAccess(buyerId: string | null | undefined, contentId: string): Promise<boolean> {
+  const bid = String(buyerId || "").trim();
+  if (!bid) return false;
+  const hit = await prisma.entitlement.findFirst({
+    where: { buyerId: bid, contentId },
+    select: { id: true }
+  });
+  // TODO(model-b): extend with time-pass entitlement checks when that model is introduced.
+  return Boolean(hit);
+}
+
+async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: string; contentId?: string }) {
+  const buyerId = asString(input.buyerId || "").trim();
+  if (!buyerId) return { healedCount: 0 };
+  return reconcileMissingEntitlementsForBuyer(
+    {
+      listPaidIntents: async (bid: string, contentFilter?: string) =>
+        prisma.paymentIntent.findMany({
+          where: {
+            buyerId: bid,
+            status: "paid",
+            ...(contentFilter ? { contentId: contentFilter } : {})
+          },
+          select: { id: true, buyerId: true, contentId: true, manifestSha256: true, status: true },
+          orderBy: { paidAt: "desc" }
+        }) as any,
+      getEntitlement: async (bid: string, cid: string) =>
+        prisma.entitlement.findFirst({ where: { buyerId: bid, contentId: cid }, select: { id: true, buyerId: true, contentId: true } }),
+      upsertEntitlement: async ({ buyerId: bid, contentId, manifestSha256, paymentIntentId }) => {
+        await prisma.entitlement.upsert({
+          where: { buyerId_contentId: { buyerId: bid, contentId } },
+          update: { paymentIntentId, manifestSha256: manifestSha256 || "" },
+          create: {
+            buyerId: bid,
+            buyerUserId: null,
+            contentId,
+            manifestSha256: manifestSha256 || "",
+            paymentIntentId
+          }
+        });
+      }
+    },
+    { buyerId, contentId: input.contentId || undefined }
+  );
+}
+
+function buyerIdFromIntent(intent: any): string | null {
+  const v = String(intent?.buyerId || "").trim();
+  return v || null;
+}
+
+function resolveAccessBuyerId(intent: any, cookieBuyerId: string | null): { buyerId: string | null; warning: string | null } {
+  const intentBuyerId = buyerIdFromIntent(intent);
+  const cookieId = String(cookieBuyerId || "").trim() || null;
+  if (intentBuyerId && cookieId && intentBuyerId !== cookieId) {
+    return { buyerId: intentBuyerId, warning: "BUYER_SESSION_MISMATCH_USING_INTENT_BUYER" };
+  }
+  return { buyerId: intentBuyerId || cookieId, warning: null };
+}
+
+function resolveObjectKeyFromManifest(manifestJson: any, fileId: string): string | null {
+  const files = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
+  if (fileId === "primary" || fileId === "main") {
+    const primary = manifestJson?.primaryFile;
+    const primaryKey =
+      typeof primary === "string"
+        ? primary
+        : primary && typeof primary === "object"
+          ? primary.path || primary.filename || primary.objectKey
+          : null;
+    if (primaryKey) return String(primaryKey);
+  }
+  const found =
+    files.find(
+      (f: any) =>
+        f?.objectKey === fileId ||
+        f?.path === fileId ||
+        f?.filename === fileId ||
+        f?.sha256 === fileId ||
+        f?.originalName === fileId
+    ) || null;
+  if (found) return String(found.objectKey || found.path || found.filename || "").trim() || null;
+  return null;
+}
+
+app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
+  if (!EDGE_DELIVERY_ENABLED || !EDGE_TICKET_SECRET) return notFound(reply, "Not found");
+
+  const body = (req.body ?? {}) as { manifestHash?: string; fileId?: string; receiptToken?: string };
+  const manifestHash = asString(body.manifestHash || "").trim().toLowerCase();
+  const fileId = asString(body.fileId || "").trim();
+  const receiptToken = asString(body.receiptToken || "").trim();
+  if (!manifestHash || !fileId) return badRequest(reply, "manifestHash and fileId required");
+
+  const manifest = await prisma.manifest.findUnique({ where: { sha256: manifestHash } });
+  if (!manifest) return notFound(reply, "Not found");
+  const content = await prisma.contentItem.findUnique({ where: { id: manifest.contentId } });
+  if (!content || content.deletedAt || !content.repoPath) return notFound(reply, "Not found");
+
+  const objectKey = resolveObjectKeyFromManifest(manifest.json as any, fileId)
+    || (await prisma.contentFile.findFirst({
+      where: { contentId: content.id, OR: [{ objectKey: fileId }, { sha256: fileId }] },
+      select: { objectKey: true }
+    }))?.objectKey
+    || null;
+  if (!objectKey) return notFound(reply, "Not found");
+
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  if (cookieBuyerId) {
+    await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId: cookieBuyerId, contentId: content.id }).catch(() => {});
+  }
+
+  const priceSats = content.priceSats ? BigInt(content.priceSats as any) : 0n;
+  let entitled = priceSats <= 0n;
+  let bindBuyerId: string | null = cookieBuyerId;
+
+  if (!entitled && cookieBuyerId) {
+    entitled = await hasAccess(cookieBuyerId, content.id);
+  }
+
+  if (!entitled && receiptToken) {
+    const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
+    if (intent && intent.contentId === content.id && intent.status === "paid") {
+      const accessBuyer = resolveAccessBuyerId(intent, cookieBuyerId);
+      bindBuyerId = bindBuyerId || accessBuyer.buyerId || null;
+      if (accessBuyer.buyerId) {
+        await prisma.entitlement.upsert({
+          where: { buyerId_contentId: { buyerId: accessBuyer.buyerId, contentId: content.id } },
+          update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
+          create: {
+            buyerId: accessBuyer.buyerId,
+            buyerUserId: null,
+            contentId: content.id,
+            manifestSha256: intent.manifestSha256 || "",
+            paymentIntentId: intent.id
+          }
+        }).catch(() => {});
+      }
+      entitled = true;
+    }
+  }
+
+  if (!entitled) return notFound(reply, "Not found");
+
+  const exp = Math.floor(Date.now() / 1000) + EDGE_TICKET_TTL_SECONDS;
+  const token = mintEdgeTicketToken(
+    {
+      mh: manifestHash,
+      fid: fileId,
+      exp,
+      ...(bindBuyerId ? { b: bindBuyerId } : {})
+    },
+    EDGE_TICKET_SECRET
+  );
+
+  return reply.send({
+    url: `${EDGE_BASE_URL}/edge/content/${encodeURIComponent(manifestHash)}/${encodeURIComponent(fileId)}?t=${encodeURIComponent(token)}`,
+    expiresAt: new Date(exp * 1000).toISOString()
+  });
+});
+
 async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
@@ -9504,6 +10572,32 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
 
+  if (intent.status !== "paid") {
+    try {
+      const refreshed = await settlePaymentIntentFromRails(intent.id);
+      if (refreshed?.intent) intent = refreshed.intent;
+    } catch {}
+  }
+
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const accessBuyer = resolveAccessBuyerId(intent, cookieBuyerId);
+  const buyerId = accessBuyer.buyerId;
+  if (buyerId && intent.status === "paid") {
+    await prisma.entitlement.upsert({
+      where: { buyerId_contentId: { buyerId, contentId: intent.contentId } },
+      update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
+      create: {
+        buyerId,
+        buyerUserId: null,
+        contentId: intent.contentId,
+        manifestSha256: intent.manifestSha256 || "",
+        paymentIntentId: intent.id
+      }
+    }).catch(() => {});
+  }
+  const accessUnlocked = intent.status === "paid" || (buyerId ? await hasAccess(buyerId, intent.contentId) : false);
+
   return reply.send({
     status: intent.status,
     paymentStatus: intent.status,
@@ -9511,7 +10605,9 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
     receiptToken: intent.receiptToken || null,
-    canFulfill: intent.status === "paid"
+    canFulfill: accessUnlocked,
+    access: accessUnlocked ? "unlocked" : "pending",
+    warning: accessBuyer.warning || undefined
   });
 }
 
@@ -9527,43 +10623,54 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
   if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
-  if (intent.status !== "paid") return reply.code(402).send({ error: "Payment not settled" });
-  if (!intent.manifestSha256) return badRequest(reply, "manifestSha256 required");
+  let latestIntent = intent;
+  if (latestIntent.status !== "paid") {
+    try {
+      const refreshed = await settlePaymentIntentFromRails(latestIntent.id);
+      if (refreshed?.intent) latestIntent = refreshed.intent as any;
+    } catch {}
+  }
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const accessBuyer = resolveAccessBuyerId(latestIntent, cookieBuyerId);
+  const buyerId = accessBuyer.buyerId;
+  const canAccess = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
+  if (!canAccess && latestIntent.status === "paid" && buyerId) {
+    await prisma.entitlement.upsert({
+      where: { buyerId_contentId: { buyerId, contentId: latestIntent.contentId } },
+      update: { paymentIntentId: latestIntent.id, manifestSha256: latestIntent.manifestSha256 || "" },
+      create: {
+        buyerId,
+        buyerUserId: null,
+        contentId: latestIntent.contentId,
+        manifestSha256: latestIntent.manifestSha256 || "",
+        paymentIntentId: latestIntent.id
+      }
+    }).catch(() => {});
+  }
+  const canAccessAfterGrant = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
+  if (!canAccessAfterGrant) return reply.code(402).send({ error: "Payment not settled" });
+  if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
 
-  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content) return notFound(reply, "Content not found");
-  const manifest = await prisma.manifest.findUnique({ where: { contentId: intent.contentId } });
-  if (!manifest || manifest.sha256 !== intent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
+  const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
+  if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
 
   try {
-    await finalizePurchase(intent.id, prisma);
+    await finalizePurchase(latestIntent.id, prisma);
   } catch {}
 
-  if (intent.buyerUserId) {
-    await prisma.entitlement.upsert({
-      where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId: intent.contentId, manifestSha256: intent.manifestSha256 } },
-      update: { paymentIntentId: intent.id },
-      create: { buyerUserId: intent.buyerUserId, contentId: intent.contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
-    }).catch(() => {});
-  } else {
-    const existingEntitlement = await prisma.entitlement.findFirst({
-      where: { buyerUserId: null, contentId: intent.contentId, manifestSha256: intent.manifestSha256 }
-    });
-    if (!existingEntitlement) {
-      await prisma.entitlement.create({
-        data: { buyerUserId: null, contentId: intent.contentId, manifestSha256: intent.manifestSha256, paymentIntentId: intent.id }
-      }).catch(() => {});
-    }
-  }
+  // Entitlement is now keyed by buyerId from cookie session.
 
   const files = await prisma.contentFile.findMany({
-    where: { contentId: intent.contentId },
+    where: { contentId: latestIntent.contentId },
     orderBy: { createdAt: "asc" }
   });
   const manifestJson = manifest.json as any;
   return reply.send({
     ok: true,
-    contentId: intent.contentId,
+    contentId: latestIntent.contentId,
     manifestSha256: manifest.sha256,
     manifest: manifestJson,
     manifestJson,
@@ -9596,20 +10703,35 @@ async function handlePublicReceiptFile(req: any, reply: any) {
   if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
     return reply.code(410).send({ error: "Receipt token expired" });
   }
-  if (intent.status !== "paid") return reply.code(402).send({ error: "Payment not settled" });
-  if (!intent.manifestSha256) return badRequest(reply, "manifestSha256 required");
+  let latestIntent = intent;
+  if (latestIntent.status !== "paid") {
+    try {
+      const refreshed = await settlePaymentIntentFromRails(latestIntent.id);
+      if (refreshed?.intent) latestIntent = refreshed.intent as any;
+    } catch {}
+  }
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const accessBuyer = resolveAccessBuyerId(latestIntent, cookieBuyerId);
+  const buyerId = accessBuyer.buyerId;
+  const canAccess = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
+  if (!canAccess) return reply.code(402).send({ error: "Payment not settled" });
+  if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
 
-  const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
+  const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content || !content.repoPath) return notFound(reply, "Content not found");
+  if (content.deliveryMode === "stream_only") {
+    return reply.code(403).send({ error: "DOWNLOAD_DISABLED" });
+  }
 
-  const manifest = await prisma.manifest.findUnique({ where: { contentId: intent.contentId } });
-  if (!manifest || manifest.sha256 !== intent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
+  const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
+  if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
   const manifestJson = manifest.json as any;
   const manifestFiles = Array.isArray(manifestJson?.files) ? manifestJson.files : [];
   const inManifest = manifestFiles.some((f: any) => f?.path === objectKey || f?.filename === objectKey);
 
   const file = await prisma.contentFile.findFirst({
-    where: { contentId: intent.contentId, objectKey }
+    where: { contentId: latestIntent.contentId, objectKey }
   });
   if (!file) return notFound(reply, "File not found");
   if (manifestFiles.length > 0 && !inManifest) return forbidden(reply);
@@ -9665,21 +10787,66 @@ app.get("/content/:id/files", { preHandler: requireAuth }, async (req: any, repl
 app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
+  req.log.info(
+    {
+      ct: req.headers["content-type"],
+      route: req.routerPath || req.routeOptions?.url || "/content/:id/files",
+      contentId
+    },
+    "upload start"
+  );
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
+  const uploadGuard = assertLifecycleCanUpload(content);
+  if (!uploadGuard.ok) {
+    return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
+  }
+  if (isPublished(content)) {
+    return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
+  }
 
-  // fastify multipart
-  const mp = await req.file();
-  if (!mp) return badRequest(reply, "file is required");
+  const uploadReqCheck = validateUploadRequest({
+    isMultipart: typeof req.isMultipart === "function" ? req.isMultipart() : false,
+    hasFile: true
+  });
+  if (!uploadReqCheck.ok) {
+    return reply.code(uploadReqCheck.status).send({ error: uploadReqCheck.error });
+  }
 
-  const fileStream = mp.file as NodeJS.ReadableStream;
-  const originalName = mp.filename || "upload";
-  const mime = mp.mimetype || "application/octet-stream";
+  const rawIdempotencyKey = asString(req.headers["x-idempotency-key"] || "").trim();
+  const idempotencyKey = rawIdempotencyKey ? `${userId}:${contentId}:${rawIdempotencyKey}` : null;
+  const now = Date.now();
+  if (idempotencyKey) {
+    const existing = uploadIdempotency.get(idempotencyKey);
+    if (existing && existing.expiresAt > now) {
+      if (existing.status === "done" && existing.response) return reply.send(existing.response);
+      const retryAfterMs = Math.max(250, existing.expiresAt - now);
+      reply.header("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+      return reply.code(409).send({ error: "Upload already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
+    }
+    uploadIdempotency.delete(idempotencyKey);
+  }
 
-  try {
+  const execute = async () => {
+    const mp = await req.file();
+    const validation = validateUploadRequest({ isMultipart: true, hasFile: Boolean(mp) });
+    if (!validation.ok) {
+      const err: any = new Error(validation.error);
+      err.statusCode = validation.status;
+      throw err;
+    }
+    const fileStream = mp.file as NodeJS.ReadableStream;
+    const originalName = mp.filename || "upload";
+    const mime = mp.mimetype || "application/octet-stream";
+    if (!mime || !String(mime).trim()) {
+      const err: any = new Error("invalid file type");
+      err.statusCode = 415;
+      throw err;
+    }
+
     const fileEntry = await addFileToContentRepo({
       repoPath: content.repoPath,
       contentTitle: content.title,
@@ -9735,7 +10902,12 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       });
     } catch {}
 
-    return reply.send({
+    const filesCount = await prisma.contentFile.count({ where: { contentId } });
+    const payload = {
+      ok: true,
+      contentId,
+      filesCount,
+      manifestSha: manifestHash,
       id: created.id,
       objectKey: created.objectKey,
       originalName: created.originalName,
@@ -9745,9 +10917,200 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       createdAt: created.createdAt,
       manifestSha256: manifestSha,
       sha256MatchesManifest: manifestSha ? manifestSha.toLowerCase() === (created.sha256 || "").toLowerCase() : null
+    };
+    if (idempotencyKey) {
+      uploadIdempotency.set(idempotencyKey, {
+        status: "done",
+        response: payload,
+        expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_DONE_TTL_MS
+      });
+    }
+    return payload;
+  };
+
+  if (idempotencyKey) {
+    uploadIdempotency.set(idempotencyKey, {
+      status: "inflight",
+      expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_INFLIGHT_TTL_MS
     });
+  }
+
+  try {
+    const payload = await execute();
+    return reply.send(payload);
   } catch (e: any) {
-    return reply.code(500).send({ error: String((e as any)?.message || String(e)) });
+    if (idempotencyKey) uploadIdempotency.delete(idempotencyKey);
+    const code = Number(e?.statusCode || e?.status || 0);
+    const msg = String(e?.message || e || "Upload failed");
+    if (code === 413 || String(e?.code || "").includes("FST_REQ_FILE_TOO_LARGE") || msg.toLowerCase().includes("too large")) {
+      return reply.code(413).send({ error: "uploaded file too large" });
+    }
+    if (code === 401 || code === 403) {
+      return reply.code(code).send({ error: code === 401 ? "Unauthorized" : "Forbidden" });
+    }
+    if (code === 400 || msg === "file is required") {
+      return reply.code(400).send({ error: "file is required" });
+    }
+    if (code === 415 || msg.toLowerCase().includes("multipart/form-data")) {
+      return reply.code(415).send({ error: "multipart/form-data required" });
+    }
+    req.log.error({ err: e, contentId }, "upload failed");
+    return reply.code(500).send({ error: "Upload failed" });
+  }
+});
+
+// Upload or replace song cover artwork (image only)
+app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).id);
+  req.log.info(
+    {
+      ct: req.headers["content-type"],
+      route: req.routerPath || req.routeOptions?.url || "/content/:id/cover",
+      contentId
+    },
+    "cover upload start"
+  );
+
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
+  const uploadGuard = assertLifecycleCanUpload(content);
+  if (!uploadGuard.ok) {
+    return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
+  }
+  if (isPublished(content)) {
+    return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
+  }
+  if (String(content.type || "").toLowerCase() !== "song") {
+    return reply.code(400).send({ error: "Cover upload is only supported for songs" });
+  }
+
+  const uploadReqCheck = validateUploadRequest({
+    isMultipart: typeof req.isMultipart === "function" ? req.isMultipart() : false,
+    hasFile: true
+  });
+  if (!uploadReqCheck.ok) {
+    return reply.code(uploadReqCheck.status).send({ error: uploadReqCheck.error });
+  }
+
+  const rawIdempotencyKey = asString(req.headers["x-idempotency-key"] || "").trim();
+  const idempotencyKey = rawIdempotencyKey ? `cover:${userId}:${contentId}:${rawIdempotencyKey}` : null;
+  const now = Date.now();
+  if (idempotencyKey) {
+    const existing = uploadIdempotency.get(idempotencyKey);
+    if (existing && existing.expiresAt > now) {
+      if (existing.status === "done" && existing.response) return reply.send(existing.response);
+      const retryAfterMs = Math.max(250, existing.expiresAt - now);
+      reply.header("Retry-After", String(Math.ceil(retryAfterMs / 1000)));
+      return reply.code(409).send({ error: "Cover upload already in progress", code: "UPLOAD_IN_PROGRESS", retryAfterMs });
+    }
+    uploadIdempotency.delete(idempotencyKey);
+  }
+
+  try {
+    if (idempotencyKey) {
+      uploadIdempotency.set(idempotencyKey, {
+        status: "inflight",
+        expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_INFLIGHT_TTL_MS
+      });
+    }
+    const mp = await req.file();
+    const validation = validateUploadRequest({ isMultipart: true, hasFile: Boolean(mp) });
+    if (!validation.ok) return reply.code(validation.status).send({ error: validation.error });
+
+    const mime = String(mp.mimetype || "").toLowerCase();
+    const allowedMimes = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
+    if (!allowedMimes.has(mime)) {
+      return reply.code(415).send({ error: "Cover must be a jpg, png, or webp image" });
+    }
+
+    const buf = await readMultipartPartBuffer(mp, 5 * 1024 * 1024);
+    const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+    const fileName = `${content.id}-cover.${ext}`;
+
+    const stream = Readable.from(buf);
+
+    const fileEntry = await addFileToContentRepo({
+      repoPath: content.repoPath,
+      contentTitle: content.title,
+      originalName: fileName,
+      mime: mime === "image/jpg" ? "image/jpeg" : mime,
+      stream,
+      setAsPrimary: false,
+      preferMasterName: false
+    });
+
+    await prisma.contentFile.upsert({
+      where: { contentId_objectKey: { contentId, objectKey: fileEntry.path } },
+      update: {
+        originalName: fileName,
+        mime: mime === "image/jpg" ? "image/jpeg" : mime,
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        createdAt: new Date(fileEntry.committedAt)
+      },
+      create: {
+        contentId,
+        objectKey: fileEntry.path,
+        originalName: fileName,
+        mime: mime === "image/jpg" ? "image/jpeg" : mime,
+        sizeBytes: BigInt(fileEntry.sizeBytes || 0),
+        sha256: fileEntry.sha256 || "",
+        encDek: "",
+        encAlg: ""
+      }
+    });
+
+    const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+    const manifestJson = await buildManifestWithDerivedAssets(content, files, { coverObjectKey: fileEntry.path });
+    const manifestSha256 = hashManifestJson(manifestJson);
+
+    const existingManifest = await prisma.manifest.findUnique({ where: { contentId } });
+    const manifest = await prisma.manifest.upsert({
+      where: { contentId },
+      update: {
+        json: manifestJson as any,
+        sha256: manifestSha256,
+        parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+        lineageRelation: existingManifest?.lineageRelation || null
+      },
+      create: {
+        contentId,
+        json: manifestJson as any,
+        sha256: manifestSha256,
+        parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+        lineageRelation: existingManifest?.lineageRelation || null
+      }
+    });
+    await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifest.id } });
+
+    const coverUrl = `${APP_BASE_URL}/public/content/${encodeURIComponent(contentId)}/cover`;
+    const payload = { ok: true, coverObjectKey: fileEntry.path, coverUrl, manifestSha256 };
+    if (idempotencyKey) {
+      uploadIdempotency.set(idempotencyKey, {
+        status: "done",
+        response: payload,
+        expiresAt: Date.now() + UPLOAD_IDEMPOTENCY_DONE_TTL_MS
+      });
+    }
+    return reply.send(payload);
+  } catch (e: any) {
+    if (idempotencyKey) uploadIdempotency.delete(idempotencyKey);
+    const code = Number(e?.statusCode || e?.status || 0);
+    const msg = String(e?.message || e || "Cover upload failed");
+    if (code === 413 || msg.toLowerCase().includes("too large")) {
+      return reply.code(413).send({ error: "Cover image exceeds 5MB limit" });
+    }
+    if (code === 409 || msg.includes("UPLOAD_IN_PROGRESS")) {
+      return reply.code(409).send({ error: "Cover upload already in progress", code: "UPLOAD_IN_PROGRESS" });
+    }
+    if (code === 415 || msg.toLowerCase().includes("multipart/form-data")) {
+      return reply.code(415).send({ error: "multipart/form-data required" });
+    }
+    req.log.error({ err: e, contentId }, "cover upload failed");
+    return reply.code(500).send({ error: "Cover upload failed" });
   }
 });
 
@@ -9761,6 +11124,35 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
   if (content.ownerUserId !== userId) return forbidden(reply);
 
   const deletedAt = new Date();
+  if (isPublished(content)) {
+    const [entitlementsCount, paidCount] = await prisma.$transaction([
+      prisma.entitlement.count({ where: { contentId } }),
+      prisma.paymentIntent.count({ where: { contentId, status: "paid" as any } })
+    ]);
+    const tombstone = shouldTombstoneOnDelete(content, entitlementsCount, paidCount);
+    await prisma.contentItem.update({
+      where: { id: contentId },
+      data: { deletedAt, deletedReason: tombstone ? "tombstone" : "soft" }
+    });
+    try {
+      await prisma.auditEvent.create({
+        data: {
+          userId,
+          action: tombstone ? "content.tombstone" : "content.delete",
+          entityType: "ContentItem",
+          entityId: contentId,
+          payloadJson: {
+            deletedAt: deletedAt.toISOString(),
+            deletedReason: tombstone ? "tombstone" : "soft",
+            entitlementsCount,
+            paidCount
+          } as any
+        }
+      });
+    } catch {}
+    return reply.send({ ok: true, tombstoned: tombstone });
+  }
+
   await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt, deletedReason: "soft" } });
   try {
     await prisma.auditEvent.create({
@@ -9787,6 +11179,13 @@ app.post("/content/:id/restore", { preHandler: requireAuth }, async (req: any, r
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  const restoreGuard = assertLifecycleCanRestore(content);
+  if (!restoreGuard.ok) {
+    return reply.code(409).send({
+      code: restoreGuard.code,
+      error: restoreGuard.message
+    });
+  }
 
   await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt: null, deletedReason: null } });
   return reply.send({ ok: true });
@@ -9800,6 +11199,12 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  if (isPublished(content)) {
+    return reply.code(409).send({
+      code: "PUBLISHED_DELETE_BLOCKED",
+      error: "Published content cannot be permanently deleted from this action."
+    });
+  }
 
   const repoPath = content.repoPath;
   const deletedAt = content.deletedAt || new Date();
@@ -10178,8 +11583,13 @@ async function handlePublicContentFile(req: any, reply: any) {
   let accessMode: "preview" | "stream" = "stream";
   let preview: { maxBytes: number } | null = null;
   const previewEnabled = String(process.env.PREVIEW_ENABLED || "1") !== "0";
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const buyerId = buyerSession?.buyer?.id || null;
 
   if (priceSats > 0n) {
+    if (buyerId) {
+      await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId: content.id }).catch(() => {});
+    }
     let entitlementOk = false;
     if (token) {
       if (token.startsWith("permit_")) {
@@ -10206,8 +11616,23 @@ async function handlePublicContentFile(req: any, reply: any) {
         }
       } else {
         const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken: token } });
-        if (intent && intent.contentId === content.id && intent.status === "paid") {
-          entitlementOk = true;
+        if (intent && intent.contentId === content.id) {
+          const accessBuyer = resolveAccessBuyerId(intent, buyerId);
+          const targetBuyerId = accessBuyer.buyerId;
+          if (intent.status === "paid" && targetBuyerId) {
+            await prisma.entitlement.upsert({
+              where: { buyerId_contentId: { buyerId: targetBuyerId, contentId: content.id } },
+              update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
+              create: {
+                buyerId: targetBuyerId,
+                buyerUserId: null,
+                contentId: content.id,
+                manifestSha256: intent.manifestSha256 || "",
+                paymentIntentId: intent.id
+              }
+            }).catch(() => {});
+          }
+          entitlementOk = intent.status === "paid" || (targetBuyerId ? await hasAccess(targetBuyerId, content.id) : false);
         }
       }
     }
@@ -10217,6 +11642,10 @@ async function handlePublicContentFile(req: any, reply: any) {
         accessMode = "preview";
         if (!preview) preview = { maxBytes: previewMaxBytesFor(mime, content.type) };
       } else {
+        if (token) {
+          reply.code(403);
+          return reply.send({ error: "Access denied", code: "ACCESS_NOT_ENTITLED" });
+        }
         reply.code(402);
         return reply.send({ error: "Payment required", code: "PAYMENT_REQUIRED" });
       }
@@ -11059,12 +12488,18 @@ async function settlePaymentIntent(paymentIntentId: string) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
   if (!intent) throw new Error("PaymentIntent not found");
   if (intent.status !== "paid") throw new Error("PaymentIntent not paid");
+  const skipSettlement = resolveProductTier().productTier === "basic";
 
   const existing = await prisma.settlement.findUnique({ where: { paymentIntentId } });
   if (existing) return existing;
 
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content) throw new Error("Content not found");
+
+  if (skipSettlement) {
+    console.info("skipped settlement: basic tier", { paymentIntentId: intent.id, contentId: content.id });
+    return null;
+  }
 
   const childSplit = await getLockedSplitForContent(content.id);
   if (!childSplit) throw new Error("Locked child split not found");
@@ -11207,21 +12642,47 @@ async function settlePaymentIntent(paymentIntentId: string) {
 }
 
 type FinalizePaymentIntentOptions = {
-  rail: "manual_lightning" | "provider_invoice" | "node_invoice";
+  rail: "manual_lightning" | "provider_invoice" | "node_invoice" | "onchain";
   confirmedByUserId?: string | null;
 };
 
 async function finalizePaymentIntent(intentId: string, options: FinalizePaymentIntentOptions) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
   if (!intent) throw new Error("PaymentIntent not found");
+  const skipSettlement = resolveProductTier().productTier === "basic";
 
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content) throw new Error("Content not found");
 
   const existingSale = await prisma.sale.findUnique({ where: { intentId } });
-  if (intent.status === "paid" && existingSale) {
+  if (intent.status === "paid" && existingSale && !skipSettlement) {
     const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
     return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
+  }
+
+  if (skipSettlement) {
+    const memo = intent.memo || (options.rail === "manual_lightning" ? `CBX-${intent.id.slice(-6).toUpperCase()}` : null);
+    const recognizedAt = intent.paidAt || new Date();
+    if (intent.status !== "paid") {
+      const paidVia = (intent.paidVia || "lightning") as any;
+      await prisma.paymentIntent.update({
+        where: { id: intentId },
+        data: {
+          status: "paid" as any,
+          paidAt: recognizedAt,
+          paidVia,
+          memo: memo || intent.memo || null
+        }
+      });
+    } else if (!intent.memo && memo) {
+      await prisma.paymentIntent.update({
+        where: { id: intentId },
+        data: { memo }
+      });
+    }
+
+    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    return { sale: null, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
 
   const memo = intent.memo || (options.rail === "manual_lightning" ? `CBX-${intent.id.slice(-6).toUpperCase()}` : null);
@@ -11615,7 +13076,9 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
       status: "pending" as any,
       purpose: "CONTENT_PURCHASE" as any,
       subjectType: "CONTENT" as any,
-      subjectId
+      subjectId,
+      receiptToken: crypto.randomBytes(24).toString("hex"),
+      receiptTokenExpiresAt: new Date(Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000)
     }
   });
 
@@ -11653,39 +13116,37 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
     if (!onchain && !onchainReason) onchainReason = "On-chain not configured";
   }
 
-  let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
-  try {
-    const invoice = await createLightningInvoice(amountSats, `Contentbox ${subjectId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
-    if (invoice) lightning = invoice;
-  } catch (e: any) {
-    app.log.warn({ err: e }, "lnbits invoice failed; continuing with on-chain only");
-  }
-
-  if (onchain?.address || lightning?.bolt11) {
+  if (onchain?.address) {
     await prisma.paymentIntent.update({
       where: { id: intent.id },
       data: {
-        onchainAddress: onchain?.address || null,
-        onchainDerivationIndex: onchain?.derivationIndex ?? null,
-        bolt11: lightning?.bolt11 || null,
-        providerId: lightning?.providerId || null,
-        lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null
+        onchainAddress: onchain.address,
+        onchainDerivationIndex: onchain?.derivationIndex ?? null
       }
     });
   }
 
+  let refreshedIntent = await ensureOrRotateLightningInvoiceForIntent(intent.id).catch(() => intent);
+  if (refreshedIntent.id !== intent.id) refreshedIntent = intent;
+
   return reply.send({
     ok: true,
     intentId: intent.id,
-    status: intent.status,
+    status: refreshedIntent.status,
     onchain: onchain ? { address: onchain.address } : null,
-    lightning: lightning ? { bolt11: lightning.bolt11, expiresAt: lightning.expiresAt } : null,
+    lightning: refreshedIntent.bolt11
+      ? {
+          bolt11: refreshedIntent.bolt11,
+          expiresAt: refreshedIntent.lightningExpiresAt ? refreshedIntent.lightningExpiresAt.toISOString() : null
+        }
+      : null,
     onchainReason
   });
 });
 
 async function getPaymentsReadiness(userId: string) {
   const productTier = resolveProductTier().productTier;
+  const paymentsMode = getPaymentsMode(productTier);
   if (productTier === "basic") {
     const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
     let lightningReady = false;
@@ -11704,6 +13165,53 @@ async function getPaymentsReadiness(userId: string) {
       ready: lightningReady,
       lightning: { ready: lightningReady, reason: lightningReason },
       onchain: { ready: false, reason: "NOT_SUPPORTED_BASIC" }
+    };
+  }
+
+  if (paymentsMode === "node") {
+    const lndStatus = await getLightningNodeConfigStatus(prisma as any);
+    let lightningReady = false;
+    let lightningReason: string | null = "NODE_NOT_CONFIGURED";
+    if (!lndStatus.endpoint) {
+      lightningReason = "NODE_ENDPOINT_MISSING";
+    } else if (!lndStatus.hasMacaroon) {
+      lightningReason = "NODE_NOT_CONFIGURED";
+    } else if (!lndStatus.decryptOk) {
+      lightningReason = "NODE_KEY_MISMATCH";
+    } else {
+      try {
+        const lndReadiness = await getLightningReadiness(prisma as any);
+        if (lndReadiness.nodeReachable) {
+          lightningReady = true;
+          lightningReason = null;
+        } else {
+          lightningReady = false;
+          lightningReason = "NODE_UNREACHABLE";
+        }
+      } catch {
+        lightningReady = false;
+        lightningReason = "NODE_UNREACHABLE";
+      }
+    }
+
+    let onchainReady = false;
+    let onchainReason: string | null = "NOT_CONFIGURED";
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
+    if (payoutMethod) {
+      const identity = await prisma.identity.findFirst({
+        where: { payoutMethodId: payoutMethod.id, userId }
+      });
+      if (identity?.value) {
+        onchainReady = true;
+        onchainReason = null;
+      }
+    }
+
+    return {
+      mode: "node",
+      ready: lightningReady || onchainReady,
+      lightning: { ready: lightningReady, reason: lightningReason },
+      onchain: { ready: onchainReady, reason: onchainReason }
     };
   }
 
@@ -11749,7 +13257,7 @@ async function getPaymentsReadiness(userId: string) {
   }
 
   return {
-    mode: getPaymentsMode(),
+    mode: paymentsMode,
     ready: lightningReady || onchainReady,
     lightning: { ready: lightningReady, reason: lightningReason },
     onchain: { ready: onchainReady, reason: onchainReason }
@@ -11762,7 +13270,570 @@ app.get("/api/payments/readiness", { preHandler: requireAuth }, async (req: any,
   return reply.send(readiness);
 });
 
-app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any) => {
+function normalizeLightningNetwork(value: unknown): "mainnet" | "testnet" | "regtest" | null {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "mainnet" || v === "bitcoin") return "mainnet";
+  if (v === "testnet" || v === "testnet3") return "testnet";
+  if (v === "regtest") return "regtest";
+  return null;
+}
+
+async function readMultipartPartBuffer(part: any, maxBytes = 1024 * 1024) {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of part.file) {
+    const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += b.length;
+    if (total > maxBytes) throw new Error("uploaded file too large");
+    chunks.push(b);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function parseLightningAdminRequest(req: any) {
+  const isMultipart = typeof req.isMultipart === "function" ? req.isMultipart() : false;
+  if (!isMultipart) {
+    throw new Error("multipart/form-data required");
+  }
+
+  let restUrl = "";
+  let networkRaw: unknown = "";
+  let macaroonBase64 = "";
+  let tlsCertPem: string | null = null;
+
+  for await (const part of req.parts()) {
+    if (part.type === "file") {
+      const field = String(part.fieldname || "");
+      if (field === "macaroonFile" || field === "macaroon") {
+        const buf = await readMultipartPartBuffer(part, 512 * 1024);
+        macaroonBase64 = buf.toString("base64");
+      } else if (field === "tlsCertFile" || field === "tlsCert") {
+        const buf = await readMultipartPartBuffer(part, 512 * 1024);
+        tlsCertPem = buf.toString("utf8");
+      } else {
+        // drain unknown file parts to avoid hanging requests
+        await readMultipartPartBuffer(part, 512 * 1024).catch(() => {});
+      }
+      continue;
+    }
+
+    const field = String(part.fieldname || "");
+    const value = typeof part.value === "string" ? part.value : String(part.value ?? "");
+    if (field === "restUrl") restUrl = value.trim();
+    if (field === "network") networkRaw = value;
+  }
+
+  return { restUrl, networkRaw, macaroonBase64, tlsCertPem };
+}
+
+async function probeLightningDiscoverCandidate(restUrl: string): Promise<LightningDiscoveryCandidate | null> {
+  const target = `${restUrl.replace(/\/$/, "")}/v1/getinfo`;
+  try {
+    const res = await fetchWithTimeout(target, { method: "GET", headers: { Accept: "application/json" } as any } as any, 1500);
+    const text = await res.text();
+    let body: any = null;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+
+    return interpretLightningDiscoveryHttpProbe({ restUrl, status: res.status, text, json: body });
+  } catch (e: any) {
+    return interpretLightningDiscoveryError(restUrl, e);
+  }
+}
+
+function lightningDiscoveryTargets(): string[] {
+  const ports = [8080, 10009, 8443];
+  const hosts = ["127.0.0.1", "localhost"];
+  const out: string[] = [];
+  for (const host of hosts) {
+    for (const port of ports) {
+      out.push(`https://${host}:${port}`);
+      out.push(`http://${host}:${port}`);
+    }
+  }
+
+  const hints = [
+    String(process.env.LND_REST_URL || "").trim(),
+    String(process.env.CONTENTBOX_LND_REST_URL || "").trim()
+  ].filter(Boolean);
+  for (const h of hints) out.push(h.replace(/\/v1\/getinfo$/i, "").replace(/\/$/, ""));
+  return Array.from(new Set(out));
+}
+
+app.get("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    return reply.send(await getLightningNodeConfigMeta(prisma as any));
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/external-claims/beatify/node", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const status = await getBeatifyNodeBadgeStatus(req);
+    const conf = await readBeatifyNodeProof();
+    return reply.send({
+      linked: status.linked,
+      proofUrlSet: Boolean(status.proofUrlSet),
+      valid: status.valid,
+      revoked: status.revoked,
+      lastCheck: status.lastCheck || null,
+      reason: status.reason || null,
+      beatifyHandle: normalizeBeatifyHandle(conf.beatifyHandle),
+      proofUrl: asString(conf.proofUrl || "").trim() || null,
+      signatureId: asString(conf.signatureId || "").trim() || null,
+      revokedAt: conf.revokedAt || null,
+      publicProofText: conf.publicProofText || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/node/set-proof", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { proofUrl?: string; beatifyHandle?: string };
+    const proofUrlRaw = asString(body.proofUrl || "").trim();
+    const proofUrl = proofUrlRaw || null;
+    if (!proofUrl) return badRequest(reply, "invalid proofUrl");
+    const beatifyHandle = normalizeBeatifyHandle(body.beatifyHandle);
+    const signatureId = extractSignatureIdFromProofUrl(proofUrl) || null;
+    const next: BeatifyNodeProofConfig = {
+      proofUrl,
+      beatifyHandle,
+      signatureId,
+      revokedAt: null,
+      setAt: Date.now(),
+      publicProofText: null
+    };
+    const existing = await readBeatifyNodeProof();
+    next.publicProofText = existing.publicProofText || null;
+    await writeBeatifyNodeProof(next);
+    beatifyProofCache.clear();
+    const status = await getBeatifyNodeBadgeStatus(req);
+    return reply.send({
+      linked: status.linked,
+      proofUrlSet: Boolean(status.proofUrlSet),
+      valid: status.valid,
+      revoked: status.revoked,
+      lastCheck: status.lastCheck || null,
+      reason: status.reason || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/profile-text", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { publicProofText?: string };
+    const trimmed = asString(body.publicProofText || "").trim();
+    if (trimmed.length > 4000) return badRequest(reply, "publicProofText too long (max 4000 chars)");
+    const conf = await readBeatifyNodeProof();
+    await writeBeatifyNodeProof({
+      ...conf,
+      publicProofText: trimmed || null
+    });
+    return reply.send({ ok: true, publicProofText: trimmed || null });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/node/revoke", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    await writeBeatifyNodeProof({ ...conf, revokedAt: Date.now() });
+    beatifyProofCache.clear();
+    const status = await getBeatifyNodeBadgeStatus(req);
+    return reply.send({
+      linked: status.linked,
+      proofUrlSet: Boolean(status.proofUrlSet),
+      valid: status.valid,
+      revoked: status.revoked,
+      lastCheck: status.lastCheck || null,
+      reason: status.reason || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/external-claims/beatify/profile", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    return reply.send({
+      beatifyHandle: normalizeBeatifyHandle(conf.beatifyHandle),
+      proofUrl: asString(conf.proofUrl || "").trim() || null,
+      signatureId: asString(conf.signatureId || "").trim() || null,
+      publicProofText: conf.publicProofText || null,
+      revokedAt: conf.revokedAt || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/profile", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { beatifyHandle?: string; proofUrl?: string; publicProofText?: string };
+    const conf = await readBeatifyNodeProof();
+    const beatifyHandle = body.beatifyHandle === undefined ? normalizeBeatifyHandle(conf.beatifyHandle) : normalizeBeatifyHandle(body.beatifyHandle);
+    const proofUrl = body.proofUrl === undefined ? (asString(conf.proofUrl || "").trim() || null) : (asString(body.proofUrl || "").trim() || null);
+    const signatureId = proofUrl ? (extractSignatureIdFromProofUrl(proofUrl) || null) : null;
+    const trimmed = body.publicProofText === undefined ? (conf.publicProofText || null) : (asString(body.publicProofText || "").trim() || null);
+    if (trimmed && trimmed.length > 4000) return badRequest(reply, "publicProofText too long (max 4000 chars)");
+
+    await writeBeatifyNodeProof({
+      proofUrl,
+      beatifyHandle,
+      signatureId,
+      publicProofText: trimmed,
+      revokedAt: conf.revokedAt || null,
+      setAt: conf.setAt || Date.now()
+    });
+    return reply.send({
+      beatifyHandle,
+      proofUrl,
+      signatureId,
+      publicProofText: trimmed,
+      revokedAt: conf.revokedAt || null
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/external-claims/beatify/revoke", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const conf = await readBeatifyNodeProof();
+    await writeBeatifyNodeProof({ ...conf, revokedAt: Date.now() });
+    const status = await getBeatifyNodeBadgeStatus(req);
+    return reply.send({
+      beatifyHandle: normalizeBeatifyHandle(conf.beatifyHandle),
+      proofUrl: asString(conf.proofUrl || "").trim() || null,
+      signatureId: asString(conf.signatureId || "").trim() || null,
+      publicProofText: conf.publicProofText || null,
+      revokedAt: Date.now(),
+      linked: status.linked,
+      valid: status.valid
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/config/status", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    const status = await getLightningNodeConfigStatus(prisma as any);
+    return reply.send({
+      configured: status.configured,
+      hasTlsCert: status.hasTlsCert,
+      hasMacaroon: status.hasMacaroon,
+      decryptOk: status.decryptOk,
+      endpoint: status.endpoint,
+      network: status.network,
+      lastUpdated: status.lastUpdated,
+      lastTestedAt: status.lastTestedAt,
+      lastStatus: status.lastStatus,
+      lastError: status.lastError,
+      warnings: status.warnings
+    });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+// Quick curl test:
+// curl -X POST http://127.0.0.1:4000/api/admin/lightning/discover -H "Authorization: Bearer <JWT>"
+app.post("/api/admin/lightning/discover", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    const candidates = (
+      await Promise.all(lightningDiscoveryTargets().map((u) => probeLightningDiscoverCandidate(u)))
+    ).filter((x): x is LightningDiscoveryCandidate => Boolean(x));
+
+    const deduped = Array.from(new Map(candidates.map((c) => [c.restUrl, c])).values());
+    if (!deduped.length) return reply.send({ ok: false, error: "No local LND REST endpoint found at default ports." });
+    return reply.send({ ok: true, candidates: deduped });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/readiness", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    const readiness = await getLightningReadiness(prisma as any);
+    return reply.send(readiness);
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/channel-guidance", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    return reply.send({ ok: true, steps: getLightningChannelGuidanceSteps() });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/peers/suggestions", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  try {
+    const limitRaw = Number((req.query || {}).limit ?? 20);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
+    const out = await getPeerSuggestions(prisma as any, { limit, probeTop: 12 });
+    return reply.send({ status: "ok", peers: out.peers, meta: out.meta });
+  } catch (e: any) {
+    const message = String(e?.message || e || "");
+    if (message.startsWith("NODE_NOT_CONFIGURED:") || message === "NODE_NOT_CONFIGURED") {
+      const reason = message.split(":")[1] || "NODE_NOT_CONFIGURED";
+      return reply.code(400).send({ status: "error", error: "NOT_CONFIGURED", reason });
+    }
+    if (message.startsWith("NOT_READY:") || message === "NOT_READY") {
+      const reason = message.split(":")[1] || "PEER_SUGGESTIONS_UNAVAILABLE";
+      return reply.code(503).send({ status: "error", error: "NOT_READY", reason });
+    }
+    return reply.code(500).send({ status: "error", error: message });
+  }
+});
+
+app.post("/api/admin/lightning/peers/probe", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { pubkey?: string; hostPort?: string };
+    const pubkey = asString(body.pubkey || "").trim();
+    const hostPort = asString(body.hostPort || "").trim();
+    if (!pubkey) return badRequest(reply, "pubkey required");
+    if (!hostPort) return badRequest(reply, "hostPort required");
+    const result = await probePeer(prisma as any, { pubkey, hostPort });
+    return reply.send({ status: "ok", ...result });
+  } catch (e: any) {
+    const code = String(e?.message || "");
+    if (code === "INVALID_PUBKEY" || code === "INVALID_HOSTPORT") return badRequest(reply, code);
+    if (code.startsWith("CONNECT_") || code === "NOT_CONNECTED_AFTER_CONNECT") {
+      return reply.code(502).send({ status: "error", error: "Peer unreachable right now. Pick another.", reason: code });
+    }
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/open-channel", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { peerPubKey?: string; capacitySats?: number | string; peerHost?: string | null };
+    const peerPubKey = asString(body.peerPubKey || "").trim();
+    const capacitySats = Math.floor(Number(body.capacitySats || 0));
+    const peerHost = body.peerHost == null ? null : asString(body.peerHost).trim() || null;
+    if (!peerPubKey) return badRequest(reply, "peerPubKey required");
+    if (!Number.isFinite(capacitySats) || capacitySats <= 0) return badRequest(reply, "capacitySats required");
+
+    const result = await openLightningChannel(prisma as any, { peerPubKey, capacitySats, host: peerHost });
+    return reply.send(result);
+  } catch (e: any) {
+    const code = String(e?.message || "");
+    if (code === "INVALID_PUBKEY" || code === "INVALID_HOSTPORT") return badRequest(reply, code);
+    if (code === "MIN_CHAN_SIZE") return reply.code(400).send({ status: "error", error: "Channel amount is below peer minimum.", reason: code });
+    if (code === "INSUFFICIENT_FUNDS") return reply.code(400).send({ status: "error", error: "Insufficient wallet balance for this channel.", reason: code });
+    if (code === "WALLET_LOCKED") return reply.code(400).send({ status: "error", error: "Wallet is locked. Unlock LND and retry.", reason: code });
+    if (code === "NOT_SYNCED") return reply.code(502).send({ status: "error", error: "Node is not synced yet. Wait for sync and retry.", reason: code });
+    if (code === "PEER_REJECTED") return reply.code(502).send({ status: "error", error: "Peer rejected this channel request. Pick another peer.", reason: code });
+    if (code === "PEER_OFFLINE") return reply.code(502).send({ status: "error", error: "Peer appears offline right now. Pick another.", reason: code });
+    if (code === "PEER_NOT_READY" || code === "peer_not_ready" || code === "connect_cooldown") {
+      return reply.code(502).send({ status: "error", error: "Peer unreachable right now. Pick another.", reason: "PEER_NOT_READY" });
+    }
+    if (code.startsWith("CONNECT_")) return reply.code(502).send({ status: "error", error: "Peer unreachable right now. Pick another.", reason: code });
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.post("/api/admin/lightning/channel-status", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { channelId?: string; peerPubKey?: string | null };
+    const channelId = asString(body.channelId || "").trim();
+    const peerPubKey = body.peerPubKey == null ? null : asString(body.peerPubKey).trim() || null;
+    if (!channelId && !peerPubKey) return badRequest(reply, "channelId or peerPubKey required");
+    const result = await getLightningChannelStatus(prisma as any, { channelId, peerPubKey });
+    return reply.send(result);
+  } catch (e: any) {
+    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/admin/lightning/channels", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    const out = await getLightningChannels(prisma as any);
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND channels right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.get("/api/admin/lightning/balances", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    const out = await getLightningBalances(prisma as any);
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND balances right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.get("/api/admin/lightning/receive-capacity", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    const out = await getLightningReceiveCapacity(prisma as any);
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND receive capacity right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.get("/api/admin/lightning/invoices", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  try {
+    const limitRaw = Number((req.query || {}).limit ?? 50);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 50;
+    const out = await getLightningInvoices(prisma as any, { limit });
+    return reply.send(out);
+  } catch (e: any) {
+    const msg = String(e?.message || e || "");
+    if (msg.includes("not configured")) return reply.code(400).send({ error: msg });
+    if (msg.includes("LND ")) {
+      return reply.code(502).send({ error: "Failed to query LND invoices right now. Check Lightning node connectivity." });
+    }
+    return reply.code(500).send({ error: msg });
+  }
+});
+
+app.post("/api/admin/lightning/close-channel", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  try {
+    const body = (req.body ?? {}) as { channelPoint?: string; force?: boolean };
+    const channelPoint = asString(body.channelPoint || "").trim();
+    const force = Boolean(body.force);
+    if (!channelPoint) return badRequest(reply, "channelPoint required");
+    if (!parseChannelPoint(channelPoint)) return badRequest(reply, "Invalid channelPoint. Expected txid:index");
+
+    const out = await closeLightningChannel(prisma as any, { channelPoint, force });
+    return reply.send(out);
+  } catch (e: any) {
+    const code = String(e?.message || "");
+    if (code === "INVALID_CHANNEL_POINT") return badRequest(reply, "Invalid channelPoint. Expected txid:index");
+    if (code === "PEER_OFFLINE") {
+      return reply.code(502).send({ status: "error", error: "PEER_OFFLINE", message: "Peer appears offline or unreachable right now." });
+    }
+    if (code === "CHANNEL_NOT_FOUND") {
+      return reply.code(502).send({ status: "error", error: "CHANNEL_NOT_FOUND", message: "Channel not found on this node." });
+    }
+    if (code === "ALREADY_CLOSING") {
+      return reply.code(502).send({ status: "error", error: "ALREADY_CLOSING", message: "This channel is already closing." });
+    }
+    if (code === "UNKNOWN") {
+      return reply.code(500).send({ status: "error", error: "UNKNOWN", message: "LND returned an unexpected error while closing channel." });
+    }
+    return reply.code(500).send({ status: "error", error: code || String(e || "Unknown error") });
+  }
+});
+
+app.post("/api/admin/lightning/test", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  try {
+    parsed = await parseLightningAdminRequest(req);
+  } catch (e: any) {
+    return badRequest(reply, String(e?.message || e));
+  }
+  const restUrl = parsed.restUrl;
+  const network = normalizeLightningNetwork(parsed.networkRaw);
+  const macaroonBase64 = parsed.macaroonBase64;
+  const tlsCertPem = parsed.tlsCertPem;
+  if (!restUrl) return badRequest(reply, "restUrl required");
+  if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
+  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+  try {
+    const u = new URL(restUrl);
+    app.log.info(
+      {
+        endpoint: `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ""}`,
+        protocolUsed: u.protocol.replace(":", ""),
+        restPort: u.port || null,
+        tlsLen: (tlsCertPem || "").length || 0,
+        macaroonLen: macaroonBase64.length
+      },
+      "lightning.config.test"
+    );
+  } catch {}
+
+  const result = await testLightningNodeConnection({ restUrl, network, macaroonBase64, tlsCertPem });
+  if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
+  return reply.send({
+    ok: true,
+    info: {
+      alias: result.info.alias || "",
+      version: result.info.version || "",
+      identityPubkey: result.info.identityPubkey || ""
+    }
+  });
+});
+
+app.post("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
+  let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
+  try {
+    parsed = await parseLightningAdminRequest(req);
+  } catch (e: any) {
+    return badRequest(reply, String(e?.message || e));
+  }
+  const restUrl = parsed.restUrl;
+  const network = normalizeLightningNetwork(parsed.networkRaw);
+  const macaroonBase64 = parsed.macaroonBase64;
+  const tlsCertPem = parsed.tlsCertPem;
+  if (!restUrl) return badRequest(reply, "restUrl required");
+  if (!network) return badRequest(reply, "network must be mainnet, testnet, or regtest");
+  if (!macaroonBase64) return badRequest(reply, "macaroonFile required");
+  try {
+    const u = new URL(restUrl);
+    app.log.info(
+      {
+        endpoint: `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ""}`,
+        protocolUsed: u.protocol.replace(":", ""),
+        restPort: u.port || null,
+        tlsLen: (tlsCertPem || "").length || 0,
+        macaroonLen: macaroonBase64.length
+      },
+      "lightning.config.save"
+    );
+  } catch {}
+
+  try {
+    const result = await saveLightningNodeConfig(prisma as any, { restUrl, network, macaroonBase64, tlsCertPem });
+    if (!result.ok) return reply.send({ ok: false, error: result.error || "Connection test failed" });
+    return reply.send({ ok: true });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+app.delete("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
+  try {
+    await deleteLightningNodeConfig(prisma as any);
+    return reply.send({ ok: true });
+  } catch (e: any) {
+    return reply.code(500).send({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contents = await prisma.contentItem.findMany({
     where: { ownerUserId: userId },
@@ -11810,7 +13881,7 @@ app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: 
     }));
 });
 
-app.get("/api/revenue/sales", { preHandler: requireAuth }, async (req: any) => {
+app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
   const sales = await prisma.sale.findMany({
     where: { sellerUserId: userId },
@@ -11844,68 +13915,61 @@ function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reas
   return { lightning, onchain };
 }
 
-app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const contents = await prisma.contentItem.findMany({
-    where: { ownerUserId: userId },
-    select: { id: true }
-  });
-  const contentIds = contents.map((c) => c.id);
-
-  const settlements = await prisma.settlement.findMany({
-    where: { contentId: { in: contentIds } }
-  });
-
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  let salesSats = 0n;
-  let salesSatsLast30d = 0n;
-  const seriesMap = new Map<string, bigint>();
-
-  for (const s of settlements) {
-    const amt = BigInt(s.netAmountSats as any);
-    salesSats += amt;
-    if (s.createdAt >= since) {
-      salesSatsLast30d += amt;
-      const key = s.createdAt.toISOString().slice(0, 10);
-      const prev = seriesMap.get(key) || 0n;
-      seriesMap.set(key, prev + amt);
+  const intents = await prisma.paymentIntent.findMany({
+    where: {
+      purpose: "CONTENT_PURCHASE" as any,
+      content: { ownerUserId: userId }
+    },
+    select: {
+      amountSats: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      paidAt: true,
+      lightningExpiresAt: true
     }
-  }
-
-  const revenueSeries: Array<{ date: string; amountSats: string }> = [];
-  for (let i = 29; i >= 0; i -= 1) {
-    const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
-    const key = d.toISOString().slice(0, 10);
-    revenueSeries.push({ date: key, amountSats: (seriesMap.get(key) || 0n).toString() });
-  }
+  });
+  const computed = computeFinanceOverviewFromIntents({
+    now,
+    intents: intents.map((i) => ({
+      amountSats: BigInt(i.amountSats as any),
+      status: String(i.status || ""),
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt,
+      paidAt: i.paidAt || null,
+      lightningExpiresAt: i.lightningExpiresAt || null
+    }))
+  });
 
   // Reuse readiness logic
   const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
   const health = { lightning: lnd, onchain };
+  req.log.info(
+    {
+      sellerUserId: userId,
+      from: since.toISOString(),
+      to: now.toISOString(),
+      matchedPaymentIntents: intents.length,
+      paidCount: computed.totals.invoicesPaid,
+      pendingCount: computed.totals.invoicesPending,
+      salesSats: computed.totals.salesSats
+    },
+    "finance.overview computed"
+  );
 
   return reply.send({
-    totals: {
-      salesSats: salesSats.toString(),
-      salesSatsLast30d: salesSatsLast30d.toString(),
-      invoicesTotal: 0,
-      invoicesPaid: 0,
-      invoicesPending: 0,
-      invoicesFailed: 0,
-      invoicesExpired: 0,
-      paymentsReceivedSats: "0",
-      paymentsPendingSats: "0",
-      paymentsReceivedCount: 0,
-      paymentsPendingCount: 0,
-      paymentsLast30d: 0
-    },
-    revenueSeries,
+    totals: computed.totals,
+    revenueSeries: computed.revenueSeries,
     health,
     lastUpdatedAt: new Date().toISOString()
   });
 });
 
-app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = (me?.email || "").toLowerCase();
@@ -11985,15 +14049,15 @@ app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, repl
   });
 });
 
-app.get("/finance/payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
   return reply.send({ items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null });
 });
 
-app.get("/finance/transactions", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/finance/transactions", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
   return reply.send({ items: [], cursor: null });
 });
 
-app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/finance/audit/export", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const [overview, royalties, payouts, transactions] = await Promise.all([
     (await (async () => {
@@ -12023,7 +14087,7 @@ app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, r
   });
 });
 
-app.get("/finance/payment-rails", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/finance/payment-rails", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
   const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
 
   const rails: any[] = [];
@@ -12063,7 +14127,7 @@ app.get("/finance/payment-rails", { preHandler: requireAuth }, async (_req: any,
   return reply.send(rails);
 });
 
-app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/finance/payment-rails/:id/test_connection", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const id = asString((req.params as any).id);
   if (id === "lightning") {
     const res = await lndHealthCheck();
@@ -12075,6 +14139,179 @@ app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth
   }
   return reply.code(404).send({ error: "Unknown rail" });
 });
+
+function lndRHashB64FromProviderId(providerId?: string | null): string | null {
+  const p = String(providerId || "").trim();
+  if (!p.startsWith("lnd:")) return null;
+  const v = p.slice("lnd:".length).trim();
+  return v || null;
+}
+
+function normalizeRemoteInvoiceState(input: unknown): "SETTLED" | "OPEN" | "ACCEPTED" | "CANCELED" | "UNKNOWN" {
+  const s = String(input || "").trim().toUpperCase();
+  if (s === "SETTLED" || s === "PAID") return "SETTLED";
+  if (s === "OPEN") return "OPEN";
+  if (s === "ACCEPTED") return "ACCEPTED";
+  if (s === "CANCELED" || s === "CANCELLED" || s === "EXPIRED") return "CANCELED";
+  return "UNKNOWN";
+}
+
+function pickIntentRail(intent: any): "manual_lightning" | "provider_invoice" | "node_invoice" | "onchain" {
+  if (intent.providerId?.startsWith("lnd:")) return "node_invoice";
+  if (intent.providerId) return "provider_invoice";
+  if (intent.onchainAddress) return "onchain";
+  return "manual_lightning";
+}
+
+const invoiceIntentSingleFlight = new SingleFlight();
+
+async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
+  return await invoiceIntentSingleFlight.do(`intent-invoice:${intentId}`, async () => {
+    const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+    if (!intent) throw new Error("PaymentIntent not found");
+    if (intent.status === "paid") return intent;
+
+    const memo = `Contentbox ${intent.subjectId.slice(0, 8)} ${String(intent.manifestSha256 || "").slice(0, 8)}`;
+    const hasExisting = Boolean(intent.bolt11 && intent.providerId);
+
+    if (hasExisting && intent.providerId?.startsWith("lnd:")) {
+      try {
+        const chk = await checkLightningInvoice(prisma as any, intent.providerId);
+        const st = normalizeRemoteInvoiceState((chk as any)?.state);
+        if (chk.paid || st === "SETTLED") return intent;
+        if (st === "OPEN" || st === "ACCEPTED") return intent;
+        if (st === "CANCELED") {
+          // rotate below
+        } else {
+          return intent;
+        }
+      } catch {
+        const createdAtMs = intent.createdAt ? new Date(intent.createdAt).getTime() : 0;
+        const ageMs = createdAtMs > 0 ? Date.now() - createdAtMs : Number.MAX_SAFE_INTEGER;
+        if (ageMs < 2 * 60 * 1000) return intent;
+      }
+    } else if (hasExisting) {
+      return intent;
+    }
+
+    const created = await createLightningInvoice(prisma as any, intent.amountSats, memo);
+    if (!created) return intent;
+    const minExpiryMs = Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000;
+    const existingExpiryMs = intent.receiptTokenExpiresAt ? new Date(intent.receiptTokenExpiresAt).getTime() : 0;
+    const nextExpiry = existingExpiryMs >= minExpiryMs ? new Date(existingExpiryMs) : new Date(minExpiryMs);
+    await prisma.paymentIntent.update({
+      where: { id: intent.id },
+      data: {
+        bolt11: created.bolt11,
+        providerId: created.providerId,
+        lightningExpiresAt: created.expiresAt ? new Date(created.expiresAt) : null,
+        receiptToken: intent.receiptToken || crypto.randomBytes(24).toString("hex"),
+        receiptTokenExpiresAt: nextExpiry
+      }
+    });
+    return (await prisma.paymentIntent.findUnique({ where: { id: intent.id } })) || intent;
+  });
+}
+
+async function settlePaymentIntentFromRails(intentId: string) {
+  const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
+  if (!intent) return null;
+
+  if (intent.status === "paid") {
+    try {
+      await finalizePurchase(intent.id, prisma);
+    } catch {}
+    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+    return { intent: updated || intent, paid: true, paidVia: updated?.paidVia || intent.paidVia || null };
+  }
+
+  let paidVia: "lightning" | "onchain" | null = null;
+  let paidAt: string | null = null;
+  let onchainUpdate: { txid?: string | null; vout?: number | null; confirmations?: number | null } = {};
+
+  if (intent.providerId && lndRHashB64FromProviderId(intent.providerId)) {
+    const res = await checkLightningInvoice(prisma as any, intent.providerId);
+    if (res.paid) {
+      paidVia = "lightning";
+      paidAt = res.paidAt || new Date().toISOString();
+    } else {
+      const state = normalizeRemoteInvoiceState((res as any)?.state);
+      if (state === "CANCELED") {
+        await ensureOrRotateLightningInvoiceForIntent(intent.id);
+      }
+    }
+  }
+
+  if (!paidVia && intent.onchainAddress) {
+    const res = await checkOnchainPayment(intent.onchainAddress, intent.amountSats, ONCHAIN_MIN_CONFS);
+    if (res.paid) {
+      paidVia = "onchain";
+      paidAt = new Date().toISOString();
+      onchainUpdate = { txid: res.txid || null, vout: res.vout ?? null, confirmations: res.confirmations ?? ONCHAIN_MIN_CONFS };
+    } else if (res.confirmations !== undefined) {
+      onchainUpdate = { confirmations: res.confirmations };
+    }
+  }
+
+  if (paidVia) {
+    await prisma.$transaction(async (tx) => {
+      const updatedIntent = await tx.paymentIntent.update({
+        where: { id: intent.id },
+        data: {
+          status: "paid" as any,
+          paidVia: paidVia as any,
+          paidAt: paidAt ? new Date(paidAt) : intent.paidAt,
+          onchainTxid: onchainUpdate.txid ?? intent.onchainTxid,
+          onchainVout: onchainUpdate.vout ?? intent.onchainVout,
+          confirmations: onchainUpdate.confirmations ?? intent.confirmations
+        }
+      });
+
+      const buyerId = buyerIdFromIntent(updatedIntent);
+      if (buyerId) {
+        const existing = await tx.entitlement.findFirst({
+          where: { buyerId, contentId: updatedIntent.contentId },
+          orderBy: { grantedAt: "asc" }
+        });
+        if (existing) {
+          await tx.entitlement.update({
+            where: { id: existing.id },
+            data: { paymentIntentId: updatedIntent.id }
+          });
+        } else {
+          await tx.entitlement.create({
+            data: {
+              buyerId,
+              buyerUserId: updatedIntent.buyerUserId,
+              contentId: updatedIntent.contentId,
+              manifestSha256: updatedIntent.manifestSha256 || "",
+              paymentIntentId: updatedIntent.id
+            }
+          });
+        }
+      }
+    });
+    const finalized = await finalizePaymentIntent(intent.id, { rail: pickIntentRail(intent) });
+    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+    return {
+      intent: updated || intent,
+      paid: true,
+      paidVia,
+      paidAt,
+      finalized
+    };
+  }
+
+  if (onchainUpdate.confirmations !== undefined) {
+    await prisma.paymentIntent.update({
+      where: { id: intent.id },
+      data: { confirmations: onchainUpdate.confirmations ?? intent.confirmations }
+    });
+  }
+
+  const refreshed = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+  return { intent: refreshed || intent, paid: false, paidVia: null, paidAt: null };
+}
 
 app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser | undefined)?.sub || null;
@@ -12089,30 +14326,31 @@ app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: a
     if (!content || content.ownerUserId !== userId) return forbidden(reply);
   }
   if (!userId) {
-    const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
-    if (!content || content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+    if (!authorizeIntentByReceiptToken(req, intent, Date.now())) return notFound(reply, "Not found");
   }
 
+  const refreshed = intent.status === "pending" ? await ensureOrRotateLightningInvoiceForIntent(intent.id).catch(() => intent) : intent;
   return reply.send({
-    id: intent.id,
-    status: intent.status,
-    paidVia: intent.paidVia,
-    amountSats: intent.amountSats.toString(),
-    purpose: intent.purpose,
-    subjectType: intent.subjectType,
-    subjectId: intent.subjectId,
-    manifestSha256: intent.manifestSha256,
-    paidAt: intent.paidAt ? intent.paidAt.toISOString() : null,
-    onchain: intent.onchainAddress
+    id: refreshed.id,
+    status: refreshed.status,
+    paidVia: refreshed.paidVia,
+    amountSats: refreshed.amountSats.toString(),
+    purpose: refreshed.purpose,
+    subjectType: refreshed.subjectType,
+    subjectId: refreshed.subjectId,
+    manifestSha256: refreshed.manifestSha256,
+    paidAt: refreshed.paidAt ? refreshed.paidAt.toISOString() : null,
+    receiptTokenExpiresAt: refreshed.receiptTokenExpiresAt ? refreshed.receiptTokenExpiresAt.toISOString() : null,
+    onchain: refreshed.onchainAddress
       ? {
-          address: intent.onchainAddress,
-          txid: intent.onchainTxid,
-          vout: intent.onchainVout,
-          confirmations: intent.confirmations
+          address: refreshed.onchainAddress,
+          txid: refreshed.onchainTxid,
+          vout: refreshed.onchainVout,
+          confirmations: refreshed.confirmations
         }
       : null,
-    lightning: intent.bolt11
-      ? { bolt11: intent.bolt11, expiresAt: intent.lightningExpiresAt ? intent.lightningExpiresAt.toISOString() : null }
+    lightning: refreshed.bolt11
+      ? { bolt11: refreshed.bolt11, expiresAt: refreshed.lightningExpiresAt ? refreshed.lightningExpiresAt.toISOString() : null }
       : null
   });
 });
@@ -12130,92 +14368,31 @@ app.post("/api/payments/intents/:id/refresh", { preHandler: optionalAuth }, asyn
     if (!content || content.ownerUserId !== userId) return forbidden(reply);
   }
   if (!userId) {
-    const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
-    if (!content || content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+    if (!authorizeIntentByReceiptToken(req, intent, Date.now())) return notFound(reply, "Not found");
   }
 
-  if (intent.status === "paid") {
-    try {
-      await finalizePurchase(intent.id, prisma);
-    } catch {}
-    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+  try {
+    const refreshed = await settlePaymentIntentFromRails(intent.id);
+    if (!refreshed) return notFound(reply, "PaymentIntent not found");
+    if (refreshed.paid) {
+      return reply.send({
+        ok: true,
+        status: "paid",
+        paidVia: refreshed.paidVia,
+        paidAt: refreshed.paidAt,
+        receiptToken: (refreshed as any)?.finalized?.receiptToken || refreshed.intent.receiptToken || null,
+        receiptTokenExpiresAt: refreshed.intent.receiptTokenExpiresAt ? refreshed.intent.receiptTokenExpiresAt.toISOString() : null
+      });
+    }
     return reply.send({
       ok: true,
-      status: intent.status,
-      paidAt: intent.paidAt?.toISOString() || null,
-      receiptToken: updated?.receiptToken || null,
-      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
+      status: refreshed.intent.status,
+      paidVia: refreshed.intent.paidVia,
+      confirmations: refreshed.intent.confirmations ?? null
     });
+  } catch (e: any) {
+    return reply.code(400).send({ error: String(e?.message || e) });
   }
-
-  let paidVia: "lightning" | "onchain" | null = null;
-  let paidAt: string | null = null;
-  let onchainUpdate: { txid?: string | null; vout?: number | null; confirmations?: number | null } = {};
-
-  if (intent.providerId) {
-    try {
-      const res = await checkLightningInvoice(intent.providerId);
-      if (res.paid) {
-        paidVia = "lightning";
-        paidAt = res.paidAt || new Date().toISOString();
-      }
-    } catch (e: any) {
-      return reply.code(400).send({ error: String(e?.message || e) });
-    }
-  }
-
-  if (!paidVia && intent.onchainAddress) {
-    try {
-      const res = await checkOnchainPayment(intent.onchainAddress, intent.amountSats, ONCHAIN_MIN_CONFS);
-      if (res.paid) {
-        paidVia = "onchain";
-        paidAt = new Date().toISOString();
-        onchainUpdate = { txid: res.txid || null, vout: res.vout ?? null, confirmations: res.confirmations ?? ONCHAIN_MIN_CONFS };
-      } else if (res.confirmations !== undefined) {
-        onchainUpdate = { confirmations: res.confirmations };
-      }
-    } catch (e: any) {
-      return reply.code(400).send({ error: String(e?.message || e) });
-    }
-  }
-
-  if (paidVia) {
-    await prisma.paymentIntent.update({
-      where: { id: intent.id },
-      data: {
-        paidVia: paidVia as any,
-        paidAt: paidAt ? new Date(paidAt) : intent.paidAt,
-        onchainTxid: onchainUpdate.txid ?? intent.onchainTxid,
-        onchainVout: onchainUpdate.vout ?? intent.onchainVout,
-        confirmations: onchainUpdate.confirmations ?? intent.confirmations
-      }
-    });
-
-    const rail = intent.providerId
-      ? PAYMENT_PROVIDER.kind === "lnd"
-        ? "node_invoice"
-        : "provider_invoice"
-      : "node_invoice";
-    const finalized = await finalizePaymentIntent(intent.id, { rail });
-    const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
-    return reply.send({
-      ok: true,
-      status: "paid",
-      paidVia,
-      paidAt,
-      receiptToken: finalized?.receiptToken || updated?.receiptToken || null,
-      receiptTokenExpiresAt: updated?.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null
-    });
-  }
-
-  if (onchainUpdate.confirmations !== undefined) {
-    await prisma.paymentIntent.update({
-      where: { id: intent.id },
-      data: { confirmations: onchainUpdate.confirmations ?? intent.confirmations }
-    });
-  }
-
-  return reply.send({ ok: true, status: intent.status, paidVia: intent.paidVia, confirmations: onchainUpdate.confirmations ?? intent.confirmations });
 });
 
 app.post("/api/payments/intents/:intentId/mark-paid", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -13116,6 +15293,10 @@ async function start() {
 
   // Ensure core payout methods exist (prevents silent failures on /api/me/payout)
   async function ensurePayoutMethods() {
+    if (!isAdvancedDb()) {
+      app.log.info("ensurePayoutMethods.skip_basic_db");
+      return;
+    }
     const methods: Prisma.PayoutMethodCreateInput[] = [
       { code: "manual", displayName: "Manual payout", isEnabled: true, isVisible: true, sortOrder: 10 },
       { code: "lightning_address", displayName: "Lightning Address", isEnabled: true, isVisible: true, sortOrder: 20 },
