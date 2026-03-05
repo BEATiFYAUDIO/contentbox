@@ -3350,11 +3350,19 @@ app.get("/api/proofs/content/:contentId", { preHandler: requireAuth }, async (re
  * AUTH
  */
 app.get("/auth/recovery/status", async (_req, reply) => {
+  if (!isAdvancedDb()) {
+    return reply.send({ recoveryAvailable: false });
+  }
   const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { recoveryKeyHash: true } });
   return reply.send({ recoveryAvailable: Boolean(user?.recoveryKeyHash) });
 });
 
 app.post("/auth/recovery/reset", async (req, reply) => {
+  if (!isAdvancedDb()) {
+    return reply
+      .code(409)
+      .send({ code: "recovery_not_configured", reason: "Recovery is not configured in basic mode." });
+  }
   if (!rateLimit(req, "auth.recovery", 5, 5 * 60_000)) {
     return reply.code(429).send({ error: "Too many attempts. Try again shortly." });
   }
@@ -3433,11 +3441,11 @@ app.post("/auth/signup", async (req, reply) => {
       displayName: body.displayName?.trim() || null,
       passwordHash
     },
-    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true, recoveryKeyHash: true }
+    select: { id: true, email: true, displayName: true, createdAt: true, tokenVersion: true }
   });
 
   let recoveryKey: string | null = null;
-  if (userCount === 0 && !user.recoveryKeyHash) {
+  if (isAdvancedDb() && userCount === 0) {
     recoveryKey = generateRecoveryKey();
     const recoveryKeyHash = hashRecoveryKey(recoveryKey);
     await prisma.user.update({
