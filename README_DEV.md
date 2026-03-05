@@ -1,5 +1,13 @@
 # ContentBox P2P Dev Runbook
 
+## First run
+
+Use the authoritative quickstart:
+
+- `docs/QUICKSTART.md`
+
+Always use a pinned tag/commit from release notes, not `main`.
+
 ## Requirements
 - Node.js + npm (no root package.json; installs are per app)
 - Postgres (local or remote)
@@ -83,42 +91,13 @@ curl http://127.0.0.1:4000/api/capabilities
 - `PREVIEW_MAX_BYTES=5000000` (default)
 
 ## LND Lightning (LND REST)
-Required env vars (server-side only):
-```
-LND_REST_URL=https://127.0.0.1:8080
-LND_MACAROON_HEX=...
-LND_TLS_CERT_PATH=/path/to/tls.cert
-```
-Optional:
-```
-LND_TLS_CERT_PEM="-----BEGIN CERTIFICATE-----..."
-```
+Use the dashboard Lightning setup wizard (upload `tls.cert` + `admin.macaroon`) per:
 
-Quick start (one command):
-```bash
-cd apps/api
-npm run lnd:setup
-npm run lnd:doctor
-```
+- `docs/QUICKSTART.md`
 
-If you run the API via systemd/docker/pm2, set env there. The scripts will pick up process.env.
-If you prefer file-based env, create `apps/api/.env.local` with the LND_* values.
+Direct LND env wiring is optional for service-managed deployments only.
 
-Common LND file locations:
-- TLS cert: `~/.lnd/tls.cert`
-- Invoice macaroon:
-  - `~/.lnd/data/chain/bitcoin/mainnet/invoices.macaroon`
-  - `~/.lnd/data/chain/bitcoin/testnet/invoices.macaroon`
-  - `~/.lnd/data/chain/bitcoin/regtest/invoices.macaroon`
-
-Validation scripts (safe, no secrets printed):
-```bash
-cd apps/api
-npm run lnd:validate
-npm run lnd:doctor
-```
-
-## Payments (LND) Quickstart
+## Payments (LND) Quickstart (manual env path)
 ```bash
 cd apps/api
 # set these in apps/api/.env.local (do NOT commit)
@@ -128,8 +107,7 @@ LND_REST_URL=https://127.0.0.1:8080
 LND_TLS_CERT_PATH=/home/<user>/.lnd/tls.cert
 LND_MACAROON_HEX=<hex>
 
-# restart API and verify public origin
-npm run api:restart-health
+# restart API and verify health
 curl -s http://127.0.0.1:4000/health
 ```
 
@@ -152,21 +130,12 @@ Docs:
 - docs/payments/buy-links-and-endpoints.md
 - docs/payments/splits-roadmap.md
 
-## End-to-end smoke test (buy flow)
+## Mode smoke tests
 ```bash
 cd apps/api
-CONTENT_ID=<contentId> npm run smoke:buy
+npm run smoke:basic
+npm run smoke:advanced
 ```
-Optional auto-pay (requires lncli + funded wallet):
-```bash
-AUTO_PAY=true CONTENT_ID=<contentId> npm run smoke:buy
-```
-Notes:
-- For public (unauth) flow, the content must be **published** and storefront enabled.
-- To test as the owner, pass a token:
-  `AUTH_TOKEN=<jwt> CONTENT_ID=<contentId> npm run smoke:buy`
-  - Mint a dev token (prints to stdout):
-    `npm run auth:mint-dev-token`
 
 ## LAN test (two machines)
 1) Start seller API on Machine A.
