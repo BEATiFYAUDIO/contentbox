@@ -208,6 +208,15 @@ $schemaPath = "prisma/schema.sqlite.prisma"
 if ($dbMode -eq "advanced") { $schemaPath = "prisma/schema.prisma" }
 npx prisma validate --schema $schemaPath
 npx prisma generate --schema $schemaPath
+if ($dbMode -eq "basic") {
+  npx prisma db push --schema $schemaPath
+} else {
+  if ((Test-Path "prisma/migrations") -and ((Get-ChildItem "prisma/migrations" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)) {
+    npx prisma migrate deploy --schema $schemaPath
+  } else {
+    npx prisma db push --schema $schemaPath
+  }
+}
 Pop-Location
 
 Push-Location $dashDir
