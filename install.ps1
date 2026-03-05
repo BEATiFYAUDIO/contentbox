@@ -136,9 +136,13 @@ function Prompt-InstallCloudflared {
   New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
   $versionLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CLOUDFLARED_VERSION=" } | Select-Object -First 1)
-  $version = $versionLine -replace "^CLOUDFLARED_VERSION=", ""
-  $version = ($version | Select-Object -First 1).ToString().Trim('"')
-  if (-not $version) { $version = "latest" }
+  $version = ($versionLine -replace "^CLOUDFLARED_VERSION=", "" | Select-Object -First 1)
+  if ($null -eq $version) {
+    $version = "latest"
+  } else {
+    $version = $version.ToString().Trim('"')
+    if (-not $version) { $version = "latest" }
+  }
   if ($version -eq "latest") {
     $base = "https://github.com/cloudflare/cloudflared/releases/latest/download"
   } else {
