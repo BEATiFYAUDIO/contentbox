@@ -12,13 +12,13 @@ function Fail($msg) {
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail "Missing required command: node" }
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Fail "Missing required command: npm" }
 
-Write-Host "[install] Node: $(node -v)"
-Write-Host "[install] npm:  $(npm -v)"
+Write-Output "[install] Node: $(node -v)"
+Write-Output "[install] npm:  $(npm -v)"
 
 if (-not (Get-Command cloudflared -ErrorAction SilentlyContinue)) {
-  Write-Host "[install] cloudflared not found in PATH."
-  Write-Host "[install] Public Link can download a managed helper tool after you approve the prompt."
-  Write-Host "[install] (Optional) You can still install cloudflared system-wide if preferred."
+  Write-Output "[install] cloudflared not found in PATH."
+  Write-Output "[install] Public Link can download a managed helper tool after you approve the prompt."
+  Write-Output "[install] (Optional) You can still install cloudflared system-wide if preferred."
 }
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -33,15 +33,15 @@ $dashEnvExample = Join-Path $dashDir ".env.example"
 if (-not (Test-Path $apiEnv)) {
   if (-not (Test-Path $apiEnvExample)) { Fail "Missing $apiEnvExample" }
   Copy-Item $apiEnvExample $apiEnv
-  Write-Host "[install] Created $apiEnv from example."
-  Write-Host "[install] Edit $apiEnv (DATABASE_URL) if needed."
+  Write-Output "[install] Created $apiEnv from example."
+  Write-Output "[install] Edit $apiEnv (DATABASE_URL) if needed."
 }
 
 if (-not (Test-Path $dashEnv)) {
   if (-not (Test-Path $dashEnvExample)) { Fail "Missing $dashEnvExample" }
   Copy-Item $dashEnvExample $dashEnv
-  Write-Host "[install] Created $dashEnv from example."
-  Write-Host "[install] Set VITE_API_URL to localhost by default."
+  Write-Output "[install] Created $dashEnv from example."
+  Write-Output "[install] Set VITE_API_URL to localhost by default."
 }
 
 if ($Lan) {
@@ -52,8 +52,8 @@ if ($Lan) {
   } else {
     Add-Content -Path $apiEnv -Value "CONTENTBOX_BIND=public"
   }
-  Write-Host "[install] LAN mode enabled (CONTENTBOX_BIND=public)."
-  Write-Host "[install] If LAN access fails, allow tcp/4000 in your firewall."
+  Write-Output "[install] LAN mode enabled (CONTENTBOX_BIND=public)."
+  Write-Output "[install] If LAN access fails, allow tcp/4000 in your firewall."
 }
 
 function Set-EnvLine($path, $key, $value) {
@@ -74,23 +74,23 @@ if (-not ($envText -match "^JWT_SECRET=") -or ($envText -match "^JWT_SECRET=chan
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
   $jwt = ($bytes | ForEach-Object { $_.ToString("x2") }) -join ""
   Set-EnvLine $apiEnv "JWT_SECRET" $jwt
-  Write-Host "[install] Generated JWT_SECRET."
+  Write-Output "[install] Generated JWT_SECRET."
 }
 
 if (-not ($envText -match "^CONTENTBOX_ROOT=")) {
   $rootPath = Join-Path $HOME "contentbox-data"
   Set-EnvLine $apiEnv "CONTENTBOX_ROOT" "`"$rootPath`""
-  Write-Host "[install] Set CONTENTBOX_ROOT to $rootPath"
+  Write-Output "[install] Set CONTENTBOX_ROOT to $rootPath"
 }
 
 if (-not ($envText -match "^PUBLIC_MODE=")) {
   Set-EnvLine $apiEnv "PUBLIC_MODE" "quick"
-  Write-Host "[install] Set PUBLIC_MODE=quick (default)."
+  Write-Output "[install] Set PUBLIC_MODE=quick (default)."
 }
 
 if (-not ($envText -match "^DB_MODE=")) {
   Set-EnvLine $apiEnv "DB_MODE" "basic"
-  Write-Host "[install] Set DB_MODE=basic (default)."
+  Write-Output "[install] Set DB_MODE=basic (default)."
 }
 
 $envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
@@ -105,7 +105,7 @@ if ($dbMode -eq "basic") {
   if (-not $rootVal) { $rootVal = Join-Path $HOME "contentbox-data" }
   $sqliteUrl = "file:$rootVal/contentbox.db"
   Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
-  Write-Host "[install] Using SQLite for basic mode."
+  Write-Output "[install] Using SQLite for basic mode."
 }
 
 Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
@@ -125,11 +125,11 @@ function Prompt-InstallCloudflared {
   $dest = Join-Path $binDir "cloudflared.exe"
   if (Test-Path $dest) { return }
 
-  Write-Host ""
-  Write-Host "Public Link helper tool (optional)"
-  Write-Host "This will download a small helper tool into:"
-  Write-Host "  $binDir"
-  Write-Host "It can be removed anytime."
+  Write-Output ""
+  Write-Output "Public Link helper tool (optional)"
+  Write-Output "This will download a small helper tool into:"
+  Write-Output "  $binDir"
+  Write-Output "It can be removed anytime."
   $ans = Read-Host "Download now? (y/N)"
   if ($ans -notmatch '^(y|Y|yes|YES)$') { return }
 
@@ -155,15 +155,15 @@ function Prompt-InstallCloudflared {
     $url = "$base/cloudflared-windows-amd64.exe"
   }
   if (-not $url) {
-    Write-Host "[install] Unsupported platform/arch for cloudflared download."
+    Write-Output "[install] Unsupported platform/arch for cloudflared download."
     return
   }
 
-  Write-Host "[install] Downloading helper tool..."
+  Write-Output "[install] Downloading helper tool..."
   try {
     Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing | Out-Null
   } catch {
-    Write-Host "[install] Download failed."
+    Write-Output "[install] Download failed."
     return
   }
 
@@ -189,7 +189,7 @@ function Prompt-InstallCloudflared {
     $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
   }
 
-  Write-Host "[install] Helper tool installed."
+  Write-Output "[install] Helper tool installed."
 }
 
 Prompt-InstallCloudflared
@@ -223,10 +223,10 @@ Push-Location $dashDir
 npm install
 Pop-Location
 
-Write-Host "[install] Next steps:"
-Write-Host "  Terminal 1: cd apps/api && npm run dev"
-Write-Host "  Terminal 2: cd apps/dashboard && npm run dev"
-Write-Host "  API: http://127.0.0.1:4000"
-Write-Host "  Dashboard: http://127.0.0.1:5173"
-Write-Host "  Public server: http://127.0.0.1:4010 (PUBLIC_PORT)"
-Write-Host "  Quickstart: docs/QUICKSTART.md"
+Write-Output "[install] Next steps:"
+Write-Output "  Terminal 1: cd apps/api && npm run dev"
+Write-Output "  Terminal 2: cd apps/dashboard && npm run dev"
+Write-Output "  API: http://127.0.0.1:4000"
+Write-Output "  Dashboard: http://127.0.0.1:5173"
+Write-Output "  Public server: http://127.0.0.1:4010 (PUBLIC_PORT)"
+Write-Output "  Quickstart: docs/QUICKSTART.md"
