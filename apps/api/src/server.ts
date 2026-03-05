@@ -79,7 +79,7 @@ import { buildCapabilitySet, canLock, canPublicShare, canRequestClearance, canSe
 import { assertCanPublish, evaluatePublishGate } from "./lib/publishGate.js";
 import { dbModeCompatFromStorage, getNodeMode, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
 import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
-import { validateNodeMode, writeNodeConfig } from "./lib/nodeConfig.js";
+import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeConfig.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
@@ -91,6 +91,16 @@ import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
 import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
 import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
+import {
+  assertCanPublish as assertLifecycleCanPublish,
+  assertCanRestore as assertLifecycleCanRestore,
+  assertCanUpload as assertLifecycleCanUpload,
+  evaluatePublicBuyAccess,
+  isArchivedPublished,
+  isPublished,
+  isSaleable,
+  shouldTombstoneOnDelete
+} from "./lib/contentLifecycle.js";
 
 /** ---------- tiny utils (strict TS friendly) ---------- */
 
@@ -1093,6 +1103,24 @@ function requireFeature(featureName: string) {
       reason,
       feature: featureName,
       message: reason
+    });
+  };
+}
+
+function requireAdvancedTier(feature: "lightning" | "revenue" | "finance") {
+  return async (_req: any, reply: any) => {
+    const ctx = getCapabilityContext();
+    if (ctx.productTier !== "basic") return;
+    const reason =
+      feature === "lightning"
+        ? "Lightning admin APIs require Advanced or LAN mode."
+        : feature === "revenue"
+          ? "Revenue APIs require Advanced or LAN mode."
+          : "Finance APIs require Advanced or LAN mode.";
+    return reply.code(403).send({
+      error: "FEATURE_LOCKED",
+      feature,
+      reason
     });
   };
 }
@@ -4209,11 +4237,7 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (
-    content.deletedAt ||
-    String(content.status || "").toLowerCase() !== "published" ||
-    String(content.storefrontStatus || "").toUpperCase() === "DISABLED"
-  ) {
+  if (!isSaleable(content)) {
     return reply.code(409).send({ code: "NOT_FOR_SALE", error: "This content is no longer for sale." });
   }
   await reconcileBuyerEntitlementsFromPurchaseHistory({
@@ -4553,11 +4577,22 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
 
 function getNodeModeStatus() {
   const runtime = resolveRuntimeConfig();
-  const source = runtime.nodeModeSource;
+  const productTierInfo = resolveProductTier();
+  const lockVars: string[] = [];
+  if (runtime.nodeModeSource === "env") lockVars.push("NODE_MODE");
+  if (productTierInfo.source === "env") lockVars.push("PRODUCT_TIER");
+  const tierLocked = lockVars.length > 0;
+  const lockReason = tierLocked
+    ? `Locked by environment variable ${lockVars.join(" and ")}`
+    : "";
   return {
     nodeMode: runtime.nodeMode,
-    source,
-    restartRequired: true
+    nodeModeSource: runtime.nodeModeSource,
+    productTier: productTierInfo.productTier,
+    productTierSource: productTierInfo.source,
+    tierLocked,
+    lockReason,
+    restartRequired: false
   };
 }
 
@@ -4566,11 +4601,12 @@ app.get("/api/node/mode", { preHandler: requireAuth }, async (_req: any, reply: 
 });
 
 app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  const runtime = resolveRuntimeConfig();
-  if (runtime.nodeModeSource === "env") {
+  const modeStatus = getNodeModeStatus();
+  if (modeStatus.tierLocked) {
     return reply.code(403).send({
       error: "NODE_MODE_LOCKED",
-      message: "Mode is locked by server environment settings."
+      reason: modeStatus.lockReason,
+      message: modeStatus.lockReason
     });
   }
   const body = (req.body ?? {}) as { nodeMode?: string };
@@ -4578,6 +4614,7 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   if (!next) return badRequest(reply, "Invalid node mode");
   try {
     await writeNodeConfig(next);
+    await writeProductTier(next);
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to persist node mode", message: String(e?.message || e) });
   }
@@ -6036,7 +6073,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     ...i,
     priceSats: i.priceSats != null ? i.priceSats.toString() : null,
     coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`,
-    tombstoned: Boolean(i.deletedAt) && String(i.status || "").toLowerCase() === "published"
+    tombstoned: isArchivedPublished(i)
   }));
 });
 
@@ -6541,8 +6578,9 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     const ok = await isAcceptedParticipant(userId, contentId);
     if (!ok) return forbidden(reply);
   }
-  if (content.deletedAt) {
-    return reply.code(409).send({ code: "TRASHED_CONTENT", message: "Restore this content before publishing." });
+  const publishGuard = assertLifecycleCanPublish(content);
+  if (!publishGuard.ok) {
+    return reply.code(409).send({ code: publishGuard.code, message: publishGuard.message });
   }
 
   const ctx = getCapabilityContext();
@@ -7867,7 +7905,8 @@ async function handlePublicContentAccess(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+  if (!isPublished(content)) return notFound(reply, "Not found");
+  if (isArchivedPublished(content)) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
   const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   if (publicLinks.length > 1) return notFound(reply, "Not found");
   const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -7915,7 +7954,6 @@ async function handlePublicContent(req: any, reply: any) {
   const content = gated.content;
   const isBasic = resolveProductTier().productTier === "basic";
   if (!isBasic) {
-    if (content.storefrontStatus === "DISABLED" && !gated.entitled) return notFound(reply, "Not found");
     const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
     if (publicLinks.length > 1) return notFound(reply, "Not found");
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -8265,8 +8303,7 @@ async function getPublicOfferGate(
   });
   if (!content) return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
 
-  const isPublished = String(content.status || "").toLowerCase() === "published";
-  const isTombstoned = Boolean(content.deletedAt) && isPublished;
+  const isTombstoned = isArchivedPublished(content);
 
   let entitled = false;
   if (isTombstoned && req && reply) {
@@ -8282,28 +8319,14 @@ async function getPublicOfferGate(
     }
   }
 
-  if (isTombstoned && !entitled) {
+  const access = evaluatePublicBuyAccess(content, entitled);
+  if (access === "saleable") {
+    return { content, allowDraftPreview: false, tombstoned: isTombstoned, entitled };
+  }
+  if (access === "removed") {
     return { content: null, allowDraftPreview: false, tombstoned: true, entitled: false };
   }
-  if (content.deletedAt && !isPublished) {
-    return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
-  }
-
-  let allowDraftPreview = false;
-  if (content.status !== "published") {
-    const links = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
-    if (links.length === 1) {
-      const review = await (prisma as any).clearanceRequest?.findFirst?.({
-        where: { contentLinkId: links[0].id },
-        orderBy: { createdAt: "desc" }
-      });
-      if (review?.reviewGrantedAt) {
-        allowDraftPreview = true;
-      }
-    }
-    if (!allowDraftPreview) return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
-  }
-  return { content, allowDraftPreview, tombstoned: isTombstoned, entitled };
+  return { content: null, allowDraftPreview: false, tombstoned: false, entitled: false };
 }
 
 async function handlePublicAttribution(req: any, reply: any) {
@@ -8440,9 +8463,6 @@ async function handlePublicPreviewFile(req: any, reply: any) {
         allowSharePreview = true;
       }
     }
-    if (content.storefrontStatus === "DISABLED" && !allowReviewPreview && !allowSharePreview && !gated.entitled) {
-      return notFound(reply, "Not found");
-    }
     if (isDerivativeType || publicLinks.length > 0) {
       if (publicLinks.length === 0) return notFound(reply, "Not found");
       if (publicLinks[0].requiresApproval && !publicLinks[0].approvedAt && !allowReviewPreview) return notFound(reply, "Not found");
@@ -8552,7 +8572,7 @@ async function handlePublicCredits(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (content.storefrontStatus === "DISABLED") return notFound(reply, "Not found");
+  if (!isSaleable(content)) return notFound(reply, "Not found");
   const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   if (publicLinks.length > 1) return notFound(reply, "Not found");
   const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -9999,14 +10019,27 @@ async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
+  if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
+    const dbg = await prisma.contentItem.findUnique({
+      where: { id: contentId },
+      select: { status: true, deletedAt: true }
+    });
+    const status = String(dbg?.status || "");
+    const deletedAt = dbg?.deletedAt ? new Date(dbg.deletedAt).toISOString() : null;
+    const saleable = Boolean(dbg && isSaleable(dbg as any));
+    const removed = Boolean(dbg && isArchivedPublished(dbg as any));
+    req.log.info({ contentId, status, deletedAt, saleable, removed }, "buy.gate");
+  }
 
   const gated = await getPublicOfferGate(contentId, req, reply);
-  if (!gated.content) return notFound(reply, "Not found");
-  const content = gated.content;
-  const allowDraftPreview = gated.allowDraftPreview;
-  if (String(content.storefrontStatus || "").toUpperCase() === "DISABLED" && !gated.entitled && !allowDraftPreview) {
-    return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+  if (!gated.content) {
+    if (gated.tombstoned && !gated.entitled) {
+      return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+    }
+    return notFound(reply, "Not found");
   }
+  const content = gated.content;
+  const allowDraftPreview = false;
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest && !allowDraftPreview) return notFound(reply, "Manifest not found");
@@ -10089,11 +10122,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (
-    content.deletedAt ||
-    String(content.status || "").toLowerCase() !== "published" ||
-    String(content.storefrontStatus || "").toUpperCase() === "DISABLED"
-  ) {
+  if (!isSaleable(content)) {
     return reply.code(409).send({ code: "NOT_FOR_SALE", message: "This content is no longer for sale." });
   }
   const buyerSession = await resolveBuyerSession(req, reply);
@@ -10763,13 +10792,11 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
-  if (content.deletedAt && content.status === "published") {
-    return reply.code(409).send({ error: "Removed from store.", code: "TOMBSTONED_CONTENT" });
+  const uploadGuard = assertLifecycleCanUpload(content);
+  if (!uploadGuard.ok) {
+    return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
   }
-  if (content.deletedAt && content.status !== "published") {
-    return reply.code(409).send({ error: "Restore this item from Trash before uploading.", code: "TRASHED_CONTENT" });
-  }
-  if (content.status === "published") {
+  if (isPublished(content)) {
     return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
   }
 
@@ -10941,13 +10968,11 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
-  if (content.deletedAt && content.status === "published") {
-    return reply.code(409).send({ error: "Removed from store.", code: "TOMBSTONED_CONTENT" });
+  const uploadGuard = assertLifecycleCanUpload(content);
+  if (!uploadGuard.ok) {
+    return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
   }
-  if (content.deletedAt && content.status !== "published") {
-    return reply.code(409).send({ error: "Restore this item from Trash before uploading.", code: "TRASHED_CONTENT" });
-  }
-  if (content.status === "published") {
+  if (isPublished(content)) {
     return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
   }
   if (String(content.type || "").toLowerCase() !== "song") {
@@ -11091,12 +11116,12 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
   if (content.ownerUserId !== userId) return forbidden(reply);
 
   const deletedAt = new Date();
-  if (content.status === "published") {
+  if (isPublished(content)) {
     const [entitlementsCount, paidCount] = await prisma.$transaction([
       prisma.entitlement.count({ where: { contentId } }),
       prisma.paymentIntent.count({ where: { contentId, status: "paid" as any } })
     ]);
-    const tombstone = entitlementsCount > 0 || paidCount > 0;
+    const tombstone = shouldTombstoneOnDelete(content, entitlementsCount, paidCount);
     await prisma.contentItem.update({
       where: { id: contentId },
       data: { deletedAt, deletedReason: tombstone ? "tombstone" : "soft" }
@@ -11146,10 +11171,11 @@ app.post("/content/:id/restore", { preHandler: requireAuth }, async (req: any, r
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  if (content.status === "published") {
+  const restoreGuard = assertLifecycleCanRestore(content);
+  if (!restoreGuard.ok) {
     return reply.code(409).send({
-      code: "TOMBSTONED_CONTENT",
-      error: "Published tombstones cannot be restored from Trash."
+      code: restoreGuard.code,
+      error: restoreGuard.message
     });
   }
 
@@ -11165,7 +11191,7 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  if (content.status === "published") {
+  if (isPublished(content)) {
     return reply.code(409).send({
       code: "PUBLISHED_DELETE_BLOCKED",
       error: "Published content cannot be permanently deleted from this action."
@@ -12454,12 +12480,18 @@ async function settlePaymentIntent(paymentIntentId: string) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
   if (!intent) throw new Error("PaymentIntent not found");
   if (intent.status !== "paid") throw new Error("PaymentIntent not paid");
+  const skipSettlement = resolveProductTier().productTier === "basic";
 
   const existing = await prisma.settlement.findUnique({ where: { paymentIntentId } });
   if (existing) return existing;
 
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content) throw new Error("Content not found");
+
+  if (skipSettlement) {
+    console.info("skipped settlement: basic tier", { paymentIntentId: intent.id, contentId: content.id });
+    return null;
+  }
 
   const childSplit = await getLockedSplitForContent(content.id);
   if (!childSplit) throw new Error("Locked child split not found");
@@ -12609,14 +12641,40 @@ type FinalizePaymentIntentOptions = {
 async function finalizePaymentIntent(intentId: string, options: FinalizePaymentIntentOptions) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
   if (!intent) throw new Error("PaymentIntent not found");
+  const skipSettlement = resolveProductTier().productTier === "basic";
 
   const content = await prisma.contentItem.findUnique({ where: { id: intent.contentId } });
   if (!content) throw new Error("Content not found");
 
   const existingSale = await prisma.sale.findUnique({ where: { intentId } });
-  if (intent.status === "paid" && existingSale) {
+  if (intent.status === "paid" && existingSale && !skipSettlement) {
     const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
     return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
+  }
+
+  if (skipSettlement) {
+    const memo = intent.memo || (options.rail === "manual_lightning" ? `CBX-${intent.id.slice(-6).toUpperCase()}` : null);
+    const recognizedAt = intent.paidAt || new Date();
+    if (intent.status !== "paid") {
+      const paidVia = (intent.paidVia || "lightning") as any;
+      await prisma.paymentIntent.update({
+        where: { id: intentId },
+        data: {
+          status: "paid" as any,
+          paidAt: recognizedAt,
+          paidVia,
+          memo: memo || intent.memo || null
+        }
+      });
+    } else if (!intent.memo && memo) {
+      await prisma.paymentIntent.update({
+        where: { id: intentId },
+        data: { memo }
+      });
+    }
+
+    const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    return { sale: null, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
 
   const memo = intent.memo || (options.rail === "manual_lightning" ? `CBX-${intent.id.slice(-6).toUpperCase()}` : null);
@@ -13297,7 +13355,7 @@ function lightningDiscoveryTargets(): string[] {
   return Array.from(new Set(out));
 }
 
-app.get("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     return reply.send(await getLightningNodeConfigMeta(prisma as any));
   } catch (e: any) {
@@ -13460,7 +13518,7 @@ app.post("/api/admin/external-claims/beatify/revoke", { preHandler: requireAuth 
   }
 });
 
-app.get("/api/admin/lightning/config/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/admin/lightning/config/status", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     const status = await getLightningNodeConfigStatus(prisma as any);
     return reply.send({
@@ -13483,7 +13541,7 @@ app.get("/api/admin/lightning/config/status", { preHandler: requireAuth }, async
 
 // Quick curl test:
 // curl -X POST http://127.0.0.1:4000/api/admin/lightning/discover -H "Authorization: Bearer <JWT>"
-app.post("/api/admin/lightning/discover", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.post("/api/admin/lightning/discover", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     const candidates = (
       await Promise.all(lightningDiscoveryTargets().map((u) => probeLightningDiscoverCandidate(u)))
@@ -13497,7 +13555,7 @@ app.post("/api/admin/lightning/discover", { preHandler: requireAuth }, async (_r
   }
 });
 
-app.get("/api/admin/lightning/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/admin/lightning/readiness", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     const readiness = await getLightningReadiness(prisma as any);
     return reply.send(readiness);
@@ -13506,7 +13564,7 @@ app.get("/api/admin/lightning/readiness", { preHandler: requireAuth }, async (_r
   }
 });
 
-app.get("/api/admin/lightning/channel-guidance", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/admin/lightning/channel-guidance", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     return reply.send({ ok: true, steps: getLightningChannelGuidanceSteps() });
   } catch (e: any) {
@@ -13514,18 +13572,27 @@ app.get("/api/admin/lightning/channel-guidance", { preHandler: requireAuth }, as
   }
 });
 
-app.get("/api/admin/lightning/peers/suggestions", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/api/admin/lightning/peers/suggestions", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   try {
     const limitRaw = Number((req.query || {}).limit ?? 20);
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
     const out = await getPeerSuggestions(prisma as any, { limit, probeTop: 12 });
     return reply.send({ status: "ok", peers: out.peers, meta: out.meta });
   } catch (e: any) {
-    return reply.code(500).send({ status: "error", error: String(e?.message || e) });
+    const message = String(e?.message || e || "");
+    if (message.startsWith("NODE_NOT_CONFIGURED:") || message === "NODE_NOT_CONFIGURED") {
+      const reason = message.split(":")[1] || "NODE_NOT_CONFIGURED";
+      return reply.code(400).send({ status: "error", error: "NOT_CONFIGURED", reason });
+    }
+    if (message.startsWith("NOT_READY:") || message === "NOT_READY") {
+      const reason = message.split(":")[1] || "PEER_SUGGESTIONS_UNAVAILABLE";
+      return reply.code(503).send({ status: "error", error: "NOT_READY", reason });
+    }
+    return reply.code(500).send({ status: "error", error: message });
   }
 });
 
-app.post("/api/admin/lightning/peers/probe", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/api/admin/lightning/peers/probe", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   try {
     const body = (req.body ?? {}) as { pubkey?: string; hostPort?: string };
     const pubkey = asString(body.pubkey || "").trim();
@@ -13544,7 +13611,7 @@ app.post("/api/admin/lightning/peers/probe", { preHandler: requireAuth }, async 
   }
 });
 
-app.post("/api/admin/lightning/open-channel", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/api/admin/lightning/open-channel", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   try {
     const body = (req.body ?? {}) as { peerPubKey?: string; capacitySats?: number | string; peerHost?: string | null };
     const peerPubKey = asString(body.peerPubKey || "").trim();
@@ -13572,7 +13639,7 @@ app.post("/api/admin/lightning/open-channel", { preHandler: requireAuth }, async
   }
 });
 
-app.post("/api/admin/lightning/channel-status", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/api/admin/lightning/channel-status", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   try {
     const body = (req.body ?? {}) as { channelId?: string; peerPubKey?: string | null };
     const channelId = asString(body.channelId || "").trim();
@@ -13585,7 +13652,7 @@ app.post("/api/admin/lightning/channel-status", { preHandler: requireAuth }, asy
   }
 });
 
-app.get("/api/admin/lightning/channels", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/admin/lightning/channels", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     const out = await getLightningChannels(prisma as any);
     return reply.send(out);
@@ -13599,7 +13666,7 @@ app.get("/api/admin/lightning/channels", { preHandler: requireAuth }, async (_re
   }
 });
 
-app.get("/api/admin/lightning/balances", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/admin/lightning/balances", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     const out = await getLightningBalances(prisma as any);
     return reply.send(out);
@@ -13613,7 +13680,7 @@ app.get("/api/admin/lightning/balances", { preHandler: requireAuth }, async (_re
   }
 });
 
-app.get("/api/admin/lightning/receive-capacity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/admin/lightning/receive-capacity", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     const out = await getLightningReceiveCapacity(prisma as any);
     return reply.send(out);
@@ -13627,7 +13694,7 @@ app.get("/api/admin/lightning/receive-capacity", { preHandler: requireAuth }, as
   }
 });
 
-app.get("/api/admin/lightning/invoices", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/api/admin/lightning/invoices", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   try {
     const limitRaw = Number((req.query || {}).limit ?? 50);
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 50;
@@ -13643,7 +13710,7 @@ app.get("/api/admin/lightning/invoices", { preHandler: requireAuth }, async (req
   }
 });
 
-app.post("/api/admin/lightning/close-channel", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/api/admin/lightning/close-channel", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   try {
     const body = (req.body ?? {}) as { channelPoint?: string; force?: boolean };
     const channelPoint = asString(body.channelPoint || "").trim();
@@ -13672,7 +13739,7 @@ app.post("/api/admin/lightning/close-channel", { preHandler: requireAuth }, asyn
   }
 });
 
-app.post("/api/admin/lightning/test", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/api/admin/lightning/test", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
   try {
     parsed = await parseLightningAdminRequest(req);
@@ -13712,7 +13779,7 @@ app.post("/api/admin/lightning/test", { preHandler: requireAuth }, async (req: a
   });
 });
 
-app.post("/api/admin/lightning", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (req: any, reply: any) => {
   let parsed: { restUrl: string; networkRaw: unknown; macaroonBase64: string; tlsCertPem: string | null };
   try {
     parsed = await parseLightningAdminRequest(req);
@@ -13749,7 +13816,7 @@ app.post("/api/admin/lightning", { preHandler: requireAuth }, async (req: any, r
   }
 });
 
-app.delete("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.delete("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
     await deleteLightningNodeConfig(prisma as any);
     return reply.send({ ok: true });
@@ -13758,7 +13825,7 @@ app.delete("/api/admin/lightning", { preHandler: requireAuth }, async (_req: any
   }
 });
 
-app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contents = await prisma.contentItem.findMany({
     where: { ownerUserId: userId },
@@ -13806,7 +13873,7 @@ app.get("/api/revenue/pending-manual", { preHandler: requireAuth }, async (req: 
     }));
 });
 
-app.get("/api/revenue/sales", { preHandler: requireAuth }, async (req: any) => {
+app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
   const sales = await prisma.sale.findMany({
     where: { sellerUserId: userId },
@@ -13840,7 +13907,7 @@ function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reas
   return { lightning, onchain };
 }
 
-app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -13894,7 +13961,7 @@ app.get("/finance/overview", { preHandler: requireAuth }, async (req: any, reply
   });
 });
 
-app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = (me?.email || "").toLowerCase();
@@ -13974,15 +14041,15 @@ app.get("/finance/royalties", { preHandler: requireAuth }, async (req: any, repl
   });
 });
 
-app.get("/finance/payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
   return reply.send({ items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null });
 });
 
-app.get("/finance/transactions", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/finance/transactions", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
   return reply.send({ items: [], cursor: null });
 });
 
-app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.get("/finance/audit/export", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const [overview, royalties, payouts, transactions] = await Promise.all([
     (await (async () => {
@@ -14012,7 +14079,7 @@ app.get("/finance/audit/export", { preHandler: requireAuth }, async (req: any, r
   });
 });
 
-app.get("/finance/payment-rails", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/finance/payment-rails", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
   const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
 
   const rails: any[] = [];
@@ -14052,7 +14119,7 @@ app.get("/finance/payment-rails", { preHandler: requireAuth }, async (_req: any,
   return reply.send(rails);
 });
 
-app.post("/finance/payment-rails/:id/test_connection", { preHandler: requireAuth }, async (req: any, reply: any) => {
+app.post("/finance/payment-rails/:id/test_connection", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const id = asString((req.params as any).id);
   if (id === "lightning") {
     const res = await lndHealthCheck();
@@ -15218,6 +15285,10 @@ async function start() {
 
   // Ensure core payout methods exist (prevents silent failures on /api/me/payout)
   async function ensurePayoutMethods() {
+    if (!isAdvancedDb()) {
+      app.log.info("ensurePayoutMethods.skip_basic_db");
+      return;
+    }
     const methods: Prisma.PayoutMethodCreateInput[] = [
       { code: "manual", displayName: "Manual payout", isEnabled: true, isVisible: true, sortOrder: 10 },
       { code: "lightning_address", displayName: "Lightning Address", isEnabled: true, isVisible: true, sortOrder: 20 },
