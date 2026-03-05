@@ -137,7 +137,7 @@ function Prompt-InstallCloudflared {
 
   $versionLine = (Get-Content $apiEnv | Where-Object { $_ -match "^CLOUDFLARED_VERSION=" } | Select-Object -First 1)
   $version = $versionLine -replace "^CLOUDFLARED_VERSION=", ""
-  $version = $version.Trim('"')
+  $version = ($version | Select-Object -First 1).ToString().Trim('"')
   if (-not $version) { $version = "latest" }
   if ($version -eq "latest") {
     $base = "https://github.com/cloudflare/cloudflared/releases/latest/download"
@@ -216,3 +216,4 @@ Write-Host "  Terminal 2: cd apps/dashboard && npm run dev"
 Write-Host "  API: http://127.0.0.1:4000"
 Write-Host "  Dashboard: http://127.0.0.1:5173"
 Write-Host "  Public server: http://127.0.0.1:4010 (PUBLIC_PORT)"
+Write-Host "  Quickstart: docs/QUICKSTART.md"
