@@ -127,10 +127,11 @@ function Prompt-InstallCloudflared {
 
   Write-Output ""
   Write-Output "Public Link helper tool (optional)"
+  Write-Output "Download cloudflared for Public Link feature? (y/N)"
   Write-Output "This will download a small helper tool into:"
   Write-Output "  $binDir"
   Write-Output "It can be removed anytime."
-  $ans = Read-Host "Download now? (y/N)"
+  $ans = Read-Host "Download cloudflared for Public Link feature? (y/N)"
   if ($ans -notmatch '^(y|Y|yes|YES)$') { return }
 
   New-Item -ItemType Directory -Force -Path $binDir | Out-Null
@@ -149,21 +150,32 @@ function Prompt-InstallCloudflared {
     $base = "https://github.com/cloudflare/cloudflared/releases/download/$version"
   }
 
-  $arch = (Get-CimInstance Win32_OperatingSystem).OSArchitecture
-  $url = ""
-  if ($arch -match "64") {
-    $url = "$base/cloudflared-windows-amd64.exe"
+  $archTag = ""
+  $procArch = String($env:PROCESSOR_ARCHITECTURE).ToUpperInvariant()
+  if ($procArch -eq "AMD64" -or $procArch -eq "X86_64") { $archTag = "amd64" }
+  if ($procArch -eq "ARM64") { $archTag = "arm64" }
+  if (-not $archTag -and (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
+    try {
+      $osArch = String((Get-CimInstance Win32_OperatingSystem).OSArchitecture).ToUpperInvariant()
+      if ($osArch -match "ARM64") { $archTag = "arm64" }
+      elseif ($osArch -match "64") { $archTag = "amd64" }
+    } catch {}
   }
-  if (-not $url) {
-    Write-Output "[install] Unsupported platform/arch for cloudflared download."
+  if (-not $archTag) {
+    Write-Output "[install] WARNING: Unsupported platform/arch for cloudflared download."
+    Write-Output "[install] Public Link disabled until cloudflared is installed."
+    Write-Output "[install] Install manually: winget install --id Cloudflare.cloudflared -e"
     return
   }
+  $url = "$base/cloudflared-windows-$archTag.exe"
 
   Write-Output "[install] Downloading helper tool..."
   try {
     Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing | Out-Null
   } catch {
-    Write-Output "[install] Download failed."
+    Write-Output "[install] WARNING: cloudflared download failed."
+    Write-Output "[install] Public Link disabled until cloudflared is installed."
+    Write-Output "[install] Install manually: winget install --id Cloudflare.cloudflared -e"
     return
   }
 
@@ -189,17 +201,25 @@ function Prompt-InstallCloudflared {
     $consent | ConvertTo-Json -Depth 10 | Set-Content -Path $stateFile
   }
 
-  Write-Output "[install] Helper tool installed."
+  Write-Output "[install] cloudflared installed: $dest"
 }
 
 Prompt-InstallCloudflared
 
 $envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
 $rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
+$rootVal = Join-Path $HOME "contentbox-data"
 if ($rootLine) {
   $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
   $rootVal = $rootVal.Trim('"')
   if (-not (Test-Path $rootVal)) { New-Item -ItemType Directory -Force -Path $rootVal | Out-Null }
+}
+$cloudflaredLocal = Join-Path (Join-Path $rootVal ".bin") "cloudflared.exe"
+if ((Get-Command cloudflared -ErrorAction SilentlyContinue) -or (Test-Path $cloudflaredLocal)) {
+  Write-Output "[install] cloudflared installed: $cloudflaredLocal"
+} else {
+  Write-Output "[install] Public Link disabled until cloudflared is installed."
+  Write-Output "[install] Install manually: winget install --id Cloudflare.cloudflared -e"
 }
 
 Push-Location $apiDir
