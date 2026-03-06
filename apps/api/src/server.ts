@@ -9,6 +9,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { Readable } from "node:stream";
 import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
@@ -1143,22 +1144,42 @@ function inferDbUrlProvider(urlRaw: string): "postgresql" | "sqlite" | "unknown"
   return "unknown";
 }
 
-function readGeneratedPrismaProvider(): "postgresql" | "sqlite" | "unknown" {
-  try {
-    const generatedSchema = path.join(process.cwd(), "node_modules", ".prisma", "client", "schema.prisma");
-    const text = fsSync.readFileSync(generatedSchema, "utf8");
-    const m = text.match(/provider\s*=\s*"([^"]+)"/i);
-    const provider = String(m?.[1] || "").toLowerCase();
-    if (provider === "postgresql") return "postgresql";
-    if (provider === "sqlite") return "sqlite";
-  } catch {}
-  return "unknown";
+function readGeneratedPrismaProvider(): {
+  provider: "postgresql" | "sqlite" | "unknown";
+  checkedPaths: string[];
+  foundPath: string | null;
+} {
+  const serverFile = fileURLToPath(import.meta.url);
+  const apiRoot = path.resolve(path.dirname(serverFile), "..");
+  const checkedPaths = [
+    path.join(apiRoot, "node_modules", ".prisma", "client", "schema.prisma"),
+    path.join(apiRoot, "node_modules", "@prisma", "client", "schema.prisma")
+  ];
+
+  for (const generatedSchema of checkedPaths) {
+    try {
+      if (!fsSync.existsSync(generatedSchema)) continue;
+      const text = fsSync.readFileSync(generatedSchema, "utf8");
+      const m = text.match(/provider\s*=\s*"([^"]+)"/i);
+      const provider = String(m?.[1] || "").toLowerCase();
+      if (provider === "postgresql") {
+        return { provider: "postgresql", checkedPaths, foundPath: generatedSchema };
+      }
+      if (provider === "sqlite") {
+        return { provider: "sqlite", checkedPaths, foundPath: generatedSchema };
+      }
+      return { provider: "unknown", checkedPaths, foundPath: generatedSchema };
+    } catch {}
+  }
+
+  return { provider: "unknown", checkedPaths, foundPath: null };
 }
 
 function validatePrismaDatasourceAlignment() {
   const dbUrl = String(process.env.DATABASE_URL || "");
   const urlProvider = inferDbUrlProvider(dbUrl);
-  const generatedProvider = readGeneratedPrismaProvider();
+  const generated = readGeneratedPrismaProvider();
+  const generatedProvider = generated.provider;
   const schemaPath = "prisma/schema.prisma";
 
   if (urlProvider !== "sqlite") {
@@ -1173,7 +1194,11 @@ function validatePrismaDatasourceAlignment() {
   }
   if (generatedProvider === "unknown") {
     throw new Error(
-      `Prisma client not generated. Run: npx prisma generate --schema ${schemaPath}`
+      [
+        `Prisma client not generated. Run: npx prisma generate --schema ${schemaPath}`,
+        `Checked paths: ${generated.checkedPaths.join(", ")}`,
+        generated.foundPath ? `Found file: ${generated.foundPath}` : "Found file: none"
+      ].join(" ")
     );
   }
   if (generatedProvider === "sqlite") return;
