@@ -103,31 +103,27 @@ ensure_contentbox_root() {
   echo "$root_val"
 }
 
-if ! grep -q '^DB_MODE=' "$API_ENV"; then
+if grep -q '^DB_MODE=' "$API_ENV"; then
+  sed -i.bak "s#^DB_MODE=.*#DB_MODE=basic#" "$API_ENV" && rm -f "$API_ENV.bak"
+else
   echo "DB_MODE=basic" >> "$API_ENV"
-  echo "[install] Set DB_MODE=basic (default)."
 fi
-
-DB_MODE_VAL="$(grep '^DB_MODE=' "$API_ENV" | head -n 1 | cut -d= -f2- | tr -d '\"' | tr '[:upper:]' '[:lower:]')"
-if [ -z "$DB_MODE_VAL" ]; then
-  DB_MODE_VAL="basic"
-fi
+echo "[install] Using DB_MODE=basic."
 
 ROOT_VAL="$(ensure_contentbox_root)"
-
-if [ "$DB_MODE_VAL" = "basic" ]; then
-  ROOT_VAL="$REAL_HOME/contentbox-data"
-  if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
-    sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$ROOT_VAL\"#" "$API_ENV" && rm -f "$API_ENV.bak"
-  else
-    echo "CONTENTBOX_ROOT=\"$ROOT_VAL\"" >> "$API_ENV"
-  fi
-  SQLITE_URL="file:${ROOT_VAL}/contentbox.db"
-  if ! grep -q '^DATABASE_URL=' "$API_ENV"; then
-    echo "DATABASE_URL=\"${SQLITE_URL}\"" >> "$API_ENV"
-  fi
-  echo "[install] Using SQLite for basic mode."
+ROOT_VAL="$REAL_HOME/contentbox-data"
+if grep -q '^CONTENTBOX_ROOT=' "$API_ENV"; then
+  sed -i.bak "s#^CONTENTBOX_ROOT=.*#CONTENTBOX_ROOT=\"$ROOT_VAL\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+else
+  echo "CONTENTBOX_ROOT=\"$ROOT_VAL\"" >> "$API_ENV"
 fi
+SQLITE_URL="file:${ROOT_VAL}/contentbox.db"
+if grep -q '^DATABASE_URL=' "$API_ENV"; then
+  sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=\"${SQLITE_URL}\"#" "$API_ENV" && rm -f "$API_ENV.bak"
+else
+  echo "DATABASE_URL=\"${SQLITE_URL}\"" >> "$API_ENV"
+fi
+echo "[install] Using SQLite for basic mode."
 
 if grep -q '^VITE_API_URL=' "$DASH_ENV"; then
   sed -i.bak 's#^VITE_API_URL=.*#VITE_API_URL=http://127.0.0.1:4000#' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
@@ -136,40 +132,6 @@ else
 fi
 if grep -q '^CONTENTBOX_ROOT=' "$DASH_ENV"; then
   sed -i.bak '/^CONTENTBOX_ROOT=/d' "$DASH_ENV" && rm -f "$DASH_ENV.bak"
-fi
-
-setup_local_postgres() {
-  if ! command -v psql >/dev/null 2>&1; then
-    echo "[install] Postgres not found. Please install PostgreSQL to continue."
-    return 1
-  fi
-
-  local target_db="contentbox"
-  local target_user="contentbox"
-  local target_pass="contentbox"
-  local db_url="postgresql://${target_user}:${target_pass}@127.0.0.1:5432/${target_db}"
-
-  local psql_cmd="psql"
-  if command -v sudo >/dev/null 2>&1; then
-    psql_cmd="sudo -u postgres psql"
-  fi
-
-  echo "[install] Ensuring local Postgres user/db..."
-  eval $psql_cmd -h 127.0.0.1 -c "\"DROP DATABASE IF EXISTS ${target_db};\"" >/dev/null 2>&1 || true
-  eval $psql_cmd -h 127.0.0.1 -c "\"DROP USER IF EXISTS ${target_user};\"" >/dev/null 2>&1 || true
-  eval $psql_cmd -h 127.0.0.1 -c "\"CREATE USER ${target_user} WITH PASSWORD '${target_pass}';\"" >/dev/null 2>&1 || return 1
-  eval $psql_cmd -h 127.0.0.1 -c "\"CREATE DATABASE ${target_db} OWNER ${target_user};\"" >/dev/null 2>&1 || return 1
-
-  if grep -q '^DATABASE_URL=' "$API_ENV"; then
-    sed -i.bak "s#^DATABASE_URL=.*#DATABASE_URL=\"${db_url}\"#" "$API_ENV" && rm -f "$API_ENV.bak"
-  else
-    echo "DATABASE_URL=\"${db_url}\"" >> "$API_ENV"
-  fi
-  echo "[install] DATABASE_URL set for local Postgres."
-}
-
-if [[ "${STORAGE:-}" == "postgres" ]] || grep -q '^DATABASE_URL=postgresql://' "$API_ENV"; then
-  setup_local_postgres || true
 fi
 
 prompt_install_cloudflared() {
@@ -324,3 +286,4 @@ echo "  Terminal 2: cd apps/dashboard && npm run dev"
 echo "  API: http://127.0.0.1:4000"
 echo "  Dashboard: http://127.0.0.1:5173"
 echo "  Public server: http://127.0.0.1:${PUBLIC_PORT:-4010} (PUBLIC_PORT)"
+echo "  Quickstart: docs/QUICKSTART.md"

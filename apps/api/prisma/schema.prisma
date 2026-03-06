@@ -4,9 +4,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
-  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 enum ContentType {
@@ -337,7 +336,7 @@ model ApprovalToken {
   expiresAt       DateTime
   usedAt          DateTime?
   decision        String?
-  upstreamRatePercent Decimal? @db.Decimal(10, 3)
+  upstreamRatePercent Decimal?
   createdAt       DateTime @default(now())
 
   contentLink ContentLink @relation(fields: [contentLinkId], references: [id], onDelete: Cascade)
@@ -417,7 +416,7 @@ model SplitParticipant {
   participantUserId String?
   role              String
   roleCode          SplitRole @default(writer)
-  percent           Decimal  @db.Decimal(10, 3)
+  percent           Decimal
   bps               Int       @default(0)
 
   payoutIdentityId String?
@@ -495,7 +494,7 @@ model RemoteInvite {
   contentDeletedAt DateTime?
   splitVersionNum Int?
   role            String?
-  percent         Decimal? @db.Decimal(10, 3)
+  percent         Decimal?
   participantEmail String?
   acceptedAt      DateTime?
   remoteUserId    String?

@@ -59,8 +59,11 @@ Open:
 - Dashboard: `http://127.0.0.1:5173`
 
 Basic mode is the default and works without PostgreSQL or LND.
+Installers always bootstrap SQLite for first run.
 
 ## Upgrade to Advanced (Sovereign Node) (Optional)
+
+Advanced mode upgrades services/readiness (LND, Public Link), not the core database provider.
 
 1. Sign in.
 2. Open **Profile**.
@@ -80,6 +83,12 @@ Optional (power users, Windows):
 powershell -ExecutionPolicy Bypass -File .\apps\api\upgrade-advanced.ps1
 ```
 
+Optional (power users, from `apps/api`):
+
+```bash
+npm run upgrade:advanced
+```
+
 Important:
 - Avoid setting `PRODUCT_TIER` or `NODE_MODE` in env unless you intentionally want to lock the Node Mode toggle.
 
@@ -94,15 +103,10 @@ Important:
   - `apps/dashboard/.env` has `VITE_API_BASE_URL=http://127.0.0.1:4000`
 - If Advanced toggle is disabled, check lock reason shown in Profile (env lock).
 - If Lightning setup fails, verify LND REST endpoint, cert, and macaroon files.
-- If you see a Prisma datasource mismatch (e.g. `DATABASE_URL` is `file:` but Prisma expects Postgres):
-  - Basic mode:
-    - `cd apps/api`
-    - `npx prisma generate --schema prisma/schema.sqlite.prisma`
-    - `npx prisma db push --schema prisma/schema.sqlite.prisma`
-  - Advanced mode:
-    - `cd apps/api`
-    - `npx prisma generate --schema prisma/schema.prisma`
-    - `npx prisma migrate deploy --schema prisma/schema.prisma`
+- If you see a Prisma datasource mismatch:
+  - `cd apps/api`
+  - `npx prisma generate --schema prisma/schema.prisma`
+  - `npx prisma db push --schema prisma/schema.prisma`
 
 ## Diagnostics
 
