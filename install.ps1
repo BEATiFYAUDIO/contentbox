@@ -203,11 +203,17 @@ if ($rootLine) {
 }
 
 Push-Location $apiDir
+Write-Output "[install] Installing API dependencies"
 npm install
 $schemaPath = "prisma/schema.sqlite.prisma"
 if ($dbMode -eq "advanced") { $schemaPath = "prisma/schema.prisma" }
 npx prisma validate --schema $schemaPath
+Write-Output "[install] Generating Prisma client"
 npx prisma generate --schema $schemaPath
+if (-not (Test-Path (Join-Path $apiDir "node_modules/.prisma/client"))) {
+  Fail "Prisma client generation failed. Run: npx prisma generate"
+}
+Write-Output "[install] Syncing database schema"
 if ($dbMode -eq "basic") {
   npx prisma db push --schema $schemaPath
 } else {
@@ -220,6 +226,7 @@ if ($dbMode -eq "basic") {
 Pop-Location
 
 Push-Location $dashDir
+Write-Output "[install] Installing dashboard dependencies"
 npm install
 Pop-Location
 
