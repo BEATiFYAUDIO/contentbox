@@ -59,9 +59,6 @@ export function assertCanPublish(ctx: CapabilityContext, intent: PublishIntent, 
     if (intent.publishKind !== "public_buy_link") {
       throw { code: "basic_public_only", reason: BASIC_SHARE_ONLY_REASON } satisfies PublishGateError;
     }
-    if (intent.forSale && !state.paymentsReady) {
-      throw { code: "wallet_not_configured", reason: WALLET_REASON } satisfies PublishGateError;
-    }
     return { publishKind: intent.publishKind };
   }
 
