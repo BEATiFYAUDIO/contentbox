@@ -1135,6 +1135,48 @@ function isAdvancedDb() {
   return storage === "postgres" && /^postgres(ql)?:\/\//i.test(url);
 }
 
+function inferDbUrlProvider(urlRaw: string): "postgresql" | "sqlite" | "unknown" {
+  const url = String(urlRaw || "").trim().toLowerCase();
+  if (!url) return "unknown";
+  if (/^postgres(ql)?:\/\//.test(url)) return "postgresql";
+  if (/^file:/.test(url)) return "sqlite";
+  return "unknown";
+}
+
+function readGeneratedPrismaProvider(): "postgresql" | "sqlite" | "unknown" {
+  try {
+    const generatedSchema = path.join(process.cwd(), "node_modules", ".prisma", "client", "schema.prisma");
+    const text = fsSync.readFileSync(generatedSchema, "utf8");
+    const m = text.match(/provider\s*=\s*"([^"]+)"/i);
+    const provider = String(m?.[1] || "").toLowerCase();
+    if (provider === "postgresql") return "postgresql";
+    if (provider === "sqlite") return "sqlite";
+  } catch {}
+  return "unknown";
+}
+
+function validatePrismaDatasourceAlignment() {
+  const dbMode = String(process.env.DB_MODE || "basic").trim().toLowerCase() || "basic";
+  const dbUrl = String(process.env.DATABASE_URL || "");
+  const urlProvider = inferDbUrlProvider(dbUrl);
+  const generatedProvider = readGeneratedPrismaProvider();
+
+  if (generatedProvider === "unknown" || urlProvider === "unknown") return;
+  if (generatedProvider === urlProvider) return;
+
+  const schemaPath =
+    dbMode === "advanced" ? "prisma/schema.prisma" : "prisma/schema.sqlite.prisma";
+  throw new Error(
+    [
+      "Prisma datasource mismatch.",
+      `Generated client provider=${generatedProvider}, but DATABASE_URL looks like ${urlProvider}.`,
+      `DB_MODE=${dbMode}.`,
+      `Fix: npx prisma generate --schema ${schemaPath}`,
+      `Then: ${dbMode === "advanced" ? `npx prisma migrate deploy --schema ${schemaPath}` : `npx prisma db push --schema ${schemaPath}`}`
+    ].join(" ")
+  );
+}
+
 function allowMultiUserOverride() {
   const v = String(process.env.CONTENTBOX_ALLOW_MULTI_USER || "").trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes";
@@ -15243,6 +15285,7 @@ app.get("/__whoami", async (req: any, reply: any) => {
 /** ---------- boot ---------- */
 
 async function start() {
+  validatePrismaDatasourceAlignment();
   await ensureDirWritable(CONTENTBOX_ROOT);
   async function preflightDb() {
     if (!isAdvancedDb()) return;
