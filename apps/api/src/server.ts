@@ -1160,7 +1160,9 @@ function readGeneratedPrismaProvider(): {
     try {
       if (!fsSync.existsSync(generatedSchema)) continue;
       const text = fsSync.readFileSync(generatedSchema, "utf8");
-      const m = text.match(/provider\s*=\s*"([^"]+)"/i);
+      // Prefer datasource provider, not generator provider (which is usually "prisma-client-js").
+      const datasourceBlock = text.match(/datasource\s+\w+\s*\{[\s\S]*?\}/i)?.[0] || "";
+      const m = datasourceBlock.match(/provider\s*=\s*"([^"]+)"/i);
       const provider = String(m?.[1] || "").toLowerCase();
       if (provider === "postgresql") {
         return { provider: "postgresql", checkedPaths, foundPath: generatedSchema };
