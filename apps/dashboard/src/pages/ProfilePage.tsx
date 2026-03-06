@@ -23,6 +23,31 @@ type ProfilePageProps = {
   onForceLogin: (message: string) => void;
 };
 
+type NodeModeStatus = {
+  nodeMode: "basic" | "advanced" | "lan";
+  nodeModeSource: string;
+  productTier: "basic" | "advanced" | "lan";
+  productTierSource: string;
+  tierLocked: boolean;
+  lockReason: string;
+  restartRequired: boolean;
+};
+
+type PublicStatus = {
+  cloudflared?: {
+    available?: boolean;
+    managedPath?: string | null;
+    version?: string | null;
+  };
+};
+
+type LightningReadiness = {
+  configured?: boolean;
+  nodeReachable?: boolean;
+  receiveReady?: boolean;
+  hints?: string[];
+};
+
 function extractBeatifyHandle(bio: string | null | undefined): string {
   if (!bio) return "";
   const m = bio.match(/(?:^|\n)\s*beatify\s*:\s*([a-z0-9._-]+)/i);
@@ -45,7 +70,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
   const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
   const paymentsRef = useRef<HTMLDivElement | null>(null);
-  const [modeInfo, setModeInfo] = useState<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean } | null>(null);
+  const [modeInfo, setModeInfo] = useState<NodeModeStatus | null>(null);
   const [modeBusy, setModeBusy] = useState(false);
   const [modeMsg, setModeMsg] = useState<string | null>(null);
   const [showRestart, setShowRestart] = useState(false);
@@ -54,6 +79,9 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectMsg, setReconnectMsg] = useState<string | null>(null);
   const [payoutLoading, setPayoutLoading] = useState(false);
+  const [publicStatus, setPublicStatus] = useState<PublicStatus | null>(null);
+  const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
+  const [advancedSetupError, setAdvancedSetupError] = useState<string | null>(null);
 
   useEffect(() => {
     setBeatifyHandle(extractBeatifyHandle(me?.bio));
@@ -61,9 +89,54 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
 
   useEffect(() => {
     let alive = true;
+    const load = async () => {
+      try {
+        const status = await api<PublicStatus>("/api/public/status", "GET");
+        if (!alive) return;
+        setPublicStatus(status || null);
+      } catch {
+        if (!alive) return;
+        setPublicStatus(null);
+      }
+
+      if (modeInfo?.nodeMode !== "advanced") {
+        if (!alive) return;
+        setLightningReadiness(null);
+        setAdvancedSetupError(null);
+        return;
+      }
+
+      try {
+        const readiness = await api<LightningReadiness>("/api/admin/lightning/readiness", "GET");
+        if (!alive) return;
+        setLightningReadiness(readiness || null);
+        setAdvancedSetupError(null);
+      } catch (e: any) {
+        if (!alive) return;
+        setLightningReadiness(null);
+        const raw = String(e?.message || "");
+        if (raw.includes("FEATURE_LOCKED")) {
+          setAdvancedSetupError("Switch Node Mode to Advanced to configure Lightning.");
+        } else if (raw.includes("NOT_CONFIGURED")) {
+          setAdvancedSetupError("Lightning not configured yet. Open Finance and save LND settings.");
+        } else if (raw.includes("NOT_READY")) {
+          setAdvancedSetupError("Lightning not ready yet. Check node sync and channels.");
+        } else {
+          setAdvancedSetupError("Could not load Lightning readiness.");
+        }
+      }
+    };
+    load();
+    return () => {
+      alive = false;
+    };
+  }, [modeInfo?.nodeMode]);
+
+  useEffect(() => {
+    let alive = true;
     (async () => {
       try {
-        const res = await api<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean }>(`/api/node/mode`, "GET");
+        const res = await api<NodeModeStatus>(`/api/node/mode`, "GET");
         if (!alive) return;
         setModeInfo(res);
       } catch {
@@ -107,7 +180,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const nodeBadge = nodeMode === "advanced" ? "Owner account" : nodeMode === "lan" ? "Shared node account" : "Trial account";
   const beatifyStatus = beatifyHandle ? "UNVERIFIED" : "UNLINKED";
 
-  const modeLocked = modeInfo?.source === "env";
+  const modeLocked = Boolean(modeInfo?.tierLocked);
   const restartCommand = "npm run dev";
   const apiBase = getApiBase();
 
@@ -176,7 +249,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
           </div>
 
           {modeLocked ? (
-            <div className="mt-2 text-xs text-amber-300">Mode is locked by server environment settings.</div>
+            <div className="mt-2 text-xs text-amber-300">{modeInfo?.lockReason || "Mode is locked by server environment settings."}</div>
           ) : null}
 
           <div className="mt-3 grid gap-2 text-sm">
@@ -204,16 +277,16 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                       setModeBusy(true);
                       setModeMsg(null);
                       try {
-                        const res = await api<{ nodeMode: "basic" | "advanced" | "lan"; source: string; restartRequired: boolean }>(
+                        const res = await api<NodeModeStatus>(
                           `/api/node/mode`,
                           "POST",
                           { nodeMode: opt }
                         );
                         setModeInfo(res);
-                        setShowRestart(Boolean(res?.restartRequired));
-                        setModeMsg("Saved. Restart required.");
-                        setPendingMode(opt);
-                        setShowRestartConfirm(true);
+                        setShowRestart(false);
+                        setModeMsg("Saved.");
+                        setPendingMode(null);
+                        setShowRestartConfirm(false);
                         onIdentityRefresh();
                       } catch (e: any) {
                         setModeMsg(e?.message || "Failed to update node mode.");
@@ -235,11 +308,58 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
             })}
           </div>
 
-          {modeInfo?.source ? (
-            <div className="mt-2 text-xs text-neutral-500">Source: {modeInfo.source}</div>
+          {modeInfo ? (
+            <div className="mt-2 text-xs text-neutral-500">
+              Source: mode={modeInfo.nodeModeSource}, tier={modeInfo.productTierSource}
+            </div>
           ) : null}
 
           {modeMsg ? <div className="mt-2 text-xs text-amber-300">{modeMsg}</div> : null}
+
+          <div className="mt-4 rounded-md border border-neutral-800 bg-neutral-950/40 px-3 py-3">
+            <div className="text-xs font-medium text-neutral-200">Advanced setup readiness</div>
+            <div className="mt-2 grid gap-1 text-xs text-neutral-400">
+              <div>
+                Node mode:{" "}
+                <span className={modeInfo?.nodeMode === "advanced" ? "text-emerald-300" : "text-amber-300"}>
+                  {modeInfo?.nodeMode === "advanced" ? "ready" : "switch to Advanced in this panel"}
+                </span>
+              </div>
+              <div>
+                cloudflared:{" "}
+                <span className={publicStatus?.cloudflared?.available ? "text-emerald-300" : "text-amber-300"}>
+                  {publicStatus?.cloudflared?.available ? "ready" : "missing (optional unless you need Public Link)"}
+                </span>
+              </div>
+              <div>
+                LND:{" "}
+                <span
+                  className={
+                    modeInfo?.nodeMode !== "advanced"
+                      ? "text-neutral-400"
+                      : lightningReadiness?.receiveReady
+                        ? "text-emerald-300"
+                        : lightningReadiness?.configured
+                          ? "text-amber-300"
+                          : "text-amber-300"
+                  }
+                >
+                  {modeInfo?.nodeMode !== "advanced"
+                    ? "not checked in Basic mode"
+                    : lightningReadiness?.receiveReady
+                      ? "ready"
+                      : lightningReadiness?.configured
+                        ? "needs channel/liquidity"
+                        : "needs config"}
+                </span>
+              </div>
+              {advancedSetupError ? <div className="text-amber-300">{advancedSetupError}</div> : null}
+              {modeInfo?.nodeMode === "advanced" && lightningReadiness?.hints?.length ? (
+                <div className="text-neutral-500">{lightningReadiness.hints[0]}</div>
+              ) : null}
+              <div className="text-neutral-500">Power users: run <code>apps/api/upgrade-advanced.ps1</code> (Windows).</div>
+            </div>
+          </div>
 
           {showRestart ? (
             <div className="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center gap-2">
