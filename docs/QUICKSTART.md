@@ -83,6 +83,15 @@ Important:
   - `apps/dashboard/.env` has `VITE_API_BASE_URL=http://127.0.0.1:4000`
 - If Advanced toggle is disabled, check lock reason shown in Profile (env lock).
 - If Lightning setup fails, verify LND REST endpoint, cert, and macaroon files.
+- If you see a Prisma datasource mismatch (e.g. `DATABASE_URL` is `file:` but Prisma expects Postgres):
+  - Basic mode:
+    - `cd apps/api`
+    - `npx prisma generate --schema prisma/schema.sqlite.prisma`
+    - `npx prisma db push --schema prisma/schema.sqlite.prisma`
+  - Advanced mode:
+    - `cd apps/api`
+    - `npx prisma generate --schema prisma/schema.prisma`
+    - `npx prisma migrate deploy --schema prisma/schema.prisma`
 
 ## Diagnostics
 
