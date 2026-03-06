@@ -1,6 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
 import { allocateByBps } from "../lib/settlement.js";
+import { resolveProductTier } from "../lib/productTier.js";
 
 function toBps(p: any): number {
   if (typeof p?.bps === "number" && Number.isFinite(p.bps) && p.bps > 0) return Math.floor(p.bps);
@@ -37,6 +38,7 @@ async function getStrictLockedSplitForContent(prisma: PrismaClient, contentId: s
 export async function finalizePurchase(paymentIntentId: string, client?: PrismaClient) {
   const prisma = client ?? new PrismaClient();
   try {
+    const skipSettlement = resolveProductTier().productTier === "basic";
     const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
     if (!intent) throw new Error("PaymentIntent not found");
     if (intent.status !== "paid") throw new Error("PaymentIntent not paid");
@@ -47,14 +49,16 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
     const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
     if (!content) throw new Error("Content not found");
 
-    const childSplit = await getLockedSplitForContent(prisma, contentId);
-    if (!childSplit) throw new Error("Locked child split not found");
+    const childSplit = skipSettlement ? null : await getLockedSplitForContent(prisma, contentId);
+    if (!skipSettlement && !childSplit) throw new Error("Locked child split not found");
 
-    const parents = await prisma.contentLink.findMany({
-      where: { childContentId: contentId },
-      orderBy: { id: "asc" }
-    });
-    if (parents.length > 1) {
+    const parents = skipSettlement
+      ? []
+      : await prisma.contentLink.findMany({
+          where: { childContentId: contentId },
+          orderBy: { id: "asc" }
+        });
+    if (!skipSettlement && parents.length > 1) {
       throw new Error("MULTIPLE_PARENTS_NOT_SUPPORTED");
     }
     const net = BigInt(intent.amountSats);
@@ -74,7 +78,7 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
 
     const childRemainder = net - upstreamAlloc.reduce((s, a) => s + a.amountSats, 0n);
 
-    if (upstreamAlloc.length > 0) {
+    if (!skipSettlement && upstreamAlloc.length > 0) {
       try {
         await prisma.auditEvent.create({
           data: {
@@ -96,38 +100,42 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
 
     const lines: Array<{ participantId?: string | null; participantEmail?: string | null; role?: string | null; amountSats: bigint }> = [];
 
-    const childItems = childSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
-    const childAlloc = allocateByBps(childRemainder, childItems.map((i) => ({ id: i.id, bps: i.bps })));
-    for (const a of childAlloc) {
-      const p = childItems.find((i) => i.id === a.id)?.p;
-      const childRole = upstreamAlloc.length > 0 ? (p?.role ? `derivative:${p.role}` : "derivative") : (p?.role || null);
-      lines.push({
-        participantId: p?.id || null,
-        participantEmail: p?.participantEmail || null,
-        role: childRole,
-        amountSats: a.amountSats
-      });
-    }
-
-    for (const up of upstreamAlloc) {
-      const parentSplit = await getStrictLockedSplitForContent(prisma, up.parentContentId);
-      if (!parentSplit) {
-        const err: any = new Error("Parent split not locked");
-        err.statusCode = 409;
-        err.code = "PARENT_SPLIT_NOT_LOCKED";
-        throw err;
-      }
-
-      const parentItems = parentSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
-      const parentAlloc = allocateByBps(up.amountSats, parentItems.map((i) => ({ id: i.id, bps: i.bps })));
-      for (const a of parentAlloc) {
-        const p = parentItems.find((i) => i.id === a.id)?.p;
+    if (!skipSettlement && childSplit) {
+      const childItems = childSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+      const childAlloc = allocateByBps(childRemainder, childItems.map((i) => ({ id: i.id, bps: i.bps })));
+      for (const a of childAlloc) {
+        const p = childItems.find((i) => i.id === a.id)?.p;
+        const childRole = upstreamAlloc.length > 0 ? (p?.role ? `derivative:${p.role}` : "derivative") : (p?.role || null);
         lines.push({
           participantId: p?.id || null,
           participantEmail: p?.participantEmail || null,
-          role: "upstream",
+          role: childRole,
           amountSats: a.amountSats
         });
+      }
+    }
+
+    if (!skipSettlement) {
+      for (const up of upstreamAlloc) {
+        const parentSplit = await getStrictLockedSplitForContent(prisma, up.parentContentId);
+        if (!parentSplit) {
+          const err: any = new Error("Parent split not locked");
+          err.statusCode = 409;
+          err.code = "PARENT_SPLIT_NOT_LOCKED";
+          throw err;
+        }
+
+        const parentItems = parentSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+        const parentAlloc = allocateByBps(up.amountSats, parentItems.map((i) => ({ id: i.id, bps: i.bps })));
+        for (const a of parentAlloc) {
+          const p = parentItems.find((i) => i.id === a.id)?.p;
+          lines.push({
+            participantId: p?.id || null,
+            participantEmail: p?.participantEmail || null,
+            role: "upstream",
+            amountSats: a.amountSats
+          });
+        }
       }
     }
 
@@ -148,37 +156,41 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
       }
     }
 
-    const existingSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId: intent.id } });
-    if (!existingSettlement) {
-      try {
-        await prisma.settlement.create({
-          data: {
-            contentId,
-            splitVersionId: childSplit.id,
-            netAmountSats: net,
-            paymentIntentId: intent.id,
-            lines: {
-              create: lines.map((l) => ({
-                participantId: l.participantId || null,
-                participantEmail: l.participantEmail || null,
-                role: l.role || null,
-                amountSats: l.amountSats
-              }))
-            }
-          }
-        });
-      } catch (e: any) {
+    if (skipSettlement) {
+      console.info("skipped settlement: basic tier", { paymentIntentId: intent.id, contentId });
+    } else if (childSplit) {
+      const existingSettlement = await prisma.settlement.findUnique({ where: { paymentIntentId: intent.id } });
+      if (!existingSettlement) {
         try {
-          await prisma.auditEvent.create({
+          await prisma.settlement.create({
             data: {
-              userId: content.ownerUserId,
-              action: "settlement.create.failed",
-              entityType: "PaymentIntent",
-              entityId: intent.id,
-              payloadJson: { error: String(e?.message || e) } as any
+              contentId,
+              splitVersionId: childSplit.id,
+              netAmountSats: net,
+              paymentIntentId: intent.id,
+              lines: {
+                create: lines.map((l) => ({
+                  participantId: l.participantId || null,
+                  participantEmail: l.participantEmail || null,
+                  role: l.role || null,
+                  amountSats: l.amountSats
+                }))
+              }
             }
           });
-        } catch {}
+        } catch (e: any) {
+          try {
+            await prisma.auditEvent.create({
+              data: {
+                userId: content.ownerUserId,
+                action: "settlement.create.failed",
+                entityType: "PaymentIntent",
+                entityId: intent.id,
+                payloadJson: { error: String(e?.message || e) } as any
+              }
+            });
+          } catch {}
+        }
       }
     }
 

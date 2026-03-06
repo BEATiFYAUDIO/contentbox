@@ -37,6 +37,13 @@ export type CapabilityReasonContext = {
 const BASIC_REASON = "This feature is not available in the Basic edition.";
 const PAYMENTS_REASON = "Local node payments must be configured to use this feature.";
 const ADVANCED_INACTIVE_REASON = "Advanced requires a permanent named link to activate sovereign features.";
+const SPLITS_REASON = "Splits and royalties require Advanced or LAN mode.";
+const DERIVATIVES_REASON = "Derivatives require Advanced or LAN mode.";
+const INVITE_REASON = "Split invites require Advanced or LAN mode.";
+const LOCK_REASON = "Locking split proofs requires Advanced or LAN mode.";
+const CLEARANCE_REASON = "Clearance requests require Advanced or LAN mode.";
+const PUBLIC_SHARE_REASON = "Public sharing requires Advanced mode with node payments.";
+const PROOFS_REASON = "Proof bundles require Advanced or LAN mode.";
 
 function isAdvancedTier(ctx: CapabilityContext) {
   return ctx.productTier === "advanced";
@@ -122,12 +129,51 @@ export function capabilityReason(
   key: CapabilityReasonKey,
   extra?: CapabilityReasonContext
 ): string {
-  if (ctx.productTier === "basic") return BASIC_REASON;
+  if (ctx.productTier === "basic") {
+    switch (key) {
+      case "splits":
+        return SPLITS_REASON;
+      case "derivatives":
+        return DERIVATIVES_REASON;
+      case "invite":
+        return INVITE_REASON;
+      case "lock":
+        return LOCK_REASON;
+      case "clearance":
+        return CLEARANCE_REASON;
+      case "public_share":
+        return PUBLIC_SHARE_REASON;
+      case "proofs":
+        return PROOFS_REASON;
+      case "publish":
+      default:
+        return BASIC_REASON;
+    }
+  }
   if (isAdvancedTier(ctx) && ctx.paymentsMode !== "node") return PAYMENTS_REASON;
 
   if (isAdvancedTier(ctx) && !ctx.namedReady) return ADVANCED_INACTIVE_REASON;
+  if (extra?.namedMode === "named" && extra?.namedStatus !== "online") return ADVANCED_INACTIVE_REASON;
 
-  return extra ? BASIC_REASON : BASIC_REASON;
+  switch (key) {
+    case "splits":
+      return SPLITS_REASON;
+    case "derivatives":
+      return DERIVATIVES_REASON;
+    case "invite":
+      return INVITE_REASON;
+    case "lock":
+      return LOCK_REASON;
+    case "clearance":
+      return CLEARANCE_REASON;
+    case "public_share":
+      return PUBLIC_SHARE_REASON;
+    case "proofs":
+      return PROOFS_REASON;
+    case "publish":
+    default:
+      return "Feature unavailable in this mode.";
+  }
 }
 
 export function buildCapabilitySet(ctx: CapabilityContext): CapabilitySet {

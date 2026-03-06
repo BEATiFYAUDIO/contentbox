@@ -189,6 +189,8 @@ type SuggestionResult = {
   meta: { cachedGraph: boolean; probed: number };
 };
 
+type PeerSuggestionErrorCode = "NODE_NOT_CONFIGURED" | "NOT_READY";
+
 const TRUSTED_PEER_MIN_FUNDING_SATS: Record<string, number> = {
   // LNBIG (example/placeholder in UI starter list)
   "03d0674b16c5b333c65fbc0146d6f0b58a5b0f3f31b17f4f0de5f2f1f4f7d8b9aa": 200_000,
@@ -601,6 +603,10 @@ async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<Grap
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
   const degree = new Map<string, number>();
+  const skipCounts = {
+    invalidPubkey: 0,
+    noAddress: 0
+  };
   for (const e of edges) {
     const n1 = String(e?.node1_pub || "").toLowerCase();
     const n2 = String(e?.node2_pub || "").toLowerCase();
@@ -611,7 +617,10 @@ async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<Grap
   const candidates: GraphCandidate[] = [];
   for (const n of nodes) {
     const pubkey = String(n?.pub_key || n?.pubKey || "").trim();
-    if (!isValidCompressedPubkey(pubkey)) continue;
+    if (!isValidCompressedPubkey(pubkey)) {
+      skipCounts.invalidPubkey += 1;
+      continue;
+    }
 
     const addresses = Array.isArray(n?.addresses) ? n.addresses : [];
     let selected: string | null = null;
@@ -627,7 +636,10 @@ async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<Grap
       break;
     }
     const hostPort = selected || onionOnly;
-    if (!hostPort) continue;
+    if (!hostPort) {
+      skipCounts.noAddress += 1;
+      continue;
+    }
 
     const lowered = pubkey.toLowerCase();
     const numChannels = Number(n?.num_channels ?? n?.numChannels ?? 0);
@@ -643,7 +655,17 @@ async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<Grap
   }
 
   candidates.sort((a, b) => b.score - a.score || a.pubkey.localeCompare(b.pubkey));
-  return candidates.slice(0, MAX_GRAPH_CANDIDATES);
+  const sliced = candidates.slice(0, MAX_GRAPH_CANDIDATES);
+  try {
+    console.info("[lightning:peer_suggestions:graph]", {
+      upstreamPath: "/v1/graph",
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      candidateCount: sliced.length,
+      skipped: skipCounts
+    });
+  } catch {}
+  return sliced;
 }
 
 async function buildGraphCandidates(lnd: RuntimeLndConfig): Promise<{ candidates: GraphCandidate[]; fromCache: boolean }> {
@@ -823,50 +845,95 @@ export async function getPeerSuggestions(
   input?: { limit?: number; probeTop?: number }
 ): Promise<SuggestionResult> {
   const lnd = await getLndConfig(prisma);
-  if (!lnd) throw new Error("Lightning node not configured");
+  if (!lnd) throw new Error("NODE_NOT_CONFIGURED");
 
   const limit = Math.max(1, Math.min(100, Math.floor(Number(input?.limit ?? 20))));
   const probeTop = Math.max(0, Math.min(12, Math.floor(Number(input?.probeTop ?? 12))));
 
-  let graphRes: { candidates: GraphCandidate[]; fromCache: boolean };
   try {
-    graphRes = await buildGraphCandidates(lnd);
-  } catch {
-    graphRes = { candidates: [], fromCache: false };
-  }
-  const top = graphRes.candidates.slice(0, 50);
-  const toProbe = top.slice(0, probeTop);
-  const probeMap = new Map<string, { reachableNow: boolean; reason?: string }>();
+    const graphRes = await buildGraphCandidates(lnd);
+    const top = graphRes.candidates.slice(0, 50);
+    const toProbe = top.slice(0, probeTop);
+    const probeMap = new Map<string, { reachableNow: boolean; reason?: string }>();
 
-  await runWithConcurrency(toProbe, 2, async (c) => {
-    const p = await probePeer(prisma, { pubkey: c.pubkey, hostPort: c.hostPort, timeoutMs: 2500 });
-    probeMap.set(`${c.pubkey.toLowerCase()}@${c.hostPort.toLowerCase()}`, p);
-    return p;
-  });
+    await runWithConcurrency(toProbe, 2, async (c) => {
+      const p = await probePeer(prisma, { pubkey: c.pubkey, hostPort: c.hostPort, timeoutMs: 2500 });
+      probeMap.set(`${c.pubkey.toLowerCase()}@${c.hostPort.toLowerCase()}`, p);
+      return p;
+    });
 
-  const rows: LightningPeerSuggestion[] = top.map((c) => {
-    const key = `${c.pubkey.toLowerCase()}@${c.hostPort.toLowerCase()}`;
-    const probed = probeMap.get(key);
+    const rows: LightningPeerSuggestion[] = top.map((c) => {
+      const key = `${c.pubkey.toLowerCase()}@${c.hostPort.toLowerCase()}`;
+      const probed = probeMap.get(key);
+      return {
+        pubkey: c.pubkey,
+        alias: c.alias,
+        hostPort: c.hostPort,
+        score: c.score,
+        reachableNow: Boolean(probed?.reachableNow),
+        reason: probed?.reachableNow ? undefined : probed?.reason
+      };
+    });
+
+    rows.sort((a, b) => {
+      if (a.reachableNow !== b.reachableNow) return a.reachableNow ? -1 : 1;
+      if (a.score !== b.score) return b.score - a.score;
+      return (a.alias || a.pubkey).localeCompare(b.alias || b.pubkey);
+    });
+
+    const returned = rows.slice(0, limit);
+    const reasonCounts: Record<string, number> = {};
+    for (const row of returned) {
+      if (!row.reachableNow && row.reason) reasonCounts[row.reason] = (reasonCounts[row.reason] || 0) + 1;
+    }
+    try {
+      console.info("[lightning:peer_suggestions]", {
+        upstreamPath: "/v1/graph",
+        cachedGraph: graphRes.fromCache,
+        candidateCount: graphRes.candidates.length,
+        probed: toProbe.length,
+        returnedCount: returned.length,
+        probeFailureReasons: reasonCounts
+      });
+    } catch {}
+
     return {
-      pubkey: c.pubkey,
-      alias: c.alias,
-      hostPort: c.hostPort,
-      score: c.score,
-      reachableNow: Boolean(probed?.reachableNow),
-      reason: probed?.reachableNow ? undefined : probed?.reason
+      peers: returned,
+      meta: { cachedGraph: graphRes.fromCache, probed: toProbe.length }
     };
-  });
+  } catch (e: any) {
+    const mapped = mapPeerSuggestionError(e);
+    try {
+      console.warn("[lightning:peer_suggestions:error]", {
+        upstreamPath: "/v1/graph",
+        errorCode: mapped.code,
+        reason: mapped.reason,
+        message: String(e?.message || e || "")
+      });
+    } catch {}
+    throw new Error(`${mapped.code}:${mapped.reason}`);
+  }
+}
 
-  rows.sort((a, b) => {
-    if (a.reachableNow !== b.reachableNow) return a.reachableNow ? -1 : 1;
-    if (a.score !== b.score) return b.score - a.score;
-    return (a.alias || a.pubkey).localeCompare(b.alias || b.pubkey);
-  });
-
-  return {
-    peers: rows.slice(0, limit),
-    meta: { cachedGraph: graphRes.fromCache, probed: toProbe.length }
-  };
+function mapPeerSuggestionError(error: unknown): { code: PeerSuggestionErrorCode; reason: string } {
+  const msg = String((error as any)?.message || error || "");
+  const upper = msg.toUpperCase();
+  if (upper.includes("NODE_NOT_CONFIGURED") || upper.includes("LIGHTNING NODE NOT CONFIGURED")) {
+    return { code: "NODE_NOT_CONFIGURED", reason: "NODE_NOT_CONFIGURED" };
+  }
+  if (upper.includes("GRAPH_FETCH_TIMEOUT")) {
+    return { code: "NOT_READY", reason: "GRAPH_FETCH_TIMEOUT" };
+  }
+  if (upper.includes("/V1/GRAPH")) {
+    return { code: "NOT_READY", reason: "GRAPH_FETCH_FAILED" };
+  }
+  if (upper.includes("LND CONNECTION FAILED")) {
+    return { code: "NOT_READY", reason: "LND_CONNECTION_FAILED" };
+  }
+  if (upper.includes("NODE_KEY_MISMATCH") || upper.includes("NODE_MACAROON")) {
+    return { code: "NOT_READY", reason: "NODE_CREDENTIALS_INVALID" };
+  }
+  return { code: "NOT_READY", reason: "PEER_SUGGESTIONS_UNAVAILABLE" };
 }
 
 export function interpretLightningDiscoveryHttpProbe(input: {

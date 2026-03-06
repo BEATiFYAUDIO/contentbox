@@ -92,6 +92,7 @@ import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
 import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
 import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
+import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import {
   assertCanPublish as assertLifecycleCanPublish,
   assertCanRestore as assertLifecycleCanRestore,
@@ -3430,8 +3431,16 @@ app.get("/api/proofs/content/:contentId", { preHandler: requireAuth }, async (re
  * AUTH
  */
 app.get("/auth/recovery/status", async (_req, reply) => {
-  const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { recoveryKeyHash: true } });
-  return reply.send({ recoveryAvailable: Boolean(user?.recoveryKeyHash) });
+  const userCount = await prisma.user.count();
+  const firstUser =
+    userCount > 0
+      ? await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true, recoveryKeyHash: true } })
+      : null;
+  return reply.send({
+    hasUsers: userCount > 0,
+    hasOwner: Boolean(firstUser?.id),
+    recoveryAvailable: Boolean(firstUser?.recoveryKeyHash)
+  });
 });
 
 app.post("/auth/recovery/reset", async (req, reply) => {
@@ -4312,12 +4321,32 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
 
   const { productTier } = resolveProductTier();
   if (productTier !== "basic") {
+    app.log.info(
+      {
+        route: "/api/buyer/buys",
+        buyerId: session.buyer.id,
+        contentId,
+        productTier,
+        mappedCode: "PAYMENT_REQUIRED"
+      },
+      "buyerBuys.self_claim_blocked_non_basic"
+    );
     return reply.code(409).send({ code: "PAYMENT_REQUIRED", error: "Payment required in this mode" });
   }
 
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (!isSaleable(content)) {
+    app.log.info(
+      {
+        route: "/api/buyer/buys",
+        buyerId: session.buyer.id,
+        contentId,
+        productTier,
+        mappedCode: "NOT_FOR_SALE"
+      },
+      "buyerBuys.self_claim_blocked_not_for_sale"
+    );
     return reply.code(409).send({ code: "NOT_FOR_SALE", error: "This content is no longer for sale." });
   }
   await reconcileBuyerEntitlementsFromPurchaseHistory({
@@ -10197,205 +10226,320 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   };
 
   const contentId = asString(body.contentId || "").trim();
-  const amountSatsInput = parseSats(body.amountSats);
   if (!contentId) return badRequest(reply, "contentId required");
 
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return notFound(reply, "Content not found");
-  if (!isSaleable(content)) {
-    return reply.code(409).send({ code: "NOT_FOR_SALE", message: "This content is no longer for sale." });
-  }
-  const buyerSession = await resolveBuyerSession(req, reply);
-  const buyerId = buyerSession?.buyer?.id || null;
-  const { productTier } = resolveProductTier();
-  if (content.priceSats == null) {
-    return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
-  }
-  if (content.priceSats < 1n) {
-    return reply.code(409).send({ code: "PRICE_FREE", message: "This item is free and does not require payment." });
-  }
-  const amountSats = content.priceSats;
-  if (amountSatsInput > 0n && amountSatsInput !== content.priceSats) {
-    return reply.code(409).send({ code: "AMOUNT_MISMATCH", message: "Amount must match creator price." });
-  }
+  const intentLog: Record<string, unknown> = {
+    route: "/buy/payments/intents",
+    contentId,
+    selfClaimPath: "fallback_after_api_buyer_buys",
+    mappedCategory: null,
+    mappedCode: null
+  };
 
-  const manifest = await prisma.manifest.findUnique({ where: { contentId } });
-  if (!manifest) return notFound(reply, "Manifest not found");
-  const manifestSha256 = asString(body.manifestSha256 || manifest.sha256).trim();
-  if (manifest.sha256 !== manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
-
-  if (buyerId) {
-    const owned = await prisma.entitlement.findFirst({
-      where: { buyerId, contentId },
-      orderBy: { grantedAt: "desc" }
-    });
-    if (owned) {
-      return reply.send({
-        ok: true,
-        alreadyOwned: true,
-        contentId,
-        manifestSha256: owned.manifestSha256 || manifestSha256
-      });
-    }
-  }
-
-  const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
-  const receiptToken = crypto.randomBytes(24).toString("hex");
-  const receiptTokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
-
-  const intent = await prisma.paymentIntent.create({
-    data: {
-      buyerUserId: null,
-      buyerId,
-      contentId,
-      manifestSha256,
-      amountSats,
-      status: "pending" as any,
-      purpose: "CONTENT_PURCHASE" as any,
-      subjectType: "CONTENT" as any,
-      subjectId: contentId,
-      receiptToken,
-      receiptTokenExpiresAt
-    }
-  });
-
-  let lightningAddress: string | null = null;
-  try {
-    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
-    if (payoutMethod) {
-      const identity = await prisma.identity.findFirst({
-        where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
-        orderBy: { createdAt: "desc" }
-      });
-      const v = asString(identity?.value || "").trim();
-      if (v) lightningAddress = v;
-    }
-  } catch {
-    lightningAddress = null;
-  }
-
-  let onchain: { address: string; derivationIndex?: number | null } | null = null;
-  let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
-  let onchainReason: string | null = null;
-  let lightningReason: string | null = null;
-
-  if (productTier !== "basic") {
+  const diagnoseLightning = async () => {
     try {
-      onchain = await createOnchainAddress(intent.id);
-    } catch {
-      onchain = null;
-      onchainReason = "TEMPORARILY_UNAVAILABLE";
+      const cfg = await getStoredLndConfig(prisma as any);
+      if (!cfg) return { configured: false, connectivity: "not_configured", reason: null as string | null };
+      try {
+        await probeLndConnection({
+          restUrl: cfg.restUrl,
+          network: cfg.network,
+          macaroonHex: cfg.macaroonHex,
+          tlsCert: cfg.tlsCert || null
+        });
+        return { configured: true, connectivity: "ok", reason: null as string | null };
+      } catch (e: any) {
+        return { configured: true, connectivity: "error", reason: String(e?.message || e || "probe_failed") };
+      }
+    } catch (e: any) {
+      return { configured: false, connectivity: "error", reason: String(e?.message || e || "config_probe_failed") };
     }
-    if (!onchain) {
-      const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
+  };
+
+  try {
+    const amountSatsInput = parseSats(body.amountSats);
+    const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+    if (!content) return notFound(reply, "Content not found");
+    intentLog.sellerId = content.ownerUserId;
+    intentLog.saleable = isSaleable(content);
+
+    if (!isSaleable(content)) {
+      app.log.info({ ...intentLog, mappedCategory: "not_for_sale", mappedCode: "NOT_FOR_SALE" }, "publicPaymentsIntents.blocked");
+      return reply.code(409).send({ code: "NOT_FOR_SALE", message: "This content is no longer for sale." });
+    }
+
+    const buyerSession = await resolveBuyerSession(req, reply);
+    const buyerId = buyerSession?.buyer?.id || null;
+    const { productTier } = resolveProductTier();
+    intentLog.buyerId = buyerId;
+    intentLog.productTier = productTier;
+    intentLog.pricingMode = content.priceSats == null ? "unset" : content.priceSats > 0n ? "paid" : "free";
+
+    if (content.priceSats == null) {
+      app.log.info({ ...intentLog, mappedCategory: "price_not_set", mappedCode: "PRICE_NOT_SET" }, "publicPaymentsIntents.blocked");
+      return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
+    }
+    if (content.priceSats < 1n) {
+      app.log.info({ ...intentLog, mappedCategory: "price_free", mappedCode: "PRICE_FREE" }, "publicPaymentsIntents.blocked");
+      return reply.code(409).send({ code: "PRICE_FREE", message: "This item is free and does not require payment." });
+    }
+    const amountSats = content.priceSats;
+    if (amountSatsInput > 0n && amountSatsInput !== content.priceSats) {
+      app.log.info({ ...intentLog, mappedCategory: "amount_mismatch", mappedCode: "AMOUNT_MISMATCH" }, "publicPaymentsIntents.blocked");
+      return reply.code(409).send({ code: "AMOUNT_MISMATCH", message: "Amount must match creator price." });
+    }
+
+    const manifest = await prisma.manifest.findUnique({ where: { contentId } });
+    if (!manifest) return notFound(reply, "Manifest not found");
+    const manifestSha256 = asString(body.manifestSha256 || manifest.sha256).trim();
+    if (manifest.sha256 !== manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
+
+    if (buyerId) {
+      const owned = await prisma.entitlement.findFirst({
+        where: { buyerId, contentId },
+        orderBy: { grantedAt: "desc" }
+      });
+      if (owned) {
+        app.log.info({ ...intentLog, mappedCategory: "already_owned", mappedCode: "ALREADY_OWNED" }, "publicPaymentsIntents.shortcircuit");
+        return reply.send({
+          ok: true,
+          alreadyOwned: true,
+          contentId,
+          manifestSha256: owned.manifestSha256 || manifestSha256
+        });
+      }
+    }
+
+    const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
+    const receiptToken = crypto.randomBytes(24).toString("hex");
+    const receiptTokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
+
+    const intent = await prisma.paymentIntent.create({
+      data: {
+        buyerUserId: null,
+        contentId,
+        manifestSha256,
+        amountSats,
+        status: "pending" as any,
+        purpose: "CONTENT_PURCHASE" as any,
+        subjectType: "CONTENT" as any,
+        subjectId: contentId,
+        receiptToken,
+        receiptTokenExpiresAt
+      }
+    });
+
+    let lightningAddress: string | null = null;
+    try {
+      const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
       if (payoutMethod) {
         const identity = await prisma.identity.findFirst({
           where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
           orderBy: { createdAt: "desc" }
         });
-        if (identity?.value) {
-          const maxIdx = await prisma.paymentIntent.findFirst({
-            where: { contentId, onchainDerivationIndex: { not: null } },
-            orderBy: { onchainDerivationIndex: "desc" },
-            select: { onchainDerivationIndex: true }
-          });
-          const nextIdx = (maxIdx?.onchainDerivationIndex ?? -1) + 1;
-          try {
-            const addr = await deriveFromXpub.addressAt(String(identity.value), nextIdx);
-            onchain = { address: addr, derivationIndex: nextIdx };
-          } catch {
-            onchain = null;
-            onchainReason = "ADDRESS_DERIVATION_FAILED";
+        const v = asString(identity?.value || "").trim();
+        if (v) lightningAddress = v;
+      }
+    } catch {
+      lightningAddress = null;
+    }
+    intentLog.sellerPaymentConfig = { lightningAddressPresent: Boolean(lightningAddress) };
+
+    let onchain: { address: string; derivationIndex?: number | null } | null = null;
+    let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
+    let onchainReason: string | null = null;
+    let lightningReason: string | null = null;
+
+    if (productTier !== "basic") {
+      try {
+        onchain = await createOnchainAddress(intent.id);
+      } catch {
+        onchain = null;
+        onchainReason = "TEMPORARILY_UNAVAILABLE";
+      }
+      if (!onchain) {
+        try {
+          const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
+          if (payoutMethod) {
+            const identity = await prisma.identity.findFirst({
+              where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
+              orderBy: { createdAt: "desc" }
+            });
+            if (identity?.value) {
+              const maxIdx = await prisma.paymentIntent.findFirst({
+                where: { contentId, onchainDerivationIndex: { not: null } },
+                orderBy: { onchainDerivationIndex: "desc" },
+                select: { onchainDerivationIndex: true }
+              });
+              const nextIdx = (maxIdx?.onchainDerivationIndex ?? -1) + 1;
+              try {
+                const addr = await deriveFromXpub.addressAt(String(identity.value), nextIdx);
+                onchain = { address: addr, derivationIndex: nextIdx };
+              } catch {
+                onchain = null;
+                onchainReason = "ADDRESS_DERIVATION_FAILED";
+              }
+            }
           }
+        } catch {
+          onchain = null;
+          onchainReason = "ONCHAIN_NOT_AVAILABLE";
         }
+        if (!onchain && !onchainReason) onchainReason = "XPUB_NOT_CONFIGURED";
       }
-      if (!onchain && !onchainReason) onchainReason = "XPUB_NOT_CONFIGURED";
+    } else {
+      onchain = null;
+      onchainReason = "NOT_SUPPORTED_BASIC";
     }
-  } else {
-    onchain = null;
-    onchainReason = "NOT_SUPPORTED_BASIC";
-  }
 
-  try {
-    const invoice = await createLightningInvoice(prisma as any, amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
-    if (invoice) lightning = invoice;
-  } catch (e: any) {
-    app.log.warn({ err: e }, "lnbits invoice failed");
-    lightningReason = "INVOICE_GENERATION_FAILED";
-  }
-  if (!lightning?.bolt11 && !lightningReason) {
-    lightningReason = "PROVIDER_NOT_CONFIGURED";
-  }
-
-  if (!onchain && !lightning && productTier === "basic" && lightningReason === "PROVIDER_NOT_CONFIGURED" && lightningAddress) {
-    const shortIntentId = intent.id.slice(-6).toUpperCase();
-    const memo = `CBX-${shortIntentId}`;
+    let lndProbe: { configured: boolean; connectivity: string; reason: string | null } = {
+      configured: false,
+      connectivity: "not_checked",
+      reason: null
+    };
     try {
-      await prisma.paymentIntent.update({
-        where: { id: intent.id },
-        data: { memo }
-      });
-    } catch {}
-    return reply.send({
-      status: "manual_required",
-      amountSats: Number(amountSats),
-      intentId: intent.id,
-      destination: { type: "lightning_address", value: lightningAddress },
-      memo,
-      message: "Send sats to the Lightning Address and include the memo."
-    });
-  }
-
-  if (!onchain && !lightning) {
-    await prisma.paymentIntent.delete({ where: { id: intent.id } }).catch(() => {});
-    return reply.code(503).send({
-      code: "NO_PAYMENT_RAILS_AVAILABLE",
-      message: "No payment rails are available right now.",
-      details: { lightningReason, onchainReason }
-    });
-  }
-
-  await prisma.paymentIntent.update({
-    where: { id: intent.id },
-    data: {
-      onchainAddress: onchain?.address || null,
-      onchainDerivationIndex: onchain?.derivationIndex ?? null,
-      bolt11: lightning?.bolt11 || null,
-      providerId: lightning?.providerId || null,
-      lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null
+      const invoice = await createLightningInvoice(prisma as any, amountSats, `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`);
+      if (invoice) lightning = invoice;
+      intentLog.invoiceCreation = lightning ? "created" : "not_configured";
+    } catch (e: any) {
+      lightningReason = "INVOICE_GENERATION_FAILED";
+      lndProbe = await diagnoseLightning();
+      intentLog.invoiceCreation = "failed";
+      app.log.warn(
+        {
+          ...intentLog,
+          lightningConfigured: lndProbe.configured,
+          lndConnectivity: lndProbe.connectivity,
+          lndReason: lndProbe.reason,
+          err: e
+        },
+        "publicPaymentsIntents.invoice_create_failed"
+      );
     }
-  });
+    if (!lightning?.bolt11 && !lightningReason) {
+      lightningReason = "PROVIDER_NOT_CONFIGURED";
+    }
+    intentLog.lightning = {
+      configured: lndProbe.configured,
+      connectivity: lndProbe.connectivity,
+      reason: lndProbe.reason,
+      result: lightning?.bolt11 ? "invoice_ready" : "not_ready"
+    };
 
-  return reply.send({
-    ok: true,
-    buyerId,
-    paymentIntentId: intent.id,
-    status: intent.status,
-    amountSats: intent.amountSats.toString(),
-    bolt11: lightning?.bolt11 || null,
-    lightningExpiresAt: lightning?.expiresAt || null,
-    onchainAddress: onchain?.address || null,
-    onchainReason,
-    lightningReason,
-    onchain: onchain ? { address: onchain.address } : null,
-    lightning: lightning ? { bolt11: lightning.bolt11, expiresAt: lightning.expiresAt } : null,
-    paymentOptions: {
-      lightning: {
-        available: Boolean(lightning?.bolt11),
+    if (!onchain && !lightning && productTier === "basic" && lightningReason === "PROVIDER_NOT_CONFIGURED" && lightningAddress) {
+      const shortIntentId = intent.id.slice(-6).toUpperCase();
+      const memo = `CBX-${shortIntentId}`;
+      try {
+        await prisma.paymentIntent.update({
+          where: { id: intent.id },
+          data: { memo }
+        });
+      } catch {}
+      app.log.info({ ...intentLog, mappedCategory: "manual_required", mappedCode: "MANUAL_REQUIRED" }, "publicPaymentsIntents.manual_required");
+      return reply.send({
+        status: "manual_required",
+        amountSats: Number(amountSats),
+        intentId: intent.id,
+        destination: { type: "lightning_address", value: lightningAddress },
+        memo,
+        message: "Send sats to the Lightning Address and include the memo."
+      });
+    }
+
+    if (!onchain && !lightning) {
+      await prisma.paymentIntent.delete({ where: { id: intent.id } }).catch(() => {});
+      const lndStatus = lndProbe.connectivity === "not_checked" ? await diagnoseLightning() : lndProbe;
+      const mappedCode =
+        lightningReason === "PROVIDER_NOT_CONFIGURED" || (lndStatus.configured && lndStatus.connectivity === "error")
+          ? "LIGHTNING_UNAVAILABLE"
+          : "NO_PAYMENT_RAILS_AVAILABLE";
+      const mappedStatus = mappedCode === "LIGHTNING_UNAVAILABLE" ? 502 : 503;
+      app.log.warn(
+        {
+          ...intentLog,
+          mappedCategory: "no_rails",
+          mappedCode,
+          lightningReason,
+          onchainReason,
+          lightningConfigured: lndStatus.configured,
+          lndConnectivity: lndStatus.connectivity,
+          lndReason: lndStatus.reason
+        },
+        "publicPaymentsIntents.no_payment_rails"
+      );
+      return reply.code(mappedStatus).send({
+        code: mappedCode,
+        message: mappedCode === "LIGHTNING_UNAVAILABLE" ? "Lightning is unavailable right now." : "No payment rails are available right now.",
+        details: { lightningReason, onchainReason, lndConnectivity: lndStatus.connectivity, lndReason: lndStatus.reason }
+      });
+    }
+
+    await prisma.paymentIntent.update({
+      where: { id: intent.id },
+      data: {
+        onchainAddress: onchain?.address || null,
+        onchainDerivationIndex: onchain?.derivationIndex ?? null,
         bolt11: lightning?.bolt11 || null,
-        expiresAt: lightning?.expiresAt || null,
-        reason: lightning?.bolt11 ? null : lightningReason
-      },
-      onchain: {
-        available: Boolean(onchain?.address),
-        address: onchain?.address || null,
-        minConfirmations: ONCHAIN_MIN_CONFS,
-        reason: onchain?.address ? null : onchainReason
+        providerId: lightning?.providerId || null,
+        lightningExpiresAt: lightning?.expiresAt ? new Date(lightning.expiresAt) : null
       }
-    },
-    receiptToken,
-    receiptTokenExpiresAt: receiptTokenExpiresAt.toISOString()
-  });
+    });
+
+    app.log.info(
+      {
+        ...intentLog,
+        mappedCategory: "ok",
+        mappedCode: "OK",
+        paymentIntentId: intent.id,
+        onchainAvailable: Boolean(onchain?.address),
+        lightningAvailable: Boolean(lightning?.bolt11)
+      },
+      "publicPaymentsIntents.created"
+    );
+
+    return reply.send({
+      ok: true,
+      buyerId,
+      paymentIntentId: intent.id,
+      status: intent.status,
+      amountSats: intent.amountSats.toString(),
+      bolt11: lightning?.bolt11 || null,
+      lightningExpiresAt: lightning?.expiresAt || null,
+      onchainAddress: onchain?.address || null,
+      onchainReason,
+      lightningReason,
+      onchain: onchain ? { address: onchain.address } : null,
+      lightning: lightning ? { bolt11: lightning.bolt11, expiresAt: lightning.expiresAt } : null,
+      paymentOptions: {
+        lightning: {
+          available: Boolean(lightning?.bolt11),
+          bolt11: lightning?.bolt11 || null,
+          expiresAt: lightning?.expiresAt || null,
+          reason: lightning?.bolt11 ? null : lightningReason
+        },
+        onchain: {
+          available: Boolean(onchain?.address),
+          address: onchain?.address || null,
+          minConfirmations: ONCHAIN_MIN_CONFS,
+          reason: onchain?.address ? null : onchainReason
+        }
+      },
+      receiptToken,
+      receiptTokenExpiresAt: receiptTokenExpiresAt.toISOString()
+    });
+  } catch (e: any) {
+    const mapped = mapPublicPaymentsIntentError(e);
+    app.log.error(
+      {
+        ...intentLog,
+        mappedCategory: mapped.category,
+        mappedCode: mapped.body.code,
+        err: e
+      },
+      "publicPaymentsIntents.failed"
+    );
+    return reply.code(mapped.statusCode).send(mapped.body);
+  }
 }
 
 app.post("/p2p/payments/intents", handlePublicPaymentsIntents);
@@ -10876,9 +11020,6 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
   if (!uploadGuard.ok) {
     return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
   }
-  if (isPublished(content)) {
-    return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
-  }
 
   const uploadReqCheck = validateUploadRequest({
     isMultipart: typeof req.isMultipart === "function" ? req.isMultipart() : false,
@@ -11051,9 +11192,6 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   const uploadGuard = assertLifecycleCanUpload(content);
   if (!uploadGuard.ok) {
     return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
-  }
-  if (isPublished(content)) {
-    return reply.code(409).send({ error: "Published content is locked for direct uploads.", code: "PUBLISHED_CONTENT" });
   }
   if (String(content.type || "").toLowerCase() !== "song") {
     return reply.code(400).send({ error: "Cover upload is only supported for songs" });
@@ -13955,6 +14093,7 @@ app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvanc
 
 app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
+  await reconcileSellerPendingIntentsForDashboard(userId, "revenue_sales");
   const sales = await prisma.sale.findMany({
     where: { sellerUserId: userId },
     include: { content: true },
@@ -13989,6 +14128,7 @@ function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reas
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  await reconcileSellerPendingIntentsForDashboard(userId, "finance_overview");
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const intents = await prisma.paymentIntent.findMany({
@@ -14306,6 +14446,18 @@ async function settlePaymentIntentFromRails(intentId: string) {
     if (res.paid) {
       paidVia = "lightning";
       paidAt = res.paidAt || new Date().toISOString();
+      app.log.info(
+        {
+          paymentIntentId: intent.id,
+          providerId: intent.providerId,
+          paymentHash: intent.providerId,
+          buyerId: buyerIdFromIntent(intent),
+          contentId: intent.contentId,
+          invoiceSettledObserved: true,
+          settlementSource: "invoice_check"
+        },
+        "payments.reconcile.lightning_settled_observed"
+      );
     } else {
       const state = normalizeRemoteInvoiceState((res as any)?.state);
       if (state === "CANCELED") {
@@ -14365,6 +14517,26 @@ async function settlePaymentIntentFromRails(intentId: string) {
     });
     const finalized = await finalizePaymentIntent(intent.id, { rail: pickIntentRail(intent) });
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
+    const seller = await prisma.contentItem.findUnique({ where: { id: intent.contentId }, select: { ownerUserId: true } });
+    const sale = await prisma.sale.findUnique({ where: { intentId: intent.id } });
+    const entitlement = await prisma.entitlement.findFirst({
+      where: { paymentIntentId: intent.id },
+      select: { id: true }
+    });
+    app.log.info(
+      {
+        paymentIntentId: intent.id,
+        providerId: intent.providerId || null,
+        buyerId: buyerIdFromIntent(intent),
+        sellerId: seller?.ownerUserId || null,
+        contentId: intent.contentId,
+        invoiceSettledObserved: true,
+        purchaseFinalized: true,
+        entitlementGranted: Boolean(entitlement?.id),
+        revenueEventInserted: Boolean(sale?.id)
+      },
+      "payments.reconcile.finalized"
+    );
     return {
       intent: updated || intent,
       paid: true,
@@ -14383,6 +14555,40 @@ async function settlePaymentIntentFromRails(intentId: string) {
 
   const refreshed = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
   return { intent: refreshed || intent, paid: false, paidVia: null, paidAt: null };
+}
+
+async function reconcileSellerPendingIntentsForDashboard(userId: string, context: "finance_overview" | "revenue_sales") {
+  const pending = await prisma.paymentIntent.findMany({
+    where: {
+      purpose: "CONTENT_PURCHASE" as any,
+      status: "pending" as any,
+      content: { ownerUserId: userId },
+      OR: [{ providerId: { not: null } }, { onchainAddress: { not: null } }]
+    },
+    select: { id: true, contentId: true, providerId: true, buyerUserId: true },
+    orderBy: { createdAt: "desc" },
+    take: 50
+  });
+
+  if (pending.length === 0) return;
+
+  for (const p of pending) {
+    try {
+      await settlePaymentIntentFromRails(p.id);
+    } catch (e: any) {
+      app.log.debug(
+        {
+          context,
+          paymentIntentId: p.id,
+          contentId: p.contentId,
+          sellerUserId: userId,
+          providerId: p.providerId || null,
+          err: e
+        },
+        "payments.reconcile.pending_intent_failed"
+      );
+    }
+  }
 }
 
 app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: any, reply) => {

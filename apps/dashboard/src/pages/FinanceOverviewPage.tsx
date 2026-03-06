@@ -67,31 +67,106 @@ type ChannelStatusResponse =
       receiveReady: boolean;
     }
   | { status: "error"; error: string };
-type StarterPeer = { label: string; pubkey: string; host: string; blurb: string; minFundingSats: number };
+type PeerSuggestion = {
+  pubkey: string;
+  alias?: string;
+  hostPort: string;
+  score: number;
+  reachableNow: boolean;
+  reason?: string;
+};
+type PeerSuggestionsResponse =
+  | { status: "ok"; peers: PeerSuggestion[]; meta?: { cachedGraph?: boolean; probed?: number } }
+  | { status: "error"; error?: string; reason?: string };
+type PeerSuggestionsNotice = {
+  title: string;
+  message: string;
+  suggestedAction: string;
+  details?: string | null;
+};
 
-const STARTER_PEERS: StarterPeer[] = [
-  {
-    label: "LNBIG (starter)",
-    pubkey: "03d0674b16c5b333c65fbc0146d6f0b58a5b0f3f31b17f4f0de5f2f1f4f7d8b9aa",
-    host: "lnbig.com:9735",
-    blurb: "Larger routing node (200k minimum).",
-    minFundingSats: 200_000
-  },
-  {
-    label: "LightningPool (starter)",
-    pubkey: "02aa0d36e56f9c2f4f2b1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcd12",
-    host: "pool.lightning.engineering:9735",
-    blurb: "Liquidity marketplace node (200k minimum).",
-    minFundingSats: 200_000
-  },
-  {
-    label: "ACINQ (starter)",
-    pubkey: "03864ef025fde8fb587d989186ce6a4a186895ee44a926bfc370e2c366597a3f8f",
-    host: "node.acinq.co:9735",
-    blurb: "Well-known routing node (400k minimum).",
-    minFundingSats: 400_000
+function parseApiErrorPayload(err: unknown): { error?: string; reason?: string } | null {
+  const msg = String((err as any)?.message || "");
+  const marker = "::";
+  const idx = msg.lastIndexOf(marker);
+  if (idx < 0) return null;
+  const tail = msg.slice(idx + marker.length).trim();
+  if (!tail.startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(tail);
+    if (!parsed || typeof parsed !== "object") return null;
+    return { error: parsed.error, reason: parsed.reason };
+  } catch {
+    return null;
   }
-];
+}
+
+function normalizeReason(raw: string | null | undefined): string {
+  return String(raw || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_");
+}
+
+function mapPeerSuggestionNotice(errorCode: string | null | undefined, reasonRaw: string | null | undefined): PeerSuggestionsNotice {
+  const reason = normalizeReason(reasonRaw);
+  if (String(errorCode || "").toUpperCase() === "NOT_CONFIGURED") {
+    return {
+      title: "Lightning not configured",
+      message: "Peer suggestions are unavailable until your Lightning node credentials are saved.",
+      suggestedAction: "Save node endpoint, TLS cert, and macaroon, then press Refresh.",
+      details: reason || null
+    };
+  }
+
+  if (reason.includes("SYNC")) {
+    return {
+      title: "Lightning not ready",
+      message: "Your node is still syncing, so graph-based peer suggestions are not ready yet.",
+      suggestedAction: "Wait for sync completion and press Refresh.",
+      details: reason
+    };
+  }
+  if (reason.includes("NO_CHANNELS")) {
+    return {
+      title: "Lightning not ready",
+      message: "Your node has no active channels yet, so suggestions are limited.",
+      suggestedAction: "Connect a known custom peer first, then retry suggestions.",
+      details: reason
+    };
+  }
+  if (reason.includes("RPC_UNREACHABLE") || reason.includes("CONNECTION") || reason.includes("TIMEOUT")) {
+    return {
+      title: "Lightning not ready",
+      message: "ContentBox could not reach your Lightning REST API.",
+      suggestedAction: "Check host/port, TLS cert, and that LND is running, then press Refresh.",
+      details: reason
+    };
+  }
+  if (reason.includes("TLS")) {
+    return {
+      title: "Lightning not ready",
+      message: "TLS validation failed while reading your node graph.",
+      suggestedAction: "Re-upload the correct tls.cert and press Refresh.",
+      details: reason
+    };
+  }
+  if (reason.includes("MACAROON") || reason.includes("UNAUTHORIZED") || reason.includes("CREDENTIAL")) {
+    return {
+      title: "Lightning not ready",
+      message: "Node authentication failed while loading peer suggestions.",
+      suggestedAction: "Re-upload an admin macaroon and press Refresh.",
+      details: reason
+    };
+  }
+
+  return {
+    title: "Lightning not ready",
+    message: "Peer suggestions are temporarily unavailable.",
+    suggestedAction: "Use a custom peer for now, or press Refresh in a moment.",
+    details: reason || null
+  };
+}
 
 export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPageProps) {
   const [data, setData] = useState<Overview | null>(null);
@@ -129,6 +204,9 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
   const [channelPreset, setChannelPreset] = useState<"100k" | "500k" | "1m" | "custom">("100k");
   const [channelCustomSats, setChannelCustomSats] = useState("100000");
   const [selectedPeerId, setSelectedPeerId] = useState<string>("0");
+  const [suggestedPeers, setSuggestedPeers] = useState<PeerSuggestion[]>([]);
+  const [peerSuggestionsBusy, setPeerSuggestionsBusy] = useState(false);
+  const [peerSuggestionsNotice, setPeerSuggestionsNotice] = useState<PeerSuggestionsNotice | null>(null);
   const [customPeerPubKey, setCustomPeerPubKey] = useState("");
   const [customPeerHost, setCustomPeerHost] = useState("");
   const [channelOpenBusy, setChannelOpenBusy] = useState(false);
@@ -187,6 +265,23 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
       active = false;
     };
   }, [refreshSignal, retryTick, showLightningModal]);
+
+  useEffect(() => {
+    if (!showLightningModal) return;
+    if (!lightningReadiness?.configured) {
+      setSuggestedPeers([]);
+      setPeerSuggestionsNotice(null);
+      return;
+    }
+    let active = true;
+    (async () => {
+      await loadPeerSuggestions();
+      if (!active) return;
+    })();
+    return () => {
+      active = false;
+    };
+  }, [showLightningModal, lightningReadiness?.configured]);
 
   const applyLightningAdmin = (res: LightningAdminConfig | null, opts?: { syncForm?: boolean }) => {
     setLightningAdmin(res);
@@ -262,6 +357,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
     setShowChannelGuidance(false);
     setChannelGuidanceError(null);
     setChannelOpenError(null);
+    setPeerSuggestionsNotice(null);
     setShowLightningModal(true);
   };
 
@@ -290,8 +386,33 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
       setChannelGuidanceError(e?.message || "Failed to load guidance.");
     }
   };
+  const loadPeerSuggestions = async () => {
+    setPeerSuggestionsBusy(true);
+    setPeerSuggestionsNotice(null);
+    try {
+      const res = await api<PeerSuggestionsResponse>("/api/admin/lightning/peers/suggestions?limit=20", "GET");
+      if (res.status !== "ok") {
+        setPeerSuggestionsNotice(mapPeerSuggestionNotice(res.error, res.reason));
+        setSuggestedPeers([]);
+        return;
+      }
+      const peers = Array.isArray(res.peers) ? res.peers : [];
+      setSuggestedPeers(peers);
+      if (selectedPeerId !== "custom" && peers.length > 0 && Number.isNaN(Number(selectedPeerId))) {
+        setSelectedPeerId("0");
+      }
+      if (selectedPeerId !== "custom" && peers.length === 0) setSelectedPeerId("custom");
+    } catch (e: any) {
+      const payload = parseApiErrorPayload(e);
+      setPeerSuggestionsNotice(mapPeerSuggestionNotice(payload?.error || "NOT_READY", payload?.reason || null));
+      setSuggestedPeers([]);
+    } finally {
+      setPeerSuggestionsBusy(false);
+    }
+  };
 
-  const selectedStarterPeer = selectedPeerId === "custom" ? null : STARTER_PEERS[Number(selectedPeerId)] || STARTER_PEERS[0];
+  const selectedStarterPeer =
+    selectedPeerId === "custom" ? null : suggestedPeers[Number(selectedPeerId)] || suggestedPeers[0] || null;
   const channelCapacitySats = (() => {
     if (channelPreset === "100k") return 100_000;
     if (channelPreset === "500k") return 500_000;
@@ -300,15 +421,15 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
     return Number.isFinite(n) ? Math.max(0, n) : 0;
   })();
   const estimatedFeeSats = Math.max(500, Math.round(channelCapacitySats * 0.002));
-  const affordableStarterPeerCount = STARTER_PEERS.filter((p) => channelCapacitySats >= p.minFundingSats).length;
+  const reachableSuggestedPeerCount = suggestedPeers.filter((p) => p.reachableNow).length;
 
   useEffect(() => {
     if (selectedPeerId === "custom") return;
-    const current = STARTER_PEERS[Number(selectedPeerId)];
-    if (current && channelCapacitySats >= current.minFundingSats) return;
-    const firstAffordableIdx = STARTER_PEERS.findIndex((p) => channelCapacitySats >= p.minFundingSats);
-    if (firstAffordableIdx >= 0) setSelectedPeerId(String(firstAffordableIdx));
-  }, [channelCapacitySats, selectedPeerId]);
+    const index = Number(selectedPeerId);
+    if (Number.isInteger(index) && index >= 0 && index < suggestedPeers.length) return;
+    if (suggestedPeers.length > 0) setSelectedPeerId("0");
+    else setSelectedPeerId("custom");
+  }, [channelCapacitySats, selectedPeerId, suggestedPeers.length]);
 
   const refreshOpenedChannelStatus = async (opts?: { silent?: boolean; channelId?: string }) => {
     const channelId = opts?.channelId || (openedChannel && openedChannel.status === "success" ? openedChannel.channelId : "");
@@ -335,13 +456,10 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
     setOpenedChannelStatus(null);
     setShowChannelGuidance(false);
     const peerPubKey = selectedPeerId === "custom" ? customPeerPubKey.trim() : selectedStarterPeer?.pubkey || "";
-    const peerHost = selectedPeerId === "custom" ? customPeerHost.trim() : selectedStarterPeer?.host || "";
+    const peerHost = selectedPeerId === "custom" ? customPeerHost.trim() : selectedStarterPeer?.hostPort || "";
     if (!peerPubKey) return setChannelOpenError("Select a peer or enter a peer pubkey.");
     if (selectedPeerId === "custom" && !peerHost) return setChannelOpenError("Enter a peer host (host:port).");
     if (!channelCapacitySats || channelCapacitySats < 20000) return setChannelOpenError("Enter at least 20,000 sats.");
-    if (selectedStarterPeer && channelCapacitySats < selectedStarterPeer.minFundingSats) {
-      return setChannelOpenError(`You need at least ${selectedStarterPeer.minFundingSats.toLocaleString()} sats for ${selectedStarterPeer.label}.`);
-    }
 
     setChannelOpenBusy(true);
     try {
@@ -944,43 +1062,58 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
                 <div className="mt-3">
                   <div className="text-xs text-neutral-300">Peer selection</div>
                   <div className="mt-3 text-xs text-neutral-500">
-                    {affordableStarterPeerCount > 0
-                      ? `${affordableStarterPeerCount} starter peer option${affordableStarterPeerCount === 1 ? "" : "s"} fit your current channel size.`
-                      : "No starter peers fit this size yet. Try a larger amount, or enter a custom peer that supports smaller channels."}
+                    {peerSuggestionsBusy
+                      ? "Loading suggested peers from your node graph…"
+                      : `${suggestedPeers.length} suggested peer${suggestedPeers.length === 1 ? "" : "s"} loaded${reachableSuggestedPeerCount > 0 ? ` · ${reachableSuggestedPeerCount} reachable now` : ""}.`}
                   </div>
                   <div className="mt-2 rounded border border-neutral-800 p-2">
-                    <div className="text-xs font-semibold text-neutral-200">Starter Peers</div>
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="font-semibold text-neutral-200">Suggested Peers</div>
+                      <button
+                        onClick={() => {
+                          void loadPeerSuggestions();
+                        }}
+                        className="rounded border border-neutral-800 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                        disabled={peerSuggestionsBusy}
+                      >
+                        {peerSuggestionsBusy ? "Refreshing…" : "Refresh"}
+                      </button>
+                    </div>
+                    {peerSuggestionsNotice ? (
+                      <div className="mt-2 rounded border border-amber-700/40 bg-amber-500/10 p-2 text-xs text-amber-100">
+                        <div className="font-semibold">{peerSuggestionsNotice.title}</div>
+                        <div className="mt-1 text-amber-200">{peerSuggestionsNotice.message}</div>
+                        <div className="mt-1 text-amber-300">{peerSuggestionsNotice.suggestedAction}</div>
+                        {peerSuggestionsNotice.details ? (
+                          <div className="mt-1 text-[11px] text-amber-400/90">Details: {peerSuggestionsNotice.details}</div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    {!peerSuggestionsNotice && !peerSuggestionsBusy && suggestedPeers.length === 0 ? (
+                      <div className="mt-2 text-xs text-neutral-500">No peers available from graph right now. You can still enter a custom peer below.</div>
+                    ) : null}
                     <div className="mt-2 space-y-2">
-                    {STARTER_PEERS.map((p, idx) => (
+                    {suggestedPeers.map((p, idx) => (
                       <label
                         key={`${p.pubkey}-${idx}`}
-                        className={[
-                          "flex items-start gap-2 rounded border p-2 text-xs",
-                          channelCapacitySats < p.minFundingSats
-                            ? "border-neutral-800 opacity-55"
-                            : "border-neutral-800"
-                        ].join(" ")}
+                        className="flex items-start gap-2 rounded border border-neutral-800 p-2 text-xs"
                       >
                         <input
                           type="radio"
                           checked={selectedPeerId === String(idx)}
                           onChange={() => setSelectedPeerId(String(idx))}
                           className="mt-0.5"
-                          disabled={channelCapacitySats < p.minFundingSats}
                         />
                         <div>
                           <div className="text-neutral-200">
-                            {p.label}{" "}
-                            {channelCapacitySats >= p.minFundingSats ? (
-                              <span className="text-emerald-300">(fits your budget)</span>
-                            ) : null}
+                            {p.alias || `${p.pubkey.slice(0, 8)}…${p.pubkey.slice(-6)}`}{" "}
+                            <span className={p.reachableNow ? "text-emerald-300" : "text-amber-300"}>
+                              ({p.reachableNow ? "reachable now" : "not reachable now"})
+                            </span>
                           </div>
-                          <div className="text-neutral-500">{p.blurb}</div>
-                          <div className="text-neutral-500">{p.host}</div>
-                          <div className="text-neutral-500">Minimum: {p.minFundingSats.toLocaleString()} sats</div>
-                          {channelCapacitySats < p.minFundingSats ? (
-                            <div className="text-amber-300">Needs {p.minFundingSats.toLocaleString()} sats+</div>
-                          ) : null}
+                          <div className="text-neutral-500">{p.hostPort}</div>
+                          <div className="text-neutral-500">Score: {p.score.toLocaleString()}</div>
+                          {!p.reachableNow && p.reason ? <div className="text-amber-300">Warning: {p.reason}</div> : null}
                         </div>
                       </label>
                     ))}
@@ -1051,7 +1184,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
                 <div className="mt-1 text-xs text-neutral-300">
                   Estimated fee: {openedChannel.transactionFee} BTC · Estimated confirmations: {openedChannel.estimatedConfirmations}
                 </div>
-                {openedChannelStatus && "status" in openedChannelStatus ? (
+                {openedChannelStatus && openedChannelStatus.status !== "error" ? (
                   <div className="mt-3 space-y-1 text-xs">
                     <div>Status: <span className="text-neutral-100">{openedChannelStatus.status}</span> ({openedChannelStatus.confirmationStatus})</div>
                     <div>Outbound Liquidity: <span className="text-neutral-100">{Math.round(openedChannelStatus.outboundLiquidity).toLocaleString()} sats</span></div>
@@ -1062,6 +1195,8 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
                         : "You can send payments but need inbound liquidity to receive."}
                     </div>
                   </div>
+                ) : openedChannelStatus?.status === "error" ? (
+                  <div className="mt-2 text-xs text-amber-300">{openedChannelStatus.error}</div>
                 ) : (
                   <div className="mt-2 text-xs text-neutral-500">Channel status will appear after the first check.</div>
                 )}

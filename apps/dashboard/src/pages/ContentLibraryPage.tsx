@@ -4,6 +4,7 @@ import { getToken } from "../lib/auth";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
+import { canArchive, canPublish, canRestore, canTrash, canUpload, computeContentUiState } from "../lib/contentState";
 import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
@@ -41,6 +42,8 @@ function writeLibraryTypeToUrl(next: LibraryTypeFilter) {
 }
 
 type ContentItem = {
+  // Contract note: content cards rely on these stable fields from /content:
+  // id, type, title, status, deletedAt, coverUrl(optional), manifest.sha256(optional).
   id: string;
   title: string;
   type: ContentType;
@@ -305,19 +308,6 @@ function formatDateLabel(value?: string | null) {
   return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
 }
 
-function extractApiReason(err: any): string | null {
-  const raw = String(err?.message || "");
-  const m = raw.match(/::\\s*(.+)$/);
-  if (!m) return null;
-  const tail = m[1];
-  try {
-    const parsed = JSON.parse(tail);
-    return parsed?.reason || parsed?.message || parsed?.error || null;
-  } catch {
-    return tail;
-  }
-}
-
 async function copyText(text: string) {
   if (!text) return;
   try {
@@ -373,6 +363,8 @@ export default function ContentLibraryPage({
   // NEW: latest split (so we can show lock notarization when locked)
   const [splitByContent, setSplitByContent] = React.useState<Record<string, SplitVersion | null>>({});
   const [splitLoading, setSplitLoading] = React.useState<Record<string, boolean>>({});
+  const [previewByContent, setPreviewByContent] = React.useState<Record<string, any | null>>({});
+  const [previewLoadingByContent, setPreviewLoadingByContent] = React.useState<Record<string, boolean>>({});
   const [auditByContent, setAuditByContent] = React.useState<Record<string, HistoryEvent[]>>({});
   const [auditLoading, setAuditLoading] = React.useState<Record<string, boolean>>({});
   const [clearanceHistoryByLink, setClearanceHistoryByLink] = React.useState<Record<string, HistoryEvent[]>>({});
@@ -456,7 +448,6 @@ export default function ContentLibraryPage({
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
   const [shareLinkByContent, setShareLinkByContent] = React.useState<Record<string, any | null>>({});
-  const [shareLinkLoading, setShareLinkLoading] = React.useState<Record<string, boolean>>({});
   const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
@@ -774,45 +765,25 @@ export default function ContentLibraryPage({
     }
   }
 
+  async function loadPreview(contentId: string) {
+    setPreviewLoadingByContent((m) => ({ ...m, [contentId]: true }));
+    try {
+      const preview = await api<any>(`/content/${contentId}/preview`, "GET");
+      setPreviewByContent((m) => ({ ...m, [contentId]: preview || null }));
+    } catch (e: any) {
+      setPreviewByContent((m) => ({ ...m, [contentId]: { error: e?.message || "Preview unavailable" } }));
+    } finally {
+      setPreviewLoadingByContent((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
   async function loadShareLink(contentId: string) {
     if (isBasicTier) return;
-    setShareLinkLoading((m) => ({ ...m, [contentId]: true }));
     try {
       const data = await api<any>(`/api/content/${contentId}/share-link`, "GET");
       setShareLinkByContent((m) => ({ ...m, [contentId]: data?.shareLink || null }));
     } catch {
       setShareLinkByContent((m) => ({ ...m, [contentId]: null }));
-    } finally {
-      setShareLinkLoading((m) => ({ ...m, [contentId]: false }));
-    }
-  }
-
-  async function rotateShareLink(contentId: string) {
-    if (isBasicTier) return;
-    try {
-      setPublishBusy((m) => ({ ...m, [contentId]: true }));
-      const res = await api<any>(`/api/content/${contentId}/share-link`, "POST", {});
-      setShareLinkByContent((m) => ({ ...m, [contentId]: res?.shareLink || null }));
-      setPublishMsg((m) => ({ ...m, [contentId]: "Share link created." }));
-    } catch (e: any) {
-      const reason = extractApiReason(e);
-      setPublishMsg((m) => ({ ...m, [contentId]: reason || e?.message || "Failed to create share link." }));
-    } finally {
-      setPublishBusy((m) => ({ ...m, [contentId]: false }));
-    }
-  }
-
-  async function revokeShareLink(contentId: string) {
-    if (isBasicTier) return;
-    try {
-      setPublishBusy((m) => ({ ...m, [contentId]: true }));
-      await api(`/api/content/${contentId}/share-link/revoke`, "POST", {});
-      setShareLinkByContent((m) => ({ ...m, [contentId]: null }));
-      setPublishMsg((m) => ({ ...m, [contentId]: "Share link revoked." }));
-    } catch (e: any) {
-      setPublishMsg((m) => ({ ...m, [contentId]: e?.message || "Failed to revoke share link." }));
-    } finally {
-      setPublishBusy((m) => ({ ...m, [contentId]: false }));
     }
   }
 
@@ -922,18 +893,8 @@ export default function ContentLibraryPage({
     if (publishBusy[contentId]) return;
     const currentItem = items.find((it) => it.id === contentId);
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(currentItem?.type || ""));
-    const lightningAvailable = identities.some(
-      (i) => (i.payoutMethod.code === "lightning_address" || i.payoutMethod.code === "lnurl") && i.value
-    );
     if (!publishAllowed) {
       setPublishMsg((m) => ({ ...m, [contentId]: publishReason }));
-      return;
-    }
-    if (isBasicTier && !lightningAvailable) {
-      setPublishMsg((m) => ({
-        ...m,
-        [contentId]: "Add a Lightning payout address (LNURL or Lightning address) in Profile → Payouts to publish."
-      }));
       return;
     }
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
@@ -1294,28 +1255,43 @@ export default function ContentLibraryPage({
     e.preventDefault();
     setError(null);
 
-    if (!title.trim()) {
+    const nextTitle = title.trim();
+    if (!nextTitle) {
       setError("Title is required.");
       return;
     }
 
     setCreating(true);
+    if (import.meta.env.DEV) {
+      console.debug("createContent:start", { title: nextTitle, type });
+    }
     try {
       const created = await api<ContentItem>("/content", "POST", {
-        title: title.trim(),
+        title: nextTitle,
         type
       });
+      if (import.meta.env.DEV) {
+        console.debug("createContent:response", { createdId: created?.id, status: created?.status, type: created?.type });
+      }
 
       setTitle("");
       setType("song");
 
-      // Ensure we land back in the active view after creating
+      // Ensure we land back in the active authored/content view after creating
+      setShowClearance(false);
       setShowTrash(false);
       setShowTombstones(false);
-      await load(false);
+      setContentScope("mine");
+
+      // Deterministic immediate refresh for the authored active view.
+      const refreshed = await api<ContentItem[]>("/content?scope=mine");
+      setItems(Array.isArray(refreshed) ? refreshed : []);
 
       setPendingOpenContentId(created.id);
     } catch (e: any) {
+      if (import.meta.env.DEV) {
+        console.debug("createContent:error", e);
+      }
       setError(e?.message || "Failed to create content");
     } finally {
       setCreating(false);
@@ -1323,6 +1299,13 @@ export default function ContentLibraryPage({
   }
 
   async function softDelete(contentId: string) {
+    const item = items.find((row) => row.id === contentId);
+    const state = computeContentUiState(item || {});
+    const prompt = state === "published"
+      ? "Archive this published item? New buyers won’t be able to purchase. Existing buyers keep access."
+      : "Move this item to Trash?";
+    if (!window.confirm(prompt)) return;
+
     setBusyAction((m) => ({ ...m, [contentId]: true }));
     setError(null);
     try {
@@ -1451,11 +1434,20 @@ export default function ContentLibraryPage({
     }
   }
 
-  function UploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
+  function UploadButton({
+    contentId,
+    disabled,
+    label = "Upload"
+  }: {
+    contentId: string;
+    disabled?: boolean;
+    label?: string;
+  }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const err = upload.status === "error" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
+    const triggerDisabled = Boolean(disabled || busy || !authReady);
 
     return (
       <>
@@ -1467,7 +1459,7 @@ export default function ContentLibraryPage({
           name={`uploadFile-${contentId}`}
           ref={inputRef}
           type="file"
-          className="hidden"
+          className="sr-only"
           onChange={async (e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
@@ -1506,25 +1498,38 @@ export default function ContentLibraryPage({
           }}
         />
 
-        <button
-          type="button"
-          disabled={disabled || busy || !authReady}
-          className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60"
-          onClick={() => inputRef.current?.click()}
+        <label
+          htmlFor={`upload-file-${contentId}`}
+          aria-disabled={triggerDisabled}
+          onClick={(e) => {
+            if (triggerDisabled) e.preventDefault();
+          }}
+          className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
+            triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
+          }`}
           title="Upload into this content repo and commit"
         >
-          {upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : "Upload"}
-        </button>
+          {upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : label}
+        </label>
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
       </>
     );
   }
 
-  function CoverUploadButton({ contentId, disabled }: { contentId: string; disabled?: boolean }) {
+  function CoverUploadButton({
+    contentId,
+    disabled,
+    label = "Upload cover"
+  }: {
+    contentId: string;
+    disabled?: boolean;
+    label?: string;
+  }) {
     const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const authReady = Boolean(getToken());
+    const triggerDisabled = Boolean(disabled || busy || !authReady);
 
     return (
       <>
@@ -1537,7 +1542,7 @@ export default function ContentLibraryPage({
           ref={inputRef}
           type="file"
           accept="image/jpeg,image/png,image/webp"
-          className="hidden"
+          className="sr-only"
           onChange={async (e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
@@ -1559,15 +1564,19 @@ export default function ContentLibraryPage({
           }}
         />
 
-        <button
-          type="button"
-          disabled={disabled || busy || !authReady}
-          className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60"
-          onClick={() => inputRef.current?.click()}
+        <label
+          htmlFor={`upload-cover-${contentId}`}
+          aria-disabled={triggerDisabled}
+          onClick={(e) => {
+            if (triggerDisabled) e.preventDefault();
+          }}
+          className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
+            triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
+          }`}
           title="Upload album cover (jpg, png, webp)"
         >
-          {busy ? "Uploading…" : "Upload cover"}
-        </button>
+          {busy ? "Uploading…" : label}
+        </label>
       </>
     );
   }
@@ -1878,7 +1887,11 @@ export default function ContentLibraryPage({
             <div className="ml-2 inline-flex rounded-lg border border-neutral-800 overflow-hidden">
               <button
                 type="button"
-                className={`text-sm px-3 py-1 whitespace-nowrap ${!showTrash && !showTombstones && !showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                className={`text-sm px-3 py-1 whitespace-nowrap ${
+                  !showTrash && !showTombstones && !showClearance
+                    ? "bg-emerald-950/40 text-emerald-200 border-r border-emerald-800/60 font-medium"
+                    : "text-neutral-300 hover:bg-neutral-900"
+                }`}
                 onClick={async () => {
                   setShowClearance(false);
                   setShowTrash(false);
@@ -1890,7 +1903,11 @@ export default function ContentLibraryPage({
               </button>
               <button
                 type="button"
-                className={`text-sm px-3 py-1 whitespace-nowrap ${showTrash ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                className={`text-sm px-3 py-1 whitespace-nowrap ${
+                  showTrash
+                    ? "bg-emerald-950/40 text-emerald-200 border-r border-emerald-800/60 font-medium"
+                    : "text-neutral-300 hover:bg-neutral-900"
+                }`}
                 onClick={async () => {
                   setShowClearance(false);
                   setShowTrash(true);
@@ -1902,7 +1919,11 @@ export default function ContentLibraryPage({
               </button>
               <button
                 type="button"
-                className={`text-sm px-3 py-1 whitespace-nowrap ${showTombstones ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                className={`text-sm px-3 py-1 whitespace-nowrap ${
+                  showTombstones
+                    ? "bg-emerald-950/40 text-emerald-200 border-r border-emerald-800/60 font-medium"
+                    : "text-neutral-300 hover:bg-neutral-900"
+                }`}
                 onClick={async () => {
                   setShowClearance(false);
                   setShowTrash(false);
@@ -1910,12 +1931,16 @@ export default function ContentLibraryPage({
                   await load(false, true);
                 }}
               >
-                Removed
+                Archived
               </button>
               {derivativesAllowed ? (
                 <button
                   type="button"
-                  className={`text-sm px-3 py-1 whitespace-nowrap ${showClearance ? "bg-neutral-950" : "hover:bg-neutral-900"}`}
+                  className={`text-sm px-3 py-1 whitespace-nowrap ${
+                    showClearance
+                      ? "bg-emerald-950/40 text-emerald-200 font-medium"
+                      : "text-neutral-300 hover:bg-neutral-900"
+                  }`}
                   onClick={async () => {
                     setShowTrash(false);
                     setShowTombstones(false);
@@ -2137,7 +2162,7 @@ export default function ContentLibraryPage({
           <div className="text-sm text-neutral-400">Loading…</div>
         ) : items.length === 0 ? (
           <div className="text-sm text-neutral-400">
-            {showTrash ? "Trash is empty." : showTombstones ? "No removed items." : "No content yet."}
+            {showTrash ? "Trash is empty." : showTombstones ? "No archived items." : "No content yet."}
           </div>
         ) : (
           <div className="space-y-2">
@@ -2155,6 +2180,12 @@ export default function ContentLibraryPage({
 
               const split = splitByContent[it.id] ?? null;
               const isSplitLoading = !!splitLoading[it.id];
+              const uiState = computeContentUiState(it);
+              const allowPublish = canPublish(uiState);
+              const allowTrash = canTrash(uiState);
+              const allowArchive = canArchive(uiState);
+              const allowRestore = canRestore(uiState);
+              const allowUpload = canUpload(uiState) || uiState === "published";
               const storefrontStatus = (it.storefrontStatus || "DISABLED") as "DISABLED" | "UNLISTED" | "LISTED";
               const manifestSha256 = it.manifest?.sha256 || "";
               const publicMetaUrl = `${apiBase}/public/content/${it.id}`;
@@ -2175,35 +2206,21 @@ export default function ContentLibraryPage({
                       <div className="text-xs text-neutral-400">
                         {it.type.toUpperCase()} • {it.status.toUpperCase()} • {formatDateLabel(it.createdAt)} • {filesCount} file
                         {filesCount === 1 ? "" : "s"}
-                        • Storefront: {(it.storefrontStatus || "DISABLED").toString()}
                         {(showTrash || showTombstones) && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
                       </div>
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
+                      {uiState === "archived" ? (
+                        <div className="mt-1 inline-flex rounded-full border border-amber-800 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
+                          Archived
+                        </div>
+                      ) : null}
+                      {uiState === "trash" ? (
+                        <div className="mt-1 inline-flex rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-[10px] uppercase tracking-wide text-neutral-300">
+                          In Trash
+                        </div>
+                      ) : null}
                       {!isOwner ? (
                         <div className="text-xs text-amber-300 mt-1">Read-only • Owner: {ownerLabel}</div>
-                      ) : null}
-                      {String(it.type || "").toLowerCase() === "song" ? (
-                        <div className="mt-2">
-                          <div className="w-20 h-20 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900">
-                            <img
-                              src={`${apiBase}/public/content/${encodeURIComponent(it.id)}/cover`}
-                              alt={`${it.title || "Song"} cover`}
-                              className="w-full h-full object-cover"
-                              loading="lazy"
-                              onError={(e) => {
-                                setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: true }));
-                                const el = e.currentTarget;
-                                const parent = el.parentElement;
-                                if (!parent) return;
-                                parent.innerHTML = '<div class="w-full h-full flex items-center justify-center text-[10px] text-neutral-500">No cover</div>';
-                              }}
-                              onLoad={() => setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: false }))}
-                            />
-                          </div>
-                          {coverLoadErrorByContent[it.id] ? (
-                            <div className="mt-1 text-[10px] text-amber-300">Cover missing on disk or not set in manifest.</div>
-                          ) : null}
-                        </div>
                       ) : null}
                     </div>
 
@@ -2231,7 +2248,8 @@ export default function ContentLibraryPage({
                                           derivativesByContent[it.id] !== undefined ? Promise.resolve() : loadDerivativesForParent(it.id),
                                           creditsByContent[it.id] !== undefined ? Promise.resolve() : loadCredits(it.id),
                                           auditByContent[it.id] !== undefined ? Promise.resolve() : loadAudit(it.id),
-                                          shareLinkByContent[it.id] !== undefined ? Promise.resolve() : loadShareLink(it.id)
+                                          shareLinkByContent[it.id] !== undefined ? Promise.resolve() : loadShareLink(it.id),
+                                          previewByContent[it.id] !== undefined ? Promise.resolve() : loadPreview(it.id)
                                         ]);
                                       } else {
                                         await Promise.all([
@@ -2247,9 +2265,15 @@ export default function ContentLibraryPage({
                                 {isOpen ? "Hide details" : isOwner ? "Show files" : "Details"}
                               </button>
 
-                              {isOwner ? <UploadButton contentId={it.id} disabled={busy} /> : null}
-                              {isOwner && String(it.type || "").toLowerCase() === "song" ? (
-                                <CoverUploadButton contentId={it.id} disabled={busy} />
+                              {isOwner && allowUpload ? (
+                                <UploadButton contentId={it.id} disabled={busy} label={uiState === "published" ? "Update file" : "Upload"} />
+                              ) : null}
+                              {isOwner && allowUpload && String(it.type || "").toLowerCase() === "song" ? (
+                                <CoverUploadButton
+                                  contentId={it.id}
+                                  disabled={busy}
+                                  label={uiState === "published" ? "Update cover" : "Upload cover"}
+                                />
                               ) : null}
 
                               {splitsAllowed && isOwner ? (
@@ -2270,40 +2294,41 @@ export default function ContentLibraryPage({
                                 disabled={
                                   publishBusy[it.id] ||
                                   !publishAllowed ||
-                                  (isBasicTier ? isDerivativeType : it.status === "published")
+                                  !allowPublish ||
+                                  (isBasicTier && isDerivativeType)
                                 }
                                 title={
                                   isBasicTier && isDerivativeType
                                     ? "Derivatives require Advanced mode and clearance before publishing."
-                                    : it.status === "published" && !isBasicTier
+                                    : !allowPublish
                                       ? "Already published"
                                       : !publishAllowed
                                         ? publishReason
-                                          : isBasicTier
-                                            ? "Publish this content"
-                                            : "Publish this content"
+                                        : "Publish this content"
                                 }
                               >
-                                {isBasicTier
-                                  ? publishBusy[it.id]
+                                {!allowPublish
+                                  ? "Published"
+                                  : publishBusy[it.id]
                                     ? "Publishing…"
-                                    : "Publish"
-                                  : it.status === "published"
-                                      ? "Published"
-                                      : publishBusy[it.id]
-                                        ? "Publishing…"
-                                        : "Publish public buy link"}
+                                    : "Publish"}
                               </button>
 
-                              <button
-                                type="button"
-                                className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
-                                onClick={() => softDelete(it.id)}
-                                disabled={busy}
-                                title="Move to trash"
-                              >
-                                {busy ? "…" : "Trash"}
-                              </button>
+                              {allowTrash || allowArchive ? (
+                                <button
+                                  type="button"
+                                  className={`text-sm rounded-lg px-3 py-1 disabled:opacity-60 whitespace-nowrap ${
+                                    allowArchive
+                                      ? "border border-amber-900 text-amber-200 hover:bg-amber-950/30"
+                                      : "border border-neutral-800 hover:bg-neutral-900"
+                                  }`}
+                                  onClick={() => softDelete(it.id)}
+                                  disabled={busy}
+                                  title={allowArchive ? "Archive this published item" : "Move this draft to Trash"}
+                                >
+                                  {busy ? "…" : allowArchive ? "Archive" : "Trash"}
+                                </button>
+                              ) : null}
                             </>
                           ) : (
                             <button
@@ -2317,14 +2342,16 @@ export default function ContentLibraryPage({
                         </>
                       ) : showTrash ? (
                         <>
-                          <button
-                            type="button"
-                            className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
-                            onClick={() => restore(it.id)}
-                            disabled={busy}
-                          >
-                            Restore
-                          </button>
+                          {allowRestore ? (
+                            <button
+                              type="button"
+                              className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                              onClick={() => restore(it.id)}
+                              disabled={busy}
+                            >
+                              Restore
+                            </button>
+                          ) : null}
 
                           <button
                             type="button"
@@ -2337,7 +2364,7 @@ export default function ContentLibraryPage({
                           </button>
                         </>
                       ) : (
-                        <div className="text-xs text-amber-300">Removed from store</div>
+                        <div className="text-xs text-amber-300">Archived</div>
                       )}
                     </div>
                     {!publishAllowed ? (
@@ -2359,6 +2386,69 @@ export default function ContentLibraryPage({
 
                   {!showTrash && !showTombstones && isOpen && (
                     <div className="border-t border-neutral-800 px-3 py-3 space-y-3">
+                      {(() => {
+                        const preview = previewByContent[it.id] || null;
+                        const previewUrl = preview?.previewUrl || null;
+                        const previewFile = previewFileFor(previewUrl, preview?.files || files);
+                        const previewMime = String(previewFile?.mime || "");
+                        const isVideo = String(it.type || "").toLowerCase() === "video" || previewMime.startsWith("video/");
+                        const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
+                        const coverUrl = `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
+                          it.manifest?.sha256 ? `?v=${encodeURIComponent(it.manifest.sha256)}` : ""
+                        }`;
+                        return (
+                          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-xs text-neutral-300 font-medium">Preview</div>
+                              <button
+                                type="button"
+                                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                onClick={() => loadPreview(it.id)}
+                              >
+                                {previewLoadingByContent[it.id] ? "Loading…" : "Refresh preview"}
+                              </button>
+                            </div>
+                            <div className="mt-2 space-y-2">
+                              {isAudio ? (
+                                <div>
+                                  <div className="w-32 h-32 rounded-md border border-neutral-800 overflow-hidden bg-neutral-900">
+                                    <img
+                                      src={coverUrl}
+                                      alt={`${it.title || "Song"} cover`}
+                                      className="w-full h-full object-cover"
+                                      loading="lazy"
+                                      onError={(e) => {
+                                        setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: true }));
+                                        const el = e.currentTarget;
+                                        const parent = el.parentElement;
+                                        if (!parent) return;
+                                        parent.innerHTML =
+                                          '<div class="w-full h-full flex items-center justify-center text-[10px] text-neutral-500">No cover</div>';
+                                      }}
+                                      onLoad={() => setCoverLoadErrorByContent((m) => ({ ...m, [it.id]: false }))}
+                                    />
+                                  </div>
+                                  {coverLoadErrorByContent[it.id] ? (
+                                    <div className="mt-1 text-[10px] text-amber-300">Cover missing on disk or not set in manifest.</div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                              {previewUrl && isVideo ? <video className="w-full rounded-md" controls src={previewUrl} /> : null}
+                              {previewUrl && isAudio ? <audio className="w-full" controls src={previewUrl} /> : null}
+                              {previewUrl && !isAudio && !isVideo ? (
+                                <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
+                                  Open preview
+                                </a>
+                              ) : null}
+                              {!previewLoadingByContent[it.id] && !previewUrl && !preview?.error ? (
+                                <div className="text-xs text-neutral-500">No preview available yet.</div>
+                              ) : null}
+                              {preview?.error ? <div className="text-xs text-amber-300">{String(preview.error)}</div> : null}
+                            </div>
+                          </div>
+                        );
+                      })()}
+
                       <div className="flex items-center justify-between">
                         <div className="text-xs text-neutral-400">
                           Repo: <span className="text-neutral-300">{it.repoPath || "not set"}</span>
@@ -3574,9 +3664,6 @@ export default function ContentLibraryPage({
                             const isBuyLoopback = isLoopbackUrl(buyLink);
                             const hasPublicBuy = Boolean(buyBase) && !isBuyLoopback;
                             const isLocalOnly = !hasPublicBuy;
-                            const shareLink = shareLinkByContent[it.id];
-                            const shareBase = (effectivePublicOrigin || apiBase || "").replace(/\/$/, "");
-                            const shareUrl = shareLink?.url || (shareLink?.token ? `${shareBase}/p/${shareLink.token}` : "");
                             let lanBase = "";
                             try {
                               const u = new URL(apiBase);

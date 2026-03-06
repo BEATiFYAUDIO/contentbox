@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { IdentityDetail } from "../lib/identity";
 import { modeLabel } from "../lib/nodeMode";
 import { setToken } from "../lib/auth";
+import { normalizeAuthBootstrapStatus, shouldShowBootstrapCreate, type AuthBootstrapStatus } from "../lib/authLanding";
 
 type Mode = "login" | "signup";
 
@@ -17,6 +18,7 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
   const [ownerEmail, setOwnerEmail] = React.useState<string | null>(null);
   const [lockReasons, setLockReasons] = React.useState<Record<string, string> | null>(null);
   const [recoveryAvailable, setRecoveryAvailable] = React.useState<boolean | null>(null);
+  const [bootstrapStatus, setBootstrapStatus] = React.useState<AuthBootstrapStatus | null>(null);
   const [recoveryProbeError, setRecoveryProbeError] = React.useState<string | null>(null);
   const [bootstrapConfirmPassword, setBootstrapConfirmPassword] = React.useState("");
   const [showRecovery, setShowRecovery] = React.useState(false);
@@ -42,10 +44,13 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
 
   const probeRecovery = React.useCallback(async () => {
     try {
-      const res = await api<{ recoveryAvailable: boolean }>("/auth/recovery/status", "GET");
-      setRecoveryAvailable(Boolean(res?.recoveryAvailable));
+      const res = await api<{ recoveryAvailable?: boolean; hasUsers?: boolean; hasOwner?: boolean }>("/auth/recovery/status", "GET");
+      const normalized = normalizeAuthBootstrapStatus(res);
+      setBootstrapStatus(normalized);
+      setRecoveryAvailable(normalized.recoveryAvailable);
       setRecoveryProbeError(null);
     } catch (e: any) {
+      setBootstrapStatus(null);
       setRecoveryAvailable(null);
       setRecoveryProbeError(e?.message || "API unreachable");
     }
@@ -59,7 +64,7 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
   const isLan = nodeMode === "lan";
   const isBasic = nodeMode === "basic";
   const signupAllowed = !isAdvanced || !ownerEmail;
-  const isBootstrap = recoveryAvailable === false;
+  const isBootstrap = shouldShowBootstrapCreate(bootstrapStatus);
 
   React.useEffect(() => {
     if (!signupAllowed && mode === "signup") setMode("login");

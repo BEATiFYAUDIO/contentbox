@@ -8,6 +8,10 @@ This repository contains **development tooling and reference implementations**. 
 
 ## What this README is (and is not)
 
+For first-run setup, use:
+
+- `docs/QUICKSTART.md` (authoritative)
+
 **This README covers:**
 
 * Running ContentBox locally for development or testing
@@ -343,4 +347,3 @@ ContentBox is intentionally built as **software you run**, not a platform you jo
 2. Invitee: open URL and click **Accept**
 
 That’s it.
-
