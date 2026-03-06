@@ -88,25 +88,17 @@ if (-not ($envText -match "^PUBLIC_MODE=")) {
   Write-Output "[install] Set PUBLIC_MODE=quick (default)."
 }
 
-if (-not ($envText -match "^DB_MODE=")) {
-  Set-EnvLine $apiEnv "DB_MODE" "basic"
-  Write-Output "[install] Set DB_MODE=basic (default)."
-}
+Set-EnvLine $apiEnv "DB_MODE" "basic"
+Write-Output "[install] Using DB_MODE=basic."
 
 $envText = Get-Content $apiEnv -ErrorAction SilentlyContinue
-$dbModeLine = ($envText | Where-Object { $_ -match "^DB_MODE=" } | Select-Object -First 1)
-$dbMode = ($dbModeLine -replace "^DB_MODE=", "").Trim()
-if (-not $dbMode) { $dbMode = "basic" }
-
-if ($dbMode -eq "basic") {
-  $rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
-  $rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
-  $rootVal = $rootVal.Trim('"')
-  if (-not $rootVal) { $rootVal = Join-Path $HOME "contentbox-data" }
-  $sqliteUrl = "file:$rootVal/contentbox.db"
-  Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
-  Write-Output "[install] Using SQLite for basic mode."
-}
+$rootLine = ($envText | Where-Object { $_ -match "^CONTENTBOX_ROOT=" } | Select-Object -First 1)
+$rootVal = $rootLine -replace "^CONTENTBOX_ROOT=", ""
+$rootVal = $rootVal.Trim('"')
+if (-not $rootVal) { $rootVal = Join-Path $HOME "contentbox-data" }
+$sqliteUrl = "file:$rootVal/contentbox.db"
+Set-EnvLine $apiEnv "DATABASE_URL" "`"$sqliteUrl`""
+Write-Output "[install] Using SQLite for basic mode."
 
 Set-EnvLine $dashEnv "VITE_API_URL" "http://127.0.0.1:4000"
 
@@ -225,8 +217,7 @@ if ((Get-Command cloudflared -ErrorAction SilentlyContinue) -or (Test-Path $clou
 Push-Location $apiDir
 Write-Output "[install] Installing API dependencies"
 npm install
-$schemaPath = "prisma/schema.sqlite.prisma"
-if ($dbMode -eq "advanced") { $schemaPath = "prisma/schema.prisma" }
+$schemaPath = "prisma/schema.prisma"
 npx prisma validate --schema $schemaPath
 Write-Output "[install] Generating Prisma client"
 npx prisma generate --schema $schemaPath
@@ -234,15 +225,7 @@ if (-not (Test-Path (Join-Path $apiDir "node_modules/.prisma/client"))) {
   Fail "Prisma client generation failed. Run: npx prisma generate"
 }
 Write-Output "[install] Syncing database schema"
-if ($dbMode -eq "basic") {
-  npx prisma db push --schema $schemaPath
-} else {
-  if ((Test-Path "prisma/migrations") -and ((Get-ChildItem "prisma/migrations" -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)) {
-    npx prisma migrate deploy --schema $schemaPath
-  } else {
-    npx prisma db push --schema $schemaPath
-  }
-}
+npx prisma db push --schema $schemaPath
 Pop-Location
 
 Push-Location $dashDir

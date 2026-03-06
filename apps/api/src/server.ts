@@ -1156,23 +1156,34 @@ function readGeneratedPrismaProvider(): "postgresql" | "sqlite" | "unknown" {
 }
 
 function validatePrismaDatasourceAlignment() {
-  const dbMode = String(process.env.DB_MODE || "basic").trim().toLowerCase() || "basic";
   const dbUrl = String(process.env.DATABASE_URL || "");
   const urlProvider = inferDbUrlProvider(dbUrl);
   const generatedProvider = readGeneratedPrismaProvider();
+  const schemaPath = "prisma/schema.prisma";
 
-  if (generatedProvider === "unknown" || urlProvider === "unknown") return;
-  if (generatedProvider === urlProvider) return;
+  if (urlProvider !== "sqlite") {
+    throw new Error(
+      [
+        "Invalid DATABASE_URL for this distribution.",
+        "ContentBox quickstart uses SQLite-first runtime.",
+        `DATABASE_URL looks like ${urlProvider}. Expected file:...`,
+        `Fix: set DATABASE_URL=\"file:<CONTENTBOX_ROOT>/contentbox.db\" in apps/api/.env, then run: npx prisma generate --schema ${schemaPath} && npx prisma db push --schema ${schemaPath}`
+      ].join(" ")
+    );
+  }
+  if (generatedProvider === "unknown") {
+    throw new Error(
+      `Prisma client not generated. Run: npx prisma generate --schema ${schemaPath}`
+    );
+  }
+  if (generatedProvider === "sqlite") return;
 
-  const schemaPath =
-    dbMode === "advanced" ? "prisma/schema.prisma" : "prisma/schema.sqlite.prisma";
   throw new Error(
     [
       "Prisma datasource mismatch.",
       `Generated client provider=${generatedProvider}, but DATABASE_URL looks like ${urlProvider}.`,
-      `DB_MODE=${dbMode}.`,
       `Fix: npx prisma generate --schema ${schemaPath}`,
-      `Then: ${dbMode === "advanced" ? `npx prisma migrate deploy --schema ${schemaPath}` : `npx prisma db push --schema ${schemaPath}`}`
+      `Then: npx prisma db push --schema ${schemaPath}`
     ].join(" ")
   );
 }
@@ -3392,19 +3403,11 @@ app.get("/api/proofs/content/:contentId", { preHandler: requireAuth }, async (re
  * AUTH
  */
 app.get("/auth/recovery/status", async (_req, reply) => {
-  if (!isAdvancedDb()) {
-    return reply.send({ recoveryAvailable: false });
-  }
   const user = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { recoveryKeyHash: true } });
   return reply.send({ recoveryAvailable: Boolean(user?.recoveryKeyHash) });
 });
 
 app.post("/auth/recovery/reset", async (req, reply) => {
-  if (!isAdvancedDb()) {
-    return reply
-      .code(409)
-      .send({ code: "recovery_not_configured", reason: "Recovery is not configured in basic mode." });
-  }
   if (!rateLimit(req, "auth.recovery", 5, 5 * 60_000)) {
     return reply.code(429).send({ error: "Too many attempts. Try again shortly." });
   }
@@ -3487,7 +3490,7 @@ app.post("/auth/signup", async (req, reply) => {
   });
 
   let recoveryKey: string | null = null;
-  if (isAdvancedDb() && userCount === 0) {
+  if (userCount === 0) {
     recoveryKey = generateRecoveryKey();
     const recoveryKeyHash = hashRecoveryKey(recoveryKey);
     await prisma.user.update({
@@ -15336,10 +15339,6 @@ async function start() {
 
   // Ensure core payout methods exist (prevents silent failures on /api/me/payout)
   async function ensurePayoutMethods() {
-    if (!isAdvancedDb()) {
-      app.log.info("ensurePayoutMethods.skip_basic_db");
-      return;
-    }
     const methods: Prisma.PayoutMethodCreateInput[] = [
       { code: "manual", displayName: "Manual payout", isEnabled: true, isVisible: true, sortOrder: 10 },
       { code: "lightning_address", displayName: "Lightning Address", isEnabled: true, isVisible: true, sortOrder: 20 },

@@ -81,14 +81,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 set +a
 
-if [ -z "${DATABASE_URL:-}" ]; then
-  fail "DATABASE_URL is missing in $ENV_FILE"
-fi
-
-DB_MODE="$(echo "${DB_MODE:-basic}" | tr '[:upper:]' '[:lower:]')"
-if [ -z "$DB_MODE" ]; then
-  DB_MODE="basic"
-fi
+DB_MODE="basic"
 set_env "DB_MODE" "$DB_MODE"
 
 if [ -z "${JWT_SECRET:-}" ] || [ "${JWT_SECRET}" = "change-me" ]; then
@@ -100,6 +93,9 @@ fi
 CONTENTBOX_ROOT="$(normalize_content_root "${CONTENTBOX_ROOT:-}")"
 set_env "CONTENTBOX_ROOT" "\"${CONTENTBOX_ROOT}\""
 echo "[bootstrap] CONTENTBOX_ROOT: ${CONTENTBOX_ROOT}"
+DATABASE_URL="file:${CONTENTBOX_ROOT}/contentbox.db"
+set_env "DATABASE_URL" "\"${DATABASE_URL}\""
+echo "[bootstrap] DATABASE_URL: ${DATABASE_URL}"
 
 mkdir -p "$CONTENTBOX_ROOT"
 
@@ -139,86 +135,14 @@ NODE
 echo "[bootstrap] Checking Prisma versions..."
 check_prisma_versions
 
-SCHEMA_PATH="prisma/schema.sqlite.prisma"
-if [ "$DB_MODE" = "advanced" ]; then
-  SCHEMA_PATH="prisma/schema.prisma"
-fi
+SCHEMA_PATH="prisma/schema.prisma"
 
 echo "[bootstrap] Prisma validate/generate..."
 (cd "$ROOT_DIR" && npx prisma validate --schema "$SCHEMA_PATH" && npx prisma generate --schema "$SCHEMA_PATH")
 
-# Verify Postgres reachability if possible
-if [ "$DB_MODE" = "advanced" ] && command -v psql >/dev/null 2>&1; then
-  DB_URL_PSQL="$(node - <<'NODE'
-const { URL } = require('url');
-const raw = process.env.DATABASE_URL || '';
-try {
-  const u = new URL(raw);
-  u.search = '';
-  console.log(u.toString());
-} catch {
-  console.log(raw);
-}
-NODE
-)"
-  echo "[bootstrap] Checking Postgres via psql..."
-  if ! psql "$DB_URL_PSQL" -c "select 1" >/dev/null 2>&1; then
-    fail "Postgres unreachable using DATABASE_URL"
-  fi
-elif [ "$DB_MODE" = "advanced" ]; then
-  if [ -d "$ROOT_DIR/node_modules/pg" ]; then
-    echo "[bootstrap] Checking Postgres via node+pg..."
-    (cd "$ROOT_DIR" && node - <<'NODE')
-const { Client } = require('pg');
-const url = process.env.DATABASE_URL;
-const client = new Client({ connectionString: url });
-client.connect().then(() => client.query('select 1')).then(() => client.end()).catch(err => {
-  console.error('Postgres unreachable:', err.message);
-  process.exit(1);
-});
-NODE
-  else
-    echo "[bootstrap] Skipping Postgres reachability check (psql or pg not available)."
-  fi
-else
-  echo "[bootstrap] Skipping Postgres check (basic mode)."
-fi
-
-is_local_db() {
-  node - <<'NODE'
-const { URL } = require('url');
-const raw = process.env.DATABASE_URL || '';
-try {
-  const u = new URL(raw);
-  const host = u.hostname;
-  const local = host === '127.0.0.1' || host === 'localhost' || host === '::1';
-  process.exit(local ? 0 : 1);
-} catch {
-  process.exit(1);
-}
-NODE
-}
-
-if [ "$DB_MODE" != "advanced" ]; then
-  echo "[bootstrap] Using SQLite (basic). Applying schema via db push..."
-  if ! (cd "$ROOT_DIR" && npx prisma db push --schema "$SCHEMA_PATH"); then
-    fail "Prisma db push failed"
-  fi
-elif [ "${CONTENTBOX_ALLOW_MIGRATE:-}" = "1" ] || is_local_db; then
-  echo "[bootstrap] Applying database schema..."
-  if [ -d "$ROOT_DIR/prisma/migrations" ] && [ "$(ls -A "$ROOT_DIR/prisma/migrations" 2>/dev/null)" ]; then
-    echo "[bootstrap] Detected migrations. Running migrate deploy..."
-    if ! (cd "$ROOT_DIR" && npx prisma migrate deploy --schema "$SCHEMA_PATH"); then
-      fail "Prisma migrate deploy failed"
-    fi
-  else
-    echo "[bootstrap] No migrations found. Running prisma db push..."
-    if ! (cd "$ROOT_DIR" && npx prisma db push --schema "$SCHEMA_PATH"); then
-      fail "Prisma db push failed"
-    fi
-  fi
-else
-  echo "[bootstrap] Skipping schema apply (non-local DB). Set CONTENTBOX_ALLOW_MIGRATE=1 to override."
+echo "[bootstrap] Applying SQLite schema via db push..."
+if ! (cd "$ROOT_DIR" && npx prisma db push --schema "$SCHEMA_PATH"); then
+  fail "Prisma db push failed"
 fi
 
 echo "[bootstrap] Done. Start API with:"
