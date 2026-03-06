@@ -36,6 +36,8 @@ git checkout <PINNED_TAG_OR_COMMIT>
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
+Windows users: run `install.ps1` (not `install.sh`).
+
 ## First Run (Basic)
 
 Start API:
@@ -63,11 +65,20 @@ Basic mode is the default and works without PostgreSQL or LND.
 1. Sign in.
 2. Open **Profile**.
 3. Switch **Node Mode** to **Advanced (Sovereign Node)**.
-4. Open Finance/Lightning setup and enter:
+4. Check the **Advanced setup readiness** panel in Profile:
+   - cloudflared: optional unless you need Public Link
+   - LND: should become ready after config
+5. Open Finance/Lightning setup and enter:
    - REST URL (usually `https://127.0.0.1:8080`)
    - `tls.cert`
    - `admin.macaroon`
-5. Test and save.
+6. Test and save.
+
+Optional (power users, Windows):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\apps\api\upgrade-advanced.ps1
+```
 
 Important:
 - Avoid setting `PRODUCT_TIER` or `NODE_MODE` in env unless you intentionally want to lock the Node Mode toggle.
