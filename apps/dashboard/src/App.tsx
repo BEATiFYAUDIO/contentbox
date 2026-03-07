@@ -617,25 +617,7 @@ export default function App() {
             {import.meta.env.DEV ? (
               <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
                 <span>Connected To:</span>
-                <span className="font-mono">{devApiUrl || "VITE_API_URL not set"}</span>
-                <span className="text-neutral-500">•</span>
-                {whoamiStatus === "ok" ? (
-                  <span className="font-mono">
-                    {whoamiInfo?.nodeId || "unknown"} •{" "}
-                    {(whoamiInfo?.db?.name || "db?") +
-                      (whoamiInfo?.db?.addr
-                        ? `@${whoamiInfo.db.addr}${whoamiInfo.db.port ? `:${whoamiInfo.db.port}` : ""}`
-                        : "")}
-                  </span>
-                ) : (
-                  <span>
-                    {whoamiStatus === "disabled"
-                      ? "whoami disabled"
-                      : whoamiStatus === "error"
-                        ? "whoami error"
-                        : "whoami checking"}
-                  </span>
-                )}
+                <span className="font-mono">{devApiUrl || "API base unresolved"}</span>
               </div>
             ) : null}
             {getToken() ? (
@@ -788,7 +770,7 @@ export default function App() {
                   }}
                 />
               )}
-              {page === "diagnostics" && <DiagnosticsPage />}
+              {page === "diagnostics" && <DiagnosticsPage whoamiInfo={whoamiInfo} whoamiStatus={whoamiStatus} />}
 
               {page === "finance" && (
                 <ErrorBoundary>

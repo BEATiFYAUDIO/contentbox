@@ -111,6 +111,20 @@ type PublicTunnel = {
   connections?: number;
 };
 
+type WhoamiInfo = {
+  nodeId?: string | null;
+  startedAt?: string | null;
+  db?: {
+    name?: string | null;
+    addr?: string | null;
+    port?: number | null;
+  } | null;
+};
+
+type DiagnosticsPageProps = {
+  whoamiInfo?: WhoamiInfo | null;
+  whoamiStatus?: "idle" | "disabled" | "ok" | "error";
+};
 
 function isLocalHostname(hostname: string): boolean {
   if (!hostname) return false;
@@ -154,7 +168,7 @@ function fmtStatus(row: ProbeRow) {
   return row.errorType || "Fail";
 }
 
-export default function DiagnosticsPage() {
+export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idle" }: DiagnosticsPageProps) {
   const apiBase = useMemo(() => getApiBase(), []);
   const inputClass =
     "w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm text-white placeholder:text-neutral-600 outline-none focus:border-neutral-600";
@@ -459,6 +473,30 @@ export default function DiagnosticsPage() {
       <p style={{ opacity: 0.7, marginBottom: 12 }}>
         Run connectivity tests against your public hosts. This never includes secrets.
       </p>
+
+      {import.meta.env.DEV ? (
+        <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Dev API probe (__whoami)</div>
+          {whoamiStatus === "ok" ? (
+            <div style={{ display: "grid", gap: 4, fontSize: 13 }}>
+              <div><b>Node</b>: {whoamiInfo?.nodeId || "unknown"}</div>
+              <div>
+                <b>DB</b>:{" "}
+                {(whoamiInfo?.db?.name || "db?") +
+                  (whoamiInfo?.db?.addr ? `@${whoamiInfo.db.addr}${whoamiInfo.db.port ? `:${whoamiInfo.db.port}` : ""}` : "")}
+              </div>
+            </div>
+          ) : (
+            <div style={{ opacity: 0.75 }}>
+              {whoamiStatus === "disabled"
+                ? "Probe disabled (endpoint not exposed)."
+                : whoamiStatus === "error"
+                  ? "Probe failed."
+                  : "Probe pending."}
+            </div>
+          )}
+        </div>
+      ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 12, marginBottom: 12 }}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Public tunnel health</div>
