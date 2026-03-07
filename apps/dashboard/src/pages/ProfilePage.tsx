@@ -39,6 +39,27 @@ type PublicStatus = {
     managedPath?: string | null;
     version?: string | null;
   };
+  status?: string;
+  transport?: {
+    activeMode?: "off" | "quick" | "named";
+    quick?: {
+      status?: "STOPPED" | "STARTING" | "ACTIVE" | "ERROR";
+      online?: boolean;
+      publicOrigin?: string | null;
+    };
+    named?: {
+      configured?: boolean;
+      online?: boolean;
+      status?: "online" | "offline" | "not_configured";
+      tunnelName?: string | null;
+      publicOrigin?: string | null;
+    };
+  };
+  advancedPublicLink?: {
+    requiredMode?: "named";
+    ready?: boolean;
+    reason?: string | null;
+  };
 };
 
 type LightningReadiness = {
@@ -82,6 +103,12 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [publicStatus, setPublicStatus] = useState<PublicStatus | null>(null);
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
   const [advancedSetupError, setAdvancedSetupError] = useState<string | null>(null);
+  const activeMode = publicStatus?.transport?.activeMode || "off";
+  const namedConfigured = Boolean(publicStatus?.transport?.named?.configured);
+  const namedOnline = Boolean(publicStatus?.transport?.named?.online);
+  const advancedNamedReady = Boolean(publicStatus?.advancedPublicLink?.ready);
+  const advancedNamedReason = String(publicStatus?.advancedPublicLink?.reason || "");
+  const quickStatus = publicStatus?.transport?.quick?.status || "STOPPED";
 
   useEffect(() => {
     setBeatifyHandle(extractBeatifyHandle(me?.bio));
@@ -326,9 +353,46 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                 </span>
               </div>
               <div>
-                cloudflared:{" "}
+                Public link (named tunnel):{" "}
+                <span
+                  className={
+                    modeInfo?.nodeMode !== "advanced"
+                      ? "text-neutral-400"
+                      : advancedNamedReady
+                        ? "text-emerald-300"
+                        : "text-amber-300"
+                  }
+                >
+                  {modeInfo?.nodeMode !== "advanced"
+                    ? "not required in Basic mode"
+                    : advancedNamedReady
+                      ? "ready"
+                      : advancedNamedReason === "NAMED_TUNNEL_OFFLINE"
+                        ? "incomplete (configured but offline)"
+                        : "pending (named tunnel not configured)"}
+                </span>
+              </div>
+              {modeInfo?.nodeMode === "advanced" ? (
+                <div className="text-neutral-500">
+                  {namedConfigured
+                    ? `Named tunnel: ${namedOnline ? "online" : "offline"}${publicStatus?.transport?.named?.tunnelName ? ` (${publicStatus.transport.named.tunnelName})` : ""}`
+                    : "Named tunnel: not configured (quick tunnel does not satisfy Advanced activation)."}
+                </div>
+              ) : null}
+              <div>
+                Quick tunnel:{" "}
+                <span className={activeMode === "quick" && quickStatus === "ACTIVE" ? "text-emerald-300" : "text-neutral-400"}>
+                  {activeMode === "quick" && quickStatus === "ACTIVE"
+                    ? "online (temporary)"
+                    : activeMode === "quick"
+                      ? `available (${quickStatus.toLowerCase()})`
+                      : "inactive"}
+                </span>
+              </div>
+              <div>
+                cloudflared binary:{" "}
                 <span className={publicStatus?.cloudflared?.available ? "text-emerald-300" : "text-amber-300"}>
-                  {publicStatus?.cloudflared?.available ? "ready" : "missing (optional unless you need Public Link)"}
+                  {publicStatus?.cloudflared?.available ? "installed" : "missing (needed for tunnel features)"}
                 </span>
               </div>
               <div>

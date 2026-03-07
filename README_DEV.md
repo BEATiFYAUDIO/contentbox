@@ -10,7 +10,7 @@ Always use a pinned tag/commit from release notes, not `main`.
 
 ## Requirements
 - Node.js + npm (no root package.json; installs are per app)
-- Postgres (local or remote)
+- SQLite is the default local runtime via installer/bootstrap
 
 ## Fresh Clone Quickstart (API)
 ```bash
@@ -20,7 +20,7 @@ git checkout fix/northstar-mvp-hardening
 
 cd apps/api
 bash scripts/bootstrap-dev.sh
-# then edit apps/api/.env and re-run if prompted
+# bootstrap writes SQLite DATABASE_URL and runs prisma generate + db push
 ```
 
 ## Dashboard Quickstart
@@ -39,14 +39,13 @@ Windows (PowerShell):
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 After the first run, edit:
-- `apps/api/.env` (DATABASE_URL)
 - `apps/dashboard/.env` if your API is not localhost
 
 ## LTE quick demo (10 lines)
 ```bash
 # 1) install
 ./install.sh
-# 2) edit apps/api/.env (DATABASE_URL)
+# 2) (no DB edit needed for quickstart; SQLite is configured automatically)
 # 3) start services
 cd apps/api && npm run dev
 cd ../dashboard && npm run dev
@@ -80,6 +79,7 @@ curl http://127.0.0.1:4000/api/capabilities
 
 ## Common errors and fixes
 - **Prisma config fails / DATABASE_URL missing**: set `DATABASE_URL` in `apps/api/.env`
+- **Migration lock/provider mismatch**: quickstart uses `prisma db push` with SQLite, not `prisma migrate`
 - **JWT_SECRET missing**: the installer auto-generates it; re-run install if missing
 - **CONTENTBOX_ROOT missing**: installer auto-creates it under `~/contentbox-data`
 - **@prisma/client errors**: run `npx prisma generate` from `apps/api`

@@ -18,7 +18,7 @@ import ConfigPage from "./pages/ConfigPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
 import FinancePage, { type FinanceTab } from "./pages/FinancePage";
 import ProfilePage from "./pages/ProfilePage";
-import { api } from "./lib/api";
+import { api, getApiBase } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
 import { fetchIdentityDetail, type IdentityDetail } from "./lib/identity";
 import { modeLabel } from "./lib/nodeMode";
@@ -122,7 +122,7 @@ function getReceiptTokenFromLocation(): string | null {
 ======================= */
 
 export default function App() {
-  const devApiUrl = ((import.meta as any).env?.VITE_API_URL || "").toString().trim().replace(/\/$/, "");
+  const devApiUrl = getApiBase().replace(/\/$/, "");
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [authNotice, setAuthNotice] = useState<string | null>(() => {

@@ -1420,11 +1420,24 @@ function getPublicLinkState(): PublicLinkState {
 function getPublicStatus() {
   const state = getPublicLinkState();
   const cloudflared = getCloudflaredStatus();
+  const namedCfg = getNamedTunnelConfig();
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
   const autoStartEnabled = getPublicSharingAutoStart();
   const quickState = tunnelManager.status();
   const consentRequired = state.mode === "quick" && !cloudflared.available && !consentGranted;
+  const productTier = resolveProductTier().productTier;
+  const advancedNeedsNamed = productTier === "advanced";
+  const namedConfigured = Boolean(namedCfg);
+  const namedOnline = state.mode === "named" && state.status === "online";
+  const advancedNamedReady = !advancedNeedsNamed || (namedConfigured && namedOnline);
+  const advancedNamedReason = !advancedNeedsNamed
+    ? null
+    : !namedConfigured
+      ? "NAMED_TUNNEL_NOT_CONFIGURED"
+      : !namedOnline
+        ? "NAMED_TUNNEL_OFFLINE"
+        : null;
   const legacyState =
     state.status === "online" ? "ACTIVE" : state.status === "starting" ? "STARTING" : state.status === "error" ? "ERROR" : "STOPPED";
   const errorDetail =
@@ -1442,10 +1455,30 @@ function getPublicStatus() {
     isCanonical: state.isCanonical,
     message: state.message,
     lastChangedAt: state.lastChangedAt,
-    tunnelName: getNamedTunnelConfig()?.tunnelName || null,
+    tunnelName: namedCfg?.tunnelName || null,
     namedTokenStored: Boolean(getNamedTunnelToken()),
-    namedConfigured: isNamedConfigured(),
+    namedConfigured,
     namedDisabled: isNamedTunnelDisabled(),
+    transport: {
+      activeMode: state.mode,
+      quick: {
+        status: quickState.status,
+        online: quickState.status === "ACTIVE",
+        publicOrigin: quickState.publicOrigin || null
+      },
+      named: {
+        configured: namedConfigured,
+        tunnelName: namedCfg?.tunnelName || null,
+        publicOrigin: namedCfg?.publicOrigin || null,
+        online: namedOnline,
+        status: namedConfigured ? (namedOnline ? "online" : "offline") : "not_configured"
+      }
+    },
+    advancedPublicLink: {
+      requiredMode: "named",
+      ready: advancedNamedReady,
+      reason: advancedNamedReason
+    },
     state: legacyState,
     lastError: errorDetail,
     lastCheckedAt: namedHealthCache.checkedAt,

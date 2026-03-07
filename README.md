@@ -33,7 +33,7 @@ If you only want to **try ContentBox locally**, you can safely ignore the sectio
 ## Contents
 
 * Overview
-* Local development setup (Docker)
+* Local development setup (Docker, legacy/advanced path)
 * Running the owner node (local)
 * Running an invitee node (optional)
 * Creating invites
@@ -74,9 +74,10 @@ There are two supported acceptance modes:
 
 ---
 
-## Local development setup (Docker)
+## Local development setup (Docker, legacy/advanced path)
 
-Docker is used to start shared infrastructure services for local development.
+Docker is optional and primarily relevant to older/advanced server-style workflows.
+For normal local installs, use `docs/QUICKSTART.md` (SQLite-first).
 
 This setup starts:
 
@@ -131,7 +132,7 @@ Install dependencies and prepare Prisma (run once):
 cd /path/to/contentbox/apps/api
 npm install
 npm run prisma:generate
-npx prisma migrate dev --name init
+npx prisma db push --schema prisma/schema.prisma
 ```
 
 Start the API:
@@ -288,6 +289,8 @@ This section describes the model and data flow, not a production deployment.
 ## Environment configuration (examples)
 
 All examples below are **non-production** and intentionally incomplete.
+For local quickstart, use SQLite (`file:...`) from `docs/QUICKSTART.md`.
+PostgreSQL examples below are for advanced/server deployments only.
 
 Owner API example:
 

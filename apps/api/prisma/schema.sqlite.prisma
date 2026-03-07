@@ -1,4 +1,6 @@
-// prisma/schema.prisma
+// Legacy compatibility schema.
+// Quickstart/runtime scripts use prisma/schema.prisma as the canonical schema.
+// Keep this file only as a temporary reference during SQLite-first cleanup.
 generator client {
   provider = "prisma-client-js"
 }
