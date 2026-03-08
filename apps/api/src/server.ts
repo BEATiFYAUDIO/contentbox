@@ -15,6 +15,7 @@ import { argon2id } from "@noble/hashes/argon2";
 import { execFile, spawnSync } from "node:child_process";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { ethers } from "ethers";
+import { nip19 } from "nostr-tools";
 import * as cheerio from "cheerio";
 import { initContentRepo, addFileToContentRepo, commitAll } from "./lib/repo.js";
 import {
@@ -93,6 +94,7 @@ import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
 import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
+import { registerWitnessRoutes } from "./modules/witness/witness.routes.js";
 import {
   assertCanPublish as assertLifecycleCanPublish,
   assertCanRestore as assertLifecycleCanRestore,
@@ -1189,7 +1191,7 @@ function validatePrismaDatasourceAlignment() {
     throw new Error(
       [
         "Invalid DATABASE_URL for this distribution.",
-        "ContentBox quickstart uses SQLite-first runtime.",
+        "Certifyd Creator quickstart uses SQLite-first runtime.",
         `DATABASE_URL looks like ${urlProvider}. Expected file:...`,
         `Fix: set DATABASE_URL=\"file:<CONTENTBOX_ROOT>/contentbox.db\" in apps/api/.env, then run: npx prisma generate --schema ${schemaPath} && npx prisma db push --schema ${schemaPath}`
       ].join(" ")
@@ -1706,6 +1708,33 @@ async function fetchAndStoreAvatarForUser(userId: string, imageUrl: string) {
   } catch (e) {
     return null;
   }
+}
+
+async function storeAvatarBufferForUser(userId: string, buf: Buffer, contentType: string | null) {
+  if (!buf || buf.length === 0) return null;
+  const MAX = 2 * 1024 * 1024;
+  if (buf.length > MAX) throw new Error("AVATAR_TOO_LARGE");
+  const ct = String(contentType || "").toLowerCase();
+  if (!ct.startsWith("image/")) throw new Error("INVALID_AVATAR_TYPE");
+  const ext = (() => {
+    const m = (ct.match(/^image\/(png|jpeg|jpg|gif|webp|avif)/i) || [])[1];
+    if (!m) return "";
+    if (m === "jpeg") return ".jpg";
+    return `.${m}`;
+  })();
+  if (!ext) throw new Error("INVALID_AVATAR_TYPE");
+
+  const sha = crypto.createHash("sha256").update(buf).digest("hex");
+  const dir = path.join(CONTENTBOX_ROOT, "avatars", userId);
+  await fs.mkdir(dir, { recursive: true });
+  const filename = `${sha}${ext}`;
+  const abs = path.join(dir, filename);
+  try {
+    await fs.stat(abs);
+  } catch {
+    await fs.writeFile(abs, buf);
+  }
+  return `${APP_BASE_URL}/public/avatars/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
 }
 
 /** ---------- manifest helpers ---------- */
@@ -2306,7 +2335,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/", async (_req: any, reply: any) => {
     return reply.send({
       ok: true,
-      message: "This is the ContentBox public endpoint. It can be whatever you want.",
+      message: "This is the Certifyd Creator public endpoint. It can be whatever you want.",
       examples: [
         "A storefront",
         "A cryptographic identity",
@@ -2321,6 +2350,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/ping", handlePublicPing);
   appPublic.get("/p/:token", handleShortPublicLink);
   appPublic.get("/u/:handle", handlePublicNodeProfilePage);
+  appPublic.get("/u/:handle/proofs.json", handlePublicProofBundle);
   appPublic.get("/profile", handlePublicProfileRedirect);
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
@@ -4700,6 +4730,8 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
   return { ...user, publicOrigin: publicOrigin || null };
 });
 
+registerWitnessRoutes(app, { prisma, requireAuth });
+
 // Public exposure control
 app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const state = getPublicLinkState();
@@ -5288,6 +5320,31 @@ app.patch("/me", { preHandler: requireAuth }, async (req: any, reply: any) => {
   return reply.send(updated);
 });
 
+app.post("/api/me/avatar/upload", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  try {
+    const file = await req.file();
+    if (!file) return badRequest(reply, "image file required");
+    const mime = String(file.mimetype || "").toLowerCase();
+    if (!mime.startsWith("image/")) return badRequest(reply, "image file required");
+    const buf = await file.toBuffer();
+    const avatarUrl = await storeAvatarBufferForUser(userId, buf, mime);
+    if (!avatarUrl) return reply.code(500).send({ error: "Failed to store avatar" });
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: { avatarUrl },
+      select: { id: true, email: true, displayName: true, createdAt: true, bio: true, avatarUrl: true }
+    });
+    return reply.send({ ok: true, me: updated });
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+    if (msg === "AVATAR_TOO_LARGE") return reply.code(413).send({ error: "AVATAR_TOO_LARGE", message: "Avatar must be 2MB or smaller." });
+    if (msg === "INVALID_AVATAR_TYPE") return badRequest(reply, "Only image files are supported.");
+    req.log.error({ err: e }, "me.avatar.upload.failed");
+    return reply.code(500).send({ error: "INTERNAL_ERROR" });
+  }
+});
+
 // (external/profile/import) route: enhanced implementation later in the file (Lens, ENS, HTML parsing).
 
 // Enhance external profile import: try Lens and ENS lookups when applicable
@@ -5545,22 +5602,6 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
 
     // 5) avatar image heuristics
     try {
-      // Beatify-specific explicit selector: prefer <img class="profile-picture outfit-reference" src="...">
-      try {
-        const bf = $("img.profile-picture.outfit-reference").first();
-        const bfsrc = bf.attr && bf.attr("src") ? bf.attr("src") : null;
-        if (bfsrc) {
-          try {
-            const resolved = new URL(bfsrc, targetUrl).toString();
-            const norm = normalizeUrlString(resolved);
-            out.image = out.image || (norm || resolved);
-          } catch {
-            const norm = normalizeUrlString(bfsrc);
-            out.image = out.image || (norm || bfsrc);
-          }
-        }
-      } catch {}
-
       const imgs = $("img").toArray().map((el) => ({ src: $(el).attr("src") || "", attrs: ($(el).attr("class") || "") + " " + ($(el).attr("alt") || "") }));
       function chooseImg(cands: typeof imgs) {
         for (const c of cands) if (/(avatar|profile|pfp|photo|headshot|face)/i.test(c.attrs)) return c.src;
@@ -5578,33 +5619,6 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
           out.image = out.image || (norm || picked);
         }
       }
-      // Beatify-specific heuristic: prefer explicit avatar files like
-      // /<handle>/avatar.png or any path containing '/avatar' on beatify hosts.
-      try {
-        const allImgSrcs = $("img").toArray().map((el) => $(el).attr("src") || "");
-        for (const s of allImgSrcs) {
-          if (!s) continue;
-          let resolved: string | null = null;
-          try {
-            resolved = new URL(s, targetUrl).toString();
-          } catch {
-            resolved = normalizeUrlString(s);
-          }
-          if (!resolved) continue;
-
-          try {
-            const p = new URL(resolved).pathname || "";
-            // match paths like /<handle>/avatar.png or any path segment 'avatar' with an image extension
-            if (/\/(?:[^\/]+)\/avatar(?:\.(png|jpe?g|gif|webp|avif))?$/i.test(p) || /\bavatar(?:\.(png|jpe?g|gif|webp|avif))$/i.test(p) || /content\.beatify\./i.test(resolved) || /beatify\.me/i.test(targetUrl)) {
-              const norm = normalizeUrlString(resolved);
-              out.image = out.image || (norm || resolved);
-              break;
-            }
-          } catch {
-            // ignore per-URL errors
-          }
-        }
-      } catch {}
     } catch {}
 
     // 6) payouts heuristics (scan text)
@@ -5690,42 +5704,6 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
       } catch {}
     }
 
-    // Beatify special-case: if we didn't find an image via HTML parsing,
-    // try the conventional content host avatar path: https://content.beatify.audio/<handle>/avatar.png
-    try {
-      if (!parsed.image) {
-        try {
-          const u = new URL(url.includes("//") ? url : `https://${url}`);
-          const host = (u.hostname || "").toLowerCase();
-          if (host.includes("beatify")) {
-            // derive handle from parsed.handle (if present) or from path (last path segment)
-            const parts = u.pathname.split("/").filter(Boolean);
-            const handleFromPath = parts.length ? parts[parts.length - 1] : null;
-            const handle = parsed.handle || handleFromPath;
-            if (handle) {
-              const cand = `https://content.beatify.audio/${encodeURIComponent(handle)}/avatar.png`;
-              try {
-                // prefer HEAD to check existence; some hosts may not support HEAD, so fall back to GET
-                let ok = false;
-                try {
-                  const hr = await fetch(cand, { method: "HEAD" } as any);
-                  ok = hr && hr.ok && ((hr.headers.get("content-type") || "").startsWith("image/"));
-                } catch {
-                  // HEAD failed, try GET but do not stream body here
-                  try {
-                    const gr = await fetch(cand, { method: "GET" } as any);
-                    ok = gr && gr.ok && ((gr.headers.get("content-type") || "").startsWith("image/"));
-                  } catch {}
-                }
-
-                if (ok) parsed.image = cand;
-              } catch {}
-            }
-          }
-        } catch {}
-      }
-    } catch {}
-
     // Ensure Beatify handle overrides other name candidates for Beatify hosts.
     try {
       const u = new URL(url.includes("//") ? url : `https://${url}`);
@@ -5738,8 +5716,6 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
     } catch {}
 
     // If we have an image URL and the authenticated user, attempt to download and store it locally.
-    // Keep the original source URL (origImage) so we can persist the external Beatify URL into the user's profile,
-    // while still saving a local copy for reliability.
     try {
       const userId = (req.user as JwtUser).sub;
       let origImage: string | null = null;
@@ -5752,20 +5728,18 @@ app.post("/external/profile/import", { preHandler: requireAuth }, async (req: an
         } catch {}
       }
 
-      // For the response, prefer returning the original external URL when present (so UI shows Beatify src),
-      // otherwise fall back to the stored copy.
-      if (origImage) parsed.image = origImage;
-      else if (storedImage) parsed.image = storedImage;
+      // For the response, prefer ContentBox-hosted image when available.
+      if (storedImage) parsed.image = storedImage;
+      else if (origImage) parsed.image = origImage;
 
       // Persist parsed profile fields into the user's profile (displayName, bio, avatarUrl) when available.
-      // Use the original external URL for avatarUrl if available so the profile element references Beatify's image.
       try {
         const userId = (req.user as JwtUser).sub;
         const updateData: any = {};
         if (parsed.name) updateData.displayName = String(parsed.name).trim() || null;
         if (parsed.description) updateData.bio = String(parsed.description).trim() || null;
-        if (origImage) updateData.avatarUrl = String(origImage).trim() || null;
-        else if (storedImage) updateData.avatarUrl = String(storedImage).trim() || null;
+        if (storedImage) updateData.avatarUrl = String(storedImage).trim() || null;
+        else if (origImage) updateData.avatarUrl = String(origImage).trim() || null;
         if (Object.keys(updateData).length > 0) {
           await prisma.user.update({ where: { id: userId }, data: updateData });
         }
@@ -6101,6 +6075,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     title: true,
     type: true,
     status: true,
+    featureOnProfile: true,
     storefrontStatus: true,
     deliveryMode: true,
     priceSats: true,
@@ -6215,6 +6190,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     ...i,
     priceSats: i.priceSats != null ? i.priceSats.toString() : null,
     coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`,
+    featureOnProfile: Boolean(i.featureOnProfile),
     tombstoned: isArchivedPublished(i)
   }));
 });
@@ -8740,14 +8716,51 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const maybeName = requested.replace(/[-_.]+/g, " ").trim();
   const user =
     await prisma.user.findFirst({
-      where: { displayName: { equals: requested, mode: "insensitive" } as any },
-      select: { id: true, displayName: true, bio: true, avatarUrl: true }
+      where: { displayName: { equals: requested } },
+      select: {
+        id: true,
+        displayName: true,
+        bio: true,
+        avatarUrl: true,
+        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+      }
     }) ||
     await prisma.user.findFirst({
-      where: { displayName: { equals: maybeName, mode: "insensitive" } as any },
-      select: { id: true, displayName: true, bio: true, avatarUrl: true }
+      where: { displayName: { equals: maybeName } },
+      select: {
+        id: true,
+        displayName: true,
+        bio: true,
+        avatarUrl: true,
+        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+      }
     });
   if (!user) return notFound(reply, "Not found");
+
+  const verifiedProofs = await prisma.proofRecord.findMany({
+    where: {
+      userId: user.id,
+      status: "verified",
+      revokedAt: null
+    },
+    orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+    select: { id: true, proofType: true, subject: true, claimJson: true }
+  });
+  const featuredContent = await prisma.contentItem.findMany({
+    where: {
+      ownerUserId: user.id,
+      status: "published",
+      deletedAt: null,
+      featureOnProfile: true
+    },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      title: true,
+      type: true,
+      manifest: { select: { json: true } }
+    }
+  });
 
   const wk = await buildWellKnownContentboxPayload(req);
   const nodeUrl = wk.nodeUrl || "";
@@ -8755,18 +8768,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const nodeSha = wk.publicKeyPemSha256 || null;
   const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}…${nodeSha.slice(-8)}` : null;
 
-  const conf = await readBeatifyNodeProof();
-  const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
-  const proofUrl = asString(conf.proofUrl || "").trim();
-  const signatureId = asString(conf.signatureId || (proofUrl ? extractSignatureIdFromProofUrl(proofUrl) : "") || "").trim();
-  const revoked = Boolean(conf.revokedAt);
-  const beatifyMatches = Boolean(
-    beatifyHandle &&
-    normalizePublicProfileHandle(beatifyHandle) === requested
-  );
-  const beatifyVerified = Boolean(beatifyMatches && beatifyHandle && proofUrl && !revoked);
-  const beatifyLinkedUnverified = Boolean(beatifyMatches && (revoked || !proofUrl));
-  const publicProofText = asString(conf.publicProofText || "").trim();
   let lightningConfigured = false;
   try {
     const lnd = await getLightningNodeConfigStatus(prisma as any);
@@ -8778,21 +8779,205 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
   const safeBio = escHtml(asString(user.bio || ""));
   const safeAvatar = asString(user.avatarUrl || "").trim();
-  const safeAvatarUrl = /^https?:\/\//i.test(safeAvatar) ? escHtml(safeAvatar) : "";
+  const safeAvatarUrl = (/^https?:\/\//i.test(safeAvatar) || safeAvatar.startsWith("/public/avatars/")) ? escHtml(safeAvatar) : "";
   const safeHandle = escHtml(`@${requested}`);
-  const safeProofUrl = escHtml(proofUrl || "");
-  const safeSig = escHtml(signatureId || "");
   const safeNodeUrl = escHtml(nodeUrl);
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
-  const safeProofText = escHtml(publicProofText || "");
+  const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
+  const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
+  const verifiedDomainProofs = verifiedProofs.filter((p) => {
+    const proofType = asString((p as any).proofType || "").trim().toLowerCase();
+    return proofType === "domain";
+  });
+  const verifiedSocialProofs = verifiedProofs.filter((p) => {
+    const proofType = asString((p as any).proofType || "").trim().toLowerCase();
+    return proofType === "social";
+  });
+  const verifiedNostrProofs = verifiedProofs.filter((p) => {
+    const proofType = asString((p as any).proofType || "").trim().toLowerCase();
+    const subjectRaw = asString((p as any).subject || "").trim().toLowerCase();
+    const claim = ((p as any).claimJson || {}) as any;
+    const claimPubkey = asString(claim?.pubkey || "").trim().toLowerCase();
+    return proofType === "nostr" || subjectRaw.startsWith("nostr:") || /^[0-9a-f]{64}$/.test(claimPubkey);
+  });
+  const verifiedOtherProofs = verifiedProofs.filter((p) => {
+    const proofType = asString((p as any).proofType || "").trim().toLowerCase();
+    const subjectRaw = asString((p as any).subject || "").trim().toLowerCase();
+    if (proofType === "domain" || proofType === "social" || proofType === "nostr") return false;
+    if (subjectRaw.startsWith("nostr:")) return false;
+    return true;
+  });
+
+  const domainProofsHtml =
+    verifiedDomainProofs.length > 0
+      ? verifiedDomainProofs
+          .map((p) => {
+            const domain = asString((p as any).subject || "").trim().toLowerCase();
+            const safeDomain = escHtml(domain);
+            const href = `https://${encodeURI(domain)}`;
+            return `<div class="line muted">✓ <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">↗</span></div>`;
+          })
+          .join("")
+      : `<div class="line muted">none</div>`;
+  const socialProofsHtml =
+    verifiedSocialProofs.length > 0
+      ? verifiedSocialProofs
+          .map((p) => {
+            const claim = ((p as any).claimJson || {}) as any;
+            const providerRaw = asString(claim?.provider || "").trim().toLowerCase();
+            const subjectRaw = asString((p as any).subject || "").trim();
+            let provider = providerRaw;
+            let account = asString(claim?.account || claim?.username || "").trim();
+            if (!provider || !account) {
+              const idx = subjectRaw.indexOf(":");
+              if (idx > 0) {
+                provider = provider || subjectRaw.slice(0, idx).trim().toLowerCase();
+                account = account || subjectRaw.slice(idx + 1).trim();
+              } else {
+                account = account || subjectRaw;
+              }
+            }
+            const providerLabel =
+              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "x" ? "X" : provider ? provider : "Social";
+            let href = "";
+            if (provider === "github" && account) {
+              href = `https://github.com/${encodeURIComponent(account)}`;
+            } else if (provider === "youtube") {
+              const channelUrl = asString(claim?.channelUrl || "").trim();
+              if (/^https:\/\/(www\.)?youtube\.com\//i.test(channelUrl)) {
+                href = channelUrl;
+              } else if (account.startsWith("@")) {
+                href = `https://www.youtube.com/${encodeURIComponent(account)}`;
+              }
+            } else if (provider === "instagram" && account) {
+              const igHandle = account.startsWith("@") ? account.slice(1) : account;
+              href = `https://instagram.com/${encodeURIComponent(igHandle)}`;
+            } else if (provider === "tiktok" && account) {
+              const ttHandle = account.startsWith("@") ? account : `@${account}`;
+              href = `https://www.tiktok.com/${encodeURIComponent(ttHandle)}`;
+            } else if (asString((p as any).location || "").trim()) {
+              const loc = asString((p as any).location || "").trim();
+              if (/^https:\/\//i.test(loc)) href = loc;
+            }
+            const displayAccount = (provider === "instagram" || provider === "tiktok") && account && !account.startsWith("@") ? `@${account}` : account;
+            const safeAccount = escHtml(displayAccount || "unknown");
+            const safeProvider = escHtml(providerLabel);
+            if (href) {
+              return `<div class="line muted">✓ ${safeProvider} — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">↗</span></div>`;
+            }
+            return `<div class="line muted">✓ ${safeProvider} — <span class="mono">${safeAccount}</span></div>`;
+          })
+          .join("")
+      : `<div class="line muted">none</div>`;
+  const nostrProofsHtml =
+    verifiedNostrProofs.length > 0
+      ? verifiedNostrProofs
+          .map((p) => {
+            const claim = ((p as any).claimJson || {}) as any;
+            const subjectRaw = asString((p as any).subject || "").trim();
+            let pubkey = asString(claim?.pubkey || "").trim().toLowerCase();
+            if (!pubkey) {
+              const idx = subjectRaw.indexOf(":");
+              if (idx > 0) {
+                pubkey = subjectRaw.slice(idx + 1).trim().toLowerCase();
+              } else {
+                pubkey = subjectRaw.toLowerCase();
+              }
+            }
+            let npub = asString(claim?.npub || "").trim().toLowerCase();
+            if (!npub && /^[0-9a-f]{64}$/.test(pubkey)) {
+              try {
+                npub = nip19.npubEncode(pubkey);
+              } catch {
+                npub = "";
+              }
+            }
+            const displayValue = npub || pubkey || "unknown";
+            const shortValue = displayValue.length > 18 ? `${displayValue.slice(0, 10)}…${displayValue.slice(-8)}` : displayValue;
+            const hrefValue = npub || pubkey;
+            const href = hrefValue ? `https://njump.me/${encodeURIComponent(hrefValue)}` : "";
+            if (href) {
+              return `<div class="line muted">✓ Nostr — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${escHtml(shortValue)}</a> <span aria-hidden="true">↗</span></div>`;
+            }
+            return `<div class="line muted">✓ Nostr — <span class="mono">${escHtml(shortValue)}</span></div>`;
+          })
+          .join("")
+      : `<div class="line muted">none</div>`;
+  const otherProofsHtml =
+    verifiedOtherProofs.length > 0
+      ? verifiedOtherProofs
+          .map((p) => {
+            const proofType = asString((p as any).proofType || "").trim().toLowerCase() || "proof";
+            const subject = asString((p as any).subject || "").trim() || "unknown";
+            return `<div class="line muted">✓ ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
+          })
+          .join("")
+      : "";
+  const featuredContentHtml =
+    featuredContent.length > 0
+      ? featuredContent
+          .map((item) => {
+            const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
+            const type = asString(item.type || "").trim().toLowerCase();
+            const safeType = escHtml(type.toUpperCase() || "ITEM");
+            const manifestJson = ((item as any).manifest?.json || {}) as any;
+            const previewObjectKey =
+              asString(manifestJson?.preview || "").trim() ||
+              asString(manifestJson?.primaryFile || "").trim() ||
+              (Array.isArray(manifestJson?.files)
+                ? asString(manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey || "").trim()
+                : "");
+            const previewUrl = previewObjectKey
+              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
+              : "";
+            const coverAsset = getCoverAssetFromManifest(manifestJson);
+            const coverUrl = coverAsset?.path
+              ? `/public/content/${encodeURIComponent(item.id)}/cover`
+              : "";
+            const buyUrl = `/buy/${encodeURIComponent(item.id)}`;
+            const mediaHtml =
+              type === "video" && previewUrl
+                ? `<video class="featured-video" controls preload="metadata" playsinline ${coverUrl ? `poster="${escHtml(coverUrl)}"` : ""}>
+                    <source src="${escHtml(previewUrl)}" />
+                  </video>`
+                : type === "song" && previewUrl
+                  ? `<div class="featured-song-media">
+                      <div class="featured-song-cover-wrap">
+                        ${
+                          coverUrl
+                            ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-song-cover" onerror="this.style.display='none'; this.parentElement.classList.add('featured-song-cover-missing');" />`
+                            : ""
+                        }
+                        <span class="featured-fallback">${safeType}</span>
+                      </div>
+                      <audio class="featured-audio" controls preload="none">
+                        <source src="${escHtml(previewUrl)}" />
+                      </audio>
+                    </div>`
+                  : coverUrl
+                    ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                       <div class="featured-image-fallback"><span class="featured-fallback">${safeType}</span></div>`
+                    : `<div class="featured-image-fallback"><span class="featured-fallback">${safeType}</span></div>`;
+            return `<article class="featured-item">
+              <div class="featured-media">${mediaHtml}</div>
+              <div class="featured-meta" style="min-width:0;">
+                <div class="featured-title">${safeTitle}</div>
+                <div class="muted" style="margin-top:4px;">${safeType}</div>
+                <div style="margin-top:8px;"><a href="${escHtml(buyUrl)}">Open ↗</a></div>
+                ${previewUrl ? `<div style="margin-top:4px;"><a class="muted" href="${escHtml(previewUrl)}" target="_blank" rel="noopener noreferrer">Preview file ↗</a></div>` : ""}
+              </div>
+            </article>`;
+          })
+          .join("")
+      : "";
 
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ContentBox Node Profile</title>
+  <title>Certifyd Creator Profile</title>
   <style>
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
@@ -8803,29 +8988,191 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     a { color:#9bdcff; text-decoration:none; }
     a:hover { text-decoration:underline; }
+    .featured-grid { display:grid; grid-template-columns:1fr; gap:10px; }
+    .featured-item { border:1px solid #222; border-radius:10px; padding:10px; background:#0f0f0f; display:flex; flex-direction:column; gap:10px; }
+    .featured-media { border:1px solid #1f1f1f; border-radius:8px; background:#161616; overflow:hidden; min-height:110px; display:flex; align-items:center; justify-content:center; }
+    .featured-image { width:100%; max-height:170px; object-fit:cover; display:block; }
+    .featured-image-fallback { width:100%; min-height:110px; display:flex; align-items:center; justify-content:center; }
+    .featured-video { width:100%; max-height:200px; background:#000; display:block; }
+    .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
+    .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+    .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
+    .featured-song-cover-wrap .featured-fallback { display:none; }
+    .featured-song-cover-missing .featured-fallback { display:block; }
+    .featured-audio { width:100%; }
+    .featured-fallback { font-size:11px; letter-spacing:0.04em; color:#8a8f98; }
+    .featured-title { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+    @media (min-width: 720px) {
+      .featured-grid { grid-template-columns:1fr 1fr; }
+      .featured-item { flex-direction:row; align-items:flex-start; }
+      .featured-media { width:170px; min-width:170px; min-height:110px; }
+      .featured-meta { flex:1; }
+    }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>ContentBox Node Profile</h2>
-    ${safeAvatarUrl ? `<div class="line"><img src="${safeAvatarUrl}" alt="avatar" style="width:72px;height:72px;border-radius:9999px;object-fit:cover;border:1px solid #222;" /></div>` : ""}
-    <div class="line"><strong>Name:</strong> ${safeDisplayName}${beatifyVerified ? " ♥" : ""}</div>
+    <h2>Certifyd Creator Profile</h2>
+    ${safeAvatarUrl
+      ? `<div class="line"><img src="${safeAvatarUrl}" alt="avatar" style="width:72px;height:72px;border-radius:9999px;object-fit:cover;border:1px solid #222;" /></div>`
+      : `<div class="line"><div aria-label="avatar fallback" style="width:72px;height:72px;border-radius:9999px;border:1px solid #222;background:#1a1a1a;display:flex;align-items:center;justify-content:center;color:#9aa0a6;font-size:12px;">No image</div></div>`}
+    <div class="line"><strong>Name:</strong> ${safeDisplayName}</div>
     <div class="line"><strong>Handle:</strong> <span class="mono">${safeHandle}</span></div>
     ${safeBio ? `<div class="line"><strong>Bio:</strong> <span>${safeBio}</span></div>` : ""}
     <div class="line"><strong>Node URL:</strong> <span class="mono">${safeNodeUrl}</span></div>
-    <div class="line"><strong>ContentBox public key hash:</strong> <span class="mono">${safeNodeSha}</span></div>
+    <div class="line"><strong>Certifyd Creator public key hash:</strong> <span class="mono">${safeNodeSha}</span></div>
     <div class="line muted">Short: <span class="mono">${safeShortSha}</span></div>
-    ${beatifyVerified ? `<div class="line"><strong>Beatify:</strong> Verified ♥</div>` : beatifyLinkedUnverified ? `<div class="line"><strong>Beatify:</strong> linked (unverified)</div>` : `<div class="line"><strong>Beatify:</strong> not linked</div>`}
-    ${beatifyMatches && proofUrl ? `<div class="line"><strong>Beatify proof:</strong> <a href="${safeProofUrl}" target="_blank" rel="noreferrer">${safeProofUrl}</a></div>` : ""}
-    ${beatifyMatches && signatureId ? `<div class="line"><strong>Signature ID:</strong> <span class="mono">${safeSig}</span></div><pre class="line mono">beatify_signature_id=${safeSig}</pre>` : ""}
-    ${safeProofText ? `<div class="line"><strong>Beatify Proof (public):</strong></div><pre class="line mono">${safeProofText}</pre>` : ""}
+    <div class="line"><strong>Verification:</strong></div>
+    <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
+    <div class="line muted">Verified domains:</div>
+    ${domainProofsHtml}
+    <div class="line muted">Social Proofs:</div>
+    ${socialProofsHtml}
+    <div class="line muted">Nostr Proofs:</div>
+    ${nostrProofsHtml}
+    ${otherProofsHtml ? `<div class="line muted">Other Proofs:</div>${otherProofsHtml}` : ""}
+    ${
+      featuredContentHtml
+        ? `<div class="line" style="margin-top:18px;"><strong>Featured Content</strong></div>
+    <div class="line muted">Only content explicitly featured by this creator appears here.</div>
+    <div class="line featured-grid">${featuredContentHtml}</div>`
+        : ""
+    }
+    <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(requested)}/proofs.json">proofs.json</a></div>
+    <div class="line muted">Public proofs and external ownership checks will appear here.</div>
     <div class="line"><strong>Lightning:</strong> <span class="muted">${lightningConfigured ? "configured" : "not configured"}</span></div>
+    <div class="line muted">Absolute bundle URL: <span class="mono">${safeProofBundleUrl}</span></div>
   </div>
 </body>
 </html>`;
 
   reply.type("text/html; charset=utf-8");
   return reply.send(html);
+}
+
+// Short public link -> buy page
+async function handlePublicProofBundle(req: any, reply: any) {
+  const matchedHandle = asString((req.params as any).handle || "").trim();
+  const requested = normalizePublicProfileHandle(matchedHandle);
+  if (!requested) return notFound(reply, "Not found");
+
+  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
+  const user =
+    await prisma.user.findFirst({
+      where: { displayName: { equals: requested } },
+      select: {
+        id: true,
+        displayName: true,
+        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+      }
+    }) ||
+    await prisma.user.findFirst({
+      where: { displayName: { equals: maybeName } },
+      select: {
+        id: true,
+        displayName: true,
+        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+      }
+    });
+  if (!user) return notFound(reply, "Not found");
+
+  const wk = await buildWellKnownContentboxPayload(req);
+  const nodeUrl = asString(wk.nodeUrl || "").trim();
+  if (!nodeUrl) return notFound(reply, "Not found");
+  const profileUrl = `${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}`;
+
+  const verifiedProofs = await prisma.proofRecord.findMany({
+    where: {
+      userId: user.id,
+      status: "verified",
+      revokedAt: null
+    },
+    orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+    select: { proofType: true, subject: true, claimJson: true, location: true, verifiedAt: true }
+  });
+
+  const domains = verifiedProofs
+    .filter((p) => asString((p as any).proofType || "").trim().toLowerCase() === "domain")
+    .map((p) => ({ domain: asString((p as any).subject || "").trim().toLowerCase(), verifiedAt: (p as any).verifiedAt?.toISOString?.() || null }))
+    .filter((p) => p.domain.length > 0)
+    .sort((a, b) => a.domain.localeCompare(b.domain));
+
+  const social = verifiedProofs
+    .filter((p) => asString((p as any).proofType || "").trim().toLowerCase() === "social")
+    .map((p) => {
+      const claim = ((p as any).claimJson || {}) as any;
+      const subjectRaw = asString((p as any).subject || "").trim();
+      const idx = subjectRaw.indexOf(":");
+      const subjectProvider = idx > 0 ? subjectRaw.slice(0, idx).trim().toLowerCase() : "";
+      const subjectAccount = idx > 0 ? subjectRaw.slice(idx + 1).trim() : subjectRaw;
+      const provider = asString(claim?.provider || subjectProvider).trim().toLowerCase();
+      const account = asString(claim?.account || claim?.username || subjectAccount).trim();
+      return {
+        provider,
+        account,
+        location: asString((p as any).location || "").trim() || null,
+        verifiedAt: (p as any).verifiedAt?.toISOString?.() || null
+      };
+    })
+    .filter((p) => p.provider.length > 0 && p.account.length > 0)
+    .sort((a, b) => {
+      const providerCmp = a.provider.localeCompare(b.provider);
+      if (providerCmp !== 0) return providerCmp;
+      return a.account.localeCompare(b.account);
+    });
+
+  const nostr = verifiedProofs
+    .filter((p) => {
+      const proofType = asString((p as any).proofType || "").trim().toLowerCase();
+      const subjectRaw = asString((p as any).subject || "").trim().toLowerCase();
+      const claim = ((p as any).claimJson || {}) as any;
+      const claimPubkey = asString(claim?.pubkey || "").trim().toLowerCase();
+      return proofType === "nostr" || subjectRaw.startsWith("nostr:") || /^[0-9a-f]{64}$/.test(claimPubkey);
+    })
+    .map((p) => {
+      const claim = ((p as any).claimJson || {}) as any;
+      const subjectRaw = asString((p as any).subject || "").trim();
+      let pubkey = asString(claim?.pubkey || "").trim().toLowerCase();
+      if (!pubkey) {
+        const idx = subjectRaw.indexOf(":");
+        pubkey = (idx > 0 ? subjectRaw.slice(idx + 1) : subjectRaw).trim().toLowerCase();
+      }
+      return {
+        pubkey,
+        display: pubkey.length > 18 ? `${pubkey.slice(0, 10)}…${pubkey.slice(-8)}` : pubkey,
+        location: asString((p as any).location || "").trim() || null,
+        verifiedAt: (p as any).verifiedAt?.toISOString?.() || null
+      };
+    })
+    .filter((p) => /^[0-9a-f]{64}$/.test(p.pubkey))
+    .sort((a, b) => a.pubkey.localeCompare(b.pubkey));
+
+  const activeWitness = user.witnessIdentity && !user.witnessIdentity.revokedAt ? user.witnessIdentity : null;
+
+  const bundle = {
+    version: 1,
+    handle: requested,
+    displayName: asString(user.displayName || ""),
+    profileUrl,
+    nodeUrl,
+    witness: activeWitness
+      ? {
+          algorithm: asString(activeWitness.algorithm || ""),
+          publicKey: asString(activeWitness.publicKey || ""),
+          fingerprint: asString(activeWitness.fingerprint || "")
+        }
+      : null,
+    proofs: {
+      domains,
+      social,
+      nostr
+    },
+    generatedAt: new Date().toISOString(),
+    signature: null
+  };
+
+  reply.type("application/json; charset=utf-8");
+  return reply.send(bundle);
 }
 
 // Short public link -> buy page
@@ -8861,7 +9208,7 @@ async function handleShortPublicLink(req: any, reply: any) {
     <h2>Not Available</h2>
     <p><strong>${safeTitle}</strong> isn’t publicly available yet.</p>
     <p class="muted">If you expected access, ask the owner to share a private link (e.g. <code>/p/&lt;token&gt;</code>) or publish the content.</p>
-    <p class="muted"><a href="${APP_BASE_URL}">Return to ContentBox</a></p>
+    <p class="muted"><a href="${APP_BASE_URL}">Return to Certifyd Creator</a></p>
   </div>
 </body>
 </html>`;
@@ -8876,6 +9223,7 @@ async function handleShortPublicLink(req: any, reply: any) {
 
 app.get("/p/:token", handleShortPublicLink);
 app.get("/u/:handle", handlePublicNodeProfilePage);
+app.get("/u/:handle/proofs.json", handlePublicProofBundle);
 async function handlePublicProfileRedirect(req: any, reply: any) {
   const conf = await readBeatifyNodeProof();
   const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
@@ -10086,7 +10434,7 @@ app.get("/embed.js", async (req: any, reply) => {
   if (getIdentityLevel() !== IdentityLevel.PERSISTENT) {
     reply.code(403);
     reply.type("application/javascript; charset=utf-8");
-    return reply.send("console.error('ContentBox embed requires persistent identity (named tunnel).');");
+    return reply.send("console.error('Certifyd Creator embed requires persistent identity (named tunnel).');");
   }
   const publicOrigin = getPublicOrigin(req).replace(/\/+$/, "");
   const js = `(function(){
@@ -12142,6 +12490,41 @@ app.patch("/content/:id/delivery-mode", { preHandler: requireAuth }, async (req:
   });
 
   return reply.send({ ok: true, deliveryMode: updated.deliveryMode || null });
+});
+
+app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const contentId = asString((req.params as any).id || "").trim();
+  if (!contentId) return badRequest(reply, "contentId required");
+
+  const raw = (req.body ?? {}) as { featureOnProfile?: unknown };
+  if (typeof raw.featureOnProfile !== "boolean") {
+    return badRequest(reply, "featureOnProfile must be boolean");
+  }
+  const next = Boolean(raw.featureOnProfile);
+
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    select: { ownerUserId: true, status: true, deletedAt: true, featureOnProfile: true }
+  });
+  if (!content) return notFound(reply, "Content not found");
+  if (content.ownerUserId !== userId) return forbidden(reply);
+  if (next && (content.status !== "published" || content.deletedAt)) {
+    return reply.code(409).send({
+      error: "NOT_ELIGIBLE",
+      message: "Only active published content can be featured on profile."
+    });
+  }
+  if (content.featureOnProfile === next) {
+    return reply.send({ ok: true, featureOnProfile: next });
+  }
+
+  const updated = await prisma.contentItem.update({
+    where: { id: contentId },
+    data: { featureOnProfile: next },
+    select: { featureOnProfile: true }
+  });
+  return reply.send({ ok: true, featureOnProfile: Boolean(updated.featureOnProfile) });
 });
 
 // Sales summary for a content item (creator)
@@ -15281,7 +15664,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
       <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} • Share: \${sp.percent || "?"}%</div>
       <button id="acceptBtn" class="btn" style="margin-top:14px;">Accept invite</button>
       <div id="status" class="muted" style="margin-top:8px;"></div>
-      <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own ContentBox first and open this link in the same browser.</div>
+      <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
     document.getElementById("acceptBtn").onclick = async () => {
       document.getElementById("status").textContent = "Accepting…";

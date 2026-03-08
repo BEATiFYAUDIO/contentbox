@@ -421,8 +421,9 @@ export default function App() {
         <aside className="w-64 border-r border-neutral-900 bg-neutral-950/60 p-4 h-screen shrink-0 flex flex-col">
           <div className="flex items-center justify-center pt-2 pb-4">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={logo} alt="Contentbox" className="w-full max-w-[180px] h-auto" />
+            <img src={logo} alt="Certifyd Creator" className="w-full max-w-[180px] h-auto" />
           </div>
+          <div className="text-sm font-semibold text-center">Certifyd Creator</div>
           <div className="text-xs text-neutral-400 mt-1 text-center">Local-first publishing</div>
 
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">

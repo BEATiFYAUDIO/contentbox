@@ -4,6 +4,7 @@ import type { IdentityDetail } from "../lib/identity";
 import { modeLabel } from "../lib/nodeMode";
 import { PAYOUT_DESTINATIONS_LABEL } from "../lib/terminology";
 import AuditPanel from "../components/AuditPanel";
+import VerificationPanel from "../modules/witness/VerificationPanel";
 
 type Me = {
   id: string;
@@ -69,25 +70,7 @@ type LightningReadiness = {
   hints?: string[];
 };
 
-function extractBeatifyHandle(bio: string | null | undefined): string {
-  if (!bio) return "";
-  const m = bio.match(/(?:^|\n)\s*beatify\s*:\s*([a-z0-9._-]+)/i);
-  return m ? m[1] : "";
-}
-
-function applyBeatifyHandleToBio(bio: string | null | undefined, handle: string): string | null {
-  const base = (bio || "").replace(/\s*beatify\s*:\s*[a-z0-9._-]+\s*/gi, "").trim();
-  const cleanHandle = (handle || "").trim();
-  if (!cleanHandle) return base || null;
-  const line = `beatify:${cleanHandle}`;
-  return base ? `${base}\n${line}` : line;
-}
-
 export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipations, onIdentityRefresh, onForceLogin }: ProfilePageProps) {
-  const [importUrl, setImportUrl] = useState<string>("");
-  const [importPreview, setImportPreview] = useState<any | null>(null);
-  const [importLoading, setImportLoading] = useState<boolean>(false);
-  const [beatifyHandle, setBeatifyHandle] = useState<string>("");
   const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
   const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
   const paymentsRef = useRef<HTMLDivElement | null>(null);
@@ -103,16 +86,14 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [publicStatus, setPublicStatus] = useState<PublicStatus | null>(null);
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
   const [advancedSetupError, setAdvancedSetupError] = useState<string | null>(null);
+  const [avatarUploadMsg, setAvatarUploadMsg] = useState<string | null>(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
   const activeMode = publicStatus?.transport?.activeMode || "off";
   const namedConfigured = Boolean(publicStatus?.transport?.named?.configured);
   const namedOnline = Boolean(publicStatus?.transport?.named?.online);
   const advancedNamedReady = Boolean(publicStatus?.advancedPublicLink?.ready);
   const advancedNamedReason = String(publicStatus?.advancedPublicLink?.reason || "");
   const quickStatus = publicStatus?.transport?.quick?.status || "STOPPED";
-
-  useEffect(() => {
-    setBeatifyHandle(extractBeatifyHandle(me?.bio));
-  }, [me?.bio]);
 
   useEffect(() => {
     let alive = true;
@@ -205,11 +186,46 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const isBasicTier = productTier === "basic";
   const ownerEmail = identityDetail?.ownerEmail || null;
   const nodeBadge = nodeMode === "advanced" ? "Owner account" : nodeMode === "lan" ? "Shared node account" : "Trial account";
-  const beatifyStatus = beatifyHandle ? "UNVERIFIED" : "UNLINKED";
 
   const modeLocked = Boolean(modeInfo?.tierLocked);
   const restartCommand = "npm run dev";
   const apiBase = getApiBase();
+
+  const uploadProfileImage = async (file: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setAvatarUploadMsg("Please choose an image file.");
+      return;
+    }
+    setAvatarUploading(true);
+    setAvatarUploadMsg(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`${apiBase}/api/me/avatar/upload`, {
+        method: "POST",
+        credentials: "include",
+        body: fd
+      });
+      const payload = await res.json().catch(() => null);
+      if (!res.ok) {
+        setAvatarUploadMsg(String(payload?.message || payload?.error || "Failed to upload profile image."));
+        return;
+      }
+      const nextMe = payload?.me || null;
+      if (nextMe && typeof nextMe === "object") {
+        setMe(nextMe as Me);
+      } else {
+        const refreshed = await api<any>(`/me`, "GET");
+        setMe(refreshed);
+      }
+      setAvatarUploadMsg("Profile image updated.");
+    } catch {
+      setAvatarUploadMsg("Failed to upload profile image.");
+    } finally {
+      setAvatarUploading(false);
+    }
+  };
 
   const handleRestartNow = async () => {
     setReconnectMsg(null);
@@ -261,7 +277,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
       <div className="text-lg font-semibold">Profile</div>
-      <div className="text-sm text-neutral-400 mt-1">Node account, public profile, and optional external claims.</div>
+      <div className="text-sm text-neutral-400 mt-1">Creator identity and public profile.</div>
 
       <div className="mt-5 space-y-4">
         <div ref={paymentsRef} id="payments" className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
@@ -517,8 +533,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                 <button
                   onClick={async () => {
                     try {
-                      const nextBio = applyBeatifyHandleToBio(me?.bio, beatifyHandle);
-                      await api(`/me`, "PATCH", { displayName: me?.displayName, bio: nextBio, avatarUrl: me?.avatarUrl ?? null });
+                      await api(`/me`, "PATCH", { displayName: me?.displayName, bio: me?.bio || null, avatarUrl: me?.avatarUrl ?? null });
                       const m = await api<any>(`/me`, "GET");
                       setMe(m);
                     } catch {
@@ -549,7 +564,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
 
             <div>
               <label className="text-sm" htmlFor="profile-avatar-url">
-                Avatar URL
+                Profile image
               </label>
               <div className="flex gap-2 items-center mt-1">
                 <input
@@ -559,159 +574,51 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                   onChange={(e) => setMe(me ? { ...me, avatarUrl: e.target.value } : me)}
                   className="flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
                   autoComplete="url"
+                  placeholder="https://example.com/avatar.jpg or upload an image below"
                 />
                 {me?.avatarUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={me.avatarUrl} alt="avatar" className="w-12 h-12 rounded-full object-cover" />
                 ) : null}
               </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <div className="text-sm font-medium">External Claims (Optional)</div>
-              <div className="text-xs text-neutral-500">Optional: linking Beatify can add verification to proof bundles and improve trust.</div>
-            </div>
-            <div className="text-xs rounded-full border border-neutral-800 px-2 py-1 text-neutral-300">{beatifyStatus}</div>
-          </div>
-
-          <div className="mt-3">
-            <label className="text-sm" htmlFor="beatify-handle">
-              Beatify handle (optional)
-            </label>
-            <div className="flex gap-2 items-center mt-1">
-              <input
-                id="beatify-handle"
-                name="beatifyHandle"
-                value={beatifyHandle}
-                onChange={(e) => setBeatifyHandle(e.target.value)}
-                placeholder="yourhandle"
-                className="flex-1 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
-                autoComplete="off"
-              />
-              {beatifyHandle ? (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <label className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 cursor-pointer">
+                  {avatarUploading ? "Uploading…" : "Upload image"}
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif,image/avif"
+                    className="hidden"
+                    disabled={avatarUploading}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) uploadProfileImage(f);
+                      e.currentTarget.value = "";
+                    }}
+                  />
+                </label>
                 <button
                   type="button"
-                  onClick={() => window.open(`https://www.beatify.me/${encodeURIComponent(beatifyHandle)}`, "_blank", "noopener,noreferrer")}
-                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  className="text-xs rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60"
+                  disabled={avatarUploading}
+                  onClick={() => {
+                    setMe(me ? { ...me, avatarUrl: null } : me);
+                    setAvatarUploadMsg(null);
+                  }}
                 >
-                  Open Beatify profile
+                  Clear image
                 </button>
-              ) : null}
-              <button
-                type="button"
-                disabled
-                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 text-neutral-500 cursor-not-allowed"
-              >
-                Verify with Beatify (optional)
-              </button>
-            </div>
-            <div className="text-xs text-neutral-500 mt-1">Beatify is optional and not required for Advanced mode.</div>
-          </div>
-
-          <div className="mt-4">
-            <label className="text-sm" htmlFor="import-profile-url">
-              Import a public profile URL (optional)
-            </label>
-            <div className="text-xs text-neutral-500">Use a Beatify or other public profile to prefill display name, bio, and avatar.</div>
-            <div className="mt-2 flex flex-wrap gap-2 items-center">
-              <input
-                id="import-profile-url"
-                name="importProfileUrl"
-                placeholder="https://... or handle.eth"
-                value={importUrl}
-                onChange={(e) => setImportUrl(e.target.value)}
-                className="flex-1 min-w-0 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
-                autoComplete="url"
-              />
-              <button
-                onClick={async () => {
-                  const url = importUrl?.trim();
-                  if (!url) return;
-                  setImportLoading(true);
-                  setImportPreview(null);
-                  try {
-                    const preview = await api<any>(`/external/profile/import`, "POST", { url });
-                    setImportPreview(preview || null);
-                  } catch (e: any) {
-                    setImportPreview({ error: e?.message || String(e) });
-                  } finally {
-                    setImportLoading(false);
-                  }
-                }}
-                className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 whitespace-nowrap"
-              >
-                {importLoading ? "Importing…" : "Import"}
-              </button>
-            </div>
-
-            {importPreview ? (
-              <div className="mt-3 rounded-md border border-neutral-800 p-3 bg-neutral-900/10">
-                {importPreview.error ? (
-                  <div className="text-sm text-red-400">Error: {importPreview.error}</div>
-                ) : (
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium">Preview</div>
-                    <div className="text-sm">Name: {importPreview.name || "(none)"}</div>
-                    <div className="text-sm">Description: {importPreview.description || "(none)"}</div>
-                    {importPreview.image ? (
-                      <img src={importPreview.image} alt="preview" className="w-32 h-32 object-cover rounded mt-1" />
-                    ) : null}
-                    <div className="text-sm">Payouts: {JSON.stringify(importPreview.payouts || {})}</div>
-
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        onClick={async () => {
-                          const p = importPreview;
-                          if (!p) return;
-                          try {
-                            await api(`/me`, "PATCH", { displayName: p.name || null, bio: p.description || null, avatarUrl: p.image || null });
-                            if (p.payouts && p.payouts.lightning) {
-                              try {
-                                const methods = await api<any[]>(`/payout-methods`, "GET");
-                                const m = methods.find((x) => x.code === "lightning_address");
-                                if (m) {
-                                  await api(`/identities`, "POST", { payoutMethodId: m.id, value: p.payouts.lightning, label: `Imported from profile` });
-                                }
-                              } catch {
-                                // ignore
-                              }
-                            }
-                            const mm = await api<any>(`/me`, "GET");
-                            setMe(mm);
-                            setImportPreview(null);
-                            setImportUrl("");
-                          } catch {
-                            // ignore
-                          }
-                        }}
-                        className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
-                      >
-                        Apply to my profile
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setImportPreview(null);
-                        }}
-                        className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <div className="text-xs text-neutral-500">Images up to 2MB.</div>
               </div>
-            ) : null}
+              {avatarUploadMsg ? <div className="mt-1 text-xs text-amber-300">{avatarUploadMsg}</div> : null}
+            </div>
           </div>
         </div>
 
+        <VerificationPanel />
+
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-sm font-medium">Payments</div>
-          <div className="text-xs text-neutral-500">Where should earnings be sent?</div>
+          <div className="text-sm font-medium">Integrations</div>
+          <div className="text-xs text-neutral-500">Configure payout and external identity integrations for this node.</div>
           <div className="mt-3 space-y-2">
             <label className="text-xs text-neutral-400" htmlFor="payments-lightning-address">
               Lightning Address
@@ -780,6 +687,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
             </button>
             {payoutMsg ? <div className="text-xs text-amber-300">{payoutMsg}</div> : null}
             <div className="text-xs text-neutral-500">Mode: {modeLabel(nodeMode)} • {PAYOUT_DESTINATIONS_LABEL}</div>
+            <div className="text-xs text-neutral-500">NIP-05 and advanced identity proofs are managed in Verification.</div>
           </div>
         </div>
 

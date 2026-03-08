@@ -1,4 +1,4 @@
-# ContentBox P2P Dev Runbook
+# Certifyd Creator P2P Dev Runbook
 
 ## First run
 
@@ -67,7 +67,7 @@ If LAN access fails, allow tcp/4000 in your firewall (e.g., UFW on Linux).
 - First time on a device, you must approve the helper tool download before Public Link starts.
 - If `cloudflared` is not found, the API will download a managed binary into `CONTENTBOX_ROOT/.bin` automatically.
 - Public server listens on `PUBLIC_PORT` (default `4010`) and is the only listener exposed via the tunnel.
-- The public URL is transient and only works while ContentBox is running. The link may change after a restart.
+- The public URL is transient and only works while Certifyd Creator is running. The link may change after a restart.
 - Only buyer/public routes are exposed on the public origin (`/public/ping`, `/p/:token`, `/buy/*`).
 - Optional: set `CLOUDFLARED_VERSION` to pin the exact cloudflared release used by managed download.
 Tip: the installer can optionally pre-download the helper tool (with consent) and enable auto-start for quick tunnels.
@@ -182,7 +182,7 @@ npx tsx src/scripts/permit_range_test.ts http://127.0.0.1:4000 <manifestHash> <f
 ```
 
 ## Tailscale (tailnet-only HTTPS sharing)
-ContentBox binds to `127.0.0.1:4000` by default (`CONTENTBOX_BIND=local`), so it is not exposed on your LAN or the public internet.
+Certifyd Creator binds to `127.0.0.1:4000` by default (`CONTENTBOX_BIND=local`), so it is not exposed on your LAN or the public internet.
 
 To share with testers via Tailscale HTTPS:
 ```bash

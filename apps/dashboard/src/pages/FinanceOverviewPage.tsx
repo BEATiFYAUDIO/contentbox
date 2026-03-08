@@ -138,7 +138,7 @@ function mapPeerSuggestionNotice(errorCode: string | null | undefined, reasonRaw
   if (reason.includes("RPC_UNREACHABLE") || reason.includes("CONNECTION") || reason.includes("TIMEOUT")) {
     return {
       title: "Lightning not ready",
-      message: "ContentBox could not reach your Lightning REST API.",
+      message: "Certifyd Creator could not reach your Lightning REST API.",
       suggestedAction: "Check host/port, TLS cert, and that LND is running, then press Refresh.",
       details: reason
     };

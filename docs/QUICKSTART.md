@@ -1,4 +1,4 @@
-# ContentBox Quickstart
+# Certifyd Creator Quickstart
 
 This is the authoritative first-run guide.
 Quickstart uses a SQLite-first runtime and schema sync via `prisma db push`; legacy PostgreSQL migration history is not used for local quickstart installs.

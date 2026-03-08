@@ -48,6 +48,7 @@ type ContentItem = {
   title: string;
   type: ContentType;
   status: "draft" | "published";
+  featureOnProfile?: boolean;
   storefrontStatus?: "DISABLED" | "UNLISTED" | "LISTED";
   deliveryMode?: "stream_only" | "download_only" | "stream_and_download" | null;
   priceSats?: string | number | null;
@@ -1231,6 +1232,25 @@ export default function ContentLibraryPage({
     }
   }
 
+  async function setFeatureOnProfile(contentId: string, featureOnProfile: boolean) {
+    setBusyAction((m) => ({ ...m, [contentId]: true }));
+    setError(null);
+    try {
+      const res = await api<{ featureOnProfile: boolean }>(`/content/${contentId}/feature-on-profile`, "PATCH", {
+        featureOnProfile
+      });
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === contentId ? { ...it, featureOnProfile: Boolean(res?.featureOnProfile) } : it
+        )
+      );
+    } catch (e: any) {
+      setError(e?.message || "Failed to update profile feature status");
+    } finally {
+      setBusyAction((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
   async function requestClearanceForContent(contentId: string, linkId: string) {
     setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: null }));
     setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "idle" } }));
@@ -1588,9 +1608,9 @@ export default function ContentLibraryPage({
           <div className="w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-950 p-4">
             <div className="text-sm font-medium">Enable Public Link</div>
             <div className="mt-2 text-xs text-neutral-400 space-y-2">
-              <div>To create a public link, ContentBox needs to download a small helper tool to this device.</div>
-              <div>It will be stored inside your ContentBox data folder and can be removed anytime.</div>
-              <div>This link works while ContentBox is running and may change after restart.</div>
+              <div>To create a public link, Certifyd Creator needs to download a small helper tool to this device.</div>
+              <div>It will be stored inside your Certifyd Creator data folder and can be removed anytime.</div>
+              <div>This link works while Certifyd Creator is running and may change after restart.</div>
             </div>
             <label className="mt-3 flex items-center gap-2 text-xs text-neutral-400" htmlFor="public-consent-dont-ask">
               <input
@@ -2219,6 +2239,11 @@ export default function ContentLibraryPage({
                           In Trash
                         </div>
                       ) : null}
+                      {Boolean(it.featureOnProfile) && uiState === "published" ? (
+                        <div className="mt-1 inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
+                          Featured on profile
+                        </div>
+                      ) : null}
                       {!isOwner ? (
                         <div className="text-xs text-amber-300 mt-1">Read-only • Owner: {ownerLabel}</div>
                       ) : null}
@@ -2274,6 +2299,21 @@ export default function ContentLibraryPage({
                                   disabled={busy}
                                   label={uiState === "published" ? "Update cover" : "Upload cover"}
                                 />
+                              ) : null}
+                              {isOwner && uiState === "published" ? (
+                                <button
+                                  type="button"
+                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                                  onClick={() => setFeatureOnProfile(it.id, !Boolean(it.featureOnProfile))}
+                                  disabled={busy}
+                                  title={
+                                    it.featureOnProfile
+                                      ? "Remove this item from your public profile showcase"
+                                      : "Feature this item on your public profile showcase"
+                                  }
+                                >
+                                  {it.featureOnProfile ? "Unfeature" : "Feature on profile"}
+                                </button>
                               ) : null}
 
                               {splitsAllowed && isOwner ? (
@@ -3493,7 +3533,7 @@ export default function ContentLibraryPage({
                                       <span className="inline-block h-3 w-3 rounded-full border border-neutral-500 border-t-transparent animate-spin" />
                                       Starting public link…
                                     </div>
-                                    <div className="text-xs text-neutral-400">Keep ContentBox open.</div>
+                                    <div className="text-xs text-neutral-400">Keep Certifyd Creator open.</div>
                                   </>
                                 ) : null}
 
@@ -3535,7 +3575,7 @@ export default function ContentLibraryPage({
                                     <div className="text-xs text-neutral-400">
                                       {publicStatus?.mode === "named"
                                         ? "Identity link stays the same even when offline."
-                                        : "This link works while ContentBox is running on this device."}
+                                        : "This link works while Certifyd Creator is running on this device."}
                                     </div>
                                     {publicStatus?.mode === "quick" ? (
                                       <div className="text-xs text-neutral-500">Link may change if you restart your computer.</div>

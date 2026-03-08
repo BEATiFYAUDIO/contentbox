@@ -116,6 +116,8 @@ model User {
   remoteInvites        RemoteInvite[]
   salesAsSeller        Sale[] @relation("SaleSeller")
   salesConfirmed       Sale[] @relation("SaleConfirmer")
+  witnessIdentity      WitnessIdentity?
+  proofRecords         ProofRecord[]
 
   @@index([email])
 }
@@ -194,6 +196,7 @@ model ContentItem {
   description   String?
   type          ContentType
   status        ContentStatus @default(draft)
+  featureOnProfile Boolean    @default(false)
   storefrontStatus StorefrontStatus @default(DISABLED)
   priceSats     BigInt?
   deliveryMode  String?
@@ -702,4 +705,44 @@ model SettlementLine {
   settlement Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
 
   @@index([settlementId])
+}
+
+model WitnessIdentity {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  algorithm   String
+  publicKey   String
+  fingerprint String
+  createdAt   DateTime @default(now())
+  revokedAt   DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  proofRecords ProofRecord[]
+
+  @@index([fingerprint])
+}
+
+model ProofRecord {
+  id                 String   @id @default(cuid())
+  userId             String
+  witnessIdentityId  String?
+  proofType          String
+  subject            String
+  claimJson          Json
+  signature          String?
+  status             String
+  verificationMethod String
+  location           String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  verifiedAt         DateTime?
+  revokedAt          DateTime?
+  failureReason      String?
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  witnessIdentity WitnessIdentity? @relation(fields: [witnessIdentityId], references: [id], onDelete: SetNull)
+
+  @@index([userId, proofType, status])
+  @@index([subject])
+  @@unique([userId, proofType, subject])
 }

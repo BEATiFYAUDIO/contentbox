@@ -246,7 +246,7 @@ export default function PayoutRailsPage() {
 
           {selected.code === "btc_onchain" ? (
             <div className="text-xs text-neutral-400">
-              Enter your XPUB so Contentbox can derive a unique on-chain address per purchase.
+              Enter your XPUB so Certifyd Creator can derive a unique on-chain address per purchase.
             </div>
           ) : null}
           {selected.code === "lightning_address" ? (

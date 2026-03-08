@@ -461,7 +461,7 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
   return (
     <div style={{ padding: 16, maxWidth: 980 }}>
       <h2 style={{ margin: "8px 0 12px" }}>Config</h2>
-      <p style={{ opacity: 0.7, marginBottom: 16 }}>Networking + system settings used across ContentBox.</p>
+      <p style={{ opacity: 0.7, marginBottom: 16 }}>Networking + system settings used across Certifyd Creator.</p>
 
       {(apiMismatch || overrideMismatch) && (
         <div
@@ -555,7 +555,7 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
         <div style={{ opacity: 0.7, marginBottom: 12 }}>
-          Public hosts used for buy + studio + contentbox routing.
+          Public hosts used for buy + studio + creator-profile routing.
         </div>
 
         <div style={{ display: "grid", gap: 8 }}>
@@ -584,13 +584,13 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
             />
           </label>
           <label htmlFor="public-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Contentbox host (public)</div>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator host (public)</div>
             <input
               id="public-origin"
               name="publicOrigin"
               value={publicOrigin}
               onChange={(e) => setPublicOrigin(e.target.value)}
-              placeholder="https://contentbox.yourdomain.com"
+              placeholder="https://creator.yourdomain.com"
               className={inputClass}
               autoComplete="url"
             />
@@ -624,13 +624,13 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
             />
           </label>
           <label htmlFor="public-origin-fallback">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Contentbox fallback</div>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator fallback</div>
             <input
               id="public-origin-fallback"
               name="publicOriginFallback"
               value={publicOriginFallback}
               onChange={(e) => setPublicOriginFallback(e.target.value)}
-              placeholder="https://contentbox.fallback.com"
+              placeholder="https://creator.fallback.com"
               className={inputClass}
               autoComplete="url"
             />
@@ -833,7 +833,7 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
                 <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
-                  Paste the Cloudflare connector token once. ContentBox will reuse it to start the tunnel.
+                  Paste the Cloudflare connector token once. Certifyd Creator will reuse it to start the tunnel.
                 </div>
                 <input
                   id="tunnel-connector-token"
@@ -985,7 +985,7 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>
             <div><b>Buy origin</b>: {health.publicBuyOrigin || "—"}</div>
             <div><b>Studio origin</b>: {health.publicStudioOrigin || "—"}</div>
-            <div><b>Contentbox origin</b>: {health.publicOrigin || "—"}</div>
+            <div><b>Certifyd Creator origin</b>: {health.publicOrigin || "—"}</div>
             <div><b>Last seen</b>: {health.ts || "—"}</div>
             <div>
               <b>PUBLIC_ORIGIN detected</b>: {publicOriginWarn ? "⚠️" : "✅"}{" "}

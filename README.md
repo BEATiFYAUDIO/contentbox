@@ -1,6 +1,6 @@
-# ContentBox — Local-first sharing, invites, and P2P collaboration
+# Certifyd Creator — Local-first sharing, invites, and P2P collaboration
 
-ContentBox is a **local-first content collaboration system** designed to work on a single machine or across trusted peers (for example, on a LAN). It allows creators to define ownership splits, invite collaborators, and record verifiable proofs of participation — without requiring a centralized platform.
+Certifyd Creator is a **local-first content collaboration system** designed to work on a single machine or across trusted peers (for example, on a LAN). It allows creators to define ownership splits, invite collaborators, and record verifiable proofs of participation — without requiring a centralized platform.
 
 This repository contains **development tooling and reference implementations**. It is intended for **local use, experimentation, and architectural exploration**, not as a hardened production service exposed directly to the public internet.
 
@@ -14,7 +14,7 @@ For first-run setup, use:
 
 **This README covers:**
 
-* Running ContentBox locally for development or testing
+* Running Certifyd Creator locally for development or testing
 * Creating and accepting collaboration invites on a trusted network
 * The architecture and data model behind invites, proofs, and settlement
 * Optional payment and entitlement designs (documented, not required)
@@ -26,7 +26,7 @@ For first-run setup, use:
 * Custodial responsibility for funds
 * A hosted service or platform offering
 
-If you only want to **try ContentBox locally**, you can safely ignore the sections on cryptographic proofs, payments, and settlement.
+If you only want to **try Certifyd Creator locally**, you can safely ignore the sections on cryptographic proofs, payments, and settlement.
 
 ---
 
@@ -50,7 +50,7 @@ If you only want to **try ContentBox locally**, you can safely ignore the sectio
 
 ## Overview
 
-ContentBox is a **local-first content collaboration system**.
+Certifyd Creator is a **local-first content collaboration system**.
 
 An owner:
 
@@ -69,7 +69,7 @@ There are two supported acceptance modes:
    This does not require the invitee to run their own node.
 
 2. **Signed P2P accept (optional, advanced)**
-   The invitee runs their own ContentBox node, signs an acceptance payload locally, and submits the signed payload to the owner.
+   The invitee runs their own Certifyd Creator node, signs an acceptance payload locally, and submits the signed payload to the owner.
    This produces cryptographic proof of acceptance.
 
 ---
@@ -108,7 +108,7 @@ Default local services:
 
 ## Running the owner node (local)
 
-These steps run the ContentBox API and dashboard from source on a local machine.
+These steps run the Certifyd Creator API and dashboard from source on a local machine.
 
 Assumptions (example values only):
 
@@ -165,7 +165,7 @@ http://<owner-host>:5173
 
 ## Running an invitee node (optional)
 
-For the **quick accept** flow, the invitee does **not** need to run ContentBox locally.
+For the **quick accept** flow, the invitee does **not** need to run Certifyd Creator locally.
 
 To test the **signed P2P acceptance** flow, the invitee runs their own local API + dashboard.
 
@@ -212,7 +212,7 @@ This is the recommended flow for most collaborators.
 
 For stronger verification:
 
-* Invitee runs a local ContentBox node
+* Invitee runs a local Certifyd Creator node
 * Invitee signs acceptance locally
 * Signed payload is sent to the owner
 * Owner verifies the signature using the invitee’s published public key
@@ -224,7 +224,7 @@ This flow is optional and intended for cases where cryptographic proof of accept
 
 ## Proofs and split locking
 
-When a split version is **locked**, ContentBox generates a canonical `proof.json` and a stable `proofHash`.
+When a split version is **locked**, Certifyd Creator generates a canonical `proof.json` and a stable `proofHash`.
 
 Proofs are:
 
@@ -251,7 +251,7 @@ Proofs include:
 
 ## Payments (design overview — optional)
 
-⚠️ **Payments are optional and NOT required to run or test ContentBox.**
+⚠️ **Payments are optional and NOT required to run or test Certifyd Creator.**
 This section documents architecture and interfaces only.
 
 Playback and collaboration **do not depend on blockchain or payment systems**.
@@ -340,7 +340,7 @@ Planned improvements include:
 * Improved P2P discovery
 * Desktop-first packaging
 
-ContentBox is intentionally built as **software you run**, not a platform you join.
+Certifyd Creator is intentionally built as **software you run**, not a platform you join.
 
 ---
 
