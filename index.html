@@ -300,9 +300,9 @@ section[id]{
     /* ---------- Hero ---------- */
     .hero-grid{
       display:grid;
-      grid-template-columns:1.2fr 0.8fr;
-      gap:28px;
-      align-items:start;
+      grid-template-columns:0.85fr 1.15fr;
+      gap:34px;
+      align-items:center;
     }
     @media (max-width: 900px){
       .hero-grid{ grid-template-columns:1fr; }
@@ -357,6 +357,7 @@ section[id]{
     /* ---------- Cards ---------- */
     .grid{ display:grid; gap:22px; }
     .grid-3{ grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }
+    .grid-2{ grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); }
 
     .card{
       background:rgba(255,255,255,0.06);
@@ -390,6 +391,46 @@ section[id]{
     .shot-meta h3{
       margin:0 0 6px;
       font-size:1.02rem;
+    }
+    .ea-form{
+      margin-top:18px;
+      display:grid;
+      gap:12px;
+    }
+    .ea-grid{
+      display:grid;
+      gap:12px;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+    }
+    .ea-field{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .ea-label{
+      font-size:0.86rem;
+      color:var(--muted);
+    }
+    .ea-input,
+    .ea-select,
+    .ea-textarea{
+      width:100%;
+      background:rgba(255,255,255,0.04);
+      border:1px solid rgba(255,255,255,0.16);
+      color:var(--fg);
+      border-radius:12px;
+      padding:12px 14px;
+      font:inherit;
+    }
+    .ea-textarea{
+      min-height:110px;
+      resize:vertical;
+    }
+    @media (max-width: 820px){
+      .ea-grid{ grid-template-columns:1fr; }
+    }
+    @media (max-width: 900px){
+      .grid-2{ grid-template-columns:1fr; }
     }
 
     /* ---------- Lightbox ---------- */
@@ -493,7 +534,7 @@ section[id]{
           <h1>Own your identity. Publish anywhere. Get verified.</h1>
 
           <p>
-            Certifyd Creator is a publishing workspace where identity, proofs, attribution, and releases stay connected.
+            Certifyd Creator connects publishing, attribution, and Bitcoin-native payments so collaborators are credited and paid with clarity.
           </p>
 
           <div class="hero-actions">
@@ -540,30 +581,6 @@ section[id]{
       </div>
     </section>
 
-    <!-- TRUST -->
-    <section id="trust" class="wrap">
-      <h2>Identity and trust</h2>
-      <p>
-        Persistent creator identity and verification proofs support trusted publishing.
-      </p>
-      <div class="grid grid-3" style="margin-top:22px">
-        <a class="shot-card" href="#shot-identity" aria-label="Open Creator identity screenshot">
-          <img src="images/screenshots/identity.png" alt="Creator identity panel with verification fingerprint and proof state" />
-          <div class="shot-meta">
-            <h3>Creator identity</h3>
-            <p>Each creator has a persistent identity fingerprint.</p>
-          </div>
-        </a>
-        <a class="shot-card" href="#shot-workspace" aria-label="Open Creator workspace screenshot">
-          <img src="images/screenshots/personallibrary.png" alt="Personal creator workspace for releases, proofs, and publishing" />
-          <div class="shot-meta">
-            <h3>Creator workspace</h3>
-            <p>Manage releases, proofs, and publishing from one workspace.</p>
-          </div>
-        </a>
-      </div>
-    </section>
-
     <!-- WHY -->
     <section id="why" class="wrap">
       <h2>Why Certifyd</h2>
@@ -590,6 +607,30 @@ section[id]{
             Publish from your own workspace without surrendering custody of your work.
           </p>
         </div>
+      </div>
+    </section>
+
+    <!-- TRUST -->
+    <section id="trust" class="wrap">
+      <h2>Identity and trust</h2>
+      <p>
+        Persistent creator identity and verification proofs support trusted publishing.
+      </p>
+      <div class="grid grid-2" style="margin-top:22px">
+        <a class="shot-card" href="#shot-identity" aria-label="Open Creator identity screenshot">
+          <img src="images/screenshots/identity.png" alt="Creator identity panel with verification fingerprint and proof state" />
+          <div class="shot-meta">
+            <h3>Creator identity</h3>
+            <p>Each creator has a persistent identity fingerprint.</p>
+          </div>
+        </a>
+        <a class="shot-card" href="#shot-workspace" aria-label="Open Creator workspace screenshot">
+          <img src="images/screenshots/personallibrary.png" alt="Personal creator workspace for releases, proofs, and publishing" />
+          <div class="shot-meta">
+            <h3>Creator workspace</h3>
+            <p>Manage releases, proofs, and publishing from one workspace.</p>
+          </div>
+        </a>
       </div>
     </section>
 
@@ -665,6 +706,77 @@ section[id]{
       <div class="hero-actions">
         <a class="btn primary" href="https://beatifyaudio.github.io/contentbox/" target="_blank" rel="noopener noreferrer">Explore the Network</a>
         <a class="btn" href="#product">Get Certifyd Creator</a>
+      </div>
+    </section>
+
+    <!-- EARLY ACCESS -->
+    <section id="early-access" class="wrap">
+      <h2>Apply for Early Access</h2>
+      <p>
+        Certifyd Creator is currently opening to a small group of creators and node operators.
+      </p>
+      <p style="margin-top:10px;">
+        We are especially looking for testers running Bitcoin / Lightning nodes and creators publishing from their own domains.
+      </p>
+
+      <div class="card" style="margin-top:20px;">
+        <form class="ea-form" action="#" method="post" onsubmit="event.preventDefault();">
+          <div class="ea-grid">
+            <label class="ea-field">
+              <span class="ea-label">Name</span>
+              <input class="ea-input" type="text" name="name" autocomplete="name" />
+            </label>
+            <label class="ea-field">
+              <span class="ea-label">Email</span>
+              <input class="ea-input" type="email" name="email" autocomplete="email" />
+            </label>
+          </div>
+
+          <label class="ea-field">
+            <span class="ea-label">Website / Domain</span>
+            <input class="ea-input" type="url" name="website" placeholder="https://yourdomain.com" />
+          </label>
+
+          <div class="ea-grid">
+            <label class="ea-field">
+              <span class="ea-label">Role</span>
+              <select class="ea-select" name="role">
+                <option>Musician</option>
+                <option>Producer</option>
+                <option>Video creator</option>
+                <option>Developer</option>
+                <option>Creative team</option>
+              </select>
+            </label>
+            <label class="ea-field">
+              <span class="ea-label">Do you run a Bitcoin / Lightning node?</span>
+              <select class="ea-select" name="node_status">
+                <option>Yes — Bitcoin Core + LND</option>
+                <option>Yes — another Lightning implementation</option>
+                <option>No but interested</option>
+                <option>No</option>
+              </select>
+            </label>
+          </div>
+
+          <label class="ea-field">
+            <span class="ea-label">Are you comfortable testing early software?</span>
+            <select class="ea-select" name="testing_comfort">
+              <option>Yes</option>
+              <option>Somewhat</option>
+              <option>No</option>
+            </select>
+          </label>
+
+          <label class="ea-field">
+            <span class="ea-label">What do you want to publish with Certifyd?</span>
+            <textarea class="ea-textarea" name="publish_goals"></textarea>
+          </label>
+
+          <div class="hero-actions" style="margin-top:6px;">
+            <button class="btn primary" type="submit">Apply for Early Access</button>
+          </div>
+        </form>
       </div>
     </section>
 
