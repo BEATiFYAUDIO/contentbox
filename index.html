@@ -244,20 +244,22 @@ section[id]{
       .header-inner{
         grid-template-columns: minmax(0,1fr) auto;
         align-items:center;
-        min-height:108px;
+        min-height:96px;
         padding:8px 0;
+        gap:12px;
       }
       .brand{
         width:100%;
-        height:84px;
+        height:70px;
         justify-content:flex-start;
       }
       .brand img{
         width:auto;
-        height:64px;
-        max-width:min(60vw, 260px);
-        max-height:84px;
+        height:52px;
+        max-width:min(50vw, 210px);
+        max-height:70px;
         object-fit:contain;
+        object-position:left center;
         transform:none;
       }
       .nav-mobile{
@@ -266,6 +268,15 @@ section[id]{
       .nav-drawer{
         right:0;
         min-width:min(320px, calc(100vw - (var(--pad) * 2)));
+      }
+    }
+    @media (max-width: 380px){
+      .brand img{
+        height:46px;
+        max-width:min(46vw, 180px);
+      }
+      .nav-mobile summary{
+        width:52px;
       }
     }
 
@@ -538,7 +549,7 @@ section[id]{
           </p>
 
           <div class="hero-actions">
-            <a class="btn primary" href="#product">Get Certifyd Creator</a>
+            <a class="btn primary" href="#product">Get Certifyd</a>
             <a class="btn" href="#network">Explore Certifyd Network</a>
           </div>
         </div>
@@ -705,7 +716,7 @@ section[id]{
       </p>
       <div class="hero-actions">
         <a class="btn primary" href="https://beatifyaudio.github.io/contentbox/" target="_blank" rel="noopener noreferrer">Explore the Network</a>
-        <a class="btn" href="#product">Get Certifyd Creator</a>
+        <a class="btn" href="#product">Get Certifyd</a>
       </div>
     </section>
 
