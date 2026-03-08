@@ -9479,6 +9479,21 @@ async function handleBuyPage(req: any, reply: any) {
     .cb-heart { margin-left:4px; font-weight:700; }
     .cb-heart--grey { color:#cbd5e1; }
     .cb-heart--gold { color:#fbbf24; }
+    .purchase-card { margin-top:14px; padding:14px; border:1px solid #2a2a2a; border-radius:14px; background:linear-gradient(180deg, #111316 0%, #0f1012 100%); }
+    .purchase-kicker { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
+    .purchase-price { margin-top:6px; font-size:30px; font-weight:800; letter-spacing:-0.02em; line-height:1.1; }
+    .purchase-sub { margin-top:4px; color:#a1a1aa; font-size:13px; }
+    .rails-wrap { margin-top:12px; }
+    .receipt-row { margin-top:10px; padding-top:10px; border-top:1px solid #222; }
+    @media (max-width: 640px) {
+      .wrap { padding: 16px; }
+      .card { padding: 16px; }
+      .purchase-card { padding: 12px; }
+      .purchase-price { font-size:26px; }
+      .btn { width:100%; }
+      .row { gap:12px; }
+      .rail { padding:10px; }
+    }
   </style>
 </head>
 <body>
@@ -9554,7 +9569,7 @@ async function handleBuyPage(req: any, reply: any) {
       Array.isArray(split?.contributors) ? split.contributors :
       [];
     if (split?.state === "active" && contributors.length > 0) {
-      splitHtml = "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Contributors:</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
+      splitHtml = "<div class=\\"muted\\" style=\\"margin-top:8px;font-weight:600;color:#d4d4d8;\\">Contributors and splits</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
         contributors.map((c) => {
           const cn = esc(c?.displayName || c?.name || c?.handle || "Contributor");
           const chRaw = String(c?.handle || "").trim();
@@ -9589,10 +9604,11 @@ async function handleBuyPage(req: any, reply: any) {
 
     mounts.forEach((mount) => {
       mount.innerHTML = "<div class=\\"step\\" style=\\"margin-top:10px;\\">" +
-        "<div style=\\"font-weight:600;\\">Creator: " + nameHtml + contentboxHandle + beatifyHandle + badge + "</div>" +
+        "<div style=\\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#a1a1aa;\\">Attribution</div>" +
+        "<div style=\\"font-weight:700;margin-top:6px;\\">Creator: " + nameHtml + contentboxHandle + beatifyHandle + badge + "</div>" +
         splitHtml +
         upstreamHtml +
-        "<div class=\\"muted\\" style=\\"margin-top:8px;\\">You're buying access. Proceeds are shared with the creators shown.</div>" +
+        "<div class=\\"muted\\" style=\\"margin-top:8px;\\">Proceeds follow the creator and contributor attribution shown here.</div>" +
       "</div>";
       mount.style.display = "";
     });
@@ -9884,18 +9900,23 @@ async function handleBuyPage(req: any, reply: any) {
         \` : ""}
         \${mediaSrc && canStream ? \`
           <div class="preview">
-            \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview</div>\` : ""}
+            \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview the release</div>\` : ""}
             \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></video>\` : ""}
             \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
             \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
         \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         \${entitlement?.status === "paid" || entitlement?.status === "bypassed" ? \`<div id="unlockBanner" class="step" style="border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\` : \`<div id="unlockBanner" class="step" style="display:none;border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\`}
-        <div style="margin-top:8px;font-size:18px;">\${price}</div>
+        \${isPaid ? \`
+          <div class="purchase-card">
+            <div class="purchase-kicker">Unlock this release</div>
+            <div class="purchase-price">Unlock for \${offer.priceSats || 0} sats</div>
+            <div class="purchase-sub">\${hidePay ? "Access is already available for this release." : "Pay with Lightning to unlock full access."}</div>
+        \` : \`<div style="margin-top:8px;font-size:18px;">\${price}</div>\`}
         \${(isPaid && !hidePay) ? \`
-          <div class="step" id="stepContinue" style="\${hasBuyer ? "display:none;" : ""}">
+          <div class="step" id="stepContinue" style="margin-top:12px;\${hasBuyer ? "display:none;" : ""}">
             <h3>Step 1</h3>
-            <div class="muted">Continue to payment.</div>
+            <div class="muted">Continue to checkout.</div>
             <button id="continueBtn" class="btn" style="margin-top:10px;">Continue</button>
             <div id="buyerStatus" class="muted" style="margin-top:6px;"></div>
           </div>
@@ -9906,15 +9927,16 @@ async function handleBuyPage(req: any, reply: any) {
             <div id="buyerError" class="muted" style="margin-top:8px;color:#fca5a5;"></div>
           </div>
           <div class="step" id="paySection" style="\${hasBuyer ? "" : "display:none;"}">
-            <h3>Payment</h3>
-            <button id="buyBtn" class="btn" style="margin-top:6px;">Confirm payment / Unlock</button>
+            <h3>Pay with Lightning</h3>
+            <button id="buyBtn" class="btn" style="margin-top:6px;">Start payment</button>
             <div id="status" class="muted" style="margin-top:8px;"></div>
           </div>
         \` : \`
           <div id="status" class="muted" style="margin-top:8px;"></div>
         \`}
         \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
-        <div id="rails" style="margin-top:16px;"></div>
+        <div id="rails" class="rails-wrap"></div>
+        \${isPaid ? \`</div>\` : ""}
         <div id="downloads" style="margin-top:16px;"></div>
       </div>
     \`;
@@ -10018,7 +10040,7 @@ async function handleBuyPage(req: any, reply: any) {
     rails.innerHTML = \`
       <div class="row">
         <div class="rail">
-          <div style="font-weight:600;">Pay with Lightning (recommended)</div>
+          <div style="font-weight:700;">Pay with Lightning</div>
           \${lightning.available ? \`
             <img alt="Lightning QR" src="\${qrUrl(lightning.bolt11)}" />
             <div class="code">\${lightning.bolt11}</div>
@@ -10026,7 +10048,7 @@ async function handleBuyPage(req: any, reply: any) {
               <a id="openWalletBtn" class="btn" href="\${hasLightningInvoice ? ("lightning:" + lightningInvoice) : "#"}" \${hasLightningInvoice ? "" : "aria-disabled=\\"true\\" style=\\"pointer-events:none;opacity:0.6;\\""}>\${hasLightningInvoice ? "Open in wallet" : "No invoice"}</a>
               <button class="copy" data-copy="\${lightning.bolt11}">Copy invoice</button>
             </div>
-            <div class="muted" style="margin-top:6px;">If your wallet didn’t open, copy or scan the invoice.</div>
+            <div class="muted" style="margin-top:6px;">If your wallet doesn’t open, scan the QR or copy the invoice.</div>
           \` : \`<div class="muted">Unavailable: \${lightning.reason || "Not available"}</div>\`}
         </div>
         <div class="rail">
@@ -10050,8 +10072,10 @@ async function handleBuyPage(req: any, reply: any) {
           </div>
         </div>
       \` : ""}
-      <div class="muted" style="margin-top:10px;">Save your receipt link to download again:</div>
-      <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
+      <div class="receipt-row">
+        <div class="muted">Receipt link</div>
+        <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
+      </div>
     \`;
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
     const openWalletBtn = document.getElementById("openWalletBtn");
