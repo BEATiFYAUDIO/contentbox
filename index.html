@@ -315,6 +315,19 @@ section[id]{
       padding:22px;
       box-shadow:0 26px 80px rgba(0,0,0,0.25);
     }
+    .hero-shot{
+      display:block;
+      border-radius:18px;
+      border:1px solid rgba(255,255,255,0.16);
+      overflow:hidden;
+      box-shadow:0 26px 80px rgba(0,0,0,0.32);
+    }
+    .hero-shot img{
+      width:100%;
+      height:auto;
+      display:block;
+      object-fit:cover;
+    }
 
     .hero-actions{
       display:flex;
@@ -361,6 +374,23 @@ section[id]{
       transition:transform 140ms ease, filter 140ms ease;
     }
     .shot:hover img{ transform:translateY(-1px); filter:brightness(1.05); }
+    .shot-card{
+      display:block;
+      text-decoration:none;
+      color:inherit;
+    }
+    .shot-card img{
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,0.14);
+      box-shadow:0 22px 70px rgba(0,0,0,0.22);
+    }
+    .shot-meta{
+      margin-top:12px;
+    }
+    .shot-meta h3{
+      margin:0 0 6px;
+      font-size:1.02rem;
+    }
 
     /* ---------- Lightbox ---------- */
     .lightbox{
@@ -457,11 +487,13 @@ section[id]{
     <section class="wrap" id="top">
       <div class="hero-grid">
         <div>
+          <p style="font-size:0.9rem; letter-spacing:0.08em; text-transform:uppercase; color:#b8c5ff; margin-bottom:12px;">
+            Certifyd Creator
+          </p>
           <h1>Own your identity. Publish anywhere. Get verified.</h1>
 
           <p>
-            Certifyd Creator helps creators publish from their own workspace, prove who they are,
-            and connect their work, attribution, and payments across the open web.
+            Certifyd Creator is a publishing workspace where identity, proofs, attribution, and releases stay connected.
           </p>
 
           <div class="hero-actions">
@@ -470,16 +502,65 @@ section[id]{
           </div>
         </div>
 
-        <aside class="panel" aria-label="What you control">
-          <h2>Creator-controlled by design</h2>
-          <p><strong>Identity, proofs, publishing, and attribution in one workflow.</strong></p>
-          <ul>
-            <li><strong>Verified identity:</strong> establish a durable creator identity.</li>
-            <li><strong>Trust proofs:</strong> connect domains and public platforms to your profile.</li>
-            <li><strong>Attribution:</strong> preserve credits, lineage, and splits with your work.</li>
-            <li><strong>Portable presence:</strong> publish once, share everywhere.</li>
-          </ul>
-        </aside>
+        <a class="hero-shot shot" href="#shot-hero" aria-label="Open Certifyd Creator product screenshot">
+          <img src="images/screenshots/contentattribution.png" alt="Certifyd Creator view showing publishing with attribution and collaborator context" />
+        </a>
+      </div>
+    </section>
+
+    <!-- PRODUCT PREVIEW -->
+    <section id="product" class="wrap">
+      <h2>Certifyd Creator in action</h2>
+      <p>
+        Publishing, attribution, revenue, and identity in one creator workspace.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <a class="shot-card" href="#shot-library" aria-label="Open Publish your work screenshot">
+          <img src="images/screenshots/contentlibrary.png" alt="Content library view for publishing with structured creator metadata" />
+          <div class="shot-meta">
+            <h3>Publish your work</h3>
+            <p>Release content with structured metadata and creator context.</p>
+          </div>
+        </a>
+        <a class="shot-card" href="#shot-royalties" aria-label="Open Credit collaborators screenshot">
+          <img src="images/screenshots/royalties.png" alt="Royalties view showing contributor attribution and split details" />
+          <div class="shot-meta">
+            <h3>Credit collaborators</h3>
+            <p>Keep contributor attribution and revenue splits attached to every release.</p>
+          </div>
+        </a>
+        <a class="shot-card" href="#shot-revenue" aria-label="Open Route payments screenshot">
+          <img src="images/screenshots/revenue.png" alt="Revenue dashboard showing Bitcoin and Lightning payment activity" />
+          <div class="shot-meta">
+            <h3>Route payments</h3>
+            <p>Bitcoin and Lightning payments connect revenue directly to creators.</p>
+          </div>
+        </a>
+      </div>
+    </section>
+
+    <!-- TRUST -->
+    <section id="trust" class="wrap">
+      <h2>Identity and trust</h2>
+      <p>
+        Persistent creator identity and verification proofs support trusted publishing.
+      </p>
+      <div class="grid grid-3" style="margin-top:22px">
+        <a class="shot-card" href="#shot-identity" aria-label="Open Creator identity screenshot">
+          <img src="images/screenshots/identity.png" alt="Creator identity panel with verification fingerprint and proof state" />
+          <div class="shot-meta">
+            <h3>Creator identity</h3>
+            <p>Each creator has a persistent identity fingerprint.</p>
+          </div>
+        </a>
+        <a class="shot-card" href="#shot-workspace" aria-label="Open Creator workspace screenshot">
+          <img src="images/screenshots/personallibrary.png" alt="Personal creator workspace for releases, proofs, and publishing" />
+          <div class="shot-meta">
+            <h3>Creator workspace</h3>
+            <p>Manage releases, proofs, and publishing from one workspace.</p>
+          </div>
+        </a>
       </div>
     </section>
 
@@ -487,33 +568,26 @@ section[id]{
     <section id="why" class="wrap">
       <h2>Why Certifyd</h2>
       <p>
-        Certifyd Creator is built for verified creator publishing, not platform lock-in.
-        It gives creators a clean operating layer for identity, proofs, attribution, and distribution.
+        Certifyd Creator is built for creators who need verification, attribution, and payments to stay connected to each release.
       </p>
 
       <div class="grid grid-3" style="margin-top:22px">
         <div class="card">
           <h3>Verified Identity</h3>
           <p>
-            Establish a creator identity you control and carry with your work.
-          </p>
-        </div>
-        <div class="card">
-          <h3>Trust Proofs</h3>
-          <p>
-            Link domains and public profiles to create verifiable creator trust signals.
+            Attach a real identity to your creator presence using domain and platform proofs.
           </p>
         </div>
         <div class="card">
           <h3>Attribution &amp; Splits</h3>
           <p>
-            Keep credits, contribution history, and split logic connected to each release.
+            Keep contributor attribution and revenue splits linked to every release.
           </p>
         </div>
         <div class="card">
           <h3>Creator-Controlled Publishing</h3>
           <p>
-            Publish from your own workspace with clear access and ownership boundaries.
+            Publish from your own workspace without surrendering custody of your work.
           </p>
         </div>
       </div>
@@ -530,7 +604,7 @@ section[id]{
         <div class="card">
           <h3>Create your identity</h3>
           <p>
-            Set up your creator identity key and fingerprint.
+            Generate your creator identity and fingerprint.
           </p>
         </div>
         <div class="card">
@@ -561,19 +635,19 @@ section[id]{
       <div class="grid grid-3" style="margin-top:22px">
         <div class="card">
           <h3>Musicians</h3>
-          <p>Publish tracks with identity, credits, and ownership context intact.</p>
+          <p>Release tracks with verified credits and attribution.</p>
         </div>
         <div class="card">
           <h3>Producers</h3>
-          <p>Track contributions and split logic across collaborative releases.</p>
+          <p>Track contributions and manage collaborative releases.</p>
         </div>
         <div class="card">
           <h3>Video creators</h3>
-          <p>Connect published works to verified creator presence and attribution history.</p>
+          <p>Connect published work to verified identity and history.</p>
         </div>
         <div class="card">
           <h3>Creative teams</h3>
-          <p>Operate shared publishing workflows without losing role clarity or proof context.</p>
+          <p>Coordinate shared publishing with clear contributor context.</p>
         </div>
       </div>
     </section>
@@ -582,59 +656,59 @@ section[id]{
     <section id="network" class="wrap">
       <h2>Certifyd Network</h2>
       <p>
-        Certifyd Network is the discovery layer for verified creators and trusted works.
-        Certifyd Creator is where publishing and proof management begin.
+        A discovery layer for verified creators and trusted works.
+      </p>
+      <p style="margin-top:14px;">
+        Certifyd Creator nodes publish identity, proofs, attribution, and releases.
+        The network surfaces these verified creators and connects them through shared trust signals.
       </p>
       <div class="hero-actions">
-        <a class="btn" href="#product">See Creator product</a>
-        <a class="btn primary" href="https://beatifyaudio.github.io/contentbox/" target="_blank" rel="noopener noreferrer">Explore Network direction</a>
-      </div>
-    </section>
-
-    <!-- PRODUCT -->
-    <section id="product" class="wrap">
-      <h2>Product screenshots</h2>
-      <p>
-        Certifyd Creator in action: identity, proofs, publishing, and access workflows.
-        Click any image to expand.
-      </p>
-
-      <div class="grid grid-3" style="margin-top:22px">
-        <a class="shot" href="#shot1" aria-label="Open Library view screenshot">
-          <img src="docs/screenshots/library.png" alt="Library view: owned and invited content" />
-        </a>
-        <a class="shot" href="#shot2" aria-label="Open Content management screenshot">
-          <img src="docs/screenshots/content_lib.png" alt="Content management: create, package, and manage work" />
-        </a>
-        <a class="shot" href="#shot3" aria-label="Open Link access screenshot">
-          <img src="docs/screenshots/store.png" alt="Link access: policy-governed access and entitlement" />
-        </a>
+        <a class="btn primary" href="https://beatifyaudio.github.io/contentbox/" target="_blank" rel="noopener noreferrer">Explore the Network</a>
+        <a class="btn" href="#product">Get Certifyd Creator</a>
       </div>
     </section>
 
     <!-- Lightboxes -->
-    <div id="shot1" class="lightbox" role="dialog" aria-modal="true" aria-label="Library view">
+    <div id="shot-library" class="lightbox" role="dialog" aria-modal="true" aria-label="Publish your work screenshot">
       <a class="lightbox-bg" href="#product" aria-label="Close"></a>
       <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
-      <img src="docs/screenshots/library.png" alt="Library view: owned and invited content" />
+      <img src="images/screenshots/contentlibrary.png" alt="Content library view for publishing with structured creator metadata" />
     </div>
 
-    <div id="shot2" class="lightbox" role="dialog" aria-modal="true" aria-label="Content management">
+    <div id="shot-royalties" class="lightbox" role="dialog" aria-modal="true" aria-label="Credit collaborators screenshot">
       <a class="lightbox-bg" href="#product" aria-label="Close"></a>
       <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
-      <img src="docs/screenshots/content_lib.png" alt="Content management: create, package, and manage work" />
+      <img src="images/screenshots/royalties.png" alt="Royalties view showing contributor attribution and split details" />
     </div>
 
-    <div id="shot3" class="lightbox" role="dialog" aria-modal="true" aria-label="Link access">
+    <div id="shot-revenue" class="lightbox" role="dialog" aria-modal="true" aria-label="Route payments screenshot">
       <a class="lightbox-bg" href="#product" aria-label="Close"></a>
       <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
-      <img src="docs/screenshots/store.png" alt="Link access: policy-governed access and entitlement" />
+      <img src="images/screenshots/revenue.png" alt="Revenue dashboard showing Bitcoin and Lightning payment activity" />
+    </div>
+
+    <div id="shot-identity" class="lightbox" role="dialog" aria-modal="true" aria-label="Creator identity screenshot">
+      <a class="lightbox-bg" href="#trust" aria-label="Close"></a>
+      <a href="#trust" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/identity.png" alt="Creator identity panel with verification fingerprint and proof state" />
+    </div>
+
+    <div id="shot-workspace" class="lightbox" role="dialog" aria-modal="true" aria-label="Creator workspace screenshot">
+      <a class="lightbox-bg" href="#trust" aria-label="Close"></a>
+      <a href="#trust" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/personallibrary.png" alt="Personal creator workspace for releases, proofs, and publishing" />
+    </div>
+
+    <div id="shot-hero" class="lightbox" role="dialog" aria-modal="true" aria-label="Attribution hero screenshot">
+      <a class="lightbox-bg" href="#top" aria-label="Close"></a>
+      <a href="#top" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/contentattribution.png" alt="Certifyd Creator view showing publishing with attribution and collaborator context" />
     </div>
   </main>
 
   <footer>
     <div class="wrap">
-      © <span id="year"></span> Certifyd Creator. Built by Beatify Group.
+      Certifyd Creator · Built by Beatify Group · © <span id="year"></span>
     </div>
   </footer>
 
