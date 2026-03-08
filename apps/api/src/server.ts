@@ -8649,6 +8649,16 @@ async function handlePublicCoverFile(req: any, reply: any) {
       cover = { path: latestImage.objectKey, sha256: latestImage.sha256 || null, mime: latestImage.mime || null };
     }
   }
+  if (!cover?.path) {
+    const files = await prisma.contentFile.findMany({
+      where: { contentId },
+      orderBy: { createdAt: "asc" }
+    });
+    const derivedCover = await ensureCoverImage(content, files);
+    if (derivedCover) {
+      cover = { path: derivedCover, sha256: null, mime: "image/jpeg" };
+    }
+  }
   if (!cover?.path) return notFound(reply, "Not found");
 
   const repoRoot = path.resolve(content.repoPath);
@@ -8758,6 +8768,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       id: true,
       title: true,
       type: true,
+      priceSats: true,
+      deliveryMode: true,
       manifest: { select: { json: true } }
     }
   });
@@ -8922,26 +8934,36 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const type = asString(item.type || "").trim().toLowerCase();
             const safeType = escHtml(type.toUpperCase() || "ITEM");
             const manifestJson = ((item as any).manifest?.json || {}) as any;
-            const previewObjectKey =
-              asString(manifestJson?.preview || "").trim() ||
+            const previewObjectKey = asString(manifestJson?.preview || "").trim();
+            const primaryObjectKey =
               asString(manifestJson?.primaryFile || "").trim() ||
               (Array.isArray(manifestJson?.files)
                 ? asString(manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey || "").trim()
                 : "");
-            const previewUrl = previewObjectKey
-              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
+            const isUngatedPublic =
+              Number(item.priceSats || 0) <= 0 &&
+              asString((item as any).deliveryMode || "").trim().toLowerCase() !== "download_only";
+            const featuredMediaKey = isUngatedPublic
+              ? (primaryObjectKey || previewObjectKey)
+              : previewObjectKey;
+            const featuredMediaUrl = featuredMediaKey
+              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(featuredMediaKey)}`
               : "";
-            const coverAsset = getCoverAssetFromManifest(manifestJson);
-            const coverUrl = coverAsset?.path
-              ? `/public/content/${encodeURIComponent(item.id)}/cover`
-              : "";
+            const coverUrl = `/public/content/${encodeURIComponent(item.id)}/cover`;
+            const posterObjectKey =
+              asString(manifestJson?.poster || "").trim() ||
+              asString(manifestJson?.thumbnail || "").trim() ||
+              asString(manifestJson?.previewPoster || "").trim();
+            const posterUrl = posterObjectKey
+              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(posterObjectKey)}`
+              : coverUrl;
             const buyUrl = `/buy/${encodeURIComponent(item.id)}`;
             const mediaHtml =
-              type === "video" && previewUrl
-                ? `<video class="featured-video" controls preload="metadata" playsinline ${coverUrl ? `poster="${escHtml(coverUrl)}"` : ""}>
-                    <source src="${escHtml(previewUrl)}" />
+              type === "video" && featuredMediaUrl
+                ? `<video class="featured-video" controls preload="metadata" playsinline ${posterUrl ? `poster="${escHtml(posterUrl)}"` : ""}>
+                    <source src="${escHtml(featuredMediaUrl)}" />
                   </video>`
-                : type === "song" && previewUrl
+                : type === "song" && featuredMediaUrl
                   ? `<div class="featured-song-media">
                       <div class="featured-song-cover-wrap">
                         ${
@@ -8952,7 +8974,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                         <span class="featured-fallback">${safeType}</span>
                       </div>
                       <audio class="featured-audio" controls preload="none">
-                        <source src="${escHtml(previewUrl)}" />
+                        <source src="${escHtml(featuredMediaUrl)}" />
                       </audio>
                     </div>`
                   : coverUrl
@@ -8965,7 +8987,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 <div class="featured-title">${safeTitle}</div>
                 <div class="muted" style="margin-top:4px;">${safeType}</div>
                 <div style="margin-top:8px;"><a href="${escHtml(buyUrl)}">Open ↗</a></div>
-                ${previewUrl ? `<div style="margin-top:4px;"><a class="muted" href="${escHtml(previewUrl)}" target="_blank" rel="noopener noreferrer">Preview file ↗</a></div>` : ""}
+                ${featuredMediaUrl ? `<div style="margin-top:4px;"><a class="muted" href="${escHtml(featuredMediaUrl)}" target="_blank" rel="noopener noreferrer">${isUngatedPublic ? "Media file" : "Preview file"} ↗</a></div>` : ""}
               </div>
             </article>`;
           })
@@ -8981,19 +9003,32 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   <style>
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
-    .card { width:min(760px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:12px; padding:20px; overflow:hidden; }
+    .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
+    .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; }
     .muted { color:#9aa0a6; font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     a { color:#9bdcff; text-decoration:none; }
     a:hover { text-decoration:underline; }
+    .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
+    .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
+    .hero { display:flex; gap:14px; align-items:center; margin-top:14px; }
+    .avatar { width:84px; height:84px; border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
+    .hero-meta { min-width:0; }
+    .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
+    .hero-handle { margin-top:4px; }
+    .meta-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
+    .meta-item { border:1px solid #1f1f1f; border-radius:10px; background:#101113; padding:10px; }
+    .meta-label { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
+    .proof-group { margin-top:12px; }
+    .proof-group-title { color:#a5adb8; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:10px; }
-    .featured-item { border:1px solid #222; border-radius:10px; padding:10px; background:#0f0f0f; display:flex; flex-direction:column; gap:10px; }
-    .featured-media { border:1px solid #1f1f1f; border-radius:8px; background:#161616; overflow:hidden; min-height:110px; display:flex; align-items:center; justify-content:center; }
+    .featured-item { border:1px solid #252525; border-radius:12px; padding:10px; background:#111215; display:flex; flex-direction:column; gap:10px; }
+    .featured-media { border:1px solid #222; border-radius:10px; background:#161616; overflow:hidden; min-height:120px; display:flex; align-items:center; justify-content:center; }
     .featured-image { width:100%; max-height:170px; object-fit:cover; display:block; }
-    .featured-image-fallback { width:100%; min-height:110px; display:flex; align-items:center; justify-content:center; }
-    .featured-video { width:100%; max-height:200px; background:#000; display:block; }
+    .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; }
+    .featured-video { width:100%; max-height:220px; background:#000; display:block; }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
     .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
@@ -9001,47 +9036,84 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-song-cover-missing .featured-fallback { display:block; }
     .featured-audio { width:100%; }
     .featured-fallback { font-size:11px; letter-spacing:0.04em; color:#8a8f98; }
-    .featured-title { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+    .featured-title { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; font-size:19px; }
     @media (min-width: 720px) {
       .featured-grid { grid-template-columns:1fr 1fr; }
       .featured-item { flex-direction:row; align-items:flex-start; }
-      .featured-media { width:170px; min-width:170px; min-height:110px; }
+      .featured-media { width:220px; min-width:220px; min-height:132px; }
       .featured-meta { flex:1; }
+      .meta-grid { grid-template-columns:1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      body { padding:14px; }
+      .card { padding:16px; }
+      .page-title { font-size:30px; }
+      .hero-name { font-size:20px; }
     }
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>Certifyd Creator Profile</h2>
-    ${safeAvatarUrl
-      ? `<div class="line"><img src="${safeAvatarUrl}" alt="avatar" style="width:72px;height:72px;border-radius:9999px;object-fit:cover;border:1px solid #222;" /></div>`
-      : `<div class="line"><div aria-label="avatar fallback" style="width:72px;height:72px;border-radius:9999px;border:1px solid #222;background:#1a1a1a;display:flex;align-items:center;justify-content:center;color:#9aa0a6;font-size:12px;">No image</div></div>`}
-    <div class="line"><strong>Name:</strong> ${safeDisplayName}</div>
-    <div class="line"><strong>Handle:</strong> <span class="mono">${safeHandle}</span></div>
-    ${safeBio ? `<div class="line"><strong>Bio:</strong> <span>${safeBio}</span></div>` : ""}
-    <div class="line"><strong>Node URL:</strong> <span class="mono">${safeNodeUrl}</span></div>
-    <div class="line"><strong>Certifyd Creator public key hash:</strong> <span class="mono">${safeNodeSha}</span></div>
-    <div class="line muted">Short: <span class="mono">${safeShortSha}</span></div>
-    <div class="line"><strong>Verification:</strong></div>
-    <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
-    <div class="line muted">Verified domains:</div>
-    ${domainProofsHtml}
-    <div class="line muted">Social Proofs:</div>
-    ${socialProofsHtml}
-    <div class="line muted">Nostr Proofs:</div>
-    ${nostrProofsHtml}
-    ${otherProofsHtml ? `<div class="line muted">Other Proofs:</div>${otherProofsHtml}` : ""}
+    <h2 class="page-title">Certifyd Creator Profile</h2>
+    <section class="hero">
+      ${safeAvatarUrl
+        ? `<img src="${safeAvatarUrl}" alt="avatar" class="avatar" />`
+        : `<div aria-label="avatar fallback" class="avatar">No image</div>`}
+      <div class="hero-meta">
+        <div class="hero-name">${safeDisplayName}</div>
+        <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
+        ${safeBio ? `<div class="line">${safeBio}</div>` : ""}
+      </div>
+    </section>
+
+    <section class="section">
+      <h3>Profile details</h3>
+      <div class="meta-grid">
+        <div class="meta-item">
+          <div class="meta-label">Node URL</div>
+          <div class="mono">${safeNodeUrl}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Creator key hash</div>
+          <div class="mono">${safeNodeSha}</div>
+          <div class="muted" style="margin-top:4px;">Short: <span class="mono">${safeShortSha}</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h3>Verification</h3>
+      <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
+      <div class="proof-group">
+        <div class="proof-group-title">Verified domains</div>
+        ${domainProofsHtml}
+      </div>
+      <div class="proof-group">
+        <div class="proof-group-title">Social proofs</div>
+        ${socialProofsHtml}
+      </div>
+      <div class="proof-group">
+        <div class="proof-group-title">Nostr proofs</div>
+        ${nostrProofsHtml}
+      </div>
+      ${otherProofsHtml ? `<div class="proof-group"><div class="proof-group-title">Other proofs</div>${otherProofsHtml}</div>` : ""}
+    </section>
     ${
       featuredContentHtml
-        ? `<div class="line" style="margin-top:18px;"><strong>Featured Content</strong></div>
+        ? `<section class="section">
+    <h3>Featured content</h3>
     <div class="line muted">Only content explicitly featured by this creator appears here.</div>
-    <div class="line featured-grid">${featuredContentHtml}</div>`
+    <div class="line featured-grid">${featuredContentHtml}</div>
+  </section>`
         : ""
     }
-    <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(requested)}/proofs.json">proofs.json</a></div>
-    <div class="line muted">Public proofs and external ownership checks will appear here.</div>
-    <div class="line"><strong>Lightning:</strong> <span class="muted">${lightningConfigured ? "configured" : "not configured"}</span></div>
-    <div class="line muted">Absolute bundle URL: <span class="mono">${safeProofBundleUrl}</span></div>
+    <section class="section">
+      <h3>Proof bundle</h3>
+      <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(requested)}/proofs.json">proofs.json</a></div>
+      <div class="line muted">Public proofs and external ownership checks will appear here.</div>
+      <div class="line"><strong>Lightning:</strong> <span class="muted">${lightningConfigured ? "configured" : "not configured"}</span></div>
+      <div class="line muted">Absolute bundle URL: <span class="mono">${safeProofBundleUrl}</span></div>
+    </section>
   </div>
 </body>
 </html>`;
