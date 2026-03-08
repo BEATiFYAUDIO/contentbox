@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "../../scripts/check-prisma-provider.sh && tsx watch src/server.ts",
+    "dev": "node ../../scripts/check-prisma-provider.js && tsx watch src/server.ts",
     "whoami": "node dev/whoami.mjs",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
