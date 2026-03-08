@@ -409,6 +409,26 @@ section[id]{
       display:grid;
       gap:12px;
     }
+    .ea-status{
+      display:none;
+      border-radius:12px;
+      padding:10px 12px;
+      font-size:0.92rem;
+      border:1px solid rgba(255,255,255,0.16);
+      background:rgba(255,255,255,0.04);
+      color:var(--muted);
+    }
+    .ea-status.show{ display:block; }
+    .ea-status.success{
+      border-color:rgba(0,225,255,0.35);
+      background:rgba(0,225,255,0.10);
+      color:rgba(225,255,255,0.96);
+    }
+    .ea-status.error{
+      border-color:rgba(255,99,132,0.45);
+      background:rgba(255,99,132,0.12);
+      color:rgba(255,235,240,0.96);
+    }
     .ea-grid{
       display:grid;
       gap:12px;
@@ -728,11 +748,11 @@ section[id]{
         Certifyd Creator is currently opening to a small group of creators and node operators.
       </p>
       <p style="margin-top:10px;">
-        We are especially looking for testers running Bitcoin / Lightning nodes and creators publishing from their own domains.
+        We are especially looking for early testers running Bitcoin / Lightning nodes and creators publishing from their own domains.
       </p>
 
       <div class="card" style="margin-top:20px;">
-        <form class="ea-form" action="#" method="post" onsubmit="event.preventDefault();">
+        <form class="ea-form" id="early-access-form" action="#" method="post" data-endpoint="https://script.google.com/macros/s/AKfycbxO8lMdZTsPWvtEuTInZ1jRtuW854X_hde4gBSYXa1PktcT9bAuAhFR3Bwl_9lVqWENpw/exec">
           <div class="ea-grid">
             <label class="ea-field">
               <span class="ea-label">Name</span>
@@ -788,6 +808,7 @@ section[id]{
           <div class="hero-actions" style="margin-top:6px;">
             <button class="btn primary" type="submit">Apply for Early Access</button>
           </div>
+          <div id="early-access-status" class="ea-status" role="status" aria-live="polite"></div>
         </form>
       </div>
     </section>
@@ -856,6 +877,90 @@ section[id]{
 
       document.addEventListener("keydown", (e) => {
         if (e.key === "Escape") menu.open = false;
+      });
+    })();
+
+    // Early access form -> Google Apps Script endpoint
+    (function () {
+      const form = document.getElementById("early-access-form");
+      const statusEl = document.getElementById("early-access-status");
+      if (!form || !statusEl) return;
+
+      const submitButton = form.querySelector("button[type='submit']");
+      const endpoint =
+        form.dataset.endpoint ||
+        window.EARLY_ACCESS_ENDPOINT ||
+        "";
+
+      function setStatus(kind, message) {
+        statusEl.className = "ea-status show " + kind;
+        statusEl.textContent = message;
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        if (!endpoint) {
+          setStatus(
+            "error",
+            "Form endpoint is not configured yet. Add your Google Apps Script URL to data-endpoint."
+          );
+          return;
+        }
+
+        const formData = new FormData(form);
+        const payload = {
+          name: String(formData.get("name") || "").trim(),
+          email: String(formData.get("email") || "").trim(),
+          website: String(formData.get("website") || "").trim(),
+          role: String(formData.get("role") || "").trim(),
+          nodeStatus: String(formData.get("node_status") || "").trim(),
+          testingComfort: String(formData.get("testing_comfort") || "").trim(),
+          publishIntent: String(formData.get("publish_goals") || "").trim(),
+        };
+
+        if (!payload.name || !payload.email) {
+          setStatus("error", "Please provide your name and email.");
+          return;
+        }
+
+        if (submitButton) submitButton.disabled = true;
+        setStatus("success", "Submitting...");
+
+        try {
+          const body = new URLSearchParams();
+          body.set("name", payload.name);
+          body.set("email", payload.email);
+          body.set("website", payload.website);
+          body.set("role", payload.role);
+          body.set("nodeStatus", payload.nodeStatus);
+          body.set("testingComfort", payload.testingComfort);
+          body.set("publishIntent", payload.publishIntent);
+
+          const res = await fetch(endpoint, {
+            method: "POST",
+            body,
+          });
+
+          const text = await res.text();
+          let data = null;
+          try { data = text ? JSON.parse(text) : null; } catch {}
+
+          if (!res.ok || (data && data.ok === false)) {
+            throw new Error((data && data.error) || "Submission failed");
+          }
+
+          setStatus("success", "Thanks. Your early access application was submitted.");
+          form.reset();
+        } catch (err) {
+          setStatus(
+            "error",
+            "Could not submit right now. Please try again in a moment."
+          );
+          console.error("Early access form submission failed", err);
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
       });
     })();
   </script>
