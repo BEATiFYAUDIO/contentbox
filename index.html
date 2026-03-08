@@ -937,17 +937,28 @@ section[id]{
           body.set("testingComfort", payload.testingComfort);
           body.set("publishIntent", payload.publishIntent);
 
-          const res = await fetch(endpoint, {
-            method: "POST",
-            body,
-          });
+          const isGoogleAppsScript = endpoint.includes("script.google.com/macros/s/");
+          if (isGoogleAppsScript) {
+            // Apps Script web apps often don't return CORS headers for browser fetch reads.
+            // Use no-cors submit mode so the POST still reaches Sheets.
+            await fetch(endpoint, {
+              method: "POST",
+              mode: "no-cors",
+              body,
+            });
+          } else {
+            const res = await fetch(endpoint, {
+              method: "POST",
+              body,
+            });
 
-          const text = await res.text();
-          let data = null;
-          try { data = text ? JSON.parse(text) : null; } catch {}
+            const text = await res.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch {}
 
-          if (!res.ok || (data && data.ok === false)) {
-            throw new Error((data && data.error) || "Submission failed");
+            if (!res.ok || (data && data.ok === false)) {
+              throw new Error((data && data.error) || "Submission failed");
+            }
           }
 
           setStatus("success", "Thanks. Your early access application was submitted.");
