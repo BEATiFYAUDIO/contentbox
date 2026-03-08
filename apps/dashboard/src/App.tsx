@@ -23,7 +23,7 @@ import { clearToken, getToken } from "./lib/auth";
 import { fetchIdentityDetail, type IdentityDetail } from "./lib/identity";
 import { modeLabel } from "./lib/nodeMode";
 import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
-import logo from "./assets/InShot_20260201_011901479.png";
+import logo from "./assets/certifyd-creator-logo.png";
 import ErrorBoundary from "./components/ErrorBoundary";
 
 /* =======================
@@ -419,12 +419,16 @@ export default function App() {
       {/* Sidebar */}
       {!hideSidebar && (
         <aside className="w-64 border-r border-neutral-900 bg-neutral-950/60 p-4 h-screen shrink-0 flex flex-col">
-          <div className="flex items-center justify-center pt-2 pb-4">
+          <div className="flex items-center justify-center pt-4 pb-3">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={logo} alt="Certifyd Creator" className="w-full max-w-[180px] h-auto" />
+            <div className="w-[214px] h-[140px] overflow-visible flex items-center justify-center">
+              <img
+                src={logo}
+                alt="Certifyd Creator"
+                className="w-full h-full object-contain scale-[1.38] origin-center"
+              />
+            </div>
           </div>
-          <div className="text-sm font-semibold text-center">Certifyd Creator</div>
-          <div className="text-xs text-neutral-400 mt-1 text-center">Local-first publishing</div>
 
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
             <div>
