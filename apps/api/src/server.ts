@@ -95,6 +95,7 @@ import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import { registerWitnessRoutes } from "./modules/witness/witness.routes.js";
+import { resolveContentboxRoot } from "./lib/contentboxRoot.js";
 import {
   assertCanPublish as assertLifecycleCanPublish,
   assertCanRestore as assertLifecycleCanRestore,
@@ -779,7 +780,10 @@ const prisma = new PrismaClient();
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
 const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
-const CONTENTBOX_ROOT = mustEnv("CONTENTBOX_ROOT");
+const CONTENTBOX_ROOT = resolveContentboxRoot();
+if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
+  process.env.CONTENTBOX_ROOT = CONTENTBOX_ROOT;
+}
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
 const NODE_HTTP_PORT = Number(process.env.PORT || 4000);
 const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "quick").trim().toLowerCase();
@@ -803,6 +807,7 @@ const STARTED_AT = new Date().toISOString();
 const NODE_ID = (process.env.NODE_ID || "").trim() || os.hostname();
 const WHOAMI_ENABLED = process.env.WHOAMI_ENABLED === "1";
 const WHOAMI_ALLOW_REMOTE = process.env.WHOAMI_ALLOW_REMOTE === "1";
+app.log.info({ contentboxRoot: CONTENTBOX_ROOT }, "Resolved CONTENTBOX_ROOT");
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -8851,7 +8856,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               }
             }
             const providerLabel =
-              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "x" ? "X" : provider ? provider : "Social";
+              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "x" ? "X" : provider ? provider : "Social";
             let href = "";
             if (provider === "github" && account) {
               href = `https://github.com/${encodeURIComponent(account)}`;
@@ -8868,6 +8873,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             } else if (provider === "tiktok" && account) {
               const ttHandle = account.startsWith("@") ? account : `@${account}`;
               href = `https://www.tiktok.com/${encodeURIComponent(ttHandle)}`;
+            } else if (provider === "rumble" && account) {
+              const profileUrl = asString(claim?.profileUrl || "").trim();
+              if (/^https:\/\/(www\.)?rumble\.com\/(c|user)\/[a-z0-9._-]+\/?$/i.test(profileUrl)) {
+                href = profileUrl;
+              } else {
+                href = `https://rumble.com/c/${encodeURIComponent(account)}`;
+              }
             } else if (asString((p as any).location || "").trim()) {
               const loc = asString((p as any).location || "").trim();
               if (/^https:\/\//i.test(loc)) href = loc;

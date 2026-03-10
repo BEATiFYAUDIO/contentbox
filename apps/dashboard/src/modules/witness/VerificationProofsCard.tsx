@@ -36,14 +36,14 @@ function looksLikeYouTubeNonChannelUrl(input: string): boolean {
   return src.includes("/post/") || src.includes("/watch") || src.includes("/shorts");
 }
 
-function looksLikeInstagramNonProfileUrl(input: string): boolean {
-  const src = String(input || "").toLowerCase();
-  return src.includes("/p/") || src.includes("/reel/") || src.includes("/stories/") || src.includes("/tv/");
-}
-
 function looksLikeTiktokNonProfileUrl(input: string): boolean {
   const src = String(input || "").toLowerCase();
   return src.includes("/video/") || src.includes("/photo/") || src.includes("/t/");
+}
+
+function looksLikeRumbleNonProfileUrl(input: string): boolean {
+  const src = String(input || "").toLowerCase();
+  return src.includes("/v") || src.includes("/embed/") || src.includes("/playlist/");
 }
 
 type Props = {
@@ -76,13 +76,13 @@ export default function VerificationProofsCard({ witness }: Props) {
   const [showNostrBuilder, setShowNostrBuilder] = useState(false);
 
   const canUseProofs = state === "ready" || state === "registeredMissingLocalKey";
-  const socialEnabled = socialProvider === "github" || socialProvider === "youtube" || socialProvider === "instagram" || socialProvider === "tiktok";
+  const socialEnabled = socialProvider === "github" || socialProvider === "youtube" || socialProvider === "tiktok" || socialProvider === "rumble" || socialProvider === "reddit" || socialProvider === "substack";
   const youtubeBadAccountUrl = socialProvider === "youtube" && looksLikeYouTubeNonChannelUrl(socialAccountInput);
   const youtubeBadLocationUrl = socialProvider === "youtube" && looksLikeYouTubeNonChannelUrl(socialLocation);
-  const instagramBadAccountUrl = socialProvider === "instagram" && looksLikeInstagramNonProfileUrl(socialAccountInput);
-  const instagramBadLocationUrl = socialProvider === "instagram" && looksLikeInstagramNonProfileUrl(socialLocation);
   const tiktokBadAccountUrl = socialProvider === "tiktok" && looksLikeTiktokNonProfileUrl(socialAccountInput);
   const tiktokBadLocationUrl = socialProvider === "tiktok" && looksLikeTiktokNonProfileUrl(socialLocation);
+  const rumbleBadAccountUrl = socialProvider === "rumble" && looksLikeRumbleNonProfileUrl(socialAccountInput);
+  const rumbleBadLocationUrl = socialProvider === "rumble" && looksLikeRumbleNonProfileUrl(socialLocation);
 
   const reloadProofs = () =>
     fetchProofRecords()
@@ -335,8 +335,10 @@ export default function VerificationProofsCard({ witness }: Props) {
               >
                 <option value="github">GitHub</option>
                 <option value="youtube">YouTube</option>
-                <option value="instagram">Instagram</option>
                 <option value="tiktok">TikTok</option>
+                <option value="rumble">Rumble</option>
+                <option value="reddit">Reddit</option>
+                <option value="substack">Substack</option>
                 <option value="x">X (coming soon)</option>
               </select>
               <input
@@ -348,10 +350,14 @@ export default function VerificationProofsCard({ witness }: Props) {
                     ? "github username"
                     : socialProvider === "youtube"
                       ? "Paste your YouTube channel URL (example: https://www.youtube.com/@yourhandle)"
-                      : socialProvider === "instagram"
-                        ? "Paste your Instagram profile URL (example: https://www.instagram.com/yourhandle/)"
                         : socialProvider === "tiktok"
                           ? "Paste your TikTok profile URL (example: https://www.tiktok.com/@yourhandle)"
+                          : socialProvider === "rumble"
+                            ? "Paste your Rumble profile URL (example: https://rumble.com/c/yourhandle)"
+                            : socialProvider === "reddit"
+                              ? "Paste your Reddit profile URL (example: https://www.reddit.com/user/yourname)"
+                              : socialProvider === "substack"
+                                ? "Paste your Substack URL (example: https://yourpublication.substack.com)"
                       : "x username"
                 }
                 className="rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
@@ -363,14 +369,14 @@ export default function VerificationProofsCard({ witness }: Props) {
                 This looks like a post or video URL. Please paste your channel URL instead.
               </div>
             ) : null}
-            {socialProvider === "instagram" && (instagramBadAccountUrl || instagramBadLocationUrl) ? (
-              <div className="mt-2 text-xs text-amber-300">
-                This looks like a post/reel/story URL. Please paste your profile URL instead.
-              </div>
-            ) : null}
             {socialProvider === "tiktok" && (tiktokBadAccountUrl || tiktokBadLocationUrl) ? (
               <div className="mt-2 text-xs text-amber-300">
                 This looks like a video URL. Please paste your TikTok profile URL instead.
+              </div>
+            ) : null}
+            {socialProvider === "rumble" && (rumbleBadAccountUrl || rumbleBadLocationUrl) ? (
+              <div className="mt-2 text-xs text-amber-300">
+                This looks like a video/embed URL. Please paste your Rumble channel/profile URL instead.
               </div>
             ) : null}
 
@@ -385,10 +391,14 @@ export default function VerificationProofsCard({ witness }: Props) {
                     setSocialError(
                       socialProvider === "youtube"
                         ? "Enter a YouTube channel URL first."
-                        : socialProvider === "instagram"
-                          ? "Enter an Instagram profile URL first."
                           : socialProvider === "tiktok"
                             ? "Enter a TikTok profile URL first."
+                            : socialProvider === "rumble"
+                              ? "Enter a Rumble profile URL first."
+                              : socialProvider === "reddit"
+                                ? "Enter a Reddit profile URL first."
+                                : socialProvider === "substack"
+                                  ? "Enter a Substack profile URL first."
                           : "Enter a username first."
                     );
                     return;
@@ -430,13 +440,21 @@ export default function VerificationProofsCard({ witness }: Props) {
                       Do NOT paste a YouTube post, video, or shorts link.
                     </div>
                   </>
-                ) : socialProvider === "instagram" ? (
-                  <div className="mt-2 text-xs text-neutral-500">
-                    For Instagram MVP, place this text in your public profile bio, then paste your public profile URL below.
-                  </div>
                 ) : socialProvider === "tiktok" ? (
                   <div className="mt-2 text-xs text-neutral-500">
                     For TikTok MVP, place this text in your public profile bio, then paste your public profile URL below.
+                  </div>
+                ) : socialProvider === "rumble" ? (
+                  <div className="mt-2 text-xs text-neutral-500">
+                    For Rumble MVP, place this text in your public channel description, then paste your public channel URL below.
+                  </div>
+                ) : socialProvider === "reddit" ? (
+                  <div className="mt-2 text-xs text-neutral-500">
+                    For Reddit MVP, place this text in your public user profile About section, then paste your profile URL below.
+                  </div>
+                ) : socialProvider === "substack" ? (
+                  <div className="mt-2 text-xs text-neutral-500">
+                    For Substack MVP, place this text in your public About bio, then paste your publication URL below.
                   </div>
                 ) : (
                   <div className="mt-2 text-xs text-neutral-500">X verification is not enabled yet in this build.</div>
@@ -453,10 +471,14 @@ export default function VerificationProofsCard({ witness }: Props) {
                   ? "https://gist.github.com/<user>/<id>"
                   : socialProvider === "youtube"
                     ? "Paste your YouTube channel URL (example: https://www.youtube.com/@yourhandle)"
-                    : socialProvider === "instagram"
-                      ? "Paste your Instagram profile URL (example: https://www.instagram.com/yourhandle/)"
                       : socialProvider === "tiktok"
                         ? "Paste your TikTok profile URL (example: https://www.tiktok.com/@yourhandle)"
+                        : socialProvider === "rumble"
+                          ? "Paste your Rumble profile URL (example: https://rumble.com/c/yourhandle)"
+                          : socialProvider === "reddit"
+                            ? "Paste your Reddit profile URL (example: https://www.reddit.com/user/yourname)"
+                            : socialProvider === "substack"
+                              ? "Paste your Substack URL (example: https://yourpublication.substack.com)"
                     : "https://x.com/<user>/status/<id>"
               }
               className="mt-2 w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-600"
@@ -471,10 +493,14 @@ export default function VerificationProofsCard({ witness }: Props) {
                   setSocialError(
                     socialProvider === "youtube"
                       ? "Enter channel URL and public YouTube URL first."
-                      : socialProvider === "instagram"
-                        ? "Enter profile URL and public Instagram URL first."
                         : socialProvider === "tiktok"
                           ? "Enter profile URL and public TikTok URL first."
+                          : socialProvider === "rumble"
+                            ? "Enter profile URL and public Rumble URL first."
+                            : socialProvider === "reddit"
+                              ? "Enter profile URL and public Reddit URL first."
+                              : socialProvider === "substack"
+                                ? "Enter profile URL and public Substack URL first."
                       : "Enter username and public URL first."
                   );
                   return;
@@ -511,7 +537,7 @@ export default function VerificationProofsCard({ witness }: Props) {
                             const idx = subjectRaw.indexOf(":");
                             const provider = String(claim?.provider || (idx > 0 ? subjectRaw.slice(0, idx) : "") || "").toLowerCase();
                             const account = String(claim?.account || claim?.username || (idx > 0 ? subjectRaw.slice(idx + 1) : subjectRaw) || "");
-                            const providerLabel = provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "x" ? "X" : "Social";
+                            const providerLabel = provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : "Social";
                             const displayAccount = (provider === "instagram" || provider === "tiktok") && account && !account.startsWith("@") ? `@${account}` : account;
                             return `${providerLabel}: ${displayAccount}`;
                           })()}

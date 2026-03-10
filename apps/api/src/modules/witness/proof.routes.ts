@@ -191,7 +191,7 @@ export function registerWitnessProofRoutes(app: any, deps: {
     } catch (e: any) {
       const message = String(e?.message || "");
       if (message === "INVALID_SOCIAL_PROVIDER") {
-        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, instagram, tiktok, or x." });
+        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, tiktok, rumble, or x." });
       }
       if (message === "SOCIAL_PROVIDER_NOT_SUPPORTED") {
         return reply.code(400).send({ error: "SOCIAL_PROVIDER_NOT_SUPPORTED", message: "This provider is not enabled yet in this build." });
@@ -207,6 +207,9 @@ export function registerWitnessProofRoutes(app: any, deps: {
       }
       if (message === "INVALID_TIKTOK_PROFILE_URL") {
         return reply.code(400).send({ error: "INVALID_TIKTOK_PROFILE_URL", message: "Enter a valid TikTok profile URL (https://www.tiktok.com/@handle)." });
+      }
+      if (message === "INVALID_RUMBLE_PROFILE_URL") {
+        return reply.code(400).send({ error: "INVALID_RUMBLE_PROFILE_URL", message: "Enter a valid Rumble profile URL (https://rumble.com/c/<handle> or https://rumble.com/user/<handle>)." });
       }
       if (message === "WITNESS_IDENTITY_REQUIRED") {
         return reply.code(409).send({ error: "WITNESS_IDENTITY_REQUIRED", message: "Create a creator identity key before social verification." });
@@ -239,7 +242,7 @@ export function registerWitnessProofRoutes(app: any, deps: {
     } catch (e: any) {
       const message = String(e?.message || "");
       if (message === "INVALID_SOCIAL_PROVIDER") {
-        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, instagram, tiktok, or x." });
+        return reply.code(400).send({ error: "INVALID_SOCIAL_PROVIDER", message: "Provider must be github, youtube, tiktok, rumble, or x." });
       }
       if (message === "SOCIAL_PROVIDER_NOT_SUPPORTED") {
         return reply.code(400).send({ error: "SOCIAL_PROVIDER_NOT_SUPPORTED", message: "This provider is not enabled yet in this build." });
@@ -255,6 +258,9 @@ export function registerWitnessProofRoutes(app: any, deps: {
       }
       if (message === "INVALID_TIKTOK_PROFILE_URL") {
         return reply.code(400).send({ error: "INVALID_TIKTOK_PROFILE_URL", message: "Enter a valid TikTok profile URL (https://www.tiktok.com/@handle)." });
+      }
+      if (message === "INVALID_RUMBLE_PROFILE_URL") {
+        return reply.code(400).send({ error: "INVALID_RUMBLE_PROFILE_URL", message: "Enter a valid Rumble profile URL (https://rumble.com/c/<handle> or https://rumble.com/user/<handle>)." });
       }
       if (message === "INVALID_SOCIAL_LOCATION") {
         return reply.code(400).send({ error: "INVALID_SOCIAL_LOCATION", message: "Enter a valid public proof URL." });

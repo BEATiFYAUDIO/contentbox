@@ -25,7 +25,7 @@ export type ProofRecord = {
   failureReason: string | null;
 };
 
-export type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok";
+export type SocialProvider = "github" | "x" | "youtube" | "tiktok" | "rumble" | "reddit" | "substack";
 
 function witnessDebug(event: string, payload?: Record<string, unknown>): void {
   try {
@@ -165,8 +165,10 @@ export async function createSocialChallenge(provider: SocialProvider, username: 
     const status = parseStatusFromApiError(e);
     if (status === 400) {
       if (provider === "youtube") throw new Error("Enter a valid YouTube channel URL (/@handle or /channel/<id>).");
-      if (provider === "instagram") throw new Error("Enter a valid Instagram profile URL (https://www.instagram.com/<handle>/).");
       if (provider === "tiktok") throw new Error("Enter a valid TikTok profile URL (https://www.tiktok.com/@handle).");
+      if (provider === "rumble") throw new Error("Enter a valid Rumble profile URL (https://rumble.com/c/<handle> or https://rumble.com/user/<handle>).");
+      if (provider === "reddit") throw new Error("Enter a valid Reddit profile URL (https://www.reddit.com/user/<username>).");
+      if (provider === "substack") throw new Error("Enter a valid Substack profile URL (https://<publication>.substack.com or https://substack.com/@<username>).");
       throw new Error("Invalid provider or username.");
     }
     if (status === 409) throw new Error("Create your creator identity key before social verification.");
@@ -187,8 +189,10 @@ export async function verifySocialProof(provider: SocialProvider, username: stri
     if (status === 404) throw new Error("Create a social challenge first.");
     if (status === 400) {
       if (provider === "youtube") throw new Error("Invalid YouTube verification input. Use your public channel URL.");
-      if (provider === "instagram") throw new Error("Invalid Instagram verification input. Use your public profile URL.");
       if (provider === "tiktok") throw new Error("Invalid TikTok verification input. Use your public profile URL.");
+      if (provider === "rumble") throw new Error("Invalid Rumble verification input. Use your public channel URL.");
+      if (provider === "reddit") throw new Error("Invalid Reddit verification input. Use your public profile URL.");
+      if (provider === "substack") throw new Error("Invalid Substack verification input. Use your public profile/publication URL.");
       throw new Error("Invalid social verification input.");
     }
     throw new Error(status ? `Failed to verify social proof (HTTP ${status}).` : "Failed to verify social proof.");

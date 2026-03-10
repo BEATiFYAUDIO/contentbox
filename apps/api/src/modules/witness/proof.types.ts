@@ -33,7 +33,7 @@ export type DomainVerifyBody = {
   domain?: string;
 };
 
-export type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok";
+export type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble";
 
 export type SocialChallengeBody = {
   provider?: string;
