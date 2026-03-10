@@ -16,6 +16,8 @@ import {
   type ProofRecordDto
 } from "./proof.types.js";
 
+type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok";
+
 function proofModel(prisma: PrismaClient): any {
   const model = (prisma as any).proofRecord;
   if (!model) {
@@ -39,7 +41,7 @@ function isValidDomain(domain: string): boolean {
   return /^(?=.{1,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i.test(domain);
 }
 
-function normalizeSocialProvider(input: string): "github" | "x" | "youtube" | "instagram" | "tiktok" | "" {
+function normalizeSocialProvider(input: string): SocialProvider | "" {
   const src = String(input || "").trim().toLowerCase();
   if (src === "github") return "github";
   if (src === "x" || src === "twitter") return "x";
@@ -51,6 +53,71 @@ function normalizeSocialProvider(input: string): "github" | "x" | "youtube" | "i
 
 function normalizeSocialUsername(input: string): string {
   return String(input || "").trim().replace(/^@+/, "").toLowerCase();
+}
+
+function normalizeSocialAccount(provider: SocialProvider, input: string): string {
+  const src = String(input || "").trim();
+  if (!src) return "";
+
+  if (provider === "github") {
+    const fromUrl = normalizeGithubAccountFromUrl(src);
+    if (fromUrl) return fromUrl;
+    return normalizeSocialUsername(src);
+  }
+
+  if (provider === "x") {
+    const fromUrl = normalizeXAccountFromUrl(src);
+    if (fromUrl) return fromUrl;
+    return normalizeSocialUsername(src);
+  }
+
+  if (provider === "youtube") {
+    const normalized = normalizeYouTubeChannelUrl(src);
+    if (normalized) return normalized.account;
+    if (/^UC[a-zA-Z0-9_-]{10,}$/.test(src)) return src;
+    return normalizeSocialUsername(src);
+  }
+
+  if (provider === "instagram") {
+    const normalized = normalizeInstagramProfileUrl(src);
+    if (normalized) return normalized.account;
+    return normalizeSocialUsername(src);
+  }
+
+  const normalized = normalizeTiktokProfileUrl(src);
+  if (normalized) return normalized.account;
+  return normalizeSocialUsername(src);
+}
+
+function normalizeStoredSocialAccount(provider: SocialProvider, account: string): string {
+  if (provider === "youtube" && /^UC[a-zA-Z0-9_-]{10,}$/.test(account)) return account;
+  return normalizeSocialUsername(account);
+}
+
+function socialSubjectCandidates(provider: SocialProvider, account: string): string[] {
+  const normalized = normalizeStoredSocialAccount(provider, account);
+  if (!normalized) return [];
+  const base = socialSubject(provider, normalized);
+
+  // Backward-compatible legacy variants for older stored subjects.
+  if (provider === "youtube" || provider === "tiktok") {
+    if (normalized.startsWith("@") || /^UC[a-zA-Z0-9_-]{10,}$/.test(normalized)) {
+      return [base];
+    }
+    return [base, socialSubject(provider, `@${normalized}`)];
+  }
+  return [base];
+}
+
+function socialDebugEnabled(): boolean {
+  return String(process.env.WITNESS_SOCIAL_VERIFY_DEBUG || "").trim() === "1";
+}
+
+function logSocialVerificationDebug(event: string, data: Record<string, unknown>) {
+  if (!socialDebugEnabled()) return;
+  try {
+    console.info(`[social-verify] ${event}`, data);
+  } catch {}
 }
 
 function normalizeNostrPubkey(input: string): string {
@@ -91,16 +158,42 @@ function isValidSocialUsername(username: string): boolean {
   return /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/i.test(username);
 }
 
+function isValidXUsername(username: string): boolean {
+  return /^[a-z0-9_]{1,15}$/i.test(username);
+}
+
 function socialSubject(provider: string, account: string): string {
   return `${provider}:${account}`;
 }
 
+const SOCIAL_PROOF_PREFIX_CERTIFYD = "certifyd-proof";
+const SOCIAL_PROOF_PREFIX_LEGACY = "contentbox-social-verify";
+const SOCIAL_PROOF_PATTERN = /^(certifyd-proof|contentbox-social-verify)\s+provider=([^\s]+)\s+account=([^\s]+)\s+nonce=([^\s]+)$/i;
+
 function buildSocialChallengeMessage(provider: "github" | "x" | "youtube" | "instagram" | "tiktok", account: string, nonce: string): string {
-  return `contentbox-social-verify provider=${provider} account=${account} nonce=${nonce}`;
+  return `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce}`;
+}
+
+function socialChallengeCandidates(challengeText: string): string[] {
+  const normalized = String(challengeText || "").trim();
+  if (!normalized) return [];
+
+  const match = normalized.match(SOCIAL_PROOF_PATTERN);
+  if (!match) return [normalized];
+
+  const provider = String(match[2] || "").trim();
+  const account = String(match[3] || "").trim();
+  const nonce = String(match[4] || "").trim();
+  if (!provider || !account || !nonce) return [normalized];
+
+  return [
+    `${SOCIAL_PROOF_PREFIX_CERTIFYD} provider=${provider} account=${account} nonce=${nonce}`,
+    `${SOCIAL_PROOF_PREFIX_LEGACY} provider=${provider} account=${account} nonce=${nonce}`
+  ];
 }
 
 function parseSocialClaim(claim: unknown): {
-  provider: "github" | "x" | "youtube" | "instagram" | "tiktok";
+  provider: SocialProvider;
   account: string;
   channelUrl: string | null;
   profileUrl: string | null;
@@ -117,7 +210,33 @@ function parseSocialClaim(claim: unknown): {
   return { provider, account, channelUrl, profileUrl, challengeText };
 }
 
-function normalizeYouTubeChannelUrl(input: string): { canonicalUrl: string; identifier: string } | null {
+function normalizeGithubAccountFromUrl(input: string): string | null {
+  const url = normalizeHttpsUrl(input);
+  if (!url) return null;
+  const host = String(url.hostname || "").toLowerCase();
+  if (host !== "github.com" && host !== "www.github.com" && host !== "gist.github.com") return null;
+  const pathname = String(url.pathname || "").replace(/\/+$/, "");
+  const parts = pathname.split("/").filter(Boolean);
+  if (!parts.length) return null;
+  const account = normalizeSocialUsername(parts[0]);
+  if (!account || !isValidSocialUsername(account)) return null;
+  return account;
+}
+
+function normalizeXAccountFromUrl(input: string): string | null {
+  const url = normalizeHttpsUrl(input);
+  if (!url) return null;
+  const host = String(url.hostname || "").toLowerCase();
+  if (host !== "x.com" && host !== "www.x.com" && host !== "twitter.com" && host !== "www.twitter.com") return null;
+  const pathname = String(url.pathname || "").replace(/\/+$/, "");
+  const parts = pathname.split("/").filter(Boolean);
+  if (!parts.length) return null;
+  const account = normalizeSocialUsername(parts[0]);
+  if (!account || !isValidSocialUsername(account)) return null;
+  return account;
+}
+
+function normalizeYouTubeChannelUrl(input: string): { canonicalUrl: string; account: string } | null {
   const url = normalizeHttpsUrl(input);
   if (!url) return null;
   const host = String(url.hostname || "").toLowerCase();
@@ -129,17 +248,17 @@ function normalizeYouTubeChannelUrl(input: string): { canonicalUrl: string; iden
   if (parts[0]?.startsWith("@")) {
     const handle = parts[0].slice(1).trim().toLowerCase();
     if (!/^[a-z0-9._-]{3,64}$/i.test(handle)) return null;
-    return { canonicalUrl: `https://www.youtube.com/@${handle}`, identifier: `@${handle}` };
+    return { canonicalUrl: `https://www.youtube.com/@${handle}`, account: handle };
   }
   if (parts[0] === "channel" && parts[1]) {
     const channelId = parts[1].trim();
     if (!/^UC[a-zA-Z0-9_-]{10,}$/.test(channelId)) return null;
-    return { canonicalUrl: `https://www.youtube.com/channel/${channelId}`, identifier: channelId };
+    return { canonicalUrl: `https://www.youtube.com/channel/${channelId}`, account: channelId };
   }
   return null;
 }
 
-function normalizeInstagramProfileUrl(input: string): { canonicalUrl: string; identifier: string } | null {
+function normalizeInstagramProfileUrl(input: string): { canonicalUrl: string; account: string } | null {
   const url = normalizeHttpsUrl(input);
   if (!url) return null;
   const host = String(url.hostname || "").toLowerCase();
@@ -150,10 +269,10 @@ function normalizeInstagramProfileUrl(input: string): { canonicalUrl: string; id
   if (parts.length !== 1) return null;
   const handle = parts[0].trim().toLowerCase();
   if (!/^[a-z0-9._]{1,30}$/i.test(handle)) return null;
-  return { canonicalUrl: `https://www.instagram.com/${handle}/`, identifier: handle };
+  return { canonicalUrl: `https://www.instagram.com/${handle}/`, account: handle };
 }
 
-function normalizeTiktokProfileUrl(input: string): { canonicalUrl: string; identifier: string } | null {
+function normalizeTiktokProfileUrl(input: string): { canonicalUrl: string; account: string } | null {
   const url = normalizeHttpsUrl(input);
   if (!url) return null;
   const host = String(url.hostname || "").toLowerCase();
@@ -165,7 +284,7 @@ function normalizeTiktokProfileUrl(input: string): { canonicalUrl: string; ident
   if (!parts[0].startsWith("@")) return null;
   const handle = parts[0].slice(1).trim().toLowerCase();
   if (!/^[a-z0-9._]{2,24}$/i.test(handle)) return null;
-  return { canonicalUrl: `https://www.tiktok.com/@${handle}`, identifier: `@${handle}` };
+  return { canonicalUrl: `https://www.tiktok.com/@${handle}`, account: handle };
 }
 
 function parseNostrClaim(claim: unknown): { pubkey: string; challenge: string; challengeText: string } | null {
@@ -231,10 +350,7 @@ async function fetchUrlText(url: string): Promise<FetchUrlResult> {
   }
 }
 
-function classifySocialFetchIssue(
-  provider: "github" | "youtube" | "instagram" | "tiktok",
-  fetched: FetchUrlResult
-): string | null {
+function classifySocialFetchIssue(provider: SocialProvider, fetched: FetchUrlResult): string | null {
   const finalUrl = String(fetched.finalUrl || "").toLowerCase();
   const text = String(fetched.text || "").toLowerCase();
   const looksHtml = fetched.contentType.includes("text/html") || fetched.contentType.includes("application/xhtml+xml") || !fetched.contentType;
@@ -243,7 +359,9 @@ function classifySocialFetchIssue(
     finalUrl.includes("/accounts/login") ||
     finalUrl.includes("/signup") ||
     finalUrl.includes("accounts.google.com") ||
-    finalUrl.includes("consent.youtube.com");
+    finalUrl.includes("consent.youtube.com") ||
+    finalUrl.includes("/challenge") ||
+    finalUrl.includes("/consent");
 
   const loginWallMarkers = [
     "log in",
@@ -257,23 +375,102 @@ function classifySocialFetchIssue(
   ];
   const hasLoginWallMarker = loginWallMarkers.some((m) => text.includes(m));
 
-  if (fetched.redirected && likelyLoginPath) {
-    return `Redirected to login/signup wall (${fetched.finalUrl}). This provider may require an unauthenticated public page view.`;
-  }
-  if (looksHtml && likelyLoginPath) {
-    return `Fetched a login/signup page instead of the public profile (${fetched.finalUrl}).`;
-  }
+  if (fetched.redirected && likelyLoginPath) return `${provider}-login-or-interstitial`;
+  if (looksHtml && likelyLoginPath) return `${provider}-login-or-interstitial`;
 
-  if (provider === "instagram" || provider === "tiktok" || provider === "youtube") {
-    if (looksHtml && hasLoginWallMarker) {
-      return `Fetched gated/interstitial HTML (${fetched.finalUrl}) instead of a fully public profile page.`;
-    }
+  if ((provider === "instagram" || provider === "tiktok" || provider === "youtube" || provider === "x") && looksHtml && hasLoginWallMarker) {
+    return `${provider}-dynamic-shell-or-gated`;
   }
 
   if (!looksHtml) {
-    return `Fetched non-HTML response (${fetched.contentType || "unknown content type"}) from ${fetched.finalUrl}.`;
+    return `${provider}-non-html-response`;
   }
+
+  if (provider === "tiktok" || provider === "x") {
+    const dynamicShellMarkers = ["__next_data__", "id=\"__next\"", "window.__initial_state__", "application/ld+json"];
+    const hasDynamicShell = dynamicShellMarkers.some((m) => text.includes(m));
+    if (hasDynamicShell && text.length < 5000) return `${provider}-dynamic-shell-or-gated`;
+  }
+
   return null;
+}
+
+function socialChallengeMissReason(provider: SocialProvider): string {
+  if (provider === "github") return "github-public-page-fetched-but-challenge-missing";
+  if (provider === "instagram") return "instagram-public-html-missing-challenge";
+  if (provider === "tiktok") return "tiktok-public-html-missing-challenge";
+  if (provider === "youtube") return "youtube-public-page-fetched-but-challenge-missing";
+  return "x-public-page-fetched-but-challenge-missing";
+}
+
+function canonicalProfileUrlForProvider(provider: SocialProvider, account: string): string {
+  if (provider === "github") return `https://github.com/${account}`;
+  if (provider === "instagram") return `https://www.instagram.com/${account}/`;
+  if (provider === "tiktok") return `https://www.tiktok.com/@${account}`;
+  if (provider === "x") return `https://x.com/${account}`;
+  if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) return `https://www.youtube.com/channel/${account}`;
+  return `https://www.youtube.com/@${account}`;
+}
+
+function providerProfileUrlCandidates(
+  provider: SocialProvider,
+  account: string,
+  inputLocation: string,
+  metadata?: { channelUrl?: string | null; profileUrl?: string | null }
+): string[] {
+  // TODO(next): split provider adapters into dedicated modules once we add manual evidence uploads
+  // and signed proof manifests for crawler-hostile platforms.
+  const urls: string[] = [];
+  const push = (raw: string | null | undefined) => {
+    const url = normalizeHttpsUrl(String(raw || ""));
+    if (!url) return;
+    const s = url.toString();
+    if (!urls.includes(s)) urls.push(s);
+  };
+
+  push(inputLocation);
+  push(metadata?.channelUrl || null);
+  push(metadata?.profileUrl || null);
+
+  if (provider === "github") {
+    push(`https://github.com/${account}`);
+    push(`https://github.com/${account}/`);
+    push(`https://gist.github.com/${account}`);
+  } else if (provider === "instagram") {
+    push(`https://www.instagram.com/${account}/`);
+  } else if (provider === "tiktok") {
+    push(`https://www.tiktok.com/@${account}`);
+  } else if (provider === "youtube") {
+    if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) {
+      push(`https://www.youtube.com/channel/${account}`);
+      push(`https://www.youtube.com/channel/${account}/about`);
+    } else {
+      push(`https://www.youtube.com/@${account}`);
+      push(`https://www.youtube.com/@${account}/about`);
+    }
+  } else if (provider === "x") {
+    push(`https://x.com/${account}`);
+    push(`https://twitter.com/${account}`);
+  }
+  return urls;
+}
+
+function accountFromProviderUrl(provider: SocialProvider, input: string): string | null {
+  if (!input) return null;
+  if (provider === "github") return normalizeGithubAccountFromUrl(input);
+  if (provider === "youtube") {
+    const parsed = normalizeYouTubeChannelUrl(input);
+    return parsed ? parsed.account : null;
+  }
+  if (provider === "instagram") {
+    const parsed = normalizeInstagramProfileUrl(input);
+    return parsed ? parsed.account : null;
+  }
+  if (provider === "tiktok") {
+    const parsed = normalizeTiktokProfileUrl(input);
+    return parsed ? parsed.account : null;
+  }
+  return normalizeXAccountFromUrl(input);
 }
 
 function toDto(row: {
@@ -500,40 +697,53 @@ export async function createSocialChallenge(
 ): Promise<ProofRecordDto> {
   const provider = normalizeSocialProvider(inputProvider);
   if (!provider) throw new Error("INVALID_SOCIAL_PROVIDER");
-  if (provider !== "github" && provider !== "youtube" && provider !== "instagram" && provider !== "tiktok") throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
+  if (provider !== "github" && provider !== "youtube" && provider !== "instagram" && provider !== "tiktok" && provider !== "x") {
+    throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
+  }
 
   const witness = await readActiveWitnessIdentity(prisma, userId);
   if (!witness || witness.revokedAt) throw new Error("WITNESS_IDENTITY_REQUIRED");
 
-  let account = "";
-  let postingHint = "";
+  let account = normalizeSocialAccount(provider, inputUsername);
+  if (!account) throw new Error("INVALID_SOCIAL_USERNAME");
+
+  let postingHint = "Publish this exact text in a public location for your account, then verify using a public URL.";
   let channelUrl: string | null = null;
   let profileUrl: string | null = null;
+
   if (provider === "github") {
-    const username = normalizeSocialUsername(inputUsername);
-    if (!username || !isValidSocialUsername(username)) throw new Error("INVALID_SOCIAL_USERNAME");
-    account = username;
+    if (!isValidSocialUsername(account)) throw new Error("INVALID_SOCIAL_USERNAME");
     postingHint = "Publish this exact text in a public GitHub Gist, then paste the Gist URL below.";
+    profileUrl = canonicalProfileUrlForProvider(provider, account);
   } else if (provider === "youtube") {
-    const normalized = normalizeYouTubeChannelUrl(inputUsername);
-    if (!normalized) throw new Error("INVALID_YOUTUBE_CHANNEL_URL");
-    account = normalized.identifier;
-    channelUrl = normalized.canonicalUrl;
-    postingHint = "Add this exact text to your public YouTube channel description (About), then verify using your public channel URL.";
-  } else {
-    if (provider === "instagram") {
-      const normalized = normalizeInstagramProfileUrl(inputUsername);
-      if (!normalized) throw new Error("INVALID_INSTAGRAM_PROFILE_URL");
-      account = normalized.identifier;
-      profileUrl = normalized.canonicalUrl;
-      postingHint = "Add this exact text to your public Instagram bio, then verify using your public profile URL.";
+    const normalizedFromUrl = normalizeYouTubeChannelUrl(inputUsername);
+    if (normalizedFromUrl) {
+      account = normalizedFromUrl.account;
+      channelUrl = normalizedFromUrl.canonicalUrl;
+    } else if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) {
+      channelUrl = canonicalProfileUrlForProvider(provider, account);
+    } else if (isValidSocialUsername(account)) {
+      channelUrl = canonicalProfileUrlForProvider(provider, account);
     } else {
-      const normalized = normalizeTiktokProfileUrl(inputUsername);
-      if (!normalized) throw new Error("INVALID_TIKTOK_PROFILE_URL");
-      account = normalized.identifier;
-      profileUrl = normalized.canonicalUrl;
-      postingHint = "Add this exact text to your public TikTok bio, then verify using your public profile URL.";
+      throw new Error("INVALID_YOUTUBE_CHANNEL_URL");
     }
+    postingHint = "Add this exact text to your public YouTube channel description (About), then verify using your public channel URL.";
+  } else if (provider === "instagram") {
+    const normalizedFromUrl = normalizeInstagramProfileUrl(inputUsername);
+    if (normalizedFromUrl) account = normalizedFromUrl.account;
+    if (!/^[a-z0-9._]{1,30}$/i.test(account)) throw new Error("INVALID_INSTAGRAM_PROFILE_URL");
+    profileUrl = canonicalProfileUrlForProvider(provider, account);
+    postingHint = "Add this exact text to your public Instagram bio, then verify using your public profile URL.";
+  } else if (provider === "tiktok") {
+    const normalizedFromUrl = normalizeTiktokProfileUrl(inputUsername);
+    if (normalizedFromUrl) account = normalizedFromUrl.account;
+    if (!/^[a-z0-9._]{2,24}$/i.test(account)) throw new Error("INVALID_TIKTOK_PROFILE_URL");
+    profileUrl = canonicalProfileUrlForProvider(provider, account);
+    postingHint = "Add this exact text to your public TikTok bio, then verify using your public profile URL.";
+  } else if (provider === "x") {
+    if (!isValidXUsername(account)) throw new Error("INVALID_SOCIAL_USERNAME");
+    profileUrl = canonicalProfileUrlForProvider(provider, account);
+    postingHint = "Add this exact text to your public X bio, then verify using your public profile URL.";
   }
 
   const nonce = randomBytes(16).toString("hex");
@@ -549,7 +759,25 @@ export async function createSocialChallenge(
     postingHint,
     witnessFingerprint: witness.fingerprint
   };
-  const subject = socialSubject(provider, account);
+  const subjectCandidates = socialSubjectCandidates(provider, account);
+  if (!subjectCandidates.length) throw new Error("INVALID_SOCIAL_USERNAME");
+  let subject = subjectCandidates[0];
+  for (const candidate of subjectCandidates) {
+    const existing = await proofModel(prisma).findUnique({
+      where: {
+        userId_proofType_subject: {
+          userId,
+          proofType: PROOF_TYPE_SOCIAL,
+          subject: candidate
+        }
+      },
+      select: { id: true, subject: true }
+    });
+    if (existing?.subject) {
+      subject = existing.subject;
+      break;
+    }
+  }
 
   const row = await proofModel(prisma).upsert({
     where: {
@@ -611,120 +839,136 @@ export async function verifySocialProof(
 ): Promise<ProofRecordDto> {
   const provider = normalizeSocialProvider(inputProvider);
   if (!provider) throw new Error("INVALID_SOCIAL_PROVIDER");
-  if (provider !== "github" && provider !== "youtube" && provider !== "instagram" && provider !== "tiktok") throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
-
-  let account = "";
-  let locationUrl: URL | null = null;
-  if (provider === "github") {
-    const username = normalizeSocialUsername(inputUsername);
-    if (!username || !isValidSocialUsername(username)) throw new Error("INVALID_SOCIAL_USERNAME");
-    account = username;
-    locationUrl = normalizeHttpsUrl(inputLocation);
-    if (!locationUrl) throw new Error("INVALID_SOCIAL_LOCATION");
-    const host = String(locationUrl.hostname || "").toLowerCase();
-    if (host !== "gist.github.com" && host !== "github.com") {
-      throw new Error("INVALID_SOCIAL_LOCATION");
-    }
-    const pathLower = String(locationUrl.pathname || "").toLowerCase();
-    const pathPrefix = `/${username.toLowerCase()}`;
-    if (!(pathLower === pathPrefix || pathLower.startsWith(`${pathPrefix}/`))) {
-      throw new Error("SOCIAL_LOCATION_MISMATCH");
-    }
-  } else {
-    if (provider === "youtube") {
-      const normalized = normalizeYouTubeChannelUrl(inputUsername);
-      if (!normalized) throw new Error("INVALID_YOUTUBE_CHANNEL_URL");
-      account = normalized.identifier;
-      locationUrl = normalizeHttpsUrl(inputLocation) || normalizeHttpsUrl(normalized.canonicalUrl);
-      if (!locationUrl) throw new Error("INVALID_SOCIAL_LOCATION");
-      const verifyTarget = normalizeYouTubeChannelUrl(locationUrl.toString());
-      if (!verifyTarget) throw new Error("INVALID_YOUTUBE_CHANNEL_URL");
-      if (verifyTarget.identifier.toLowerCase() !== account.toLowerCase()) {
-        throw new Error("SOCIAL_LOCATION_MISMATCH");
-      }
-      locationUrl = new URL(verifyTarget.canonicalUrl);
-    } else {
-      if (provider === "instagram") {
-        const normalized = normalizeInstagramProfileUrl(inputUsername);
-        if (!normalized) throw new Error("INVALID_INSTAGRAM_PROFILE_URL");
-        account = normalized.identifier;
-        locationUrl = normalizeHttpsUrl(inputLocation) || normalizeHttpsUrl(normalized.canonicalUrl);
-        if (!locationUrl) throw new Error("INVALID_SOCIAL_LOCATION");
-        const verifyTarget = normalizeInstagramProfileUrl(locationUrl.toString());
-        if (!verifyTarget) throw new Error("INVALID_INSTAGRAM_PROFILE_URL");
-        if (verifyTarget.identifier.toLowerCase() !== account.toLowerCase()) {
-          throw new Error("SOCIAL_LOCATION_MISMATCH");
-        }
-        locationUrl = new URL(verifyTarget.canonicalUrl);
-      } else {
-        const normalized = normalizeTiktokProfileUrl(inputUsername);
-        if (!normalized) throw new Error("INVALID_TIKTOK_PROFILE_URL");
-        account = normalized.identifier;
-        locationUrl = normalizeHttpsUrl(inputLocation) || normalizeHttpsUrl(normalized.canonicalUrl);
-        if (!locationUrl) throw new Error("INVALID_SOCIAL_LOCATION");
-        const verifyTarget = normalizeTiktokProfileUrl(locationUrl.toString());
-        if (!verifyTarget) throw new Error("INVALID_TIKTOK_PROFILE_URL");
-        if (verifyTarget.identifier.toLowerCase() !== account.toLowerCase()) {
-          throw new Error("SOCIAL_LOCATION_MISMATCH");
-        }
-        locationUrl = new URL(verifyTarget.canonicalUrl);
-      }
-    }
+  if (provider !== "github" && provider !== "youtube" && provider !== "instagram" && provider !== "tiktok" && provider !== "x") {
+    throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
   }
 
-  const subject = socialSubject(provider, account);
-  const existing = await proofModel(prisma).findUnique({
-    where: {
-      userId_proofType_subject: {
-        userId,
-        proofType: PROOF_TYPE_SOCIAL,
-        subject
+  const rawAccount = String(inputUsername || "").trim();
+  const account = normalizeSocialAccount(provider, rawAccount);
+  if (!account) {
+    if (provider === "youtube") throw new Error("INVALID_YOUTUBE_CHANNEL_URL");
+    if (provider === "instagram") throw new Error("INVALID_INSTAGRAM_PROFILE_URL");
+    if (provider === "tiktok") throw new Error("INVALID_TIKTOK_PROFILE_URL");
+    throw new Error("INVALID_SOCIAL_USERNAME");
+  }
+
+  const subjectCandidates = socialSubjectCandidates(provider, account);
+  let existing: { id: string; claimJson: unknown } | null = null;
+  for (const subject of subjectCandidates) {
+    existing = await proofModel(prisma).findUnique({
+      where: {
+        userId_proofType_subject: {
+          userId,
+          proofType: PROOF_TYPE_SOCIAL,
+          subject
+        }
+      },
+      select: {
+        id: true,
+        claimJson: true
       }
-    },
-    select: {
-      id: true,
-      claimJson: true
-    }
-  });
+    });
+    if (existing) break;
+  }
   if (!existing) throw new Error("PROOF_CHALLENGE_NOT_FOUND");
 
   const claim = parseSocialClaim(existing.claimJson);
   if (!claim) throw new Error("PROOF_CHALLENGE_INVALID");
   if (claim.provider !== provider) throw new Error("PROOF_CHALLENGE_INVALID");
-  if (String(claim.account || "").trim().toLowerCase() !== account.toLowerCase()) throw new Error("PROOF_CHALLENGE_INVALID");
 
-  let verified = false;
-  let failureReason: string | null = null;
-  try {
-    const fetched = await fetchUrlText(locationUrl.toString());
-    if (!fetched.ok) {
-      failureReason = `URL fetch failed with HTTP ${fetched.status} (final URL: ${fetched.finalUrl})`;
-    } else {
-      const fetchIssue = classifySocialFetchIssue(provider, fetched);
-      if (fetchIssue) {
-        failureReason = fetchIssue;
-      } else if (!fetched.text.includes(claim.challengeText)) {
-        const redirectHint = fetched.redirected ? ` Final URL: ${fetched.finalUrl}.` : "";
-        failureReason =
-          provider === "youtube"
-            ? `Challenge text was not found on the channel page. Ensure it is visible in your public channel description/about.${redirectHint}`
-            : provider === "instagram"
-              ? `Challenge text was not found on the profile page. Ensure it is visible in your public Instagram bio.${redirectHint}`
-              : provider === "tiktok"
-                ? `Challenge text was not found on the profile page. Ensure it is visible in your public TikTok bio.${redirectHint}`
-                : `Challenge text was not found at the provided URL.${redirectHint}`;
-      } else {
-        verified = true;
-      }
-    }
-  } catch (e: any) {
-    const raw = String(e?.message || e);
-    if (raw.toUpperCase().includes("ABORT")) {
-      failureReason = "URL fetch timed out before the provider returned a public page.";
-    } else {
-      failureReason = `URL fetch failed: ${raw}`;
+  const claimAccount = normalizeStoredSocialAccount(provider, claim.account);
+  const requestAccount = normalizeStoredSocialAccount(provider, account);
+  if (claimAccount !== requestAccount) throw new Error("PROOF_CHALLENGE_INVALID");
+
+  const rawLocation = String(inputLocation || "").trim();
+  if (rawLocation) {
+    if (!normalizeHttpsUrl(rawLocation)) throw new Error("INVALID_SOCIAL_LOCATION");
+    const locationAccount = accountFromProviderUrl(provider, rawLocation);
+    if (!locationAccount) throw new Error("INVALID_SOCIAL_LOCATION");
+    if (normalizeStoredSocialAccount(provider, locationAccount) !== requestAccount) {
+      throw new Error("SOCIAL_LOCATION_MISMATCH");
     }
   }
+
+  const acceptedChallenges = socialChallengeCandidates(claim.challengeText);
+  const candidateUrls = providerProfileUrlCandidates(provider, requestAccount, rawLocation, {
+    channelUrl: claim.channelUrl,
+    profileUrl: claim.profileUrl
+  });
+  if (!candidateUrls.length) throw new Error("INVALID_SOCIAL_LOCATION");
+
+  const attemptedUrls: string[] = [];
+  let verified = false;
+  let failureReason = "no-usable-provider-candidate";
+  let lastCandidateReason: string | null = null;
+  let matchedUrl: string | null = null;
+  let matchedChallengePrefix: string | null = null;
+
+  for (const candidateUrl of candidateUrls) {
+    attemptedUrls.push(candidateUrl);
+    try {
+      const fetched = await fetchUrlText(candidateUrl);
+      const candidateMatched = acceptedChallenges.find((c) => fetched.text.includes(c));
+      if (fetched.ok && candidateMatched) {
+        verified = true;
+        matchedUrl = fetched.finalUrl || candidateUrl;
+        matchedChallengePrefix = candidateMatched.startsWith(SOCIAL_PROOF_PREFIX_CERTIFYD)
+          ? SOCIAL_PROOF_PREFIX_CERTIFYD
+          : SOCIAL_PROOF_PREFIX_LEGACY;
+        break;
+      }
+
+      if (!fetched.ok) {
+        failureReason = `url-fetch-http-${fetched.status}`;
+      } else {
+        const issue = classifySocialFetchIssue(provider, fetched);
+        failureReason = issue || socialChallengeMissReason(provider);
+      }
+      lastCandidateReason = failureReason;
+
+      logSocialVerificationDebug("candidate_checked", {
+        provider,
+        rawAccount,
+        normalizedAccount: requestAccount,
+        attemptedUrl: candidateUrl,
+        finalUrl: fetched.finalUrl,
+        redirected: fetched.redirected,
+        status: fetched.status,
+        contentType: fetched.contentType,
+        matchedChallengePrefix: candidateMatched
+          ? candidateMatched.startsWith(SOCIAL_PROOF_PREFIX_CERTIFYD)
+            ? SOCIAL_PROOF_PREFIX_CERTIFYD
+            : SOCIAL_PROOF_PREFIX_LEGACY
+          : null,
+        failureReason
+      });
+    } catch (e: any) {
+      const raw = String(e?.message || e);
+      failureReason = raw.toUpperCase().includes("ABORT")
+        ? "provider-fetch-timeout"
+        : "provider-fetch-network-error";
+      lastCandidateReason = failureReason;
+      logSocialVerificationDebug("candidate_failed", {
+        provider,
+        rawAccount,
+        normalizedAccount: requestAccount,
+        attemptedUrl: candidateUrl,
+        error: raw,
+        failureReason
+      });
+    }
+  }
+
+  logSocialVerificationDebug("verify_complete", {
+    provider,
+    rawAccount,
+    normalizedAccount: requestAccount,
+    attemptedUrls,
+    matchedChallengePrefix,
+    verified,
+    failureReason: verified ? null : failureReason,
+    lastCandidateReason
+  });
 
   const row = await proofModel(prisma).update({
     where: { id: existing.id },
@@ -732,7 +976,7 @@ export async function verifySocialProof(
       status: verified ? PROOF_STATUS_VERIFIED : PROOF_STATUS_FAILED,
       verifiedAt: verified ? new Date() : null,
       failureReason: verified ? null : failureReason,
-      location: locationUrl.toString(),
+      location: verified ? matchedUrl : candidateUrls[0] || null,
       revokedAt: null
     },
     select: {
