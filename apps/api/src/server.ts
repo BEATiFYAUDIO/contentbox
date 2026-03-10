@@ -2027,7 +2027,7 @@ async function ensureCoverImage(content: any, files: any[]) {
     const ffmpegArgs = [
       "-y",
       "-ss",
-      "1",
+      "3",
       "-i",
       inputAbs,
       "-frames:v",
@@ -2035,7 +2035,7 @@ async function ensureCoverImage(content: any, files: any[]) {
       "-vf",
       "scale='min(1280,iw)':-2",
       "-q:v",
-      "3",
+      "2",
       tmpOut
     ];
 
@@ -8415,6 +8415,83 @@ function toPublicCreator(u: { displayName?: string | null } | null | undefined) 
   };
 }
 
+type SocialProofTier = "strong" | "standard" | "weak";
+type CreatorSignalTierLabel = "Emerging" | "Verified" | "Strong" | "High Assurance";
+const PROOF_WEIGHTS: Record<SocialProofTier, number> = {
+  strong: 5,
+  standard: 3,
+  weak: 1
+};
+
+function getSocialProofTier(provider: string): SocialProofTier | null {
+  const p = asString(provider || "").trim().toLowerCase();
+  if (!p) return null;
+  if (p === "github") return "strong";
+  if (p === "rumble" || p === "reddit" || p === "substack" || p === "youtube") return "standard";
+  if (p === "instagram" || p === "tiktok" || p === "x") return "weak";
+  return null;
+}
+
+function getProofTier(proofType: string, provider?: string): SocialProofTier | null {
+  const type = asString(proofType || "").trim().toLowerCase();
+  if (type === "domain") return "strong";
+  if (type === "social") return getSocialProofTier(asString(provider || ""));
+  return null;
+}
+
+function creatorSignalTierLabel(score: number): CreatorSignalTierLabel {
+  if (score <= 5) return "Emerging";
+  if (score <= 12) return "Verified";
+  if (score <= 20) return "Strong";
+  return "High Assurance";
+}
+
+function computeCreatorSignal(
+  proofs: Array<{ proofType?: string | null; subject?: string | null; claimJson?: unknown }>
+): {
+  score: number;
+  identityScore: number;
+  presenceBonus: number;
+  tier: CreatorSignalTierLabel;
+  verifiedPlatforms: number;
+} {
+  let identityScore = 0;
+  const platforms = new Set<string>();
+
+  for (const p of proofs || []) {
+    const proofType = asString((p as any)?.proofType || "").trim().toLowerCase();
+    const subjectRaw = asString((p as any)?.subject || "").trim();
+    const claim = ((p as any)?.claimJson || {}) as any;
+    const providerRaw = asString(claim?.provider || "").trim().toLowerCase();
+    const idx = subjectRaw.indexOf(":");
+    const provider = providerRaw || (proofType === "social" && idx > 0 ? subjectRaw.slice(0, idx).trim().toLowerCase() : "");
+    const tier = getProofTier(proofType, provider);
+    if (tier) identityScore += PROOF_WEIGHTS[tier];
+
+    if (proofType === "domain") {
+      const domain = asString(subjectRaw).trim().toLowerCase();
+      if (domain) platforms.add(`domain:${domain}`);
+    } else if (proofType === "social") {
+      if (provider) platforms.add(`social:${provider}`);
+    } else if (proofType === "nostr" || subjectRaw.toLowerCase().startsWith("nostr:")) {
+      platforms.add("nostr");
+    } else if (proofType) {
+      platforms.add(`proof:${proofType}`);
+    }
+  }
+
+  const verifiedPlatforms = platforms.size;
+  const presenceBonus = Math.min(Math.max(verifiedPlatforms - 1, 0), 5);
+  const score = identityScore + presenceBonus;
+  return {
+    score,
+    identityScore,
+    presenceBonus,
+    tier: creatorSignalTierLabel(score),
+    verifiedPlatforms
+  };
+}
+
 async function getPublicOfferGate(
   contentId: string,
   req?: any,
@@ -8759,7 +8836,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       revokedAt: null
     },
     orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
-    select: { id: true, proofType: true, subject: true, claimJson: true }
+    select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
   });
   const featuredContent = await prisma.contentItem.findMany({
     where: {
@@ -8825,6 +8902,42 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     if (subjectRaw.startsWith("nostr:")) return false;
     return true;
   });
+  const creatorSignal = computeCreatorSignal(verifiedProofs as any);
+  const creatorSignalPercent = Math.max(0, Math.min(100, Math.round((creatorSignal.score / 25) * 100)));
+  const trustTierBadgeHtml = (tier: SocialProofTier | null): string => {
+    if (!tier) return "";
+    const label = tier === "strong" ? "Strong" : tier === "standard" ? "Standard" : "Best-effort";
+    return ` <span class="muted">[${label}]</span>`;
+  };
+  const deriveExternalVideoThumbnail = (rawUrl: unknown): string => {
+    const src = asString(rawUrl || "").trim();
+    if (!src) return "";
+    try {
+      const u = new URL(src);
+      const host = u.hostname.toLowerCase();
+      let id = "";
+      if (host.includes("youtu.be")) {
+        id = u.pathname.replace(/^\/+/, "").split("/")[0] || "";
+      } else if (host.includes("youtube.com")) {
+        if (u.pathname === "/watch") {
+          id = u.searchParams.get("v") || "";
+        } else if (u.pathname.startsWith("/shorts/") || u.pathname.startsWith("/embed/")) {
+          id = u.pathname.split("/")[2] || "";
+        }
+      }
+      if (/^[A-Za-z0-9_-]{8,}$/.test(id)) {
+        return `https://i.ytimg.com/vi/${encodeURIComponent(id)}/hqdefault.jpg`;
+      }
+    } catch {}
+    return "";
+  };
+  const firstHttps = (...values: unknown[]): string => {
+    for (const v of values) {
+      const s = asString(v || "").trim();
+      if (/^https:\/\//i.test(s)) return s;
+    }
+    return "";
+  };
 
   const domainProofsHtml =
     verifiedDomainProofs.length > 0
@@ -8833,7 +8946,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const domain = asString((p as any).subject || "").trim().toLowerCase();
             const safeDomain = escHtml(domain);
             const href = `https://${encodeURI(domain)}`;
-            return `<div class="line muted">✓ <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">↗</span></div>`;
+            return `<div class="line muted">✓ <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeDomain}</a> <span aria-hidden="true">↗</span>${trustTierBadgeHtml("strong")}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -8856,41 +8969,46 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               }
             }
             const providerLabel =
-              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "x" ? "X" : provider ? provider : "Social";
-            let href = "";
+              provider === "github" ? "GitHub" : provider === "youtube" ? "YouTube" : provider === "instagram" ? "Instagram" : provider === "tiktok" ? "TikTok" : provider === "rumble" ? "Rumble" : provider === "reddit" ? "Reddit" : provider === "substack" ? "Substack" : provider === "x" ? "X" : provider ? provider : "Social";
+            let fallbackHref = "";
             if (provider === "github" && account) {
-              href = `https://github.com/${encodeURIComponent(account)}`;
+              fallbackHref = `https://github.com/${encodeURIComponent(account)}`;
+            } else if (provider === "reddit" && account) {
+              fallbackHref = `https://www.reddit.com/user/${encodeURIComponent(account)}`;
+            } else if (provider === "substack" && account) {
+              fallbackHref = `https://${encodeURIComponent(account)}.substack.com`;
             } else if (provider === "youtube") {
-              const channelUrl = asString(claim?.channelUrl || "").trim();
-              if (/^https:\/\/(www\.)?youtube\.com\//i.test(channelUrl)) {
-                href = channelUrl;
-              } else if (account.startsWith("@")) {
-                href = `https://www.youtube.com/${encodeURIComponent(account)}`;
+              if (account.startsWith("@")) {
+                fallbackHref = `https://www.youtube.com/${encodeURIComponent(account)}`;
+              } else if (account) {
+                fallbackHref = `https://www.youtube.com/@${encodeURIComponent(account)}`;
               }
             } else if (provider === "instagram" && account) {
               const igHandle = account.startsWith("@") ? account.slice(1) : account;
-              href = `https://instagram.com/${encodeURIComponent(igHandle)}`;
+              fallbackHref = `https://instagram.com/${encodeURIComponent(igHandle)}`;
             } else if (provider === "tiktok" && account) {
               const ttHandle = account.startsWith("@") ? account : `@${account}`;
-              href = `https://www.tiktok.com/${encodeURIComponent(ttHandle)}`;
+              fallbackHref = `https://www.tiktok.com/${encodeURIComponent(ttHandle)}`;
             } else if (provider === "rumble" && account) {
-              const profileUrl = asString(claim?.profileUrl || "").trim();
-              if (/^https:\/\/(www\.)?rumble\.com\/(c|user)\/[a-z0-9._-]+\/?$/i.test(profileUrl)) {
-                href = profileUrl;
-              } else {
-                href = `https://rumble.com/c/${encodeURIComponent(account)}`;
-              }
-            } else if (asString((p as any).location || "").trim()) {
-              const loc = asString((p as any).location || "").trim();
-              if (/^https:\/\//i.test(loc)) href = loc;
+              fallbackHref = `https://rumble.com/c/${encodeURIComponent(account)}`;
+            } else if (provider === "x" && account) {
+              fallbackHref = `https://x.com/${encodeURIComponent(account)}`;
             }
+            const href = firstHttps(
+              (p as any).location,
+              claim?.proofUrl,
+              claim?.profileUrl,
+              claim?.channelUrl,
+              fallbackHref
+            );
+            const tierBadge = trustTierBadgeHtml(getSocialProofTier(provider));
             const displayAccount = (provider === "instagram" || provider === "tiktok") && account && !account.startsWith("@") ? `@${account}` : account;
             const safeAccount = escHtml(displayAccount || "unknown");
             const safeProvider = escHtml(providerLabel);
             if (href) {
-              return `<div class="line muted">✓ ${safeProvider} — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">↗</span></div>`;
+              return `<div class="line muted">✓ ${safeProvider} — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">↗</span>${tierBadge}</div>`;
             }
-            return `<div class="line muted">✓ ${safeProvider} — <span class="mono">${safeAccount}</span></div>`;
+            return `<div class="line muted">✓ ${safeProvider} — <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -8938,13 +9056,30 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
           .join("")
       : "";
+  const creatorSignalHtml = `<div class="line"><strong>Creator Signal:</strong> ${escHtml(String(creatorSignal.score))} <span class="muted">(${escHtml(creatorSignal.tier)})</span></div>
+      <div class="signal-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
+        <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
+      </div>
+      <div class="muted">Signal meter: ${escHtml(String(creatorSignalPercent))}%</div>
+      <div class="line muted">${escHtml(String(creatorSignal.identityScore))} Identity Strength • ${escHtml(String(creatorSignal.verifiedPlatforms))} Verified Platforms • +${escHtml(String(creatorSignal.presenceBonus))} Presence</div>`;
   const featuredContentHtml =
     featuredContent.length > 0
       ? featuredContent
           .map((item) => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
-            const safeType = escHtml(type.toUpperCase() || "ITEM");
+            const typeLabel =
+              type === "video" ? "Video" :
+              type === "song" ? "Song" :
+              type === "audio" ? "Audio" :
+              type === "article" || type === "writing" || type === "book" ? "Article" :
+              "Other";
+            const safeType = escHtml(typeLabel);
+            const ctaLabel =
+              typeLabel === "Video" ? "Watch" :
+              typeLabel === "Song" || typeLabel === "Audio" ? "Listen" :
+              typeLabel === "Article" ? "Read" :
+              "View";
             const manifestJson = ((item as any).manifest?.json || {}) as any;
             const previewObjectKey = asString(manifestJson?.preview || "").trim();
             const primaryObjectKey =
@@ -8961,7 +9096,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const featuredMediaUrl = featuredMediaKey
               ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(featuredMediaKey)}`
               : "";
+            const videoPreviewUrl = previewObjectKey
+              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
+              : `/public/content/${encodeURIComponent(item.id)}/preview-file`;
             const coverUrl = `/public/content/${encodeURIComponent(item.id)}/cover`;
+            const manifestThumbnailRaw =
+              asString(manifestJson?.thumbnailUrl || "").trim() ||
+              asString(manifestJson?.thumbnail || "").trim();
+            const externalThumbUrl = deriveExternalVideoThumbnail(
+              manifestJson?.sourceUrl || manifestJson?.externalUrl || manifestJson?.url || primaryObjectKey || ""
+            );
             const posterObjectKey =
               asString(manifestJson?.poster || "").trim() ||
               asString(manifestJson?.thumbnail || "").trim() ||
@@ -8969,12 +9113,21 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const posterUrl = posterObjectKey
               ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(posterObjectKey)}`
               : coverUrl;
+            const videoThumbUrl = /^https?:\/\//i.test(manifestThumbnailRaw)
+              ? manifestThumbnailRaw
+              : manifestThumbnailRaw
+                ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(manifestThumbnailRaw)}`
+                : externalThumbUrl || coverUrl || posterUrl;
             const buyUrl = `/buy/${encodeURIComponent(item.id)}`;
             const mediaHtml =
-              type === "video" && featuredMediaUrl
-                ? `<video class="featured-video" controls preload="metadata" playsinline ${posterUrl ? `poster="${escHtml(posterUrl)}"` : ""}>
-                    <source src="${escHtml(featuredMediaUrl)}" />
-                  </video>`
+              type === "video"
+                ? `<div class="featured-video-thumb-wrap">
+                    <video class="featured-video-preview" preload="metadata" muted autoplay loop playsinline poster="${escHtml(videoThumbUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                      <source src="${escHtml(videoPreviewUrl)}" />
+                    </video>
+                    <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
+                    <span class="featured-video-play" aria-hidden="true">▶</span>
+                  </div>`
                 : type === "song" && featuredMediaUrl
                   ? `<div class="featured-song-media">
                       <div class="featured-song-cover-wrap">
@@ -8991,15 +9144,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                     </div>`
                   : coverUrl
                     ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
-                       <div class="featured-image-fallback"><span class="featured-fallback">${safeType}</span></div>`
+                       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${safeType}</span></div>`
                     : `<div class="featured-image-fallback"><span class="featured-fallback">${safeType}</span></div>`;
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta" style="min-width:0;">
+                <div class="featured-topline">
+                  <span class="featured-type-badge">${safeType}</span>
+                  <span class="featured-verified">Certifyd</span>
+                </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="muted" style="margin-top:4px;">${safeType}</div>
-                <div style="margin-top:8px;"><a href="${escHtml(buyUrl)}">Open ↗</a></div>
-                ${featuredMediaUrl ? `<div style="margin-top:4px;"><a class="muted" href="${escHtml(featuredMediaUrl)}" target="_blank" rel="noopener noreferrer">${isUngatedPublic ? "Media file" : "Preview file"} ↗</a></div>` : ""}
+                <div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ↗</a></div>
               </div>
             </article>`;
           })
@@ -9036,23 +9191,33 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-group { margin-top:12px; }
     .proof-group-title { color:#a5adb8; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:10px; }
-    .featured-item { border:1px solid #252525; border-radius:12px; padding:10px; background:#111215; display:flex; flex-direction:column; gap:10px; }
-    .featured-media { border:1px solid #222; border-radius:10px; background:#161616; overflow:hidden; min-height:120px; display:flex; align-items:center; justify-content:center; }
-    .featured-image { width:100%; max-height:170px; object-fit:cover; display:block; }
-    .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; }
-    .featured-video { width:100%; max-height:220px; background:#000; display:block; }
+    .featured-item { border:1px solid #252525; border-radius:12px; padding:10px; background:#111215; display:grid; grid-template-columns:1fr; gap:10px; }
+    .featured-media { border:1px solid #222; border-radius:10px; background:#161616; overflow:hidden; aspect-ratio:16 / 9; width:100%; min-height:0; display:flex; align-items:center; justify-content:center; }
+    .featured-image { width:100%; height:100%; object-fit:cover; display:block; }
+    .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
+    .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
+    .featured-video-thumb { width:100%; height:100%; object-fit:cover; display:block; }
+    .featured-video-preview { width:100%; height:100%; object-fit:cover; display:block; background:#000; }
+    .featured-video-fallback { position:absolute; inset:0; min-height:0; z-index:2; }
+    .featured-video-play { position:absolute; right:10px; bottom:10px; width:28px; height:28px; border-radius:999px; display:flex; align-items:center; justify-content:center; background:rgba(9,12,18,0.72); border:1px solid rgba(154,206,255,0.35); color:#d7ecff; font-size:12px; line-height:1; z-index:3; }
     .featured-song-media { width:100%; display:flex; flex-direction:column; gap:8px; padding:8px; }
     .featured-song-cover-wrap { width:100%; min-height:90px; border-radius:6px; border:1px solid #252525; background:#111; display:flex; align-items:center; justify-content:center; overflow:hidden; }
     .featured-song-cover { width:100%; max-height:140px; object-fit:cover; display:block; }
     .featured-song-cover-wrap .featured-fallback { display:none; }
     .featured-song-cover-missing .featured-fallback { display:block; }
     .featured-audio { width:100%; }
-    .featured-fallback { font-size:11px; letter-spacing:0.04em; color:#8a8f98; }
-    .featured-title { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; font-size:19px; }
+    .featured-fallback { font-size:11px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
+    .featured-topline { display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap; }
+    .featured-type-badge { font-size:11px; letter-spacing:0.02em; color:#b9c2cf; background:#1a2028; border:1px solid #303948; border-radius:999px; padding:3px 8px; }
+    .featured-verified { font-size:11px; color:#7dd3fc; background:#10212e; border:1px solid #284557; border-radius:999px; padding:3px 8px; }
+    .featured-cta { display:inline-flex; align-items:center; font-weight:600; }
+    .featured-title { font-weight:700; font-size:19px; line-height:1.25; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
+    .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
     @media (min-width: 720px) {
       .featured-grid { grid-template-columns:1fr 1fr; }
-      .featured-item { flex-direction:row; align-items:flex-start; }
-      .featured-media { width:220px; min-width:220px; min-height:132px; }
+      .featured-item { grid-template-columns:200px 1fr; align-items:start; gap:12px; }
+      .featured-media { width:200px; min-width:200px; }
       .featured-meta { flex:1; }
       .meta-grid { grid-template-columns:1fr 1fr; }
     }
@@ -9094,6 +9259,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     </section>
 
     <section class="section">
+      <h3>Creator Signal</h3>
+      ${creatorSignalHtml}
+    </section>
+
+    <section class="section">
       <h3>Verification</h3>
       <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
       <div class="proof-group">
@@ -9113,8 +9283,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     ${
       featuredContentHtml
         ? `<section class="section">
-    <h3>Featured content</h3>
-    <div class="line muted">Only content explicitly featured by this creator appears here.</div>
+    <h3>Certifyd Works</h3>
+    <div class="line muted">Verified works published or claimed by this creator.</div>
     <div class="line featured-grid">${featuredContentHtml}</div>
   </section>`
         : ""
@@ -9174,6 +9344,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
     orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
     select: { proofType: true, subject: true, claimJson: true, location: true, verifiedAt: true }
   });
+  const creatorSignal = computeCreatorSignal(verifiedProofs as any);
 
   const domains = verifiedProofs
     .filter((p) => asString((p as any).proofType || "").trim().toLowerCase() === "domain")
@@ -9251,6 +9422,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
       social,
       nostr
     },
+    creatorSignal,
     generatedAt: new Date().toISOString(),
     signature: null
   };
@@ -11581,10 +11753,31 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       }
     });
 
-    // return enriched info
-    const manifest = await readManifest(content.repoPath);
-    const manifestSha = manifest ? findManifestSha(manifest, fileEntry.path) : null;
-    const manifestHash = manifest ? computeManifestHash(manifest) : null;
+    // Rebuild manifest with derived assets (preview + cover thumbnail) on upload.
+    const files = await prisma.contentFile.findMany({ where: { contentId }, orderBy: { createdAt: "asc" } });
+    const manifestJson = await buildManifestWithDerivedAssets(content, files);
+    const manifestHash = hashManifestJson(manifestJson);
+    const existingManifest = await prisma.manifest.findUnique({ where: { contentId } });
+    const manifestRecord = await prisma.manifest.upsert({
+      where: { contentId },
+      update: {
+        json: manifestJson as any,
+        sha256: manifestHash,
+        parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+        lineageRelation: existingManifest?.lineageRelation || null
+      },
+      create: {
+        contentId,
+        json: manifestJson as any,
+        sha256: manifestHash,
+        parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+        lineageRelation: existingManifest?.lineageRelation || null
+      }
+    });
+    await prisma.contentItem.update({ where: { id: contentId }, data: { manifestId: manifestRecord.id } });
+    const manifestFiles = Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files : [];
+    const uploadedManifestFile = manifestFiles.find((f: any) => asString(f?.objectKey || f?.path || "") === fileEntry.path) || null;
+    const manifestSha = asString(uploadedManifestFile?.sha256 || "").trim() || null;
 
     try {
       await prisma.auditEvent.create({
