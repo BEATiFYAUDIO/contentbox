@@ -117,6 +117,17 @@ function getReceiptTokenFromLocation(): string | null {
   return null;
 }
 
+function normalizePublicProfileHandle(value: unknown): string | null {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return null;
+  const collapsed = raw.replace(/\s+/g, "-");
+  const clean = collapsed
+    .replace(/[^a-z0-9._-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^[-._]+|[-._]+$/g, "");
+  return clean || null;
+}
+
 /* =======================
    App Component
 ======================= */
@@ -413,6 +424,13 @@ export default function App() {
       : "Configure named link";
 
   const hideSidebar = Boolean(inviteToken && !me);
+  const creatorHandle = normalizePublicProfileHandle(me?.displayName || me?.email || "");
+  const logoHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : "/";
+  const creatorProfileHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : null;
+  const publicCreatorUrl =
+    creatorProfileHref && publicStatus?.url
+      ? new URL(creatorProfileHref, String(publicStatus.url)).toString()
+      : null;
 
   return (
     <div className="h-screen overflow-hidden bg-neutral-950 text-neutral-100 flex">
@@ -420,18 +438,44 @@ export default function App() {
       {!hideSidebar && (
         <aside className="w-64 border-r border-neutral-900 bg-neutral-950/60 p-4 h-screen shrink-0 flex flex-col">
           <div className="flex items-center justify-center pt-4 pb-3">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <div className="w-[214px] h-[140px] overflow-visible flex items-center justify-center">
-              <img
-                src={logo}
-                alt="Certifyd Creator"
-                className="w-full h-full object-contain scale-[1.38] origin-center"
-              />
-            </div>
+            <a href={logoHref} className="block">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <div className="w-[214px] h-[140px] overflow-visible flex items-center justify-center">
+                <img
+                  src={logo}
+                  alt="Certifyd Creator"
+                  className="w-full h-full object-contain scale-[1.38] origin-center"
+                />
+              </div>
+            </a>
           </div>
-
+          
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
             <div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
+              <div className="space-y-1">
+              {identityNav.map((item) => {
+                const active = item.key === page;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={() => setPage(item.key)}
+                    className={[
+                      "w-full text-left rounded-lg px-3 py-2 transition border",
+                      active
+                        ? "border-white/30 bg-white/5"
+                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                    ].join(" ")}
+                  >
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-neutral-900 pt-4">
               <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
               <div className="space-y-1">
               {contentNav.map((item) => {
@@ -521,29 +565,6 @@ export default function App() {
               </div>
             </div>
 
-            <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
-              <div className="space-y-1">
-              {identityNav.map((item) => {
-                const active = item.key === page;
-                return (
-                  <button
-                    key={item.key}
-                    onClick={() => setPage(item.key)}
-                    className={[
-                      "w-full text-left rounded-lg px-3 py-2 transition border",
-                      active
-                        ? "border-white/30 bg-white/5"
-                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
-                    ].join(" ")}
-                  >
-                    <div className="text-sm font-medium">{item.label}</div>
-                    <div className="text-xs text-neutral-400">{item.hint}</div>
-                  </button>
-                );
-              })}
-              </div>
-            </div>
             {showAdvancedNav && (
               <div className="mt-4 border-t border-neutral-900 pt-4">
                 <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Advanced</div>
@@ -665,15 +686,22 @@ export default function App() {
                 {publicStatus?.url ? (
                   <>
                     <button
-                      onClick={() => window.open(String(publicStatus.url), "_blank", "noopener,noreferrer")}
+                      onClick={() =>
+                        window.open(
+                          publicCreatorUrl || String(publicStatus.url),
+                          "_blank",
+                          "noopener,noreferrer"
+                        )
+                      }
                       className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
                     >
-                      Open public link
+                      {publicCreatorUrl ? "Open public profile" : "Open public link"}
                     </button>
                     <button
                       onClick={() => {
-                        if (publicStatus?.url) {
-                          navigator.clipboard.writeText(String(publicStatus.url)).catch(() => {});
+                        const copyTarget = publicCreatorUrl || (publicStatus?.url ? String(publicStatus.url) : "");
+                        if (copyTarget) {
+                          navigator.clipboard.writeText(copyTarget).catch(() => {});
                         }
                       }}
                       className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"

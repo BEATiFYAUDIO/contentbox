@@ -5,6 +5,7 @@ import {
   assertCanPublish,
   assertCanRestore,
   assertCanTrash,
+  assertCanUpload,
   evaluatePublicBuyAccess,
   isSaleable,
   isTrashedDraft,
@@ -51,6 +52,13 @@ test("action guards enforce publish/trash/archive/restore semantics", () => {
   const restoreBlockedForArchived = assertCanRestore(archivedPublished);
   assert.equal(restoreBlockedForArchived.ok, false);
   if (!restoreBlockedForArchived.ok) assert.equal(restoreBlockedForArchived.code, "TOMBSTONED_CONTENT");
+
+  const uploadBlockedForPublished = assertCanUpload(activePublished);
+  assert.equal(uploadBlockedForPublished.ok, false);
+  if (!uploadBlockedForPublished.ok) assert.equal(uploadBlockedForPublished.code, "PUBLISHED_IMMUTABLE");
+
+  const coverUploadAllowedForPublished = assertCanUpload(activePublished, { allowPublished: true });
+  assert.equal(coverUploadAllowedForPublished.ok, true);
 });
 
 test("delete mode for published with purchases becomes tombstone", () => {
@@ -77,4 +85,3 @@ test("purchase-intent saleability guard equivalent", () => {
   assert.equal(saleable.length, 1);
   assert.equal(blocked.length, 3);
 });
-

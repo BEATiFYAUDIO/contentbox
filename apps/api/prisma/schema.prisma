@@ -192,6 +192,7 @@ model Identity {
 model ContentItem {
   id            String        @id @default(cuid())
   ownerUserId   String
+  previousVersionContentId String?
   title         String
   description   String?
   type          ContentType
@@ -211,6 +212,8 @@ model ContentItem {
   deletedReason  String?
 
   owner         User         @relation("OwnerContent", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  previousVersion ContentItem? @relation("ContentItemVersionLineage", fields: [previousVersionContentId], references: [id], onDelete: SetNull)
+  nextVersions    ContentItem[] @relation("ContentItemVersionLineage")
   files         ContentFile[]
   credits       ContentCredit[]
   splitVersions SplitVersion[]
@@ -226,6 +229,7 @@ model ContentItem {
   publishEvents PublishEvent[]
 
   @@index([ownerUserId])
+  @@index([previousVersionContentId])
   @@index([repoPath])
   @@index([deletedAt])
 }

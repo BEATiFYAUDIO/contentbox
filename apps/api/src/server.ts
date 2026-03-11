@@ -95,7 +95,6 @@ import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import { registerWitnessRoutes } from "./modules/witness/witness.routes.js";
-import { resolveContentboxRoot } from "./lib/contentboxRoot.js";
 import {
   assertCanPublish as assertLifecycleCanPublish,
   assertCanRestore as assertLifecycleCanRestore,
@@ -780,10 +779,7 @@ const prisma = new PrismaClient();
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
 const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
-const CONTENTBOX_ROOT = resolveContentboxRoot();
-if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
-  process.env.CONTENTBOX_ROOT = CONTENTBOX_ROOT;
-}
+const CONTENTBOX_ROOT = mustEnv("CONTENTBOX_ROOT");
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
 const NODE_HTTP_PORT = Number(process.env.PORT || 4000);
 const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "quick").trim().toLowerCase();
@@ -6033,6 +6029,22 @@ app.get("/api/payout-methods", { preHandler: requireAuth }, async () => {
   });
 });
 
+function toVersionSummary(content: {
+  previousVersionContentId?: string | null;
+  previousVersion?: { id: string; title: string; status: string } | null;
+}) {
+  return {
+    previousVersionContentId: content.previousVersionContentId || null,
+    previousVersion: content.previousVersion
+      ? {
+          id: content.previousVersion.id,
+          title: content.previousVersion.title,
+          status: content.previousVersion.status
+        }
+      : null
+  };
+}
+
 /**
  * CONTENT (auth)
  */
@@ -6080,6 +6092,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     title: true,
     type: true,
     status: true,
+    previousVersionContentId: true,
+    previousVersion: { select: { id: true, title: true, status: true } },
     featureOnProfile: true,
     storefrontStatus: true,
     deliveryMode: true,
@@ -6101,14 +6115,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
-    items.push(...local.map((i) => ({ ...i, libraryAccess: i.ownerUserId === userId ? "owned" : "local" })));
+    items.push(...local.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: i.ownerUserId === userId ? "owned" : "local" })));
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
       where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
-    items.push(...owned.map((i) => ({ ...i, libraryAccess: "owned" })));
+    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned" })));
   } else {
     // library: owned + purchased (entitlements) + public preview
     const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
@@ -6156,13 +6170,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       })
     ]);
 
-    items.push(...owned.map((i) => ({ ...i, libraryAccess: "owned" })));
+    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned" })));
     items.push(
       ...purchased
         .filter((p) => p.content)
-        .map((p) => ({ ...p.content, libraryAccess: "purchased" }))
+        .map((p) => ({ ...p.content, ...toVersionSummary(p.content), libraryAccess: "purchased" }))
     );
-    items.push(...publicPreview.map((i) => ({ ...i, libraryAccess: "preview" })));
+    items.push(...publicPreview.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "preview" })));
     if (participantLinks.length > 0) {
       const participantIds = Array.from(
         new Set(participantLinks.map((p) => p.splitVersion?.contentId).filter(Boolean) as string[])
@@ -6178,7 +6192,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           orderBy: { createdAt: "desc" },
           select: selectBase
         });
-        items.push(...participantContent.map((i) => ({ ...i, libraryAccess: "participant" })));
+        items.push(...participantContent.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "participant" })));
       }
     }
   }
@@ -6260,6 +6274,103 @@ app.post("/content", { preHandler: requireAuth }, async (req: any, reply) => {
 
   const created = await prisma.contentItem.findUnique({ where: { id: content.id } });
   return reply.send(created);
+});
+
+// Create a new draft version from an existing published content item.
+app.post("/content/:id/new-version", { preHandler: requireAuth }, async (req: any, reply) => {
+  const userId = (req.user as JwtUser).sub;
+  const sourceId = asString((req.params as any).id || "").trim();
+  if (!sourceId) return badRequest(reply, "contentId required");
+
+  const source = await prisma.contentItem.findUnique({
+    where: { id: sourceId },
+    select: {
+      id: true,
+      ownerUserId: true,
+      title: true,
+      description: true,
+      type: true,
+      status: true,
+      deletedAt: true,
+      priceSats: true,
+      deliveryMode: true
+    }
+  });
+  if (!source) return notFound(reply, "Content not found");
+  if (source.ownerUserId !== userId) return forbidden(reply);
+  if (source.deletedAt) return reply.code(409).send({ code: "SOURCE_DELETED", error: "Source content is deleted." });
+  if (String(source.status || "").toLowerCase() !== "published") {
+    return reply.code(409).send({
+      code: "SOURCE_NOT_PUBLISHED",
+      error: "Only published content can create a new version draft."
+    });
+  }
+
+  const nextTitle = `${asString(source.title || "").trim() || "Untitled"} (New Version Draft)`;
+  const draft = await prisma.contentItem.create({
+    data: {
+      ownerUserId: userId,
+      previousVersionContentId: source.id,
+      title: nextTitle,
+      description: source.description || null,
+      type: source.type as any,
+      status: "draft" as any,
+      priceSats: source.priceSats ?? null,
+      deliveryMode: source.deliveryMode || null
+    }
+  });
+
+  try {
+    const repoPath = await initContentRepo({
+      root: CONTENTBOX_ROOT,
+      contentId: draft.id,
+      type: String(source.type || "file"),
+      title: nextTitle
+    });
+    await prisma.contentItem.update({ where: { id: draft.id }, data: { repoPath } });
+
+    await prisma.splitVersion.create({
+      data: { contentId: draft.id, versionNumber: 1, createdByUserId: userId, status: "draft" }
+    });
+
+    const sourceCredits = await prisma.contentCredit.findMany({
+      where: { contentId: source.id },
+      orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }]
+    });
+    if (sourceCredits.length) {
+      await prisma.contentCredit.createMany({
+        data: sourceCredits.map((c) => ({
+          contentId: draft.id,
+          name: c.name,
+          role: c.role,
+          userId: c.userId || null,
+          sortOrder: c.sortOrder ?? 0
+        }))
+      });
+    }
+
+    try {
+      await prisma.auditEvent.create({
+        data: {
+          userId,
+          action: "content.new_version.create",
+          entityType: "ContentItem",
+          entityId: draft.id,
+          payloadJson: { sourceContentId: source.id, sourceStatus: source.status } as any
+        }
+      });
+    } catch {}
+  } catch (e: any) {
+    await prisma.contentItem.delete({ where: { id: draft.id } }).catch(() => {});
+    return reply.code(500).send({ error: asString(e?.message || e || "Failed to create new version draft") });
+  }
+
+  const created = await prisma.contentItem.findUnique({ where: { id: draft.id } });
+  return reply.send({
+    ok: true,
+    sourceContentId: source.id,
+    content: created
+  });
 });
 
 // Create derivative content (child) with parent links and draft split
@@ -9741,12 +9852,21 @@ async function handleBuyPage(req: any, reply: any) {
     .purchase-sub { margin-top:4px; color:#a1a1aa; font-size:13px; }
     .rails-wrap { margin-top:12px; }
     .receipt-row { margin-top:10px; padding-top:10px; border-top:1px solid #222; }
+    .library-return-wrap { margin-top:10px; text-align:left; }
+    .library-return { text-decoration:none; }
     @media (max-width: 640px) {
       .wrap { padding: 16px; }
       .card { padding: 16px; }
       .purchase-card { padding: 12px; }
       .purchase-price { font-size:26px; }
       .btn { width:100%; }
+      .library-return {
+        display:inline-flex !important;
+        width:auto !important;
+        min-width:0;
+        padding:10px 14px;
+        border-radius:10px;
+      }
       .row { gap:12px; }
       .rail { padding:10px; }
     }
@@ -10151,7 +10271,7 @@ async function handleBuyPage(req: any, reply: any) {
           <div class="step" style="border-color:#14532d;background:#0b1f14;">
             <div style="font-weight:600;">Already owned</div>
             <div class="muted" style="margin-top:6px;">This item is in your library.</div>
-            <a class="btn" href="/library" style="display:inline-block;margin-top:10px;text-decoration:none;">Go to library</a>
+            <div class="library-return-wrap"><a class="btn library-return" href="/library">Go to library</a></div>
           </div>
         \` : ""}
         \${mediaSrc && canStream ? \`
@@ -10571,8 +10691,14 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     .step { margin-top:14px; padding:12px; border:1px solid #222; border-radius:12px; background:#0f0f10; }
     .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
     .item { border:1px solid #222; border-radius:12px; padding:12px; background:#0f0f10; margin-top:10px; }
+    .content-id { display:block; margin-top:2px; overflow-wrap:anywhere; word-break:break-word; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; line-height:1.35; }
     a { color:#93c5fd; }
     .footer { margin-top:20px; font-size:12px; color:#a1a1aa; }
+    @media (max-width: 640px) {
+      .wrap { padding: 16px; }
+      .card { padding: 16px; }
+      .item { padding: 10px; }
+    }
   </style>
 </head>
 <body>
@@ -10632,7 +10758,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
           .map((e) =>
             '<div class="item">' +
               '<div style="font-weight:600;">' + (e.content?.title || e.contentId || "Untitled") + '</div>' +
-              '<div class="muted">Content ID: ' + e.contentId + '</div>' +
+              '<div class="muted">Content ID:<span class="content-id">' + e.contentId + '</span></div>' +
               '<div class="muted" style="margin-top:6px;"><a href="/buy/' + encodeURIComponent(e.contentId) + '">Open buy page</a></div>' +
             '</div>'
           )
@@ -11854,7 +11980,7 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
   }
 });
 
-// Upload or replace song cover artwork (image only)
+// Upload or replace cover artwork (image only) for supported content types.
 app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
@@ -11871,12 +11997,13 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
   if (!content.repoPath) return reply.code(500).send({ error: "Content repo not initialized" });
-  const uploadGuard = assertLifecycleCanUpload(content);
+  const uploadGuard = assertLifecycleCanUpload(content, { allowPublished: true });
   if (!uploadGuard.ok) {
     return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
   }
-  if (String(content.type || "").toLowerCase() !== "song") {
-    return reply.code(400).send({ error: "Cover upload is only supported for songs" });
+  const coverSupportedTypes = new Set(["song", "video", "book", "file"]);
+  if (!coverSupportedTypes.has(String(content.type || "").toLowerCase())) {
+    return reply.code(400).send({ error: "Cover upload is only supported for song, video, book, and file content." });
   }
 
   const uploadReqCheck = validateUploadRequest({
@@ -12145,7 +12272,10 @@ app.get("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => 
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
-  const c = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  const c = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    include: { previousVersion: { select: { id: true, title: true, status: true } } }
+  });
   if (!c) return notFound(reply, "Content not found");
   let canEdit = c.ownerUserId === userId;
   if (!canEdit) {
@@ -12176,6 +12306,14 @@ app.get("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => 
     title: c.title,
     type: c.type,
     status: c.status,
+    previousVersionContentId: c.previousVersionContentId || null,
+    previousVersion: c.previousVersion
+      ? {
+          id: c.previousVersion.id,
+          title: c.previousVersion.title,
+          status: c.previousVersion.status
+        }
+      : null,
     priceSats: c.priceSats != null ? c.priceSats.toString() : null,
     storefrontStatus: c.storefrontStatus,
     createdAt: c.createdAt,

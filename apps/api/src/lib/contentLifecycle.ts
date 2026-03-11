@@ -56,12 +56,19 @@ export function assertCanPublish(item: ContentLike): GuardResult {
   return { ok: true };
 }
 
-export function assertCanUpload(item: ContentLike): GuardResult {
+export function assertCanUpload(item: ContentLike, opts?: { allowPublished?: boolean }): GuardResult {
   if (isArchivedPublished(item)) {
     return { ok: false, code: "TOMBSTONED_CONTENT", message: "Removed from store." };
   }
   if (isTrashedDraft(item)) {
     return { ok: false, code: "TRASHED_CONTENT", message: "Restore this item from Trash before uploading." };
+  }
+  if (isPublished(item) && !opts?.allowPublished) {
+    return {
+      ok: false,
+      code: "PUBLISHED_IMMUTABLE",
+      message: "This published release is immutable. Create a new version to upload updated media."
+    };
   }
   return { ok: true };
 }
@@ -107,4 +114,3 @@ export function evaluatePublicBuyAccess(item: ContentLike, entitled: boolean): "
   if (isArchivedPublished(item)) return entitled ? "saleable" : "removed";
   return "not_found";
 }
-

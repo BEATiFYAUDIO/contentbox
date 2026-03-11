@@ -17,6 +17,7 @@ const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   books: "Books",
   files: "Files"
 };
+const COVER_UPLOAD_TYPES = new Set<ContentType>(["song", "video", "book", "file"]);
 
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
   const v = String(raw || "").toLowerCase();
@@ -48,6 +49,8 @@ type ContentItem = {
   title: string;
   type: ContentType;
   status: "draft" | "published";
+  previousVersionContentId?: string | null;
+  previousVersion?: { id: string; title: string; status: string } | null;
   featureOnProfile?: boolean;
   storefrontStatus?: "DISABLED" | "UNLISTED" | "LISTED";
   deliveryMode?: "stream_only" | "download_only" | "stream_and_download" | null;
@@ -1318,6 +1321,26 @@ export default function ContentLibraryPage({
     }
   }
 
+  async function createNewVersionDraft(sourceContentId: string) {
+    setBusyAction((m) => ({ ...m, [sourceContentId]: true }));
+    setError(null);
+    try {
+      const res = await api<{ ok: true; sourceContentId: string; content?: { id: string } }>(
+        `/content/${sourceContentId}/new-version`,
+        "POST",
+        {}
+      );
+      const newId = String(res?.content?.id || "").trim();
+      if (!newId) throw new Error("New version draft was created but no content id was returned.");
+      setPendingOpenContentId(newId);
+      await refreshCurrentView();
+    } catch (e: any) {
+      setError(e?.message || "Failed to create new version draft.");
+    } finally {
+      setBusyAction((m) => ({ ...m, [sourceContentId]: false }));
+    }
+  }
+
   async function softDelete(contentId: string) {
     const item = items.find((row) => row.id === contentId);
     const state = computeContentUiState(item || {});
@@ -1513,7 +1536,11 @@ export default function ContentLibraryPage({
               setExpanded((m) => ({ ...m, [contentId]: true }));
               await Promise.all([loadFiles(contentId), loadLatestSplit(contentId)]);
             } catch (err: any) {
-              setUpload({ status: "error", contentId, message: err?.message || "Upload failed" });
+              const raw = String(err?.message || "Upload failed");
+              const message = raw.includes("PUBLISHED_IMMUTABLE")
+                ? "This published release is immutable. Create a new version to upload updated media."
+                : raw;
+              setUpload({ status: "error", contentId, message });
             }
           }}
         />
@@ -1554,7 +1581,7 @@ export default function ContentLibraryPage({
     return (
       <>
         <label className="sr-only" htmlFor={`upload-cover-${contentId}`}>
-          Upload song cover
+          Upload content cover
         </label>
         <input
           id={`upload-cover-${contentId}`}
@@ -2205,7 +2232,7 @@ export default function ContentLibraryPage({
               const allowTrash = canTrash(uiState);
               const allowArchive = canArchive(uiState);
               const allowRestore = canRestore(uiState);
-              const allowUpload = canUpload(uiState) || uiState === "published";
+              const allowUpload = canUpload(uiState);
               const storefrontStatus = (it.storefrontStatus || "DISABLED") as "DISABLED" | "UNLISTED" | "LISTED";
               const manifestSha256 = it.manifest?.sha256 || "";
               const publicMetaUrl = `${apiBase}/public/content/${it.id}`;
@@ -2229,6 +2256,17 @@ export default function ContentLibraryPage({
                         {(showTrash || showTombstones) && it.deletedAt ? ` • Deleted ${formatDateLabel(it.deletedAt)}` : ""}
                       </div>
                       <div className="text-[11px] text-neutral-500 mt-1 capitalize">Access: {accessTag}</div>
+                      {it.previousVersionContentId ? (
+                        <div className="text-[11px] text-sky-300/90 mt-1">
+                          Version draft from:{" "}
+                          <span className="text-sky-200">
+                            {it.previousVersion?.title || shortSha(it.previousVersionContentId, 10)}
+                          </span>
+                          {it.previousVersion?.status ? (
+                            <span className="text-neutral-500"> ({String(it.previousVersion.status).toLowerCase()})</span>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {uiState === "archived" ? (
                         <div className="mt-1 inline-flex rounded-full border border-amber-800 bg-amber-950/40 px-2 py-0.5 text-[10px] uppercase tracking-wide text-amber-200">
                           Archived
@@ -2291,9 +2329,20 @@ export default function ContentLibraryPage({
                               </button>
 
                               {isOwner && allowUpload ? (
-                                <UploadButton contentId={it.id} disabled={busy} label={uiState === "published" ? "Update file" : "Upload"} />
+                                <UploadButton contentId={it.id} disabled={busy} label="Upload" />
                               ) : null}
-                              {isOwner && allowUpload && String(it.type || "").toLowerCase() === "song" ? (
+                              {isOwner && uiState === "published" ? (
+                                <button
+                                  type="button"
+                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                                  onClick={() => createNewVersionDraft(it.id)}
+                                  disabled={busy}
+                                  title="Create a new draft version to upload updated media"
+                                >
+                                  {busy ? "Creating…" : "Upload New Version"}
+                                </button>
+                              ) : null}
+                              {isOwner && allowUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
                                 <CoverUploadButton
                                   contentId={it.id}
                                   disabled={busy}
