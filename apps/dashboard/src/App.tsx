@@ -99,6 +99,22 @@ function getInviteTokenFromLocation(): string | null {
   return null;
 }
 
+function normalizeAvatarUrl(raw: string | null | undefined): string | null {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  const apiBase = getApiBase().replace(/\/+$/, "");
+  if (value.startsWith("/public/avatars/")) {
+    return `${apiBase}${value}`;
+  }
+  try {
+    const u = new URL(value);
+    if (u.pathname.startsWith("/public/avatars/")) {
+      return `${apiBase}${u.pathname}${u.search || ""}`;
+    }
+  } catch {}
+  return value;
+}
+
 function getReceiptTokenFromLocation(): string | null {
   const parts = window.location.pathname.split("/").filter(Boolean);
   if (parts[0] === "receipt" && typeof parts[1] === "string") {
@@ -613,9 +629,9 @@ export default function App() {
               </div>
               <div className="text-xs text-neutral-400">Signed in as</div>
               <div className="flex items-center gap-2">
-                {me.avatarUrl ? (
+                {normalizeAvatarUrl(me.avatarUrl) ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={me.avatarUrl} alt="avatar" className="w-8 h-8 rounded-full object-cover" />
+                  <img src={normalizeAvatarUrl(me.avatarUrl)!} alt="avatar" className="w-8 h-8 rounded-full object-cover" />
                 ) : null}
                 <div className="text-sm">{me.displayName || me.email}</div>
               </div>

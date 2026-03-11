@@ -191,6 +191,17 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const modeLocked = Boolean(modeInfo?.tierLocked);
   const restartCommand = "npm run dev";
   const apiBase = getApiBase();
+  const profileAvatarUrl = (() => {
+    const raw = String(me?.avatarUrl || "").trim();
+    if (!raw) return "";
+    const base = apiBase.replace(/\/+$/, "");
+    if (raw.startsWith("/public/avatars/")) return `${base}${raw}`;
+    try {
+      const u = new URL(raw);
+      if (u.pathname.startsWith("/public/avatars/")) return `${base}${u.pathname}${u.search || ""}`;
+    } catch {}
+    return raw;
+  })();
 
   const uploadProfileImage = async (file: File) => {
     if (!file) return;
@@ -582,9 +593,9 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                   autoComplete="url"
                   placeholder="https://example.com/avatar.jpg or upload an image below"
                 />
-                {me?.avatarUrl ? (
+                {profileAvatarUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={me.avatarUrl} alt="avatar" className="w-12 h-12 rounded-full object-cover" />
+                  <img src={profileAvatarUrl} alt="avatar" className="w-12 h-12 rounded-full object-cover" />
                 ) : null}
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-2">

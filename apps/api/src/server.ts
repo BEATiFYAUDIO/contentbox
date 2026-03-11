@@ -1738,8 +1738,8 @@ async function fetchAndStoreAvatarForUser(userId: string, imageUrl: string) {
       await fs.writeFile(abs, buf);
     }
 
-    // return public URL
-    return `${APP_BASE_URL}/public/avatars/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
+    // Return a host-agnostic public path so it works across local/dev/public origins.
+    return `/public/avatars/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
   } catch (e) {
     return null;
   }
@@ -1769,7 +1769,8 @@ async function storeAvatarBufferForUser(userId: string, buf: Buffer, contentType
   } catch {
     await fs.writeFile(abs, buf);
   }
-  return `${APP_BASE_URL}/public/avatars/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
+  // Return a host-agnostic public path so it works across local/dev/public origins.
+  return `/public/avatars/${encodeURIComponent(userId)}/${encodeURIComponent(filename)}`;
 }
 
 /** ---------- manifest helpers ---------- */
@@ -5344,7 +5345,18 @@ app.patch("/me", { preHandler: requireAuth }, async (req: any, reply: any) => {
 
   const displayName = body.displayName === undefined ? undefined : (String(body.displayName).trim() || null);
   const bio = body.bio === undefined ? undefined : (String(body.bio).trim() || null);
-  const avatarUrl = body.avatarUrl === undefined ? undefined : (String(body.avatarUrl).trim() || null);
+  const avatarUrlRaw = body.avatarUrl === undefined ? undefined : (String(body.avatarUrl).trim() || null);
+  const avatarUrl =
+    avatarUrlRaw == null
+      ? avatarUrlRaw
+      : (() => {
+          if (avatarUrlRaw.startsWith("/public/avatars/")) return avatarUrlRaw;
+          try {
+            const u = new URL(avatarUrlRaw);
+            if (u.pathname.startsWith("/public/avatars/")) return `${u.pathname}${u.search || ""}`;
+          } catch {}
+          return avatarUrlRaw;
+        })();
 
   const data: any = {};
   if (displayName !== undefined) data.displayName = displayName;
