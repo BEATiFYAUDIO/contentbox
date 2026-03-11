@@ -9034,7 +9034,23 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
   const safeBio = escHtml(asString(user.bio || ""));
   const safeAvatar = asString(user.avatarUrl || "").trim();
-  const safeAvatarUrl = (/^https?:\/\//i.test(safeAvatar) || safeAvatar.startsWith("/public/avatars/")) ? escHtml(safeAvatar) : "";
+  const publicOrigin = getPublicOrigin(req).replace(/\/+$/, "");
+  let avatarSrc = "";
+  if (safeAvatar.startsWith("/public/avatars/")) {
+    avatarSrc = safeAvatar;
+  } else if (/^https?:\/\//i.test(safeAvatar)) {
+    try {
+      const u = new URL(safeAvatar);
+      if (u.pathname.startsWith("/public/avatars/")) {
+        avatarSrc = `${publicOrigin}${u.pathname}${u.search || ""}`;
+      } else {
+        avatarSrc = safeAvatar;
+      }
+    } catch {
+      avatarSrc = "";
+    }
+  }
+  const safeAvatarUrl = avatarSrc ? escHtml(avatarSrc) : "";
   const safeHandle = escHtml(`@${requested}`);
   const safeNodeUrl = escHtml(nodeUrl);
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
