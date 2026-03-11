@@ -1609,7 +1609,7 @@ app.register(cors, {
   },
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization", "X-Idempotency-Key"],
-  credentials: false,
+  credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204
 });
