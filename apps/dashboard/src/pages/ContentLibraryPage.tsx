@@ -2229,6 +2229,7 @@ export default function ContentLibraryPage({
               const allowArchive = canArchive(uiState);
               const allowRestore = canRestore(uiState);
               const allowUpload = canUpload(uiState);
+              const allowCoverUpload = uiState === "draft" || uiState === "published";
               const storefrontStatus = (it.storefrontStatus || "DISABLED") as "DISABLED" | "UNLISTED" | "LISTED";
               const manifestSha256 = it.manifest?.sha256 || "";
               const publicMetaUrl = `${apiBase}/public/content/${it.id}`;
@@ -2338,7 +2339,7 @@ export default function ContentLibraryPage({
                                   {busy ? "Creating…" : "Upload New Version"}
                                 </button>
                               ) : null}
-                              {isOwner && allowUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
+                              {isOwner && allowCoverUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
                                 <CoverUploadButton
                                   contentId={it.id}
                                   disabled={busy}
