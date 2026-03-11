@@ -8962,28 +8962,32 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
 
+  const userSelect = {
+    id: true,
+    displayName: true,
+    bio: true,
+    avatarUrl: true,
+    witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+  } as const;
+
   const maybeName = requested.replace(/[-_.]+/g, " ").trim();
-  const user =
+  let user =
     await prisma.user.findFirst({
       where: { displayName: { equals: requested } },
-      select: {
-        id: true,
-        displayName: true,
-        bio: true,
-        avatarUrl: true,
-        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-      }
+      select: userSelect
     }) ||
     await prisma.user.findFirst({
       where: { displayName: { equals: maybeName } },
-      select: {
-        id: true,
-        displayName: true,
-        bio: true,
-        avatarUrl: true,
-        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-      }
+      select: userSelect
     });
+
+  if (!user) {
+    const candidates = await prisma.user.findMany({
+      where: { displayName: { not: null } },
+      select: userSelect
+    });
+    user = candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) || null;
+  }
   if (!user) return notFound(reply, "Not found");
 
   const verifiedProofs = await prisma.proofRecord.findMany({

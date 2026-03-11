@@ -444,8 +444,8 @@ export default function App() {
   const logoHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : "/";
   const creatorProfileHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : null;
   const publicCreatorUrl =
-    creatorProfileHref && publicStatus?.url
-      ? new URL(creatorProfileHref, String(publicStatus.url)).toString()
+    publicStatus?.url
+      ? new URL(creatorProfileHref || "/profile", String(publicStatus.url)).toString()
       : null;
 
   return (
