@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { api, getApiBase } from "../lib/api";
+import { getToken } from "../lib/auth";
 import type { IdentityDetail } from "../lib/identity";
 import { modeLabel } from "../lib/nodeMode";
 import { PAYOUT_DESTINATIONS_LABEL } from "../lib/terminology";
@@ -200,11 +201,16 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
     setAvatarUploading(true);
     setAvatarUploadMsg(null);
     try {
+      const token = getToken();
+      if (!token) {
+        setAvatarUploadMsg("Please sign in again before uploading.");
+        return;
+      }
       const fd = new FormData();
       fd.append("file", file);
       const res = await fetch(`${apiBase}/api/me/avatar/upload`, {
         method: "POST",
-        credentials: "include",
+        headers: { Authorization: `Bearer ${token}` },
         body: fd
       });
       const payload = await res.json().catch(() => null);

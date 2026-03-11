@@ -79,10 +79,24 @@ curl http://127.0.0.1:4000/api/capabilities
 
 ## Common errors and fixes
 - **Prisma config fails / DATABASE_URL missing**: set `DATABASE_URL` in `apps/api/.env`
-- **Migration lock/provider mismatch**: quickstart uses `prisma db push` with SQLite, not `prisma migrate`
+- **Migration/provider mismatch**: run `npx prisma migrate dev --schema prisma/schema.prisma`, then `npx prisma generate --schema prisma/schema.prisma` (use `db push` only for disposable local SQLite fallback).
 - **JWT_SECRET missing**: the installer auto-generates it; re-run install if missing
-- **CONTENTBOX_ROOT missing**: installer auto-creates it under `~/contentbox-data`
+- **CONTENTBOX_ROOT missing**: safe. API now resolves a cross-platform default automatically.
 - **@prisma/client errors**: run `npx prisma generate` from `apps/api`
+
+## Post-pull alignment (recommended on every machine)
+```bash
+cd apps/api
+node ../../scripts/check-prisma-provider.js
+npx prisma migrate dev --schema prisma/schema.prisma
+npx prisma generate --schema prisma/schema.prisma
+npm run dev
+```
+
+Expected startup log includes:
+- resolved `CONTENTBOX_ROOT` path
+- `contentboxRootSource` (`env` or `fallback`)
+- database provider/target summary
 
 ## Environment flags
 - `DEV_P2P_UNLOCK=1` to allow stream permits without payment

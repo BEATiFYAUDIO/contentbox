@@ -764,6 +764,10 @@ export default function ContentLibraryPage({
     try {
       const files = await api<ContentFile[]>(`/content/${contentId}/files`);
       setFilesByContent((m) => ({ ...m, [contentId]: files }));
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      setFilesByContent((m) => ({ ...m, [contentId]: [] }));
+      setError((prev) => prev || (msg ? `File list refresh failed: ${msg}` : "File list refresh failed."));
     } finally {
       setFilesLoading((m) => ({ ...m, [contentId]: false }));
     }
@@ -1530,7 +1534,7 @@ export default function ContentLibraryPage({
 
               // Auto-open the card and refresh files/split so the file ID shows immediately.
               setExpanded((m) => ({ ...m, [contentId]: true }));
-              await Promise.all([loadFiles(contentId), loadLatestSplit(contentId)]);
+              await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId)]);
             } catch (err: any) {
               const raw = String(err?.message || "Upload failed");
               const message = raw.includes("PUBLISHED_IMMUTABLE")

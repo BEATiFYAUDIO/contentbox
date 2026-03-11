@@ -86,7 +86,7 @@ import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
-import { resolveContentboxRoot } from "./lib/contentboxRoot.js";
+import { resolveContentboxRootInfo } from "./lib/contentboxRoot.js";
 import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSessionToken } from "./lib/buyerSession.js";
 import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
 import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
@@ -780,7 +780,8 @@ const prisma = new PrismaClient();
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
 const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
-const CONTENTBOX_ROOT = resolveContentboxRoot();
+const CONTENTBOX_ROOT_INFO = resolveContentboxRootInfo();
+const CONTENTBOX_ROOT = CONTENTBOX_ROOT_INFO.root;
 if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
   process.env.CONTENTBOX_ROOT = CONTENTBOX_ROOT;
 }
@@ -807,7 +808,36 @@ const STARTED_AT = new Date().toISOString();
 const NODE_ID = (process.env.NODE_ID || "").trim() || os.hostname();
 const WHOAMI_ENABLED = process.env.WHOAMI_ENABLED === "1";
 const WHOAMI_ALLOW_REMOTE = process.env.WHOAMI_ALLOW_REMOTE === "1";
-app.log.info({ contentboxRoot: CONTENTBOX_ROOT }, "Resolved CONTENTBOX_ROOT");
+function describeDatabaseTarget(rawUrl: string): { provider: "sqlite" | "postgresql" | "unknown"; target: string } {
+  const raw = String(rawUrl || "").trim();
+  if (!raw) return { provider: "unknown", target: "unset" };
+  if (/^file:/i.test(raw)) {
+    const relOrAbs = raw.replace(/^file:/i, "");
+    const resolved = path.isAbsolute(relOrAbs) ? relOrAbs : path.resolve(process.cwd(), relOrAbs);
+    return { provider: "sqlite", target: resolved };
+  }
+  if (/^postgres(ql)?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const dbName = u.pathname.replace(/^\/+/, "") || "(default)";
+      return { provider: "postgresql", target: `${u.hostname}:${u.port || "5432"}/${dbName}` };
+    } catch {
+      return { provider: "postgresql", target: "invalid-url" };
+    }
+  }
+  return { provider: "unknown", target: "unrecognized" };
+}
+
+const DB_TARGET = describeDatabaseTarget(String(process.env.DATABASE_URL || ""));
+app.log.info(
+  {
+    contentboxRoot: CONTENTBOX_ROOT,
+    contentboxRootSource: CONTENTBOX_ROOT_INFO.source,
+    databaseProvider: DB_TARGET.provider,
+    databaseTarget: DB_TARGET.target
+  },
+  "Startup runtime configuration"
+);
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -1198,7 +1228,7 @@ function validatePrismaDatasourceAlignment() {
         "Invalid DATABASE_URL for this distribution.",
         "Certifyd Creator quickstart uses SQLite-first runtime.",
         `DATABASE_URL looks like ${urlProvider}. Expected file:...`,
-        `Fix: set DATABASE_URL=\"file:<CONTENTBOX_ROOT>/contentbox.db\" in apps/api/.env, then run: npx prisma generate --schema ${schemaPath} && npx prisma db push --schema ${schemaPath}`
+        `Fix: set DATABASE_URL=\"file:<CONTENTBOX_ROOT>/contentbox.db\" in apps/api/.env, then run: npx prisma migrate dev --schema ${schemaPath} && npx prisma generate --schema ${schemaPath}. If this is a disposable local SQLite DB and migration flow is blocked, use npx prisma db push --schema ${schemaPath} as fallback.`
       ].join(" ")
     );
   }
@@ -1217,8 +1247,8 @@ function validatePrismaDatasourceAlignment() {
     [
       "Prisma datasource mismatch.",
       `Generated client provider=${generatedProvider}, but DATABASE_URL looks like ${urlProvider}.`,
-      `Fix: npx prisma generate --schema ${schemaPath}`,
-      `Then: npx prisma db push --schema ${schemaPath}`
+      `Fix: npx prisma migrate dev --schema ${schemaPath}`,
+      `Then: npx prisma generate --schema ${schemaPath} (or db push only for disposable local SQLite fallback).`
     ].join(" ")
   );
 }
@@ -16382,6 +16412,23 @@ app.get("/__whoami", async (req: any, reply: any) => {
 async function start() {
   validatePrismaDatasourceAlignment();
   await ensureDirWritable(CONTENTBOX_ROOT);
+  async function preflightPrismaReadiness() {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      await prisma.contentItem.findFirst({ select: { id: true, previousVersionContentId: true } });
+      await prisma.user.count();
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      throw new Error(
+        [
+          "Prisma preflight failed before server startup.",
+          "Likely schema/client/database drift on this machine.",
+          `Details: ${msg}`,
+          "Fix (SQLite): run `npx prisma migrate dev --schema prisma/schema.prisma` and `npx prisma generate --schema prisma/schema.prisma`, then restart API. If this is a disposable local dev DB and migration flow is blocked, use `npx prisma db push --schema prisma/schema.prisma` as fallback."
+        ].join(" ")
+      );
+    }
+  }
   async function preflightDb() {
     if (!isAdvancedDb()) return;
     const allowEmpty = String(process.env.CONTENTBOX_ALLOW_EMPTY_DB || "") === "1";
@@ -16463,6 +16510,7 @@ async function start() {
 
   await ensureNodeKeys();
   await ensurePayoutMethods();
+  await preflightPrismaReadiness();
   await preflightDb();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
