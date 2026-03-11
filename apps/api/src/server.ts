@@ -2398,6 +2398,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
   appPublic.get("/public/content/:id/preview-file", handlePublicPreviewFile);
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
+  appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
