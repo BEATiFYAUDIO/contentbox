@@ -9050,6 +9050,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       avatarSrc = "";
     }
   }
+  if (avatarSrc.startsWith("/public/avatars/")) {
+    try {
+      const parsed = new URL(avatarSrc, "http://localhost");
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      const avatarUserId = decodeURIComponent(parts[2] || "");
+      const avatarFilename = decodeURIComponent(parts[3] || "");
+      const abs = path.join(CONTENTBOX_ROOT, "avatars", avatarUserId, avatarFilename);
+      if (!avatarUserId || !avatarFilename || !fsSync.existsSync(abs)) {
+        avatarSrc = "";
+      }
+    } catch {
+      avatarSrc = "";
+    }
+  }
   const safeAvatarUrl = avatarSrc ? escHtml(avatarSrc) : "";
   const safeHandle = escHtml(`@${requested}`);
   const safeNodeUrl = escHtml(nodeUrl);
