@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getPublicOriginConfig } from "./publicOriginStore.js";
+import { resolveContentboxRoot } from "./contentboxRoot.js";
 
-const CONTENTBOX_ROOT = String(process.env.CONTENTBOX_ROOT || "").trim();
-const STATE_FILE = CONTENTBOX_ROOT ? path.join(CONTENTBOX_ROOT, "state.json") : "";
+const CONTENTBOX_ROOT = resolveContentboxRoot();
+const STATE_FILE = path.join(CONTENTBOX_ROOT, "state.json");
 
 function readStateFlag(): boolean {
-  if (!STATE_FILE) return false;
   try {
     if (!fs.existsSync(STATE_FILE)) return false;
     const raw = fs.readFileSync(STATE_FILE, "utf8");

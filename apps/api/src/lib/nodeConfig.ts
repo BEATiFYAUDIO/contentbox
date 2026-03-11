@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { resolveContentboxRoot } from "./contentboxRoot.js";
 
 export type NodeMode = "basic" | "advanced" | "lan";
 export type ProductTier = "basic" | "advanced" | "lan";
@@ -11,9 +12,9 @@ export type NodeConfig = {
   updatedAt: string;
 };
 
-const CONTENTBOX_ROOT = String(process.env.CONTENTBOX_ROOT || "").trim();
-const CONFIG_DIR = CONTENTBOX_ROOT ? path.join(CONTENTBOX_ROOT, "state") : "";
-const CONFIG_PATH = CONFIG_DIR ? path.join(CONFIG_DIR, "node_config.json") : "";
+const CONTENTBOX_ROOT = resolveContentboxRoot();
+const CONFIG_DIR = path.join(CONTENTBOX_ROOT, "state");
+const CONFIG_PATH = path.join(CONFIG_DIR, "node_config.json");
 
 function isValidNodeMode(value: unknown): value is NodeMode {
   return value === "basic" || value === "advanced" || value === "lan";
@@ -53,7 +54,6 @@ export function readNodeConfigSync(): NodeConfig | null {
 }
 
 export async function writeNodeConfig(nodeMode: NodeMode): Promise<NodeConfig> {
-  if (!CONFIG_PATH) throw new Error("CONTENTBOX_ROOT not set; cannot persist node mode.");
   const existing = await readNodeConfig();
   const cfg: NodeConfig = { nodeMode, productTier: existing?.productTier, updatedAt: new Date().toISOString() };
   await fsp.mkdir(CONFIG_DIR, { recursive: true });
@@ -64,7 +64,6 @@ export async function writeNodeConfig(nodeMode: NodeMode): Promise<NodeConfig> {
 }
 
 export async function writeProductTier(productTier: ProductTier): Promise<NodeConfig> {
-  if (!CONFIG_PATH) throw new Error("CONTENTBOX_ROOT not set; cannot persist product tier.");
   const existing = await readNodeConfig();
   const cfg: NodeConfig = { nodeMode: existing?.nodeMode, productTier, updatedAt: new Date().toISOString() };
   await fsp.mkdir(CONFIG_DIR, { recursive: true });
