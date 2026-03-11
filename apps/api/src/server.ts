@@ -9034,7 +9034,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
   const safeBio = escHtml(asString(user.bio || ""));
   const safeAvatar = asString(user.avatarUrl || "").trim();
-  const publicOrigin = getPublicOrigin(req).replace(/\/+$/, "");
   let avatarSrc = "";
   if (safeAvatar.startsWith("/public/avatars/")) {
     avatarSrc = safeAvatar;
@@ -9042,7 +9041,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     try {
       const u = new URL(safeAvatar);
       if (u.pathname.startsWith("/public/avatars/")) {
-        avatarSrc = `${publicOrigin}${u.pathname}${u.search || ""}`;
+        // Keep avatar links origin-relative so they survive rotating basic-mode public URLs.
+        avatarSrc = `${u.pathname}${u.search || ""}`;
       } else {
         avatarSrc = safeAvatar;
       }
