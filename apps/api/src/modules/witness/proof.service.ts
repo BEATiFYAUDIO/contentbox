@@ -17,6 +17,8 @@ import {
 } from "./proof.types.js";
 
 type SocialProvider = "github" | "x" | "youtube" | "instagram" | "tiktok" | "rumble" | "reddit" | "substack";
+type SocialProofTier = "strong" | "standard" | "weak";
+type ProofTrustTier = SocialProofTier | "unknown";
 
 function proofModel(prisma: PrismaClient): any {
   const model = (prisma as any).proofRecord;
@@ -61,55 +63,7 @@ function normalizeSocialUsername(input: string): string {
 function normalizeSocialAccount(provider: SocialProvider, input: string): string {
   const src = String(input || "").trim();
   if (!src) return "";
-
-  if (provider === "github") {
-    const fromUrl = normalizeGithubAccountFromUrl(src);
-    if (fromUrl) return fromUrl;
-    return normalizeSocialUsername(src);
-  }
-
-  if (provider === "x") {
-    const fromUrl = normalizeXAccountFromUrl(src);
-    if (fromUrl) return fromUrl;
-    return normalizeSocialUsername(src);
-  }
-
-  if (provider === "youtube") {
-    const normalized = normalizeYouTubeChannelUrl(src);
-    if (normalized) return normalized.account;
-    if (/^UC[a-zA-Z0-9_-]{10,}$/.test(src)) return src;
-    return normalizeSocialUsername(src);
-  }
-
-  if (provider === "instagram") {
-    const normalized = normalizeInstagramProfileUrl(src);
-    if (normalized) return normalized.account;
-    return normalizeSocialUsername(src);
-  }
-
-  if (provider === "rumble") {
-    const normalized = normalizeRumbleProfileUrl(src);
-    if (normalized) return normalized.account;
-    return normalizeSocialUsername(src);
-  }
-
-  if (provider === "reddit") {
-    const normalized = normalizeRedditProfileUrl(src);
-    if (normalized) return normalized.account;
-    const fromSlash = src.match(/^u\/([a-z0-9_-]{3,20})$/i);
-    if (fromSlash?.[1]) return normalizeSocialUsername(fromSlash[1]);
-    return normalizeSocialUsername(src);
-  }
-
-  if (provider === "substack") {
-    const normalized = normalizeSubstackProfileUrl(src);
-    if (normalized) return normalized.account;
-    return normalizeSocialUsername(src);
-  }
-
-  const normalized = normalizeTiktokProfileUrl(src);
-  if (normalized) return normalized.account;
-  return normalizeSocialUsername(src);
+  return getSocialProviderConfig(provider).normalizeAccount(src);
 }
 
 function normalizeStoredSocialAccount(provider: SocialProvider, account: string): string {
@@ -380,6 +334,150 @@ function normalizeSubstackProfileUrl(input: string): { canonicalUrl: string; acc
     return { canonicalUrl: `https://${publication}.substack.com`, account: publication };
   }
   return null;
+}
+
+type SocialProviderConfig = {
+  tier: SocialProofTier;
+  normalizeAccount: (input: string) => string;
+  accountFromUrl: (input: string) => string | null;
+  candidateUrls: (account: string) => string[];
+};
+
+// Keep provider-specific verification behavior centralized here so adding new
+// providers (e.g. gitlab/dev.to/bandcamp/soundcloud) is mostly config-only.
+const SOCIAL_PROVIDERS: Record<SocialProvider, SocialProviderConfig> = {
+  github: {
+    tier: "strong",
+    normalizeAccount: (input) => normalizeGithubAccountFromUrl(input) || normalizeSocialUsername(input),
+    accountFromUrl: (input) => normalizeGithubAccountFromUrl(input),
+    candidateUrls: (account) => [
+      `https://github.com/${account}`,
+      `https://github.com/${account}/`,
+      `https://gist.github.com/${account}`
+    ]
+  },
+  x: {
+    tier: "weak",
+    normalizeAccount: (input) => normalizeXAccountFromUrl(input) || normalizeSocialUsername(input),
+    accountFromUrl: (input) => normalizeXAccountFromUrl(input),
+    candidateUrls: (account) => [
+      `https://x.com/${account}`,
+      `https://twitter.com/${account}`
+    ]
+  },
+  youtube: {
+    tier: "standard",
+    normalizeAccount: (input) => {
+      const normalized = normalizeYouTubeChannelUrl(input);
+      if (normalized) return normalized.account;
+      if (/^UC[a-zA-Z0-9_-]{10,}$/.test(input)) return input;
+      return normalizeSocialUsername(input);
+    },
+    accountFromUrl: (input) => {
+      const parsed = normalizeYouTubeChannelUrl(input);
+      return parsed ? parsed.account : null;
+    },
+    candidateUrls: (account) =>
+      /^UC[a-zA-Z0-9_-]{10,}$/.test(account)
+        ? [
+            `https://www.youtube.com/channel/${account}`,
+            `https://www.youtube.com/channel/${account}/about`
+          ]
+        : [
+            `https://www.youtube.com/@${account}`,
+            `https://www.youtube.com/@${account}/about`
+          ]
+  },
+  instagram: {
+    tier: "weak",
+    normalizeAccount: (input) => {
+      const normalized = normalizeInstagramProfileUrl(input);
+      return normalized ? normalized.account : normalizeSocialUsername(input);
+    },
+    accountFromUrl: (input) => {
+      const parsed = normalizeInstagramProfileUrl(input);
+      return parsed ? parsed.account : null;
+    },
+    candidateUrls: (account) => [`https://www.instagram.com/${account}/`]
+  },
+  tiktok: {
+    tier: "weak",
+    normalizeAccount: (input) => {
+      const normalized = normalizeTiktokProfileUrl(input);
+      return normalized ? normalized.account : normalizeSocialUsername(input);
+    },
+    accountFromUrl: (input) => {
+      const parsed = normalizeTiktokProfileUrl(input);
+      return parsed ? parsed.account : null;
+    },
+    candidateUrls: (account) => [`https://www.tiktok.com/@${account}`]
+  },
+  rumble: {
+    tier: "standard",
+    normalizeAccount: (input) => {
+      const normalized = normalizeRumbleProfileUrl(input);
+      return normalized ? normalized.account : normalizeSocialUsername(input);
+    },
+    accountFromUrl: (input) => {
+      const parsed = normalizeRumbleProfileUrl(input);
+      return parsed ? parsed.account : null;
+    },
+    candidateUrls: (account) => [
+      `https://rumble.com/user/${account}/about`,
+      `https://rumble.com/user/${account}`,
+      `https://rumble.com/${account}`,
+      `https://rumble.com/c/${account}`
+    ]
+  },
+  reddit: {
+    tier: "standard",
+    normalizeAccount: (input) => {
+      const normalized = normalizeRedditProfileUrl(input);
+      if (normalized) return normalized.account;
+      const fromSlash = String(input || "").trim().match(/^u\/([a-z0-9_-]{3,20})$/i);
+      if (fromSlash?.[1]) return normalizeSocialUsername(fromSlash[1]);
+      return normalizeSocialUsername(input);
+    },
+    accountFromUrl: (input) => {
+      const parsed = normalizeRedditProfileUrl(input);
+      return parsed ? parsed.account : null;
+    },
+    candidateUrls: (account) => [
+      `https://www.reddit.com/user/${account}/about`,
+      `https://www.reddit.com/user/${account}`
+    ]
+  },
+  substack: {
+    tier: "standard",
+    normalizeAccount: (input) => {
+      const normalized = normalizeSubstackProfileUrl(input);
+      return normalized ? normalized.account : normalizeSocialUsername(input);
+    },
+    accountFromUrl: (input) => {
+      const parsed = normalizeSubstackProfileUrl(input);
+      return parsed ? parsed.account : null;
+    },
+    candidateUrls: (account) => [
+      `https://${account}.substack.com/about`,
+      `https://${account}.substack.com`,
+      `https://substack.com/@${account}`
+    ]
+  }
+};
+
+function getSocialProviderConfig(provider: SocialProvider): SocialProviderConfig {
+  return SOCIAL_PROVIDERS[provider];
+}
+
+function getSocialProofTier(provider: SocialProvider): SocialProofTier {
+  return getSocialProviderConfig(provider).tier;
+}
+
+function getProofTier(proofType: string, provider?: string): ProofTrustTier {
+  if (proofType === PROOF_TYPE_DOMAIN) return "strong";
+  if (proofType !== PROOF_TYPE_SOCIAL) return "unknown";
+  const normalized = normalizeSocialProvider(String(provider || ""));
+  return normalized ? getSocialProofTier(normalized) : "unknown";
 }
 
 function parseNostrClaim(claim: unknown): { pubkey: string; challenge: string; challengeText: string } | null {
@@ -708,70 +806,13 @@ function providerProfileUrlCandidates(
   push(inputLocation);
   push(metadata?.channelUrl || null);
   push(metadata?.profileUrl || null);
-
-  if (provider === "github") {
-    push(`https://github.com/${account}`);
-    push(`https://github.com/${account}/`);
-    push(`https://gist.github.com/${account}`);
-  } else if (provider === "instagram") {
-    push(`https://www.instagram.com/${account}/`);
-  } else if (provider === "tiktok") {
-    push(`https://www.tiktok.com/@${account}`);
-  } else if (provider === "rumble") {
-    push(`https://rumble.com/user/${account}/about`);
-    push(`https://rumble.com/user/${account}`);
-    push(`https://rumble.com/${account}`);
-    push(`https://rumble.com/c/${account}`);
-  } else if (provider === "reddit") {
-    push(`https://www.reddit.com/user/${account}/about`);
-    push(`https://www.reddit.com/user/${account}`);
-  } else if (provider === "substack") {
-    push(`https://${account}.substack.com/about`);
-    push(`https://${account}.substack.com`);
-    push(`https://substack.com/@${account}`);
-  } else if (provider === "youtube") {
-    if (/^UC[a-zA-Z0-9_-]{10,}$/.test(account)) {
-      push(`https://www.youtube.com/channel/${account}`);
-      push(`https://www.youtube.com/channel/${account}/about`);
-    } else {
-      push(`https://www.youtube.com/@${account}`);
-      push(`https://www.youtube.com/@${account}/about`);
-    }
-  } else if (provider === "x") {
-    push(`https://x.com/${account}`);
-    push(`https://twitter.com/${account}`);
-  }
+  for (const url of getSocialProviderConfig(provider).candidateUrls(account)) push(url);
   return urls;
 }
 
 function accountFromProviderUrl(provider: SocialProvider, input: string): string | null {
   if (!input) return null;
-  if (provider === "github") return normalizeGithubAccountFromUrl(input);
-  if (provider === "youtube") {
-    const parsed = normalizeYouTubeChannelUrl(input);
-    return parsed ? parsed.account : null;
-  }
-  if (provider === "instagram") {
-    const parsed = normalizeInstagramProfileUrl(input);
-    return parsed ? parsed.account : null;
-  }
-  if (provider === "tiktok") {
-    const parsed = normalizeTiktokProfileUrl(input);
-    return parsed ? parsed.account : null;
-  }
-  if (provider === "rumble") {
-    const parsed = normalizeRumbleProfileUrl(input);
-    return parsed ? parsed.account : null;
-  }
-  if (provider === "reddit") {
-    const parsed = normalizeRedditProfileUrl(input);
-    return parsed ? parsed.account : null;
-  }
-  if (provider === "substack") {
-    const parsed = normalizeSubstackProfileUrl(input);
-    return parsed ? parsed.account : null;
-  }
-  return normalizeXAccountFromUrl(input);
+  return getSocialProviderConfig(provider).accountFromUrl(input);
 }
 
 function toDto(row: {
@@ -1270,6 +1311,7 @@ export async function verifySocialProof(
 
       logSocialVerificationDebug("candidate_checked", {
         provider,
+        providerTier: getSocialProofTier(provider),
         rawAccount,
         normalizedAccount: requestAccount,
         expectedChallengeText: provider === "instagram" || provider === "rumble" ? expectedChallengeText : undefined,
@@ -1396,6 +1438,7 @@ export async function verifySocialProof(
 
   logSocialVerificationDebug("verify_complete", {
     provider,
+    providerTier: getProofTier(PROOF_TYPE_SOCIAL, provider),
     rawAccount,
     normalizedAccount: requestAccount,
     attemptedUrls,
