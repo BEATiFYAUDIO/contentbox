@@ -28,6 +28,13 @@ const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   files: "Files"
 };
 
+const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: string; cls: string }> = {
+  owned: { label: "Owned", cls: "border-emerald-600/40 bg-emerald-500/10 text-emerald-300" },
+  purchased: { label: "Purchased", cls: "border-sky-600/40 bg-sky-500/10 text-sky-300" },
+  preview: { label: "Preview only", cls: "border-amber-600/40 bg-amber-500/10 text-amber-300" },
+  local: { label: "Local", cls: "border-neutral-700 bg-neutral-700/20 text-neutral-300" }
+};
+
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
   const v = String(raw || "").toLowerCase();
   return (LIBRARY_TYPE_FILTERS as string[]).includes(v) ? (v as LibraryTypeFilter) : "all";
@@ -138,40 +145,39 @@ export default function LibraryPage() {
     }
   }
 
-  function formatDateLabel(value?: string | null) {
-    if (!value) return "—";
-    const d = new Date(value);
-    return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
-  }
+function formatDateLabel(value?: string | null) {
+  if (!value) return "—";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString();
+}
 
-  function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | null): string | null {
-    const normalizeToApiBase = (raw: string): string | null => {
-      const source = String(raw || "").trim();
-      if (!source) return null;
-      try {
-        const asUrl = new URL(source, apiBase);
-        // Force API origin to avoid localhost/127.0.0.1 drift across UI/API hosts.
-        const pathAndQuery = `${asUrl.pathname}${asUrl.search}`;
-        return `${apiBase.replace(/\/$/, "")}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
-      } catch {
-        return `${apiBase.replace(/\/$/, "")}/${source.replace(/^\/+/, "")}`;
-      }
-    };
-
-    const preferred = normalizeToApiBase(String(itemCoverUrl || "").trim());
-    if (preferred) return preferred;
-    const coverObjectKey = String(preview?.manifest?.cover || "").trim();
-    if (!coverObjectKey) return null;
-    return `${apiBase.replace(/\/$/, "")}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
+function normalizeAssetUrl(apiBase: string, raw: string | null | undefined): string | null {
+  const source = String(raw || "").trim();
+  if (!source) return null;
+  try {
+    const asUrl = new URL(source, apiBase);
+    const pathAndQuery = `${asUrl.pathname}${asUrl.search}`;
+    return `${apiBase.replace(/\/$/, "")}${pathAndQuery.startsWith("/") ? "" : "/"}${pathAndQuery}`;
+  } catch {
+    return `${apiBase.replace(/\/$/, "")}/${source.replace(/^\/+/, "")}`;
   }
+}
+
+function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | null): string | null {
+  const preferred = normalizeAssetUrl(apiBase, String(itemCoverUrl || "").trim());
+  if (preferred) return preferred;
+  const coverObjectKey = String(preview?.manifest?.cover || "").trim();
+  if (!coverObjectKey) return null;
+  return `${apiBase.replace(/\/$/, "")}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
+}
 
   return (
     <div className="space-y-4">
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-4 sm:p-5">
         <div className="text-lg font-semibold">Library</div>
-        <div className="text-sm text-neutral-400 mt-1">Private, content-rich library (owned + purchased + preview).</div>
+        <div className="text-sm text-neutral-400 mt-1">Private creator library: owned, purchased, and preview-access content.</div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <div className="text-xs text-neutral-500 mr-1">Type:</div>
+          <div className="text-xs text-neutral-500">Type</div>
           {LIBRARY_TYPE_FILTERS.map((value) => {
             const active = libraryTypeFilter === value;
             return (
@@ -188,8 +194,8 @@ export default function LibraryPage() {
               </button>
             );
           })}
+          <div className="text-xs text-neutral-500 sm:ml-auto">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
         </div>
-        <div className="mt-2 text-xs text-neutral-500">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
       </div>
 
       {msg ? <div className="text-sm text-red-300">{msg}</div> : null}
@@ -220,22 +226,49 @@ export default function LibraryPage() {
                       String(preview?.manifest?.sha256 || "").trim() ||
                       String(it.updatedAt || "").trim() ||
                       String(it.createdAt || "").trim();
-                    const rawCoverUrl = isAudio ? songCoverUrl(it.id, preview, it.coverUrl || null) : null;
+                    const rawCoverUrl = isAudio
+                      ? songCoverUrl(it.id, preview, it.coverUrl || null)
+                      : normalizeAssetUrl(apiBase, it.coverUrl || null);
                     const coverUrl =
                       rawCoverUrl && version
                         ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
                         : rawCoverUrl;
                     const isOpen = previewOpenById[it.id] ?? true;
+                    const access = ACCESS_BADGE[(it.libraryAccess || "preview") as NonNullable<LibraryItem["libraryAccess"]>] || ACCESS_BADGE.preview;
                     return (
-                      <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4 flex flex-col gap-3">
+                      <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
+                        <div className="w-full aspect-video rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
+                          {coverUrl ? (
+                            <img
+                              className="w-full h-full object-cover"
+                              src={coverUrl}
+                              alt={`${it.title || "Content"} cover`}
+                              loading="lazy"
+                              onError={(e) => {
+                                setCoverLoadErrorById((m) => ({ ...m, [it.id]: true }));
+                                const el = e.currentTarget;
+                                const parent = el.parentElement;
+                                if (!parent) return;
+                                parent.innerHTML = '<div class="w-full h-full flex items-center justify-center text-xs text-neutral-500">No media</div>';
+                              }}
+                              onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
+                            />
+                          ) : preview && isOpen && previewUrl && isImage ? (
+                            <img className="w-full h-full object-cover" src={previewUrl} alt={it.title || "Preview"} />
+                          ) : (
+                            <div className="text-xs text-neutral-500">No media</div>
+                          )}
+                        </div>
                         <div>
                           <div className="text-sm font-medium">{it.title || "Content"}</div>
-                          <div className="text-xs text-neutral-500">
-                          {String(it.type || "").toUpperCase()} · {it.status?.toUpperCase?.() || "STATUS"} ·{" "}
-                          {formatDateLabel(it.createdAt)} · Storefront: {it.storefrontStatus || "DISABLED"}
+                          <div className="mt-1 text-xs text-neutral-500">
+                            {String(it.type || "").toUpperCase()} · {it.status?.toUpperCase?.() || "STATUS"}
                           </div>
-                          <div className="mt-1 text-[11px] text-neutral-500 capitalize">
-                            Access: {it.libraryAccess || "preview"}
+                          <div className="mt-1 flex items-center gap-2">
+                            <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${access.cls}`}>
+                              {access.label}
+                            </span>
+                            <span className="text-[11px] text-neutral-500">Created {formatDateLabel(it.createdAt)}</span>
                           </div>
                           {it.owner?.displayName || it.owner?.email ? (
                             <div className="text-[11px] text-neutral-500 mt-1">
@@ -244,39 +277,13 @@ export default function LibraryPage() {
                           ) : null}
                         </div>
 
-                        {isAudio ? (
-                          coverUrl ? (
-                            <div>
-                              <div className="w-full max-w-[320px] aspect-square rounded-md overflow-hidden border border-neutral-800 bg-neutral-950">
-                                <img
-                                  className="w-full h-full object-cover"
-                                  src={coverUrl}
-                                  alt={`${it.title || "Song"} cover`}
-                                  loading="lazy"
-                                  onError={(e) => {
-                                    setCoverLoadErrorById((m) => ({ ...m, [it.id]: true }));
-                                    const el = e.currentTarget;
-                                    const parent = el.parentElement;
-                                    if (!parent) return;
-                                    parent.innerHTML = '<div class="w-full h-full flex items-center justify-center text-xs text-neutral-500">No cover</div>';
-                                  }}
-                                  onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
-                                />
-                              </div>
-                              {coverLoadErrorById[it.id] ? (
-                                <div className="mt-1 text-[11px] text-amber-300">Cover missing on disk or not set in manifest.</div>
-                              ) : null}
-                            </div>
-                          ) : (
-                            <div className="w-full max-w-[320px] aspect-square rounded-md border border-neutral-800 bg-neutral-950/60 flex items-center justify-center text-xs text-neutral-500">
-                              No cover
-                            </div>
-                          )
+                        {isAudio && coverLoadErrorById[it.id] ? (
+                          <div className="text-[11px] text-amber-300">Cover missing on disk or not set in manifest.</div>
                         ) : null}
 
                         <div className="rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
                           <div className="flex items-center justify-between">
-                            <div className="text-sm font-semibold text-neutral-100">Preview</div>
+                            <div className="text-sm font-semibold text-neutral-100">Player</div>
                             <button
                               type="button"
                               className="text-[11px] rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -285,7 +292,6 @@ export default function LibraryPage() {
                               {isOpen ? "Hide" : "Show"}
                             </button>
                           </div>
-                          <div className="text-xs text-neutral-400">Click to load a read-only preview.</div>
                           <div className="mt-2 flex items-center gap-2">
                             <button
                               type="button"
@@ -304,8 +310,6 @@ export default function LibraryPage() {
                                 <video className="w-full rounded-md" controls src={previewUrl} />
                               ) : previewUrl && isAudio ? (
                                 <audio className="w-full" controls src={previewUrl} />
-                              ) : previewUrl && isImage ? (
-                                <img className="w-full rounded-md" src={previewUrl} alt={it.title || "Preview"} />
                               ) : previewUrl ? (
                                 <a className="text-xs text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
                                   Open preview
@@ -326,7 +330,9 @@ export default function LibraryPage() {
         </div>
       )}
 
-      <AuditPanel scopeType="library" title="Audit" exportName="library-audit.json" />
+      <div className="pt-2 border-t border-neutral-900">
+        <AuditPanel scopeType="library" title="Audit & tools" exportName="library-audit.json" />
+      </div>
     </div>
   );
 }
