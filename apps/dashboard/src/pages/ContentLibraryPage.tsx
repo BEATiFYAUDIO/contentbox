@@ -1494,11 +1494,7 @@ export default function ContentLibraryPage({
 
     return (
       <>
-        <label className="sr-only" htmlFor={`upload-file-${contentId}`}>
-          Upload file
-        </label>
         <input
-          id={`upload-file-${contentId}`}
           name={`uploadFile-${contentId}`}
           ref={inputRef}
           type="file"
@@ -1545,11 +1541,13 @@ export default function ContentLibraryPage({
           }}
         />
 
-        <label
-          htmlFor={`upload-file-${contentId}`}
-          aria-disabled={triggerDisabled}
-          onClick={(e) => {
-            if (triggerDisabled) e.preventDefault();
+        <button
+          type="button"
+          aria-label="Upload file"
+          disabled={triggerDisabled}
+          onClick={() => {
+            if (triggerDisabled) return;
+            inputRef.current?.click();
           }}
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
@@ -1557,7 +1555,7 @@ export default function ContentLibraryPage({
           title="Upload into this content repo and commit"
         >
           {upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : label}
-        </label>
+        </button>
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
       </>
@@ -1580,11 +1578,7 @@ export default function ContentLibraryPage({
 
     return (
       <>
-        <label className="sr-only" htmlFor={`upload-cover-${contentId}`}>
-          Upload content cover
-        </label>
         <input
-          id={`upload-cover-${contentId}`}
           name={`uploadCover-${contentId}`}
           ref={inputRef}
           type="file"
@@ -1611,11 +1605,13 @@ export default function ContentLibraryPage({
           }}
         />
 
-        <label
-          htmlFor={`upload-cover-${contentId}`}
-          aria-disabled={triggerDisabled}
-          onClick={(e) => {
-            if (triggerDisabled) e.preventDefault();
+        <button
+          type="button"
+          aria-label="Upload content cover"
+          disabled={triggerDisabled}
+          onClick={() => {
+            if (triggerDisabled) return;
+            inputRef.current?.click();
           }}
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
@@ -1623,7 +1619,7 @@ export default function ContentLibraryPage({
           title="Upload album cover (jpg, png, webp)"
         >
           {busy ? "Uploading…" : label}
-        </label>
+        </button>
       </>
     );
   }
