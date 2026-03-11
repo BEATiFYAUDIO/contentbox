@@ -9064,6 +9064,31 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       avatarSrc = "";
     }
   }
+  if (!avatarSrc) {
+    try {
+      const userAvatarDir = path.join(CONTENTBOX_ROOT, "avatars", user.id);
+      if (fsSync.existsSync(userAvatarDir)) {
+        const files = await fs.readdir(userAvatarDir);
+        const imageFiles = files.filter((name) => /\.(png|jpe?g|gif|webp|avif)$/i.test(name));
+        if (imageFiles.length > 0) {
+          const withStat = await Promise.all(
+            imageFiles.map(async (name) => {
+              const abs = path.join(userAvatarDir, name);
+              const stat = await fs.stat(abs);
+              return { name, mtimeMs: stat.mtimeMs };
+            })
+          );
+          withStat.sort((a, b) => b.mtimeMs - a.mtimeMs);
+          const latest = withStat[0];
+          if (latest?.name) {
+            avatarSrc = `/public/avatars/${encodeURIComponent(user.id)}/${encodeURIComponent(latest.name)}`;
+          }
+        }
+      }
+    } catch {
+      // keep avatar hidden when fallback scan fails
+    }
+  }
   const safeAvatarUrl = avatarSrc ? escHtml(avatarSrc) : "";
   const safeHandle = escHtml(`@${requested}`);
   const safeNodeUrl = escHtml(nodeUrl);
