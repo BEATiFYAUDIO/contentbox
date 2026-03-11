@@ -86,6 +86,7 @@ import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
+import { resolveContentboxRoot } from "./lib/contentboxRoot.js";
 import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSessionToken } from "./lib/buyerSession.js";
 import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
 import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
@@ -779,7 +780,10 @@ const prisma = new PrismaClient();
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
 const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
-const CONTENTBOX_ROOT = mustEnv("CONTENTBOX_ROOT");
+const CONTENTBOX_ROOT = resolveContentboxRoot();
+if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
+  process.env.CONTENTBOX_ROOT = CONTENTBOX_ROOT;
+}
 const APP_BASE_URL = (process.env.APP_BASE_URL || "http://127.0.0.1:5173").replace(/\/$/, "");
 const NODE_HTTP_PORT = Number(process.env.PORT || 4000);
 const PUBLIC_MODE = String(process.env.PUBLIC_MODE || "quick").trim().toLowerCase();
