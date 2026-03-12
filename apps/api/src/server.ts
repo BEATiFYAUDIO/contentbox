@@ -1759,6 +1759,12 @@ function getLocalNodePrivatePem(): string | null {
   }
 }
 
+function hasInvoiceProviderRole(nodeMode: "basic" | "advanced" | "lan"): boolean {
+  // Minimal truthful role signal for current architecture:
+  // advanced nodes can expose provider capability surfaces.
+  return nodeMode === "advanced";
+}
+
 async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeIdentityDoc> {
   const runtime = resolveRuntimeConfig();
   const ctx = getCapabilityContext();
@@ -1783,7 +1789,7 @@ async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeId
     profileId = owner?.id || null;
   }
 
-  const invoiceProviderRole = false;
+  const invoiceProviderRole = hasInvoiceProviderRole(runtime.nodeMode as "basic" | "advanced" | "lan");
   const creatorRole = true;
 
   return {
@@ -7167,8 +7173,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   // Delegated/provider-backed commerce is not implemented/configurable yet.
   const delegatedInvoiceSupport = false;
 
-  // We intentionally avoid over-claiming invoice provider role until provider APIs/binding exist.
-  const invoiceProviderRole = false;
+  const invoiceProviderRole = hasInvoiceProviderRole(runtime.nodeMode as "basic" | "advanced" | "lan");
   const creatorRole = true;
   const hybridRole = creatorRole && invoiceProviderRole;
 
