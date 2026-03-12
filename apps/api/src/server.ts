@@ -914,6 +914,15 @@ type LocalState = {
   namedTunnelToken?: string;
   namedTunnelDisabled?: boolean;
   backupsEnabled?: boolean;
+  networkProvider?: {
+    providerNodeId?: string | null;
+    providerProfileId?: string | null;
+    providerUrl?: string | null;
+    providerPubKey?: string | null;
+    enabled?: boolean;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+  };
 };
 
 function readLocalState(): LocalState {
@@ -1031,6 +1040,85 @@ function setBackupsEnabled(enabled: boolean) {
   s.backupsEnabled = enabled;
   writeLocalState(s);
   return s.backupsEnabled;
+}
+
+type NetworkProviderConfig = {
+  providerNodeId: string | null;
+  providerProfileId: string | null;
+  providerUrl: string | null;
+  providerPubKey: string | null;
+  enabled: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+function normalizeProviderUrl(value: string | null | undefined): string | null {
+  const v = String(value || "").trim();
+  if (!v) return null;
+  try {
+    const parsed = new URL(v);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.toString().replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function getNetworkProviderConfig(): NetworkProviderConfig {
+  const s = readLocalState();
+  const p = s.networkProvider || {};
+  const providerUrl = normalizeProviderUrl(p.providerUrl);
+  return {
+    providerNodeId: asString(p.providerNodeId || "").trim() || null,
+    providerProfileId: asString(p.providerProfileId || "").trim() || null,
+    providerUrl,
+    providerPubKey: asString(p.providerPubKey || "").trim() || null,
+    enabled: Boolean(p.enabled),
+    createdAt: asString(p.createdAt || "").trim() || null,
+    updatedAt: asString(p.updatedAt || "").trim() || null
+  };
+}
+
+function isNetworkProviderConfigured(cfg: NetworkProviderConfig): boolean {
+  return Boolean(cfg.enabled && cfg.providerNodeId && cfg.providerUrl);
+}
+
+function setNetworkProviderConfig(input: {
+  providerNodeId?: string | null;
+  providerProfileId?: string | null;
+  providerUrl?: string | null;
+  providerPubKey?: string | null;
+  enabled?: boolean;
+}): NetworkProviderConfig {
+  const current = getNetworkProviderConfig();
+  const now = new Date().toISOString();
+  const next: NetworkProviderConfig = {
+    providerNodeId:
+      input.providerNodeId !== undefined ? asString(input.providerNodeId || "").trim() || null : current.providerNodeId,
+    providerProfileId:
+      input.providerProfileId !== undefined
+        ? asString(input.providerProfileId || "").trim() || null
+        : current.providerProfileId,
+    providerUrl: input.providerUrl !== undefined ? normalizeProviderUrl(input.providerUrl) : current.providerUrl,
+    providerPubKey:
+      input.providerPubKey !== undefined ? asString(input.providerPubKey || "").trim() || null : current.providerPubKey,
+    enabled: input.enabled !== undefined ? Boolean(input.enabled) : current.enabled,
+    createdAt: current.createdAt || now,
+    updatedAt: now
+  };
+
+  const s = readLocalState();
+  s.networkProvider = {
+    providerNodeId: next.providerNodeId,
+    providerProfileId: next.providerProfileId,
+    providerUrl: next.providerUrl,
+    providerPubKey: next.providerPubKey,
+    enabled: next.enabled,
+    createdAt: next.createdAt,
+    updatedAt: next.updatedAt
+  };
+  writeLocalState(s);
+  return next;
 }
 
 function isPersistentOrigin(origin: string | null): boolean {
@@ -5039,6 +5127,99 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
     paymentsMode: ctx.paymentsMode,
     paymentsReadiness,
     storage: runtime.storage
+  });
+});
+
+function deriveNetworkVisibility(publicStatus: ReturnType<typeof getPublicStatus>): "DISABLED" | "UNLISTED" | "LISTED" {
+  // Network v1 remains link-first. We only mark discoverable/listed when a persistent
+  // named endpoint is online; quick/offline states are treated as hidden/direct-link posture.
+  if (publicStatus.status !== "online") return "DISABLED";
+  if (publicStatus.mode === "named") return "LISTED";
+  return "UNLISTED";
+}
+
+app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const runtime = resolveRuntimeConfig();
+  const ctx = getCapabilityContext();
+  const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+
+  const localInvoiceMinting =
+    ctx.paymentsMode === "node" &&
+    ctx.nodeMode === "advanced" &&
+    Boolean(paymentsReadiness?.lightning?.ready);
+
+  // Delegated/provider-backed commerce is not implemented/configurable yet.
+  const delegatedInvoiceSupport = false;
+
+  // We intentionally avoid over-claiming invoice provider role until provider APIs/binding exist.
+  const invoiceProviderRole = false;
+  const creatorRole = true;
+  const hybridRole = creatorRole && invoiceProviderRole;
+
+  const visibility = deriveNetworkVisibility(ctx.publicStatus);
+  const publicUrl = ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || null;
+  const tunnel = ctx.publicStatus.mode === "quick" || ctx.publicStatus.mode === "named";
+  const providerConfig = getNetworkProviderConfig();
+  const providerConfigured = isNetworkProviderConfigured(providerConfig);
+
+  return reply.send({
+    nodeMode: runtime.nodeMode as "basic" | "advanced" | "lan",
+    serviceRoles: {
+      creator: creatorRole,
+      invoiceProvider: invoiceProviderRole,
+      hybrid: hybridRole
+    },
+    paymentCapability: {
+      localInvoiceMinting,
+      delegatedInvoiceSupport,
+      tipsOnly: !localInvoiceMinting && !delegatedInvoiceSupport
+    },
+    providerBinding: {
+      configured: providerConfigured,
+      providerNodeId: providerConfigured ? providerConfig.providerNodeId : null
+    },
+    visibility,
+    reachability: {
+      publicUrl,
+      tunnel,
+      ipfs: false
+    }
+  });
+});
+
+app.get("/api/network/provider", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  return reply.send({
+    ...cfg,
+    configured: isNetworkProviderConfigured(cfg)
+  });
+});
+
+app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as {
+    providerNodeId?: string | null;
+    providerProfileId?: string | null;
+    providerUrl?: string | null;
+    providerPubKey?: string | null;
+    enabled?: boolean;
+  };
+
+  if (body.providerUrl !== undefined && body.providerUrl !== null) {
+    const normalized = normalizeProviderUrl(body.providerUrl);
+    if (!normalized) return badRequest(reply, "providerUrl must be an absolute http(s) URL");
+  }
+
+  const next = setNetworkProviderConfig({
+    providerNodeId: body.providerNodeId,
+    providerProfileId: body.providerProfileId,
+    providerUrl: body.providerUrl,
+    providerPubKey: body.providerPubKey,
+    enabled: body.enabled
+  });
+  return reply.send({
+    ...next,
+    configured: isNetworkProviderConfigured(next)
   });
 });
 
