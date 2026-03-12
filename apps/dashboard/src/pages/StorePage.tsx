@@ -265,6 +265,19 @@ type ProfileActivationResult = {
   checkedAt: string | null;
 };
 
+type PublishReadiness = {
+  readiness: "ready" | "activation_required" | "network_not_ready";
+  allowed: boolean;
+  message: string;
+};
+
+type PublishProfileResult = {
+  status: "published" | "not_ready" | "activation_required" | "failed";
+  message: string;
+  publishId?: string;
+  publishedAt?: string;
+};
+
 function guessApiBase() {
   return getApiBase();
 }
@@ -331,6 +344,13 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [profileActivationBusy, setProfileActivationBusy] = React.useState(false);
   const [profileActivationMsg, setProfileActivationMsg] = React.useState<string | null>(null);
   const [profileActivationErr, setProfileActivationErr] = React.useState<string | null>(null);
+  const [publishReadiness, setPublishReadiness] = React.useState<PublishReadiness | null>(null);
+  const [publishName, setPublishName] = React.useState("");
+  const [publishBio, setPublishBio] = React.useState("");
+  const [publishLinks, setPublishLinks] = React.useState("");
+  const [publishProfileBusy, setPublishProfileBusy] = React.useState(false);
+  const [publishProfileResult, setPublishProfileResult] = React.useState<PublishProfileResult | null>(null);
+  const [publishProfileErr, setPublishProfileErr] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -515,6 +535,22 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
   React.useEffect(() => {
     let active = true;
+    api<PublishReadiness>("/api/publish/readiness", "GET")
+      .then((d) => {
+        if (!active) return;
+        setPublishReadiness(d || null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setPublishReadiness(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
     fetchIdentityDetail()
       .then((d) => {
         if (!active) return;
@@ -616,6 +652,17 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     }
   }
 
+  async function refreshPublishReadiness() {
+    try {
+      const readiness = await api<PublishReadiness>("/api/publish/readiness", "GET");
+      setPublishReadiness(readiness || null);
+      return readiness || null;
+    } catch {
+      setPublishReadiness(null);
+      return null;
+    }
+  }
+
   function guidedVerificationFailureMessage(status: ProviderVerification["verification"]["status"]) {
     if (status === "unreachable") return "We couldn’t reach your provider.";
     if (status === "not_configured") return "Your connection setup is incomplete.";
@@ -682,6 +729,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderExecutionReadiness(executionReadiness || null);
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
       setProviderVerificationLoading(false);
     } catch (e: any) {
       setProviderErr(e?.message || "Failed to save provider configuration.");
@@ -717,6 +765,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderExecutionReadiness(executionReadiness || null);
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
     } catch (e: any) {
       setProviderAck(null);
       setProviderAckErr(e?.message || "Provider acknowledgment request failed.");
@@ -737,6 +786,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderExecutionReadiness(executionReadiness || null);
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
     } catch (e: any) {
       setProviderOperation(null);
       setProviderOperationErr(e?.message || "Provider execution permit request failed.");
@@ -755,6 +805,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderExecutionReadiness(executionReadiness || null);
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
     } catch (e: any) {
       setProviderExecuteTest(null);
       setProviderExecuteTestErr(e?.message || "Provider execute-test failed.");
@@ -795,6 +846,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setNetworkSummary(refreshed || null);
       const initialStatus = await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
       if (initialStatus?.status === "ready") {
         setGuidedSetupPhase("ready");
         setGuidedSetupMessage("Connected and ready to use.");
@@ -809,6 +861,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderVerificationLoading(false);
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
       if (verification?.verification?.status !== "verified") {
         setGuidedSetupPhase("error");
         setGuidedSetupMessage(guidedVerificationFailureMessage(verification?.verification?.status || "not_configured"));
@@ -823,6 +876,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderAckReadiness(ackReadiness || null);
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
       if (!(ack?.acknowledgment?.status === "accepted" && ack?.acknowledgment?.signatureValidated)) {
         setGuidedSetupPhase("error");
         setGuidedSetupMessage(guidedAcknowledgmentFailureMessage(ack?.acknowledgment?.status || "provider_not_trusted"));
@@ -839,6 +893,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setProviderExecutionReadiness(executionReadiness || null);
       const finalStatus = await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
       if (!(permit?.permit?.status === "accepted" && permit?.permit?.signatureValidated)) {
         setGuidedSetupPhase("error");
         setGuidedSetupMessage(guidedPermitFailureMessage(permit?.permit?.status || "provider_not_trusted"));
@@ -867,6 +922,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setGuidedSetupMessage("Your provider connection needs attention.");
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
     } finally {
       setProviderSaving(false);
       setProviderVerificationLoading(false);
@@ -882,6 +938,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setRuntimeMsg("Restart requested. The node runtime should come back shortly.");
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
     } catch (e: any) {
       setRuntimeErr(e?.message || "Failed to request restart.");
     } finally {
@@ -902,10 +959,36 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       }
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
     } catch (e: any) {
       setProfileActivationErr(e?.message || "Failed to activate profile.");
     } finally {
       setProfileActivationBusy(false);
+    }
+  }
+
+  async function publishProfile() {
+    setPublishProfileErr(null);
+    setPublishProfileResult(null);
+    setPublishProfileBusy(true);
+    try {
+      const parsedLinks = publishLinks
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const fallbackLink = /^https?:\/\//i.test(summaryPublicEndpoint) ? [summaryPublicEndpoint] : [];
+      const links = parsedLinks.length ? parsedLinks : fallbackLink;
+      const payload: Record<string, any> = {};
+      if (publishName.trim()) payload.name = publishName.trim();
+      if (publishBio.trim()) payload.bio = publishBio.trim();
+      if (links.length) payload.links = links;
+      const result = await api<PublishProfileResult>("/api/publish/profile", "POST", payload);
+      setPublishProfileResult(result || null);
+      await refreshPublishReadiness();
+    } catch (e: any) {
+      setPublishProfileErr(e?.message || "Failed to publish profile.");
+    } finally {
+      setPublishProfileBusy(false);
     }
   }
 
@@ -1158,6 +1241,14 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       : profileActivationStatus?.activation?.status === "not_ready"
         ? "Not ready"
         : "Unknown";
+  const publishReadinessLabel =
+    publishReadiness?.readiness === "ready"
+      ? "Ready"
+      : publishReadiness?.readiness === "activation_required"
+        ? "Activation required"
+        : publishReadiness?.readiness === "network_not_ready"
+          ? "Network not ready"
+          : "Unknown";
 
   return (
     <div className="space-y-6">
@@ -1240,6 +1331,11 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <span className="text-neutral-500">Suggested action</span>
               <span className="text-neutral-200 text-right">{userNetworkStatus?.actionLabel || "None"}</span>
             </div>
+            <div className="flex items-start justify-between gap-3 border-t border-neutral-900 pt-2">
+              <span className="text-neutral-500">Publish readiness</span>
+              <span className="text-neutral-200 text-right">{publishReadinessLabel}</span>
+            </div>
+            <div className="text-neutral-400">{publishReadiness?.message || "Publish readiness unavailable."}</div>
           </div>
         </div>
 
@@ -1368,6 +1464,53 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               </button>
               {profileActivationMsg ? <div className="text-xs text-emerald-300">{profileActivationMsg}</div> : null}
               {profileActivationErr ? <div className="text-xs text-rose-300">{profileActivationErr}</div> : null}
+            </div>
+          </div>
+          <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Publish</div>
+            <div className="mt-1 text-xs text-neutral-200">Publish profile</div>
+            <div className="mt-2 grid gap-2 md:grid-cols-3">
+              <input
+                value={publishName}
+                onChange={(e) => setPublishName(e.target.value)}
+                placeholder="Name (optional)"
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs"
+                autoComplete="off"
+              />
+              <input
+                value={publishBio}
+                onChange={(e) => setPublishBio(e.target.value)}
+                placeholder="Bio (optional)"
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs"
+                autoComplete="off"
+              />
+              <input
+                value={publishLinks}
+                onChange={(e) => setPublishLinks(e.target.value)}
+                placeholder="Links comma-separated (optional)"
+                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs"
+                autoComplete="off"
+              />
+            </div>
+            <div className="mt-2 text-xs text-neutral-500">
+              If links are empty, publish uses the current public endpoint when available.
+            </div>
+            <div className="mt-3 flex items-center gap-3">
+              <button
+                onClick={publishProfile}
+                disabled={publishProfileBusy || publishReadiness?.allowed === false}
+                className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
+                title={publishReadiness?.allowed === false ? publishReadiness.message : undefined}
+              >
+                {publishProfileBusy ? "Publishing..." : "Publish profile"}
+              </button>
+              {publishProfileResult ? <div className="text-xs text-emerald-300">{publishProfileResult.message}</div> : null}
+              {publishProfileErr ? <div className="text-xs text-rose-300">{publishProfileErr}</div> : null}
+            </div>
+            <div className="mt-2 grid gap-1 text-xs text-neutral-400">
+              <div>Status: <span className="text-neutral-300">{publishProfileResult?.status || "—"}</span></div>
+              <div>Publish ID: <span className="text-neutral-300 break-all">{publishProfileResult?.publishId || "—"}</span></div>
+              <div>Published at: <span className="text-neutral-300">{publishProfileResult?.publishedAt ? new Date(publishProfileResult.publishedAt).toLocaleString() : "—"}</span></div>
             </div>
           </div>
           <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">

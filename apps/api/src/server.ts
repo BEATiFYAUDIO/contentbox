@@ -1209,6 +1209,20 @@ type UserNetworkStatus = {
   actionLabel: string | null;
 };
 
+type PublishReadiness = {
+  readiness: "ready" | "activation_required" | "network_not_ready";
+  allowed: boolean;
+  message: string;
+};
+
+type PublishLogEntry = {
+  publishId: string;
+  type: "profile";
+  publishedAt: string;
+  providerNodeId: string | null;
+  hash: string | null;
+};
+
 type ProfileNetworkActivationState = {
   configured: {
     providerUrl: string | null;
@@ -1437,6 +1451,8 @@ const PROVIDER_VERIFICATION_FILE = path.join(RUNTIME_STATE_DIR, "provider-verifi
 const PROVIDER_ACK_FILE = path.join(RUNTIME_STATE_DIR, "provider-acknowledgment.json");
 const PROVIDER_OPERATION_FILE = path.join(RUNTIME_STATE_DIR, "provider-execution-permit.json");
 const PROFILE_NETWORK_ACTIVATION_FILE = path.join(RUNTIME_STATE_DIR, "profile-network-activation.json");
+const PUBLISH_LOG_FILE = path.join(RUNTIME_STATE_DIR, "publish-log.json");
+const PUBLISH_LOG_MAX_ENTRIES = 100;
 const RUNTIME_STATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RUNTIME_SUPERVISED = String(process.env.CERTIFYD_SUPERVISOR_ACTIVE || "") === "1";
 const PROVIDER_ACK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -2999,6 +3015,73 @@ function deriveUserNetworkStatus(): UserNetworkStatus {
     message: "Establishing provider relationship prerequisites.",
     actionLabel: "Refresh connection"
   };
+}
+
+function evaluatePublishReadiness(): PublishReadiness {
+  const userStatus = deriveUserNetworkStatus();
+  if (userStatus.status !== "ready") {
+    return {
+      readiness: "network_not_ready",
+      allowed: false,
+      message: "Finish provider setup before publishing."
+    };
+  }
+  const cfg = getNetworkProviderConfig();
+  const activation = getProfileNetworkActivationStatus(cfg);
+  if (activation.activation.status !== "activated" || !activation.activation.activatedAt) {
+    return {
+      readiness: "activation_required",
+      allowed: false,
+      message: "Activate your profile before publishing."
+    };
+  }
+  return {
+    readiness: "ready",
+    allowed: true,
+    message: "Publishing prerequisites are satisfied."
+  };
+}
+
+function readPublishLog(): PublishLogEntry[] {
+  try {
+    if (!fsSync.existsSync(PUBLISH_LOG_FILE)) return [];
+    const raw = fsSync.readFileSync(PUBLISH_LOG_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: PublishLogEntry[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      if (item.type !== "profile") continue;
+      if (typeof item.publishId !== "string" || !item.publishId.trim()) continue;
+      if (typeof item.publishedAt !== "string" || !item.publishedAt.trim()) continue;
+      out.push({
+        publishId: item.publishId,
+        type: "profile",
+        publishedAt: item.publishedAt,
+        providerNodeId: typeof item.providerNodeId === "string" ? item.providerNodeId : null,
+        hash: typeof item.hash === "string" ? item.hash : null
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function writePublishLog(entries: PublishLogEntry[]) {
+  try {
+    fsSync.mkdirSync(RUNTIME_STATE_DIR, { recursive: true });
+    const tmp = `${PUBLISH_LOG_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(entries, null, 2));
+    fsSync.renameSync(tmp, PUBLISH_LOG_FILE);
+  } catch {}
+}
+
+function appendPublishLog(entry: PublishLogEntry) {
+  const current = readPublishLog();
+  current.unshift(entry);
+  if (current.length > PUBLISH_LOG_MAX_ENTRIES) current.length = PUBLISH_LOG_MAX_ENTRIES;
+  writePublishLog(current);
 }
 
 function requireProviderExecutionReady(reply: any, action: string): boolean {
@@ -7210,6 +7293,104 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
 app.get("/api/network/user-status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.send(deriveUserNetworkStatus());
+});
+
+app.get("/api/publish/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(evaluatePublishReadiness());
+});
+
+app.get("/api/publish/log", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(readPublishLog());
+});
+
+app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const providerTarget = getNetworkProviderConfig();
+  const verification = getProviderVerificationStatus(providerTarget);
+  const acknowledgment = getProviderAcknowledgmentStatus(providerTarget);
+  const permit = getProviderOperationIntentStatus(providerTarget);
+  const userStatus = deriveUserNetworkStatus();
+  const activation = getProfileNetworkActivationStatus(providerTarget);
+  const publishReadiness = evaluatePublishReadiness();
+
+  return reply.send({
+    providerTarget: {
+      providerUrl: providerTarget.providerUrl,
+      providerNodeId: providerTarget.providerNodeId,
+      providerPubKey: providerTarget.providerPubKey,
+      enabled: providerTarget.enabled
+    },
+    verification,
+    acknowledgment,
+    permit,
+    userStatus,
+    activation,
+    publishReadiness
+  });
+});
+
+app.post("/api/publish/profile", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const readiness = evaluatePublishReadiness();
+  if (!readiness.allowed) {
+    const status = readiness.readiness === "activation_required" ? "activation_required" : "not_ready";
+    return reply.send({
+      status,
+      message: readiness.message
+    });
+  }
+
+  const body = (req.body ?? {}) as {
+    name?: unknown;
+    bio?: unknown;
+    links?: unknown;
+  };
+
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const bio = typeof body.bio === "string" ? body.bio.trim() : "";
+
+  let links: string[] = [];
+  if (body.links !== undefined) {
+    if (!Array.isArray(body.links)) return badRequest(reply, "links must be an array of strings");
+    const normalized: string[] = [];
+    for (const v of body.links) {
+      if (typeof v !== "string") return badRequest(reply, "links must contain only strings");
+      const s = v.trim();
+      if (!s) continue;
+      normalized.push(s);
+    }
+    links = normalized;
+  }
+
+  if (!name && !bio && links.length === 0) {
+    return badRequest(reply, "Provide at least one of name, bio, or links");
+  }
+
+  const userId = (req.user as JwtUser).sub;
+  const publishedAt = new Date().toISOString();
+  const providerConfig = getNetworkProviderConfig();
+  const payloadHash = crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ userId, name, bio, links }))
+    .digest("hex");
+  const publishId = `pub_${crypto
+    .createHash("sha256")
+    .update(JSON.stringify({ userId, publishedAt, payloadHash }))
+    .digest("hex")
+    .slice(0, 16)}`;
+
+  appendPublishLog({
+    publishId,
+    type: "profile",
+    publishedAt,
+    providerNodeId: providerConfig.providerNodeId || null,
+    hash: payloadHash
+  });
+
+  return reply.send({
+    status: "published",
+    publishId,
+    publishedAt,
+    message: "Profile published."
+  });
 });
 
 app.get("/api/network/activate-profile/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
