@@ -1116,6 +1116,23 @@ type NetworkProviderConfig = {
   updatedAt: string | null;
 };
 
+type NodeIdentityDoc = {
+  nodeId: string;
+  nodePubKey: string;
+  profileId: string | null;
+  capabilityLevel: "basic" | "advanced" | "lan";
+  serviceRoles: {
+    creator: boolean;
+    invoiceProvider: boolean;
+    hybrid: boolean;
+  };
+  endpoints: Array<{
+    url: string;
+    kind: "quick" | "named" | "custom";
+    active: boolean;
+  }>;
+};
+
 function normalizeProviderUrl(value: string | null | undefined): string | null {
   const v = String(value || "").trim();
   if (!v) return null;
@@ -1145,6 +1162,76 @@ function getNetworkProviderConfig(): NetworkProviderConfig {
 
 function isNetworkProviderConfigured(cfg: NetworkProviderConfig): boolean {
   return Boolean(cfg.enabled && cfg.providerNodeId && cfg.providerUrl);
+}
+
+function getLocalNodePublicPem(): string | null {
+  const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
+  try {
+    if (!fsSync.existsSync(pubPath)) return null;
+    const pem = fsSync.readFileSync(pubPath, "utf8").trim();
+    return pem || null;
+  } catch {
+    return null;
+  }
+}
+
+function deriveNodeIdentityFromPublicKey(pem: string): { nodeId: string; nodePubKey: string } {
+  const keyObj = crypto.createPublicKey(pem);
+  const der = keyObj.export({ type: "spki", format: "der" }) as Buffer;
+  const fingerprint = crypto.createHash("sha256").update(der).digest("hex");
+  const pubB64Url = base64UrlEncode(der);
+  return {
+    nodeId: `node:${fingerprint}`,
+    nodePubKey: `ed25519:${pubB64Url}`
+  };
+}
+
+async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeIdentityDoc> {
+  const runtime = resolveRuntimeConfig();
+  const ctx = getCapabilityContext();
+  const publicUrl = ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || null;
+  const endpointKind: "quick" | "named" | "custom" =
+    ctx.publicStatus.mode === "quick" ? "quick" : ctx.publicStatus.mode === "named" ? "named" : "custom";
+
+  const nodePem = getLocalNodePublicPem();
+  const baseIdentity = nodePem
+    ? deriveNodeIdentityFromPublicKey(nodePem)
+    : {
+        // Should be rare because ensureNodeKeys runs at boot.
+        nodeId: `node:unavailable:${NODE_ID}`,
+        nodePubKey: "ed25519:unavailable"
+      };
+
+  let profileId: string | null = null;
+  if (userId) {
+    profileId = userId;
+  } else {
+    const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } });
+    profileId = owner?.id || null;
+  }
+
+  const invoiceProviderRole = false;
+  const creatorRole = true;
+
+  return {
+    ...baseIdentity,
+    profileId,
+    capabilityLevel: runtime.nodeMode as "basic" | "advanced" | "lan",
+    serviceRoles: {
+      creator: creatorRole,
+      invoiceProvider: invoiceProviderRole,
+      hybrid: creatorRole && invoiceProviderRole
+    },
+    endpoints: publicUrl
+      ? [
+          {
+            url: publicUrl,
+            kind: endpointKind,
+            active: ctx.publicStatus.status === "online"
+          }
+        ]
+      : []
+  };
 }
 
 function setNetworkProviderConfig(input: {
@@ -5250,6 +5337,12 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       ipfs: false
     }
   });
+});
+
+app.get("/api/network/node-identity", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const doc = await buildLocalNodeIdentityDoc(userId);
+  return reply.send(doc);
 });
 
 app.get("/api/network/provider", { preHandler: requireAuth }, async (_req: any, reply: any) => {
