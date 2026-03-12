@@ -1116,6 +1116,228 @@ type NetworkProviderConfig = {
   updatedAt: string | null;
 };
 
+type ProviderVerificationStatus =
+  | "verified"
+  | "mismatch"
+  | "pubkey_mismatch"
+  | "identity_inconsistent"
+  | "invalid_signature"
+  | "unsigned_descriptor"
+  | "unreachable"
+  | "invalid_descriptor"
+  | "missing_provider_role"
+  | "not_configured";
+
+type ProviderVerificationResult = {
+  configured: {
+    providerUrl: string | null;
+    providerNodeId: string | null;
+    providerPubKey: string | null;
+  };
+  observed: {
+    nodeId: string | null;
+    nodePubKey: string | null;
+    capabilityLevel: "basic" | "advanced" | "lan" | null;
+    serviceRoles: Array<"creator" | "provider">;
+    endpoint: {
+      url: string | null;
+      kind: "quick" | "named" | "custom" | null;
+      stability: "temporary" | "stable" | null;
+      active: boolean | null;
+    };
+  };
+  verification: {
+    status: ProviderVerificationStatus;
+    checkedAt: string;
+    message: string;
+  };
+};
+
+type ProviderVerificationPosture = ProviderVerificationResult & {
+  history: {
+    lastSuccessAt: string | null;
+    lastFailureAt: string | null;
+  };
+};
+
+type ProviderExecutionTrustReadiness = {
+  readiness: "ready" | "blocked" | "unreachable" | "not_configured";
+  allowed: boolean;
+  postureStatus: ProviderVerificationStatus;
+  message: string;
+};
+
+type ProviderAcknowledgmentReadiness = {
+  readiness: "ready" | "blocked" | "not_current" | "not_configured";
+  allowed: boolean;
+  status:
+    | "accepted"
+    | "invalid_response"
+    | "invalid_signature"
+    | "unreachable"
+    | "provider_not_trusted"
+    | "missing";
+  message: string;
+};
+
+type ProviderExecutionPermitReadiness = {
+  readiness: "ready" | "blocked" | "not_current" | "expired" | "not_configured";
+  allowed: boolean;
+  status:
+    | "accepted"
+    | "invalid_response"
+    | "invalid_signature"
+    | "unreachable"
+    | "provider_not_trusted"
+    | "provider_acknowledgment_required"
+    | "missing";
+  message: string;
+};
+
+type ProviderExecutionChainReadiness = {
+  ready: boolean;
+  trustReadiness: ProviderExecutionTrustReadiness;
+  ackReadiness: ProviderAcknowledgmentReadiness;
+  permitReadiness: ProviderExecutionPermitReadiness;
+  message: string;
+};
+
+type UserNetworkStatus = {
+  status: "ready" | "connecting" | "action_required" | "offline";
+  title: "Ready" | "Connecting" | "Action Required" | "Offline";
+  message: string;
+  actionLabel: string | null;
+};
+
+type ProfileNetworkActivationState = {
+  configured: {
+    providerUrl: string | null;
+    providerNodeId: string | null;
+    providerPubKey: string | null;
+  };
+  activation: {
+    status: "activated" | "not_ready";
+    message: string;
+    checkedAt: string;
+    activatedAt: string | null;
+  };
+};
+
+type ProviderCapabilitiesDoc = {
+  nodeId: string;
+  capabilityLevel: "basic" | "advanced" | "lan";
+  serviceRoles: Array<"creator" | "provider">;
+  providerCapabilities: {
+    descriptorVerification: boolean;
+    trustGatedExecution: boolean;
+  };
+};
+
+type ProviderAcknowledgmentRequest = {
+  clientNodeId: string;
+  clientNodePubKey?: string | null;
+  clientCapabilityLevel?: "basic" | "advanced" | "lan" | null;
+  requestedAt?: string | null;
+  intent?: string | null;
+};
+
+type ProviderAcknowledgmentResponse = {
+  provider: {
+    nodeId: string;
+    nodePubKey: string;
+  };
+  client: {
+    nodeId: string;
+    nodePubKey: string | null;
+  };
+  acknowledgment: {
+    status: "accepted";
+    intent: string;
+    issuedAt: string;
+  };
+  signature: {
+    alg: "ed25519";
+    value: string;
+  };
+};
+
+type ProviderOperationIntentRequest = {
+  clientNodeId: string;
+  clientNodePubKey?: string | null;
+  intent: string;
+  requestedAt?: string | null;
+};
+
+type ProviderExecutionPermitResponse = {
+  provider: {
+    nodeId: string;
+    nodePubKey: string;
+  };
+  client: {
+    nodeId: string;
+    nodePubKey: string | null;
+  };
+  permit: {
+    permitId: string;
+    status: "accepted";
+    intent: string;
+    issuedAt: string;
+    expiresAt: string | null;
+  };
+  signature: {
+    alg: "ed25519";
+    value: string;
+  };
+};
+
+type ProviderAcknowledgmentState = {
+  configured: {
+    providerUrl: string | null;
+    providerNodeId: string | null;
+    providerPubKey: string | null;
+  };
+  observed: {
+    providerNodeId: string | null;
+    providerNodePubKey: string | null;
+  };
+  acknowledgment: {
+    status: "accepted" | "invalid_response" | "invalid_signature" | "unreachable" | "provider_not_trusted";
+    intent: string | null;
+    issuedAt: string | null;
+    checkedAt: string;
+    message: string;
+    signatureValidated: boolean;
+  };
+};
+
+type ProviderOperationIntentState = {
+  configured: {
+    providerUrl: string | null;
+    providerNodeId: string | null;
+    providerPubKey: string | null;
+  };
+  observed: {
+    providerNodeId: string | null;
+    providerNodePubKey: string | null;
+  };
+  permit: {
+    permitId: string | null;
+    status:
+      | "accepted"
+      | "invalid_response"
+      | "invalid_signature"
+      | "unreachable"
+      | "provider_not_trusted"
+      | "provider_acknowledgment_required";
+    intent: string | null;
+    issuedAt: string | null;
+    expiresAt: string | null;
+    checkedAt: string;
+    message: string;
+    signatureValidated: boolean;
+  };
+};
+
 type NodeIdentityDoc = {
   nodeId: string;
   nodePubKey: string;
@@ -1132,6 +1354,346 @@ type NodeIdentityDoc = {
     active: boolean;
   }>;
 };
+
+type NodePresence = {
+  node: {
+    nodeId: string;
+    profileId: string | null;
+    capabilityLevel: "basic" | "advanced" | "lan";
+    serviceRoles: Array<"creator" | "provider">;
+  };
+  endpoint: {
+    url: string | null;
+    kind: "quick" | "named" | "custom";
+    stability: "temporary" | "stable";
+    active: boolean;
+  };
+  runtime: {
+    status: "running" | "stopped" | "degraded";
+    apiReady: boolean;
+    reason: RuntimeStatusReason;
+  };
+};
+
+type PublicNodePresence = {
+  nodeId: string;
+  nodePubKey: string;
+  capabilityLevel: "basic" | "advanced" | "lan";
+  serviceRoles: Array<"creator" | "provider">;
+  endpoint: {
+    url: string | null;
+    kind: "quick" | "named" | "custom";
+    stability: "temporary" | "stable";
+    active: boolean;
+  };
+  signature: {
+    alg: "ed25519";
+    signedFields: ["nodeId", "nodePubKey", "capabilityLevel", "serviceRoles", "endpoint"];
+    value: string;
+  };
+};
+
+type RuntimeStatusReason =
+  | "normal_start"
+  | "manual_restart"
+  | "crash_restart"
+  | "health_probe_failed"
+  | "startup_failure"
+  | "startup_probe_timeout"
+  | "uncaught_exception"
+  | "unhandled_rejection"
+  | "port_bind_failed"
+  | `api_exit_code_${number}`;
+
+type RuntimeHealthState = {
+  runtime: {
+    status: "running" | "stopped" | "degraded";
+    apiReady: boolean;
+    startedAt: string | null;
+    lastRestartAt: string | null;
+    restartCount24h: number;
+    pid: number | null;
+    reason: RuntimeStatusReason;
+  };
+  endpoint: {
+    url: string | null;
+    kind: "quick" | "named" | "custom";
+    stability: "temporary" | "stable";
+    active: boolean;
+    lastSeenAt: string | null;
+  };
+  node: {
+    nodeId: string;
+    capabilityLevel: "basic" | "advanced" | "lan";
+  };
+  diagnostics?: {
+    lastFailureHint?: string;
+  };
+};
+
+const RUNTIME_STATE_DIR = path.join(CONTENTBOX_ROOT, "state");
+const RUNTIME_HEALTH_FILE = path.join(RUNTIME_STATE_DIR, "health.json");
+const PROVIDER_VERIFICATION_FILE = path.join(RUNTIME_STATE_DIR, "provider-verification.json");
+const PROVIDER_ACK_FILE = path.join(RUNTIME_STATE_DIR, "provider-acknowledgment.json");
+const PROVIDER_OPERATION_FILE = path.join(RUNTIME_STATE_DIR, "provider-execution-permit.json");
+const PROFILE_NETWORK_ACTIVATION_FILE = path.join(RUNTIME_STATE_DIR, "profile-network-activation.json");
+const RUNTIME_STATE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const RUNTIME_SUPERVISED = String(process.env.CERTIFYD_SUPERVISOR_ACTIVE || "") === "1";
+const PROVIDER_ACK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PROVIDER_PERMIT_DEFAULT_TTL_MS = 30 * 60 * 1000;
+const PROVIDER_PERMIT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function resolveNodeIdForRuntimeStatus(): string {
+  const nodePem = getLocalNodePublicPem();
+  if (nodePem) {
+    try {
+      return deriveNodeIdentityFromPublicKey(nodePem).nodeId;
+    } catch {}
+  }
+  return `node:unavailable:${NODE_ID}`;
+}
+
+function getLiveEndpointStatus() {
+  const ctx = getCapabilityContext();
+  const url = ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || null;
+  const kind: "quick" | "named" | "custom" =
+    ctx.publicStatus.mode === "quick" ? "quick" : ctx.publicStatus.mode === "named" ? "named" : "custom";
+  const stability: "temporary" | "stable" = kind === "quick" ? "temporary" : "stable";
+  const active = ctx.publicStatus.status === "online" && Boolean(url);
+  return {
+    url,
+    kind,
+    stability,
+    active,
+    lastSeenAt: active ? new Date().toISOString() : null
+  };
+}
+
+function defaultRuntimeHealthState(): RuntimeHealthState {
+  const runtime = resolveRuntimeConfig();
+  return {
+    runtime: {
+      status: "stopped",
+      apiReady: false,
+      startedAt: null,
+      lastRestartAt: null,
+      restartCount24h: 0,
+      pid: null,
+      reason: "normal_start"
+    },
+    endpoint: getLiveEndpointStatus(),
+    node: {
+      nodeId: resolveNodeIdForRuntimeStatus(),
+      capabilityLevel: runtime.nodeMode as "basic" | "advanced" | "lan"
+    }
+  };
+}
+
+function readRuntimeHealthState(): RuntimeHealthState {
+  try {
+    if (!fsSync.existsSync(RUNTIME_HEALTH_FILE)) return defaultRuntimeHealthState();
+    const raw = fsSync.readFileSync(RUNTIME_HEALTH_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return defaultRuntimeHealthState();
+    const fallback = defaultRuntimeHealthState();
+    return {
+      runtime: {
+        status:
+          parsed?.runtime?.status === "running" || parsed?.runtime?.status === "degraded"
+            ? parsed.runtime.status
+            : "stopped",
+        apiReady: Boolean(parsed?.runtime?.apiReady),
+        startedAt: typeof parsed?.runtime?.startedAt === "string" ? parsed.runtime.startedAt : fallback.runtime.startedAt,
+        lastRestartAt:
+          typeof parsed?.runtime?.lastRestartAt === "string" ? parsed.runtime.lastRestartAt : fallback.runtime.lastRestartAt,
+        restartCount24h: Number.isFinite(Number(parsed?.runtime?.restartCount24h))
+          ? Math.max(0, Math.floor(Number(parsed.runtime.restartCount24h)))
+          : 0,
+        pid: Number.isFinite(Number(parsed?.runtime?.pid)) ? Number(parsed.runtime.pid) : fallback.runtime.pid,
+        reason:
+          typeof parsed?.runtime?.reason === "string"
+            ? (parsed.runtime.reason as RuntimeStatusReason)
+            : fallback.runtime.reason
+      },
+      endpoint: {
+        url: typeof parsed?.endpoint?.url === "string" ? parsed.endpoint.url : fallback.endpoint.url,
+        kind:
+          parsed?.endpoint?.kind === "quick" || parsed?.endpoint?.kind === "named" || parsed?.endpoint?.kind === "custom"
+            ? parsed.endpoint.kind
+            : fallback.endpoint.kind,
+        stability: parsed?.endpoint?.stability === "stable" ? "stable" : "temporary",
+        active: Boolean(parsed?.endpoint?.active),
+        lastSeenAt:
+          typeof parsed?.endpoint?.lastSeenAt === "string" ? parsed.endpoint.lastSeenAt : fallback.endpoint.lastSeenAt
+      },
+      node: {
+        nodeId: typeof parsed?.node?.nodeId === "string" && parsed.node.nodeId.trim() ? parsed.node.nodeId : fallback.node.nodeId,
+        capabilityLevel:
+          parsed?.node?.capabilityLevel === "advanced" || parsed?.node?.capabilityLevel === "lan"
+            ? parsed.node.capabilityLevel
+            : "basic"
+      }
+    };
+  } catch {
+    return defaultRuntimeHealthState();
+  }
+}
+
+function writeRuntimeHealthState(state: RuntimeHealthState) {
+  try {
+    fsSync.mkdirSync(RUNTIME_STATE_DIR, { recursive: true });
+    const tmp = `${RUNTIME_HEALTH_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fsSync.renameSync(tmp, RUNTIME_HEALTH_FILE);
+  } catch {}
+}
+
+function persistRuntimeHealthFromApi(input: {
+  apiReady: boolean;
+  reason: RuntimeStatusReason;
+  statusIfUnsupervised?: "running" | "stopped" | "degraded";
+  startedAt?: string | null;
+  lastRestartAt?: string | null;
+  incrementRestartCount?: boolean;
+}) {
+  const prev = readRuntimeHealthState();
+  const now = new Date();
+  const runtime = resolveRuntimeConfig();
+  const liveEndpoint = getLiveEndpointStatus();
+  const restartWindowStart =
+    typeof prev.runtime.lastRestartAt === "string" ? Date.parse(prev.runtime.lastRestartAt) : Number.NaN;
+  const withinWindow = Number.isFinite(restartWindowStart) && now.getTime() - restartWindowStart < RUNTIME_STATE_WINDOW_MS;
+  const nextCount = RUNTIME_SUPERVISED
+    ? prev.runtime.restartCount24h
+    : input.incrementRestartCount
+      ? (withinWindow ? prev.runtime.restartCount24h : 0) + 1
+      : withinWindow
+        ? prev.runtime.restartCount24h
+        : 0;
+  const runtimeStatus = RUNTIME_SUPERVISED
+    ? prev.runtime.status
+    : input.statusIfUnsupervised ?? prev.runtime.status;
+  const runtimeReason =
+    input.reason === "manual_restart"
+      ? "manual_restart"
+      : RUNTIME_SUPERVISED
+        ? prev.runtime.reason
+        : input.reason;
+  const runtimePid = RUNTIME_SUPERVISED
+    ? prev.runtime.pid
+    : runtimeStatus === "running"
+      ? process.pid
+      : null;
+  const next: RuntimeHealthState = {
+    runtime: {
+      status: runtimeStatus,
+      apiReady: input.apiReady,
+      startedAt: input.startedAt ?? prev.runtime.startedAt ?? STARTED_AT,
+      lastRestartAt: RUNTIME_SUPERVISED ? prev.runtime.lastRestartAt ?? null : input.lastRestartAt ?? prev.runtime.lastRestartAt ?? null,
+      restartCount24h: nextCount,
+      pid: runtimePid,
+      reason: runtimeReason
+    },
+    endpoint: {
+      ...liveEndpoint,
+      lastSeenAt: liveEndpoint.active ? now.toISOString() : prev.endpoint.lastSeenAt
+    },
+    node: {
+      nodeId: resolveNodeIdForRuntimeStatus(),
+      capabilityLevel: runtime.nodeMode as "basic" | "advanced" | "lan"
+    }
+  };
+  writeRuntimeHealthState(next);
+  return next;
+}
+
+function getRuntimeHealthStatus(): RuntimeHealthState {
+  const stored = readRuntimeHealthState();
+  const liveEndpoint = getLiveEndpointStatus();
+  const runtime = resolveRuntimeConfig();
+  const reason = String(stored.runtime.reason || "");
+  const codeMatch = reason.match(/^api_exit_code_(\d+)$/);
+  const lastFailureHint =
+    reason === "port_bind_failed"
+      ? `Port ${process.env.PORT || 4000} already in use`
+      : reason === "startup_probe_timeout"
+        ? "API process started, but readiness probe timed out"
+        : reason === "startup_failure"
+          ? "API process exited before readiness probe succeeded"
+          : reason === "health_probe_failed"
+            ? "Runtime health probe failed"
+            : reason === "manual_restart"
+              ? "Manual restart requested"
+              : reason === "uncaught_exception"
+                ? "Unhandled runtime exception"
+                : reason === "unhandled_rejection"
+                  ? "Unhandled async rejection"
+                  : codeMatch
+                    ? `API exited with code ${codeMatch[1]}`
+                    : undefined;
+  return {
+    runtime: stored.runtime,
+    endpoint: {
+      ...stored.endpoint,
+      ...liveEndpoint,
+      lastSeenAt: liveEndpoint.active ? new Date().toISOString() : stored.endpoint.lastSeenAt
+    },
+    node: {
+      nodeId: stored.node.nodeId || resolveNodeIdForRuntimeStatus(),
+      capabilityLevel: runtime.nodeMode as "basic" | "advanced" | "lan"
+    },
+    diagnostics:
+      stored.runtime.status === "running" && stored.runtime.apiReady
+        ? undefined
+        : lastFailureHint
+          ? { lastFailureHint }
+          : undefined
+  };
+}
+
+function toServiceRoleList(serviceRoles: NodeIdentityDoc["serviceRoles"]): Array<"creator" | "provider"> {
+  const out: Array<"creator" | "provider"> = [];
+  if (serviceRoles.creator) out.push("creator");
+  if (serviceRoles.invoiceProvider) out.push("provider");
+  return out;
+}
+
+async function buildNodePresence(userId?: string | null): Promise<NodePresence> {
+  const identity = await buildLocalNodeIdentityDoc(userId || null);
+  const runtimeStatus = getRuntimeHealthStatus();
+  return {
+    node: {
+      nodeId: identity.nodeId,
+      profileId: identity.profileId,
+      capabilityLevel: identity.capabilityLevel,
+      serviceRoles: toServiceRoleList(identity.serviceRoles)
+    },
+    endpoint: {
+      url: runtimeStatus.endpoint.url,
+      kind: runtimeStatus.endpoint.kind,
+      stability: runtimeStatus.endpoint.stability,
+      active: runtimeStatus.endpoint.active
+    },
+    runtime: {
+      status: runtimeStatus.runtime.status,
+      apiReady: runtimeStatus.runtime.apiReady,
+      reason: runtimeStatus.runtime.reason
+    }
+  };
+}
+
+async function buildProviderCapabilitiesDoc(userId?: string | null): Promise<ProviderCapabilitiesDoc> {
+  const identity = await buildLocalNodeIdentityDoc(userId || null);
+  return {
+    nodeId: identity.nodeId,
+    capabilityLevel: identity.capabilityLevel,
+    serviceRoles: toServiceRoleList(identity.serviceRoles),
+    providerCapabilities: {
+      descriptorVerification: true,
+      trustGatedExecution: true
+    }
+  };
+}
 
 function normalizeProviderUrl(value: string | null | undefined): string | null {
   const v = String(value || "").trim();
@@ -1184,6 +1746,17 @@ function deriveNodeIdentityFromPublicKey(pem: string): { nodeId: string; nodePub
     nodeId: `node:${fingerprint}`,
     nodePubKey: `ed25519:${pubB64Url}`
   };
+}
+
+function getLocalNodePrivatePem(): string | null {
+  const privPath = path.join(CONTENTBOX_ROOT, ".node", "node_private.pem");
+  try {
+    if (!fsSync.existsSync(privPath)) return null;
+    const pem = fsSync.readFileSync(privPath, "utf8").trim();
+    return pem || null;
+  } catch {
+    return null;
+  }
 }
 
 async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeIdentityDoc> {
@@ -1269,7 +1842,1243 @@ function setNetworkProviderConfig(input: {
     updatedAt: next.updatedAt
   };
   writeLocalState(s);
+  // Invalidate posture when target/config changes; live verification repopulates observed trust state.
+  persistProviderVerificationPosture(
+    buildProviderVerificationResult(next, "not_configured", "Provider configuration updated. Run a live verification check.")
+  );
+  persistProviderAcknowledgmentState(
+    buildProviderAcknowledgmentState(next, {
+      status: "provider_not_trusted",
+      intent: null,
+      issuedAt: null,
+      checkedAt: new Date().toISOString(),
+      message: "Provider configuration updated. Request a fresh acknowledgment.",
+      signatureValidated: false
+    })
+  );
+  persistProviderOperationIntentState(
+    buildProviderOperationIntentState(next, {
+      status: "provider_not_trusted",
+      intent: null,
+      issuedAt: null,
+      checkedAt: new Date().toISOString(),
+      message: "Provider configuration updated. Request a fresh provider execution permit.",
+      signatureValidated: false
+    })
+  );
+  persistProfileNetworkActivationState(
+    buildProfileNetworkActivationState(next, {
+      status: "not_ready",
+      message: "Provider configuration updated. Re-activate profile after setup is ready.",
+      checkedAt: new Date().toISOString(),
+      activatedAt: null
+    })
+  );
   return next;
+}
+
+function emptyProviderObserved(): ProviderVerificationResult["observed"] {
+  return {
+    nodeId: null,
+    nodePubKey: null,
+    capabilityLevel: null,
+    serviceRoles: [],
+    endpoint: {
+      url: null,
+      kind: null,
+      stability: null,
+      active: null
+    }
+  };
+}
+
+function deriveNodeIdFromNodePubKey(pubKey: string): string | null {
+  const value = String(pubKey || "").trim();
+  if (!value.startsWith("ed25519:")) return null;
+  const b64 = value.slice("ed25519:".length).trim();
+  if (!b64) return null;
+  try {
+    const der = base64UrlDecode(b64);
+    const fingerprint = crypto.createHash("sha256").update(der).digest("hex");
+    return `node:${fingerprint}`;
+  } catch {
+    return null;
+  }
+}
+
+const NODE_PRESENCE_SIGNED_FIELDS = ["nodeId", "nodePubKey", "capabilityLevel", "serviceRoles", "endpoint"] as const;
+type NodePresenceSignedPayload = Omit<PublicNodePresence, "signature">;
+
+function buildPublicNodePresencePayload(input: {
+  nodeId: string;
+  nodePubKey: string;
+  capabilityLevel: "basic" | "advanced" | "lan";
+  serviceRoles: Array<"creator" | "provider">;
+  endpoint: {
+    url: string | null;
+    kind: "quick" | "named" | "custom";
+    stability: "temporary" | "stable";
+    active: boolean;
+  };
+}): NodePresenceSignedPayload {
+  return {
+    nodeId: input.nodeId,
+    nodePubKey: input.nodePubKey,
+    capabilityLevel: input.capabilityLevel,
+    serviceRoles: input.serviceRoles,
+    endpoint: input.endpoint
+  };
+}
+
+function canonicalNodePresencePayloadBytes(payload: NodePresenceSignedPayload): Buffer {
+  return Buffer.from(stableStringify(payload), "utf8");
+}
+
+function signNodePresencePayload(payload: NodePresenceSignedPayload): string | null {
+  const privPem = getLocalNodePrivatePem();
+  if (!privPem) return null;
+  try {
+    const sig = crypto.sign(null, canonicalNodePresencePayloadBytes(payload), privPem);
+    return base64UrlEncode(sig);
+  } catch {
+    return null;
+  }
+}
+
+function verifyNodePresenceSignature(input: {
+  payload: NodePresenceSignedPayload;
+  nodePubKey: string;
+  signature: string;
+}): boolean {
+  const derivedNodeId = deriveNodeIdFromNodePubKey(input.nodePubKey);
+  if (!derivedNodeId || derivedNodeId !== input.payload.nodeId) return false;
+  try {
+    const pubDer = base64UrlDecode(String(input.nodePubKey).replace(/^ed25519:/, ""));
+    const publicKey = crypto.createPublicKey({ key: pubDer, format: "der", type: "spki" });
+    const sig = base64UrlDecode(input.signature);
+    return crypto.verify(null, canonicalNodePresencePayloadBytes(input.payload), publicKey, sig);
+  } catch {
+    return false;
+  }
+}
+
+function signStablePayloadWithLocalNodeKey(payload: unknown): string | null {
+  const privPem = getLocalNodePrivatePem();
+  if (!privPem) return null;
+  try {
+    const sig = crypto.sign(null, Buffer.from(stableStringify(payload), "utf8"), privPem);
+    return base64UrlEncode(sig);
+  } catch {
+    return null;
+  }
+}
+
+function verifyStablePayloadSignature(nodePubKey: string, payload: unknown, signature: string): boolean {
+  const derivedNodeId = deriveNodeIdFromNodePubKey(nodePubKey);
+  if (!derivedNodeId) return false;
+  try {
+    const pubDer = base64UrlDecode(String(nodePubKey).replace(/^ed25519:/, ""));
+    const publicKey = crypto.createPublicKey({ key: pubDer, format: "der", type: "spki" });
+    const sig = base64UrlDecode(signature);
+    return crypto.verify(null, Buffer.from(stableStringify(payload), "utf8"), publicKey, sig);
+  } catch {
+    return false;
+  }
+}
+
+function buildProviderAcknowledgmentPayload(input: {
+  provider: ProviderAcknowledgmentResponse["provider"];
+  client: ProviderAcknowledgmentResponse["client"];
+  acknowledgment: ProviderAcknowledgmentResponse["acknowledgment"];
+}) {
+  return {
+    provider: input.provider,
+    client: input.client,
+    acknowledgment: input.acknowledgment
+  };
+}
+
+function buildProviderOperationIntentPayload(input: {
+  provider: ProviderExecutionPermitResponse["provider"];
+  client: ProviderExecutionPermitResponse["client"];
+  permit: ProviderExecutionPermitResponse["permit"];
+}) {
+  return {
+    provider: input.provider,
+    client: input.client,
+    permit: input.permit
+  };
+}
+
+function buildPermitId(input: { providerNodeId: string; clientNodeId: string; intent: string; issuedAt: string }): string {
+  const digest = crypto
+    .createHash("sha256")
+    .update(stableStringify(input))
+    .digest("hex")
+    .slice(0, 32);
+  return `permit:${digest}`;
+}
+
+async function verifyConfiguredProvider(cfg: NetworkProviderConfig): Promise<ProviderVerificationResult> {
+  const checkedAt = new Date().toISOString();
+  const configured = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId,
+    providerPubKey: cfg.providerPubKey
+  };
+  if (!isNetworkProviderConfigured(cfg)) {
+    return {
+      configured,
+      observed: emptyProviderObserved(),
+      verification: {
+        status: "not_configured",
+        checkedAt,
+        message: "No enabled provider binding is configured."
+      }
+    };
+  }
+
+  const target = `${String(cfg.providerUrl).replace(/\/+$/, "")}/.well-known/certifyd-node`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(target, { method: "GET", signal: controller.signal } as any);
+    if (!res.ok) {
+      return {
+        configured,
+        observed: emptyProviderObserved(),
+        verification: {
+          status: "unreachable",
+          checkedAt,
+          message: `Provider descriptor request failed (${res.status}).`
+        }
+      };
+    }
+
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      return {
+        configured,
+        observed: emptyProviderObserved(),
+        verification: {
+          status: "invalid_descriptor",
+          checkedAt,
+          message: "Provider descriptor is not valid JSON."
+        }
+      };
+    }
+
+    const nodeId = typeof body?.nodeId === "string" ? body.nodeId.trim() : "";
+    const nodePubKey = typeof body?.nodePubKey === "string" ? body.nodePubKey.trim() : "";
+    const capabilityLevel =
+      body?.capabilityLevel === "basic" || body?.capabilityLevel === "advanced" || body?.capabilityLevel === "lan"
+        ? (body.capabilityLevel as "basic" | "advanced" | "lan")
+        : null;
+    const rawRoles = Array.isArray(body?.serviceRoles) ? body.serviceRoles : null;
+    const serviceRoles: Array<"creator" | "provider"> = rawRoles
+      ? rawRoles.filter((r: any) => r === "creator" || r === "provider")
+      : [];
+    const endpoint = {
+      url: typeof body?.endpoint?.url === "string" ? body.endpoint.url : null,
+      kind:
+        body?.endpoint?.kind === "quick" || body?.endpoint?.kind === "named" || body?.endpoint?.kind === "custom"
+          ? (body.endpoint.kind as "quick" | "named" | "custom")
+          : null,
+      stability:
+        body?.endpoint?.stability === "temporary" || body?.endpoint?.stability === "stable"
+          ? (body.endpoint.stability as "temporary" | "stable")
+          : null,
+      active: typeof body?.endpoint?.active === "boolean" ? body.endpoint.active : null
+    };
+    const observed: ProviderVerificationResult["observed"] = {
+      nodeId: nodeId || null,
+      nodePubKey: nodePubKey || null,
+      capabilityLevel,
+      serviceRoles,
+      endpoint
+    };
+    const signatureObj = body?.signature;
+    const signatureAlg = typeof signatureObj?.alg === "string" ? signatureObj.alg : "";
+    const signatureValue = typeof signatureObj?.value === "string" ? signatureObj.value.trim() : "";
+    const signedFields = Array.isArray(signatureObj?.signedFields) ? signatureObj.signedFields : null;
+
+    if (!nodeId || !nodePubKey || !rawRoles) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "invalid_descriptor",
+          checkedAt,
+          message: "Provider descriptor is missing required fields."
+        }
+      };
+    }
+    if (!signatureObj) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "unsigned_descriptor",
+          checkedAt,
+          message: "Provider descriptor is unsigned."
+        }
+      };
+    }
+    if (signatureAlg !== "ed25519" || !signatureValue || !signedFields) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "invalid_descriptor",
+          checkedAt,
+          message: "Provider descriptor signature block is invalid."
+        }
+      };
+    }
+    const signedFieldSet = new Set(signedFields.map((f: any) => String(f)));
+    for (const field of NODE_PRESENCE_SIGNED_FIELDS) {
+      if (!signedFieldSet.has(field)) {
+        return {
+          configured,
+          observed,
+          verification: {
+            status: "invalid_descriptor",
+            checkedAt,
+            message: "Provider descriptor signature is missing required signed fields."
+          }
+        };
+      }
+    }
+    const signedPayload = buildPublicNodePresencePayload({
+      nodeId: nodeId || "",
+      nodePubKey: nodePubKey || "",
+      capabilityLevel: capabilityLevel || "basic",
+      serviceRoles,
+      endpoint: {
+        url: endpoint.url,
+        kind: endpoint.kind || "quick",
+        stability: endpoint.stability || "temporary",
+        active: Boolean(endpoint.active)
+      }
+    });
+    if (!verifyNodePresenceSignature({ payload: signedPayload, nodePubKey, signature: signatureValue })) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "invalid_signature",
+          checkedAt,
+          message: "Provider descriptor signature verification failed."
+        }
+      };
+    }
+    if (cfg.providerNodeId && nodeId !== cfg.providerNodeId) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "mismatch",
+          checkedAt,
+          message: "Observed provider node ID does not match configured provider node ID."
+        }
+      };
+    }
+    if (cfg.providerPubKey && nodePubKey && nodePubKey !== cfg.providerPubKey) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "pubkey_mismatch",
+          checkedAt,
+          message: "Observed provider public key does not match configured provider public key."
+        }
+      };
+    }
+    if (cfg.providerPubKey && !nodePubKey) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "invalid_descriptor",
+          checkedAt,
+          message: "Provider descriptor did not include node public key."
+        }
+      };
+    }
+    if (nodePubKey) {
+      const derivedNodeId = deriveNodeIdFromNodePubKey(nodePubKey);
+      if (!derivedNodeId || (nodeId && derivedNodeId !== nodeId)) {
+        return {
+          configured,
+          observed,
+          verification: {
+            status: "identity_inconsistent",
+            checkedAt,
+            message: "Observed provider node identity is inconsistent with observed public key."
+          }
+        };
+      }
+    }
+    if (!serviceRoles.includes("provider")) {
+      return {
+        configured,
+        observed,
+        verification: {
+          status: "missing_provider_role",
+          checkedAt,
+          message: "Provider descriptor does not advertise provider role."
+        }
+      };
+    }
+    return {
+      configured,
+      observed,
+      verification: {
+        status: "verified",
+        checkedAt,
+        message: "Provider descriptor verified."
+      }
+    };
+  } catch {
+    return {
+      configured,
+      observed: emptyProviderObserved(),
+      verification: {
+        status: "unreachable",
+        checkedAt,
+        message: "Provider URL is unreachable."
+      }
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildProviderVerificationResult(
+  cfg: NetworkProviderConfig,
+  status: ProviderVerificationStatus,
+  message: string
+): ProviderVerificationResult {
+  return {
+    configured: {
+      providerUrl: cfg.providerUrl,
+      providerNodeId: cfg.providerNodeId,
+      providerPubKey: cfg.providerPubKey
+    },
+    observed: emptyProviderObserved(),
+    verification: {
+      status,
+      checkedAt: new Date().toISOString(),
+      message
+    }
+  };
+}
+
+function isSameProviderVerificationTarget(a: ProviderVerificationResult["configured"], b: ProviderVerificationResult["configured"]) {
+  return (
+    String(a.providerUrl || "").trim() === String(b.providerUrl || "").trim() &&
+    String(a.providerNodeId || "").trim() === String(b.providerNodeId || "").trim() &&
+    String(a.providerPubKey || "").trim() === String(b.providerPubKey || "").trim()
+  );
+}
+
+function readProviderVerificationPosture(): ProviderVerificationPosture | null {
+  try {
+    if (!fsSync.existsSync(PROVIDER_VERIFICATION_FILE)) return null;
+    const raw = fsSync.readFileSync(PROVIDER_VERIFICATION_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const status = String(parsed?.verification?.status || "");
+    const knownStatuses: ProviderVerificationStatus[] = [
+      "verified",
+      "mismatch",
+      "pubkey_mismatch",
+      "identity_inconsistent",
+      "invalid_signature",
+      "unsigned_descriptor",
+      "unreachable",
+      "invalid_descriptor",
+      "missing_provider_role",
+      "not_configured"
+    ];
+    if (!knownStatuses.includes(status as ProviderVerificationStatus)) return null;
+    const result: ProviderVerificationPosture = {
+      configured: {
+        providerUrl: typeof parsed?.configured?.providerUrl === "string" ? parsed.configured.providerUrl : null,
+        providerNodeId: typeof parsed?.configured?.providerNodeId === "string" ? parsed.configured.providerNodeId : null,
+        providerPubKey: typeof parsed?.configured?.providerPubKey === "string" ? parsed.configured.providerPubKey : null
+      },
+      observed: {
+        nodeId: typeof parsed?.observed?.nodeId === "string" ? parsed.observed.nodeId : null,
+        nodePubKey: typeof parsed?.observed?.nodePubKey === "string" ? parsed.observed.nodePubKey : null,
+        capabilityLevel:
+          parsed?.observed?.capabilityLevel === "basic" ||
+          parsed?.observed?.capabilityLevel === "advanced" ||
+          parsed?.observed?.capabilityLevel === "lan"
+            ? parsed.observed.capabilityLevel
+            : null,
+        serviceRoles: Array.isArray(parsed?.observed?.serviceRoles)
+          ? parsed.observed.serviceRoles.filter((r: any) => r === "creator" || r === "provider")
+          : [],
+        endpoint: {
+          url: typeof parsed?.observed?.endpoint?.url === "string" ? parsed.observed.endpoint.url : null,
+          kind:
+            parsed?.observed?.endpoint?.kind === "quick" ||
+            parsed?.observed?.endpoint?.kind === "named" ||
+            parsed?.observed?.endpoint?.kind === "custom"
+              ? parsed.observed.endpoint.kind
+              : null,
+          stability:
+            parsed?.observed?.endpoint?.stability === "temporary" || parsed?.observed?.endpoint?.stability === "stable"
+              ? parsed.observed.endpoint.stability
+              : null,
+          active: typeof parsed?.observed?.endpoint?.active === "boolean" ? parsed.observed.endpoint.active : null
+        }
+      },
+      verification: {
+        status: status as ProviderVerificationStatus,
+        checkedAt:
+          typeof parsed?.verification?.checkedAt === "string" ? parsed.verification.checkedAt : new Date().toISOString(),
+        message: typeof parsed?.verification?.message === "string" ? parsed.verification.message : "Verification state unavailable."
+      },
+      history: {
+        lastSuccessAt:
+          typeof parsed?.history?.lastSuccessAt === "string" ? parsed.history.lastSuccessAt : null,
+        lastFailureAt:
+          typeof parsed?.history?.lastFailureAt === "string" ? parsed.history.lastFailureAt : null
+      }
+    };
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function writeProviderVerificationPosture(posture: ProviderVerificationPosture) {
+  try {
+    fsSync.mkdirSync(RUNTIME_STATE_DIR, { recursive: true });
+    const tmp = `${PROVIDER_VERIFICATION_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(posture, null, 2));
+    fsSync.renameSync(tmp, PROVIDER_VERIFICATION_FILE);
+  } catch {}
+}
+
+function persistProviderVerificationPosture(result: ProviderVerificationResult): ProviderVerificationPosture {
+  const prev = readProviderVerificationPosture();
+  const now = result.verification.checkedAt || new Date().toISOString();
+  const next: ProviderVerificationPosture = {
+    ...result,
+    history: {
+      lastSuccessAt: prev?.history?.lastSuccessAt ?? null,
+      lastFailureAt: prev?.history?.lastFailureAt ?? null
+    }
+  };
+  if (result.verification.status === "verified") {
+    next.history.lastSuccessAt = now;
+  } else if (result.verification.status !== "not_configured") {
+    next.history.lastFailureAt = now;
+  }
+  writeProviderVerificationPosture(next);
+  return next;
+}
+
+function getProviderVerificationStatus(cfg: NetworkProviderConfig): ProviderVerificationPosture {
+  const persisted = readProviderVerificationPosture();
+  if (!persisted) {
+    return persistProviderVerificationPosture(
+      buildProviderVerificationResult(cfg, "not_configured", "No provider verification has been recorded yet.")
+    );
+  }
+  const configuredNow: ProviderVerificationResult["configured"] = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId,
+    providerPubKey: cfg.providerPubKey
+  };
+  if (!isSameProviderVerificationTarget(persisted.configured, configuredNow)) {
+    return persistProviderVerificationPosture(
+      buildProviderVerificationResult(
+        cfg,
+        "not_configured",
+        "Provider target changed. Run a live verification check."
+      )
+    );
+  }
+  return persisted;
+}
+
+function buildProviderAcknowledgmentState(
+  cfg: NetworkProviderConfig,
+  input: ProviderAcknowledgmentState["acknowledgment"] & {
+    observedProviderNodeId?: string | null;
+    observedProviderNodePubKey?: string | null;
+  }
+): ProviderAcknowledgmentState {
+  return {
+    configured: {
+      providerUrl: cfg.providerUrl,
+      providerNodeId: cfg.providerNodeId,
+      providerPubKey: cfg.providerPubKey
+    },
+    observed: {
+      providerNodeId: input.observedProviderNodeId ?? null,
+      providerNodePubKey: input.observedProviderNodePubKey ?? null
+    },
+    acknowledgment: {
+      status: input.status,
+      intent: input.intent,
+      issuedAt: input.issuedAt,
+      checkedAt: input.checkedAt,
+      message: input.message,
+      signatureValidated: input.signatureValidated
+    }
+  };
+}
+
+function isSameProviderAcknowledgmentTarget(
+  a: ProviderAcknowledgmentState["configured"],
+  b: ProviderAcknowledgmentState["configured"]
+) {
+  return (
+    String(a.providerUrl || "").trim() === String(b.providerUrl || "").trim() &&
+    String(a.providerNodeId || "").trim() === String(b.providerNodeId || "").trim() &&
+    String(a.providerPubKey || "").trim() === String(b.providerPubKey || "").trim()
+  );
+}
+
+function readProviderAcknowledgmentState(): ProviderAcknowledgmentState | null {
+  try {
+    if (!fsSync.existsSync(PROVIDER_ACK_FILE)) return null;
+    const raw = fsSync.readFileSync(PROVIDER_ACK_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const status = String(parsed?.acknowledgment?.status || "");
+    const known = new Set(["accepted", "invalid_response", "invalid_signature", "unreachable", "provider_not_trusted"]);
+    if (!known.has(status)) return null;
+    return {
+      configured: {
+        providerUrl: typeof parsed?.configured?.providerUrl === "string" ? parsed.configured.providerUrl : null,
+        providerNodeId: typeof parsed?.configured?.providerNodeId === "string" ? parsed.configured.providerNodeId : null,
+        providerPubKey: typeof parsed?.configured?.providerPubKey === "string" ? parsed.configured.providerPubKey : null
+      },
+      observed: {
+        providerNodeId: typeof parsed?.observed?.providerNodeId === "string" ? parsed.observed.providerNodeId : null,
+        providerNodePubKey:
+          typeof parsed?.observed?.providerNodePubKey === "string" ? parsed.observed.providerNodePubKey : null
+      },
+      acknowledgment: {
+        status: status as ProviderAcknowledgmentState["acknowledgment"]["status"],
+        intent: typeof parsed?.acknowledgment?.intent === "string" ? parsed.acknowledgment.intent : null,
+        issuedAt: typeof parsed?.acknowledgment?.issuedAt === "string" ? parsed.acknowledgment.issuedAt : null,
+        checkedAt:
+          typeof parsed?.acknowledgment?.checkedAt === "string"
+            ? parsed.acknowledgment.checkedAt
+            : new Date().toISOString(),
+        message:
+          typeof parsed?.acknowledgment?.message === "string"
+            ? parsed.acknowledgment.message
+            : "Acknowledgment status unavailable.",
+        signatureValidated: Boolean(parsed?.acknowledgment?.signatureValidated)
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeProviderAcknowledgmentState(state: ProviderAcknowledgmentState) {
+  try {
+    fsSync.mkdirSync(RUNTIME_STATE_DIR, { recursive: true });
+    const tmp = `${PROVIDER_ACK_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fsSync.renameSync(tmp, PROVIDER_ACK_FILE);
+  } catch {}
+}
+
+function persistProviderAcknowledgmentState(state: ProviderAcknowledgmentState): ProviderAcknowledgmentState {
+  writeProviderAcknowledgmentState(state);
+  return state;
+}
+
+function getProviderAcknowledgmentStatus(cfg: NetworkProviderConfig): ProviderAcknowledgmentState {
+  const persisted = readProviderAcknowledgmentState();
+  const configuredNow = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId,
+    providerPubKey: cfg.providerPubKey
+  };
+  if (!persisted) {
+    return persistProviderAcknowledgmentState(
+      buildProviderAcknowledgmentState(cfg, {
+        status: "provider_not_trusted",
+        intent: null,
+        issuedAt: null,
+        checkedAt: new Date().toISOString(),
+        message: "No provider acknowledgment has been recorded yet.",
+        signatureValidated: false
+      })
+    );
+  }
+  if (!isSameProviderAcknowledgmentTarget(persisted.configured, configuredNow)) {
+    return persistProviderAcknowledgmentState(
+      buildProviderAcknowledgmentState(cfg, {
+        status: "provider_not_trusted",
+        intent: null,
+        issuedAt: null,
+        checkedAt: new Date().toISOString(),
+        message: "Provider target changed. Request a fresh acknowledgment.",
+        signatureValidated: false
+      })
+    );
+  }
+  return persisted;
+}
+
+function buildProviderOperationIntentState(
+  cfg: NetworkProviderConfig,
+  input: {
+    status: ProviderOperationIntentState["permit"]["status"];
+    intent: string | null;
+    issuedAt: string | null;
+    checkedAt: string;
+    message: string;
+    signatureValidated: boolean;
+    permitId?: string | null;
+    expiresAt?: string | null;
+    observedProviderNodeId?: string | null;
+    observedProviderNodePubKey?: string | null;
+  }
+): ProviderOperationIntentState {
+  return {
+    configured: {
+      providerUrl: cfg.providerUrl,
+      providerNodeId: cfg.providerNodeId,
+      providerPubKey: cfg.providerPubKey
+    },
+    observed: {
+      providerNodeId: input.observedProviderNodeId ?? null,
+      providerNodePubKey: input.observedProviderNodePubKey ?? null
+    },
+    permit: {
+      permitId: input.permitId ?? null,
+      status: input.status,
+      intent: input.intent,
+      issuedAt: input.issuedAt,
+      expiresAt: input.expiresAt ?? null,
+      checkedAt: input.checkedAt,
+      message: input.message,
+      signatureValidated: input.signatureValidated
+    }
+  };
+}
+
+function isSameProviderOperationTarget(
+  a: ProviderOperationIntentState["configured"],
+  b: ProviderOperationIntentState["configured"]
+) {
+  return (
+    String(a.providerUrl || "").trim() === String(b.providerUrl || "").trim() &&
+    String(a.providerNodeId || "").trim() === String(b.providerNodeId || "").trim() &&
+    String(a.providerPubKey || "").trim() === String(b.providerPubKey || "").trim()
+  );
+}
+
+function readProviderOperationIntentState(): ProviderOperationIntentState | null {
+  try {
+    if (!fsSync.existsSync(PROVIDER_OPERATION_FILE)) return null;
+    const raw = fsSync.readFileSync(PROVIDER_OPERATION_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const payload = parsed?.permit && typeof parsed.permit === "object" ? parsed.permit : parsed?.operation;
+    const status = String(payload?.status || "");
+    const known = new Set([
+      "accepted",
+      "invalid_response",
+      "invalid_signature",
+      "unreachable",
+      "provider_not_trusted",
+      "provider_acknowledgment_required"
+    ]);
+    if (!known.has(status)) return null;
+    return {
+      configured: {
+        providerUrl: typeof parsed?.configured?.providerUrl === "string" ? parsed.configured.providerUrl : null,
+        providerNodeId: typeof parsed?.configured?.providerNodeId === "string" ? parsed.configured.providerNodeId : null,
+        providerPubKey: typeof parsed?.configured?.providerPubKey === "string" ? parsed.configured.providerPubKey : null
+      },
+      observed: {
+        providerNodeId: typeof parsed?.observed?.providerNodeId === "string" ? parsed.observed.providerNodeId : null,
+        providerNodePubKey:
+          typeof parsed?.observed?.providerNodePubKey === "string" ? parsed.observed.providerNodePubKey : null
+      },
+      permit: {
+        permitId: typeof payload?.permitId === "string" ? payload.permitId : null,
+        status: status as ProviderOperationIntentState["permit"]["status"],
+        intent: typeof payload?.intent === "string" ? payload.intent : null,
+        issuedAt: typeof payload?.issuedAt === "string" ? payload.issuedAt : null,
+        expiresAt: typeof payload?.expiresAt === "string" ? payload.expiresAt : null,
+        checkedAt:
+          typeof payload?.checkedAt === "string" ? payload.checkedAt : new Date().toISOString(),
+        message:
+          typeof payload?.message === "string"
+            ? payload.message
+            : "Operation intent status unavailable.",
+        signatureValidated: Boolean(payload?.signatureValidated)
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeProviderOperationIntentState(state: ProviderOperationIntentState) {
+  try {
+    fsSync.mkdirSync(RUNTIME_STATE_DIR, { recursive: true });
+    const tmp = `${PROVIDER_OPERATION_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fsSync.renameSync(tmp, PROVIDER_OPERATION_FILE);
+  } catch {}
+}
+
+function persistProviderOperationIntentState(state: ProviderOperationIntentState): ProviderOperationIntentState {
+  writeProviderOperationIntentState(state);
+  return state;
+}
+
+function getProviderOperationIntentStatus(cfg: NetworkProviderConfig): ProviderOperationIntentState {
+  const persisted = readProviderOperationIntentState();
+  const configuredNow = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId,
+    providerPubKey: cfg.providerPubKey
+  };
+  if (!persisted) {
+    return persistProviderOperationIntentState(
+      buildProviderOperationIntentState(cfg, {
+        status: "provider_not_trusted",
+        permitId: null,
+        intent: null,
+        issuedAt: null,
+        expiresAt: null,
+        checkedAt: new Date().toISOString(),
+        message: "No provider execution permit result has been recorded yet.",
+        signatureValidated: false
+      })
+    );
+  }
+  if (!isSameProviderOperationTarget(persisted.configured, configuredNow)) {
+    return persistProviderOperationIntentState(
+      buildProviderOperationIntentState(cfg, {
+        status: "provider_not_trusted",
+        permitId: null,
+        intent: null,
+        issuedAt: null,
+        expiresAt: null,
+        checkedAt: new Date().toISOString(),
+        message: "Provider target changed. Request a fresh provider execution permit.",
+        signatureValidated: false
+      })
+    );
+  }
+  return persisted;
+}
+
+function buildProfileNetworkActivationState(
+  cfg: NetworkProviderConfig,
+  input: ProfileNetworkActivationState["activation"]
+): ProfileNetworkActivationState {
+  return {
+    configured: {
+      providerUrl: cfg.providerUrl,
+      providerNodeId: cfg.providerNodeId,
+      providerPubKey: cfg.providerPubKey
+    },
+    activation: {
+      status: input.status,
+      message: input.message,
+      checkedAt: input.checkedAt,
+      activatedAt: input.activatedAt
+    }
+  };
+}
+
+function isSameProfileActivationTarget(
+  a: ProfileNetworkActivationState["configured"],
+  b: ProfileNetworkActivationState["configured"]
+) {
+  return (
+    String(a.providerUrl || "").trim() === String(b.providerUrl || "").trim() &&
+    String(a.providerNodeId || "").trim() === String(b.providerNodeId || "").trim() &&
+    String(a.providerPubKey || "").trim() === String(b.providerPubKey || "").trim()
+  );
+}
+
+function readProfileNetworkActivationState(): ProfileNetworkActivationState | null {
+  try {
+    if (!fsSync.existsSync(PROFILE_NETWORK_ACTIVATION_FILE)) return null;
+    const raw = fsSync.readFileSync(PROFILE_NETWORK_ACTIVATION_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const status = String(parsed?.activation?.status || "");
+    if (status !== "activated" && status !== "not_ready") return null;
+    return {
+      configured: {
+        providerUrl: typeof parsed?.configured?.providerUrl === "string" ? parsed.configured.providerUrl : null,
+        providerNodeId: typeof parsed?.configured?.providerNodeId === "string" ? parsed.configured.providerNodeId : null,
+        providerPubKey: typeof parsed?.configured?.providerPubKey === "string" ? parsed.configured.providerPubKey : null
+      },
+      activation: {
+        status: status as ProfileNetworkActivationState["activation"]["status"],
+        message:
+          typeof parsed?.activation?.message === "string"
+            ? parsed.activation.message
+            : "Profile activation status unavailable.",
+        checkedAt:
+          typeof parsed?.activation?.checkedAt === "string"
+            ? parsed.activation.checkedAt
+            : new Date().toISOString(),
+        activatedAt:
+          typeof parsed?.activation?.activatedAt === "string" ? parsed.activation.activatedAt : null
+      }
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeProfileNetworkActivationState(state: ProfileNetworkActivationState) {
+  try {
+    fsSync.mkdirSync(RUNTIME_STATE_DIR, { recursive: true });
+    const tmp = `${PROFILE_NETWORK_ACTIVATION_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fsSync.renameSync(tmp, PROFILE_NETWORK_ACTIVATION_FILE);
+  } catch {}
+}
+
+function persistProfileNetworkActivationState(state: ProfileNetworkActivationState): ProfileNetworkActivationState {
+  writeProfileNetworkActivationState(state);
+  return state;
+}
+
+function getProfileNetworkActivationStatus(cfg: NetworkProviderConfig): ProfileNetworkActivationState {
+  const persisted = readProfileNetworkActivationState();
+  const configuredNow = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId,
+    providerPubKey: cfg.providerPubKey
+  };
+  if (!persisted) {
+    return persistProfileNetworkActivationState(
+      buildProfileNetworkActivationState(cfg, {
+        status: "not_ready",
+        message: "Finish provider setup before activating your profile.",
+        checkedAt: new Date().toISOString(),
+        activatedAt: null
+      })
+    );
+  }
+  if (!isSameProfileActivationTarget(persisted.configured, configuredNow)) {
+    return persistProfileNetworkActivationState(
+      buildProfileNetworkActivationState(cfg, {
+        status: "not_ready",
+        message: "Provider target changed. Re-activate profile for this provider.",
+        checkedAt: new Date().toISOString(),
+        activatedAt: null
+      })
+    );
+  }
+  return persisted;
+}
+
+function evaluateProviderAcknowledgmentReadiness(
+  cfg: NetworkProviderConfig,
+  persisted?: ProviderAcknowledgmentState | null
+): ProviderAcknowledgmentReadiness {
+  if (!isNetworkProviderConfigured(cfg)) {
+    return {
+      readiness: "not_configured",
+      allowed: false,
+      status: "provider_not_trusted",
+      message: "No provider is configured for acknowledgment-based execution."
+    };
+  }
+  const state = persisted ?? readProviderAcknowledgmentState();
+  if (!state) {
+    return {
+      readiness: "blocked",
+      allowed: false,
+      status: "missing",
+      message: "No provider acknowledgment has been recorded yet."
+    };
+  }
+  const targetNow = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId,
+    providerPubKey: cfg.providerPubKey
+  };
+  if (!isSameProviderAcknowledgmentTarget(state.configured, targetNow)) {
+    return {
+      readiness: "not_current",
+      allowed: false,
+      status: state.acknowledgment.status,
+      message: "Stored provider acknowledgment is for a different provider target."
+    };
+  }
+  if (state.acknowledgment.status === "accepted" && state.acknowledgment.signatureValidated) {
+    const issuedAtMs = Date.parse(String(state.acknowledgment.issuedAt || ""));
+    if (!Number.isFinite(issuedAtMs) || Date.now() - issuedAtMs > PROVIDER_ACK_MAX_AGE_MS) {
+      return {
+        readiness: "blocked",
+        allowed: false,
+        status: state.acknowledgment.status,
+        message: "Provider acknowledgment is stale and must be refreshed."
+      };
+    }
+    return {
+      readiness: "ready",
+      allowed: true,
+      status: "accepted",
+      message: "Provider acknowledgment is valid for provider-mediated execution."
+    };
+  }
+  return {
+    readiness: "blocked",
+    allowed: false,
+    status: state.acknowledgment.status,
+    message: "Valid provider acknowledgment is required for this action."
+  };
+}
+
+function evaluateProviderExecutionPermitReadiness(
+  cfg: NetworkProviderConfig,
+  persisted?: ProviderOperationIntentState | null
+): ProviderExecutionPermitReadiness {
+  if (!isNetworkProviderConfigured(cfg)) {
+    return {
+      readiness: "not_configured",
+      allowed: false,
+      status: "provider_not_trusted",
+      message: "No provider is configured for permit-based execution."
+    };
+  }
+  const state = persisted ?? readProviderOperationIntentState();
+  if (!state) {
+    return {
+      readiness: "blocked",
+      allowed: false,
+      status: "missing",
+      message: "No provider execution permit has been recorded yet."
+    };
+  }
+  const targetNow = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId,
+    providerPubKey: cfg.providerPubKey
+  };
+  if (!isSameProviderOperationTarget(state.configured, targetNow)) {
+    return {
+      readiness: "not_current",
+      allowed: false,
+      status: state.permit.status,
+      message: "Stored provider execution permit is for a different provider target."
+    };
+  }
+  if (!(state.permit.status === "accepted" && state.permit.signatureValidated)) {
+    return {
+      readiness: "blocked",
+      allowed: false,
+      status: state.permit.status,
+      message: "Valid provider execution permit is required for this action."
+    };
+  }
+  const now = Date.now();
+  const expiresAtMs = Date.parse(String(state.permit.expiresAt || ""));
+  if (Number.isFinite(expiresAtMs) && expiresAtMs <= now) {
+    return {
+      readiness: "expired",
+      allowed: false,
+      status: state.permit.status,
+      message: "Provider execution permit has expired."
+    };
+  }
+  const issuedAtMs = Date.parse(String(state.permit.issuedAt || ""));
+  if (!Number.isFinite(issuedAtMs) || now - issuedAtMs > PROVIDER_PERMIT_MAX_AGE_MS) {
+    return {
+      readiness: "expired",
+      allowed: false,
+      status: state.permit.status,
+      message: "Provider execution permit is stale and must be refreshed."
+    };
+  }
+  return {
+    readiness: "ready",
+    allowed: true,
+    status: "accepted",
+    message: "Provider execution permit is valid for provider-mediated execution."
+  };
+}
+
+function evaluateProviderExecutionChainReadiness(): ProviderExecutionChainReadiness {
+  const cfg = getNetworkProviderConfig();
+  const trustReadiness = getProviderExecutionTrustReadiness(getProviderVerificationStatus(cfg));
+  const ackReadiness = evaluateProviderAcknowledgmentReadiness(cfg, getProviderAcknowledgmentStatus(cfg));
+  const permitReadiness = evaluateProviderExecutionPermitReadiness(cfg, getProviderOperationIntentStatus(cfg));
+  const ready = Boolean(trustReadiness.allowed && ackReadiness.allowed && permitReadiness.allowed);
+  const message = ready
+    ? "Provider execution prerequisites are satisfied."
+    : "Provider execution prerequisites are not satisfied.";
+  return { ready, trustReadiness, ackReadiness, permitReadiness, message };
+}
+
+function deriveUserNetworkStatus(): UserNetworkStatus {
+  const runtime = getRuntimeHealthStatus();
+  const chain = evaluateProviderExecutionChainReadiness();
+  const trust = chain.trustReadiness.readiness;
+  const ack = chain.ackReadiness.readiness;
+  const permit = chain.permitReadiness.readiness;
+
+  // User-facing abstraction over richer protocol state. Keep this compact and non-jargony.
+  if (runtime.runtime.status !== "running" || !runtime.runtime.apiReady) {
+    return {
+      status: "offline",
+      title: "Offline",
+      message: "Node runtime is not ready.",
+      actionLabel: "Restart node"
+    };
+  }
+  if (trust === "unreachable") {
+    return {
+      status: "offline",
+      title: "Offline",
+      message: "Configured provider is currently unreachable.",
+      actionLabel: "Check provider reachability"
+    };
+  }
+  if (chain.ready) {
+    return {
+      status: "ready",
+      title: "Ready",
+      message: "Connected to provider and ready to use.",
+      actionLabel: null
+    };
+  }
+  if (trust === "not_configured" || ack === "not_configured" || permit === "not_configured") {
+    return {
+      status: "connecting",
+      title: "Connecting",
+      message: "Provider relationship setup is still in progress.",
+      actionLabel: "Configure provider"
+    };
+  }
+  if (ack === "not_current" || permit === "not_current" || permit === "expired" || trust === "blocked" || ack === "blocked" || permit === "blocked") {
+    const detail =
+      permit === "expired"
+        ? chain.permitReadiness.message
+        : permit === "not_current"
+          ? chain.permitReadiness.message
+          : ack === "not_current"
+            ? chain.ackReadiness.message
+            : chain.message;
+    return {
+      status: "action_required",
+      title: "Action Required",
+      message: detail,
+      actionLabel: "Refresh provider connection"
+    };
+  }
+  return {
+    status: "connecting",
+    title: "Connecting",
+    message: "Establishing provider relationship prerequisites.",
+    actionLabel: "Refresh connection"
+  };
+}
+
+function requireProviderExecutionReady(reply: any, action: string): boolean {
+  const chain = evaluateProviderExecutionChainReadiness();
+  if (chain.ready) return true;
+  reply.code(409).send({
+    error: "PROVIDER_EXECUTION_NOT_READY",
+    action,
+    trustReadiness: chain.trustReadiness.readiness,
+    ackReadiness: chain.ackReadiness.readiness,
+    permitReadiness: chain.permitReadiness.readiness,
+    message: chain.message
+  });
+  return false;
+}
+
+function requireProviderAcknowledgment(reply: any, action: string): boolean {
+  // Reusable guard for future provider-mediated routes that require a prior accepted acknowledgment.
+  const cfg = getNetworkProviderConfig();
+  const readiness = evaluateProviderAcknowledgmentReadiness(cfg);
+  if (readiness.allowed) return true;
+  reply.code(409).send({
+    error: "PROVIDER_ACKNOWLEDGMENT_REQUIRED",
+    action,
+    readiness: readiness.readiness,
+    status: readiness.status,
+    message: readiness.message
+  });
+  return false;
+}
+
+function getProviderExecutionTrustReadiness(
+  posture: ProviderVerificationPosture
+): ProviderExecutionTrustReadiness {
+  const status = posture.verification.status;
+  if (status === "verified") {
+    return {
+      readiness: "ready",
+      allowed: true,
+      postureStatus: status,
+      message: "Configured provider is trusted for provider-dependent execution."
+    };
+  }
+  if (status === "unreachable") {
+    return {
+      readiness: "unreachable",
+      allowed: false,
+      postureStatus: status,
+      message:
+        "Configured provider is not currently reachable, so provider-dependent execution is blocked."
+    };
+  }
+  if (status === "not_configured") {
+    return {
+      readiness: "not_configured",
+      allowed: false,
+      postureStatus: status,
+      message: "No trusted provider is configured for provider-dependent execution."
+    };
+  }
+  return {
+    readiness: "blocked",
+    allowed: false,
+    postureStatus: status,
+    message: "Configured provider is not trusted for provider-dependent execution."
+  };
+}
+
+function evaluateProviderExecutionTrustReadiness(): ProviderExecutionTrustReadiness {
+  const cfg = getNetworkProviderConfig();
+  const posture = getProviderVerificationStatus(cfg);
+  return getProviderExecutionTrustReadiness(posture);
+}
+
+function requireTrustedProviderExecution(reply: any, action: string): boolean {
+  // Reusable guard for future provider-executed routes. Current provider routes are
+  // configuration/verification surfaces and are intentionally not blocked by trust posture.
+  const trust = evaluateProviderExecutionTrustReadiness();
+  if (trust.allowed) return true;
+  return reply.code(409).send({
+    error: "PROVIDER_NOT_TRUSTED",
+    action,
+    readiness: trust.readiness,
+    status: trust.postureStatus,
+    message: trust.message
+  });
 }
 
 function isPersistentOrigin(origin: string | null): boolean {
@@ -2655,6 +4464,34 @@ function handlePublicPing(_req: any, reply: any) {
 }
 
 app.get("/health", async () => ({ ok: true }));
+app.get("/api/health", async () => ({ ok: true }));
+app.get("/.well-known/certifyd-node", async (_req: any, reply: any) => {
+  const presence = await buildNodePresence();
+  const identity = await buildLocalNodeIdentityDoc();
+  const payload = buildPublicNodePresencePayload({
+    nodeId: presence.node.nodeId,
+    nodePubKey: identity.nodePubKey,
+    capabilityLevel: presence.node.capabilityLevel,
+    serviceRoles: presence.node.serviceRoles,
+    endpoint: presence.endpoint
+  });
+  const signatureValue = signNodePresencePayload(payload);
+  if (!signatureValue) {
+    return reply.code(503).send({
+      error: "NODE_SIGNATURE_UNAVAILABLE",
+      message: "Node presence signature unavailable."
+    });
+  }
+  const publicDoc: PublicNodePresence = {
+    ...payload,
+    signature: {
+      alg: "ed25519",
+      signedFields: [...NODE_PRESENCE_SIGNED_FIELDS],
+      value: signatureValue
+    }
+  };
+  return reply.send(publicDoc);
+});
 app.get("/public/ping", async (_req: any, reply: any) => {
   return reply.send({ ok: true, ts: new Date().toISOString() });
 });
@@ -5071,6 +6908,33 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   return reply.send(getNodeModeStatus());
 });
 
+app.get("/api/runtime/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const status = getRuntimeHealthStatus();
+  return reply.send(status);
+});
+
+app.post("/api/runtime/restart", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const ip = asString((req as any)?.ip || "");
+  if (!isLoopbackIp(ip)) {
+    return reply.code(403).send({
+      error: "RESTART_LOCAL_ONLY",
+      message: "Runtime restart is only allowed from the local host."
+    });
+  }
+  const now = new Date().toISOString();
+  persistRuntimeHealthFromApi({
+    apiReady: false,
+    reason: "manual_restart",
+    statusIfUnsupervised: "degraded",
+    lastRestartAt: now,
+    incrementRestartCount: true
+  });
+  reply.send({ ok: true, restarting: true, reason: "manual_restart", requestedAt: now });
+  setTimeout(() => {
+    process.exit(0);
+  }, 350);
+});
+
 app.post("/api/node/restart", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const supervised =
     Boolean(process.env.PM2_HOME) ||
@@ -5339,10 +7203,178 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   });
 });
 
+app.get("/api/network/user-status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(deriveUserNetworkStatus());
+});
+
+app.get("/api/network/activate-profile/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  return reply.send(getProfileNetworkActivationStatus(cfg));
+});
+
+app.post("/api/network/activate-profile", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  const checkedAt = new Date().toISOString();
+  const userStatus = deriveUserNetworkStatus();
+  if (userStatus.status !== "ready") {
+    const state = persistProfileNetworkActivationState(
+      buildProfileNetworkActivationState(cfg, {
+        status: "not_ready",
+        message: "Finish provider setup before activating this feature.",
+        checkedAt,
+        activatedAt: null
+      })
+    );
+    return reply.send({
+      status: "not_ready",
+      message: state.activation.message,
+      activatedAt: null,
+      checkedAt
+    });
+  }
+  const prev = getProfileNetworkActivationStatus(cfg);
+  const activatedAt = prev.activation.status === "activated" && prev.activation.activatedAt
+    ? prev.activation.activatedAt
+    : checkedAt;
+  const state = persistProfileNetworkActivationState(
+    buildProfileNetworkActivationState(cfg, {
+      status: "activated",
+      message: "Your profile is now ready on the network.",
+      checkedAt,
+      activatedAt
+    })
+  );
+  return reply.send({
+    status: state.activation.status,
+    message: state.activation.message,
+    activatedAt: state.activation.activatedAt,
+    checkedAt: state.activation.checkedAt
+  });
+});
+
 app.get("/api/network/node-identity", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const doc = await buildLocalNodeIdentityDoc(userId);
   return reply.send(doc);
+});
+
+app.get("/api/network/presence", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const presence = await buildNodePresence(userId);
+  return reply.send(presence);
+});
+
+app.get("/api/network/provider/capabilities", async (_req: any, reply: any) => {
+  const capabilities = await buildProviderCapabilitiesDoc();
+  return reply.send(capabilities);
+});
+
+app.post("/api/network/provider/acknowledge-client", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as ProviderAcknowledgmentRequest;
+  const clientNodeId = String(body?.clientNodeId || "").trim();
+  const clientNodePubKey = String(body?.clientNodePubKey || "").trim() || null;
+  const requestedAt = String(body?.requestedAt || "").trim() || null;
+  const intent = String(body?.intent || "").trim() || "provider_handshake";
+  if (!clientNodeId) {
+    return badRequest(reply, "clientNodeId is required");
+  }
+  if (clientNodePubKey) {
+    const derived = deriveNodeIdFromNodePubKey(clientNodePubKey);
+    if (!derived || derived !== clientNodeId) {
+      return badRequest(reply, "client node identity is inconsistent with provided public key");
+    }
+  }
+
+  const identity = await buildLocalNodeIdentityDoc();
+  const issuedAt = new Date().toISOString();
+  const responsePayload = buildProviderAcknowledgmentPayload({
+    provider: {
+      nodeId: identity.nodeId,
+      nodePubKey: identity.nodePubKey
+    },
+    client: {
+      nodeId: clientNodeId,
+      nodePubKey: clientNodePubKey
+    },
+    acknowledgment: {
+      status: "accepted",
+      intent,
+      issuedAt
+    }
+  });
+  const sig = signStablePayloadWithLocalNodeKey(responsePayload);
+  if (!sig) {
+    return reply.code(503).send({
+      error: "PROVIDER_ACK_SIGNATURE_UNAVAILABLE",
+      message: "Provider acknowledgment signature unavailable."
+    });
+  }
+  const out: ProviderAcknowledgmentResponse & { requestedAt: string | null } = {
+    ...responsePayload,
+    signature: {
+      alg: "ed25519",
+      value: sig
+    },
+    requestedAt
+  };
+  return reply.send(out);
+});
+
+app.post("/api/network/provider/accept-operation-intent", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as ProviderOperationIntentRequest;
+  const clientNodeId = String(body?.clientNodeId || "").trim();
+  const clientNodePubKey = String(body?.clientNodePubKey || "").trim() || null;
+  const intent = String(body?.intent || "").trim();
+  if (!clientNodeId) return badRequest(reply, "clientNodeId is required");
+  if (!intent) return badRequest(reply, "intent is required");
+  if (clientNodePubKey) {
+    const derived = deriveNodeIdFromNodePubKey(clientNodePubKey);
+    if (!derived || derived !== clientNodeId) {
+      return badRequest(reply, "client node identity is inconsistent with provided public key");
+    }
+  }
+
+  const identity = await buildLocalNodeIdentityDoc();
+  const issuedAt = new Date().toISOString();
+  const expiresAt = new Date(Date.parse(issuedAt) + PROVIDER_PERMIT_DEFAULT_TTL_MS).toISOString();
+  const permitId = buildPermitId({
+    providerNodeId: identity.nodeId,
+    clientNodeId,
+    intent,
+    issuedAt
+  });
+  const responsePayload = buildProviderOperationIntentPayload({
+    provider: {
+      nodeId: identity.nodeId,
+      nodePubKey: identity.nodePubKey
+    },
+    client: {
+      nodeId: clientNodeId,
+      nodePubKey: clientNodePubKey
+    },
+    permit: {
+      permitId,
+      status: "accepted",
+      intent,
+      issuedAt,
+      expiresAt
+    }
+  });
+  const sig = signStablePayloadWithLocalNodeKey(responsePayload);
+  if (!sig) {
+    return reply.code(503).send({
+      error: "PROVIDER_OPERATION_SIGNATURE_UNAVAILABLE",
+      message: "Provider operation intent signature unavailable."
+    });
+  }
+  const out: ProviderExecutionPermitResponse = {
+    ...responsePayload,
+    signature: {
+      alg: "ed25519",
+      value: sig
+    }
+  };
+  return reply.send(out);
 });
 
 app.get("/api/network/provider", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -5351,6 +7383,767 @@ app.get("/api/network/provider", { preHandler: requireAuth }, async (_req: any, 
     ...cfg,
     configured: isNetworkProviderConfigured(cfg)
   });
+});
+
+app.get("/api/network/provider/verification", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  const result = await verifyConfiguredProvider(cfg);
+  const persisted = persistProviderVerificationPosture(result);
+  return reply.send(persisted);
+});
+
+app.get("/api/network/provider/verification/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  const status = getProviderVerificationStatus(cfg);
+  return reply.send(status);
+});
+
+app.get("/api/network/provider/trust-readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  const posture = getProviderVerificationStatus(cfg);
+  return reply.send(getProviderExecutionTrustReadiness(posture));
+});
+
+app.get("/api/network/provider/acknowledgment/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  return reply.send(getProviderAcknowledgmentStatus(cfg));
+});
+
+app.get("/api/network/provider/acknowledgment/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  const persisted = getProviderAcknowledgmentStatus(cfg);
+  return reply.send(evaluateProviderAcknowledgmentReadiness(cfg, persisted));
+});
+
+app.get("/api/network/provider/operation-intent/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  return reply.send(getProviderOperationIntentStatus(cfg));
+});
+
+app.get("/api/network/provider/operation-intent/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const cfg = getNetworkProviderConfig();
+  const persisted = getProviderOperationIntentStatus(cfg);
+  return reply.send(evaluateProviderExecutionPermitReadiness(cfg, persisted));
+});
+
+app.get("/api/network/provider/execution/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(evaluateProviderExecutionChainReadiness());
+});
+
+app.post("/api/network/provider/handshake", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const checkedAt = new Date().toISOString();
+  if (!requireTrustedProviderExecution(reply, "provider_handshake")) return;
+  const cfg = getNetworkProviderConfig();
+  const configured = {
+    providerUrl: cfg.providerUrl,
+    providerNodeId: cfg.providerNodeId
+  };
+  const emptyObserved = {
+    nodeId: null as string | null,
+    capabilityLevel: null as "basic" | "advanced" | "lan" | null,
+    serviceRoles: [] as Array<"creator" | "provider">,
+    providerCapabilities: null as { descriptorVerification: boolean; trustGatedExecution: boolean } | null
+  };
+  const providerUrl = String(cfg.providerUrl || "").trim();
+  if (!providerUrl) {
+    return reply.send({
+      configured,
+      observed: emptyObserved,
+      handshake: {
+        status: "provider_not_trusted",
+        checkedAt,
+        message: "Configured provider target is missing."
+      }
+    });
+  }
+
+  const target = `${providerUrl.replace(/\/+$/, "")}/api/network/provider/capabilities`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(target, { method: "GET", signal: controller.signal } as any);
+    if (!res.ok) {
+      return reply.send({
+        configured,
+        observed: emptyObserved,
+        handshake: {
+          status: "unreachable",
+          checkedAt,
+          message: `Provider capability handshake failed (${res.status}).`
+        }
+      });
+    }
+
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      return reply.send({
+        configured,
+        observed: emptyObserved,
+        handshake: {
+          status: "invalid_response",
+          checkedAt,
+          message: "Provider capability handshake returned non-JSON response."
+        }
+      });
+    }
+
+    const nodeId = typeof body?.nodeId === "string" ? body.nodeId.trim() : "";
+    const capabilityLevel =
+      body?.capabilityLevel === "basic" || body?.capabilityLevel === "advanced" || body?.capabilityLevel === "lan"
+        ? (body.capabilityLevel as "basic" | "advanced" | "lan")
+        : null;
+    const serviceRoles: Array<"creator" | "provider"> = Array.isArray(body?.serviceRoles)
+      ? body.serviceRoles.filter((r: any) => r === "creator" || r === "provider")
+      : [];
+    const providerCapabilities =
+      body?.providerCapabilities &&
+      typeof body.providerCapabilities.descriptorVerification === "boolean" &&
+      typeof body.providerCapabilities.trustGatedExecution === "boolean"
+        ? {
+            descriptorVerification: body.providerCapabilities.descriptorVerification,
+            trustGatedExecution: body.providerCapabilities.trustGatedExecution
+          }
+        : null;
+
+    const observed = {
+      nodeId: nodeId || null,
+      capabilityLevel,
+      serviceRoles,
+      providerCapabilities
+    };
+
+    if (!nodeId || !capabilityLevel || !providerCapabilities || !serviceRoles.includes("provider")) {
+      return reply.send({
+        configured,
+        observed,
+        handshake: {
+          status: "invalid_response",
+          checkedAt,
+          message: "Provider capability handshake response is missing required fields."
+        }
+      });
+    }
+
+    return reply.send({
+      configured,
+      observed,
+      handshake: {
+        status: "ok",
+        checkedAt,
+        message: "Provider capability handshake succeeded."
+      }
+    });
+  } catch {
+    return reply.send({
+      configured,
+      observed: emptyObserved,
+      handshake: {
+        status: "unreachable",
+        checkedAt,
+        message: "Provider URL is unreachable for capability handshake."
+      }
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.post("/api/network/provider/request-acknowledgment", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const checkedAt = new Date().toISOString();
+  const cfg = getNetworkProviderConfig();
+  const respond = (state: ProviderAcknowledgmentState) => reply.send(persistProviderAcknowledgmentState(state));
+  const trust = evaluateProviderExecutionTrustReadiness();
+  if (!trust.allowed) {
+    return respond(
+      buildProviderAcknowledgmentState(cfg, {
+        status: "provider_not_trusted",
+        intent: null,
+        issuedAt: null,
+        checkedAt,
+        message: trust.message,
+        signatureValidated: false
+      })
+    );
+  }
+
+  const providerUrl = String(cfg.providerUrl || "").trim();
+  if (!providerUrl) {
+    return respond(
+      buildProviderAcknowledgmentState(cfg, {
+        status: "provider_not_trusted",
+        intent: null,
+        issuedAt: null,
+        checkedAt,
+        message: "Configured provider target is missing.",
+        signatureValidated: false
+      })
+    );
+  }
+
+  const userId = (req.user as JwtUser).sub;
+  const localNode = await buildLocalNodeIdentityDoc(userId);
+  const requestBody: ProviderAcknowledgmentRequest = {
+    clientNodeId: localNode.nodeId,
+    clientNodePubKey: localNode.nodePubKey,
+    clientCapabilityLevel: localNode.capabilityLevel,
+    requestedAt: checkedAt,
+    intent: "provider_handshake"
+  };
+
+  const target = `${providerUrl.replace(/\/+$/, "")}/api/network/provider/acknowledge-client`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(target, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    } as any);
+    if (!res.ok) {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "unreachable",
+          intent: null,
+          issuedAt: null,
+          checkedAt,
+          message: `Provider acknowledgment request failed (${res.status}).`,
+          signatureValidated: false
+        })
+      );
+    }
+
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "invalid_response",
+          intent: null,
+          issuedAt: null,
+          checkedAt,
+          message: "Provider acknowledgment response was not valid JSON.",
+          signatureValidated: false
+        })
+      );
+    }
+
+    const providerNodeId = typeof body?.provider?.nodeId === "string" ? body.provider.nodeId.trim() : "";
+    const providerNodePubKey = typeof body?.provider?.nodePubKey === "string" ? body.provider.nodePubKey.trim() : "";
+    const intent = typeof body?.acknowledgment?.intent === "string" ? body.acknowledgment.intent : null;
+    const issuedAt = typeof body?.acknowledgment?.issuedAt === "string" ? body.acknowledgment.issuedAt : null;
+    const accepted = body?.acknowledgment?.status === "accepted";
+    const signatureAlg = typeof body?.signature?.alg === "string" ? body.signature.alg : "";
+    const signatureValue = typeof body?.signature?.value === "string" ? body.signature.value.trim() : "";
+
+    if (!providerNodeId || !providerNodePubKey || !accepted || !intent || !issuedAt) {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "invalid_response",
+          intent: intent || null,
+          issuedAt: issuedAt || null,
+          checkedAt,
+          message: "Provider acknowledgment response is missing required fields.",
+          signatureValidated: false,
+          observedProviderNodeId: providerNodeId || null,
+          observedProviderNodePubKey: providerNodePubKey || null
+        })
+      );
+    }
+
+    if (cfg.providerNodeId && providerNodeId !== cfg.providerNodeId) {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "invalid_response",
+          intent,
+          issuedAt,
+          checkedAt,
+          message: "Observed provider node ID does not match configured provider node ID.",
+          signatureValidated: false,
+          observedProviderNodeId: providerNodeId,
+          observedProviderNodePubKey: providerNodePubKey
+        })
+      );
+    }
+    if (cfg.providerPubKey && providerNodePubKey !== cfg.providerPubKey) {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "invalid_signature",
+          intent,
+          issuedAt,
+          checkedAt,
+          message: "Observed provider public key does not match configured provider public key.",
+          signatureValidated: false,
+          observedProviderNodeId: providerNodeId,
+          observedProviderNodePubKey: providerNodePubKey
+        })
+      );
+    }
+    const derivedNodeId = deriveNodeIdFromNodePubKey(providerNodePubKey);
+    if (!derivedNodeId || derivedNodeId !== providerNodeId) {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "invalid_signature",
+          intent,
+          issuedAt,
+          checkedAt,
+          message: "Provider identity is inconsistent with provider public key.",
+          signatureValidated: false,
+          observedProviderNodeId: providerNodeId,
+          observedProviderNodePubKey: providerNodePubKey
+        })
+      );
+    }
+    if (signatureAlg !== "ed25519" || !signatureValue) {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "invalid_signature",
+          intent,
+          issuedAt,
+          checkedAt,
+          message: "Provider acknowledgment signature is missing or invalid.",
+          signatureValidated: false,
+          observedProviderNodeId: providerNodeId,
+          observedProviderNodePubKey: providerNodePubKey
+        })
+      );
+    }
+
+    const signedPayload = buildProviderAcknowledgmentPayload({
+      provider: {
+        nodeId: providerNodeId,
+        nodePubKey: providerNodePubKey
+      },
+      client: {
+        nodeId: typeof body?.client?.nodeId === "string" ? body.client.nodeId : "",
+        nodePubKey: typeof body?.client?.nodePubKey === "string" ? body.client.nodePubKey : null
+      },
+      acknowledgment: {
+        status: "accepted",
+        intent,
+        issuedAt
+      }
+    });
+    const signatureValid = verifyStablePayloadSignature(providerNodePubKey, signedPayload, signatureValue);
+    if (!signatureValid) {
+      return respond(
+        buildProviderAcknowledgmentState(cfg, {
+          status: "invalid_signature",
+          intent,
+          issuedAt,
+          checkedAt,
+          message: "Provider acknowledgment signature verification failed.",
+          signatureValidated: false,
+          observedProviderNodeId: providerNodeId,
+          observedProviderNodePubKey: providerNodePubKey
+        })
+      );
+    }
+
+    return respond(
+      buildProviderAcknowledgmentState(cfg, {
+        status: "accepted",
+        intent,
+        issuedAt,
+        checkedAt,
+        message: "Provider acknowledgment accepted and signature verified.",
+        signatureValidated: true,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      })
+    );
+  } catch {
+    return respond(
+      buildProviderAcknowledgmentState(cfg, {
+        status: "unreachable",
+        intent: null,
+        issuedAt: null,
+        checkedAt,
+        message: "Provider URL is unreachable for acknowledgment.",
+        signatureValidated: false
+      })
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.post("/api/network/provider/request-operation-intent", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const checkedAt = new Date().toISOString();
+  const cfg = getNetworkProviderConfig();
+  const respond = (input: {
+    status:
+      | "accepted"
+      | "invalid_response"
+      | "invalid_signature"
+      | "unreachable"
+      | "provider_not_trusted"
+      | "provider_acknowledgment_required";
+    intent?: string | null;
+    issuedAt?: string | null;
+    expiresAt?: string | null;
+    permitId?: string | null;
+    message: string;
+    signatureValidated: boolean;
+    observedProviderNodeId?: string | null;
+    observedProviderNodePubKey?: string | null;
+  }) => {
+    const state = buildProviderOperationIntentState(cfg, {
+      status: input.status,
+      permitId: input.permitId ?? null,
+      intent: input.intent ?? null,
+      issuedAt: input.issuedAt ?? null,
+      expiresAt: input.expiresAt ?? null,
+      checkedAt,
+      message: input.message,
+      signatureValidated: input.signatureValidated,
+      observedProviderNodeId: input.observedProviderNodeId ?? null,
+      observedProviderNodePubKey: input.observedProviderNodePubKey ?? null
+    });
+    return reply.send(persistProviderOperationIntentState(state));
+  };
+
+  const trust = evaluateProviderExecutionTrustReadiness();
+  if (!trust.allowed) {
+    return respond({
+      status: "provider_not_trusted",
+      message: trust.message,
+      signatureValidated: false
+    });
+  }
+  const ack = evaluateProviderAcknowledgmentReadiness(cfg);
+  if (!ack.allowed) {
+    return respond({
+      status: "provider_acknowledgment_required",
+      message: ack.message,
+      signatureValidated: false
+    });
+  }
+
+  const providerUrl = String(cfg.providerUrl || "").trim();
+  if (!providerUrl) {
+    return respond({
+      status: "provider_not_trusted",
+      message: "Configured provider target is missing.",
+      signatureValidated: false
+    });
+  }
+
+  const userId = (req.user as JwtUser).sub;
+  const localNode = await buildLocalNodeIdentityDoc(userId);
+  const requestBody: ProviderOperationIntentRequest = {
+    clientNodeId: localNode.nodeId,
+    clientNodePubKey: localNode.nodePubKey,
+    intent: "provider_execution_test",
+    requestedAt: checkedAt
+  };
+
+  const target = `${providerUrl.replace(/\/+$/, "")}/api/network/provider/accept-operation-intent`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(target, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    } as any);
+    if (!res.ok) {
+      return respond({
+        status: "unreachable",
+        message: `Provider operation intent request failed (${res.status}).`,
+        signatureValidated: false
+      });
+    }
+
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      return respond({
+        status: "invalid_response",
+        message: "Provider operation intent response was not valid JSON.",
+        signatureValidated: false
+      });
+    }
+
+    const providerNodeId = typeof body?.provider?.nodeId === "string" ? body.provider.nodeId.trim() : "";
+    const providerNodePubKey = typeof body?.provider?.nodePubKey === "string" ? body.provider.nodePubKey.trim() : "";
+    const opStatus = body?.permit?.status === "accepted";
+    const permitId = typeof body?.permit?.permitId === "string" ? body.permit.permitId : null;
+    const intent = typeof body?.permit?.intent === "string" ? body.permit.intent : null;
+    const issuedAt = typeof body?.permit?.issuedAt === "string" ? body.permit.issuedAt : null;
+    const expiresAt = typeof body?.permit?.expiresAt === "string" ? body.permit.expiresAt : null;
+    const signatureAlg = typeof body?.signature?.alg === "string" ? body.signature.alg : "";
+    const signatureValue = typeof body?.signature?.value === "string" ? body.signature.value.trim() : "";
+
+    if (!providerNodeId || !providerNodePubKey || !opStatus || !permitId || !intent || !issuedAt) {
+      return respond({
+        status: "invalid_response",
+        intent,
+        issuedAt,
+        expiresAt,
+        permitId,
+        message: "Provider operation intent response is missing required fields.",
+        signatureValidated: false,
+        observedProviderNodeId: providerNodeId || null,
+        observedProviderNodePubKey: providerNodePubKey || null
+      });
+    }
+    if (cfg.providerNodeId && providerNodeId !== cfg.providerNodeId) {
+      return respond({
+        status: "invalid_response",
+        intent,
+        issuedAt,
+        expiresAt,
+        permitId,
+        message: "Observed provider node ID does not match configured provider node ID.",
+        signatureValidated: false,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      });
+    }
+    if (cfg.providerPubKey && providerNodePubKey !== cfg.providerPubKey) {
+      return respond({
+        status: "invalid_signature",
+        intent,
+        issuedAt,
+        expiresAt,
+        permitId,
+        message: "Observed provider public key does not match configured provider public key.",
+        signatureValidated: false,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      });
+    }
+    const derivedNodeId = deriveNodeIdFromNodePubKey(providerNodePubKey);
+    if (!derivedNodeId || derivedNodeId !== providerNodeId) {
+      return respond({
+        status: "invalid_signature",
+        intent,
+        issuedAt,
+        expiresAt,
+        permitId,
+        message: "Provider identity is inconsistent with provider public key.",
+        signatureValidated: false,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      });
+    }
+    if (signatureAlg !== "ed25519" || !signatureValue) {
+      return respond({
+        status: "invalid_signature",
+        intent,
+        issuedAt,
+        expiresAt,
+        permitId,
+        message: "Provider operation intent signature is missing or invalid.",
+        signatureValidated: false,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      });
+    }
+
+    const signedPayload = buildProviderOperationIntentPayload({
+      provider: {
+        nodeId: providerNodeId,
+        nodePubKey: providerNodePubKey
+      },
+      client: {
+        nodeId: typeof body?.client?.nodeId === "string" ? body.client.nodeId : "",
+        nodePubKey: typeof body?.client?.nodePubKey === "string" ? body.client.nodePubKey : null
+      },
+      permit: {
+        permitId,
+        status: "accepted",
+        intent,
+        issuedAt,
+        expiresAt
+      }
+    });
+    const signatureValid = verifyStablePayloadSignature(providerNodePubKey, signedPayload, signatureValue);
+    if (!signatureValid) {
+      return respond({
+        status: "invalid_signature",
+        intent,
+        issuedAt,
+        expiresAt,
+        permitId,
+        message: "Provider operation intent signature verification failed.",
+        signatureValidated: false,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      });
+    }
+
+    return respond({
+      status: "accepted",
+      intent,
+      issuedAt,
+      expiresAt,
+      permitId,
+      message: "Provider operation intent accepted and signature verified.",
+      signatureValidated: true,
+      observedProviderNodeId: providerNodeId,
+      observedProviderNodePubKey: providerNodePubKey
+    });
+  } catch {
+    return respond({
+      status: "unreachable",
+      message: "Provider URL is unreachable for operation intent.",
+      signatureValidated: false
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+app.post("/api/network/provider/execute-test", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as {
+    clientNodeId?: string | null;
+    clientNodePubKey?: string | null;
+    permitId?: string | null;
+    intent?: string | null;
+    requestedAt?: string | null;
+  };
+  const clientNodeId = String(body.clientNodeId || "").trim();
+  const clientNodePubKey = String(body.clientNodePubKey || "").trim() || null;
+  const permitId = String(body.permitId || "").trim();
+  const intent = String(body.intent || "").trim();
+  if (!clientNodeId) return badRequest(reply, "clientNodeId is required");
+  if (!permitId) return badRequest(reply, "permitId is required");
+  if (!intent) return badRequest(reply, "intent is required");
+  if (clientNodePubKey) {
+    const derived = deriveNodeIdFromNodePubKey(clientNodePubKey);
+    if (!derived || derived !== clientNodeId) {
+      return badRequest(reply, "client node identity is inconsistent with provided public key");
+    }
+  }
+  const provider = await buildLocalNodeIdentityDoc();
+  return reply.send({
+    provider: {
+      nodeId: provider.nodeId
+    },
+    execution: {
+      status: "ok",
+      permitId,
+      intent,
+      checkedAt: new Date().toISOString(),
+      message: "Provider execution test accepted."
+    }
+  });
+});
+
+app.post("/api/network/provider/request-execute-test", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  if (!requireProviderExecutionReady(reply, "provider_execute_test")) return;
+  const cfg = getNetworkProviderConfig();
+  const providerUrl = String(cfg.providerUrl || "").trim();
+  const permitState = getProviderOperationIntentStatus(cfg);
+  const permit = permitState.permit;
+  if (!providerUrl || !permit.permitId || !permit.intent) {
+    return reply.send({
+      configured: {
+        providerUrl: cfg.providerUrl,
+        providerNodeId: cfg.providerNodeId
+      },
+      execution: {
+        status: "provider_execution_not_ready",
+        checkedAt: new Date().toISOString(),
+        message: "Provider execution permit is missing required fields."
+      }
+    });
+  }
+
+  const userId = (req.user as JwtUser).sub;
+  const localNode = await buildLocalNodeIdentityDoc(userId);
+  const target = `${providerUrl.replace(/\/+$/, "")}/api/network/provider/execute-test`;
+  const checkedAt = new Date().toISOString();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 6000);
+  try {
+    const res = await fetch(target, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        clientNodeId: localNode.nodeId,
+        clientNodePubKey: localNode.nodePubKey,
+        permitId: permit.permitId,
+        intent: permit.intent,
+        requestedAt: checkedAt
+      }),
+      signal: controller.signal
+    } as any);
+    if (!res.ok) {
+      return reply.send({
+        configured: {
+          providerUrl: cfg.providerUrl,
+          providerNodeId: cfg.providerNodeId
+        },
+        execution: {
+          status: "unreachable",
+          checkedAt,
+          message: `Provider execute-test request failed (${res.status}).`
+        }
+      });
+    }
+    let body: any = null;
+    try {
+      body = await res.json();
+    } catch {
+      return reply.send({
+        configured: {
+          providerUrl: cfg.providerUrl,
+          providerNodeId: cfg.providerNodeId
+        },
+        execution: {
+          status: "invalid_response",
+          checkedAt,
+          message: "Provider execute-test response was not valid JSON."
+        }
+      });
+    }
+    if (body?.execution?.status !== "ok") {
+      return reply.send({
+        configured: {
+          providerUrl: cfg.providerUrl,
+          providerNodeId: cfg.providerNodeId
+        },
+        execution: {
+          status: "invalid_response",
+          checkedAt,
+          message: "Provider execute-test response is missing required fields."
+        }
+      });
+    }
+    return reply.send({
+      configured: {
+        providerUrl: cfg.providerUrl,
+        providerNodeId: cfg.providerNodeId
+      },
+      execution: {
+        status: "ok",
+        checkedAt,
+        message: "Provider execute-test completed."
+      }
+    });
+  } catch {
+    return reply.send({
+      configured: {
+        providerUrl: cfg.providerUrl,
+        providerNodeId: cfg.providerNodeId
+      },
+      execution: {
+        status: "unreachable",
+        checkedAt,
+        message: "Provider URL is unreachable for execute-test."
+      }
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 });
 
 app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -16828,6 +19621,12 @@ app.setNotFoundHandler(async (req: any, reply: any) => {
 /** ---------- boot ---------- */
 
 async function start() {
+  persistRuntimeHealthFromApi({
+    apiReady: false,
+    reason: "normal_start",
+    statusIfUnsupervised: "degraded",
+    startedAt: STARTED_AT
+  });
   validatePrismaDatasourceAlignment();
   await ensureDirWritable(CONTENTBOX_ROOT);
   async function preflightPrismaReadiness() {
@@ -16932,6 +19731,12 @@ async function start() {
   await preflightDb();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
+  persistRuntimeHealthFromApi({
+    apiReady: true,
+    reason: "normal_start",
+    statusIfUnsupervised: "running",
+    startedAt: STARTED_AT
+  });
   if (isIntegratedDashboardBuilt()) {
     app.log.info({ dashboardDist: DASHBOARD_DIST_DIR }, "Integrated dashboard surface enabled on API server");
   } else {
@@ -16957,7 +19762,44 @@ async function start() {
   }
 }
 
+process.on("SIGTERM", () => {
+  persistRuntimeHealthFromApi({
+    apiReady: false,
+    reason: "api_exit_code_0",
+    statusIfUnsupervised: "stopped"
+  });
+});
+
+process.on("SIGINT", () => {
+  persistRuntimeHealthFromApi({
+    apiReady: false,
+    reason: "api_exit_code_0",
+    statusIfUnsupervised: "stopped"
+  });
+});
+
+process.on("uncaughtException", () => {
+  persistRuntimeHealthFromApi({
+    apiReady: false,
+    reason: "uncaught_exception",
+    statusIfUnsupervised: "degraded"
+  });
+});
+
+process.on("unhandledRejection", () => {
+  persistRuntimeHealthFromApi({
+    apiReady: false,
+    reason: "unhandled_rejection",
+    statusIfUnsupervised: "degraded"
+  });
+});
+
 start().catch((err) => {
+  persistRuntimeHealthFromApi({
+    apiReady: false,
+    reason: "startup_failure",
+    statusIfUnsupervised: "stopped"
+  });
   app.log.error(err);
   process.exit(1);
 });
