@@ -382,7 +382,7 @@ export default function App() {
 
   // Navigation options for the sidebar
   const accessNav = [
-    { key: "store" as const, label: "Store (Link)", hint: "Buy from a link" },
+    { key: "store" as const, label: "Network", hint: "Identity + reachability + links" },
     { key: "library" as const, label: "Library", hint: "What I own" },
     { key: "downloads" as const, label: "Downloads", hint: "Get your files" },
     { key: "purchases" as const, label: "Purchase history", hint: "Receipts + status" }
@@ -408,15 +408,15 @@ export default function App() {
 
   const advancedNav = [
     { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
-    { key: "config" as const, label: "Config", hint: "Networking + system" },
-    { key: "diagnostics" as const, label: "Diagnostics", hint: "Connectivity tests" }
+    { key: "config" as const, label: "Configuration", hint: "Node + tunnel setup" },
+    { key: "diagnostics" as const, label: "Diagnostics", hint: "Health + connectivity" }
   ];
 
   const pageTitle =
-    page === "config" ? "Config" :
+    page === "config" ? "Configuration" :
     page === "diagnostics" ? "Diagnostics" :
     page === "library" ? "Library" :
-    page === "store" ? "Store (Direct link)" :
+    page === "store" ? "Network" :
     page === "participations" ? "Royalties" :
     page === "downloads" ? "Downloads" :
     page === "purchases" ? "Purchase history" :
@@ -434,6 +434,7 @@ export default function App() {
 
   const showAdvancedLocked =
     advancedInactive && (page === "splits" || page === "invite" || page === "split-editor");
+  const isOperatorPage = page === "config" || page === "diagnostics";
   const advancedCtaLabel =
     publicStatus?.mode === "named" && publicStatus?.status !== "online"
       ? "Bring named link online"
@@ -583,7 +584,7 @@ export default function App() {
 
             {showAdvancedNav && (
               <div className="mt-4 border-t border-neutral-900 pt-4">
-                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Advanced</div>
+                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Operator</div>
                 <div className="space-y-1">
                 {advancedNav.map((item) => {
                   const active = item.key === page;
@@ -654,6 +655,11 @@ export default function App() {
       <div className="flex-1 min-w-0 overflow-y-auto overscroll-none">
         <header className="border-b border-neutral-900">
           <div className="mx-auto max-w-5xl px-6 py-4 space-y-2">
+            {import.meta.env.DEV ? (
+              <div className="rounded-md border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+                Dashboard Dev Mode. API requests are proxied to the backend. Use the integrated node surface for real network testing.
+              </div>
+            ) : null}
             <div className="text-sm text-neutral-400">Dashboard</div>
             <div className="text-xl font-semibold">{pageTitle}</div>
             {import.meta.env.DEV ? (
@@ -734,18 +740,20 @@ export default function App() {
                     Set up named link
                   </button>
                 ) : null}
-                <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
-                  <span>
-                    Product: {modeLabel(productTier as any)}
-                    {advancedInactive ? " (inactive)" : ""}
-                  </span>
-                  <span className="text-neutral-500">•</span>
-                  <span>Payments: {diagnosticsStatus?.paymentsMode || identityDetail?.paymentsMode || (productTier === "advanced" || productTier === "lan" ? "node" : "wallet")}</span>
-                  <span className="text-neutral-500">•</span>
-                  <span>Storage: {identityDetail?.storage || "unknown"}</span>
-                  <span className="text-neutral-500">•</span>
-                  <span>Logged in as: {me?.email || "unknown"}</span>
-                </div>
+                {isOperatorPage ? (
+                  <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
+                    <span>
+                      Product: {modeLabel(productTier as any)}
+                      {advancedInactive ? " (inactive)" : ""}
+                    </span>
+                    <span className="text-neutral-500">•</span>
+                    <span>Payments: {diagnosticsStatus?.paymentsMode || identityDetail?.paymentsMode || (productTier === "advanced" || productTier === "lan" ? "node" : "wallet")}</span>
+                    <span className="text-neutral-500">•</span>
+                    <span>Storage: {identityDetail?.storage || "unknown"}</span>
+                    <span className="text-neutral-500">•</span>
+                    <span>Operator: {me?.email || "unknown"}</span>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
