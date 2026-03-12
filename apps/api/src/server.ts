@@ -667,6 +667,67 @@ function forbidden(reply: any) {
   return reply.code(403).send({ error: "Forbidden" });
 }
 
+function isIntegratedDashboardBuilt(): boolean {
+  return fsSync.existsSync(DASHBOARD_INDEX_FILE) && fsSync.existsSync(DASHBOARD_DIST_DIR);
+}
+
+function contentTypeForAsset(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".html") return "text/html; charset=utf-8";
+  if (ext === ".js" || ext === ".mjs") return "application/javascript; charset=utf-8";
+  if (ext === ".css") return "text/css; charset=utf-8";
+  if (ext === ".json") return "application/json; charset=utf-8";
+  if (ext === ".svg") return "image/svg+xml";
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".ico") return "image/x-icon";
+  if (ext === ".woff2") return "font/woff2";
+  if (ext === ".woff") return "font/woff";
+  if (ext === ".ttf") return "font/ttf";
+  if (ext === ".map") return "application/json; charset=utf-8";
+  return "application/octet-stream";
+}
+
+function sendFastifyRouteNotFound(req: any, reply: any, pathname: string) {
+  return reply.code(404).send({
+    message: `Route ${req.method}:${pathname} not found`,
+    error: "Not Found",
+    statusCode: 404
+  });
+}
+
+async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolean> {
+  if (!isIntegratedDashboardBuilt()) return false;
+  const method = String(req.method || "").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return false;
+
+  const rawPath = String(req.raw?.url || req.url || "/");
+  const pathname = rawPath.split("?")[0] || "/";
+  if (pathname.startsWith("/api/")) return false;
+
+  const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const candidate = path.resolve(DASHBOARD_DIST_DIR, relative);
+
+  if (candidate.startsWith(DASHBOARD_DIST_DIR) && fsSync.existsSync(candidate) && fsSync.statSync(candidate).isFile()) {
+    reply.type(contentTypeForAsset(candidate));
+    if (method === "HEAD") {
+      reply.code(200).send();
+      return true;
+    }
+    reply.send(fsSync.readFileSync(candidate));
+    return true;
+  }
+
+  reply.type("text/html; charset=utf-8");
+  if (method === "HEAD") {
+    reply.code(200).send();
+    return true;
+  }
+  reply.send(fsSync.readFileSync(DASHBOARD_INDEX_FILE));
+  return true;
+}
+
 const BUYER_SESSION_COOKIE = "cb_buyer_session";
 const BUYER_SESSION_DAYS = 30;
 
@@ -797,6 +858,9 @@ const BACKUP_DIR = path.join(CONTENTBOX_ROOT, "backups");
 const BACKUP_RETENTION_DAYS = Math.max(1, Math.floor(Number(process.env.CONTENTBOX_BACKUP_RETENTION_DAYS || "30")));
 const INVITE_RETENTION_DAYS = Math.max(1, Math.floor(Number(process.env.CONTENTBOX_INVITE_RETENTION_DAYS || "90")));
 const STATE_FILE = path.join(CONTENTBOX_ROOT, "state.json");
+const SERVER_FILE = fileURLToPath(import.meta.url);
+const DASHBOARD_DIST_DIR = path.resolve(path.dirname(SERVER_FILE), "../../dashboard/dist");
+const DASHBOARD_INDEX_FILE = path.join(DASHBOARD_DIST_DIR, "index.html");
 const allowedOrigins = (process.env.CONTENTBOX_CORS_ORIGINS || "")
   .split(",")
   .map((v) => v.trim())
@@ -16660,6 +16724,14 @@ app.get("/__whoami", async (req: any, reply: any) => {
   });
 });
 
+app.setNotFoundHandler(async (req: any, reply: any) => {
+  const rawPath = String(req.raw?.url || req.url || "/");
+  const pathname = rawPath.split("?")[0] || "/";
+  const served = await tryServeIntegratedDashboard(req, reply);
+  if (served) return;
+  return sendFastifyRouteNotFound(req, reply, pathname);
+});
+
 /** ---------- boot ---------- */
 
 async function start() {
@@ -16767,6 +16839,14 @@ async function start() {
   await preflightDb();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
+  if (isIntegratedDashboardBuilt()) {
+    app.log.info({ dashboardDist: DASHBOARD_DIST_DIR }, "Integrated dashboard surface enabled on API server");
+  } else {
+    app.log.info(
+      { dashboardDist: DASHBOARD_DIST_DIR },
+      "Integrated dashboard build not found; API-only surface active on this runtime"
+    );
+  }
   const state = getPublicLinkState();
   if (state.mode !== "off") {
     const host = getPublicBindHost(state.mode);
