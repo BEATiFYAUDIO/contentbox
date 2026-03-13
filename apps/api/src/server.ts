@@ -1848,6 +1848,85 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   return updated || intent;
 }
 
+async function requestDelegatedProviderPaymentIntent(input: {
+  creatorNodeId: string;
+  contentId: string;
+  amountSats: string;
+  paymentIntentId: string;
+  buyerSessionId: string | null;
+}): Promise<{ paymentIntentId: string; bolt11: string; providerInvoiceRef: string | null }> {
+  const providerCfg = getNetworkProviderConfig();
+  const providerTrust = evaluateProviderExecutionTrustReadiness();
+  const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "");
+  if (!isNetworkProviderConfigured(providerCfg) || !providerTrust.allowed || !providerUrl) {
+    throw new Error("provider_not_ready");
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch(`${providerUrl}/public/provider/payment-intents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        creatorNodeId: input.creatorNodeId,
+        contentId: input.contentId,
+        amountSats: input.amountSats,
+        paymentIntentId: input.paymentIntentId,
+        buyerSessionId: input.buyerSessionId
+      }),
+      signal: controller.signal
+    } as any);
+    const json: any = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(String(json?.error || json?.message || `provider_http_${res.status}`));
+    }
+    const paymentIntentId = String(json?.paymentIntentId || "").trim();
+    const bolt11 = String(json?.bolt11 || "").trim();
+    if (!paymentIntentId || !bolt11) {
+      throw new Error("provider_invalid_response");
+    }
+    return {
+      paymentIntentId,
+      bolt11,
+      providerInvoiceRef: String(json?.providerInvoiceRef || "").trim() || null
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchDelegatedProviderPaymentIntentStatus(paymentIntentId: string): Promise<{
+  paid: boolean;
+  paidAt: string | null;
+  status: string;
+}> {
+  const providerCfg = getNetworkProviderConfig();
+  const providerTrust = evaluateProviderExecutionTrustReadiness();
+  const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "");
+  if (!paymentIntentId || !isNetworkProviderConfigured(providerCfg) || !providerTrust.allowed || !providerUrl) {
+    return { paid: false, paidAt: null, status: "unavailable" };
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`${providerUrl}/public/provider/payment-intents/${encodeURIComponent(paymentIntentId)}/status`, {
+      method: "GET",
+      signal: controller.signal
+    } as any);
+    const json: any = await res.json().catch(() => null);
+    if (!res.ok) return { paid: false, paidAt: null, status: "unavailable" };
+    const status = String(json?.status || "unknown").trim().toLowerCase();
+    const paid = Boolean(json?.paid) || status === "paid";
+    const paidAtRaw = String(json?.paidAt || "").trim();
+    const paidAt = paidAtRaw && !Number.isNaN(new Date(paidAtRaw).getTime()) ? new Date(paidAtRaw).toISOString() : null;
+    return { paid, paidAt, status: status || "unknown" };
+  } catch {
+    return { paid: false, paidAt: null, status: "unavailable" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function resolveNodeIdForRuntimeStatus(): string {
   const nodePem = getLocalNodePublicPem();
   if (nodePem) {
@@ -4995,6 +5074,96 @@ function registerPublicRoutes(appPublic: any) {
     );
   });
   appPublic.post("/api/buyer/buys", handleBuyerBuys);
+  appPublic.post("/public/provider/payment-intents", async (req: any, reply: any) => {
+    const body = (req.body ?? {}) as {
+      creatorNodeId?: string | null;
+      contentId?: string | null;
+      amountSats?: string | number | null;
+      paymentIntentId?: string | null;
+      buyerSessionId?: string | null;
+    };
+    const creatorNodeId = String(body.creatorNodeId || "").trim();
+    const contentId = String(body.contentId || "").trim();
+    const amountSats = String(body.amountSats ?? "").trim();
+    const paymentIntentId = String(body.paymentIntentId || "").trim();
+    if (!creatorNodeId || !contentId || !paymentIntentId) return badRequest(reply, "creatorNodeId, contentId, paymentIntentId required");
+    if (!/^\d+$/.test(amountSats) || Number(amountSats) <= 0) return badRequest(reply, "amountSats must be a positive integer");
+
+    const link = getProviderCreatorLink(creatorNodeId);
+    if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
+      return reply.code(409).send({ error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED", message: "Provider relationship is not ready." });
+    }
+    const delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+    if (!delegated) {
+      return reply.code(409).send({ error: "DELEGATED_PUBLISH_REQUIRED", message: "Delegated publish record is required." });
+    }
+
+    const existing = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+    if (existing) {
+      return reply.send({
+        ok: true,
+        paymentIntentId: existing.paymentIntentId,
+        bolt11: existing.bolt11,
+        providerInvoiceRef: existing.providerInvoiceRef,
+        status: existing.status
+      });
+    }
+
+    const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
+    const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
+    const memo = `Certifyd delegated ${contentId.slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+    let bolt11: string | null = null;
+    let providerInvoiceRef: string | null = null;
+    try {
+      const invoice = await createLightningInvoice(prisma as any, BigInt(amountSats), memo);
+      bolt11 = invoice?.bolt11 || null;
+      providerInvoiceRef = invoice?.providerId || null;
+    } catch {}
+    const created = createProviderPaymentIntent({
+      providerNodeId,
+      creatorNodeId,
+      contentId,
+      paymentIntentId,
+      bolt11,
+      providerInvoiceRef,
+      amountSats,
+      status: bolt11 ? "issued" : "created",
+      paymentReceiptId: null,
+      buyerSessionId: String(body.buyerSessionId || "").trim() || null,
+      paidAt: null
+    });
+    return reply.send({
+      ok: true,
+      paymentIntentId: created.paymentIntentId,
+      bolt11: created.bolt11,
+      providerInvoiceRef: created.providerInvoiceRef,
+      status: created.status
+    });
+  });
+  appPublic.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: any, reply: any) => {
+    const paymentIntentId = String((req.params as any)?.paymentIntentId || "").trim();
+    if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+    let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+    if (!current) return notFound(reply, "Provider payment intent not found");
+    if (current.status !== "paid" && current.providerInvoiceRef) {
+      const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+      if (invoiceStatus?.paid) {
+        const patched = updateProviderPaymentIntent(current.id, {
+          status: "paid",
+          paidAt: invoiceStatus.paidAt || new Date().toISOString()
+        });
+        current = await ensureProviderPaymentSettlement(patched || current);
+      }
+    }
+    return reply.send({
+      ok: true,
+      paymentIntentId: current.paymentIntentId,
+      status: current.status,
+      paid: current.status === "paid",
+      paidAt: current.paidAt || null,
+      paymentReceiptId: current.paymentReceiptId || null
+    });
+  });
   appPublic.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
     const body = (req.body ?? {}) as { contentId?: string };
     const contentId = asString(body.contentId || "");
@@ -15873,6 +16042,35 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     if (!lightning?.bolt11 && !lightningReason) {
       lightningReason = "PROVIDER_NOT_CONFIGURED";
     }
+
+    if (!lightning?.bolt11) {
+      const providerCfg = getNetworkProviderConfig();
+      const providerTrust = evaluateProviderExecutionTrustReadiness();
+      const providerUrl = String(providerCfg.providerUrl || "").trim();
+      if (isNetworkProviderConfigured(providerCfg) && providerTrust.allowed && providerUrl) {
+        try {
+          const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
+          const delegated = await requestDelegatedProviderPaymentIntent({
+            creatorNodeId: creatorIdentity.nodeId,
+            contentId,
+            amountSats: amountSats.toString(),
+            paymentIntentId: intent.id,
+            buyerSessionId: buyerSession?.id || null
+          });
+          lightning = {
+            bolt11: delegated.bolt11,
+            providerId: `providerpi:${delegated.paymentIntentId}`,
+            expiresAt: null
+          };
+          lightningReason = null;
+          intentLog.delegatedLightning = "provider_invoice_issued";
+        } catch (e: any) {
+          intentLog.delegatedLightning = String(e?.message || "provider_unavailable");
+          if (!lightningReason) lightningReason = "PROVIDER_UNREACHABLE";
+        }
+      }
+    }
+
     intentLog.lightning = {
       configured: lndProbe.configured,
       connectivity: lndProbe.connectivity,
@@ -15904,7 +16102,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       await prisma.paymentIntent.delete({ where: { id: intent.id } }).catch(() => {});
       const lndStatus = lndProbe.connectivity === "not_checked" ? await diagnoseLightning() : lndProbe;
       const mappedCode =
-        lightningReason === "PROVIDER_NOT_CONFIGURED" || (lndStatus.configured && lndStatus.connectivity === "error")
+        lightningReason === "PROVIDER_NOT_CONFIGURED" ||
+        lightningReason === "PROVIDER_UNREACHABLE" ||
+        (lndStatus.configured && lndStatus.connectivity === "error")
           ? "LIGHTNING_UNAVAILABLE"
           : "NO_PAYMENT_RAILS_AVAILABLE";
       const mappedStatus = mappedCode === "LIGHTNING_UNAVAILABLE" ? 502 : 503;
@@ -20004,7 +20204,16 @@ async function settlePaymentIntentFromRails(intentId: string) {
   let paidAt: string | null = null;
   let onchainUpdate: { txid?: string | null; vout?: number | null; confirmations?: number | null } = {};
 
-  if (intent.providerId && lndRHashB64FromProviderId(intent.providerId)) {
+  if (intent.providerId?.startsWith("providerpi:")) {
+    const delegatedPaymentIntentId = intent.providerId.slice("providerpi:".length).trim();
+    if (delegatedPaymentIntentId) {
+      const providerStatus = await fetchDelegatedProviderPaymentIntentStatus(delegatedPaymentIntentId);
+      if (providerStatus.paid) {
+        paidVia = "lightning";
+        paidAt = providerStatus.paidAt || new Date().toISOString();
+      }
+    }
+  } else if (intent.providerId && lndRHashB64FromProviderId(intent.providerId)) {
     const res = await checkLightningInvoice(prisma as any, intent.providerId);
     if (res.paid) {
       paidVia = "lightning";
