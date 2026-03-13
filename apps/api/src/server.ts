@@ -4994,6 +4994,7 @@ function registerPublicRoutes(appPublic: any) {
       }))
     );
   });
+  appPublic.post("/api/buyer/buys", handleBuyerBuys);
   appPublic.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
     const body = (req.body ?? {}) as { contentId?: string };
     const contentId = asString(body.contentId || "");
@@ -7059,8 +7060,7 @@ function hashIp(ip: string | null): string | null {
   return crypto.createHmac("sha256", SELF_CLAIM_IP_SALT).update(ip).digest("hex");
 }
 
-// Record a self-claimed purchase for Basic mode buyers
-app.post("/api/buyer/buys", async (req: any, reply: any) => {
+async function handleBuyerBuys(req: any, reply: any) {
   const session = await requireBuyerSession(req, reply);
   if (!session) return;
 
@@ -7196,7 +7196,10 @@ app.post("/api/buyer/buys", async (req: any, reply: any) => {
     }
     throw e;
   }
-});
+}
+
+// Record a self-claimed purchase for Basic mode buyers
+app.post("/api/buyer/buys", handleBuyerBuys);
 
 // Claim a free entitlement (for library) when content is free in Basic mode
 app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
