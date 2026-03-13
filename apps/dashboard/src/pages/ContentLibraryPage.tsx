@@ -148,6 +148,45 @@ type ContentLibraryPageProps = {
   onOpenSplits?: (contentId: string) => void;
 };
 
+type LifecycleReceiptType =
+  | "provider_acknowledgment"
+  | "operation_permit"
+  | "profile_activation"
+  | "profile_publish"
+  | "content_publish";
+
+type LifecycleReceipt = {
+  id: string;
+  type: LifecycleReceiptType;
+  version: number;
+  createdAt: string;
+  subjectNodeId: string;
+  providerNodeId: string | null;
+  objectId: string | null;
+  payloadHash: string;
+  prevReceiptId: string | null;
+  payload: unknown;
+  signatures: Array<{ alg: string; keyId?: string | null; value: string }>;
+};
+
+type ContentPublishReceiptPayload = {
+  contentId?: string;
+  manifestHash?: string | null;
+  title?: string | null;
+  type?: string | null;
+  primaryFile?: string | null;
+  publishedAt?: string | null;
+  creatorNodeId?: string | null;
+  providerNodeId?: string | null;
+};
+
+type NetworkPublishState = {
+  publishedAt: string | null;
+  manifestHash: string | null;
+  receiptId: string | null;
+  providerNodeId: string | null;
+};
+
 type ParentLinkInfo = {
   linkId: string;
   relation: string;
@@ -178,6 +217,12 @@ type UploadState =
   | { status: "uploading"; contentId: string; filename: string }
   | { status: "done"; contentId: string; filename: string }
   | { status: "error"; contentId: string; message: string };
+
+function visibilityLabel(status: "DISABLED" | "UNLISTED" | "LISTED"): string {
+  if (status === "LISTED") return "Discoverable";
+  if (status === "UNLISTED") return "Direct Link";
+  return "Hidden";
+}
 
 function uploadIdempotencyKey(contentId: string, file: File) {
   const suffix =
@@ -434,8 +479,19 @@ export default function ContentLibraryPage({
     } catch (e: any) {
       setManifestPreview(contentId, { loading: false, error: e?.message || "Manifest not found" });
       return null;
-    }
   }
+}
+
+function asNonEmptyString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim();
+  return v.length > 0 ? v : null;
+}
+
+function readContentPublishPayload(payload: unknown): ContentPublishReceiptPayload | null {
+  if (!payload || typeof payload !== "object") return null;
+  return payload as ContentPublishReceiptPayload;
+}
 
   const openManifestEntry = Object.entries(manifestPreviewByContent).find(([, v]) => v?.open);
   const openManifestId = openManifestEntry?.[0] || null;
@@ -479,6 +535,7 @@ export default function ContentLibraryPage({
   const [creditMsg, setCreditMsg] = React.useState<Record<string, string>>({});
   const [publishBusy, setPublishBusy] = React.useState<Record<string, boolean>>({});
   const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
+  const [networkPublishByContent, setNetworkPublishByContent] = React.useState<Record<string, NetworkPublishState | null>>({});
   const [pendingOpenContentId, setPendingOpenContentId] = React.useState<string | null>(null);
   const [clearanceByLink, setClearanceByLink] = React.useState<Record<string, any | null>>({});
   const [clearanceLoadingByLink, setClearanceLoadingByLink] = React.useState<Record<string, boolean>>({});
@@ -538,6 +595,25 @@ export default function ContentLibraryPage({
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  React.useEffect(() => {
+    const targets = items.filter((it) => expanded[it.id] && it.status === "published" && !networkPublishByContent[it.id]);
+    if (targets.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const it of targets) {
+        const next = await resolveNetworkPublishState(it.id, {
+          publishedAt: asNonEmptyString(it.publishedAt),
+          manifestSha256: asNonEmptyString(it.manifest?.sha256)
+        });
+        if (cancelled) return;
+        setNetworkPublishByContent((m) => ({ ...m, [it.id]: next }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [items, expanded, networkPublishByContent]);
 
   React.useEffect(() => {
     (async () => {
@@ -897,6 +973,76 @@ export default function ContentLibraryPage({
     }
   }
 
+  async function findLatestContentPublishReceipt(contentId: string): Promise<LifecycleReceipt | null> {
+    const list = await api<LifecycleReceipt[]>(`/api/receipts?limit=100`, "GET");
+    if (!Array.isArray(list)) return null;
+    for (const receipt of list) {
+      if (!receipt || receipt.type !== "content_publish") continue;
+      if (receipt.objectId === contentId) return receipt;
+      const payload = readContentPublishPayload(receipt.payload);
+      if (payload?.contentId === contentId) return receipt;
+    }
+    return null;
+  }
+
+  async function resolveNetworkPublishState(
+    contentId: string,
+    fallback: { publishedAt?: string | null; manifestSha256?: string | null }
+  ): Promise<NetworkPublishState> {
+    let receipt: LifecycleReceipt | null = null;
+    try {
+      receipt = await findLatestContentPublishReceipt(contentId);
+    } catch {
+      receipt = null;
+    }
+    const payload = readContentPublishPayload(receipt?.payload);
+    return {
+      publishedAt:
+        asNonEmptyString(payload?.publishedAt) ||
+        asNonEmptyString(receipt?.createdAt) ||
+        asNonEmptyString(fallback.publishedAt) ||
+        null,
+      manifestHash:
+        asNonEmptyString(payload?.manifestHash) ||
+        asNonEmptyString(fallback.manifestSha256) ||
+        null,
+      receiptId: asNonEmptyString(receipt?.id) || null,
+      providerNodeId:
+        asNonEmptyString(payload?.providerNodeId) ||
+        asNonEmptyString(receipt?.providerNodeId) ||
+        null
+    };
+  }
+
+  async function captureNetworkPublishState(
+    contentId: string,
+    fallback: { publishedAt?: string | null; manifestSha256?: string | null }
+  ) {
+    const state = await resolveNetworkPublishState(contentId, fallback);
+    setNetworkPublishByContent((m) => ({ ...m, [contentId]: state }));
+  }
+
+  async function applyPublishSuccess(contentId: string, res: any) {
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === contentId
+          ? {
+              ...it,
+              status: "published",
+              publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString(),
+              manifest: res?.manifestSha256 ? { sha256: res.manifestSha256 } : it.manifest
+            }
+          : it
+      )
+    );
+    await load(false);
+    setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
+    void captureNetworkPublishState(contentId, {
+      publishedAt: asNonEmptyString(res?.publishedAt),
+      manifestSha256: asNonEmptyString(res?.manifestSha256)
+    });
+  }
+
   async function publishContent(contentId: string) {
     if (publishBusy[contentId]) return;
     const currentItem = items.find((it) => it.id === contentId);
@@ -915,39 +1061,13 @@ export default function ContentLibraryPage({
         }
         await api(`/api/content/${contentId}/manifest`, "POST", {});
         const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
-        setItems((prev) =>
-          prev.map((it) =>
-            it.id === contentId
-              ? {
-                  ...it,
-                  status: "published",
-                  publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString(),
-                  manifest: res?.manifestSha256 ? { sha256: res.manifestSha256 } : it.manifest
-                }
-              : it
-          )
-        );
-        await load(false);
-        setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
+        await applyPublishSuccess(contentId, res);
         return;
       }
       if (!splitsAllowed) {
         await api(`/api/content/${contentId}/manifest`, "POST", {});
         const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
-        setItems((prev) =>
-          prev.map((it) =>
-            it.id === contentId
-              ? {
-                  ...it,
-                  status: "published",
-                  publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString(),
-                  manifest: res?.manifestSha256 ? { sha256: res.manifestSha256 } : it.manifest
-                }
-              : it
-          )
-        );
-        await load(false);
-        setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
+        await applyPublishSuccess(contentId, res);
         return;
       }
       const versions = await api<any[]>(`/content/${contentId}/split-versions`, "GET");
@@ -968,20 +1088,7 @@ export default function ContentLibraryPage({
       }
       await api(`/api/content/${contentId}/manifest`, "POST", {});
       const res = await api<any>(`/api/content/${contentId}/publish`, "POST", {});
-      setItems((prev) =>
-        prev.map((it) =>
-          it.id === contentId
-            ? {
-                ...it,
-                status: "published",
-                publishedAt: res?.publishedAt || it.publishedAt || new Date().toISOString(),
-                manifest: res?.manifestSha256 ? { sha256: res.manifestSha256 } : it.manifest
-              }
-            : it
-        )
-      );
-      await load(false);
-      setPublishMsg((m) => ({ ...m, [contentId]: "Published." }));
+      await applyPublishSuccess(contentId, res);
     } catch (e: any) {
       const msg = e?.message || "Publish failed.";
       setPublishMsg((m) => ({ ...m, [contentId]: msg }));
@@ -1233,7 +1340,7 @@ export default function ContentLibraryPage({
         prev.map((it) => (it.id === contentId ? { ...it, storefrontStatus: res.storefrontStatus as any } : it))
       );
     } catch (e: any) {
-      setError(e?.message || "Failed to update storefront status");
+      setError(e?.message || "Failed to update network visibility");
     } finally {
       setBusyAction((m) => ({ ...m, [contentId]: false }));
     }
@@ -2281,6 +2388,11 @@ export default function ContentLibraryPage({
                       {Boolean(it.featureOnProfile) && uiState === "published" ? (
                         <div className="mt-1 inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
                           Featured on profile
+                        </div>
+                      ) : null}
+                      {uiState === "published" && networkPublishByContent[it.id]?.receiptId ? (
+                        <div className="mt-1 inline-flex rounded-full border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
+                          Network Published
                         </div>
                       ) : null}
                       {!isOwner ? (
@@ -3393,7 +3505,7 @@ export default function ContentLibraryPage({
                       </div>
                       ) : null}
 
-                      {/* Storefront panel */}
+                      {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="text-xs text-neutral-300 font-medium">Monetization</div>
                         <div className="mt-2 grid gap-3 md:grid-cols-3">
@@ -4044,6 +4156,60 @@ export default function ContentLibraryPage({
                         {publishMsg[it.id] ? (
                           <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div>
                         ) : null}
+                        {it.status === "published" ? (
+                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
+                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
+                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+                              <div>
+                                Status: <span className="text-emerald-200">Published</span>
+                              </div>
+                              <div>
+                                Published at:{" "}
+                                <span className="text-neutral-200">
+                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Manifest hash:{" "}
+                                  <span className="text-neutral-200 break-all">
+                                    {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
+                                  </span>
+                                </span>
+                                {(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256) ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Publish receipt ID:{" "}
+                                  <span className="text-neutral-200 break-all">{networkPublishByContent[it.id]?.receiptId || "—"}</span>
+                                </span>
+                                {networkPublishByContent[it.id]?.receiptId ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.receiptId || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div>
+                                Provider node ID:{" "}
+                                <span className="text-neutral-200 break-all">
+                                  {networkPublishByContent[it.id]?.providerNodeId || "—"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
 
                         <div className="mt-3 grid gap-2 md:grid-cols-2">
                           <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
@@ -4097,10 +4263,10 @@ export default function ContentLibraryPage({
                         {creditMsg[it.id] ? <div className="mt-1 text-xs text-amber-300">{creditMsg[it.id]}</div> : null}
                       </div>
 
-                      {/* Storefront panel */}
+                      {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs text-neutral-300 font-medium">Storefront</div>
+                          <div className="text-xs text-neutral-300 font-medium">Network Visibility</div>
                           <div className="flex items-center gap-2">
                             <span
                               className={`text-[10px] px-2 py-1 rounded-full border ${
@@ -4111,7 +4277,7 @@ export default function ContentLibraryPage({
                                     : "border-neutral-800 text-neutral-400 bg-neutral-950/60"
                               }`}
                             >
-                              {storefrontStatus}
+                              {visibilityLabel(storefrontStatus)}
                             </span>
                           </div>
                         </div>
@@ -4126,7 +4292,7 @@ export default function ContentLibraryPage({
                         ) : null}
                         {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (
                           <div className="mt-1 text-xs text-amber-300">
-                            Public release is locked until clearance. Private sales via direct link still work.
+                            Public network release is locked until clearance. Private direct-link access still works.
                           </div>
                         ) : null}
                         {parentLinkByContent[it.id]?.requiresApproval &&
@@ -4211,7 +4377,7 @@ export default function ContentLibraryPage({
                         <div className="mt-2 grid gap-3 md:grid-cols-3">
                           <div className="md:col-span-1">
                             <label className="block text-xs text-neutral-400 mb-1" htmlFor={`storefront-status-${it.id}`}>
-                              Status
+                              Visibility
                             </label>
                             <select
                               id={`storefront-status-${it.id}`}
@@ -4226,16 +4392,16 @@ export default function ContentLibraryPage({
                                 (parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt)
                               }
                             >
-                              <option value="DISABLED">Disabled</option>
-                              <option value="UNLISTED">Unlisted</option>
-                              <option value="LISTED">Listed</option>
+                              <option value="DISABLED">Hidden</option>
+                              <option value="UNLISTED">Direct Link</option>
+                              <option value="LISTED">Discoverable</option>
                             </select>
                           </div>
 
                           <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
-                            <div>Disabled: not purchasable publicly.</div>
-                            <div>Unlisted: purchasable by link (not discoverable).</div>
-                            <div>Listed: purchasable and discoverable.</div>
+                            <div>Hidden: not reachable from public network routes.</div>
+                            <div>Direct Link: reachable by direct link (not discoverable).</div>
+                            <div>Discoverable: reachable and available for discovery surfaces.</div>
                           </div>
                         </div>
 
@@ -4267,7 +4433,7 @@ export default function ContentLibraryPage({
                         </div>
 
                         <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
-                          <div className="font-medium text-neutral-300 mb-1">Checkout rails availability</div>
+                          <div className="font-medium text-neutral-300 mb-1">Payment capability</div>
                           {identitiesLoading ? (
                             <div>Loading payout destinations…</div>
                           ) : (
@@ -4296,7 +4462,7 @@ export default function ContentLibraryPage({
 
                         <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-xs text-neutral-400">
                           <div className="flex items-center justify-between gap-3">
-                            <div className="font-medium text-neutral-300">Storefront contract</div>
+                            <div className="font-medium text-neutral-300">Network Visibility Payload</div>
                             <button
                               type="button"
                               className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -4319,7 +4485,7 @@ export default function ContentLibraryPage({
                                 }
                               }}
                             >
-                              {storefrontPreviewLoading[it.id] ? "Loading…" : "Preview storefront payload"}
+                              {storefrontPreviewLoading[it.id] ? "Loading…" : "Preview network payload"}
                             </button>
                           </div>
                           {storefrontPreview[it.id] ? (
@@ -4332,12 +4498,12 @@ export default function ContentLibraryPage({
                         <div className="mt-3 flex items-center justify-between gap-3">
                           <div className="text-xs text-neutral-500">
                             {storefrontStatus === "DISABLED"
-                              ? "Enable storefront (Unlisted or Listed) to test public purchase flow."
+                              ? "Enable network visibility (Direct Link or Discoverable) to test public purchase flow."
                               : it.status !== "published"
                                 ? "Publish content to generate a manifest before purchase."
                                 : !manifestSha256
                                   ? "Manifest missing."
-                                  : "Ready for public purchase testing."}
+                                  : "Ready to validate the public purchase flow."}
                           </div>
                           <button
                             type="button"
@@ -4352,7 +4518,7 @@ export default function ContentLibraryPage({
                             }
                             disabled={(!isAuthed && storefrontStatus === "DISABLED") || it.status !== "published" || !manifestSha256}
                           >
-                            Test purchase
+                            Test public purchase flow
                           </button>
                         </div>
                       </div>

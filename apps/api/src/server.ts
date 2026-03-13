@@ -95,6 +95,19 @@ import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
 import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
+import {
+  buildContentPublishReceiptPayload,
+  computeCanonicalManifestHash,
+  normalizeManifestForPublish
+} from "./lib/contentPublish.js";
+import {
+  appendLifecycleReceipt,
+  getLifecycleReceiptById,
+  listLifecycleReceipts,
+  summarizeLifecycleReceipts,
+  verifyLifecycleReceipt,
+  type ReceiptType
+} from "./lib/receipts.js";
 import { registerWitnessRoutes } from "./modules/witness/witness.routes.js";
 import {
   assertCanPublish as assertLifecycleCanPublish,
@@ -225,6 +238,38 @@ function parseSats(x: unknown): bigint {
   if (/^\d+$/.test(s)) return BigInt(s);
   const n = Number(s);
   return Number.isFinite(n) ? BigInt(Math.floor(n)) : 0n;
+}
+
+function normalizePublicOriginBase(origin: unknown): string {
+  return asString(origin || "").trim().replace(/\/+$/, "");
+}
+
+function buildPublicUrlFromOrigin(origin: unknown, routePath: unknown): string {
+  const base = normalizePublicOriginBase(origin);
+  const p = asString(routePath || "").trim();
+  if (!base || !p) return "";
+  return `${base}${p.startsWith("/") ? p : `/${p}`}`;
+}
+
+function normalizeKnownPublicRouteToOrigin(origin: unknown, rawUrl: unknown): string {
+  const raw = asString(rawUrl || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("/")) return buildPublicUrlFromOrigin(origin, raw);
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const u = new URL(raw);
+      const pathAndQuery = `${u.pathname}${u.search || ""}`;
+      if (
+        u.pathname.startsWith("/buy/") ||
+        u.pathname.startsWith("/public/content/") ||
+        u.pathname.startsWith("/u/")
+      ) {
+        return buildPublicUrlFromOrigin(origin, pathAndQuery);
+      }
+    } catch {}
+    return raw;
+  }
+  return "";
 }
 
 type RangeRequest =
@@ -1452,6 +1497,7 @@ const PROVIDER_ACK_FILE = path.join(RUNTIME_STATE_DIR, "provider-acknowledgment.
 const PROVIDER_OPERATION_FILE = path.join(RUNTIME_STATE_DIR, "provider-execution-permit.json");
 const PROFILE_NETWORK_ACTIVATION_FILE = path.join(RUNTIME_STATE_DIR, "profile-network-activation.json");
 const PUBLISH_LOG_FILE = path.join(RUNTIME_STATE_DIR, "publish-log.json");
+const RECEIPTS_DIR = path.join(CONTENTBOX_ROOT, "receipts");
 const PUBLISH_LOG_MAX_ENTRIES = 100;
 const RUNTIME_STATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RUNTIME_SUPERVISED = String(process.env.CERTIFYD_SUPERVISOR_ACTIVE || "") === "1";
@@ -3084,6 +3130,18 @@ function appendPublishLog(entry: PublishLogEntry) {
   writePublishLog(current);
 }
 
+function appendLifecycleReceiptSafe(input: {
+  type: ReceiptType;
+  subjectNodeId: string;
+  providerNodeId?: string | null;
+  objectId?: string | null;
+  payload: unknown;
+}) {
+  try {
+    appendLifecycleReceipt(RECEIPTS_DIR, input);
+  } catch {}
+}
+
 function requireProviderExecutionReady(reply: any, action: string): boolean {
   const chain = evaluateProviderExecutionChainReadiness();
   if (chain.ready) return true;
@@ -4054,6 +4112,8 @@ async function loadProofForSplitVersion(repoPath: string, versionNumber: number)
 async function buildManifestJson(content: any, files: any[]) {
   const primaryFile = files?.[0]?.objectKey || null;
   return {
+    schemaVersion: 1,
+    manifestVersion: 1,
     contentId: content.id,
     title: content.title,
     description: content.description || null,
@@ -7303,6 +7363,31 @@ app.get("/api/publish/log", { preHandler: requireAuth }, async (_req: any, reply
   return reply.send(readPublishLog());
 });
 
+app.get("/api/receipts", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const q = req.query as { limit?: string | number } | undefined;
+  const rawLimit = Number(q?.limit ?? 50);
+  const limit = Number.isFinite(rawLimit) ? rawLimit : 50;
+  return reply.send(listLifecycleReceipts(RECEIPTS_DIR, limit));
+});
+
+app.get("/api/receipts/summary", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send(summarizeLifecycleReceipts(RECEIPTS_DIR));
+});
+
+app.get("/api/receipts/verify/:id", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = String(req.params?.id || "").trim();
+  if (!id) return badRequest(reply, "id is required");
+  return reply.send(verifyLifecycleReceipt(RECEIPTS_DIR, id));
+});
+
+app.get("/api/receipts/:id", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = String(req.params?.id || "").trim();
+  if (!id) return badRequest(reply, "id is required");
+  const receipt = getLifecycleReceiptById(RECEIPTS_DIR, id);
+  if (!receipt) return notFound(reply, "Receipt not found");
+  return reply.send(receipt);
+});
+
 app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const providerTarget = getNetworkProviderConfig();
   const verification = getProviderVerificationStatus(providerTarget);
@@ -7385,6 +7470,24 @@ app.post("/api/publish/profile", { preHandler: requireAuth }, async (req: any, r
     hash: payloadHash
   });
 
+  try {
+    const localNode = await buildLocalNodeIdentityDoc(userId);
+    appendLifecycleReceiptSafe({
+      type: "profile_publish",
+      subjectNodeId: localNode.nodeId,
+      providerNodeId: providerConfig.providerNodeId || null,
+      objectId: publishId,
+      payload: {
+        publishId,
+        publishedAt,
+        name: name || null,
+        bio: bio || null,
+        links,
+        hash: payloadHash
+      }
+    });
+  } catch {}
+
   return reply.send({
     status: "published",
     publishId,
@@ -7398,7 +7501,7 @@ app.get("/api/network/activate-profile/status", { preHandler: requireAuth }, asy
   return reply.send(getProfileNetworkActivationStatus(cfg));
 });
 
-app.post("/api/network/activate-profile", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.post("/api/network/activate-profile", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const cfg = getNetworkProviderConfig();
   const checkedAt = new Date().toISOString();
   const userStatus = deriveUserNetworkStatus();
@@ -7430,6 +7533,22 @@ app.post("/api/network/activate-profile", { preHandler: requireAuth }, async (_r
       activatedAt
     })
   );
+  try {
+    const userId = (req.user as JwtUser).sub;
+    const localNode = await buildLocalNodeIdentityDoc(userId);
+    appendLifecycleReceiptSafe({
+      type: "profile_activation",
+      subjectNodeId: localNode.nodeId,
+      providerNodeId: cfg.providerNodeId || null,
+      objectId: state.activation.activatedAt || null,
+      payload: {
+        status: state.activation.status,
+        message: state.activation.message,
+        checkedAt: state.activation.checkedAt,
+        activatedAt: state.activation.activatedAt
+      }
+    });
+  } catch {}
   return reply.send({
     status: state.activation.status,
     message: state.activation.message,
@@ -7929,6 +8048,21 @@ app.post("/api/network/provider/request-acknowledgment", { preHandler: requireAu
       );
     }
 
+    appendLifecycleReceiptSafe({
+      type: "provider_acknowledgment",
+      subjectNodeId: localNode.nodeId,
+      providerNodeId,
+      objectId: issuedAt,
+      payload: {
+        intent,
+        issuedAt,
+        checkedAt,
+        signatureValidated: true,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      }
+    });
+
     return respond(
       buildProviderAcknowledgmentState(cfg, {
         status: "accepted",
@@ -8164,6 +8298,23 @@ app.post("/api/network/provider/request-operation-intent", { preHandler: require
         observedProviderNodePubKey: providerNodePubKey
       });
     }
+
+    appendLifecycleReceiptSafe({
+      type: "operation_permit",
+      subjectNodeId: localNode.nodeId,
+      providerNodeId,
+      objectId: permitId,
+      payload: {
+        permitId,
+        intent,
+        issuedAt,
+        expiresAt,
+        checkedAt,
+        signatureValidated: true,
+        observedProviderNodeId: providerNodeId,
+        observedProviderNodePubKey: providerNodePubKey
+      }
+    });
 
     return respond({
       status: "accepted",
@@ -10184,6 +10335,9 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   const ctx = getCapabilityContext();
   const derivativeInfo = await resolveDerivativeInfo(contentId, content.type);
   const manifest = await ensureManifestForContent(content);
+  const creatorIdentity = await buildLocalNodeIdentityDoc(userId);
+  const canonicalManifestJson = normalizeManifestForPublish((manifest as any)?.json || {});
+  const canonicalManifestHash = computeCanonicalManifestHash(canonicalManifestJson);
 
   const parents = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
   const upstreamSum = sumBps(parents.map((p) => ({ bps: p.upstreamBps })));
@@ -10268,7 +10422,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
         isDerivative: derivativeInfo.isDerivative,
         clearanceCleared: derivativeInfo.clearanceCleared,
         splitLocked: sv.status === "locked",
-        targetLocked: Boolean(manifest?.sha256),
+        targetLocked: Boolean(canonicalManifestHash),
         paymentsReady
       }
     );
@@ -10278,9 +10432,13 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 
   const now = new Date();
   await prisma.$transaction(async (tx) => {
+    await tx.manifest.update({
+      where: { id: manifest.id },
+      data: { json: canonicalManifestJson as any, sha256: canonicalManifestHash }
+    });
     await tx.splitVersion.update({
       where: { id: sv.id },
-      data: { lockedManifestSha256: manifest.sha256 }
+      data: { lockedManifestSha256: canonicalManifestHash }
     });
     await tx.contentItem.update({
       where: { id: contentId },
@@ -10291,7 +10449,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       data: {
         contentId,
         publicUrl: `${publicOrigin}/buy/${contentId}`,
-        targetHash: manifest.sha256,
+        targetHash: canonicalManifestHash,
         splitVersionId: sv.id,
         clearanceId: derivativeInfo.clearanceId,
         priceSats: content.priceSats != null ? BigInt(content.priceSats as any) : null,
@@ -10306,8 +10464,27 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     await triggerPublicStartBestEffort();
   } catch {}
 
+  const providerCfg = getNetworkProviderConfig();
+  const providerNodeIdForReceipt = isNetworkProviderConfigured(providerCfg) ? providerCfg.providerNodeId : null;
+  appendLifecycleReceiptSafe({
+    type: "content_publish",
+    subjectNodeId: creatorIdentity.nodeId,
+    providerNodeId: providerNodeIdForReceipt,
+    objectId: contentId,
+    payload: buildContentPublishReceiptPayload({
+      contentId,
+      manifestHash: canonicalManifestHash,
+      title: (canonicalManifestJson as any)?.title ?? null,
+      type: (canonicalManifestJson as any)?.type ?? null,
+      primaryFile: (canonicalManifestJson as any)?.primaryFile ?? null,
+      publishedAt: now.toISOString(),
+      creatorNodeId: creatorIdentity.nodeId,
+      providerNodeId: providerNodeIdForReceipt
+    })
+  });
+
   const publicOrigin = getPublicOrigin(req);
-  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: manifest.sha256, publicOrigin });
+  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: canonicalManifestHash, publicOrigin });
 });
 
 // Update storefront status (owner only)
@@ -12472,6 +12649,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     return "";
   };
+  const currentPublicOrigin = normalizePublicOriginBase(nodeUrl);
 
   const domainProofsHtml =
     verifiedDomainProofs.length > 0
@@ -12628,12 +12806,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               ? (primaryObjectKey || previewObjectKey)
               : previewObjectKey;
             const featuredMediaUrl = featuredMediaKey
-              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(featuredMediaKey)}`
+              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(featuredMediaKey)}`)
               : "";
             const videoPreviewUrl = previewObjectKey
-              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`
-              : `/public/content/${encodeURIComponent(item.id)}/preview-file`;
-            const coverUrl = `/public/content/${encodeURIComponent(item.id)}/cover`;
+              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`)
+              : buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file`);
+            const coverUrl = buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/cover`);
             const manifestThumbnailRaw =
               asString(manifestJson?.thumbnailUrl || "").trim() ||
               asString(manifestJson?.thumbnail || "").trim();
@@ -12645,14 +12823,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               asString(manifestJson?.thumbnail || "").trim() ||
               asString(manifestJson?.previewPoster || "").trim();
             const posterUrl = posterObjectKey
-              ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(posterObjectKey)}`
+              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(posterObjectKey)}`)
               : coverUrl;
-            const videoThumbUrl = /^https?:\/\//i.test(manifestThumbnailRaw)
-              ? manifestThumbnailRaw
+            const normalizedManifestThumbUrl = normalizeKnownPublicRouteToOrigin(currentPublicOrigin, manifestThumbnailRaw);
+            const videoThumbUrl = normalizedManifestThumbUrl
+              ? normalizedManifestThumbUrl
               : manifestThumbnailRaw
-                ? `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(manifestThumbnailRaw)}`
+                ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(manifestThumbnailRaw)}`)
                 : externalThumbUrl || coverUrl || posterUrl;
-            const buyUrl = `/buy/${encodeURIComponent(item.id)}`;
+            const buyUrl = buildPublicUrlFromOrigin(currentPublicOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
