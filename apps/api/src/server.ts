@@ -1505,6 +1505,348 @@ const RUNTIME_SUPERVISED = String(process.env.CERTIFYD_SUPERVISOR_ACTIVE || "") 
 const PROVIDER_ACK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PROVIDER_PERMIT_DEFAULT_TTL_MS = 30 * 60 * 1000;
 const PROVIDER_PERMIT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PROVIDER_CREATOR_LINKS_FILE = path.join(RUNTIME_STATE_DIR, "provider-creator-links.json");
+const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider-delegated-publishes.json");
+const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
+const PROVIDER_PAYMENT_RECEIPTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-receipts.json");
+
+type ProviderTrustStatus = "unknown" | "verified" | "blocked";
+type ProviderHandshakeStatus = "none" | "accepted" | "failed";
+type ProviderPublishStatus = "published" | "failed";
+type ProviderPaymentIntentStatus = "created" | "issued" | "paid" | "cancelled" | "expired";
+
+type ProviderCreatorLinkRecord = {
+  id: string;
+  providerNodeId: string;
+  creatorNodeId: string;
+  creatorDisplayName: string | null;
+  providerEndpoint: string | null;
+  trustStatus: ProviderTrustStatus;
+  handshakeStatus: ProviderHandshakeStatus;
+  executionAllowed: boolean;
+  lastSeenAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProviderDelegatedPublishRecord = {
+  id: string;
+  providerNodeId: string;
+  creatorNodeId: string;
+  contentId: string;
+  title: string | null;
+  contentType: string | null;
+  manifestHash: string;
+  visibility: "DISABLED" | "UNLISTED" | "LISTED";
+  publishReceiptId: string | null;
+  publishedAt: string;
+  status: ProviderPublishStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProviderPaymentIntentRecord = {
+  id: string;
+  providerNodeId: string;
+  creatorNodeId: string;
+  contentId: string | null;
+  paymentIntentId: string;
+  bolt11: string | null;
+  providerInvoiceRef: string | null;
+  amountSats: string;
+  status: ProviderPaymentIntentStatus;
+  paymentReceiptId: string | null;
+  buyerSessionId: string | null;
+  createdAt: string;
+  paidAt: string | null;
+  updatedAt: string;
+};
+
+type ProviderPaymentReceiptRecord = {
+  id: string;
+  providerNodeId: string;
+  creatorNodeId: string;
+  contentId: string | null;
+  paymentIntentId: string;
+  paymentReceiptId: string;
+  bolt11: string | null;
+  amountSats: string;
+  paidAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function readJsonArrayState<T>(filePath: string): T[] {
+  try {
+    if (!fsSync.existsSync(filePath)) return [];
+    const raw = fsSync.readFileSync(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeJsonArrayState<T>(filePath: string, rows: T[]) {
+  try {
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tmp = `${filePath}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(rows, null, 2));
+    fsSync.renameSync(tmp, filePath);
+  } catch {}
+}
+
+function buildProviderRecordId(prefix: string): string {
+  return `${prefix}_${crypto.randomBytes(8).toString("hex")}`;
+}
+
+function listProviderCreatorLinks(): ProviderCreatorLinkRecord[] {
+  return readJsonArrayState<ProviderCreatorLinkRecord>(PROVIDER_CREATOR_LINKS_FILE)
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+
+function getProviderCreatorLink(creatorNodeId: string): ProviderCreatorLinkRecord | null {
+  if (!creatorNodeId) return null;
+  const rows = readJsonArrayState<ProviderCreatorLinkRecord>(PROVIDER_CREATOR_LINKS_FILE);
+  return rows.find((r) => r.creatorNodeId === creatorNodeId) || null;
+}
+
+function upsertProviderCreatorLink(input: {
+  providerNodeId: string;
+  creatorNodeId: string;
+  creatorDisplayName?: string | null;
+  providerEndpoint?: string | null;
+  trustStatus?: ProviderTrustStatus;
+  handshakeStatus?: ProviderHandshakeStatus;
+  executionAllowed?: boolean;
+  lastSeenAt?: string | null;
+}): ProviderCreatorLinkRecord {
+  const now = new Date().toISOString();
+  const rows = readJsonArrayState<ProviderCreatorLinkRecord>(PROVIDER_CREATOR_LINKS_FILE);
+  const idx = rows.findIndex((r) => r.creatorNodeId === input.creatorNodeId);
+  if (idx >= 0) {
+    rows[idx] = {
+      ...rows[idx],
+      creatorDisplayName:
+        input.creatorDisplayName !== undefined ? (input.creatorDisplayName || null) : rows[idx].creatorDisplayName,
+      providerEndpoint:
+        input.providerEndpoint !== undefined ? (input.providerEndpoint || null) : rows[idx].providerEndpoint,
+      trustStatus: input.trustStatus || rows[idx].trustStatus,
+      handshakeStatus: input.handshakeStatus || rows[idx].handshakeStatus,
+      executionAllowed: input.executionAllowed !== undefined ? Boolean(input.executionAllowed) : rows[idx].executionAllowed,
+      lastSeenAt: input.lastSeenAt !== undefined ? input.lastSeenAt : rows[idx].lastSeenAt,
+      updatedAt: now
+    };
+    writeJsonArrayState(PROVIDER_CREATOR_LINKS_FILE, rows);
+    return rows[idx];
+  }
+  const created: ProviderCreatorLinkRecord = {
+    id: buildProviderRecordId("pcl"),
+    providerNodeId: input.providerNodeId,
+    creatorNodeId: input.creatorNodeId,
+    creatorDisplayName: input.creatorDisplayName || null,
+    providerEndpoint: input.providerEndpoint || null,
+    trustStatus: input.trustStatus || "unknown",
+    handshakeStatus: input.handshakeStatus || "none",
+    executionAllowed: Boolean(input.executionAllowed),
+    lastSeenAt: input.lastSeenAt || now,
+    createdAt: now,
+    updatedAt: now
+  };
+  rows.unshift(created);
+  writeJsonArrayState(PROVIDER_CREATOR_LINKS_FILE, rows);
+  return created;
+}
+
+function listProviderDelegatedPublishes(): ProviderDelegatedPublishRecord[] {
+  return readJsonArrayState<ProviderDelegatedPublishRecord>(PROVIDER_DELEGATED_PUBLISHES_FILE)
+    .sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
+}
+
+function createProviderDelegatedPublish(
+  input: Omit<ProviderDelegatedPublishRecord, "id" | "createdAt" | "updatedAt">
+): ProviderDelegatedPublishRecord {
+  const now = new Date().toISOString();
+  const rows = readJsonArrayState<ProviderDelegatedPublishRecord>(PROVIDER_DELEGATED_PUBLISHES_FILE);
+  const created: ProviderDelegatedPublishRecord = {
+    id: buildProviderRecordId("pdp"),
+    ...input,
+    createdAt: now,
+    updatedAt: now
+  };
+  rows.unshift(created);
+  writeJsonArrayState(PROVIDER_DELEGATED_PUBLISHES_FILE, rows);
+  return created;
+}
+
+function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
+  return readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE)
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+
+function findProviderPaymentIntentByPaymentIntentId(paymentIntentId: string): ProviderPaymentIntentRecord | null {
+  if (!paymentIntentId) return null;
+  const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE);
+  return rows.find((r) => r.paymentIntentId === paymentIntentId) || null;
+}
+
+function createProviderPaymentIntent(
+  input: Omit<ProviderPaymentIntentRecord, "id" | "createdAt" | "updatedAt">
+): ProviderPaymentIntentRecord {
+  const now = new Date().toISOString();
+  const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE);
+  const created: ProviderPaymentIntentRecord = {
+    id: buildProviderRecordId("ppi"),
+    ...input,
+    createdAt: now,
+    updatedAt: now
+  };
+  rows.unshift(created);
+  writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
+  return created;
+}
+
+function upsertProviderPaymentIntentByPaymentIntentId(
+  paymentIntentId: string,
+  input: Omit<ProviderPaymentIntentRecord, "id" | "createdAt" | "updatedAt">
+): ProviderPaymentIntentRecord {
+  const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE);
+  const idx = rows.findIndex((r) => r.paymentIntentId === paymentIntentId);
+  if (idx >= 0) {
+    rows[idx] = {
+      ...rows[idx],
+      ...input,
+      id: rows[idx].id,
+      createdAt: rows[idx].createdAt,
+      updatedAt: new Date().toISOString()
+    };
+    writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
+    return rows[idx];
+  }
+  const created = createProviderPaymentIntent(input);
+  return created;
+}
+
+function updateProviderPaymentIntent(
+  id: string,
+  patch: Partial<
+    Pick<
+      ProviderPaymentIntentRecord,
+      "status" | "bolt11" | "providerInvoiceRef" | "paymentReceiptId" | "paidAt" | "amountSats" | "buyerSessionId"
+    >
+  >
+): ProviderPaymentIntentRecord | null {
+  const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE);
+  const idx = rows.findIndex((r) => r.id === id);
+  if (idx < 0) return null;
+  rows[idx] = {
+    ...rows[idx],
+    status: (patch.status || rows[idx].status) as ProviderPaymentIntentStatus,
+    bolt11: patch.bolt11 !== undefined ? patch.bolt11 : rows[idx].bolt11,
+    providerInvoiceRef: patch.providerInvoiceRef !== undefined ? patch.providerInvoiceRef : rows[idx].providerInvoiceRef,
+    paymentReceiptId: patch.paymentReceiptId !== undefined ? patch.paymentReceiptId : rows[idx].paymentReceiptId,
+    buyerSessionId: patch.buyerSessionId !== undefined ? patch.buyerSessionId : rows[idx].buyerSessionId,
+    paidAt: patch.paidAt !== undefined ? patch.paidAt : rows[idx].paidAt,
+    amountSats: patch.amountSats !== undefined ? patch.amountSats : rows[idx].amountSats,
+    updatedAt: new Date().toISOString()
+  };
+  writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
+  return rows[idx];
+}
+
+function listProviderPaymentReceipts(): ProviderPaymentReceiptRecord[] {
+  return readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE).sort((a, b) =>
+    String(b.paidAt || b.updatedAt || "").localeCompare(String(a.paidAt || a.updatedAt || ""))
+  );
+}
+
+function createProviderPaymentReceipt(
+  input: Omit<ProviderPaymentReceiptRecord, "id" | "createdAt" | "updatedAt">
+): ProviderPaymentReceiptRecord {
+  const now = new Date().toISOString();
+  const rows = readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE);
+  const existing = rows.find((row) => row.paymentIntentId === input.paymentIntentId);
+  if (existing) return existing;
+  const created: ProviderPaymentReceiptRecord = {
+    id: buildProviderRecordId("ppr"),
+    ...input,
+    createdAt: now,
+    updatedAt: now
+  };
+  rows.unshift(created);
+  writeJsonArrayState(PROVIDER_PAYMENT_RECEIPTS_FILE, rows);
+  return created;
+}
+
+async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentRecord) {
+  if (intent.status !== "paid" || intent.paymentReceiptId) return intent;
+  const paidAt = intent.paidAt || new Date().toISOString();
+  const paymentReceiptId = `payr_${crypto.randomBytes(8).toString("hex")}`;
+  createProviderPaymentReceipt({
+    providerNodeId: intent.providerNodeId,
+    creatorNodeId: intent.creatorNodeId,
+    contentId: intent.contentId,
+    paymentIntentId: intent.paymentIntentId,
+    paymentReceiptId,
+    bolt11: intent.bolt11,
+    amountSats: intent.amountSats,
+    paidAt
+  });
+
+  appendLifecycleReceiptSafe({
+    type: "payment_receipt",
+    subjectNodeId: intent.creatorNodeId,
+    providerNodeId: intent.providerNodeId,
+    objectId: intent.contentId || intent.paymentIntentId,
+    payload: {
+      paymentReceiptId,
+      paymentIntentId: intent.paymentIntentId,
+      contentId: intent.contentId,
+      creatorNodeId: intent.creatorNodeId,
+      providerNodeId: intent.providerNodeId,
+      amountSats: intent.amountSats,
+      paidAt
+    }
+  });
+
+  if (intent.buyerSessionId && intent.contentId) {
+    try {
+      const buyerSession = await prisma.buyerSession.findUnique({
+        where: { id: intent.buyerSessionId },
+        select: { buyerId: true }
+      });
+      const delegated = listProviderDelegatedPublishes().find((row) => row.contentId === intent.contentId);
+      const manifestSha256 = delegated?.manifestHash || "";
+      if (buyerSession?.buyerId && manifestSha256) {
+        await prisma.entitlement.upsert({
+          where: {
+            buyerId_contentId_manifestSha256: {
+              buyerId: buyerSession.buyerId,
+              contentId: intent.contentId,
+              manifestSha256
+            }
+          },
+          update: {
+            paymentIntentId: intent.paymentIntentId
+          },
+          create: {
+            buyerId: buyerSession.buyerId,
+            contentId: intent.contentId,
+            manifestSha256,
+            paymentIntentId: intent.paymentIntentId
+          }
+        });
+      }
+    } catch {}
+  }
+
+  const updated = updateProviderPaymentIntent(intent.id, {
+    paymentReceiptId,
+    paidAt,
+    status: "paid"
+  });
+  return updated || intent;
+}
 
 function resolveNodeIdForRuntimeStatus(): string {
   const nodePem = getLocalNodePublicPem();
@@ -7638,6 +7980,15 @@ app.post("/api/network/provider/acknowledge-client", async (req: any, reply: any
     },
     requestedAt
   };
+  upsertProviderCreatorLink({
+    providerNodeId: identity.nodeId,
+    creatorNodeId: clientNodeId,
+    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    trustStatus: "verified",
+    handshakeStatus: "accepted",
+    executionAllowed: false,
+    lastSeenAt: issuedAt
+  });
   return reply.send(out);
 });
 
@@ -7695,7 +8046,251 @@ app.post("/api/network/provider/accept-operation-intent", async (req: any, reply
       value: sig
     }
   };
+  upsertProviderCreatorLink({
+    providerNodeId: identity.nodeId,
+    creatorNodeId: clientNodeId,
+    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    trustStatus: "verified",
+    handshakeStatus: "accepted",
+    executionAllowed: true,
+    lastSeenAt: issuedAt
+  });
   return reply.send(out);
+});
+
+app.post("/api/network/provider/delegated-publish", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as {
+    creatorNodeId?: string | null;
+    creatorNodePubKey?: string | null;
+    creatorDisplayName?: string | null;
+    contentId?: string | null;
+    title?: string | null;
+    contentType?: string | null;
+    manifestHash?: string | null;
+    visibility?: "DISABLED" | "UNLISTED" | "LISTED" | null;
+    primaryFile?: string | null;
+    publishedAt?: string | null;
+  };
+  const creatorNodeId = String(body.creatorNodeId || "").trim();
+  const creatorNodePubKey = String(body.creatorNodePubKey || "").trim() || null;
+  const contentId = String(body.contentId || "").trim();
+  const manifestHash = String(body.manifestHash || "").trim();
+  if (!creatorNodeId) return badRequest(reply, "creatorNodeId is required");
+  if (!contentId) return badRequest(reply, "contentId is required");
+  if (!manifestHash) return badRequest(reply, "manifestHash is required");
+  if (creatorNodePubKey) {
+    const derived = deriveNodeIdFromNodePubKey(creatorNodePubKey);
+    if (!derived || derived !== creatorNodeId) {
+      return badRequest(reply, "creator node identity is inconsistent with provided public key");
+    }
+  }
+  const existingLink = getProviderCreatorLink(creatorNodeId);
+  if (!existingLink || existingLink.trustStatus !== "verified" || !existingLink.executionAllowed) {
+    return reply.code(409).send({
+      error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED",
+      message: "Provider relationship is not ready for delegated publish."
+    });
+  }
+
+  const providerIdentity = await buildLocalNodeIdentityDoc();
+  const publishedAt = String(body.publishedAt || "").trim() || new Date().toISOString();
+  const visibility =
+    body.visibility === "DISABLED" || body.visibility === "LISTED" || body.visibility === "UNLISTED"
+      ? body.visibility
+      : "UNLISTED";
+  const receiptPayload = buildContentPublishReceiptPayload({
+    contentId,
+    manifestHash,
+    title: String(body.title || "").trim() || null,
+    type: String(body.contentType || "").trim() || null,
+    primaryFile: String(body.primaryFile || "").trim() || null,
+    publishedAt,
+    creatorNodeId,
+    providerNodeId: providerIdentity.nodeId
+  });
+  let publishReceiptId: string | null = null;
+  try {
+    const receipt = appendLifecycleReceipt(RECEIPTS_DIR, {
+      type: "content_publish",
+      subjectNodeId: creatorNodeId,
+      providerNodeId: providerIdentity.nodeId,
+      objectId: contentId,
+      payload: receiptPayload
+    });
+    publishReceiptId = receipt.id;
+  } catch {}
+
+  const delegatedPublish = createProviderDelegatedPublish({
+    providerNodeId: providerIdentity.nodeId,
+    creatorNodeId,
+    contentId,
+    title: String(body.title || "").trim() || null,
+    contentType: String(body.contentType || "").trim() || null,
+    manifestHash,
+    visibility,
+    publishReceiptId,
+    publishedAt,
+    status: "published"
+  });
+
+  upsertProviderCreatorLink({
+    providerNodeId: providerIdentity.nodeId,
+    creatorNodeId,
+    creatorDisplayName: String(body.creatorDisplayName || "").trim() || null,
+    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    trustStatus: "verified",
+    handshakeStatus: "accepted",
+    executionAllowed: true,
+    lastSeenAt: publishedAt
+  });
+
+  return reply.send({
+    ok: true,
+    provider: {
+      nodeId: providerIdentity.nodeId,
+      nodePubKey: providerIdentity.nodePubKey
+    },
+    delegatedPublish,
+    receipt: publishReceiptId
+      ? {
+          id: publishReceiptId,
+          type: "content_publish",
+          payload: receiptPayload
+        }
+      : null
+  });
+});
+
+app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const links = listProviderCreatorLinks();
+  const publishes = listProviderDelegatedPublishes();
+  const intents = listProviderPaymentIntents();
+  const activePaymentIntents = intents.filter((intent) => intent.status === "created" || intent.status === "issued").length;
+  const settledPayments = intents.filter((intent) => intent.status === "paid").length;
+  return reply.send({
+    delegatedCreators: links.length,
+    publishedItems: publishes.length,
+    activePaymentIntents,
+    settledPayments
+  });
+});
+
+app.get("/api/provider/creator-links", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: listProviderCreatorLinks() });
+});
+
+app.get("/api/provider/delegated-publishes", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: listProviderDelegatedPublishes() });
+});
+
+app.get("/api/provider/payment-intents", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: listProviderPaymentIntents() });
+});
+
+app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as {
+    creatorNodeId?: string | null;
+    contentId?: string | null;
+    amountSats?: string | number | null;
+    paymentIntentId?: string | null;
+    buyerSessionId?: string | null;
+  };
+  const provider = await buildLocalNodeIdentityDoc((req.user as JwtUser).sub);
+  const creatorNodeId = String(body.creatorNodeId || "").trim();
+  const contentId = String(body.contentId || "").trim() || null;
+  const amountSats = String(body.amountSats ?? "").trim();
+  const paymentIntentId = String(body.paymentIntentId || "").trim() || buildProviderRecordId("pi");
+  if (!creatorNodeId) return badRequest(reply, "creatorNodeId is required");
+  if (!/^\d+$/.test(amountSats)) return badRequest(reply, "amountSats must be a positive integer");
+  if (!amountSats || Number(amountSats) <= 0) return badRequest(reply, "amountSats must be greater than zero");
+  const link = getProviderCreatorLink(creatorNodeId);
+  if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
+    return reply.code(409).send({
+      error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED",
+      message: "Provider relationship is not ready for payment intents."
+    });
+  }
+  if (contentId) {
+    const delegated = listProviderDelegatedPublishes().find(
+      (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
+    );
+    if (!delegated) {
+      return reply.code(409).send({
+        error: "DELEGATED_PUBLISH_REQUIRED",
+        message: "Delegated publish record is required before creating payment intents."
+      });
+    }
+  }
+  const memo = `Certifyd delegated ${String(contentId || "").slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  let bolt11: string | null = null;
+  let providerInvoiceRef: string | null = null;
+  try {
+    const invoice = await createLightningInvoice(prisma as any, BigInt(amountSats), memo);
+    bolt11 = invoice?.bolt11 || null;
+    providerInvoiceRef = invoice?.providerId || null;
+  } catch {}
+  const created = createProviderPaymentIntent({
+    providerNodeId: provider.nodeId,
+    creatorNodeId,
+    contentId,
+    paymentIntentId,
+    bolt11,
+    providerInvoiceRef,
+    amountSats,
+    status: bolt11 ? "issued" : "created",
+    paymentReceiptId: null,
+    buyerSessionId: String(body.buyerSessionId || "").trim() || null,
+    paidAt: null
+  });
+  return reply.send(created);
+});
+
+app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id is required");
+  const body = (req.body ?? {}) as {
+    status?: ProviderPaymentIntentStatus;
+    bolt11?: string | null;
+    paymentReceiptId?: string | null;
+    paidAt?: string | null;
+    amountSats?: string | number | null;
+    buyerSessionId?: string | null;
+  };
+  const current = listProviderPaymentIntents().find((row) => row.id === id) || null;
+  if (!current) return notFound(reply, "Payment intent not found");
+
+  const nextStatus = body.status || current.status;
+  if (nextStatus === "paid") {
+    if (!current.providerInvoiceRef) {
+      return reply.code(409).send({
+        error: "PAYMENT_VERIFICATION_REQUIRED",
+        message: "This payment intent cannot be marked paid without a verifiable provider invoice reference."
+      });
+    }
+    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+    if (!invoiceStatus?.paid) {
+      return reply.code(409).send({
+        error: "PAYMENT_NOT_SETTLED",
+        message: "Lightning invoice is not settled yet."
+      });
+    }
+  }
+
+  const updated = updateProviderPaymentIntent(id, {
+    status: nextStatus,
+    bolt11: body.bolt11 !== undefined ? String(body.bolt11 || "").trim() || null : undefined,
+    paymentReceiptId: undefined,
+    paidAt: body.paidAt !== undefined ? String(body.paidAt || "").trim() || null : undefined,
+    amountSats: body.amountSats !== undefined ? String(body.amountSats ?? "").trim() || "0" : undefined,
+    buyerSessionId: body.buyerSessionId !== undefined ? String(body.buyerSessionId || "").trim() || null : undefined
+  });
+  if (!updated) return notFound(reply, "Payment intent not found");
+  const settled = await ensureProviderPaymentSettlement(updated);
+  return reply.send(settled);
+});
+
+app.get("/api/provider/payment-receipts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.send({ items: listProviderPaymentReceipts() });
 });
 
 app.get("/api/network/provider", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -10466,6 +11061,75 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     return reply.code(403).send({ code: e?.code || "publish_not_allowed", reason: e?.reason || "Not allowed" });
   }
 
+  const providerCfg = getNetworkProviderConfig();
+  let delegatedReceipt:
+    | {
+        id: string;
+        type: "content_publish";
+        payload: ReturnType<typeof buildContentPublishReceiptPayload>;
+      }
+    | null = null;
+  let delegatedPublishRecord: ProviderDelegatedPublishRecord | null = null;
+  const shouldDelegatePublish =
+    isNetworkProviderConfigured(providerCfg) &&
+    evaluateProviderExecutionTrustReadiness().allowed &&
+    String(providerCfg.providerUrl || "").trim().length > 0;
+  if (shouldDelegatePublish) {
+    const owner = await prisma.user.findUnique({
+      where: { id: content.ownerUserId },
+      select: { displayName: true, email: true }
+    });
+    const creatorDisplayName = String(owner?.displayName || "").trim() || String(owner?.email || "").trim() || null;
+    const target = `${String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "")}/api/network/provider/delegated-publish`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    try {
+      const providerResponse = await fetch(target, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          creatorNodeId: creatorIdentity.nodeId,
+          creatorNodePubKey: creatorIdentity.nodePubKey,
+          creatorDisplayName,
+          contentId,
+          title: (canonicalManifestJson as any)?.title ?? null,
+          contentType: (canonicalManifestJson as any)?.type ?? null,
+          manifestHash: canonicalManifestHash,
+          visibility: content.storefrontStatus || "UNLISTED",
+          primaryFile: (canonicalManifestJson as any)?.primaryFile ?? null,
+          publishedAt: new Date().toISOString()
+        }),
+        signal: controller.signal
+      } as any);
+      if (!providerResponse.ok) {
+        return reply.code(502).send({
+          code: "delegated_publish_failed",
+          message: `Provider delegated publish failed (${providerResponse.status}).`
+        });
+      }
+      const providerJson: any = await providerResponse.json().catch(() => null);
+      delegatedPublishRecord = providerJson?.delegatedPublish || null;
+      const receipt = providerJson?.receipt;
+      if (receipt && typeof receipt.id === "string" && receipt.type === "content_publish" && receipt.payload) {
+        delegatedReceipt = {
+          id: receipt.id,
+          type: "content_publish",
+          payload: receipt.payload as ReturnType<typeof buildContentPublishReceiptPayload>
+        };
+      }
+    } catch {
+      return reply.code(502).send({
+        code: "delegated_publish_unreachable",
+        message: "Provider delegated publish endpoint is unreachable."
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  const splitVersionId = sv?.id ? String(sv.id) : "";
+  if (!splitVersionId) return badRequest(reply, "Split version missing");
+
   const now = new Date();
   await prisma.$transaction(async (tx) => {
     await tx.manifest.update({
@@ -10473,12 +11137,12 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       data: { json: canonicalManifestJson as any, sha256: canonicalManifestHash }
     });
     await tx.splitVersion.update({
-      where: { id: sv.id },
+      where: { id: splitVersionId },
       data: { lockedManifestSha256: canonicalManifestHash }
     });
     await tx.contentItem.update({
       where: { id: contentId },
-      data: { status: "published", manifestId: manifest.id, currentSplitId: sv.id }
+      data: { status: "published", manifestId: manifest.id, currentSplitId: splitVersionId }
     });
     const publicOrigin = getPublicOrigin(req).replace(/\/$/, "");
     await tx.publishEvent.create({
@@ -10486,7 +11150,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
         contentId,
         publicUrl: `${publicOrigin}/buy/${contentId}`,
         targetHash: canonicalManifestHash,
-        splitVersionId: sv.id,
+        splitVersionId,
         clearanceId: derivativeInfo.clearanceId,
         priceSats: content.priceSats != null ? BigInt(content.priceSats as any) : null,
         publisherNodeId: publicOrigin || null,
@@ -10500,8 +11164,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     await triggerPublicStartBestEffort();
   } catch {}
 
-  const providerCfg = getNetworkProviderConfig();
-  const providerNodeIdForReceipt = isNetworkProviderConfigured(providerCfg) ? providerCfg.providerNodeId : null;
+  const providerNodeIdForReceipt = delegatedPublishRecord?.providerNodeId || (isNetworkProviderConfigured(providerCfg) ? providerCfg.providerNodeId : null);
   appendLifecycleReceiptSafe({
     type: "content_publish",
     subjectNodeId: creatorIdentity.nodeId,
@@ -10520,7 +11183,21 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   });
 
   const publicOrigin = getPublicOrigin(req);
-  return reply.send({ ok: true, publishedAt: now.toISOString(), manifestSha256: canonicalManifestHash, publicOrigin });
+  return reply.send({
+    ok: true,
+    publishedAt: now.toISOString(),
+    manifestSha256: canonicalManifestHash,
+    publicOrigin,
+    delegatedPublish: delegatedPublishRecord
+      ? {
+          id: delegatedPublishRecord.id,
+          providerNodeId: delegatedPublishRecord.providerNodeId,
+          creatorNodeId: delegatedPublishRecord.creatorNodeId,
+          publishReceiptId: delegatedPublishRecord.publishReceiptId
+        }
+      : null,
+    delegatedReceipt
+  });
 });
 
 // Update storefront status (owner only)
@@ -15183,6 +15860,23 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     });
 
+    const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === contentId);
+    if (delegatedPublish) {
+      upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
+        providerNodeId: delegatedPublish.providerNodeId,
+        creatorNodeId: delegatedPublish.creatorNodeId,
+        contentId,
+        paymentIntentId: intent.id,
+        bolt11: lightning?.bolt11 || null,
+        providerInvoiceRef: lightning?.providerId || null,
+        amountSats: amountSats.toString(),
+        status: lightning?.bolt11 ? "issued" : "created",
+        paymentReceiptId: null,
+        buyerSessionId: buyerSession?.id || null,
+        paidAt: null
+      });
+    }
+
     app.log.info(
       {
         ...intentLog,
@@ -19214,6 +19908,15 @@ async function settlePaymentIntentFromRails(intentId: string) {
     try {
       await finalizePurchase(intent.id, prisma);
     } catch {}
+    const providerIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
+    if (providerIntent) {
+      await ensureProviderPaymentSettlement(
+        updateProviderPaymentIntent(providerIntent.id, {
+          status: "paid",
+          paidAt: providerIntent.paidAt || intent.paidAt?.toISOString() || new Date().toISOString()
+        }) || providerIntent
+      );
+    }
     const updated = await prisma.paymentIntent.findUnique({ where: { id: intent.id } });
     return { intent: updated || intent, paid: true, paidVia: updated?.paidVia || intent.paidVia || null };
   }
@@ -19318,6 +20021,15 @@ async function settlePaymentIntentFromRails(intentId: string) {
       },
       "payments.reconcile.finalized"
     );
+    const providerIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
+    if (providerIntent) {
+      await ensureProviderPaymentSettlement(
+        updateProviderPaymentIntent(providerIntent.id, {
+          status: "paid",
+          paidAt: paidAt || new Date().toISOString()
+        }) || providerIntent
+      );
+    }
     return {
       intent: updated || intent,
       paid: true,

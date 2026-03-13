@@ -7,7 +7,8 @@ export type ReceiptType =
   | "operation_permit"
   | "profile_activation"
   | "profile_publish"
-  | "content_publish";
+  | "content_publish"
+  | "payment_receipt";
 
 export type ReceiptSignature = {
   alg: string;
@@ -66,7 +67,8 @@ export function isLifecycleReceipt(value: unknown): value is LifecycleReceipt {
     "operation_permit",
     "profile_activation",
     "profile_publish",
-    "content_publish"
+    "content_publish",
+    "payment_receipt"
   ]);
   if (typeof r.id !== "string" || !r.id.trim()) return false;
   if (typeof r.type !== "string" || !knownTypes.has(r.type as ReceiptType)) return false;
@@ -231,6 +233,7 @@ export function summarizeLifecycleReceipts(receiptsDir: string) {
   let latestActivationReceipt: LifecycleReceipt | null = null;
   let latestPublishReceipt: LifecycleReceipt | null = null;
   let latestContentPublishReceipt: LifecycleReceipt | null = null;
+  let latestPaymentReceipt: LifecycleReceipt | null = null;
 
   for (let i = index.ids.length - 1; i >= 0; i -= 1) {
     const rec = getLifecycleReceiptById(receiptsDir, index.ids[i]);
@@ -240,12 +243,14 @@ export function summarizeLifecycleReceipts(receiptsDir: string) {
     if (!latestActivationReceipt && rec.type === "profile_activation") latestActivationReceipt = rec;
     if (!latestPublishReceipt && rec.type === "profile_publish") latestPublishReceipt = rec;
     if (!latestContentPublishReceipt && rec.type === "content_publish") latestContentPublishReceipt = rec;
+    if (!latestPaymentReceipt && rec.type === "payment_receipt") latestPaymentReceipt = rec;
     if (
       latestAcknowledgmentReceipt &&
       latestPermitReceipt &&
       latestActivationReceipt &&
       latestPublishReceipt &&
-      latestContentPublishReceipt
+      latestContentPublishReceipt &&
+      latestPaymentReceipt
     ) break;
   }
 
@@ -255,6 +260,7 @@ export function summarizeLifecycleReceipts(receiptsDir: string) {
     latestActivationReceipt,
     latestPublishReceipt,
     latestContentPublishReceipt,
+    latestPaymentReceipt,
     totalReceiptCount: index.ids.length
   };
 }

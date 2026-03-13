@@ -16,6 +16,7 @@ import ReceiptPage from "./pages/ReceiptPage";
 import SalesPage from "./pages/SalesPage";
 import ConfigPage from "./pages/ConfigPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
+import ProviderConsolePage from "./pages/ProviderConsolePage";
 import FinancePage, { type FinanceTab } from "./pages/FinancePage";
 import ProfilePage from "./pages/ProfilePage";
 import { api, getApiBase } from "./lib/api";
@@ -64,6 +65,7 @@ type PageKey =
   | "sales"
   | "config"
   | "diagnostics"
+  | "provider-console"
   | "finance"
   | "receipt"
   | "invite"
@@ -290,6 +292,7 @@ export default function App() {
     if (!tokenFromUrl && !receiptFromUrl) {
       if (parts[0] === "config") setPage("config");
       else if (parts[0] === "diagnostics") setPage("diagnostics");
+      else if (parts[0] === "provider-console") setPage("provider-console");
       else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
       else {
         // Always land on Content after refresh (ignore prior path)
@@ -404,13 +407,18 @@ export default function App() {
 
   const advancedNav = [
     { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
+    { key: "provider-console" as const, label: "Provider Console", hint: "Delegated creators + commerce" },
     { key: "config" as const, label: "Configuration", hint: "Node + tunnel setup" },
     { key: "diagnostics" as const, label: "Diagnostics", hint: "Health + connectivity" }
-  ];
+  ].filter((item) => {
+    if (item.key === "provider-console") return sovereignCapabilities.canActAsProviderNode;
+    return true;
+  });
 
   const pageTitle =
     page === "config" ? "Configuration" :
     page === "diagnostics" ? "Diagnostics" :
+    page === "provider-console" ? "Provider Console" :
     page === "library" ? "Library" :
     page === "store" ? "Network" :
     page === "participations" ? "Royalties" :
@@ -430,7 +438,7 @@ export default function App() {
 
   const showAdvancedLocked =
     advancedInactive && (page === "splits" || page === "invite" || page === "split-editor");
-  const isOperatorPage = page === "config" || page === "diagnostics";
+  const isOperatorPage = page === "config" || page === "diagnostics" || page === "provider-console";
   const advancedCtaLabel =
     publicStatus?.mode === "named" && publicStatus?.status !== "online"
       ? "Bring named link online"
@@ -835,6 +843,7 @@ export default function App() {
                 />
               )}
               {page === "diagnostics" && <DiagnosticsPage whoamiInfo={whoamiInfo} whoamiStatus={whoamiStatus} />}
+              {page === "provider-console" && <ProviderConsolePage />}
 
               {page === "finance" && (
                 <ErrorBoundary>
