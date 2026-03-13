@@ -1488,6 +1488,7 @@ type RuntimeHealthState = {
   diagnostics?: {
     lastFailureHint?: string;
   };
+  restartAvailable?: boolean;
 };
 
 const RUNTIME_STATE_DIR = path.join(CONTENTBOX_ROOT, "state");
@@ -1709,7 +1710,8 @@ function getRuntimeHealthStatus(): RuntimeHealthState {
         ? undefined
         : lastFailureHint
           ? { lastFailureHint }
-          : undefined
+          : undefined,
+    restartAvailable: RUNTIME_SUPERVISED
   };
 }
 
@@ -1823,8 +1825,8 @@ function getLocalNodePrivatePem(): string | null {
 
 function hasInvoiceProviderRole(nodeMode: "basic" | "advanced" | "lan"): boolean {
   // Minimal truthful role signal for current architecture:
-  // advanced nodes can expose provider capability surfaces.
-  return nodeMode === "advanced";
+  // advanced and lan nodes can expose provider capability surfaces.
+  return nodeMode === "advanced" || nodeMode === "lan";
 }
 
 async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeIdentityDoc> {
@@ -7067,6 +7069,12 @@ app.get("/api/runtime/status", { preHandler: requireAuth }, async (_req: any, re
 });
 
 app.post("/api/runtime/restart", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  if (!RUNTIME_SUPERVISED) {
+    return reply.code(409).send({
+      error: "RESTART_NOT_SUPERVISED",
+      message: "Runtime restart is only available under a supervisor-managed runtime."
+    });
+  }
   const ip = asString((req as any)?.ip || "");
   if (!isLoopbackIp(ip)) {
     return reply.code(403).send({
