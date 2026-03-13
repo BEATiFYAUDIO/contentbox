@@ -1857,7 +1857,7 @@ async function requestDelegatedProviderPaymentIntent(input: {
 }): Promise<{ paymentIntentId: string; bolt11: string; providerInvoiceRef: string | null }> {
   const providerCfg = getNetworkProviderConfig();
   let providerTrust = evaluateProviderExecutionTrustReadiness();
-  if (!providerTrust.allowed && isNetworkProviderConfigured(providerCfg)) {
+  if (!providerTrust.allowed && hasProviderPaymentTarget(providerCfg)) {
     try {
       const refreshed = await verifyConfiguredProvider(providerCfg);
       persistProviderVerificationPosture(refreshed);
@@ -1865,7 +1865,7 @@ async function requestDelegatedProviderPaymentIntent(input: {
     } catch {}
   }
   const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "");
-  if (!isNetworkProviderConfigured(providerCfg) || !providerTrust.allowed || !providerUrl) {
+  if (!hasProviderPaymentTarget(providerCfg) || !providerTrust.allowed || !providerUrl) {
     const err: any = new Error("provider_not_ready");
     err.code = "PROVIDER_NOT_READY";
     throw err;
@@ -1933,7 +1933,7 @@ async function fetchDelegatedProviderPaymentIntentStatus(paymentIntentId: string
   const providerCfg = getNetworkProviderConfig();
   const providerTrust = evaluateProviderExecutionTrustReadiness();
   const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "");
-  if (!paymentIntentId || !isNetworkProviderConfigured(providerCfg) || !providerTrust.allowed || !providerUrl) {
+  if (!paymentIntentId || !hasProviderPaymentTarget(providerCfg) || !providerTrust.allowed || !providerUrl) {
     return { paid: false, paidAt: null, status: "unavailable" };
   }
   const controller = new AbortController();
@@ -2270,6 +2270,12 @@ function isNetworkProviderConfigured(cfg: NetworkProviderConfig): boolean {
   return Boolean(cfg.enabled && cfg.providerNodeId && cfg.providerUrl);
 }
 
+function hasProviderPaymentTarget(cfg: NetworkProviderConfig): boolean {
+  // Payment delegation requires an enabled provider URL. providerNodeId/providerPubKey can be
+  // optional during bootstrap and are validated when present.
+  return Boolean(cfg.enabled && cfg.providerUrl);
+}
+
 function getLocalNodePublicPem(): string | null {
   const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
   try {
@@ -2576,7 +2582,7 @@ async function verifyConfiguredProvider(cfg: NetworkProviderConfig): Promise<Pro
     providerNodeId: cfg.providerNodeId,
     providerPubKey: cfg.providerPubKey
   };
-  if (!isNetworkProviderConfigured(cfg)) {
+  if (!hasProviderPaymentTarget(cfg)) {
     return {
       configured,
       observed: emptyProviderObserved(),
@@ -15920,12 +15926,16 @@ async function handlePublicOffer(req: any, reply: any) {
   }
 
   const providerCfg = getNetworkProviderConfig();
+  const publishProofProviderNodeId = asString(publishProof?.providerNodeId || "").trim() || null;
+  const configuredProviderNodeId = asString(providerCfg.providerNodeId || "").trim() || null;
+  const providerBackedPaymentAvailable = hasProviderPaymentTarget(providerCfg);
   const invoiceProviderNodeId =
     latestEntitlement?.payment &&
-    !asString(latestEntitlement.payment?.providerId || "").trim().toLowerCase().startsWith("lnd:") &&
-    isNetworkProviderConfigured(providerCfg)
-      ? providerCfg.providerNodeId
-      : null;
+    !asString(latestEntitlement.payment?.providerId || "").trim().toLowerCase().startsWith("lnd:")
+      ? configuredProviderNodeId || publishProofProviderNodeId
+      : providerBackedPaymentAvailable
+        ? configuredProviderNodeId || publishProofProviderNodeId
+        : null;
   const paymentAccessProof: PublicPaymentAccessProof = {
     contentId,
     paymentState: hasPrice ? (entitled ? "owned" : "payment_required") : tipsEnabled ? "tip" : "free",
@@ -16185,7 +16195,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     if (!lightning?.bolt11) {
       const providerCfg = getNetworkProviderConfig();
       let providerTrust = evaluateProviderExecutionTrustReadiness();
-      if (!providerTrust.allowed && isNetworkProviderConfigured(providerCfg)) {
+      if (!providerTrust.allowed && hasProviderPaymentTarget(providerCfg)) {
         try {
           const refreshed = await verifyConfiguredProvider(providerCfg);
           persistProviderVerificationPosture(refreshed);
@@ -16193,7 +16203,12 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         } catch {}
       }
       const providerUrl = String(providerCfg.providerUrl || "").trim();
-      if (isNetworkProviderConfigured(providerCfg) && providerTrust.allowed && providerUrl) {
+      intentLog.providerDelegation = {
+        configured: hasProviderPaymentTarget(providerCfg),
+        providerUrlPresent: Boolean(providerUrl),
+        trustReadiness: providerTrust.readiness
+      };
+      if (hasProviderPaymentTarget(providerCfg) && providerTrust.allowed && providerUrl) {
         try {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
           const delegated = await requestDelegatedProviderPaymentIntent({
@@ -16225,6 +16240,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             lightningReason = "PROVIDER_UNREACHABLE";
           }
         }
+      } else if (!lightningReason) {
+        lightningReason = hasProviderPaymentTarget(providerCfg) ? "PROVIDER_NOT_READY" : "PROVIDER_NOT_CONFIGURED";
       }
     }
 
