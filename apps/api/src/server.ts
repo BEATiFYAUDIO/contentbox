@@ -7714,6 +7714,18 @@ app.get("/api/network/provider/verification", { preHandler: requireAuth }, async
 app.get("/api/network/provider/verification/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const cfg = getNetworkProviderConfig();
   const status = getProviderVerificationStatus(cfg);
+  if (status.verification.status === "missing_provider_role") {
+    const providerUrl = String(cfg.providerUrl || "").trim();
+    const localProviderTarget =
+      providerUrl.startsWith("http://127.0.0.1:") ||
+      providerUrl.startsWith("http://localhost:") ||
+      providerUrl === "http://127.0.0.1" ||
+      providerUrl === "http://localhost";
+    if (localProviderTarget) {
+      const refreshed = await verifyConfiguredProvider(cfg);
+      return reply.send(persistProviderVerificationPosture(refreshed));
+    }
+  }
   return reply.send(status);
 });
 
