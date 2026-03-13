@@ -276,6 +276,7 @@ export default function App() {
     } catch {}
   }, [authNotice]);
 
+
   // Extract the invite token from the URL when the component mounts
   useEffect(() => {
     const tokenFromUrl = getInviteTokenFromLocation();
@@ -658,7 +659,7 @@ export default function App() {
       {/* Main content */}
       <div className="flex-1 min-w-0 overflow-y-auto overscroll-none">
         <header className="border-b border-neutral-900">
-          <div className="mx-auto max-w-5xl px-6 py-4 space-y-2">
+          <div className="mx-auto w-full max-w-screen-2xl px-4 py-4 sm:px-6 space-y-2">
             {import.meta.env.DEV ? (
               <div className="rounded-md border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
                 Dashboard Dev Mode. API requests are proxied to the backend. Use the integrated node surface for real network testing.
@@ -787,7 +788,7 @@ export default function App() {
             </div>
           ) : null}
 
-        <main className="p-6 max-w-5xl mx-auto">
+        <main className="mx-auto w-full max-w-screen-2xl p-4 sm:p-6">
           {showAdvancedLocked ? (
             <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-6 text-sm text-amber-200">
               <div className="text-lg font-semibold mb-2">Advanced not active</div>

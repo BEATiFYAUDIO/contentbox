@@ -1505,17 +1505,25 @@ const RUNTIME_SUPERVISED = String(process.env.CERTIFYD_SUPERVISOR_ACTIVE || "") 
 const PROVIDER_ACK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PROVIDER_PERMIT_DEFAULT_TTL_MS = 30 * 60 * 1000;
 const PROVIDER_PERMIT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const REMITTANCE_FLIGHTS = new Set<string>();
+const REMITTANCE_FORWARDING_STALE_MS = Math.max(
+  30_000,
+  Number.parseInt(String(process.env.CERTIFYD_REMITTANCE_STALE_MS || "180000"), 10) || 180000
+);
 const PROVIDER_CREATOR_LINKS_FILE = path.join(RUNTIME_STATE_DIR, "provider-creator-links.json");
 const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider-delegated-publishes.json");
 const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
 const PROVIDER_PAYMENT_RECEIPTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-receipts.json");
+const CREATOR_PAYOUT_DESTINATIONS_FILE = path.join(RUNTIME_STATE_DIR, "creator-payout-destinations.json");
 
 type ProviderTrustStatus = "unknown" | "verified" | "blocked";
 type ProviderHandshakeStatus = "none" | "accepted" | "failed";
 type ProviderPublishStatus = "published" | "failed";
 type ProviderPaymentIntentStatus = "created" | "issued" | "paid" | "cancelled" | "expired";
-type ProviderPayoutStatus = "pending" | "paid" | "failed";
+type ProviderPayoutStatus = "pending" | "forwarding" | "paid" | "failed";
 type ProviderPayoutRail = "provider_custody" | "forwarded" | "creator_node" | null;
+type CreatorPayoutDestinationType = "lightning_address" | "local_lnd" | "onchain_address" | null;
+type ProviderRemitMode = "provider_custody" | "auto_forward" | "manual_payout" | null;
 
 type ProviderCreatorLinkRecord = {
   id: string;
@@ -1557,11 +1565,23 @@ type ProviderPaymentIntentRecord = {
   providerInvoiceRef: string | null;
   amountSats: string;
   grossAmountSats: string;
+  providerInvoicingFeeSats: string;
+  providerDurableHostingFeeSats: string;
   providerFeeSats: string;
   creatorNetSats: string;
   status: ProviderPaymentIntentStatus;
   payoutStatus: ProviderPayoutStatus;
   payoutRail: ProviderPayoutRail;
+  payoutDestinationType: CreatorPayoutDestinationType;
+  payoutDestinationSummary: string | null;
+  providerRemitMode: ProviderRemitMode;
+  payoutReference: string | null;
+  remittedAt: string | null;
+  payoutLastError: string | null;
+  remittanceAttemptId: string | null;
+  remittanceLockedAt: string | null;
+  remittanceLastCheckedAt: string | null;
+  remittanceAttempts: number;
   paymentReceiptId: string | null;
   buyerSessionId: string | null;
   createdAt: string;
@@ -1579,32 +1599,102 @@ type ProviderPaymentReceiptRecord = {
   bolt11: string | null;
   amountSats: string;
   grossAmountSats: string;
+  providerInvoicingFeeSats: string;
+  providerDurableHostingFeeSats: string;
   providerFeeSats: string;
   creatorNetSats: string;
   payoutStatus: ProviderPayoutStatus;
   payoutRail: ProviderPayoutRail;
+  payoutDestinationType: CreatorPayoutDestinationType;
+  payoutDestinationSummary: string | null;
+  providerRemitMode: ProviderRemitMode;
+  payoutReference: string | null;
+  remittedAt: string | null;
+  payoutLastError: string | null;
   paidAt: string;
   createdAt: string;
   updatedAt: string;
 };
 
-function computeProviderFeeBreakdown(amountSats: string | bigint | number): {
+type CreatorPayoutDestinationRecord = {
+  userId: string;
+  payoutDestinationType: CreatorPayoutDestinationType;
+  lightningAddress: string | null;
+  onchainAddress: string | null;
+  providerRemitMode: ProviderRemitMode;
+  payoutConfiguredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type CreatorPayoutDestinationState = {
+  payoutDestinationType: CreatorPayoutDestinationType;
+  lightningAddress: string | null;
+  onchainAddress: string | null;
+  localLndReady: boolean;
+  providerRemitMode: ProviderRemitMode;
+  payoutConfiguredAt: string | null;
+  valid: boolean;
+  message: string;
+  effectiveDestinationType: CreatorPayoutDestinationType;
+  effectiveDestinationSummary: string | null;
+  effectivePayoutRail: ProviderPayoutRail;
+};
+
+const PROVIDER_INVOICING_FEE_PERCENT = 1;
+const PROVIDER_DURABLE_HOSTING_FEE_PERCENT = 1;
+
+function computePercentFeeComponent(gross: bigint, feePercent: number, remaining: bigint): bigint {
+  if (gross <= 0n || remaining <= 0n || feePercent <= 0) return 0n;
+  const percent = BigInt(Math.max(0, Math.floor(feePercent)));
+  if (percent <= 0n) return 0n;
+  let fee = (gross * percent) / 100n;
+  if (fee < 1n) fee = 1n;
+  if (fee > remaining) fee = remaining;
+  return fee;
+}
+
+function computeProviderFeeBreakdown(
+  amountSats: string | bigint | number,
+  services?: { providerInvoicing?: boolean; durablePublicHosting?: boolean }
+): {
   grossAmountSats: string;
+  providerInvoicingFeeSats: string;
+  providerDurableHostingFeeSats: string;
   providerFeeSats: string;
   creatorNetSats: string;
 } {
   const gross = typeof amountSats === "bigint" ? amountSats : BigInt(String(amountSats || "0"));
   if (gross <= 0n) {
-    return { grossAmountSats: "0", providerFeeSats: "0", creatorNetSats: "0" };
+    return {
+      grossAmountSats: "0",
+      providerInvoicingFeeSats: "0",
+      providerDurableHostingFeeSats: "0",
+      providerFeeSats: "0",
+      creatorNetSats: "0"
+    };
   }
-  // Policy v1: provider fee = max(1 sat, 1% rounded down)
-  const fee = gross >= 100n ? gross / 100n : 1n;
-  const providerFee = fee < 1n ? 1n : fee > gross ? gross : fee;
-  const creatorNet = gross - providerFee;
+
+  const useProviderInvoicing = services?.providerInvoicing !== false;
+  const useDurableHosting = Boolean(services?.durablePublicHosting);
+
+  let remaining = gross;
+  const providerInvoicingFee = useProviderInvoicing
+    ? computePercentFeeComponent(gross, PROVIDER_INVOICING_FEE_PERCENT, remaining)
+    : 0n;
+  remaining -= providerInvoicingFee;
+  const providerDurableHostingFee = useDurableHosting
+    ? computePercentFeeComponent(gross, PROVIDER_DURABLE_HOSTING_FEE_PERCENT, remaining)
+    : 0n;
+  remaining -= providerDurableHostingFee;
+
+  const providerFee = providerInvoicingFee + providerDurableHostingFee;
   return {
     grossAmountSats: gross.toString(),
+    providerInvoicingFeeSats: providerInvoicingFee.toString(),
+    providerDurableHostingFeeSats: providerDurableHostingFee.toString(),
     providerFeeSats: providerFee.toString(),
-    creatorNetSats: creatorNet.toString()
+    creatorNetSats: remaining.toString()
   };
 }
 
@@ -1626,6 +1716,233 @@ function writeJsonArrayState<T>(filePath: string, rows: T[]) {
     fsSync.writeFileSync(tmp, JSON.stringify(rows, null, 2));
     fsSync.renameSync(tmp, filePath);
   } catch {}
+}
+
+function parseProviderRemitMode(value: unknown): ProviderRemitMode {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "provider_custody" || mode === "auto_forward" || mode === "manual_payout") return mode;
+  return null;
+}
+
+function parsePayoutDestinationType(value: unknown): CreatorPayoutDestinationType {
+  const type = String(value || "").trim().toLowerCase();
+  if (type === "lightning_address" || type === "local_lnd" || type === "onchain_address") return type;
+  return null;
+}
+
+function isValidLightningAddress(value: string): boolean {
+  const v = String(value || "").trim();
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
+}
+
+function isValidOnchainAddress(value: string): boolean {
+  const v = String(value || "").trim();
+  return /^(bc1|tb1|bcrt1|[13mn2])[a-zA-HJ-NP-Z0-9]{20,}$/i.test(v);
+}
+
+function summarizePayoutDestination(type: CreatorPayoutDestinationType, lightningAddress: string | null, onchainAddress: string | null) {
+  if (type === "lightning_address" && lightningAddress) return lightningAddress;
+  if (type === "onchain_address" && onchainAddress) {
+    if (onchainAddress.length <= 16) return onchainAddress;
+    return `${onchainAddress.slice(0, 10)}…${onchainAddress.slice(-6)}`;
+  }
+  if (type === "local_lnd") return "Local Lightning node";
+  return null;
+}
+
+function listCreatorPayoutDestinationRecords(): CreatorPayoutDestinationRecord[] {
+  return readJsonArrayState<CreatorPayoutDestinationRecord>(CREATOR_PAYOUT_DESTINATIONS_FILE)
+    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+}
+
+function getCreatorPayoutDestinationRecord(userId: string): CreatorPayoutDestinationRecord | null {
+  if (!userId) return null;
+  return listCreatorPayoutDestinationRecords().find((row) => row.userId === userId) || null;
+}
+
+function upsertCreatorPayoutDestinationRecord(
+  userId: string,
+  input: {
+    payoutDestinationType: CreatorPayoutDestinationType;
+    lightningAddress?: string | null;
+    onchainAddress?: string | null;
+    providerRemitMode?: ProviderRemitMode;
+  }
+): CreatorPayoutDestinationRecord {
+  const now = new Date().toISOString();
+  const rows = readJsonArrayState<CreatorPayoutDestinationRecord>(CREATOR_PAYOUT_DESTINATIONS_FILE);
+  const idx = rows.findIndex((row) => row.userId === userId);
+  const type = parsePayoutDestinationType(input.payoutDestinationType);
+  const recordBase = {
+    userId,
+    payoutDestinationType: type,
+    lightningAddress: input.lightningAddress !== undefined ? String(input.lightningAddress || "").trim() || null : null,
+    onchainAddress: input.onchainAddress !== undefined ? String(input.onchainAddress || "").trim() || null : null,
+    providerRemitMode: parseProviderRemitMode(input.providerRemitMode || null),
+    payoutConfiguredAt: type ? now : null
+  };
+  if (idx >= 0) {
+    rows[idx] = {
+      ...rows[idx],
+      ...recordBase,
+      createdAt: rows[idx].createdAt || now,
+      updatedAt: now
+    };
+    writeJsonArrayState(CREATOR_PAYOUT_DESTINATIONS_FILE, rows);
+    return rows[idx];
+  }
+  const created: CreatorPayoutDestinationRecord = {
+    ...recordBase,
+    createdAt: now,
+    updatedAt: now
+  };
+  rows.unshift(created);
+  writeJsonArrayState(CREATOR_PAYOUT_DESTINATIONS_FILE, rows);
+  return created;
+}
+
+async function resolveEffectivePayoutDestination(
+  userId: string,
+  options?: { localLndReady?: boolean; paymentsReadiness?: Awaited<ReturnType<typeof getPaymentsReadiness>> | null }
+): Promise<CreatorPayoutDestinationState> {
+  let record = getCreatorPayoutDestinationRecord(userId);
+  const paymentsReadiness = options?.paymentsReadiness || (await getPaymentsReadiness(userId).catch(() => null));
+  const localLndReady = options?.localLndReady !== undefined ? Boolean(options.localLndReady) : Boolean(paymentsReadiness?.lightning?.ready);
+
+  if (!record) {
+    const methods = await prisma.payoutMethod
+      .findMany({
+        where: { code: { in: ["lightning_address", "btc_onchain"] as any } }
+      })
+      .catch(() => []);
+    const methodByCode = new Map(methods.map((m) => [String(m.code), m.id]));
+    const identities = await prisma.identity
+      .findMany({
+        where: {
+          userId,
+          payoutMethodId: { in: methods.map((m) => m.id) }
+        }
+      })
+      .catch(() => []);
+    const lightningIdentity = identities.find((row) => row.payoutMethodId === methodByCode.get("lightning_address"));
+    const onchainIdentity = identities.find((row) => row.payoutMethodId === methodByCode.get("btc_onchain"));
+    const inferredLightning = String(lightningIdentity?.value || "").trim() || null;
+    const inferredOnchain = String(onchainIdentity?.value || "").trim() || null;
+    if (inferredLightning || inferredOnchain) {
+      const inferredType: CreatorPayoutDestinationType = inferredLightning
+        ? "lightning_address"
+        : inferredOnchain
+          ? "onchain_address"
+          : null;
+      if (inferredType) {
+        record = upsertCreatorPayoutDestinationRecord(userId, {
+          payoutDestinationType: inferredType,
+          lightningAddress: inferredLightning,
+          onchainAddress: inferredOnchain,
+          providerRemitMode: "manual_payout"
+        });
+      }
+    }
+  }
+
+  const type = parsePayoutDestinationType(record?.payoutDestinationType || null);
+  const lightningAddress = String(record?.lightningAddress || "").trim() || null;
+  const onchainAddress = String(record?.onchainAddress || "").trim() || null;
+  const providerRemitMode = parseProviderRemitMode(record?.providerRemitMode || null) || "manual_payout";
+  const payoutConfiguredAt = record?.payoutConfiguredAt || null;
+
+  if (!type) {
+    return {
+      payoutDestinationType: null,
+      lightningAddress,
+      onchainAddress,
+      localLndReady,
+      providerRemitMode,
+      payoutConfiguredAt,
+      valid: false,
+      message: "Payout destination is not configured.",
+      effectiveDestinationType: null,
+      effectiveDestinationSummary: null,
+      effectivePayoutRail: null
+    };
+  }
+
+  if (type === "lightning_address") {
+    if (!lightningAddress || !isValidLightningAddress(lightningAddress)) {
+      return {
+        payoutDestinationType: type,
+        lightningAddress,
+        onchainAddress,
+        localLndReady,
+        providerRemitMode,
+        payoutConfiguredAt,
+        valid: false,
+        message: "Lightning Address payout destination is invalid.",
+        effectiveDestinationType: null,
+        effectiveDestinationSummary: null,
+        effectivePayoutRail: null
+      };
+    }
+  } else if (type === "onchain_address") {
+    if (!onchainAddress || !isValidOnchainAddress(onchainAddress)) {
+      return {
+        payoutDestinationType: type,
+        lightningAddress,
+        onchainAddress,
+        localLndReady,
+        providerRemitMode,
+        payoutConfiguredAt,
+        valid: false,
+        message: "On-chain payout destination is invalid.",
+        effectiveDestinationType: null,
+        effectiveDestinationSummary: null,
+        effectivePayoutRail: null
+      };
+    }
+  } else if (type === "local_lnd" && !localLndReady) {
+    return {
+      payoutDestinationType: type,
+      lightningAddress,
+      onchainAddress,
+      localLndReady,
+      providerRemitMode,
+      payoutConfiguredAt,
+      valid: false,
+      message: "Local Lightning payout destination requires local Lightning readiness.",
+      effectiveDestinationType: null,
+      effectiveDestinationSummary: null,
+      effectivePayoutRail: null
+    };
+  }
+
+  const effectivePayoutRail: ProviderPayoutRail =
+    type === "local_lnd"
+      ? "creator_node"
+      : providerRemitMode === "auto_forward"
+        ? "forwarded"
+        : "provider_custody";
+
+  return {
+    payoutDestinationType: type,
+    lightningAddress,
+    onchainAddress,
+    localLndReady,
+    providerRemitMode,
+    payoutConfiguredAt,
+    valid: true,
+    message: "Payout destination configured.",
+    effectiveDestinationType: type,
+    effectiveDestinationSummary: summarizePayoutDestination(type, lightningAddress, onchainAddress),
+    effectivePayoutRail
+  };
+}
+
+async function hasValidCreatorPayoutDestination(
+  userId: string,
+  options?: { localLndReady?: boolean; paymentsReadiness?: Awaited<ReturnType<typeof getPaymentsReadiness>> | null }
+) {
+  const resolved = await resolveEffectivePayoutDestination(userId, options);
+  return resolved.valid;
 }
 
 function buildProviderRecordId(prefix: string): string {
@@ -1713,14 +2030,31 @@ function createProviderDelegatedPublish(
 
 function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
   const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE).map((row) => {
-    const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0");
+    const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0", {
+      providerInvoicing: true,
+      durablePublicHosting: false
+    });
     return {
       ...row,
       grossAmountSats: row.grossAmountSats || fee.grossAmountSats,
+      providerInvoicingFeeSats: row.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
+      providerDurableHostingFeeSats: row.providerDurableHostingFeeSats || fee.providerDurableHostingFeeSats,
       providerFeeSats: row.providerFeeSats || fee.providerFeeSats,
       creatorNetSats: row.creatorNetSats || fee.creatorNetSats,
       payoutStatus: row.payoutStatus || "pending",
-      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail
+      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail,
+      payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
+      payoutDestinationSummary: row.payoutDestinationSummary || null,
+      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
+      payoutReference: row.payoutReference || null,
+      remittedAt: row.remittedAt || null,
+      payoutLastError: row.payoutLastError || null,
+      remittanceAttemptId: row.remittanceAttemptId || null,
+      remittanceLockedAt: row.remittanceLockedAt || null,
+      remittanceLastCheckedAt: row.remittanceLastCheckedAt || null,
+      remittanceAttempts: Number.isFinite(Number((row as any).remittanceAttempts))
+        ? Math.max(0, Number((row as any).remittanceAttempts))
+        : 0
     };
   });
   return rows.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
@@ -1781,10 +2115,22 @@ function updateProviderPaymentIntent(
       | "paidAt"
       | "amountSats"
       | "grossAmountSats"
+      | "providerInvoicingFeeSats"
+      | "providerDurableHostingFeeSats"
       | "providerFeeSats"
       | "creatorNetSats"
       | "payoutStatus"
       | "payoutRail"
+      | "payoutDestinationType"
+      | "payoutDestinationSummary"
+      | "providerRemitMode"
+      | "payoutReference"
+      | "remittedAt"
+      | "payoutLastError"
+      | "remittanceAttemptId"
+      | "remittanceLockedAt"
+      | "remittanceLastCheckedAt"
+      | "remittanceAttempts"
       | "buyerSessionId"
     >
   >
@@ -1804,24 +2150,60 @@ function updateProviderPaymentIntent(
     paidAt: patch.paidAt !== undefined ? patch.paidAt : rows[idx].paidAt,
     amountSats: patch.amountSats !== undefined ? patch.amountSats : rows[idx].amountSats,
     grossAmountSats: patch.grossAmountSats !== undefined ? patch.grossAmountSats : rows[idx].grossAmountSats,
-    providerFeeSats: patch.providerFeeSats !== undefined ? patch.providerFeeSats : rows[idx].providerFeeSats,
-    creatorNetSats: patch.creatorNetSats !== undefined ? patch.creatorNetSats : rows[idx].creatorNetSats,
-    updatedAt: new Date().toISOString()
-  };
+    providerInvoicingFeeSats:
+      patch.providerInvoicingFeeSats !== undefined ? patch.providerInvoicingFeeSats : rows[idx].providerInvoicingFeeSats,
+    providerDurableHostingFeeSats:
+      patch.providerDurableHostingFeeSats !== undefined
+        ? patch.providerDurableHostingFeeSats
+        : rows[idx].providerDurableHostingFeeSats,
+      providerFeeSats: patch.providerFeeSats !== undefined ? patch.providerFeeSats : rows[idx].providerFeeSats,
+      creatorNetSats: patch.creatorNetSats !== undefined ? patch.creatorNetSats : rows[idx].creatorNetSats,
+      payoutDestinationType:
+        patch.payoutDestinationType !== undefined ? patch.payoutDestinationType : rows[idx].payoutDestinationType,
+      payoutDestinationSummary:
+        patch.payoutDestinationSummary !== undefined ? patch.payoutDestinationSummary : rows[idx].payoutDestinationSummary,
+      providerRemitMode: patch.providerRemitMode !== undefined ? patch.providerRemitMode : rows[idx].providerRemitMode,
+      payoutReference: patch.payoutReference !== undefined ? patch.payoutReference : rows[idx].payoutReference,
+      remittedAt: patch.remittedAt !== undefined ? patch.remittedAt : rows[idx].remittedAt,
+      payoutLastError: patch.payoutLastError !== undefined ? patch.payoutLastError : rows[idx].payoutLastError,
+      remittanceAttemptId:
+        patch.remittanceAttemptId !== undefined ? patch.remittanceAttemptId : rows[idx].remittanceAttemptId,
+      remittanceLockedAt: patch.remittanceLockedAt !== undefined ? patch.remittanceLockedAt : rows[idx].remittanceLockedAt,
+      remittanceLastCheckedAt:
+        patch.remittanceLastCheckedAt !== undefined
+          ? patch.remittanceLastCheckedAt
+          : rows[idx].remittanceLastCheckedAt,
+      remittanceAttempts:
+        patch.remittanceAttempts !== undefined
+          ? Math.max(0, Number(patch.remittanceAttempts) || 0)
+          : Math.max(0, Number(rows[idx].remittanceAttempts) || 0),
+      updatedAt: new Date().toISOString()
+    };
   writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
   return rows[idx];
 }
 
 function listProviderPaymentReceipts(): ProviderPaymentReceiptRecord[] {
   const rows = readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE).map((row) => {
-    const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0");
+    const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0", {
+      providerInvoicing: true,
+      durablePublicHosting: false
+    });
     return {
       ...row,
       grossAmountSats: row.grossAmountSats || fee.grossAmountSats,
+      providerInvoicingFeeSats: row.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
+      providerDurableHostingFeeSats: row.providerDurableHostingFeeSats || fee.providerDurableHostingFeeSats,
       providerFeeSats: row.providerFeeSats || fee.providerFeeSats,
       creatorNetSats: row.creatorNetSats || fee.creatorNetSats,
       payoutStatus: row.payoutStatus || "pending",
-      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail
+      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail,
+      payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
+      payoutDestinationSummary: row.payoutDestinationSummary || null,
+      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
+      payoutReference: row.payoutReference || null,
+      remittedAt: row.remittedAt || null,
+      payoutLastError: row.payoutLastError || null
     };
   });
   return rows.sort((a, b) => String(b.paidAt || b.updatedAt || "").localeCompare(String(a.paidAt || a.updatedAt || "")));
@@ -1858,10 +2240,18 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
     bolt11: intent.bolt11,
     amountSats: intent.amountSats,
     grossAmountSats: intent.grossAmountSats || intent.amountSats,
+    providerInvoicingFeeSats: intent.providerInvoicingFeeSats || intent.providerFeeSats || "0",
+    providerDurableHostingFeeSats: intent.providerDurableHostingFeeSats || "0",
     providerFeeSats: intent.providerFeeSats || "0",
     creatorNetSats: intent.creatorNetSats || intent.amountSats,
     payoutStatus: intent.payoutStatus || "pending",
     payoutRail: intent.payoutRail ?? "provider_custody",
+    payoutDestinationType: parsePayoutDestinationType(intent.payoutDestinationType || null),
+    payoutDestinationSummary: intent.payoutDestinationSummary || null,
+    providerRemitMode: parseProviderRemitMode(intent.providerRemitMode || null),
+    payoutReference: intent.payoutReference || null,
+    remittedAt: intent.remittedAt || null,
+    payoutLastError: intent.payoutLastError || null,
     paidAt
   });
 
@@ -1878,10 +2268,18 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
       providerNodeId: intent.providerNodeId,
       amountSats: intent.amountSats,
       grossAmountSats: intent.grossAmountSats || intent.amountSats,
+      providerInvoicingFeeSats: intent.providerInvoicingFeeSats || intent.providerFeeSats || "0",
+      providerDurableHostingFeeSats: intent.providerDurableHostingFeeSats || "0",
       providerFeeSats: intent.providerFeeSats || "0",
       creatorNetSats: intent.creatorNetSats || intent.amountSats,
       payoutStatus: intent.payoutStatus || "pending",
       payoutRail: intent.payoutRail ?? "provider_custody",
+      payoutDestinationType: parsePayoutDestinationType(intent.payoutDestinationType || null),
+      payoutDestinationSummary: intent.payoutDestinationSummary || null,
+      providerRemitMode: parseProviderRemitMode(intent.providerRemitMode || null),
+      payoutReference: intent.payoutReference || null,
+      remittedAt: intent.remittedAt || null,
+      payoutLastError: intent.payoutLastError || null,
       paidAt
     }
   });
@@ -1920,9 +2318,399 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   const updated = updateProviderPaymentIntent(intent.id, {
     paymentReceiptId,
     paidAt,
-    status: "paid"
+    status: "paid",
+    payoutStatus: intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node" ? "paid" : intent.payoutStatus || "pending",
+    remittedAt:
+      intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node"
+        ? paidAt
+        : intent.remittedAt || null,
+    payoutReference:
+      intent.payoutRail === "forwarded" && !intent.payoutReference
+        ? intent.providerInvoiceRef || paymentReceiptId
+        : intent.payoutReference || null,
+    payoutLastError: null,
+    remittanceAttemptId:
+      intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node"
+        ? null
+        : intent.remittanceAttemptId || null,
+    remittanceLockedAt:
+      intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node"
+        ? null
+        : intent.remittanceLockedAt || null,
+    remittanceLastCheckedAt: new Date().toISOString()
   });
-  return updated || intent;
+  const settled = updated || intent;
+  app.log.info(
+    {
+      paymentIntentId: settled.paymentIntentId,
+      creatorNodeId: settled.creatorNodeId,
+      status: settled.status,
+      payoutStatus: settled.payoutStatus,
+      providerRemitMode: settled.providerRemitMode,
+      payoutDestinationType: settled.payoutDestinationType,
+      payoutDestinationSummary: settled.payoutDestinationSummary,
+      creatorNetSats: settled.creatorNetSats
+    },
+    "providerRemittance.trigger_evaluated"
+  );
+  if (settled.status === "paid" && settled.providerRemitMode === "auto_forward") {
+    app.log.info(
+      { paymentIntentId: settled.paymentIntentId, creatorNodeId: settled.creatorNodeId },
+      "providerRemittance.trigger_started"
+    );
+    return executeCreatorRemittance(settled, "provider_settlement");
+  }
+  if (settled.status === "paid") {
+    app.log.info(
+      {
+        paymentIntentId: settled.paymentIntentId,
+        creatorNodeId: settled.creatorNodeId,
+        reason: settled.providerRemitMode !== "auto_forward" ? "AUTO_FORWARD_DISABLED" : "NOT_SETTLED",
+        providerRemitMode: settled.providerRemitMode
+      },
+      "providerRemittance.trigger_skipped"
+    );
+  }
+  return settled;
+}
+
+function normalizeLndMacaroonHex(): string | null {
+  const raw = String(process.env.LND_MACAROON_HEX || process.env.LND_MACAROON || "").trim();
+  if (!raw) return null;
+  if (/^[0-9a-fA-F]+$/.test(raw)) return raw.toLowerCase();
+  try {
+    return Buffer.from(raw, "base64").toString("hex").toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJsonWithTimeout(url: string, init: RequestInit, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal } as any);
+    const text = await res.text().catch(() => "");
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    return { res, json, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function requestLightningAddressInvoice(lightningAddress: string, amountSats: string, memo: string): Promise<string> {
+  const [name, domain] = String(lightningAddress || "").trim().split("@");
+  if (!name || !domain) throw new Error("LIGHTNING_ADDRESS_INVALID");
+  const amountMsat = BigInt(String(amountSats || "0")) * 1000n;
+  if (amountMsat <= 0n) throw new Error("AMOUNT_INVALID");
+  try {
+    app.log.info(
+      { lightningAddress, domain, amountSats, amountMsat: amountMsat.toString() },
+      "providerRemittance.lightning_address_lookup_start"
+    );
+    const lnurlpUrl = `https://${domain}/.well-known/lnurlp/${encodeURIComponent(name)}`;
+    const lnurlp = await fetchJsonWithTimeout(lnurlpUrl, { method: "GET", headers: { Accept: "application/json" } as any }, 8000);
+    if (!lnurlp.res.ok || !lnurlp.json?.callback) throw new Error("LIGHTNING_ADDRESS_LOOKUP_FAILED");
+    app.log.info(
+      { lightningAddress, callbackHost: (() => { try { return new URL(String(lnurlp.json?.callback || "")).host; } catch { return null; } })() },
+      "providerRemittance.lightning_address_lookup_ok"
+    );
+    const callbackBase = String(lnurlp.json.callback || "").trim();
+    const separator = callbackBase.includes("?") ? "&" : "?";
+    const callbackUrl = `${callbackBase}${separator}amount=${amountMsat.toString()}&comment=${encodeURIComponent(memo.slice(0, 120))}`;
+    const invoiceRes = await fetchJsonWithTimeout(callbackUrl, { method: "GET", headers: { Accept: "application/json" } as any }, 8000);
+    const pr = String(invoiceRes.json?.pr || "").trim();
+    if (!invoiceRes.res.ok || !pr) throw new Error("LIGHTNING_ADDRESS_INVOICE_FAILED");
+    app.log.info(
+      { lightningAddress, invoiceLength: pr.length },
+      "providerRemittance.lightning_address_invoice_ok"
+    );
+    return pr;
+  } catch (err: any) {
+    app.log.warn(
+      { lightningAddress, domain, error: String(err?.message || err) },
+      "providerRemittance.lightning_address_invoice_failed"
+    );
+    throw err;
+  }
+}
+
+async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | null; status: string }> {
+  const lndRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "");
+  const macaroon = normalizeLndMacaroonHex();
+  if (!lndRest || !macaroon) throw new Error("LND_SEND_NOT_CONFIGURED");
+  const paymentRequestTag = crypto.createHash("sha256").update(String(bolt11 || "")).digest("hex").slice(0, 12);
+  app.log.info(
+    { lndRest, paymentRequestTag },
+    "providerRemittance.lnd_send_attempt"
+  );
+  const target = `${lndRest}/v2/router/send`;
+  const body = { payment_request: bolt11, timeout_seconds: 60, fee_limit_sat: 50 };
+  const { res, json, text } = await fetchJsonWithTimeout(
+    target,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Accept: "application/json",
+        "Grpc-Metadata-macaroon": macaroon
+      } as any,
+      body: JSON.stringify(body)
+    },
+    15000
+  );
+  if (!res.ok) {
+    app.log.warn(
+      { lndRest, paymentRequestTag, statusCode: res.status, response: String(json?.error || text || "send_failed") },
+      "providerRemittance.lnd_send_http_failed"
+    );
+    throw new Error(`LND_SEND_HTTP_${res.status}:${String(json?.error || text || "send_failed")}`);
+  }
+  const status = String(json?.status || "").trim().toUpperCase();
+  const paymentHash = String(json?.payment_hash || "").trim() || null;
+  if (status === "SUCCEEDED" || status === "SUCCESS") {
+    app.log.info(
+      { lndRest, paymentRequestTag, paymentHash, status },
+      "providerRemittance.lnd_send_success"
+    );
+    return { paymentHash, status: "paid" };
+  }
+  app.log.warn(
+    { lndRest, paymentRequestTag, status, paymentHash },
+    "providerRemittance.lnd_send_not_paid"
+  );
+  throw new Error(`LND_SEND_NOT_PAID:${status || "UNKNOWN"}`);
+}
+
+function isStaleForwardingRemittance(intent: ProviderPaymentIntentRecord, nowMs = Date.now()): boolean {
+  if (!intent || intent.payoutStatus !== "forwarding") return false;
+  if (intent.payoutReference || intent.remittedAt) return false;
+  const lockedAtMs = intent.remittanceLockedAt ? Date.parse(intent.remittanceLockedAt) : NaN;
+  if (!Number.isFinite(lockedAtMs) || lockedAtMs <= 0) return true;
+  return nowMs - lockedAtMs > REMITTANCE_FORWARDING_STALE_MS;
+}
+
+function isRemittanceEligibleForExecution(
+  intent: ProviderPaymentIntentRecord,
+  nowMs = Date.now()
+): { eligible: boolean; reason: string } {
+  if (!intent) return { eligible: false, reason: "MISSING_INTENT" };
+  if (intent.status !== "paid") return { eligible: false, reason: "PAYMENT_NOT_SETTLED" };
+  if (intent.payoutStatus === "paid") return { eligible: false, reason: "ALREADY_PAID" };
+  if (intent.payoutReference || intent.remittedAt) return { eligible: false, reason: "ALREADY_RECORDED" };
+  if (intent.payoutRail === "creator_node") return { eligible: false, reason: "SELF_RECEIVED" };
+  if (intent.providerRemitMode !== "auto_forward") return { eligible: false, reason: "AUTO_FORWARD_DISABLED" };
+  if (intent.payoutDestinationType !== "lightning_address") return { eligible: false, reason: "UNSUPPORTED_DESTINATION" };
+  if (BigInt(String(intent.creatorNetSats || "0")) <= 0n) return { eligible: false, reason: "NON_POSITIVE_NET" };
+  if (intent.remittanceAttemptId && intent.remittanceLockedAt && !isStaleForwardingRemittance(intent, nowMs)) {
+    return { eligible: false, reason: "LOCK_ACTIVE" };
+  }
+  if (intent.payoutStatus === "forwarding" && !isStaleForwardingRemittance(intent, nowMs)) {
+    return { eligible: false, reason: "FORWARDING_ACTIVE" };
+  }
+  return { eligible: true, reason: "OK" };
+}
+
+function acquirePersistentRemittanceLock(
+  intent: ProviderPaymentIntentRecord,
+  reason: string
+): { acquired: boolean; intent: ProviderPaymentIntentRecord; attemptId?: string; skipReason?: string } {
+  const nowMs = Date.now();
+  const current = listProviderPaymentIntents().find((row) => row.id === intent.id) || intent;
+  const eligible = isRemittanceEligibleForExecution(current, nowMs);
+  if (!eligible.eligible) {
+    const touched =
+      updateProviderPaymentIntent(current.id, {
+        remittanceLastCheckedAt: new Date(nowMs).toISOString()
+      }) || current;
+    app.log.info(
+      {
+        route: reason,
+        paymentIntentId: touched.paymentIntentId,
+        creatorNodeId: touched.creatorNodeId,
+        skipReason: eligible.reason
+      },
+      "providerRemittance.execution_skipped"
+    );
+    return { acquired: false, intent: touched, skipReason: eligible.reason };
+  }
+  const attemptId = `rmt_${crypto.randomBytes(8).toString("hex")}`;
+  const nowIso = new Date(nowMs).toISOString();
+  const locked =
+    updateProviderPaymentIntent(current.id, {
+      payoutStatus: "forwarding",
+      payoutLastError: null,
+      remittanceAttemptId: attemptId,
+      remittanceLockedAt: nowIso,
+      remittanceLastCheckedAt: nowIso,
+      remittanceAttempts: Math.max(0, Number(current.remittanceAttempts) || 0) + 1
+    }) || current;
+  app.log.info(
+    {
+      route: reason,
+      paymentIntentId: locked.paymentIntentId,
+      creatorNodeId: locked.creatorNodeId,
+      remittanceAttemptId: attemptId,
+      staleRecovered: isStaleForwardingRemittance(current, nowMs)
+    },
+    "providerRemittance.lock_acquired"
+  );
+  return { acquired: true, intent: locked, attemptId };
+}
+
+function markRemittancePaid(
+  intentId: string,
+  attemptId: string,
+  patch: { payoutReference: string | null; remittedAt: string; payoutRail: ProviderPayoutRail }
+): ProviderPaymentIntentRecord | null {
+  const current = listProviderPaymentIntents().find((row) => row.id === intentId) || null;
+  if (!current) return null;
+  if (current.remittanceAttemptId && current.remittanceAttemptId !== attemptId) return current;
+  return updateProviderPaymentIntent(intentId, {
+    payoutStatus: "paid",
+    payoutRail: patch.payoutRail,
+    payoutReference: patch.payoutReference,
+    remittedAt: patch.remittedAt,
+    payoutLastError: null,
+    remittanceAttemptId: null,
+    remittanceLockedAt: null,
+    remittanceLastCheckedAt: patch.remittedAt
+  });
+}
+
+function markRemittanceFailed(intentId: string, attemptId: string, message: string): ProviderPaymentIntentRecord | null {
+  const nowIso = new Date().toISOString();
+  const current = listProviderPaymentIntents().find((row) => row.id === intentId) || null;
+  if (!current) return null;
+  if (current.remittanceAttemptId && current.remittanceAttemptId !== attemptId) return current;
+  return updateProviderPaymentIntent(intentId, {
+    payoutStatus: "failed",
+    payoutLastError: message,
+    remittanceAttemptId: null,
+    remittanceLockedAt: null,
+    remittanceLastCheckedAt: nowIso
+  });
+}
+
+async function executeCreatorRemittance(intent: ProviderPaymentIntentRecord, reason: string): Promise<ProviderPaymentIntentRecord> {
+  if (REMITTANCE_FLIGHTS.has(intent.id)) {
+    return listProviderPaymentIntents().find((row) => row.id === intent.id) || intent;
+  }
+  REMITTANCE_FLIGHTS.add(intent.id);
+  try {
+    const lock = acquirePersistentRemittanceLock(intent, reason);
+    if (!lock.acquired || !lock.attemptId) return lock.intent;
+    const forwarding = lock.intent;
+    try {
+      if (forwarding.payoutDestinationType !== "lightning_address") {
+        throw new Error("PAYOUT_DESTINATION_UNSUPPORTED_AUTO_FORWARD");
+      }
+      const lightningAddress = String(forwarding.payoutDestinationSummary || "").trim();
+      if (!lightningAddress || !lightningAddress.includes("@")) {
+        throw new Error("PAYOUT_DESTINATION_INVALID");
+      }
+      app.log.info(
+        {
+          route: reason,
+          paymentIntentId: forwarding.paymentIntentId,
+          remittanceAttemptId: lock.attemptId,
+          payoutDestinationType: forwarding.payoutDestinationType,
+          payoutDestinationSummary: forwarding.payoutDestinationSummary,
+          providerRemitMode: forwarding.providerRemitMode,
+          creatorNetSats: forwarding.creatorNetSats
+        },
+        "providerRemittance.payout_destination_resolved"
+      );
+      app.log.info(
+        {
+          route: reason,
+          paymentIntentId: forwarding.paymentIntentId,
+          remittanceAttemptId: lock.attemptId,
+          creatorNodeId: forwarding.creatorNodeId
+        },
+        "providerRemittance.execution_started"
+      );
+      const invoice = await requestLightningAddressInvoice(
+        lightningAddress,
+        forwarding.creatorNetSats || "0",
+        `Certifyd remittance ${forwarding.paymentIntentId.slice(-8)}`
+      );
+      const send = await payBolt11ViaLnd(invoice);
+      const paidAt = new Date().toISOString();
+      const paid =
+        markRemittancePaid(forwarding.id, lock.attemptId, {
+          payoutRail: "forwarded",
+          payoutReference: send.paymentHash || `ln:${forwarding.paymentIntentId}`,
+          remittedAt: paidAt
+        }) || forwarding;
+      app.log.info(
+        {
+          route: reason,
+          paymentIntentId: forwarding.paymentIntentId,
+          remittanceAttemptId: lock.attemptId,
+          payoutReference: paid.payoutReference
+        },
+        "providerRemittance.send_success"
+      );
+      return paid;
+    } catch (e: any) {
+      const message = String(e?.message || "auto_forward_failed");
+      app.log.warn(
+        {
+          route: reason,
+          paymentIntentId: forwarding.paymentIntentId,
+          creatorNodeId: forwarding.creatorNodeId,
+          payoutDestinationType: forwarding.payoutDestinationType,
+          providerRemitMode: forwarding.providerRemitMode,
+          remittanceAttemptId: lock.attemptId,
+          error: message
+        },
+        "providerRemittance.send_failed"
+      );
+      return markRemittanceFailed(forwarding.id, lock.attemptId, message) || forwarding;
+    }
+  } finally {
+    REMITTANCE_FLIGHTS.delete(intent.id);
+  }
+}
+
+async function reconcileStaleForwardingRemittancesOnStartup() {
+  const rows = listProviderPaymentIntents();
+  const staleRows = rows.filter((row) => isStaleForwardingRemittance(row));
+  if (!staleRows.length) return;
+  app.log.warn(
+    {
+      staleForwardingCount: staleRows.length,
+      staleThresholdMs: REMITTANCE_FORWARDING_STALE_MS
+    },
+    "providerRemittance.startup_reconcile.begin"
+  );
+  for (const row of staleRows) {
+    app.log.warn(
+      {
+        paymentIntentId: row.paymentIntentId,
+        creatorNodeId: row.creatorNodeId,
+        remittanceAttemptId: row.remittanceAttemptId,
+        remittanceLockedAt: row.remittanceLockedAt
+      },
+      "providerRemittance.stale_forwarding_detected"
+    );
+    const reset =
+      updateProviderPaymentIntent(row.id, {
+        payoutStatus: "pending",
+        remittanceAttemptId: null,
+        remittanceLockedAt: null,
+        remittanceLastCheckedAt: new Date().toISOString(),
+        payoutLastError: row.payoutLastError || "STALE_FORWARDING_RECOVERED"
+      }) || row;
+    await executeCreatorRemittance(reset, "startup_reconcile_stale_forwarding");
+  }
+  app.log.info({ reconciled: staleRows.length }, "providerRemittance.startup_reconcile.complete");
 }
 
 async function requestDelegatedProviderPaymentIntent(input: {
@@ -1931,7 +2719,23 @@ async function requestDelegatedProviderPaymentIntent(input: {
   amountSats: string;
   paymentIntentId: string;
   buyerSessionId: string | null;
-}): Promise<{ paymentIntentId: string; bolt11: string; providerInvoiceRef: string | null }> {
+  needsProviderInvoicing?: boolean;
+  needsDurablePublicHosting?: boolean;
+  payoutDestinationType?: CreatorPayoutDestinationType;
+  payoutDestinationSummary?: string | null;
+  providerRemitMode?: ProviderRemitMode;
+}): Promise<{
+  paymentIntentId: string;
+  bolt11: string;
+  providerInvoiceRef: string | null;
+  providerFeeSats: string | null;
+  providerInvoicingFeeSats: string | null;
+  providerDurableHostingFeeSats: string | null;
+  creatorNetSats: string | null;
+  payoutDestinationType: CreatorPayoutDestinationType;
+  payoutDestinationSummary: string | null;
+  providerRemitMode: ProviderRemitMode;
+}> {
   const providerCfg = getNetworkProviderConfig();
   let providerTrust = evaluateProviderExecutionTrustReadiness();
   if (!providerTrust.allowed && hasProviderPaymentTarget(providerCfg)) {
@@ -1958,7 +2762,12 @@ async function requestDelegatedProviderPaymentIntent(input: {
         contentId: input.contentId,
         amountSats: input.amountSats,
         paymentIntentId: input.paymentIntentId,
-        buyerSessionId: input.buyerSessionId
+        buyerSessionId: input.buyerSessionId,
+        needsProviderInvoicing: input.needsProviderInvoicing !== false,
+        needsDurablePublicHosting: Boolean(input.needsDurablePublicHosting),
+        payoutDestinationType: input.payoutDestinationType || null,
+        payoutDestinationSummary: input.payoutDestinationSummary || null,
+        providerRemitMode: input.providerRemitMode || "manual_payout"
       }),
       signal: controller.signal
     } as any);
@@ -1989,7 +2798,14 @@ async function requestDelegatedProviderPaymentIntent(input: {
     return {
       paymentIntentId,
       bolt11,
-      providerInvoiceRef: String(json?.providerInvoiceRef || "").trim() || null
+      providerInvoiceRef: String(json?.providerInvoiceRef || "").trim() || null,
+      providerFeeSats: String(json?.providerFeeSats || "").trim() || null,
+      providerInvoicingFeeSats: String(json?.providerInvoicingFeeSats || "").trim() || null,
+      providerDurableHostingFeeSats: String(json?.providerDurableHostingFeeSats || "").trim() || null,
+      creatorNetSats: String(json?.creatorNetSats || "").trim() || null,
+      payoutDestinationType: parsePayoutDestinationType(json?.payoutDestinationType || null),
+      payoutDestinationSummary: String(json?.payoutDestinationSummary || "").trim() || null,
+      providerRemitMode: parseProviderRemitMode(json?.providerRemitMode || null)
     };
   } catch (e: any) {
     app.log.warn(
@@ -3862,6 +4678,102 @@ function getCapabilityContext() {
   return { productTier, paymentsMode, namedReady, nodeMode, publicStatus, providerConfigured, providerTrusted };
 }
 
+type ProviderServiceProfile = {
+  participationMode: "basic_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+  hasStablePublicRoute: boolean;
+  stablePublicRouteOrigin: string | null;
+  temporaryNodeEndpointOrigin: string | null;
+  localNodeEndpointOrigin: string | null;
+  hasLocalInvoiceMinting: boolean;
+  needsProviderInvoicing: boolean;
+  needsDurablePublicHosting: boolean;
+  providerInvoicingFeePercent: number;
+  providerDurableHostingFeePercent: number;
+  totalProviderFeePercent: number;
+  providerConfigured: boolean;
+  providerTrusted: boolean;
+  providerUrl: string | null;
+  canonicalCommerceOrigin: string | null;
+  canonicalCommerceKind: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
+};
+
+function resolveProviderServiceProfile(input: {
+  hasLocalInvoiceMinting: boolean;
+  providerCfg?: NetworkProviderConfig;
+  ctx?: ReturnType<typeof getCapabilityContext>;
+}): ProviderServiceProfile {
+  const ctx = input.ctx || getCapabilityContext();
+  const providerCfg = input.providerCfg || getNetworkProviderConfig();
+  const activeLocalOrigin =
+    ctx.publicStatus.status === "online"
+      ? String(ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || "").trim().replace(/\/+$/, "") || null
+      : null;
+  const hasStablePublicRoute = Boolean(
+    activeLocalOrigin &&
+      (ctx.publicStatus.mode === "named" || isPersistentOrigin(activeLocalOrigin))
+  );
+  const stablePublicRouteOrigin = hasStablePublicRoute ? activeLocalOrigin : null;
+  const temporaryNodeEndpointOrigin = activeLocalOrigin && !hasStablePublicRoute ? activeLocalOrigin : null;
+
+  const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "") || null;
+  const providerConfigured = hasProviderPaymentTarget(providerCfg);
+  const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
+  const hasLocalInvoiceMinting = Boolean(input.hasLocalInvoiceMinting);
+
+  const isBasicCreator = ctx.nodeMode === "basic";
+  const isLanNode = ctx.nodeMode === "lan";
+  const fullySelfProvided = hasStablePublicRoute && hasLocalInvoiceMinting;
+  const isSovereignCreatorWithProvider =
+    !isBasicCreator &&
+    !isLanNode &&
+    providerConfigured &&
+    !fullySelfProvided;
+  const participationMode: ProviderServiceProfile["participationMode"] = isBasicCreator
+    ? "basic_creator"
+    : isSovereignCreatorWithProvider
+      ? "sovereign_creator_with_provider"
+      : "sovereign_node";
+
+  const needsProviderInvoicing = participationMode === "sovereign_creator_with_provider" && !hasLocalInvoiceMinting;
+  const needsDurablePublicHosting = participationMode === "sovereign_creator_with_provider" && !hasStablePublicRoute;
+
+  const providerInvoicingFeePercent = needsProviderInvoicing ? PROVIDER_INVOICING_FEE_PERCENT : 0;
+  const providerDurableHostingFeePercent = needsDurablePublicHosting ? PROVIDER_DURABLE_HOSTING_FEE_PERCENT : 0;
+  const totalProviderFeePercent = providerInvoicingFeePercent + providerDurableHostingFeePercent;
+
+  let canonicalCommerceOrigin: string | null = null;
+  let canonicalCommerceKind: ProviderServiceProfile["canonicalCommerceKind"] = "unavailable";
+  if (needsDurablePublicHosting && providerTrusted && providerUrl) {
+    canonicalCommerceOrigin = providerUrl;
+    canonicalCommerceKind = "provider_hosted";
+  } else if (stablePublicRouteOrigin) {
+    canonicalCommerceOrigin = stablePublicRouteOrigin;
+    canonicalCommerceKind = "self_hosted_stable";
+  } else if (temporaryNodeEndpointOrigin) {
+    canonicalCommerceOrigin = temporaryNodeEndpointOrigin;
+    canonicalCommerceKind = "temporary_endpoint";
+  }
+
+  return {
+    participationMode,
+    hasStablePublicRoute,
+    stablePublicRouteOrigin,
+    temporaryNodeEndpointOrigin,
+    localNodeEndpointOrigin: activeLocalOrigin,
+    hasLocalInvoiceMinting,
+    needsProviderInvoicing,
+    needsDurablePublicHosting,
+    providerInvoicingFeePercent,
+    providerDurableHostingFeePercent,
+    totalProviderFeePercent,
+    providerConfigured,
+    providerTrusted,
+    providerUrl,
+    canonicalCommerceOrigin,
+    canonicalCommerceKind
+  };
+}
+
 function isAdvancedInactive(ctx: ReturnType<typeof getCapabilityContext>) {
   return ctx.productTier === "advanced" && !isAdvancedActive(ctx);
 }
@@ -5232,6 +6144,11 @@ function registerPublicRoutes(appPublic: any) {
       amountSats?: string | number | null;
       paymentIntentId?: string | null;
       buyerSessionId?: string | null;
+      needsProviderInvoicing?: boolean;
+      needsDurablePublicHosting?: boolean;
+      payoutDestinationType?: CreatorPayoutDestinationType;
+      payoutDestinationSummary?: string | null;
+      providerRemitMode?: ProviderRemitMode;
     };
     const creatorNodeId = String(body.creatorNodeId || "").trim();
     const contentId = String(body.contentId || "").trim();
@@ -5256,7 +6173,14 @@ function registerPublicRoutes(appPublic: any) {
         paymentIntentId: existing.paymentIntentId,
         bolt11: existing.bolt11,
         providerInvoiceRef: existing.providerInvoiceRef,
-        status: existing.status
+        status: existing.status,
+        providerFeeSats: existing.providerFeeSats,
+        providerInvoicingFeeSats: existing.providerInvoicingFeeSats,
+        providerDurableHostingFeeSats: existing.providerDurableHostingFeeSats,
+        creatorNetSats: existing.creatorNetSats,
+        payoutDestinationType: existing.payoutDestinationType,
+        payoutDestinationSummary: existing.payoutDestinationSummary,
+        providerRemitMode: existing.providerRemitMode
       });
     }
 
@@ -5274,6 +6198,12 @@ function registerPublicRoutes(appPublic: any) {
       bolt11 = invoice?.bolt11 || null;
       providerInvoiceRef = invoice?.providerId || null;
     } catch {}
+    const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+    const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
+    const fee = computeProviderFeeBreakdown(amountSats, {
+      providerInvoicing: body.needsProviderInvoicing !== false,
+      durablePublicHosting: Boolean(body.needsDurablePublicHosting)
+    });
     const created = createProviderPaymentIntent({
       providerNodeId,
       creatorNodeId,
@@ -5282,10 +6212,20 @@ function registerPublicRoutes(appPublic: any) {
       bolt11,
       providerInvoiceRef,
       amountSats,
-      ...computeProviderFeeBreakdown(amountSats),
+      ...fee,
       status: bolt11 ? "issued" : "created",
       payoutStatus: "pending",
-      payoutRail: "provider_custody",
+      payoutRail,
+      payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
+      payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
+      providerRemitMode,
+      payoutReference: null,
+      remittedAt: null,
+      payoutLastError: null,
+      remittanceAttemptId: null,
+      remittanceLockedAt: null,
+      remittanceLastCheckedAt: null,
+      remittanceAttempts: 0,
       paymentReceiptId: null,
       buyerSessionId: String(body.buyerSessionId || "").trim() || null,
       paidAt: null
@@ -5295,7 +6235,14 @@ function registerPublicRoutes(appPublic: any) {
       paymentIntentId: created.paymentIntentId,
       bolt11: created.bolt11,
       providerInvoiceRef: created.providerInvoiceRef,
-      status: created.status
+      status: created.status,
+      providerFeeSats: created.providerFeeSats,
+      providerInvoicingFeeSats: created.providerInvoicingFeeSats,
+      providerDurableHostingFeeSats: created.providerDurableHostingFeeSats,
+      creatorNetSats: created.creatorNetSats,
+      payoutDestinationType: created.payoutDestinationType,
+      payoutDestinationSummary: created.payoutDestinationSummary,
+      providerRemitMode: created.providerRemitMode
     });
   });
   appPublic.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: any, reply: any) => {
@@ -7537,6 +8484,11 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     amountSats?: string | number | null;
     paymentIntentId?: string | null;
     buyerSessionId?: string | null;
+    needsProviderInvoicing?: boolean;
+    needsDurablePublicHosting?: boolean;
+    payoutDestinationType?: CreatorPayoutDestinationType;
+    payoutDestinationSummary?: string | null;
+    providerRemitMode?: ProviderRemitMode;
   };
   const creatorNodeId = String(body.creatorNodeId || "").trim();
   const contentId = String(body.contentId || "").trim();
@@ -7561,7 +8513,14 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
       paymentIntentId: existing.paymentIntentId,
       bolt11: existing.bolt11,
       providerInvoiceRef: existing.providerInvoiceRef,
-      status: existing.status
+      status: existing.status,
+      providerFeeSats: existing.providerFeeSats,
+      providerInvoicingFeeSats: existing.providerInvoicingFeeSats,
+      providerDurableHostingFeeSats: existing.providerDurableHostingFeeSats,
+      creatorNetSats: existing.creatorNetSats,
+      payoutDestinationType: existing.payoutDestinationType,
+      payoutDestinationSummary: existing.payoutDestinationSummary,
+      providerRemitMode: existing.providerRemitMode
     });
   }
 
@@ -7579,6 +8538,12 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
   } catch {}
+  const fee = computeProviderFeeBreakdown(amountSats, {
+    providerInvoicing: body.needsProviderInvoicing !== false,
+    durablePublicHosting: Boolean(body.needsDurablePublicHosting)
+  });
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const created = createProviderPaymentIntent({
     providerNodeId,
     creatorNodeId,
@@ -7587,10 +8552,20 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     bolt11,
     providerInvoiceRef,
     amountSats,
-    ...computeProviderFeeBreakdown(amountSats),
+    ...fee,
     status: bolt11 ? "issued" : "created",
     payoutStatus: "pending",
-    payoutRail: "provider_custody",
+    payoutRail,
+    payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
+    payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
+    providerRemitMode,
+    payoutReference: null,
+    remittedAt: null,
+    payoutLastError: null,
+    remittanceAttemptId: null,
+    remittanceLockedAt: null,
+    remittanceLastCheckedAt: null,
+    remittanceAttempts: 0,
     paymentReceiptId: null,
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
@@ -7600,7 +8575,14 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     paymentIntentId: created.paymentIntentId,
     bolt11: created.bolt11,
     providerInvoiceRef: created.providerInvoiceRef,
-    status: created.status
+    status: created.status,
+    providerFeeSats: created.providerFeeSats,
+    providerInvoicingFeeSats: created.providerInvoicingFeeSats,
+    providerDurableHostingFeeSats: created.providerDurableHostingFeeSats,
+    creatorNetSats: created.creatorNetSats,
+    payoutDestinationType: created.payoutDestinationType,
+    payoutDestinationSummary: created.payoutDestinationSummary,
+    providerRemitMode: created.providerRemitMode
   });
 });
 
@@ -7649,10 +8631,17 @@ app.get("/public/provider/revenue/:creatorNodeId", async (req: any, reply: any) 
     {
       content_id: string;
       gross_sats: bigint;
+      provider_invoicing_fee_sats: bigint;
+      provider_durable_hosting_fee_sats: bigint;
       provider_fee_sats: bigint;
       creator_net_sats: bigint;
       payout_status: ProviderPayoutStatus;
       payout_rail: ProviderPayoutRail;
+      payout_destination_type: CreatorPayoutDestinationType;
+      payout_destination_summary: string | null;
+      provider_remit_mode: ProviderRemitMode;
+      payout_reference: string | null;
+      remitted_at: string | null;
       last_updated: string;
     }
   >();
@@ -7663,22 +8652,37 @@ app.get("/public/provider/revenue/:creatorNodeId", async (req: any, reply: any) 
     const current = grouped.get(contentId) || {
       content_id: contentId,
       gross_sats: 0n,
+      provider_invoicing_fee_sats: 0n,
+      provider_durable_hosting_fee_sats: 0n,
       provider_fee_sats: 0n,
       creator_net_sats: 0n,
       payout_status: "pending" as ProviderPayoutStatus,
       payout_rail: row.payoutRail ?? "provider_custody",
+      payout_destination_type: parsePayoutDestinationType(row.payoutDestinationType || null),
+      payout_destination_summary: row.payoutDestinationSummary || null,
+      provider_remit_mode: parseProviderRemitMode(row.providerRemitMode || null),
+      payout_reference: row.payoutReference || null,
+      remitted_at: row.remittedAt || null,
       last_updated: row.updatedAt || row.createdAt
     };
     current.gross_sats += BigInt(String(row.grossAmountSats || row.amountSats || "0"));
+    current.provider_invoicing_fee_sats += BigInt(String(row.providerInvoicingFeeSats || row.providerFeeSats || "0"));
+    current.provider_durable_hosting_fee_sats += BigInt(String(row.providerDurableHostingFeeSats || "0"));
     current.provider_fee_sats += BigInt(String(row.providerFeeSats || "0"));
     current.creator_net_sats += BigInt(String(row.creatorNetSats || row.amountSats || "0"));
     if (row.payoutStatus === "failed") current.payout_status = "failed";
+    else if (row.payoutStatus === "forwarding" && current.payout_status !== "failed") current.payout_status = "forwarding";
     else if (row.payoutStatus === "pending" && current.payout_status !== "failed") current.payout_status = "pending";
     else if (row.payoutStatus === "paid" && current.payout_status === "paid") current.payout_status = "paid";
     if (new Date(row.updatedAt || row.createdAt).getTime() > new Date(current.last_updated).getTime()) {
       current.last_updated = row.updatedAt || row.createdAt;
       current.payout_rail = row.payoutRail ?? current.payout_rail;
       if (current.payout_status !== "failed") current.payout_status = row.payoutStatus || current.payout_status;
+      current.payout_destination_type = parsePayoutDestinationType(row.payoutDestinationType || null);
+      current.payout_destination_summary = row.payoutDestinationSummary || null;
+      current.provider_remit_mode = parseProviderRemitMode(row.providerRemitMode || null);
+      current.payout_reference = row.payoutReference || null;
+      current.remitted_at = row.remittedAt || null;
     }
     grouped.set(contentId, current);
   }
@@ -7692,10 +8696,17 @@ app.get("/public/provider/revenue/:creatorNodeId", async (req: any, reply: any) 
       .map((row) => ({
         content_id: row.content_id,
         gross_sats: Number(row.gross_sats),
+        provider_invoicing_fee_sats: Number(row.provider_invoicing_fee_sats),
+        provider_durable_hosting_fee_sats: Number(row.provider_durable_hosting_fee_sats),
         provider_fee_sats: Number(row.provider_fee_sats),
         creator_net_sats: Number(row.creator_net_sats),
         payout_status: row.payout_status,
         payout_rail: row.payout_rail,
+        payout_destination_type: row.payout_destination_type,
+        payout_destination_summary: row.payout_destination_summary,
+        provider_remit_mode: row.provider_remit_mode,
+        payout_reference: row.payout_reference,
+        remitted_at: row.remitted_at,
         last_updated: row.last_updated
       }))
       .sort((a, b) => String(b.last_updated).localeCompare(String(a.last_updated)))
@@ -8249,10 +9260,23 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
   const localInvoiceMinting =
     ctx.paymentsMode === "node" &&
-    ctx.nodeMode === "advanced" &&
+    (ctx.nodeMode === "advanced" || ctx.nodeMode === "lan") &&
     Boolean(paymentsReadiness?.lightning?.ready);
 
-  const delegatedInvoiceSupport = hasProviderPaymentTarget(providerConfig) && evaluateProviderExecutionTrustReadiness().allowed;
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: localInvoiceMinting,
+    providerCfg: providerConfig,
+    ctx
+  });
+  const delegatedInvoiceSupport = serviceProfile.providerConfigured && serviceProfile.providerTrusted;
+  const payoutDestination = await resolveEffectivePayoutDestination(userId, {
+    localLndReady: localInvoiceMinting,
+    paymentsReadiness
+  });
+  const providerBackedCommerceReady = !serviceProfile.needsProviderInvoicing || payoutDestination.valid;
+  const providerBackedCommerceMessage = providerBackedCommerceReady
+    ? "Provider-backed commerce is payout-ready."
+    : "Configure a creator payout destination before provider-backed invoicing can be fully activated.";
 
   const invoiceProviderRole = hasInvoiceProviderRole(runtime.nodeMode as "basic" | "advanced" | "lan");
   const creatorRole = true;
@@ -8273,7 +9297,43 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     paymentCapability: {
       localInvoiceMinting,
       delegatedInvoiceSupport,
-      tipsOnly: !localInvoiceMinting && !delegatedInvoiceSupport
+      tipsOnly: !localInvoiceMinting && !delegatedInvoiceSupport,
+      providerInvoicingAvailable: serviceProfile.needsProviderInvoicing,
+      creatorPayoutDestinationConfigured: payoutDestination.valid,
+      creatorPayoutRail: payoutDestination.effectivePayoutRail,
+      providerBackedCommerceReady,
+      providerBackedCommerceMessage
+    },
+    modeProfile: {
+      participationMode: serviceProfile.participationMode,
+      hasStablePublicRoute: serviceProfile.hasStablePublicRoute,
+      hasLocalInvoiceMinting: serviceProfile.hasLocalInvoiceMinting,
+      providerConfigured: serviceProfile.providerConfigured,
+      providerTrusted: serviceProfile.providerTrusted
+    },
+    providerServices: {
+      invoicing: {
+        mode: serviceProfile.needsProviderInvoicing ? "provider_backed" : "self_provided",
+        feePercent: serviceProfile.providerInvoicingFeePercent
+      },
+      durablePublicHosting: {
+        mode: serviceProfile.needsDurablePublicHosting ? "provider_backed" : "self_provided",
+        feePercent: serviceProfile.providerDurableHostingFeePercent
+      },
+      totalProviderFeePercent: serviceProfile.totalProviderFeePercent
+    },
+    payoutDestination: {
+      payoutDestinationType: payoutDestination.payoutDestinationType,
+      lightningAddress: payoutDestination.lightningAddress,
+      onchainAddress: payoutDestination.onchainAddress,
+      localLndReady: payoutDestination.localLndReady,
+      providerRemitMode: payoutDestination.providerRemitMode,
+      payoutConfiguredAt: payoutDestination.payoutConfiguredAt,
+      valid: payoutDestination.valid,
+      message: payoutDestination.message,
+      effectiveDestinationType: payoutDestination.effectiveDestinationType,
+      effectiveDestinationSummary: payoutDestination.effectiveDestinationSummary,
+      effectivePayoutRail: payoutDestination.effectivePayoutRail
     },
     providerBinding: {
       configured: providerConfigured,
@@ -8282,9 +9342,62 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     visibility,
     reachability: {
       publicUrl,
+      localNodeEndpointUrl: serviceProfile.localNodeEndpointOrigin,
+      temporaryNodeEndpointUrl: serviceProfile.temporaryNodeEndpointOrigin,
+      canonicalCommerceUrl: serviceProfile.canonicalCommerceOrigin,
+      canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
       tunnel,
       ipfs: false
     }
+  });
+});
+
+app.get("/api/network/payout-destination", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const localLndReady = Boolean(paymentsReadiness?.lightning?.ready);
+  const destination = await resolveEffectivePayoutDestination(userId, {
+    localLndReady,
+    paymentsReadiness
+  });
+  return reply.send(destination);
+});
+
+app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body ?? {}) as {
+    payoutDestinationType?: CreatorPayoutDestinationType;
+    lightningAddress?: string | null;
+    onchainAddress?: string | null;
+    providerRemitMode?: ProviderRemitMode;
+  };
+
+  const type = parsePayoutDestinationType(body?.payoutDestinationType || null);
+  if (!type) return badRequest(reply, "payoutDestinationType must be lightning_address, local_lnd, or onchain_address");
+  const providerRemitMode = parseProviderRemitMode(body?.providerRemitMode || null) || "manual_payout";
+  const record = upsertCreatorPayoutDestinationRecord(userId, {
+    payoutDestinationType: type,
+    lightningAddress: body?.lightningAddress || null,
+    onchainAddress: body?.onchainAddress || null,
+    providerRemitMode
+  });
+
+  const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const destination = await resolveEffectivePayoutDestination(userId, {
+    localLndReady: Boolean(paymentsReadiness?.lightning?.ready),
+    paymentsReadiness
+  });
+  if (!destination.valid) {
+    return reply.code(400).send({
+      error: "INVALID_PAYOUT_DESTINATION",
+      message: destination.message,
+      payoutDestination: destination,
+      record
+    });
+  }
+  return reply.send({
+    ok: true,
+    payoutDestination: destination
   });
 });
 
@@ -8325,7 +9438,7 @@ app.get("/api/receipts/:id", { preHandler: requireAuth }, async (req: any, reply
   return reply.send(receipt);
 });
 
-app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const providerTarget = getNetworkProviderConfig();
   const verification = getProviderVerificationStatus(providerTarget);
   const acknowledgment = getProviderAcknowledgmentStatus(providerTarget);
@@ -8333,6 +9446,22 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (_
   const userStatus = deriveUserNetworkStatus();
   const activation = getProfileNetworkActivationStatus(providerTarget);
   const publishReadiness = evaluatePublishReadiness();
+  const ctx = getCapabilityContext();
+  const userId = (req.user as JwtUser).sub;
+  const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting:
+      ctx.paymentsMode === "node" &&
+      Boolean(paymentsReadiness?.lightning?.ready),
+    providerCfg: providerTarget,
+    ctx
+  });
+  const payoutDestination = await resolveEffectivePayoutDestination(userId, {
+    localLndReady:
+      ctx.paymentsMode === "node" &&
+      Boolean(paymentsReadiness?.lightning?.ready),
+    paymentsReadiness
+  });
 
   return reply.send({
     providerTarget: {
@@ -8344,6 +9473,8 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (_
     verification,
     acknowledgment,
     permit,
+    serviceProfile,
+    payoutDestination,
     userStatus,
     activation,
     publishReadiness
@@ -8749,21 +9880,30 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
   const totals = intents.reduce(
     (acc, intent) => {
       const gross = BigInt(String(intent.grossAmountSats || intent.amountSats || "0"));
+      const invoicingFee = BigInt(String(intent.providerInvoicingFeeSats || intent.providerFeeSats || "0"));
+      const durableHostingFee = BigInt(String(intent.providerDurableHostingFeeSats || "0"));
       const fee = BigInt(String(intent.providerFeeSats || "0"));
       const net = BigInt(String(intent.creatorNetSats || intent.amountSats || "0"));
       acc.grossCollectedSats += gross;
+      acc.providerInvoicingFeeEarnedSats += invoicingFee;
+      acc.providerDurableHostingFeeEarnedSats += durableHostingFee;
       acc.providerFeeEarnedSats += fee;
       acc.creatorNetOwedSats += net;
       if (intent.payoutStatus === "paid") acc.creatorNetPaidSats += net;
       if (intent.payoutStatus === "pending") acc.creatorNetPendingSats += net;
+      if (intent.payoutStatus === "forwarding") acc.creatorNetPendingSats += net;
+      if (intent.payoutStatus === "failed") acc.creatorNetFailedSats += net;
       return acc;
     },
     {
       grossCollectedSats: 0n,
+      providerInvoicingFeeEarnedSats: 0n,
+      providerDurableHostingFeeEarnedSats: 0n,
       providerFeeEarnedSats: 0n,
       creatorNetOwedSats: 0n,
       creatorNetPaidSats: 0n,
-      creatorNetPendingSats: 0n
+      creatorNetPendingSats: 0n,
+      creatorNetFailedSats: 0n
     }
   );
   return reply.send({
@@ -8773,10 +9913,13 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
     settledPayments,
     totals: {
       grossCollectedSats: totals.grossCollectedSats.toString(),
+      providerInvoicingFeeEarnedSats: totals.providerInvoicingFeeEarnedSats.toString(),
+      providerDurableHostingFeeEarnedSats: totals.providerDurableHostingFeeEarnedSats.toString(),
       providerFeeEarnedSats: totals.providerFeeEarnedSats.toString(),
       creatorNetOwedSats: totals.creatorNetOwedSats.toString(),
       creatorNetPaidSats: totals.creatorNetPaidSats.toString(),
-      creatorNetPendingSats: totals.creatorNetPendingSats.toString()
+      creatorNetPendingSats: totals.creatorNetPendingSats.toString(),
+      creatorNetFailedSats: totals.creatorNetFailedSats.toString()
     }
   });
 });
@@ -8803,6 +9946,9 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     amountSats?: string | number | null;
     paymentIntentId?: string | null;
     buyerSessionId?: string | null;
+    payoutDestinationType?: CreatorPayoutDestinationType;
+    payoutDestinationSummary?: string | null;
+    providerRemitMode?: ProviderRemitMode;
   };
   const provider = await buildLocalNodeIdentityDoc((req.user as JwtUser).sub);
   const creatorNodeId = String(body.creatorNodeId || "").trim();
@@ -8842,6 +9988,8 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
   } catch {}
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const created = createProviderPaymentIntent({
     providerNodeId: provider.nodeId,
     creatorNodeId,
@@ -8853,7 +10001,17 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     ...computeProviderFeeBreakdown(amountSats),
     status: bolt11 ? "issued" : "created",
     payoutStatus: "pending",
-    payoutRail: "provider_custody",
+    payoutRail,
+    payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
+    payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
+    providerRemitMode,
+    payoutReference: null,
+    remittedAt: null,
+    payoutLastError: null,
+    remittanceAttemptId: null,
+    remittanceLockedAt: null,
+    remittanceLastCheckedAt: null,
+    remittanceAttempts: 0,
     paymentReceiptId: null,
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
@@ -8867,6 +10025,9 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     amountSats?: string | number | null;
     paymentIntentId?: string | null;
     buyerSessionId?: string | null;
+    payoutDestinationType?: CreatorPayoutDestinationType;
+    payoutDestinationSummary?: string | null;
+    providerRemitMode?: ProviderRemitMode;
   };
   const provider = await buildLocalNodeIdentityDoc((req.user as JwtUser).sub);
   const creatorNodeId = String(body.creatorNodeId || "").trim();
@@ -8906,6 +10067,8 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
   } catch {}
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const created = createProviderPaymentIntent({
     providerNodeId: provider.nodeId,
     creatorNodeId,
@@ -8917,7 +10080,17 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     ...computeProviderFeeBreakdown(amountSats),
     status: bolt11 ? "issued" : "created",
     payoutStatus: "pending",
-    payoutRail: "provider_custody",
+    payoutRail,
+    payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
+    payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
+    providerRemitMode,
+    payoutReference: null,
+    remittedAt: null,
+    payoutLastError: null,
+    remittanceAttemptId: null,
+    remittanceLockedAt: null,
+    remittanceLastCheckedAt: null,
+    remittanceAttempts: 0,
     paymentReceiptId: null,
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
@@ -8935,6 +10108,10 @@ app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, asyn
     paidAt?: string | null;
     amountSats?: string | number | null;
     buyerSessionId?: string | null;
+    payoutStatus?: ProviderPayoutStatus;
+    payoutRail?: ProviderPayoutRail;
+    payoutReference?: string | null;
+    remittedAt?: string | null;
   };
   const current = listProviderPaymentIntents().find((row) => row.id === id) || null;
   if (!current) return notFound(reply, "Payment intent not found");
@@ -8956,7 +10133,13 @@ app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, asyn
     }
   }
 
-  const recalculated = body.amountSats !== undefined ? computeProviderFeeBreakdown(String(body.amountSats ?? "").trim() || "0") : null;
+  const recalculated =
+    body.amountSats !== undefined
+      ? computeProviderFeeBreakdown(String(body.amountSats ?? "").trim() || "0", {
+          providerInvoicing: BigInt(String(current.providerInvoicingFeeSats || current.providerFeeSats || "0")) > 0n,
+          durablePublicHosting: BigInt(String(current.providerDurableHostingFeeSats || "0")) > 0n
+        })
+      : null;
   const updated = updateProviderPaymentIntent(id, {
     status: nextStatus,
     bolt11: body.bolt11 !== undefined ? String(body.bolt11 || "").trim() || null : undefined,
@@ -8964,13 +10147,50 @@ app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, asyn
     paidAt: body.paidAt !== undefined ? String(body.paidAt || "").trim() || null : undefined,
     amountSats: body.amountSats !== undefined ? String(body.amountSats ?? "").trim() || "0" : undefined,
     grossAmountSats: recalculated?.grossAmountSats,
+    providerInvoicingFeeSats: recalculated?.providerInvoicingFeeSats,
+    providerDurableHostingFeeSats: recalculated?.providerDurableHostingFeeSats,
     providerFeeSats: recalculated?.providerFeeSats,
     creatorNetSats: recalculated?.creatorNetSats,
-    buyerSessionId: body.buyerSessionId !== undefined ? String(body.buyerSessionId || "").trim() || null : undefined
+    buyerSessionId: body.buyerSessionId !== undefined ? String(body.buyerSessionId || "").trim() || null : undefined,
+    payoutStatus: body.payoutStatus !== undefined ? body.payoutStatus : undefined,
+    payoutRail: body.payoutRail !== undefined ? body.payoutRail : undefined,
+    payoutReference: body.payoutReference !== undefined ? String(body.payoutReference || "").trim() || null : undefined,
+    remittedAt: body.remittedAt !== undefined ? String(body.remittedAt || "").trim() || null : undefined
   });
   if (!updated) return notFound(reply, "Payment intent not found");
   const settled = await ensureProviderPaymentSettlement(updated);
   return reply.send(settled);
+});
+
+app.post("/api/provider/payment-intents/:id/retry-remittance", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id is required");
+  const current = listProviderPaymentIntents().find((row) => row.id === id) || null;
+  if (!current) return notFound(reply, "Payment intent not found");
+  if (current.status !== "paid") {
+    return reply.code(409).send({ error: "PAYMENT_NOT_SETTLED", message: "Remittance can only run after payment settlement." });
+  }
+  const result = await executeCreatorRemittance(current, "provider_retry_remittance");
+  return reply.send({ ok: true, item: result });
+});
+
+app.post("/api/provider/remittances/reprocess", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const candidates = listProviderPaymentIntents().filter((row) => {
+    if (row.status !== "paid") return false;
+    if (row.payoutStatus === "paid") return false;
+    if (row.providerRemitMode !== "auto_forward") return false;
+    return row.payoutDestinationType === "lightning_address";
+  });
+  const items: ProviderPaymentIntentRecord[] = [];
+  for (const row of candidates) {
+    const forwarded = await executeCreatorRemittance(row, "provider_bulk_reprocess_remittance");
+    items.push(forwarded);
+  }
+  return reply.send({
+    ok: true,
+    processed: items.length,
+    items
+  });
 });
 
 app.get("/api/provider/payment-receipts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -9820,7 +11040,14 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
 // Public-safe canonical origin for buy links (no auth required).
 app.get("/api/public/origin", async (req: any, reply: any) => {
   const publicOrigin = getPublicOrigin(req);
-  return reply.send({ publicOrigin });
+  const profile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
+  return reply.send({
+    publicOrigin,
+    canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
+    canonicalCommerceKind: profile.canonicalCommerceKind,
+    localNodeEndpointOrigin: profile.localNodeEndpointOrigin,
+    temporaryNodeEndpointOrigin: profile.temporaryNodeEndpointOrigin
+  });
 });
 
 app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -10798,6 +12025,19 @@ app.post("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) 
   if (productTier !== "basic") {
     await upsert("btc_onchain", body.btcAddress);
   }
+
+  const normalizedBtc = String(body.btcAddress || "").trim() || null;
+  const inferredType: CreatorPayoutDestinationType = lightningAddress
+    ? "lightning_address"
+    : normalizedBtc
+      ? "onchain_address"
+      : null;
+  upsertCreatorPayoutDestinationRecord(userId, {
+    payoutDestinationType: inferredType,
+    lightningAddress: lightningAddress || null,
+    onchainAddress: normalizedBtc,
+    providerRemitMode: inferredType ? "manual_payout" : null
+  });
 
   return reply.send({ ok: true });
 });
@@ -11815,6 +13055,9 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   if (!splitVersionId) return badRequest(reply, "Split version missing");
 
   const now = new Date();
+  const publishServiceProfile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
+  const commerceOriginForPublish =
+    publishServiceProfile.canonicalCommerceOrigin || getPublicOrigin(req);
   await prisma.$transaction(async (tx) => {
     await tx.manifest.update({
       where: { id: manifest.id },
@@ -11828,7 +13071,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       where: { id: contentId },
       data: { status: "published", manifestId: manifest.id, currentSplitId: splitVersionId }
     });
-    const publicOrigin = getPublicOrigin(req).replace(/\/$/, "");
+    const publicOrigin = commerceOriginForPublish.replace(/\/$/, "");
     await tx.publishEvent.create({
       data: {
         contentId,
@@ -11866,7 +13109,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     })
   });
 
-  const publicOrigin = getPublicOrigin(req);
+  const publicOrigin = commerceOriginForPublish;
   return reply.send({
     ok: true,
     publishedAt: now.toISOString(),
@@ -14047,6 +15290,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     return "";
   };
   const currentPublicOrigin = normalizePublicOriginBase(nodeUrl);
+  const canonicalCommerceOrigin =
+    resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin ||
+    currentPublicOrigin;
 
   const domainProofsHtml =
     verifiedDomainProofs.length > 0
@@ -14228,7 +15474,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               : manifestThumbnailRaw
                 ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(manifestThumbnailRaw)}`)
                 : externalThumbUrl || coverUrl || posterUrl;
-            const buyUrl = buildPublicUrlFromOrigin(currentPublicOrigin, `/buy/${encodeURIComponent(item.id)}`);
+            const buyUrl = buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
@@ -16334,6 +17580,21 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     const buyerSession = await resolveBuyerSession(req, reply);
     const buyerId = buyerSession?.buyer?.id || null;
     const { productTier } = resolveProductTier();
+    const capabilityCtx = getCapabilityContext();
+    const sellerPaymentsReadiness = await getPaymentsReadiness(content.ownerUserId).catch(() => null);
+    const serviceProfile = resolveProviderServiceProfile({
+      hasLocalInvoiceMinting:
+        capabilityCtx.paymentsMode === "node" &&
+        Boolean(sellerPaymentsReadiness?.lightning?.ready),
+      providerCfg: getNetworkProviderConfig(),
+      ctx: capabilityCtx
+    });
+    const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId, {
+      localLndReady:
+        capabilityCtx.paymentsMode === "node" &&
+        Boolean(sellerPaymentsReadiness?.lightning?.ready),
+      paymentsReadiness: sellerPaymentsReadiness
+    });
     intentLog.buyerId = buyerId;
     intentLog.productTier = productTier;
     intentLog.pricingMode = content.priceSats == null ? "unset" : content.priceSats > 0n ? "paid" : "free";
@@ -16407,6 +17668,11 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       lightningAddress = null;
     }
     intentLog.sellerPaymentConfig = { lightningAddressPresent: Boolean(lightningAddress) };
+    intentLog.creatorPayoutDestination = {
+      valid: payoutDestination.valid,
+      destinationType: payoutDestination.effectiveDestinationType,
+      payoutRail: payoutDestination.effectivePayoutRail
+    };
 
     let onchain: { address: string; derivationIndex?: number | null } | null = null;
     let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
@@ -16504,6 +17770,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         trustReadiness: providerTrust.readiness
       };
       if (hasProviderPaymentTarget(providerCfg) && providerUrl) {
+        if (serviceProfile.needsProviderInvoicing && !payoutDestination.valid) {
+          lightningReason = "CREATOR_PAYOUT_DESTINATION_REQUIRED";
+        } else {
         try {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
           const delegated = await requestDelegatedProviderPaymentIntent({
@@ -16511,7 +17780,12 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             contentId,
             amountSats: amountSats.toString(),
             paymentIntentId: intent.id,
-            buyerSessionId: buyerSession?.id || null
+            buyerSessionId: buyerSession?.id || null,
+            needsProviderInvoicing: serviceProfile.needsProviderInvoicing,
+            needsDurablePublicHosting: serviceProfile.needsDurablePublicHosting,
+            payoutDestinationType: payoutDestination.effectiveDestinationType,
+            payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
+            providerRemitMode: payoutDestination.providerRemitMode
           });
           lightning = {
             bolt11: delegated.bolt11,
@@ -16536,6 +17810,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
           } else if (!lightningReason) {
             lightningReason = "PROVIDER_UNREACHABLE";
           }
+        }
         }
       } else if (!lightningReason) {
         lightningReason = hasProviderPaymentTarget(providerCfg) ? "PROVIDER_NOT_READY" : "PROVIDER_NOT_CONFIGURED";
@@ -16575,6 +17850,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     if (!onchain && !lightning) {
       await prisma.paymentIntent.delete({ where: { id: intent.id } }).catch(() => {});
       if (
+        lightningReason === "CREATOR_PAYOUT_DESTINATION_REQUIRED" ||
         lightningReason === "PROVIDER_DELEGATED_PUBLISH_REQUIRED" ||
         lightningReason === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED" ||
         lightningReason === "PROVIDER_NOT_READY" ||
@@ -16582,7 +17858,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         lightningReason === "PROVIDER_INVALID_RESPONSE"
       ) {
         const mappedCode =
-          lightningReason === "PROVIDER_DELEGATED_PUBLISH_REQUIRED"
+          lightningReason === "CREATOR_PAYOUT_DESTINATION_REQUIRED"
+            ? "CREATOR_PAYOUT_DESTINATION_REQUIRED"
+            : lightningReason === "PROVIDER_DELEGATED_PUBLISH_REQUIRED"
             ? "DELEGATED_PUBLISH_REQUIRED"
             : lightningReason === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED"
               ? "PROVIDER_RELATIONSHIP_REQUIRED"
@@ -16603,7 +17881,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         return reply.code(409).send({
           code: mappedCode,
           message:
-            mappedCode === "DELEGATED_PUBLISH_REQUIRED"
+            mappedCode === "CREATOR_PAYOUT_DESTINATION_REQUIRED"
+              ? "Creator payout destination is required before provider-backed invoicing can be activated."
+              : mappedCode === "DELEGATED_PUBLISH_REQUIRED"
               ? "Provider payment is not ready for this content yet. Publish via provider first."
               : mappedCode === "PROVIDER_RELATIONSHIP_REQUIRED"
               ? "Provider relationship is not ready for delegated payments."
@@ -16656,7 +17936,11 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === contentId);
     if (delegatedPublish) {
-      const fee = computeProviderFeeBreakdown(amountSats.toString());
+      const fee = computeProviderFeeBreakdown(amountSats.toString(), {
+        providerInvoicing: serviceProfile.needsProviderInvoicing,
+        durablePublicHosting: serviceProfile.needsDurablePublicHosting
+      });
+      const providerIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
       upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
         providerNodeId: delegatedPublish.providerNodeId,
         creatorNodeId: delegatedPublish.creatorNodeId,
@@ -16665,12 +17949,24 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         bolt11: lightning?.bolt11 || null,
         providerInvoiceRef: lightning?.providerId || null,
         amountSats: amountSats.toString(),
-        grossAmountSats: fee.grossAmountSats,
-        providerFeeSats: fee.providerFeeSats,
-        creatorNetSats: fee.creatorNetSats,
+        grossAmountSats: providerIntent?.grossAmountSats || fee.grossAmountSats,
+        providerInvoicingFeeSats: providerIntent?.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
+        providerDurableHostingFeeSats: providerIntent?.providerDurableHostingFeeSats || fee.providerDurableHostingFeeSats,
+        providerFeeSats: providerIntent?.providerFeeSats || fee.providerFeeSats,
+        creatorNetSats: providerIntent?.creatorNetSats || fee.creatorNetSats,
         status: lightning?.bolt11 ? "issued" : "created",
         payoutStatus: "pending",
-        payoutRail: "provider_custody",
+        payoutRail: payoutDestination.effectivePayoutRail || "provider_custody",
+        payoutDestinationType: payoutDestination.effectiveDestinationType,
+        payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
+        providerRemitMode: payoutDestination.providerRemitMode,
+        payoutReference: null,
+        remittedAt: null,
+        payoutLastError: null,
+        remittanceAttemptId: null,
+        remittanceLockedAt: null,
+        remittanceLastCheckedAt: null,
+        remittanceAttempts: providerIntent?.remittanceAttempts || 0,
         paymentReceiptId: null,
         buyerSessionId: buyerSession?.id || null,
         paidAt: null
@@ -16715,6 +18011,14 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
           minConfirmations: ONCHAIN_MIN_CONFS,
           reason: onchain?.address ? null : onchainReason
         }
+      },
+      creatorPayout: {
+        configured: payoutDestination.valid,
+        destinationType: payoutDestination.effectiveDestinationType,
+        destinationSummary: payoutDestination.effectiveDestinationSummary,
+        payoutRail: payoutDestination.effectivePayoutRail,
+        providerRemitMode: payoutDestination.providerRemitMode,
+        message: payoutDestination.message
       },
       receiptToken,
       receiptTokenExpiresAt: receiptTokenExpiresAt.toISOString()
@@ -20385,15 +21689,32 @@ app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("r
       const gross = BigInt(s.amountSats as any);
       const providerIntent = intentById.get(s.intentId);
       const providerBacked = String(providerIntent?.providerId || "").startsWith("providerpi:");
-      const fee = providerBacked ? (gross >= 100n ? gross / 100n : 1n) : 0n;
-      const providerFeeSats = fee > gross ? gross : fee;
-      const creatorNetSats = gross - providerFeeSats;
+      const providerRecord = providerBacked ? findProviderPaymentIntentByPaymentIntentId(s.intentId) : null;
+      const fallbackFee = computeProviderFeeBreakdown(gross, {
+        providerInvoicing: providerBacked,
+        durablePublicHosting: false
+      });
+      const providerInvoicingFeeSats = providerBacked
+        ? BigInt(String(providerRecord?.providerInvoicingFeeSats || providerRecord?.providerFeeSats || fallbackFee.providerInvoicingFeeSats))
+        : 0n;
+      const providerDurableHostingFeeSats = providerBacked
+        ? BigInt(String(providerRecord?.providerDurableHostingFeeSats || fallbackFee.providerDurableHostingFeeSats))
+        : 0n;
+      const providerFeeSats = providerInvoicingFeeSats + providerDurableHostingFeeSats;
+      const creatorNetSats = gross > providerFeeSats ? gross - providerFeeSats : 0n;
       return {
         grossAmountSats: gross.toString(),
+        providerInvoicingFeeSats: providerInvoicingFeeSats.toString(),
+        providerDurableHostingFeeSats: providerDurableHostingFeeSats.toString(),
         providerFeeSats: providerFeeSats.toString(),
         creatorNetSats: creatorNetSats.toString(),
-        payoutStatus: providerBacked ? ("pending" as const) : ("paid" as const),
-        payoutRail: providerBacked ? ("provider_custody" as const) : ("creator_node" as const),
+        payoutStatus: providerBacked ? (providerRecord?.payoutStatus || "pending") : ("paid" as const),
+        payoutRail: providerBacked ? (providerRecord?.payoutRail || "provider_custody") : ("creator_node" as const),
+        payoutDestinationType: providerBacked ? parsePayoutDestinationType(providerRecord?.payoutDestinationType || null) : "local_lnd",
+        payoutDestinationSummary: providerBacked ? (providerRecord?.payoutDestinationSummary || null) : "Local Lightning node",
+        providerRemitMode: providerBacked ? (parseProviderRemitMode(providerRecord?.providerRemitMode || null) || null) : null,
+        payoutReference: providerBacked ? (providerRecord?.payoutReference || null) : null,
+        remittedAt: providerBacked ? (providerRecord?.remittedAt || null) : s.recognizedAt.toISOString(),
         providerNodeId: providerBacked ? configuredProviderNodeId : null,
         creatorNodeId
       };
@@ -21971,6 +23292,9 @@ async function start() {
   await preflightDb();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
+  await reconcileStaleForwardingRemittancesOnStartup().catch((err) => {
+    app.log.warn({ err: String((err as any)?.message || err) }, "providerRemittance.startup_reconcile.failed");
+  });
   persistRuntimeHealthFromApi({
     apiReady: true,
     reason: "normal_start",

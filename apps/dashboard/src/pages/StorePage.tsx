@@ -14,6 +14,42 @@ type NetworkSummary = {
     localInvoiceMinting: boolean;
     delegatedInvoiceSupport: boolean;
     tipsOnly: boolean;
+    providerInvoicingAvailable?: boolean;
+    creatorPayoutDestinationConfigured?: boolean;
+    creatorPayoutRail?: "provider_custody" | "forwarded" | "creator_node" | null;
+    providerBackedCommerceReady?: boolean;
+    providerBackedCommerceMessage?: string;
+  };
+  modeProfile?: {
+    participationMode?: "basic_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+    hasStablePublicRoute?: boolean;
+    hasLocalInvoiceMinting?: boolean;
+    providerConfigured?: boolean;
+    providerTrusted?: boolean;
+  };
+  payoutDestination?: {
+    payoutDestinationType?: "lightning_address" | "local_lnd" | "onchain_address" | null;
+    lightningAddress?: string | null;
+    onchainAddress?: string | null;
+    localLndReady?: boolean;
+    providerRemitMode?: "provider_custody" | "auto_forward" | "manual_payout" | null;
+    payoutConfiguredAt?: string | null;
+    valid?: boolean;
+    message?: string;
+    effectiveDestinationType?: "lightning_address" | "local_lnd" | "onchain_address" | null;
+    effectiveDestinationSummary?: string | null;
+    effectivePayoutRail?: "provider_custody" | "forwarded" | "creator_node" | null;
+  };
+  providerServices?: {
+    invoicing?: {
+      mode?: "provider_backed" | "self_provided";
+      feePercent?: number;
+    };
+    durablePublicHosting?: {
+      mode?: "provider_backed" | "self_provided";
+      feePercent?: number;
+    };
+    totalProviderFeePercent?: number;
   };
   providerBinding: {
     configured: boolean;
@@ -22,6 +58,10 @@ type NetworkSummary = {
   visibility: "DISABLED" | "UNLISTED" | "LISTED";
   reachability: {
     publicUrl: string | null;
+    localNodeEndpointUrl?: string | null;
+    temporaryNodeEndpointUrl?: string | null;
+    canonicalCommerceUrl?: string | null;
+    canonicalCommerceKind?: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
     tunnel: boolean;
     ipfs: boolean;
   };
@@ -244,6 +284,20 @@ type UserNetworkStatus = {
   actionLabel: string | null;
 };
 
+type CreatorPayoutDestinationStatus = {
+  payoutDestinationType: "lightning_address" | "local_lnd" | "onchain_address" | null;
+  lightningAddress: string | null;
+  onchainAddress: string | null;
+  localLndReady: boolean;
+  providerRemitMode: "provider_custody" | "auto_forward" | "manual_payout" | null;
+  payoutConfiguredAt: string | null;
+  valid: boolean;
+  message: string;
+  effectiveDestinationType: "lightning_address" | "local_lnd" | "onchain_address" | null;
+  effectiveDestinationSummary: string | null;
+  effectivePayoutRail: "provider_custody" | "forwarded" | "creator_node" | null;
+};
+
 type GuidedSetupPhase = "idle" | "saving" | "verifying" | "acknowledging" | "permitting" | "ready" | "error";
 
 type ProfileActivationStatus = {
@@ -383,6 +437,14 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [publishProfileBusy, setPublishProfileBusy] = React.useState(false);
   const [publishProfileResult, setPublishProfileResult] = React.useState<PublishProfileResult | null>(null);
   const [publishProfileErr, setPublishProfileErr] = React.useState<string | null>(null);
+  const [payoutDestination, setPayoutDestination] = React.useState<CreatorPayoutDestinationStatus | null>(null);
+  const [payoutDestinationSaving, setPayoutDestinationSaving] = React.useState(false);
+  const [payoutDestinationMsg, setPayoutDestinationMsg] = React.useState<string | null>(null);
+  const [payoutDestinationErr, setPayoutDestinationErr] = React.useState<string | null>(null);
+  const [payoutDestinationTypeInput, setPayoutDestinationTypeInput] = React.useState<"lightning_address" | "local_lnd" | "onchain_address">("lightning_address");
+  const [payoutLightningInput, setPayoutLightningInput] = React.useState("");
+  const [payoutOnchainInput, setPayoutOnchainInput] = React.useState("");
+  const [payoutRemitModeInput, setPayoutRemitModeInput] = React.useState<"provider_custody" | "auto_forward" | "manual_payout">("manual_payout");
   const [receiptsPanelOpen, setReceiptsPanelOpen] = React.useState(false);
   const [receiptsLoading, setReceiptsLoading] = React.useState(false);
   const [receiptsErr, setReceiptsErr] = React.useState<string | null>(null);
@@ -591,6 +653,26 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
   React.useEffect(() => {
     let active = true;
+    api<CreatorPayoutDestinationStatus>("/api/network/payout-destination", "GET")
+      .then((d) => {
+        if (!active) return;
+        setPayoutDestination(d || null);
+        setPayoutDestinationTypeInput((d?.payoutDestinationType || "lightning_address") as any);
+        setPayoutLightningInput(d?.lightningAddress || "");
+        setPayoutOnchainInput(d?.onchainAddress || "");
+        setPayoutRemitModeInput((d?.providerRemitMode || "manual_payout") as any);
+      })
+      .catch(() => {
+        if (!active) return;
+        setPayoutDestination(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
     fetchIdentityDetail()
       .then((d) => {
         if (!active) return;
@@ -699,6 +781,17 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       return readiness || null;
     } catch {
       setPublishReadiness(null);
+      return null;
+    }
+  }
+
+  async function refreshPayoutDestination() {
+    try {
+      const destination = await api<CreatorPayoutDestinationStatus>("/api/network/payout-destination", "GET");
+      setPayoutDestination(destination || null);
+      return destination || null;
+    } catch {
+      setPayoutDestination(null);
       return null;
     }
   }
@@ -1057,6 +1150,33 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     }
   }
 
+  async function savePayoutDestination() {
+    setPayoutDestinationMsg(null);
+    setPayoutDestinationErr(null);
+    setPayoutDestinationSaving(true);
+    try {
+      const destination = await api<{ ok?: boolean; payoutDestination?: CreatorPayoutDestinationStatus }>(
+        "/api/network/payout-destination",
+        "POST",
+        {
+          payoutDestinationType: payoutDestinationTypeInput,
+          lightningAddress: payoutDestinationTypeInput === "lightning_address" ? payoutLightningInput.trim() : null,
+          onchainAddress: payoutDestinationTypeInput === "onchain_address" ? payoutOnchainInput.trim() : null,
+          providerRemitMode: payoutRemitModeInput
+        }
+      );
+      setPayoutDestination(destination?.payoutDestination || null);
+      setPayoutDestinationMsg("Payout destination saved.");
+      await refreshUserNetworkStatus();
+      await refreshPublishReadiness();
+    } catch (e: any) {
+      setPayoutDestinationErr(e?.message || "Failed to save payout destination.");
+      await refreshPayoutDestination();
+    } finally {
+      setPayoutDestinationSaving(false);
+    }
+  }
+
   async function publishProfile() {
     setPublishProfileErr(null);
     setPublishProfileResult(null);
@@ -1066,7 +1186,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
-      const fallbackLink = /^https?:\/\//i.test(summaryPublicEndpoint) ? [summaryPublicEndpoint] : [];
+      const fallbackLink = /^https?:\/\//i.test(summaryCanonicalCommerceUrl) ? [summaryCanonicalCommerceUrl] : [];
       const links = parsedLinks.length ? parsedLinks : fallbackLink;
       const payload: Record<string, any> = {};
       if (publishName.trim()) payload.name = publishName.trim();
@@ -1188,11 +1308,20 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           ? "Tips / direct wallet payments"
           : "Unavailable"
     : fallbackPaymentCapabilityLabel;
-  const summaryPublicEndpoint = networkSummary?.reachability?.publicUrl || publicEndpoint;
+  const summaryCanonicalCommerceUrl =
+    networkSummary?.reachability?.canonicalCommerceUrl ||
+    networkSummary?.reachability?.publicUrl ||
+    publicEndpoint;
+  const summaryLocalNodeEndpoint =
+    networkSummary?.reachability?.localNodeEndpointUrl ||
+    networkSummary?.reachability?.publicUrl ||
+    publicEndpoint;
+  const summaryTemporaryNodeEndpoint = networkSummary?.reachability?.temporaryNodeEndpointUrl || null;
+  const summaryCanonicalCommerceKind = networkSummary?.reachability?.canonicalCommerceKind || "unavailable";
   const summaryTunnel = networkSummary ? networkSummary.reachability.tunnel : fallbackTunnel;
   const summaryIpfsEnabled = networkSummary ? networkSummary.reachability.ipfs : false;
   const summaryReachabilityMode = networkSummary
-    ? networkSummary.reachability.publicUrl
+    ? summaryCanonicalCommerceUrl
       ? "Public route available"
       : "No active public route"
     : reachabilityMode;
@@ -1215,7 +1344,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     providerConfigured: Boolean(providerConfig?.configured),
     providerInfrastructureCapability: summaryProvidesInvoiceInfrastructure
   });
-  const participationMeta = participationModeMeta(participationMode);
+  const participationModeFromSummary = networkSummary?.modeProfile?.participationMode;
+  const participationMeta = participationModeMeta(
+    participationModeFromSummary === "basic_creator"
+      ? "basic_creator"
+      : participationModeFromSummary === "sovereign_creator_with_provider"
+        ? "sovereign_with_provider"
+        : participationModeFromSummary === "sovereign_node"
+          ? "sovereign_node"
+          : participationMode
+  );
   const providerVerified = providerVerification?.verification?.status === "verified";
   const providerExecutionAllowed = providerVerified && Boolean(providerConfig?.configured);
   const modeProviderState = providerConfig?.configured
@@ -1225,14 +1363,32 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         ? "connected / verified / execution limited"
         : "connected / verification pending"
     : "not configured";
-  const modePaymentState = summaryPaymentCapability.includes("Delegated invoice")
-    ? "provider-backed"
-    : summaryPaymentCapability.includes("Sovereign payment rails")
-      ? "local sovereign rails"
-      : "not configured";
+  const invoicingService = networkSummary?.providerServices?.invoicing;
+  const durableHostingService = networkSummary?.providerServices?.durablePublicHosting;
+  const modePaymentState =
+    invoicingService?.mode === "provider_backed"
+      ? "provider-backed"
+      : networkSummary?.paymentCapability?.localInvoiceMinting
+        ? "self-provided (local sovereign rails)"
+        : "not configured";
   const modeDirectInvoice = networkSummary?.paymentCapability?.localInvoiceMinting ? "configured" : "not configured";
-  const modeDirectReceive = modeDirectInvoice;
+  const modeDirectReceive = networkSummary?.paymentCapability?.localInvoiceMinting ? "configured" : "not configured";
   const modePublicInfraRole = summaryProvidesInvoiceInfrastructure ? "active on this node" : "not active on this node";
+  const totalProviderFeeLabel =
+    typeof networkSummary?.providerServices?.totalProviderFeePercent === "number"
+      ? `${networkSummary.providerServices.totalProviderFeePercent}%`
+      : "—";
+  const payoutState = payoutDestination || networkSummary?.payoutDestination || null;
+  const payoutConfigured = Boolean(payoutState?.valid);
+  const payoutDestinationLabel = payoutState?.effectiveDestinationSummary || payoutState?.effectiveDestinationType || "Not configured";
+  const payoutRailLabel = payoutState?.effectivePayoutRail || "—";
+  const payoutRemitModeLabel = payoutState?.providerRemitMode || "manual_payout";
+  const providerBackedCommerceReady = Boolean(networkSummary?.paymentCapability?.providerBackedCommerceReady);
+  const providerBackedCommerceMessage =
+    networkSummary?.paymentCapability?.providerBackedCommerceMessage ||
+    (payoutConfigured
+      ? "Provider-backed commerce is payout-ready."
+      : "Configure payout destination for provider-backed commerce.");
   const runtimeStateLabel =
     runtimeStatus?.runtime?.status === "running"
       ? "Running"
@@ -1240,7 +1396,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         ? "Degraded"
         : "Stopped";
   const runtimeApiReadyLabel = runtimeStatus?.runtime?.apiReady ? "yes" : "no";
-  const runtimeEndpointUrl = runtimeStatus?.endpoint?.url || summaryPublicEndpoint;
+  const runtimeEndpointUrl = runtimeStatus?.endpoint?.url || summaryLocalNodeEndpoint;
   const runtimeEndpointStability =
     runtimeStatus?.endpoint?.stability === "stable"
       ? "Stable"
@@ -1373,6 +1529,62 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         : publishReadiness?.readiness === "network_not_ready"
           ? "Network not ready"
           : "Unknown";
+  const hasStablePublicRoute = Boolean(
+    networkSummary?.modeProfile?.hasStablePublicRoute || summaryCanonicalCommerceKind === "self_hosted_stable"
+  );
+  const hasLocalInvoiceMinting = Boolean(
+    networkSummary?.modeProfile?.hasLocalInvoiceMinting || networkSummary?.paymentCapability?.localInvoiceMinting
+  );
+  const needsProviderInvoicing = !hasLocalInvoiceMinting;
+  const needsDurablePublicHosting = !hasStablePublicRoute;
+  const supportsAutoForward = Boolean(payoutConfigured && payoutState?.effectiveDestinationType === "lightning_address");
+  const usingManualWhenAutoAvailable = supportsAutoForward && payoutRemitModeLabel === "manual_payout";
+  type GuardLevel = "ready" | "warn" | "block";
+  const commerceGuardLevel: GuardLevel =
+    needsProviderInvoicing && !payoutConfigured
+      ? "block"
+      : usingManualWhenAutoAvailable ||
+          (needsDurablePublicHosting && durableHostingService?.mode === "provider_backed") ||
+          (needsProviderInvoicing && invoicingService?.mode === "provider_backed")
+        ? "warn"
+        : "ready";
+  const commerceGuardMessage =
+    commerceGuardLevel === "block"
+      ? "Configure a valid creator payout destination before provider-backed commerce can run safely."
+      : usingManualWhenAutoAvailable
+        ? "Manual payout is active. Auto-forward is available and recommended to complete payout automatically."
+        : commerceGuardLevel === "warn"
+          ? "Provider-backed fallback is active and valid. You can self-provide capabilities later to reduce provider fees."
+          : "Commerce path is fully configured for this mode.";
+  const providerInvoicingModeLabel = needsProviderInvoicing
+    ? invoicingService?.mode === "provider_backed"
+      ? `provider-backed (${Number(invoicingService?.feePercent || 0)}%)`
+      : "provider-backed (expected)"
+    : "self-provided";
+  const durableHostingModeLabel = needsDurablePublicHosting
+    ? durableHostingService?.mode === "provider_backed"
+      ? `provider-backed (${Number(durableHostingService?.feePercent || 0)}%)`
+      : "provider-backed (expected)"
+    : "self-provided";
+  const creatorPayoutModeLabel = payoutRailLabel === "creator_node" ? "self-received" : "provider-remitted";
+  const payoutStatusVocabulary = {
+    pending: "Pending payout",
+    forwarding: "Forwarding payout",
+    paid: "Paid out",
+    failed: "Payout failed"
+  };
+  const modeDelineationLabel =
+    participationMeta.label === "Sovereign Creator with Provider"
+      ? "Sovereign Creator with Provider"
+      : participationMeta.label === "Sovereign Creator Node"
+        ? "Sovereign Node"
+        : "Basic";
+  const guardPillClass =
+    commerceGuardLevel === "ready"
+      ? "border-emerald-800/70 bg-emerald-900/20 text-emerald-300"
+      : commerceGuardLevel === "warn"
+        ? "border-amber-800/70 bg-amber-900/20 text-amber-300"
+        : "border-rose-800/70 bg-rose-900/20 text-rose-300";
 
   return (
     <div className="space-y-6">
@@ -1421,10 +1633,23 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 md:col-span-2">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Mode Summary</div>
-            <div className="mt-1 text-sm text-neutral-200">Mode: {participationMeta.label}</div>
+            <div className="mt-1 text-sm text-neutral-200">Mode: {modeDelineationLabel}</div>
+            <div className="mt-2">
+              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${guardPillClass}`}>
+                {commerceGuardLevel === "ready" ? "ready" : commerceGuardLevel === "warn" ? "warn" : "block"}
+              </span>
+              <span className="ml-2 text-xs text-neutral-400">{commerceGuardMessage}</span>
+            </div>
             <div className="mt-2 grid gap-1 text-xs text-neutral-300">
               <div>Provider: {modeProviderState}</div>
               <div>Payment mode: {modePaymentState}</div>
+              <div>Invoicing service: {providerInvoicingModeLabel}</div>
+              <div>Public hosting service: {durableHostingModeLabel}</div>
+              <div>Creator payout: {creatorPayoutModeLabel}</div>
+              <div>Payout destination: {payoutDestinationLabel}</div>
+              <div>Total provider fee: {totalProviderFeeLabel}</div>
+              <div>Payment collection rail: {invoicingService?.mode === "provider_backed" ? "provider-backed invoicing" : "creator node invoicing"}</div>
+              <div>Creator payout rail: {payoutRailLabel}</div>
               <div>Direct invoice minting on this node: {modeDirectInvoice}</div>
               <div>Direct receive on this node: {modeDirectReceive}</div>
               <div>Public infrastructure role: {modePublicInfraRole}</div>
@@ -1432,8 +1657,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-900/40 p-2 text-xs text-neutral-400">
               <div className="font-medium text-neutral-300">Upgrade to Sovereign Node</div>
               <div className="mt-1">
-                Connect Lightning Node to enable local invoice minting and direct receipt of funds on this node.
-                This is optional in Sovereign Creator (with Provider) mode and required for direct sovereign infrastructure/payment handling.
+                Add a named tunnel / stable public route to self-provide durable public hosting.
+                Connect Lightning Node to self-provide invoice minting and direct receipt on this node.
+                In Sovereign Creator (with Provider), these are optional capability upgrades. Self-providing both moves this node to full Sovereign Node posture.
               </div>
             </div>
           </div>
@@ -1453,7 +1679,21 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Reachability</div>
             <div className="mt-1 text-sm text-neutral-200">{summaryReachabilityMode}</div>
-            <div className="text-xs text-neutral-400 mt-1 break-all">{summaryPublicEndpoint}</div>
+            <div className="text-xs text-neutral-400 mt-1">
+              Canonical public commerce URL:
+              <span className="text-neutral-300 break-all"> {summaryCanonicalCommerceUrl || "—"}</span>
+            </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Canonical route: <span className="text-neutral-300">{summaryCanonicalCommerceKind.replace(/_/g, " ")}</span>
+            </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Local node endpoint: <span className="text-neutral-300 break-all">{summaryLocalNodeEndpoint || "—"}</span>
+            </div>
+            {summaryTemporaryNodeEndpoint ? (
+              <div className="text-xs text-amber-300 mt-1 break-all">
+                Temporary node endpoint: {summaryTemporaryNodeEndpoint}
+              </div>
+            ) : null}
             <div className="text-xs text-neutral-500 mt-1">Tunnel: {summaryTunnel ? "yes" : "no"}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
@@ -1485,6 +1725,105 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <span className="text-neutral-200 text-right">{publishReadinessLabel}</span>
             </div>
             <div className="text-neutral-400">{publishReadiness?.message || "Publish readiness unavailable."}</div>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Creator Payout Destination</div>
+          <div className="mt-2 grid gap-2 text-xs">
+            <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
+              <span className="text-neutral-500">Configured</span>
+              <span className="text-neutral-200 text-right">{payoutConfigured ? "yes" : "no"}</span>
+            </div>
+            <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
+              <span className="text-neutral-500">Payout destination</span>
+              <span className="text-neutral-200 text-right break-all">{payoutDestinationLabel}</span>
+            </div>
+            <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
+              <span className="text-neutral-500">Provider remittance mode</span>
+              <span className="text-neutral-200 text-right">{payoutRemitModeLabel}</span>
+            </div>
+            <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
+              <span className="text-neutral-500">Provider-backed commerce readiness</span>
+              <span className={`text-right ${providerBackedCommerceReady ? "text-emerald-300" : "text-amber-300"}`}>
+                {providerBackedCommerceReady ? "Ready" : "Action required"}
+              </span>
+            </div>
+            <div className="text-neutral-400">{providerBackedCommerceMessage}</div>
+            <div className="text-neutral-400">{payoutState?.message || "Set where creator net should be remitted when provider collects payment."}</div>
+            <div className="text-neutral-500">
+              Payout state wording: {payoutStatusVocabulary.pending} / {payoutStatusVocabulary.forwarding} / {payoutStatusVocabulary.paid} / {payoutStatusVocabulary.failed}
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-2 md:grid-cols-2">
+            <label className="text-xs text-neutral-400">
+              Payout destination
+              <select
+                className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
+                value={payoutDestinationTypeInput}
+                onChange={(e) => setPayoutDestinationTypeInput(e.target.value as any)}
+              >
+                <option value="lightning_address">Lightning Address</option>
+                <option value="onchain_address">On-chain address</option>
+                <option value="local_lnd">Local Lightning node</option>
+              </select>
+            </label>
+            <label className="text-xs text-neutral-400">
+              Provider remittance
+              <select
+                className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
+                value={payoutRemitModeInput}
+                onChange={(e) => setPayoutRemitModeInput(e.target.value as any)}
+              >
+                <option value="manual_payout">Manual payout</option>
+                <option value="auto_forward">Auto-forward</option>
+                <option value="provider_custody">Provider custody</option>
+              </select>
+            </label>
+            <label className="text-xs text-neutral-400 md:col-span-2">
+              Lightning Address
+              <input
+                className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
+                value={payoutLightningInput}
+                onChange={(e) => setPayoutLightningInput(e.target.value)}
+                placeholder="creator@domain.com"
+                disabled={payoutDestinationTypeInput !== "lightning_address"}
+              />
+            </label>
+            <label className="text-xs text-neutral-400 md:col-span-2">
+              On-chain address
+              <input
+                className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
+                value={payoutOnchainInput}
+                onChange={(e) => setPayoutOnchainInput(e.target.value)}
+                placeholder="bc1..."
+                disabled={payoutDestinationTypeInput !== "onchain_address"}
+              />
+            </label>
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              onClick={savePayoutDestination}
+              disabled={payoutDestinationSaving}
+              className="rounded-md border border-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-900 disabled:opacity-60"
+            >
+              {payoutDestinationSaving ? "Saving..." : "Save payout destination"}
+            </button>
+            {payoutDestinationMsg ? <span className="text-xs text-emerald-300">{payoutDestinationMsg}</span> : null}
+            {payoutDestinationErr ? <span className="text-xs text-rose-300">{payoutDestinationErr}</span> : null}
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Payment Flow</div>
+          <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+            <div>1. Buyer pays</div>
+            <div>2. Provider settles</div>
+            <div>3. Provider fee retained</div>
+            <div>4. Creator net calculated</div>
+            <div>5. Creator payout sent</div>
+            <div>6. Payout status updated</div>
           </div>
         </div>
 
@@ -1642,7 +1981,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               />
             </div>
             <div className="mt-2 text-xs text-neutral-500">
-              If links are empty, publish uses the current public endpoint when available.
+              If links are empty, publish uses the canonical public commerce URL when available.
             </div>
             <div className="mt-3 flex items-center gap-3">
               <button

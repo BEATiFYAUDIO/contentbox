@@ -21,10 +21,18 @@ type SaleRow = {
   contentId: string;
   amountSats: string | number;
   grossAmountSats?: string | number;
+  providerInvoicingFeeSats?: string | number;
+  providerDurableHostingFeeSats?: string | number;
   providerFeeSats?: string | number;
   creatorNetSats?: string | number;
-  payoutStatus?: "pending" | "paid" | "failed";
+  payoutStatus?: "pending" | "forwarding" | "paid" | "failed";
   payoutRail?: "provider_custody" | "forwarded" | "creator_node" | null;
+  payoutDestinationType?: "lightning_address" | "local_lnd" | "onchain_address" | null;
+  payoutDestinationSummary?: string | null;
+  providerRemitMode?: "provider_custody" | "auto_forward" | "manual_payout" | null;
+  payoutReference?: string | null;
+  remittedAt?: string | null;
+  payoutLastError?: string | null;
   providerNodeId?: string | null;
   creatorNodeId?: string | null;
   currency: string;
@@ -176,18 +184,47 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
     if (!text || !navigator.clipboard) return;
     navigator.clipboard.writeText(text).catch(() => {});
   };
+  const payoutStatusLabel = (status?: SaleRow["payoutStatus"]) =>
+    status === "forwarding"
+      ? "Forwarding payout"
+      : status === "paid"
+        ? "Paid out"
+        : status === "failed"
+          ? "Payout failed"
+          : "Pending payout";
+  const payoutStatusTone = (status?: SaleRow["payoutStatus"]) =>
+    status === "paid"
+      ? "text-emerald-300"
+      : status === "failed"
+        ? "text-rose-300"
+        : status === "forwarding"
+          ? "text-amber-300"
+          : "text-neutral-200";
 
   const totals = React.useMemo(() => {
     return sales.reduce(
       (acc, s) => {
         acc.gross += Number(s.grossAmountSats ?? s.amountSats ?? 0) || 0;
+        acc.providerInvoicingFee += Number(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0) || 0;
+        acc.providerDurableHostingFee += Number(s.providerDurableHostingFeeSats ?? 0) || 0;
         acc.providerFee += Number(s.providerFeeSats ?? 0) || 0;
         acc.creatorNet += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
         if (s.payoutStatus === "paid") acc.payoutsReceived += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
         if (s.payoutStatus === "pending") acc.pendingPayout += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
+        if (s.payoutStatus === "forwarding") acc.pendingPayout += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
+        if (s.payoutStatus === "failed") acc.failedPayout += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
         return acc;
       },
-      { gross: 0, providerFee: 0, creatorNet: 0, payoutsReceived: 0, pendingPayout: 0 }
+      {
+        gross: 0,
+        providerInvoicingFee: 0,
+        providerDurableHostingFee: 0,
+        providerFee: 0,
+        creatorNet: 0,
+        payoutsReceived: 0,
+        pendingPayout: 0,
+        failedPayout: 0
+      }
     );
   }, [sales]);
 
@@ -250,10 +287,14 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                   <tr className="text-left text-neutral-400">
                     <th className="py-2 px-3">Content</th>
                     <th className="py-2 px-3">Gross</th>
+                    <th className="py-2 px-3">Invoicing Fee</th>
+                    <th className="py-2 px-3">Hosting Fee</th>
                     <th className="py-2 px-3">Provider Fee</th>
                     <th className="py-2 px-3">Creator Net</th>
                     <th className="py-2 px-3">Payout</th>
                     <th className="py-2 px-3">Rail</th>
+                    <th className="py-2 px-3">Destination</th>
+                    <th className="py-2 px-3">Remit Mode</th>
                     <th className="py-2 px-3">Last Updated</th>
                   </tr>
                 </thead>
@@ -262,10 +303,14 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                     <tr key={row.content_id} className="border-t border-neutral-800">
                       <td className="py-2 px-3 font-mono text-xs">{row.content_id}</td>
                       <td className="py-2 px-3">{formatSats(row.gross_sats)} sats</td>
+                      <td className="py-2 px-3">{formatSats(row.provider_invoicing_fee_sats ?? 0)} sats</td>
+                      <td className="py-2 px-3">{formatSats(row.provider_durable_hosting_fee_sats ?? 0)} sats</td>
                       <td className="py-2 px-3">{formatSats(row.provider_fee_sats)} sats</td>
                       <td className="py-2 px-3">{formatSats(row.creator_net_sats)} sats</td>
                       <td className="py-2 px-3">{row.payout_status}</td>
                       <td className="py-2 px-3">{row.payout_rail || "—"}</td>
+                      <td className="py-2 px-3">{row.payout_destination_summary || row.payout_destination_type || "—"}</td>
+                      <td className="py-2 px-3">{row.provider_remit_mode || "—"}</td>
                       <td className="py-2 px-3 text-xs text-neutral-500">{new Date(row.last_updated).toLocaleString()}</td>
                     </tr>
                   ))}
@@ -286,6 +331,14 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerFee)} sats</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Provider Invoicing Fee</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerInvoicingFee)} sats</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Provider Durable Hosting Fee</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerDurableHostingFee)} sats</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net Creator Earnings</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.creatorNet)} sats</div>
         </div>
@@ -296,6 +349,10 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Pending Payout</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.pendingPayout)} sats</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Failed Payout</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.failedPayout)} sats</div>
         </div>
       </div>
 
@@ -367,24 +424,27 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                 <th className="py-2 px-3">Recognized</th>
                 <th className="py-2 px-3">Item</th>
                 <th className="py-2 px-3">Amount</th>
+                <th className="py-2 px-3">Invoicing Fee</th>
+                <th className="py-2 px-3">Hosting Fee</th>
                 <th className="py-2 px-3">Provider Fee</th>
                 <th className="py-2 px-3">Creator Net</th>
                 <th className="py-2 px-3">Rail</th>
                 <th className="py-2 px-3">Payout</th>
+                <th className="py-2 px-3">Destination</th>
                 <th className="py-2 px-3">Memo</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={11} className="py-4 px-3 text-sm text-neutral-400">
                     Loading sales ledger…
                   </td>
                 </tr>
               ) : null}
               {!loading && sales.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={11} className="py-4 px-3 text-sm text-neutral-400">
                     No sales recorded yet.
                   </td>
                 </tr>
@@ -395,12 +455,21 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                     <td className="py-2 px-3 text-xs text-neutral-400">{new Date(s.recognizedAt).toLocaleString()}</td>
                     <td className="py-2 px-3">{s.content?.title || "Content"}</td>
                     <td className="py-2 px-3">{formatSats(s.grossAmountSats ?? s.amountSats)} {s.currency || "SAT"}</td>
+                    <td className="py-2 px-3">{formatSats(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0)} SAT</td>
+                    <td className="py-2 px-3">{formatSats(s.providerDurableHostingFeeSats ?? 0)} SAT</td>
                     <td className="py-2 px-3">{formatSats(s.providerFeeSats ?? 0)} SAT</td>
                     <td className="py-2 px-3">{formatSats(s.creatorNetSats ?? s.amountSats)} SAT</td>
                     <td className="py-2 px-3">{s.rail}</td>
                     <td className="py-2 px-3">
-                      <div>{s.payoutStatus || "paid"}</div>
+                      <div className={payoutStatusTone(s.payoutStatus)}>{payoutStatusLabel(s.payoutStatus)}</div>
                       <div className="text-xs text-neutral-500">{s.payoutRail || "creator_node"}</div>
+                      {s.payoutStatus === "failed" ? <div className="text-xs text-neutral-500">Retry available</div> : null}
+                    </td>
+                    <td className="py-2 px-3">
+                      <div>{s.payoutDestinationSummary || s.payoutDestinationType || "—"}</div>
+                      <div className="text-xs text-neutral-500">{s.providerRemitMode || "self-received"}</div>
+                      {s.remittedAt ? <div className="text-xs text-neutral-500">Remitted: {new Date(s.remittedAt).toLocaleString()}</div> : null}
+                      {s.payoutLastError ? <div className="text-xs text-rose-300">{s.payoutLastError}</div> : null}
                     </td>
                     <td className="py-2 px-3 font-mono text-xs">{s.memo || "—"}</td>
                   </tr>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 
 type ProviderSummary = {
@@ -8,10 +8,13 @@ type ProviderSummary = {
   settledPayments: number;
   totals?: {
     grossCollectedSats: string;
+    providerInvoicingFeeEarnedSats?: string;
+    providerDurableHostingFeeEarnedSats?: string;
     providerFeeEarnedSats: string;
     creatorNetOwedSats: string;
     creatorNetPaidSats: string;
     creatorNetPendingSats: string;
+    creatorNetFailedSats?: string;
   };
 };
 
@@ -55,11 +58,19 @@ type ProviderPaymentIntent = {
   providerInvoiceRef: string | null;
   amountSats: string;
   grossAmountSats: string;
+  providerInvoicingFeeSats: string;
+  providerDurableHostingFeeSats: string;
   providerFeeSats: string;
   creatorNetSats: string;
   status: "created" | "issued" | "paid" | "cancelled" | "expired";
-  payoutStatus: "pending" | "paid" | "failed";
+  payoutStatus: "pending" | "forwarding" | "paid" | "failed";
   payoutRail: "provider_custody" | "forwarded" | "creator_node" | null;
+  payoutDestinationType: "lightning_address" | "local_lnd" | "onchain_address" | null;
+  payoutDestinationSummary: string | null;
+  providerRemitMode: "provider_custody" | "auto_forward" | "manual_payout" | null;
+  payoutReference: string | null;
+  remittedAt: string | null;
+  payoutLastError: string | null;
   paymentReceiptId: string | null;
   buyerSessionId: string | null;
   createdAt: string;
@@ -92,7 +103,7 @@ function statusPillClass(status: string) {
   if (status === "verified" || status === "accepted" || status === "published" || status === "paid") {
     return "border-emerald-800/70 bg-emerald-900/20 text-emerald-300";
   }
-  if (status === "created" || status === "issued" || status === "unknown") {
+  if (status === "created" || status === "issued" || status === "forwarding" || status === "unknown") {
     return "border-amber-800/70 bg-amber-900/20 text-amber-300";
   }
   return "border-neutral-700 bg-neutral-900/50 text-neutral-300";
@@ -102,6 +113,13 @@ function sats(raw: string | number | null | undefined) {
   const n = Number(raw || 0);
   if (!Number.isFinite(n)) return "0";
   return Math.round(n).toLocaleString();
+}
+
+function shortId(value: string | null | undefined, left = 12, right = 10) {
+  const v = String(value || "").trim();
+  if (!v) return "—";
+  if (v.length <= left + right + 1) return v;
+  return `${v.slice(0, left)}…${v.slice(-right)}`;
 }
 
 function ExecutionPill({ allowed }: { allowed: boolean }) {
@@ -125,9 +143,11 @@ export default function ProviderConsolePage() {
   const [delegatedPublishes, setDelegatedPublishes] = useState<ProviderDelegatedPublish[]>([]);
   const [paymentIntents, setPaymentIntents] = useState<ProviderPaymentIntent[]>([]);
   const [paymentReceipts, setPaymentReceipts] = useState<ProviderPaymentReceipt[]>([]);
+  const [remitBusyId, setRemitBusyId] = useState<string | null>(null);
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<
     "all" | "created" | "issued" | "paid" | "cancelled" | "expired"
   >("all");
+  const [expandedIntentIds, setExpandedIntentIds] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -152,6 +172,20 @@ export default function ProviderConsolePage() {
     }
   }, []);
 
+  const retryRemittance = useCallback(async (id: string) => {
+    if (!id) return;
+    setRemitBusyId(id);
+    setError(null);
+    try {
+      await api(`/api/provider/payment-intents/${encodeURIComponent(id)}/retry-remittance`, "POST", {});
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "Failed to retry remittance.");
+    } finally {
+      setRemitBusyId(null);
+    }
+  }, [load]);
+
   useEffect(() => {
     load();
   }, [load]);
@@ -164,12 +198,19 @@ export default function ProviderConsolePage() {
   ];
   const economicsCards = [
     { label: "Gross Collected", value: `${sats(summary?.totals?.grossCollectedSats)} sats` },
+    { label: "Invoicing Fee Earned", value: `${sats(summary?.totals?.providerInvoicingFeeEarnedSats)} sats` },
+    { label: "Durable Hosting Fee Earned", value: `${sats(summary?.totals?.providerDurableHostingFeeEarnedSats)} sats` },
     { label: "Provider Fee Earned", value: `${sats(summary?.totals?.providerFeeEarnedSats)} sats` },
     { label: "Creator Net Owed", value: `${sats(summary?.totals?.creatorNetOwedSats)} sats` },
-    { label: "Creator Net Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` }
+    { label: "Creator Net Paid", value: `${sats(summary?.totals?.creatorNetPaidSats)} sats` },
+    { label: "Creator Net Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` },
+    { label: "Creator Net Failed", value: `${sats(summary?.totals?.creatorNetFailedSats)} sats` }
   ];
   const visiblePaymentIntents =
     paymentStatusFilter === "all" ? paymentIntents : paymentIntents.filter((intent) => intent.status === paymentStatusFilter);
+  const toggleIntentDetails = (id: string) => {
+    setExpandedIntentIds((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
 
   return (
     <div className="space-y-5">
@@ -217,7 +258,7 @@ export default function ProviderConsolePage() {
           <div className="mt-3 text-sm text-neutral-400">No delegated creator links yet.</div>
         ) : (
           <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[920px] text-sm">
+            <table className="w-full min-w-[760px] text-sm">
               <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
                   <th className="py-2 pr-3 font-medium">Creator</th>
@@ -225,7 +266,7 @@ export default function ProviderConsolePage() {
                   <th className="py-2 pr-3 font-medium">Handshake</th>
                   <th className="py-2 pr-3 font-medium">Execution</th>
                   <th className="py-2 pr-3 font-medium">Last Seen</th>
-                  <th className="py-2 pr-3 font-medium">Endpoint</th>
+                  <th className="hidden xl:table-cell py-2 pr-3 font-medium">Endpoint</th>
                 </tr>
               </thead>
               <tbody>
@@ -233,7 +274,9 @@ export default function ProviderConsolePage() {
                   <tr key={row.id} className="border-t border-neutral-800/70">
                     <td className="py-2 pr-3 align-top">
                       <div className="text-neutral-100">{row.creatorDisplayName || "Delegated creator"}</div>
-                      <div className="text-xs text-neutral-500 break-all">{row.creatorNodeId}</div>
+                      <div className="max-w-[260px] truncate font-mono text-[11px] text-neutral-500" title={row.creatorNodeId}>
+                        {shortId(row.creatorNodeId, 16, 10)}
+                      </div>
                     </td>
                     <td className="py-2 pr-3 align-top">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.trustStatus)}`}>
@@ -249,7 +292,11 @@ export default function ProviderConsolePage() {
                       <ExecutionPill allowed={row.executionAllowed} />
                     </td>
                     <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.lastSeenAt)}</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.providerEndpoint || "—"}</td>
+                    <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[320px] truncate font-mono text-[11px]" title={row.providerEndpoint || ""}>
+                        {row.providerEndpoint || "—"}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -265,14 +312,14 @@ export default function ProviderConsolePage() {
           <div className="mt-3 text-sm text-neutral-400">No delegated publish records yet.</div>
         ) : (
           <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[1020px] text-sm">
+            <table className="w-full min-w-[780px] text-sm">
               <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
                   <th className="py-2 pr-3 font-medium">Title</th>
                   <th className="py-2 pr-3 font-medium">Creator Node</th>
                   <th className="py-2 pr-3 font-medium">Visibility</th>
-                  <th className="py-2 pr-3 font-medium">Receipt</th>
-                  <th className="py-2 pr-3 font-medium">Manifest Hash</th>
+                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Receipt</th>
+                  <th className="hidden xl:table-cell py-2 pr-3 font-medium">Manifest Hash</th>
                   <th className="py-2 pr-3 font-medium">Published</th>
                 </tr>
               </thead>
@@ -283,14 +330,26 @@ export default function ProviderConsolePage() {
                       <div className="text-neutral-100">{row.title || row.contentId}</div>
                       <div className="text-xs text-neutral-500">{row.contentType || "unknown type"}</div>
                     </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.creatorNodeId}</td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[240px] truncate font-mono text-[12px]" title={row.creatorNodeId}>
+                        {shortId(row.creatorNodeId, 16, 10)}
+                      </div>
+                    </td>
                     <td className="py-2 pr-3 align-top">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>
                         {row.visibility.toLowerCase()} / {row.status}
                       </span>
                     </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.publishReceiptId || "—"}</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.manifestHash}</td>
+                    <td className="hidden lg:table-cell py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[180px] truncate font-mono text-[11px]" title={row.publishReceiptId || ""}>
+                        {row.publishReceiptId ? shortId(row.publishReceiptId, 14, 8) : "—"}
+                      </div>
+                    </td>
+                    <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[260px] truncate font-mono text-[11px]" title={row.manifestHash}>
+                        {shortId(row.manifestHash, 16, 12)}
+                      </div>
+                    </td>
                     <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.publishedAt)}</td>
                   </tr>
                 ))}
@@ -321,46 +380,54 @@ export default function ProviderConsolePage() {
               <option value="expired">Expired</option>
             </select>
           </label>
+          <button
+            onClick={() => void api("/api/provider/remittances/reprocess", "POST", {}).then(load).catch((e: any) => setError(e?.message || "Failed to reprocess remittances."))}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+            disabled={loading}
+          >
+            Reprocess pending/failed
+          </button>
         </div>
         {visiblePaymentIntents.length === 0 ? (
           <div className="mt-3 text-sm text-neutral-400">No payment intents yet.</div>
         ) : (
           <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[1220px] text-sm">
+            <table className="w-full min-w-[760px] text-sm">
               <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
-                  <th className="py-2 pr-3 font-medium">Payment Intent</th>
+                  <th className="py-2 pr-3 font-medium">Intent</th>
                   <th className="py-2 pr-3 font-medium">Creator Node</th>
-                  <th className="py-2 pr-3 font-medium">Content</th>
-                  <th className="py-2 pr-3 font-medium">BOLT11</th>
+                  <th className="hidden xl:table-cell py-2 pr-3 font-medium">Content</th>
                   <th className="py-2 pr-3 font-medium">Amount</th>
-                  <th className="py-2 pr-3 font-medium">Provider Fee</th>
-                  <th className="py-2 pr-3 font-medium">Creator Net</th>
-                  <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Creator Net</th>
+                  <th className="py-2 pr-3 font-medium">Settlement</th>
                   <th className="py-2 pr-3 font-medium">Payout</th>
-                  <th className="py-2 pr-3 font-medium">Payout Rail</th>
-                  <th className="py-2 pr-3 font-medium">Payment Receipt</th>
-                  <th className="py-2 pr-3 font-medium">Created</th>
-                  <th className="py-2 pr-3 font-medium">Paid</th>
+                  <th className="py-2 pr-3 font-medium">Action</th>
+                  <th className="py-2 pr-3 font-medium">Details</th>
                 </tr>
               </thead>
               <tbody>
                 {visiblePaymentIntents.map((row) => (
-                  <tr key={row.id} className="border-t border-neutral-800/70">
+                  <Fragment key={row.id}>
+                  <tr className="border-t border-neutral-800/70">
                     <td className="py-2 pr-3 align-top">
-                      <div className="text-neutral-100">{row.paymentIntentId}</div>
-                      <div className="text-xs text-neutral-500">{row.providerInvoiceRef || "No provider invoice ref"}</div>
+                      <div className="max-w-[170px] truncate font-mono text-[12px] text-neutral-100" title={row.paymentIntentId}>
+                        {shortId(row.paymentIntentId, 16, 10)}
+                      </div>
+                      <div className="text-[11px] text-neutral-500">{formatDate(row.createdAt)}</div>
                     </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.creatorNodeId}</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.contentId || "—"}</td>
                     <td className="py-2 pr-3 align-top text-neutral-300">
-                      <span className="block max-w-[320px] truncate" title={row.bolt11 || ""}>
-                        {row.bolt11 || "—"}
-                      </span>
+                      <div className="max-w-[160px] truncate font-mono text-[12px]" title={row.creatorNodeId}>
+                        {shortId(row.creatorNodeId, 16, 10)}
+                      </div>
+                    </td>
+                    <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[130px] truncate font-mono text-[12px]" title={row.contentId || ""}>
+                        {row.contentId ? shortId(row.contentId, 10, 8) : "—"}
+                      </div>
                     </td>
                     <td className="py-2 pr-3 align-top text-neutral-300">{row.grossAmountSats || row.amountSats} sats</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{row.providerFeeSats} sats</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{row.creatorNetSats} sats</td>
+                    <td className="hidden lg:table-cell py-2 pr-3 align-top text-neutral-300">{row.creatorNetSats} sats</td>
                     <td className="py-2 pr-3 align-top">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>
                         {row.status}
@@ -371,11 +438,82 @@ export default function ProviderConsolePage() {
                         {row.payoutStatus}
                       </span>
                     </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{row.payoutRail || "—"}</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.paymentReceiptId || "—"}</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.createdAt)}</td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.paidAt)}</td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">
+                      {row.status === "paid" && row.payoutStatus !== "paid" ? (
+                        <button
+                          onClick={() => retryRemittance(row.id)}
+                          disabled={remitBusyId === row.id}
+                          className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60 disabled:opacity-60"
+                        >
+                          {remitBusyId === row.id ? "Retrying..." : "Retry remittance"}
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 align-top">
+                      <button
+                        onClick={() => toggleIntentDetails(row.id)}
+                        className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+                      >
+                        {expandedIntentIds[row.id] ? "Hide details" : "Show details"}
+                      </button>
+                    </td>
                   </tr>
+                  {expandedIntentIds[row.id] ? (
+                    <tr className="border-t border-neutral-800/50 bg-neutral-950/40">
+                      <td colSpan={9} className="px-3 py-3">
+                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                          <div className="text-xs text-neutral-400">
+                            <div className="uppercase tracking-wide text-neutral-500">Provider Invoice Ref</div>
+                            <div className="mt-1 break-all font-mono text-[11px] text-neutral-300">{row.providerInvoiceRef || "—"}</div>
+                          </div>
+                          <div className="text-xs text-neutral-400">
+                            <div className="uppercase tracking-wide text-neutral-500">BOLT11</div>
+                            <div className="mt-1 break-all font-mono text-[11px] text-neutral-300">{row.bolt11 || "—"}</div>
+                          </div>
+                          <div className="text-xs text-neutral-400">
+                            <div className="uppercase tracking-wide text-neutral-500">Payment Receipt</div>
+                            <div className="mt-1 break-all font-mono text-[11px] text-neutral-300">{row.paymentReceiptId || "—"}</div>
+                          </div>
+                          <div className="text-xs text-neutral-400">
+                            <div className="uppercase tracking-wide text-neutral-500">Fee Split</div>
+                            <div className="mt-1 text-neutral-300">
+                              Provider total {row.providerFeeSats} sats
+                              <span className="mx-1 text-neutral-500">|</span>
+                              Invoicing {row.providerInvoicingFeeSats} sats
+                              <span className="mx-1 text-neutral-500">|</span>
+                              Hosting {row.providerDurableHostingFeeSats} sats
+                            </div>
+                          </div>
+                          <div className="text-xs text-neutral-400">
+                            <div className="uppercase tracking-wide text-neutral-500">Payout Routing</div>
+                            <div className="mt-1 text-neutral-300">
+                              Rail: {row.payoutRail || "—"}
+                              <span className="mx-1 text-neutral-500">|</span>
+                              Mode: {row.providerRemitMode || "—"}
+                            </div>
+                            <div className="mt-1 break-all font-mono text-[11px] text-neutral-300">
+                              Destination: {row.payoutDestinationSummary || row.payoutDestinationType || "—"}
+                            </div>
+                          </div>
+                          <div className="text-xs text-neutral-400">
+                            <div className="uppercase tracking-wide text-neutral-500">Remittance</div>
+                            <div className="mt-1 break-all font-mono text-[11px] text-neutral-300">
+                              Ref: {row.payoutReference || "—"}
+                            </div>
+                            <div className="mt-1 text-neutral-300">
+                              Remitted: {formatDate(row.remittedAt)} <span className="mx-1 text-neutral-500">|</span> Paid: {formatDate(row.paidAt)}
+                            </div>
+                            {row.payoutLastError ? (
+                              <div className="mt-1 break-all text-rose-300">{row.payoutLastError}</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
