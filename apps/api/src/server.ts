@@ -1885,12 +1885,21 @@ async function requestDelegatedProviderPaymentIntent(input: {
       }),
       signal: controller.signal
     } as any);
-    const json: any = await res.json().catch(() => null);
+    const text = await res.text().catch(() => "");
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
     if (!res.ok) {
-      const err: any = new Error(String(json?.message || json?.error || `provider_http_${res.status}`));
-      err.code = String(json?.error || "").trim() || `PROVIDER_HTTP_${res.status}`;
+      const status = Number(res.status || 0);
+      const routeMismatch = status === 404 || status === 405 || status === 501;
+      const fallbackCode = routeMismatch ? "PROVIDER_ROUTE_MISMATCH" : `PROVIDER_HTTP_${status || "UNKNOWN"}`;
+      const err: any = new Error(String(json?.message || json?.error || text || `provider_http_${res.status}`));
+      err.code = String(json?.error || "").trim() || fallbackCode;
       err.status = res.status;
-      err.body = json || null;
+      err.body = json || text || null;
       throw err;
     }
     const paymentIntentId = String(json?.paymentIntentId || "").trim();
@@ -7438,6 +7447,104 @@ async function handleBuyerBuys(req: any, reply: any) {
 
 // Record a self-claimed purchase for Basic mode buyers
 app.post("/api/buyer/buys", handleBuyerBuys);
+
+// Public delegated provider invoice routes (machine-to-machine, trust-gated by provider relationship records).
+// These routes must remain publicly reachable because delegated creators call providerUrl/public/provider/* directly.
+app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as {
+    creatorNodeId?: string | null;
+    contentId?: string | null;
+    amountSats?: string | number | null;
+    paymentIntentId?: string | null;
+    buyerSessionId?: string | null;
+  };
+  const creatorNodeId = String(body.creatorNodeId || "").trim();
+  const contentId = String(body.contentId || "").trim();
+  const amountSats = String(body.amountSats ?? "").trim();
+  const paymentIntentId = String(body.paymentIntentId || "").trim();
+  if (!creatorNodeId || !contentId || !paymentIntentId) return badRequest(reply, "creatorNodeId, contentId, paymentIntentId required");
+  if (!/^\d+$/.test(amountSats) || Number(amountSats) <= 0) return badRequest(reply, "amountSats must be a positive integer");
+
+  const link = getProviderCreatorLink(creatorNodeId);
+  if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
+    return reply.code(409).send({ error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED", message: "Provider relationship is not ready." });
+  }
+  const delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+  if (!delegated) {
+    return reply.code(409).send({ error: "DELEGATED_PUBLISH_REQUIRED", message: "Delegated publish record is required." });
+  }
+
+  const existing = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+  if (existing) {
+    return reply.send({
+      ok: true,
+      paymentIntentId: existing.paymentIntentId,
+      bolt11: existing.bolt11,
+      providerInvoiceRef: existing.providerInvoiceRef,
+      status: existing.status
+    });
+  }
+
+  const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
+  const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
+  const memo = `Certifyd delegated ${contentId.slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  let bolt11: string | null = null;
+  let providerInvoiceRef: string | null = null;
+  try {
+    const invoice = await createLightningInvoiceWithRetry(BigInt(amountSats), memo, {
+      route: "/public/provider/payment-intents",
+      paymentIntentId,
+      contentId
+    });
+    bolt11 = invoice?.bolt11 || null;
+    providerInvoiceRef = invoice?.providerId || null;
+  } catch {}
+  const created = createProviderPaymentIntent({
+    providerNodeId,
+    creatorNodeId,
+    contentId,
+    paymentIntentId,
+    bolt11,
+    providerInvoiceRef,
+    amountSats,
+    status: bolt11 ? "issued" : "created",
+    paymentReceiptId: null,
+    buyerSessionId: String(body.buyerSessionId || "").trim() || null,
+    paidAt: null
+  });
+  return reply.send({
+    ok: true,
+    paymentIntentId: created.paymentIntentId,
+    bolt11: created.bolt11,
+    providerInvoiceRef: created.providerInvoiceRef,
+    status: created.status
+  });
+});
+
+app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: any, reply: any) => {
+  const paymentIntentId = String((req.params as any)?.paymentIntentId || "").trim();
+  if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+  let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+  if (!current) return notFound(reply, "Provider payment intent not found");
+  if (current.status !== "paid" && current.providerInvoiceRef) {
+    const invoiceStatus = await checkLightningInvoice(prisma as any, current.providerInvoiceRef).catch(() => null);
+    if (invoiceStatus?.paid) {
+      const patched = updateProviderPaymentIntent(current.id, {
+        status: "paid",
+        paidAt: invoiceStatus.paidAt || new Date().toISOString()
+      });
+      current = await ensureProviderPaymentSettlement(patched || current);
+    }
+  }
+  return reply.send({
+    ok: true,
+    paymentIntentId: current.paymentIntentId,
+    status: current.status,
+    paid: current.status === "paid",
+    paidAt: current.paidAt || null,
+    paymentReceiptId: current.paymentReceiptId || null
+  });
+});
 
 // Claim a free entitlement (for library) when content is free in Basic mode
 app.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
@@ -16229,6 +16336,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             lightningReason = "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED";
           } else if (providerCode === "PROVIDER_NOT_READY") {
             lightningReason = "PROVIDER_NOT_READY";
+          } else if (providerCode === "PROVIDER_ROUTE_MISMATCH" || providerCode === "PROVIDER_HTTP_404" || providerCode === "PROVIDER_HTTP_405") {
+            lightningReason = "PROVIDER_ROUTE_MISMATCH";
           } else if (providerCode === "PROVIDER_INVALID_RESPONSE") {
             lightningReason = "PROVIDER_INVALID_RESPONSE";
           } else if (!lightningReason) {
@@ -16276,6 +16385,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         lightningReason === "PROVIDER_DELEGATED_PUBLISH_REQUIRED" ||
         lightningReason === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED" ||
         lightningReason === "PROVIDER_NOT_READY" ||
+        lightningReason === "PROVIDER_ROUTE_MISMATCH" ||
         lightningReason === "PROVIDER_INVALID_RESPONSE"
       ) {
         const mappedCode =
@@ -16285,6 +16395,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               ? "PROVIDER_RELATIONSHIP_REQUIRED"
               : lightningReason === "PROVIDER_NOT_READY"
                 ? "PROVIDER_NOT_READY"
+                : lightningReason === "PROVIDER_ROUTE_MISMATCH"
+                  ? "PROVIDER_ROUTE_MISMATCH"
                 : "PROVIDER_INVALID_RESPONSE";
         app.log.warn(
           {
@@ -16301,10 +16413,12 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             mappedCode === "DELEGATED_PUBLISH_REQUIRED"
               ? "Provider payment is not ready for this content yet. Publish via provider first."
               : mappedCode === "PROVIDER_RELATIONSHIP_REQUIRED"
-                ? "Provider relationship is not ready for delegated payments."
-                : mappedCode === "PROVIDER_NOT_READY"
-                  ? "Provider is configured but not ready to issue delegated invoices."
-                  : "Provider returned an invalid payment response.",
+              ? "Provider relationship is not ready for delegated payments."
+              : mappedCode === "PROVIDER_NOT_READY"
+                ? "Provider is configured but not ready to issue delegated invoices."
+                : mappedCode === "PROVIDER_ROUTE_MISMATCH"
+                  ? "Provider delegated invoice route is unavailable or mismatched."
+                : "Provider returned an invalid payment response.",
           details: { lightningReason }
         });
       }

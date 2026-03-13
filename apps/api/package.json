@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node ../../scripts/check-prisma-provider.js && tsx watch src/server.ts",
+    "start:api": "node ../../scripts/check-prisma-provider.js && tsx src/server.ts",
+    "runtime:supervisor": "tsx src/runtime/supervisor.ts",
     "whoami": "node dev/whoami.mjs",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
@@ -14,6 +16,8 @@
     "smoke:basic": "npx tsx src/scripts/smoke_basic_mode.ts",
     "smoke:advanced": "npx tsx src/scripts/smoke_advanced_mode.ts",
     "test:storefront-gating": "API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 npx tsx src/scripts/storefront_gating_test.ts",
+    "test:delegated-invoice-harness": "npx tsx src/payments/delegated_invoice_harness.ts",
+    "test:delegated-invoice-harness:ci": "EXPECT_SETTLED=1 EXPECT_UI_CONSISTENT=1 npx tsx src/payments/delegated_invoice_harness.ts",
     "test:identity-gating": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/identity_gating_test.ts",
     "test:buyer-auth": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/buyer_auth_test.ts",
     "test:lightning-onboarding": "npx tsx --test src/payments/lightning.onboarding.test.ts"
