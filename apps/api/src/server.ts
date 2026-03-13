@@ -4945,7 +4945,83 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
+  // Buyer session + entitlement routes used by public buy pages.
+  appPublic.post("/api/buyer/bootstrap", async (req: any, reply: any) => {
+    const session = await getOrCreateBuyerSession(req, reply);
+    return reply.send({ ok: true, buyer: { id: session.buyer.id } });
+  });
+  appPublic.get("/api/buyer/me", async (req: any, reply: any) => {
+    const session = await resolveBuyerSession(req, reply);
+    if (!session) return reply.send({ buyer: null });
+    return reply.send({ buyer: { id: session.buyer.id } });
+  });
+  appPublic.post("/api/buyer/logout", async (req: any, reply: any) => {
+    const rawToken = getCookie(req, BUYER_SESSION_COOKIE);
+    const sessionId = verifyBuyerSessionToken(rawToken, JWT_SECRET)?.sid || resolveBuyerSessionIdFromToken(rawToken, JWT_SECRET);
+    if (sessionId) {
+      await prisma.buyerSession.delete({ where: { id: sessionId } }).catch(() => {});
+    }
+    reply.header("Set-Cookie", buildBuyerClearCookie(req));
+    return reply.send({ ok: true });
+  });
+  appPublic.get("/api/buyer/entitlements", async (req: any, reply: any) => {
+    const session = await resolveBuyerSession(req, reply);
+    const buyerId = session?.buyer?.id || null;
+    if (!buyerId) return reply.send([]);
+    const entitlements = await prisma.entitlement.findMany({
+      where: { buyerId },
+      include: {
+        content: {
+          select: {
+            id: true,
+            title: true,
+            type: true,
+            manifest: { select: { sha256: true } }
+          }
+        }
+      },
+      orderBy: { grantedAt: "desc" }
+    });
+    return reply.send(
+      entitlements.map((e) => ({
+        id: e.id,
+        contentId: e.contentId,
+        manifestSha256: e.manifestSha256,
+        grantedAt: e.grantedAt,
+        title: e.content?.title || null,
+        type: e.content?.type || null,
+        currentManifestSha256: e.content?.manifest?.sha256 || null
+      }))
+    );
+  });
+  appPublic.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
+    const body = (req.body ?? {}) as { contentId?: string };
+    const contentId = asString(body.contentId || "");
+    if (!contentId) return badRequest(reply, "contentId required");
+    const session = await getOrCreateBuyerSession(req, reply);
+    const buyerId = session.buyer.id;
+    const content = await prisma.contentItem.findUnique({ where: { id: contentId }, include: { manifest: true } });
+    if (!content || content.status !== "published") return notFound(reply, "Content not found");
+    if ((content.priceSats || 0n) > 0n) {
+      return reply.code(409).send({ error: "PAID_CONTENT", message: "Paid content requires payment intent." });
+    }
+    const manifestSha256 = content.manifest?.sha256 || "";
+    const existing = await prisma.entitlement.findFirst({
+      where: { buyerId, contentId, manifestSha256 },
+      orderBy: { grantedAt: "desc" }
+    });
+    if (existing) return reply.send({ ok: true, alreadyOwned: true, entitlementId: existing.id });
+    const created = await prisma.entitlement.create({
+      data: {
+        buyerId,
+        contentId,
+        manifestSha256
+      }
+    });
+    return reply.send({ ok: true, entitlementId: created.id });
+  });
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
+  appPublic.post("/api/public/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
   appPublic.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
