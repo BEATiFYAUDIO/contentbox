@@ -33,6 +33,7 @@ If you only want to **try Certifyd Creator locally**, you can safely ignore the 
 ## Contents
 
 * Overview
+* Certifyd Network + Commerce Progress
 * Local development setup (Docker, legacy/advanced path)
 * Running the owner node (local)
 * Running an invitee node (optional)
@@ -71,6 +72,49 @@ There are two supported acceptance modes:
 2. **Signed P2P accept (optional, advanced)**
    The invitee runs their own Certifyd Creator node, signs an acceptance payload locally, and submits the signed payload to the owner.
    This produces cryptographic proof of acceptance.
+
+---
+
+## Certifyd Network + Commerce Progress
+
+Current milestone status (implemented):
+
+- provider verification
+- provider acknowledgment
+- execution permit
+- network readiness
+- profile activation
+- profile publish
+- canonical content manifest hashing at publish time
+- `content_publish` receipts
+- creator-side network publish proof
+- public viewer-side publish proof
+- public viewer-side payment/access proof
+- public content playback/unlock working
+
+Current creator/product loop:
+
+Create content  
+→ upload file  
+→ publish to Certifyd network  
+→ `content_publish` receipt created  
+→ creator sees publish proof  
+→ viewer sees trust proof  
+→ viewer sees payment/access state  
+→ playback/unlock works
+
+Known limitations in this pass:
+
+- `content.status = "published"` still exists as operational state
+- publish proof receipt lookup currently scans recent local receipts
+- viewer-side payment/access proof is buyer-session scoped
+- no discovery, failover, or replication yet
+- no major protocol redesign in this milestone
+
+Recommended next roadmap step:
+
+- add targeted commerce reconciliation tests around payment/access proof transitions
+  (`locked → preview → entitled`) so creator and viewer surfaces stay consistent.
 
 ---
 

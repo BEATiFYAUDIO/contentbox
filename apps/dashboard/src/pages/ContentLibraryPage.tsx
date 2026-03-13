@@ -181,6 +181,7 @@ type ContentPublishReceiptPayload = {
 };
 
 type NetworkPublishState = {
+  hasReceipt: boolean;
   publishedAt: string | null;
   manifestHash: string | null;
   receiptId: string | null;
@@ -997,6 +998,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
     const payload = readContentPublishPayload(receipt?.payload);
     return {
+      hasReceipt: Boolean(receipt?.id),
       publishedAt:
         asNonEmptyString(payload?.publishedAt) ||
         asNonEmptyString(receipt?.createdAt) ||
@@ -2352,6 +2354,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const lightningAvailable = identities.some(
                 (i) => (i.payoutMethod.code === "lightning_address" || i.payoutMethod.code === "lnurl") && i.value
               );
+              const currentPriceSats = Number(it.priceSats ?? 0);
+              const paidUnlockEnabled = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
+              const creatorSales = salesByContent[it.id] || null;
+              const recentSales = Array.isArray(creatorSales?.recent) ? creatorSales.recent : [];
+              const lastSale = recentSales[0] || null;
+              const monetizationAccessLabel = paidUnlockEnabled
+                ? "Paid unlock enabled"
+                : lightningAvailable
+                  ? "Free access with tips enabled"
+                  : "Free access";
 
               return (
                 <div key={it.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40">
@@ -2390,7 +2402,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           Featured on profile
                         </div>
                       ) : null}
-                      {uiState === "published" && networkPublishByContent[it.id]?.receiptId ? (
+                      {uiState === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
                         <div className="mt-1 inline-flex rounded-full border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-200">
                           Network Published
                         </div>
@@ -3508,6 +3520,30 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="text-xs text-neutral-300 font-medium">Monetization</div>
+                        <div className="mt-2 rounded-md border border-sky-900/40 bg-sky-950/20 p-3">
+                          <div className="text-xs font-medium text-sky-200">Payment / Access Proof</div>
+                          <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+                            <div>
+                              Access model: <span className="text-neutral-100">{monetizationAccessLabel}</span>
+                            </div>
+                            <div>
+                              Payment state:{" "}
+                              <span className="text-neutral-100">
+                                {paidUnlockEnabled ? "Payment required before unlock" : "No payment required"}
+                              </span>
+                            </div>
+                            <div>
+                              Recent purchases recorded: <span className="text-neutral-100">{recentSales.length}</span>
+                            </div>
+                            <div>
+                              Last payment receipt ID:{" "}
+                              <span className="text-neutral-100 break-all">{lastSale?.id || "—"}</span>
+                            </div>
+                            <div>
+                              Last payment method: <span className="text-neutral-100">{lastSale?.paidVia || "—"}</span>
+                            </div>
+                          </div>
+                        </div>
                         <div className="mt-2 grid gap-3 md:grid-cols-3">
                           <div className="md:col-span-1">
                             <label className="block text-xs text-neutral-400 mb-1" htmlFor={`priceSats-${it.id}`}>
@@ -4156,7 +4192,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         {publishMsg[it.id] ? (
                           <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div>
                         ) : null}
-                        {it.status === "published" ? (
+                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
                           <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
                             <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
                             <div className="mt-2 grid gap-1 text-xs text-neutral-300">

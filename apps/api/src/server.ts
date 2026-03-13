@@ -13434,6 +13434,14 @@ async function handleBuyPage(req: any, reply: any) {
     .field { margin-top:10px; }
     .step { margin-top:14px; padding:12px; border:1px solid #222; border-radius:12px; background:#0f0f10; }
     .step h3 { margin:0 0 6px; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
+    .proof-card { margin-top:12px; padding:12px; border:1px solid #1f3d2f; border-radius:12px; background:#0c1912; }
+    .proof-title { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#86efac; font-weight:700; }
+    .proof-grid { margin-top:8px; display:grid; gap:6px; font-size:12px; color:#cbd5e1; }
+    .proof-label { color:#9ca3af; }
+    .access-card { margin-top:10px; padding:12px; border:1px solid #2b3340; border-radius:12px; background:#10151d; }
+    .access-title { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#93c5fd; font-weight:700; }
+    .access-grid { margin-top:8px; display:grid; gap:6px; font-size:12px; color:#d4d4d8; }
+    .access-label { color:#9ca3af; }
     .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
     .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
     .section-title { margin-top:12px; font-size:16px; font-weight:600; }
@@ -13500,6 +13508,7 @@ async function handleBuyPage(req: any, reply: any) {
   let previewSeconds = 20;
   let buyer = null;
   let alreadyOwned = false;
+  let livePaymentProof = null;
   const edgeUrlCache = new Map();
   let attributionData = null;
   const ENTITLE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -13590,6 +13599,125 @@ async function handleBuyPage(req: any, reply: any) {
       "</div>";
       mount.style.display = "";
     });
+  }
+
+  function formatProofTime(v){
+    const s = String(v || "").trim();
+    if (!s) return "—";
+    const d = new Date(s);
+    if (Number.isNaN(d.getTime())) return s;
+    return d.toLocaleString();
+  }
+
+  function shortHash(v){
+    const s = String(v || "").trim();
+    if (s.length <= 20) return s;
+    return s.slice(0, 12) + "…" + s.slice(-8);
+  }
+
+  function renderPublishProofBlock(offer){
+    const proof = offer?.publishProof || null;
+    const receiptId = String(proof?.receiptId || "").trim();
+    const manifestHash = String(proof?.manifestHash || "").trim();
+    if (!receiptId || !manifestHash) return "";
+    const publishedAt = String(proof?.publishedAt || "").trim();
+    const creatorNodeId = String(proof?.creatorNodeId || "").trim();
+    const providerNodeId = String(proof?.providerNodeId || "").trim();
+    return "<div class=\\"proof-card\\">" +
+      "<div class=\\"proof-title\\">Published to Certifyd Network</div>" +
+      "<div class=\\"proof-grid\\">" +
+        "<div><span class=\\"proof-label\\">Published at:</span> " + esc(formatProofTime(publishedAt)) + "</div>" +
+        "<div><span class=\\"proof-label\\">Manifest hash:</span> <span class=\\"code\\">" + esc(shortHash(manifestHash)) + "</span></div>" +
+        "<div><span class=\\"proof-label\\">Receipt ID:</span> <span class=\\"code\\">" + esc(shortHash(receiptId)) + "</span></div>" +
+        (creatorNodeId ? "<div><span class=\\"proof-label\\">Creator node:</span> <span class=\\"code\\">" + esc(shortHash(creatorNodeId)) + "</span></div>" : "") +
+        (providerNodeId ? "<div><span class=\\"proof-label\\">Provider node:</span> <span class=\\"code\\">" + esc(shortHash(providerNodeId)) + "</span></div>" : "") +
+      "</div>" +
+    "</div>";
+  }
+
+  function normalizePaymentState(v){
+    const s = String(v || "").trim().toLowerCase();
+    if (s === "free" || s === "tip" || s === "payment_required" || s === "paid" || s === "owned" || s === "unlocked") return s;
+    return null;
+  }
+
+  function normalizeEntitlementState(v){
+    const s = String(v || "").trim().toLowerCase();
+    if (s === "locked" || s === "preview" || s === "entitled") return s;
+    return null;
+  }
+
+  function resolvePaymentAccessProof(offer, entitlement, owned){
+    const base = (offer && typeof offer === "object" && offer.paymentAccessProof && typeof offer.paymentAccessProof === "object")
+      ? offer.paymentAccessProof
+      : {};
+    const isPaid = Number(offer?.priceSats || 0) > 0;
+    const isOwned = Boolean(owned);
+    const isEntitled = entitlement?.status === "paid" || entitlement?.status === "bypassed" || isOwned;
+    const isPreview = entitlement?.status === "preview";
+
+    let paymentState = normalizePaymentState(base?.paymentState);
+    let entitlementState = normalizeEntitlementState(base?.entitlementState);
+
+    if (isPaid) {
+      if (isEntitled) {
+        paymentState = isOwned ? "owned" : "unlocked";
+        entitlementState = "entitled";
+      } else if (isPreview) {
+        paymentState = paymentState || "payment_required";
+        entitlementState = "preview";
+      } else {
+        paymentState = "payment_required";
+        entitlementState = "locked";
+      }
+    } else {
+      if (!paymentState || paymentState === "payment_required") paymentState = "free";
+      entitlementState = "entitled";
+    }
+
+    const live = livePaymentProof && String(livePaymentProof.contentId || "") === String(offer?.contentId || contentId) ? livePaymentProof : null;
+    const paymentReceiptId = String(live?.paymentReceiptId || base?.paymentReceiptId || "").trim() || null;
+    const paidAt = String(live?.paidAt || base?.paidAt || "").trim() || null;
+    const paymentMethod = String(live?.paymentMethod || base?.paymentMethod || "").trim() || null;
+    const invoiceProviderNodeId = String(live?.invoiceProviderNodeId || base?.invoiceProviderNodeId || "").trim() || null;
+    const currentContentId = String(base?.contentId || offer?.contentId || contentId || "").trim() || null;
+
+    return { paymentState, entitlementState, paymentReceiptId, paidAt, paymentMethod, invoiceProviderNodeId, contentId: currentContentId };
+  }
+
+  function paymentStateLabel(state){
+    if (state === "unlocked" || state === "paid" || state === "owned") return "Unlocked";
+    if (state === "payment_required") return "Locked";
+    if (state === "tip") return "Tips enabled";
+    return "Free";
+  }
+
+  function paymentMessageForState(state){
+    if (state === "unlocked" || state === "paid" || state === "owned") return "Payment confirmed.";
+    if (state === "payment_required") return "Payment required to unlock full access.";
+    if (state === "tip") return "Access is free. Tips support the creator.";
+    return "Access is free.";
+  }
+
+  function renderPaymentAccessProofBlock(offer, entitlement, owned){
+    const proof = resolvePaymentAccessProof(offer, entitlement, owned);
+    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "—";
+    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "—";
+    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "—";
+    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "—";
+    const entitlementLabel = proof.entitlementState === "entitled" ? "Entitled" : proof.entitlementState === "preview" ? "Preview" : "Locked";
+    return "<div class=\\"access-card\\">" +
+      "<div class=\\"access-title\\">Payment / Access Proof</div>" +
+      "<div class=\\"access-grid\\">" +
+        "<div><span class=\\"access-label\\">Access:</span> " + esc(paymentStateLabel(proof.paymentState)) + "</div>" +
+        "<div><span class=\\"access-label\\">Entitlement:</span> " + esc(entitlementLabel) + "</div>" +
+        "<div class=\\"muted\\">" + esc(paymentMessageForState(proof.paymentState)) + "</div>" +
+        "<div><span class=\\"access-label\\">Payment receipt:</span> <span class=\\"code\\">" + esc(receiptId) + "</span></div>" +
+        "<div><span class=\\"access-label\\">Paid at:</span> " + esc(paidAt) + "</div>" +
+        "<div><span class=\\"access-label\\">Payment method:</span> " + esc(paymentMethod) + "</div>" +
+        "<div><span class=\\"access-label\\">Invoice provider node:</span> <span class=\\"code\\">" + esc(providerNode) + "</span></div>" +
+      "</div>" +
+    "</div>";
   }
 
   async function loadAttribution(){
@@ -13823,6 +13951,8 @@ async function handleBuyPage(req: any, reply: any) {
       "<div>" +
         "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
         "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
+        renderPublishProofBlock(offer) +
+        renderPaymentAccessProofBlock(offer, null, Boolean(offer?.owned)) +
         "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
         (isAudio
           ? (coverSrc
@@ -13867,6 +13997,8 @@ async function handleBuyPage(req: any, reply: any) {
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
+        \${renderPublishProofBlock(offer)}
+        \${renderPaymentAccessProofBlock(offer, entitlement, owned)}
         <section id="cb-attribution" style="display:none"></section>
         \${isAudio ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${already ? \`
@@ -14132,6 +14264,15 @@ async function handleBuyPage(req: any, reply: any) {
       receiptToken = status.receiptToken;
     }
     const paid = status.access === "unlocked" || status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
+    livePaymentProof = {
+      contentId: status.contentId || contentId,
+      paymentState: paid ? "unlocked" : "payment_required",
+      entitlementState: paid ? "entitled" : "locked",
+      paymentReceiptId: status.paymentIntentId || null,
+      paidAt: status.paidAt || null,
+      paymentMethod: status.paymentMethod || null,
+      invoiceProviderNodeId: status.invoiceProviderNodeId || null
+    };
     if (paid) {
       clearManualIntent();
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -14227,6 +14368,7 @@ async function handleBuyPage(req: any, reply: any) {
           fetchJson("/buy/content/" + contentId + "/offer")
             .then(async (offer)=> {
               currentOffer = offer;
+              livePaymentProof = null;
               const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
               const shouldUpgradeOwnedFromPreview = Boolean(
                 alreadyOwned &&
@@ -14513,6 +14655,75 @@ app.get("/p2p/identity", { preHandler: requireAuth }, async (req: any, reply) =>
   return reply.send({ peerId, baseUrl });
 });
 
+type ContentPublishProof = {
+  publishedAt: string | null;
+  manifestHash: string | null;
+  receiptId: string;
+  creatorNodeId: string | null;
+  providerNodeId: string | null;
+};
+
+function readContentPublishProofPayload(payload: unknown): {
+  contentId: string | null;
+  manifestHash: string | null;
+  publishedAt: string | null;
+  creatorNodeId: string | null;
+  providerNodeId: string | null;
+} {
+  if (!payload || typeof payload !== "object") {
+    return { contentId: null, manifestHash: null, publishedAt: null, creatorNodeId: null, providerNodeId: null };
+  }
+  const obj = payload as Record<string, unknown>;
+  return {
+    contentId: asString(obj.contentId || "").trim() || null,
+    manifestHash: asString(obj.manifestHash || "").trim() || null,
+    publishedAt: asString(obj.publishedAt || "").trim() || null,
+    creatorNodeId: asString(obj.creatorNodeId || "").trim() || null,
+    providerNodeId: asString(obj.providerNodeId || "").trim() || null
+  };
+}
+
+function findLatestContentPublishProofForContent(contentId: string, manifestHash: string | null): ContentPublishProof | null {
+  const receipts = listLifecycleReceipts(RECEIPTS_DIR, 500);
+  for (const receipt of receipts) {
+    if (!receipt || receipt.type !== "content_publish") continue;
+    const payload = readContentPublishProofPayload(receipt.payload);
+    const payloadContentId = payload.contentId;
+    const objectContentId = asString(receipt.objectId || "").trim() || null;
+    if (payloadContentId !== contentId && objectContentId !== contentId) continue;
+    const resolvedManifestHash = payload.manifestHash || manifestHash;
+    return {
+      publishedAt: payload.publishedAt || asString(receipt.createdAt || "").trim() || null,
+      manifestHash: resolvedManifestHash || null,
+      receiptId: receipt.id,
+      creatorNodeId: payload.creatorNodeId || asString(receipt.subjectNodeId || "").trim() || null,
+      providerNodeId: payload.providerNodeId || asString(receipt.providerNodeId || "").trim() || null
+    };
+  }
+  return null;
+}
+
+type PublicPaymentAccessProof = {
+  contentId: string;
+  paymentState: "free" | "tip" | "payment_required" | "paid" | "owned" | "unlocked";
+  entitlementState: "locked" | "preview" | "entitled";
+  paymentReceiptId: string | null;
+  paidAt: string | null;
+  paymentMethod: string | null;
+  invoiceProviderNodeId: string | null;
+};
+
+function resolvePaymentMethodFromIntent(intent: any): string | null {
+  const paidVia = asString(intent?.paidVia || "").trim().toLowerCase();
+  if (paidVia) return paidVia;
+  const providerId = asString(intent?.providerId || "").trim().toLowerCase();
+  if (providerId.startsWith("lnd:")) return "lightning";
+  if (providerId) return "provider";
+  const onchainAddress = asString(intent?.onchainAddress || "").trim();
+  if (onchainAddress) return "onchain";
+  return null;
+}
+
 async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
@@ -14544,6 +14755,7 @@ async function handlePublicOffer(req: any, reply: any) {
   if (manifest && manifestShaQuery && manifest.sha256 !== manifestShaQuery) {
     return badRequest(reply, "manifestSha256 does not match content manifest");
   }
+  const publishProof = manifest ? findLatestContentPublishProofForContent(contentId, manifest.sha256) : null;
 
   const manifestJson = (manifest?.json || {}) as any;
   let primaryFileId =
@@ -14576,6 +14788,65 @@ async function handlePublicOffer(req: any, reply: any) {
   const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
   const priceSats = content.priceSats ?? null;
+  const hasPrice = priceSats != null && priceSats > 0n;
+  let buyerId: string | null = null;
+  let entitled = Boolean(gated.entitled);
+  try {
+    const buyerSession = await resolveBuyerSession(req, reply);
+    buyerId = asString(buyerSession?.buyer?.id || "").trim() || null;
+  } catch {
+    buyerId = null;
+  }
+  if (buyerId) {
+    await reconcileBuyerEntitlementsFromPurchaseHistory({ buyerId, contentId }).catch(() => {});
+    entitled = await hasAccess(buyerId, contentId);
+  }
+
+  let latestEntitlement: any | null = null;
+  if (buyerId) {
+    latestEntitlement = await prisma.entitlement.findFirst({
+      where: { contentId, buyerId },
+      orderBy: { grantedAt: "desc" },
+      include: { payment: true }
+    });
+  }
+
+  let tipsEnabled = false;
+  if (!hasPrice) {
+    try {
+      const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+      if (payoutMethod?.id) {
+        const identity = await prisma.identity.findFirst({
+          where: { payoutMethodId: payoutMethod.id, userId: content.ownerUserId },
+          orderBy: { createdAt: "desc" }
+        });
+        tipsEnabled = Boolean(asString(identity?.value || "").trim());
+      }
+    } catch {
+      tipsEnabled = false;
+    }
+  }
+
+  const providerCfg = getNetworkProviderConfig();
+  const invoiceProviderNodeId =
+    latestEntitlement?.payment &&
+    !asString(latestEntitlement.payment?.providerId || "").trim().toLowerCase().startsWith("lnd:") &&
+    isNetworkProviderConfigured(providerCfg)
+      ? providerCfg.providerNodeId
+      : null;
+  const paymentAccessProof: PublicPaymentAccessProof = {
+    contentId,
+    paymentState: hasPrice ? (entitled ? "owned" : "payment_required") : tipsEnabled ? "tip" : "free",
+    entitlementState: hasPrice ? (entitled ? "entitled" : "locked") : "entitled",
+    paymentReceiptId: latestEntitlement?.payment ? asString(latestEntitlement.payment.id || "").trim() || null : null,
+    paidAt:
+      latestEntitlement?.payment?.paidAt && !Number.isNaN(new Date(latestEntitlement.payment.paidAt).getTime())
+        ? new Date(latestEntitlement.payment.paidAt).toISOString()
+        : null,
+    paymentMethod: resolvePaymentMethodFromIntent(latestEntitlement?.payment || null),
+    invoiceProviderNodeId
+  };
+
   if (!allowDraftPreview) {
     if (priceSats == null) {
       return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
@@ -14597,6 +14868,8 @@ async function handlePublicOffer(req: any, reply: any) {
     deliveryMode: (content as any).deliveryMode || null,
     tombstoned: gated.tombstoned,
     owned: gated.entitled,
+    publishProof,
+    paymentAccessProof,
     seller: { hostOrigin: baseUrl },
     sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
     fulfillment: { mode: "receiptToken", ttlSeconds }
@@ -15202,14 +15475,22 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     }).catch(() => {});
   }
   const accessUnlocked = intent.status === "paid" || (buyerId ? await hasAccess(buyerId, intent.contentId) : false);
+  const providerCfg = getNetworkProviderConfig();
+  const invoiceProviderNodeId =
+    !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
+      ? providerCfg.providerNodeId
+      : null;
 
   return reply.send({
     status: intent.status,
     paymentStatus: intent.status,
+    paymentMethod: resolvePaymentMethodFromIntent(intent),
+    paidAt: intent.paidAt ? new Date(intent.paidAt).toISOString() : null,
     paymentIntentId: intent.id,
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
     receiptToken: intent.receiptToken || null,
+    invoiceProviderNodeId,
     canFulfill: accessUnlocked,
     access: accessUnlocked ? "unlocked" : "pending",
     warning: accessBuyer.warning || undefined
@@ -17380,6 +17661,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
     return tx.sale.upsert({
       where: { intentId },
       update: {
+        // NOTE(certifyd-boundary): sale records stay creator-owned even when rail === provider_invoice.
         amountSats: fresh.amountSats,
         contentId: fresh.contentId,
         sellerUserId: content.ownerUserId,
@@ -17390,6 +17672,8 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
         confirmedByUserId: options.confirmedByUserId || null
       },
       create: {
+        // TODO(certifyd-provider-fees): add explicit provider infrastructure compensation records
+        // without shifting sale ownership away from creator/content identity.
         intentId,
         contentId: fresh.contentId,
         sellerUserId: content.ownerUserId,
@@ -17404,6 +17688,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   });
 
   const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+  // TODO(certifyd-entitlement-boundary): delegated/provider invoice execution must not become entitlement truth ownership.
   return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
 }
 
@@ -18826,6 +19111,9 @@ function normalizeRemoteInvoiceState(input: unknown): "SETTLED" | "OPEN" | "ACCE
 }
 
 function pickIntentRail(intent: any): "manual_lightning" | "provider_invoice" | "node_invoice" | "onchain" {
+  // NOTE(certifyd-boundary): rail/provider selection is infrastructure routing only.
+  // Creator/content identity remains the ownership root for sale and entitlement truth.
+  // TODO(certifyd-delegated-invoicing): bind delegated invoice request metadata to providerNodeId + creatorNodeId explicitly.
   if (intent.providerId?.startsWith("lnd:")) return "node_invoice";
   if (intent.providerId) return "provider_invoice";
   if (intent.onchainAddress) return "onchain";
