@@ -7981,6 +7981,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const userId = (req.user as JwtUser).sub;
   const runtime = resolveRuntimeConfig();
   const ctx = getCapabilityContext();
+  const providerConfig = getNetworkProviderConfig();
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
 
   const localInvoiceMinting =
@@ -7988,8 +7989,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     ctx.nodeMode === "advanced" &&
     Boolean(paymentsReadiness?.lightning?.ready);
 
-  // Delegated/provider-backed commerce is not implemented/configurable yet.
-  const delegatedInvoiceSupport = false;
+  const delegatedInvoiceSupport = hasProviderPaymentTarget(providerConfig) && evaluateProviderExecutionTrustReadiness().allowed;
 
   const invoiceProviderRole = hasInvoiceProviderRole(runtime.nodeMode as "basic" | "advanced" | "lan");
   const creatorRole = true;
@@ -7998,7 +7998,6 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const visibility = deriveNetworkVisibility(ctx.publicStatus);
   const publicUrl = ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || null;
   const tunnel = ctx.publicStatus.mode === "quick" || ctx.publicStatus.mode === "named";
-  const providerConfig = getNetworkProviderConfig();
   const providerConfigured = isNetworkProviderConfigured(providerConfig);
 
   return reply.send({
