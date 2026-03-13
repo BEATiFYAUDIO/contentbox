@@ -10,6 +10,19 @@ export async function startPublicServer(registerPublicRoutes: RegisterFn, host: 
     bodyLimit: 2 * 1024 * 1024
   });
 
+  // Match API server behavior: allow empty JSON request bodies.
+  const jsonParser = (_req: any, body: string, done: (err: Error | null, value?: any) => void) => {
+    const raw = String(body || "").trim();
+    if (!raw) return done(null, {});
+    try {
+      return done(null, JSON.parse(raw));
+    } catch (e: any) {
+      return done(e);
+    }
+  };
+  app.addContentTypeParser("application/json", { parseAs: "string" }, jsonParser);
+  app.addContentTypeParser("application/*+json", { parseAs: "string" }, jsonParser);
+
   // Minimal CORS for public routes (invite/buy links accessed from other origins)
   app.addHook("onSend", async (_req: any, reply: any, payload: any) => {
     reply.header("access-control-allow-origin", "*");
