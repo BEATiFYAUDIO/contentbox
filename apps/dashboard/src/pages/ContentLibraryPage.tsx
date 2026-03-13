@@ -379,17 +379,22 @@ export default function ContentLibraryPage({
   const canAdvancedSplits = features?.advancedSplits ?? false;
   const canDerivatives = features?.derivatives ?? false;
   const canPublicShare = features?.publicShare ?? false;
-  const publishReason =
+  const networkPublishReason =
+    capabilityReasons?.publish_network ||
     capabilityReasons?.publish ||
-    "You can prepare this action, but a permanent named link must be online to perform it.";
+    "Network publish requires a trusted provider connection or sovereign local payment rails.";
+  const discoveryPublishReason =
+    capabilityReasons?.publish_discovery ||
+    capabilityReasons?.public_share ||
+    "Public discovery requires provider-node capability with a permanent named public link.";
   const clearanceReason =
     capabilityReasons?.clearance ||
     "You can prepare this action, but a permanent named link must be online to perform it.";
-  const publishAllowed = capabilities?.publish ?? true;
+  const networkPublishAllowed = capabilities?.publishToNetwork ?? capabilities?.publish ?? true;
   const crossNodeAllowed = capabilities?.requestClearance ?? true;
   const splitsAllowed = capabilities?.useSplits ?? canAdvancedSplits;
   const derivativesAllowed = capabilities?.useDerivatives ?? canDerivatives;
-  const publicShareAllowed = capabilities?.publicShare ?? canPublicShare;
+  const discoveryPublishAllowed = capabilities?.publishToDiscovery ?? capabilities?.publicShare ?? canPublicShare;
   const apiBase = getApiBase();
   const envPublicOrigin = ((import.meta as any).env?.VITE_PUBLIC_ORIGIN || "").toString().trim();
   const envPublicBuyOrigin = ((import.meta as any).env?.VITE_PUBLIC_BUY_ORIGIN || "").toString().trim();
@@ -1049,8 +1054,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     if (publishBusy[contentId]) return;
     const currentItem = items.find((it) => it.id === contentId);
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(currentItem?.type || ""));
-    if (!publishAllowed) {
-      setPublishMsg((m) => ({ ...m, [contentId]: publishReason }));
+    if (!networkPublishAllowed) {
+      setPublishMsg((m) => ({ ...m, [contentId]: networkPublishReason }));
       return;
     }
     setPublishBusy((m) => ({ ...m, [contentId]: true }));
@@ -1333,6 +1338,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   }
 
   async function updateStorefrontStatus(contentId: string, storefrontStatus: "DISABLED" | "UNLISTED" | "LISTED") {
+    if (storefrontStatus !== "DISABLED" && !discoveryPublishAllowed) {
+      setError(discoveryPublishReason);
+      return;
+    }
     setBusyAction((m) => ({ ...m, [contentId]: true }));
     try {
       const res = await api<{ storefrontStatus: string }>(`/api/content/${contentId}/storefront`, "PATCH", {
@@ -1342,7 +1351,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         prev.map((it) => (it.id === contentId ? { ...it, storefrontStatus: res.storefrontStatus as any } : it))
       );
     } catch (e: any) {
-      setError(e?.message || "Failed to update network visibility");
+      if (e?.message && String(e.message).includes("public_discovery_not_allowed")) {
+        setError(discoveryPublishReason);
+      } else {
+        setError(e?.message || "Failed to update network visibility");
+      }
     } finally {
       setBusyAction((m) => ({ ...m, [contentId]: false }));
     }
@@ -2507,7 +2520,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 onClick={() => publishContent(it.id)}
                                 disabled={
                                   publishBusy[it.id] ||
-                                  !publishAllowed ||
+                                  !networkPublishAllowed ||
                                   !allowPublish ||
                                   (isBasicTier && isDerivativeType)
                                 }
@@ -2516,8 +2529,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     ? "Derivatives require Advanced mode and clearance before publishing."
                                     : !allowPublish
                                       ? "Already published"
-                                      : !publishAllowed
-                                        ? publishReason
+                                      : !networkPublishAllowed
+                                        ? networkPublishReason
                                         : "Publish this content"
                                 }
                               >
@@ -2581,9 +2594,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-xs text-amber-300">Archived</div>
                       )}
                     </div>
-                    {!publishAllowed ? (
+                    {!networkPublishAllowed ? (
                       <div className="w-full text-[11px] text-amber-300">
-                        {publishReason}{" "}
+                        {networkPublishReason}{" "}
                         <button
                           type="button"
                           onClick={() => {
@@ -2592,10 +2605,30 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           }}
                           className="underline text-amber-200 hover:text-amber-100"
                         >
-                          Set up named link
+                          Configure provider or named link
                         </button>
                       </div>
                     ) : null}
+                    <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
+                      <div>
+                        Network publish:{" "}
+                        <span className={networkPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
+                          {networkPublishAllowed ? "Ready" : "Not ready"}
+                        </span>
+                      </div>
+                      {!networkPublishAllowed ? (
+                        <div className="text-amber-300">{networkPublishReason}</div>
+                      ) : null}
+                      <div>
+                        Public discovery:{" "}
+                        <span className={discoveryPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
+                          {discoveryPublishAllowed ? "Ready" : "Not ready"}
+                        </span>
+                      </div>
+                      {!discoveryPublishAllowed ? (
+                        <div className="text-amber-300">{discoveryPublishReason}</div>
+                      ) : null}
+                    </div>
                   </div>
 
                   {!showTrash && !showTombstones && isOpen && (
@@ -3889,7 +3922,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");
-                            const canEmbed = Boolean(publicShareAllowed && publicStatus?.isCanonical && embedBase);
+                            const canEmbed = Boolean(discoveryPublishAllowed && publicStatus?.isCanonical && embedBase);
                             const embedScript = canEmbed ? `${embedBase}/embed.js` : "";
                             const embedTag = canEmbed
                               ? `<script async src="${embedScript}"></script>\n<div data-contentbox-buy="${it.id}"></div>`

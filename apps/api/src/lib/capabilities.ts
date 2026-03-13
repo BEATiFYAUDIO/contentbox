@@ -16,6 +16,8 @@ export type CapabilitySet = {
   sendInvite: boolean;
   lockSplits: boolean;
   publish: boolean;
+  publishToNetwork: boolean;
+  publishToDiscovery: boolean;
   requestClearance: boolean;
   publicShare: boolean;
   proofBundles: boolean;
@@ -27,6 +29,8 @@ export type CapabilityReasonKey =
   | "invite"
   | "lock"
   | "publish"
+  | "publish_network"
+  | "publish_discovery"
   | "clearance"
   | "public_share"
   | "proofs";
@@ -126,6 +130,14 @@ export function canPublish(ctx: CapabilityContext): boolean {
   return true;
 }
 
+export function canPublishToNetwork(ctx: CapabilityContext): boolean {
+  return canPublish(ctx);
+}
+
+export function canPublishToDiscovery(ctx: CapabilityContext): boolean {
+  return canPublicShare(ctx);
+}
+
 export function canRequestClearance(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return false;
   if (isLanTier(ctx)) return true;
@@ -173,8 +185,11 @@ export function capabilityReason(
       case "proofs":
         return PROOFS_REASON;
       case "publish":
+      case "publish_network":
       default:
         return BASIC_REASON;
+      case "publish_discovery":
+        return PUBLIC_SHARE_REASON;
     }
   }
   const requiresLocalNodePayments =
@@ -187,7 +202,7 @@ export function capabilityReason(
   if (isAdvancedTier(ctx) && ctx.paymentsMode !== "node" && requiresLocalNodePayments) return PAYMENTS_REASON;
 
   if (isAdvancedTier(ctx) && !canActAsSovereignCreator(ctx)) return sovereignCreatorReason(ctx);
-  if (key === "public_share" && !canActAsProviderNode(ctx)) return PUBLIC_SHARE_REASON;
+  if ((key === "public_share" || key === "publish_discovery") && !canActAsProviderNode(ctx)) return PUBLIC_SHARE_REASON;
   switch (key) {
     case "splits":
       return SPLITS_REASON;
@@ -200,7 +215,10 @@ export function capabilityReason(
     case "clearance":
       return CLEARANCE_REASON;
     case "public_share":
+    case "publish_discovery":
       return PUBLIC_SHARE_REASON;
+    case "publish_network":
+      return sovereignCreatorReason(ctx);
     case "proofs":
       return PROOFS_REASON;
     case "publish":
@@ -210,14 +228,18 @@ export function capabilityReason(
 }
 
 export function buildCapabilitySet(ctx: CapabilityContext): CapabilitySet {
+  const publishToNetwork = canPublishToNetwork(ctx);
+  const publishToDiscovery = canPublishToDiscovery(ctx);
   return {
     useSplits: canUseSplits(ctx),
     useDerivatives: canUseDerivatives(ctx),
     sendInvite: canSendInvite(ctx),
     lockSplits: canLock(ctx),
-    publish: canPublish(ctx),
+    publish: publishToNetwork,
+    publishToNetwork,
+    publishToDiscovery,
     requestClearance: canRequestClearance(ctx),
-    publicShare: canPublicShare(ctx),
+    publicShare: publishToDiscovery,
     proofBundles: canUseProofBundles(ctx)
   };
 }

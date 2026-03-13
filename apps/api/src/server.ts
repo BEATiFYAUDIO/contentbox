@@ -7138,6 +7138,8 @@ app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: a
       invite: capabilityReason(ctx, "invite", reasonCtx),
       lock: capabilityReason(ctx, "lock", reasonCtx),
       publish: capabilityReason(ctx, "publish", reasonCtx),
+      publish_network: capabilityReason(ctx, "publish_network", reasonCtx),
+      publish_discovery: capabilityReason(ctx, "publish_discovery", reasonCtx),
       clearance: capabilityReason(ctx, "clearance", reasonCtx),
       public_share: capabilityReason(ctx, "public_share", reasonCtx),
       proofs: capabilityReason(ctx, "proofs", reasonCtx)
@@ -10265,6 +10267,14 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
   if (content.ownerUserId !== userId) return forbidden(reply);
 
   const ctx = getCapabilityContext();
+  if (!ctx || !buildCapabilitySet(ctx).publishToNetwork) {
+    const reason = capabilityReason(ctx, "publish_network", capabilityReasonContext(ctx));
+    return reply.code(403).send({
+      code: "publish_network_not_allowed",
+      reason,
+      message: reason
+    });
+  }
   const derivativeInfo = await resolveDerivativeInfo(contentId, content.type);
   const forSale = content.priceSats != null && BigInt(content.priceSats as any) > 0n;
   const readiness = ctx.paymentsMode === "node" ? await getPaymentsReadiness(userId) : null;

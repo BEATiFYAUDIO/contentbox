@@ -18,6 +18,8 @@ export type CapabilitySet = {
   sendInvite: boolean;
   lockSplits: boolean;
   publish: boolean;
+  publishToNetwork?: boolean;
+  publishToDiscovery?: boolean;
   requestClearance: boolean;
   publicShare: boolean;
   proofBundles: boolean;
