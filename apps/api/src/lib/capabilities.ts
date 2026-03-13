@@ -6,6 +6,8 @@ export type CapabilityContext = {
   namedReady: boolean;
   paymentsMode: PaymentsMode;
   nodeMode?: NodeMode;
+  providerConfigured?: boolean;
+  providerTrusted?: boolean;
 };
 
 export type CapabilitySet = {
@@ -36,13 +38,16 @@ export type CapabilityReasonContext = {
 
 const BASIC_REASON = "This feature is not available in the Basic edition.";
 const PAYMENTS_REASON = "Local node payments must be configured to use this feature.";
-const ADVANCED_INACTIVE_REASON = "Advanced requires a permanent named link to activate sovereign features.";
+const ADVANCED_INACTIVE_REASON =
+  "Sovereign creator mode requires either a trusted provider connection or a permanent named public link.";
+const ADVANCED_PROVIDER_PENDING_REASON =
+  "Provider is configured but not trusted/reachable yet. Verify provider or bring a named public link online.";
 const SPLITS_REASON = "Splits and royalties require Advanced or LAN mode.";
 const DERIVATIVES_REASON = "Derivatives require Advanced or LAN mode.";
 const INVITE_REASON = "Split invites require Advanced or LAN mode.";
 const LOCK_REASON = "Locking split proofs requires Advanced or LAN mode.";
 const CLEARANCE_REASON = "Clearance requests require Advanced or LAN mode.";
-const PUBLIC_SHARE_REASON = "Public sharing requires Advanced mode with node payments.";
+const PUBLIC_SHARE_REASON = "Provider-node public sharing requires a permanent named public link and local node payments.";
 const PROOFS_REASON = "Proof bundles require Advanced or LAN mode.";
 
 function isAdvancedTier(ctx: CapabilityContext) {
@@ -55,7 +60,26 @@ function isLanTier(ctx: CapabilityContext) {
 
 export function isAdvancedActive(ctx: CapabilityContext) {
   if (ctx.productTier !== "advanced") return true;
-  return ctx.namedReady;
+  return Boolean(ctx.namedReady || ctx.providerTrusted);
+}
+
+export function canActAsSovereignCreator(ctx: CapabilityContext): boolean {
+  if (ctx.productTier === "basic") return false;
+  if (isLanTier(ctx)) return true;
+  return isAdvancedActive(ctx);
+}
+
+export function canPublishViaProvider(ctx: CapabilityContext): boolean {
+  return ctx.productTier === "advanced" && Boolean(ctx.providerTrusted);
+}
+
+export function canUseProviderBackedCommerce(ctx: CapabilityContext): boolean {
+  return Boolean(ctx.providerTrusted);
+}
+
+export function canActAsProviderNode(ctx: CapabilityContext): boolean {
+  if (ctx.productTier === "basic") return false;
+  return Boolean(ctx.namedReady && hasNodePayments(ctx));
 }
 
 function hasNodePayments(ctx: CapabilityContext) {
@@ -66,21 +90,21 @@ function hasNodePayments(ctx: CapabilityContext) {
 export function canUseSplits(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return false;
   if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
+  if (!canActAsSovereignCreator(ctx)) return false;
   return hasNodePayments(ctx);
 }
 
 export function canUseDerivatives(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return false;
   if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
+  if (!canActAsSovereignCreator(ctx)) return false;
   return hasNodePayments(ctx);
 }
 
 export function canSendInvite(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return false;
   if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
+  if (!canActAsSovereignCreator(ctx)) return false;
   if (!hasNodePayments(ctx)) return false;
   return true;
 }
@@ -88,7 +112,7 @@ export function canSendInvite(ctx: CapabilityContext): boolean {
 export function canLock(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return false;
   if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
+  if (!canActAsSovereignCreator(ctx)) return false;
   if (!hasNodePayments(ctx)) return false;
   return true;
 }
@@ -96,32 +120,35 @@ export function canLock(ctx: CapabilityContext): boolean {
 export function canPublish(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return true;
   if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
-  if (!hasNodePayments(ctx)) return false;
+  if (!canActAsSovereignCreator(ctx)) return false;
+  if (hasNodePayments(ctx)) return true;
+  if (!canPublishViaProvider(ctx)) return false;
   return true;
 }
 
 export function canRequestClearance(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return false;
   if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
+  if (!canActAsSovereignCreator(ctx)) return false;
   if (!hasNodePayments(ctx)) return false;
   return true;
 }
 
 export function canPublicShare(ctx: CapabilityContext): boolean {
-  if (ctx.productTier === "basic") return false;
-  if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
-  if (!hasNodePayments(ctx)) return false;
-  return true;
+  return canActAsProviderNode(ctx);
 }
 
 export function canUseProofBundles(ctx: CapabilityContext): boolean {
   if (ctx.productTier === "basic") return false;
   if (isLanTier(ctx)) return true;
-  if (!isAdvancedActive(ctx)) return false;
+  if (!canActAsSovereignCreator(ctx)) return false;
   return hasNodePayments(ctx);
+}
+
+function sovereignCreatorReason(ctx: CapabilityContext): string {
+  if (ctx.productTier !== "advanced") return ADVANCED_INACTIVE_REASON;
+  if (ctx.providerConfigured && !ctx.providerTrusted) return ADVANCED_PROVIDER_PENDING_REASON;
+  return ADVANCED_INACTIVE_REASON;
 }
 
 export function capabilityReason(
@@ -150,11 +177,17 @@ export function capabilityReason(
         return BASIC_REASON;
     }
   }
-  if (isAdvancedTier(ctx) && ctx.paymentsMode !== "node") return PAYMENTS_REASON;
+  const requiresLocalNodePayments =
+    key === "splits" ||
+    key === "derivatives" ||
+    key === "invite" ||
+    key === "lock" ||
+    key === "clearance" ||
+    key === "proofs";
+  if (isAdvancedTier(ctx) && ctx.paymentsMode !== "node" && requiresLocalNodePayments) return PAYMENTS_REASON;
 
-  if (isAdvancedTier(ctx) && !ctx.namedReady) return ADVANCED_INACTIVE_REASON;
-  if (extra?.namedMode === "named" && extra?.namedStatus !== "online") return ADVANCED_INACTIVE_REASON;
-
+  if (isAdvancedTier(ctx) && !canActAsSovereignCreator(ctx)) return sovereignCreatorReason(ctx);
+  if (key === "public_share" && !canActAsProviderNode(ctx)) return PUBLIC_SHARE_REASON;
   switch (key) {
     case "splits":
       return SPLITS_REASON;
@@ -186,5 +219,21 @@ export function buildCapabilitySet(ctx: CapabilityContext): CapabilitySet {
     requestClearance: canRequestClearance(ctx),
     publicShare: canPublicShare(ctx),
     proofBundles: canUseProofBundles(ctx)
+  };
+}
+
+export type SovereignCapabilityMatrix = {
+  canActAsSovereignCreator: boolean;
+  canPublishViaProvider: boolean;
+  canUseProviderBackedCommerce: boolean;
+  canActAsProviderNode: boolean;
+};
+
+export function buildSovereignCapabilityMatrix(ctx: CapabilityContext): SovereignCapabilityMatrix {
+  return {
+    canActAsSovereignCreator: canActAsSovereignCreator(ctx),
+    canPublishViaProvider: canPublishViaProvider(ctx),
+    canUseProviderBackedCommerce: canUseProviderBackedCommerce(ctx),
+    canActAsProviderNode: canActAsProviderNode(ctx)
   };
 }

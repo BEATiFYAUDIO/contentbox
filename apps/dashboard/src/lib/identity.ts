@@ -23,6 +23,13 @@ export type CapabilitySet = {
   proofBundles: boolean;
 };
 
+export type SovereignCapabilityMatrix = {
+  canActAsSovereignCreator: boolean;
+  canPublishViaProvider: boolean;
+  canUseProviderBackedCommerce: boolean;
+  canActAsProviderNode: boolean;
+};
+
 export type IdentityDetail = {
   level: IdentityLevel;
   dbMode: "basic" | "advanced";
@@ -38,6 +45,7 @@ export type IdentityDetail = {
   storage?: "sqlite" | "postgres";
   features?: FeatureMatrix;
   capabilities?: CapabilitySet;
+  sovereignCapabilities?: SovereignCapabilityMatrix;
   capabilityReasons?: Record<string, string>;
   lockReasons?: Record<string, string>;
 };

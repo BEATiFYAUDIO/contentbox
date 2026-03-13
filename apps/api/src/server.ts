@@ -77,7 +77,7 @@ import {
   sortParticipants
 } from "./lib/proofs/proofBundle.js";
 import { IdentityLevel, getIdentityDetail, getIdentityLevel } from "./lib/identityLevel.js";
-import { buildCapabilitySet, canLock, canPublicShare, canRequestClearance, canSendInvite, canUseDerivatives, canUseProofBundles, canUseSplits, capabilityReason, isAdvancedActive } from "./lib/capabilities.js";
+import { buildCapabilitySet, buildSovereignCapabilityMatrix, canLock, canPublicShare, canRequestClearance, canSendInvite, canUseDerivatives, canUseProofBundles, canUseSplits, capabilityReason, isAdvancedActive } from "./lib/capabilities.js";
 import { assertCanPublish, evaluatePublishGate } from "./lib/publishGate.js";
 import { dbModeCompatFromStorage, getNodeMode, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
 import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
@@ -3219,13 +3219,14 @@ function requireTrustedProviderExecution(reply: any, action: string): boolean {
   // configuration/verification surfaces and are intentionally not blocked by trust posture.
   const trust = evaluateProviderExecutionTrustReadiness();
   if (trust.allowed) return true;
-  return reply.code(409).send({
+  reply.code(409).send({
     error: "PROVIDER_NOT_TRUSTED",
     action,
     readiness: trust.readiness,
     status: trust.postureStatus,
     message: trust.message
   });
+  return false;
 }
 
 function isPersistentOrigin(origin: string | null): boolean {
@@ -3281,7 +3282,10 @@ function getCapabilityContext() {
   const publicStatus = getPublicStatus();
   const namedReady = publicStatus.mode === "named" && publicStatus.status === "online";
   const nodeMode = resolveRuntimeConfig().nodeMode;
-  return { productTier, paymentsMode, namedReady, nodeMode, publicStatus };
+  const providerConfig = getNetworkProviderConfig();
+  const providerConfigured = isNetworkProviderConfigured(providerConfig);
+  const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
+  return { productTier, paymentsMode, namedReady, nodeMode, publicStatus, providerConfigured, providerTrusted };
 }
 
 function isAdvancedInactive(ctx: ReturnType<typeof getCapabilityContext>) {
@@ -7107,6 +7111,7 @@ app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: a
   const productTierInfo = resolveProductTier();
   const ctx = getCapabilityContext();
   const capabilities = buildCapabilitySet(ctx);
+  const sovereignCapabilities = buildSovereignCapabilityMatrix(ctx);
   const reasonCtx = { namedMode: ctx.publicStatus.mode, namedStatus: ctx.publicStatus.status };
   const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { email: true } });
   return reply.send({
@@ -7118,6 +7123,7 @@ app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: a
     paymentsMode: ctx.paymentsMode,
     namedReady: ctx.namedReady,
     capabilities,
+    sovereignCapabilities,
     capabilityReasons: {
       splits: capabilityReason(ctx, "splits", reasonCtx),
       derivatives: capabilityReason(ctx, "derivatives", reasonCtx),

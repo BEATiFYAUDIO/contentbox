@@ -367,9 +367,14 @@ export default function App() {
     publicShare: features.publicShare,
     proofBundles: features.advancedSplits
   };
+  const sovereignCapabilities = identityDetail?.sovereignCapabilities || {
+    canActAsSovereignCreator: productTier !== "basic",
+    canPublishViaProvider: false,
+    canUseProviderBackedCommerce: false,
+    canActAsProviderNode: false
+  };
   const capabilityReasons = identityDetail?.capabilityReasons || {};
-  const namedReady = diagnosticsStatus?.namedReady ?? identityDetail?.namedReady;
-  const advancedInactive = productTier === "advanced" && !namedReady;
+  const advancedInactive = productTier === "advanced" && !sovereignCapabilities.canActAsSovereignCreator;
 
   // Navigation options for the sidebar
   const accessNav = [
@@ -678,7 +683,17 @@ export default function App() {
                   {productTier === "advanced" && publicStatus?.mode !== "named" ? (
                     <>
                       <span className="text-neutral-500">•</span>
-                      <span className="text-amber-300">Advanced requires a permanent named link to activate sovereign features</span>
+                      <span className="text-amber-300">
+                        {sovereignCapabilities.canPublishViaProvider
+                          ? "Temporary endpoint active. Provider-backed sovereign creator publish is enabled."
+                          : "Sovereign creator mode needs a trusted provider or a permanent named link."}
+                      </span>
+                    </>
+                  ) : null}
+                  {productTier === "advanced" && !sovereignCapabilities.canActAsProviderNode ? (
+                    <>
+                      <span className="text-neutral-500">•</span>
+                      <span className="text-amber-300">Provider-node infrastructure still requires a permanent named public link.</span>
                     </>
                   ) : null}
                   <span className="text-neutral-500">•</span>
@@ -723,7 +738,7 @@ export default function App() {
                     </button>
                   </>
                 ) : null}
-                {productTier === "advanced" && publicStatus?.mode !== "named" ? (
+                {productTier === "advanced" && !sovereignCapabilities.canActAsProviderNode ? (
                   <button
                     onClick={() => setPage("config")}
                     className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
@@ -753,7 +768,7 @@ export default function App() {
         {advancedInactive ? (
             <div className="mx-6 mt-4 rounded-lg border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center gap-2">
               <div className="flex-1 min-w-[200px]">
-                Advanced requires a permanent named link to activate sovereign features.
+                Sovereign creator mode requires a trusted provider connection or a permanent named link.
               </div>
               <button
                 onClick={() => setPage("config")}
@@ -769,7 +784,7 @@ export default function App() {
             <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-6 text-sm text-amber-200">
               <div className="text-lg font-semibold mb-2">Advanced not active</div>
               <div className="mb-3">
-                Advanced requires a permanent named link to activate sovereign features.
+                Sovereign creator mode requires a trusted provider connection or a permanent named link.
               </div>
               <button
                 onClick={() => setPage("config")}
