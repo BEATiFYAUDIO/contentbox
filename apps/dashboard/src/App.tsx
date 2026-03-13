@@ -152,7 +152,7 @@ export default function App() {
   const devApiUrl = getApiBase().replace(/\/$/, "");
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
-  const [authNotice, setAuthNotice] = useState<string | null>(() => {
+  const [authNotice] = useState<string | null>(() => {
     try {
       return window.localStorage.getItem("contentbox.authNotice") || null;
     } catch {
@@ -235,15 +235,6 @@ export default function App() {
         } catch {}
       })
       .catch(() => setIdentityDetail(null));
-  };
-
-  const forceLogin = (message: string) => {
-    try {
-      window.localStorage.setItem("contentbox.authNotice", message);
-    } catch {}
-    setAuthNotice(message);
-    clearToken();
-    setMe(null);
   };
 
   useEffect(() => {
@@ -821,6 +812,7 @@ export default function App() {
               {page === "config" && (
                 <ConfigPage
                   showAdvanced={showAdvancedNav}
+                  onIdentityRefresh={refreshIdentityDetail}
                   onOpenPayments={() => {
                     window.location.hash = "#payments";
                     setPage("profile");
@@ -914,8 +906,6 @@ export default function App() {
                     window.history.pushState({}, "", "/participations");
                     setPage("participations");
                   }}
-                  onIdentityRefresh={refreshIdentityDetail}
-                  onForceLogin={forceLogin}
                 />
               )}
             </>

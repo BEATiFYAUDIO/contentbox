@@ -16,6 +16,40 @@ type Health = {
   ts?: string;
 };
 
+type NodeModeStatus = {
+  nodeMode: "basic" | "advanced" | "lan";
+  nodeModeSource: string;
+  productTier: "basic" | "advanced" | "lan";
+  productTierSource: string;
+  tierLocked: boolean;
+  lockReason: string;
+  restartRequired: boolean;
+};
+
+type NetworkSummary = {
+  nodeMode: "basic" | "advanced" | "lan";
+  serviceRoles: {
+    creator: boolean;
+    invoiceProvider: boolean;
+    hybrid: boolean;
+  };
+  paymentCapability: {
+    localInvoiceMinting: boolean;
+    delegatedInvoiceSupport: boolean;
+    tipsOnly: boolean;
+  };
+  providerBinding: {
+    configured: boolean;
+    providerNodeId: string | null;
+  };
+};
+
+type NetworkProviderConfig = {
+  providerNodeId: string | null;
+  providerUrl: string | null;
+  enabled: boolean;
+};
+
 const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
 const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
 const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
@@ -69,7 +103,16 @@ function safeHost(value: string): string {
   }
 }
 
-export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvanced?: boolean; onOpenPayments?: () => void }) {
+export default function ConfigPage({
+  showAdvanced,
+  onOpenPayments,
+  onIdentityRefresh
+}: {
+  showAdvanced?: boolean;
+  onOpenPayments?: () => void;
+  onIdentityRefresh?: () => void;
+}) {
+  const devMode = Boolean((import.meta as any).env?.DEV);
   const apiBase = useMemo(() => getApiBase(), []);
   const uiOrigin = typeof window !== "undefined" ? window.location.origin : "";
   const [health, setHealth] = useState<Health | null>(null);
@@ -101,6 +144,11 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
   const [publicOriginDetected, setPublicOriginDetected] = useState<string>("");
   const [publicOriginWarn, setPublicOriginWarn] = useState<boolean>(false);
   const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
+  const [modeInfo, setModeInfo] = useState<NodeModeStatus | null>(null);
+  const [modeBusy, setModeBusy] = useState(false);
+  const [modeMsg, setModeMsg] = useState<string | null>(null);
+  const [networkSummary, setNetworkSummary] = useState<NetworkSummary | null>(null);
+  const [providerConfig, setProviderConfig] = useState<NetworkProviderConfig | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -203,6 +251,59 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
     let cancelled = false;
     (async () => {
       try {
+        const [summaryRes, providerRes] = await Promise.all([
+          fetch(`${apiBase}/api/network/summary`, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${token}` }
+          }),
+          fetch(`${apiBase}/api/network/provider`, {
+            method: "GET",
+            headers: { Authorization: `Bearer ${token}` }
+          })
+        ]);
+        const [summaryJson, providerJson] = await Promise.all([
+          summaryRes.json().catch(() => null),
+          providerRes.json().catch(() => null)
+        ]);
+        if (cancelled) return;
+        setNetworkSummary(summaryRes.ok ? (summaryJson as NetworkSummary) : null);
+        setProviderConfig(providerRes.ok ? (providerJson as NetworkProviderConfig) : null);
+      } catch {
+        if (cancelled) return;
+        setNetworkSummary(null);
+        setProviderConfig(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token, modeInfo?.nodeMode]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/node/mode`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json();
+        if (!cancelled) setModeInfo(res.ok ? (json as NodeModeStatus) : null);
+      } catch {
+        if (!cancelled) setModeInfo(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
         const res = await fetch(`${apiBase}/api/diagnostics/status`, {
           method: "GET",
           headers: { Authorization: `Bearer ${token}` }
@@ -221,6 +322,64 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
   const productTier = diagnosticsStatus?.productTier || "basic";
   const namedConfigured = Boolean(diagnosticsStatus?.publicStatus?.namedConfigured);
   const quickDisabled = productTier === "advanced" && namedConfigured;
+  const modeLocked = Boolean(modeInfo?.tierLocked);
+  const providerConfigured = Boolean(
+    networkSummary?.providerBinding?.configured ||
+      (providerConfig?.enabled && providerConfig?.providerNodeId && providerConfig?.providerUrl)
+  );
+  const providerInfrastructureCapability = Boolean(
+    networkSummary?.serviceRoles?.invoiceProvider ||
+      networkSummary?.serviceRoles?.hybrid ||
+      networkSummary?.paymentCapability?.localInvoiceMinting
+  );
+  const participationMode =
+    modeInfo?.nodeMode === "basic"
+      ? {
+          label: "Basic Creator",
+          description: "Creator identity with provider-backed infrastructure."
+        }
+      : providerInfrastructureCapability
+        ? {
+            label: "Sovereign Creator Node",
+            description: "Runs full local infrastructure and can provide services to other creators."
+          }
+        : providerConfigured
+          ? {
+              label: "Sovereign Creator (with Provider)",
+              description: "Runs a sovereign node but uses a provider for payment infrastructure."
+            }
+          : {
+              label: "Sovereign Creator Node",
+              description: "Runs full local infrastructure and can provide services to other creators."
+            };
+
+  const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
+    if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
+    if (nextMode === "advanced") {
+      const ok = window.confirm(
+        "Switching to Sovereign Creator Node enforces single-identity local ownership. Continue?"
+      );
+      if (!ok) return;
+    }
+    setModeBusy(true);
+    setModeMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/node/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ nodeMode: nextMode })
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.message || json?.error || "Failed to update node mode.");
+      setModeInfo(json as NodeModeStatus);
+      setModeMsg((json as NodeModeStatus).restartRequired ? "Saved. Restart required to fully apply mode change." : "Saved.");
+      onIdentityRefresh?.();
+    } catch (e: any) {
+      setModeMsg(e?.message || "Failed to update node mode.");
+    } finally {
+      setModeBusy(false);
+    }
+  };
 
   const refreshPublicStatus = async () => {
     if (!token) return;
@@ -507,6 +666,98 @@ export default function ConfigPage({ showAdvanced, onOpenPayments }: { showAdvan
           </div>
         </div>
       )}
+
+      <div id="node-mode" style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 4, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 600 }}>Network Participation Mode</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, opacity: 0.75 }}>Current Participation</span>
+            <span
+              style={{
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.2)",
+                background: "rgba(255,255,255,0.04)",
+                color: "#e5e7eb"
+              }}
+            >
+              {participationMode.label}
+            </span>
+          </div>
+        </div>
+        <div style={{ opacity: 0.7, marginBottom: 10 }}>
+          Choose how this node participates in the Certifyd network.
+        </div>
+        <div style={{ marginBottom: 10, fontSize: 12, color: "#a3a3a3" }}>
+          This controls node infrastructure capabilities. Creator identity and content remain unchanged.
+        </div>
+        <div style={{ marginBottom: 10, fontSize: 12, opacity: 0.7 }}>{participationMode.description}</div>
+        {modeLocked ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+            {modeInfo?.lockReason || "Mode is locked by server environment settings."}
+          </div>
+        ) : null}
+        <div style={{ display: "grid", gap: 8, marginBottom: 10 }}>
+          <label htmlFor="cfg-node-mode-basic" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
+            <input
+              id="cfg-node-mode-basic"
+              type="radio"
+              name="cfg-node-mode"
+              checked={modeInfo?.nodeMode === "basic"}
+              disabled={!modeInfo || modeBusy || modeLocked}
+              onChange={() => updateNodeMode("basic")}
+            />
+            <span>
+              <div>Basic Creator</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator identity with provider-backed infrastructure.</div>
+            </span>
+          </label>
+          <label htmlFor="cfg-node-mode-advanced" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
+            <input
+              id="cfg-node-mode-advanced"
+              type="radio"
+              name="cfg-node-mode"
+              checked={modeInfo?.nodeMode === "advanced"}
+              disabled={!modeInfo || modeBusy || modeLocked}
+              onChange={() => updateNodeMode("advanced")}
+            />
+            <span>
+              <div>Sovereign Creator (with Provider)</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs a sovereign node but uses a provider for payment infrastructure.</div>
+            </span>
+          </label>
+          <label htmlFor="cfg-node-mode-lan" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
+            <input
+              id="cfg-node-mode-lan"
+              type="radio"
+              name="cfg-node-mode"
+              checked={modeInfo?.nodeMode === "lan"}
+              disabled={!modeInfo || modeBusy || modeLocked}
+              onChange={() => updateNodeMode("lan")}
+            />
+            <span>
+              <div>Sovereign Creator Node</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs full local infrastructure and can provide services to other creators.</div>
+            </span>
+          </label>
+        </div>
+        {devMode && modeInfo ? (
+          <details style={{ marginTop: 10, border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "8px 10px" }}>
+            <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Dev Info</summary>
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+              <div>nodeMode: {modeInfo.nodeMode}</div>
+              <div>modeSource: {modeInfo.nodeModeSource}</div>
+              <div>tierSource: {modeInfo.productTierSource}</div>
+            </div>
+          </details>
+        ) : null}
+        {modeMsg ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: modeMsg.toLowerCase().includes("failed") ? "#fda4af" : "#fbbf24" }}>
+            {modeMsg}
+          </div>
+        ) : null}
+      </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>

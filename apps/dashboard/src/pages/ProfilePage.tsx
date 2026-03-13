@@ -1,8 +1,7 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { api, getApiBase } from "../lib/api";
 import { getToken } from "../lib/auth";
 import type { IdentityDetail } from "../lib/identity";
-import { modeLabel } from "../lib/nodeMode";
 import { PAYOUT_DESTINATIONS_LABEL } from "../lib/terminology";
 import AuditPanel from "../components/AuditPanel";
 import VerificationPanel from "../modules/witness/VerificationPanel";
@@ -21,149 +20,13 @@ type ProfilePageProps = {
   setMe: (next: Me | null) => void;
   identityDetail: IdentityDetail | null;
   onOpenParticipations: () => void;
-  onIdentityRefresh: () => void;
-  onForceLogin: (message: string) => void;
 };
-
-type NodeModeStatus = {
-  nodeMode: "basic" | "advanced" | "lan";
-  nodeModeSource: string;
-  productTier: "basic" | "advanced" | "lan";
-  productTierSource: string;
-  tierLocked: boolean;
-  lockReason: string;
-  restartRequired: boolean;
-};
-
-type PublicStatus = {
-  cloudflared?: {
-    available?: boolean;
-    managedPath?: string | null;
-    version?: string | null;
-  };
-  status?: string;
-  transport?: {
-    activeMode?: "off" | "quick" | "named";
-    quick?: {
-      status?: "STOPPED" | "STARTING" | "ACTIVE" | "ERROR";
-      online?: boolean;
-      publicOrigin?: string | null;
-    };
-    named?: {
-      configured?: boolean;
-      online?: boolean;
-      status?: "online" | "offline" | "not_configured";
-      tunnelName?: string | null;
-      publicOrigin?: string | null;
-    };
-  };
-  advancedPublicLink?: {
-    requiredMode?: "named";
-    ready?: boolean;
-    reason?: string | null;
-  };
-};
-
-type LightningReadiness = {
-  configured?: boolean;
-  nodeReachable?: boolean;
-  receiveReady?: boolean;
-  hints?: string[];
-};
-
-export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipations, onIdentityRefresh, onForceLogin }: ProfilePageProps) {
+export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipations }: ProfilePageProps) {
   const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
   const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
-  const paymentsRef = useRef<HTMLDivElement | null>(null);
-  const [modeInfo, setModeInfo] = useState<NodeModeStatus | null>(null);
-  const [modeBusy, setModeBusy] = useState(false);
-  const [modeMsg, setModeMsg] = useState<string | null>(null);
-  const [showRestart, setShowRestart] = useState(false);
-  const [showRestartConfirm, setShowRestartConfirm] = useState(false);
-  const [pendingMode, setPendingMode] = useState<"basic" | "advanced" | "lan" | null>(null);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [reconnectMsg, setReconnectMsg] = useState<string | null>(null);
   const [payoutLoading, setPayoutLoading] = useState(false);
-  const [publicStatus, setPublicStatus] = useState<PublicStatus | null>(null);
-  const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
-  const [advancedSetupError, setAdvancedSetupError] = useState<string | null>(null);
   const [avatarUploadMsg, setAvatarUploadMsg] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
-  const activeMode = publicStatus?.transport?.activeMode || "off";
-  const namedConfigured = Boolean(publicStatus?.transport?.named?.configured);
-  const namedOnline = Boolean(publicStatus?.transport?.named?.online);
-  const advancedNamedReady = Boolean(publicStatus?.advancedPublicLink?.ready);
-  const advancedNamedReason = String(publicStatus?.advancedPublicLink?.reason || "");
-  const quickStatus = publicStatus?.transport?.quick?.status || "STOPPED";
-
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const status = await api<PublicStatus>("/api/public/status", "GET");
-        if (!alive) return;
-        setPublicStatus(status || null);
-      } catch {
-        if (!alive) return;
-        setPublicStatus(null);
-      }
-
-      if (modeInfo?.nodeMode !== "advanced") {
-        if (!alive) return;
-        setLightningReadiness(null);
-        setAdvancedSetupError(null);
-        return;
-      }
-
-      try {
-        const readiness = await api<LightningReadiness>("/api/admin/lightning/readiness", "GET");
-        if (!alive) return;
-        setLightningReadiness(readiness || null);
-        setAdvancedSetupError(null);
-      } catch (e: any) {
-        if (!alive) return;
-        setLightningReadiness(null);
-        const raw = String(e?.message || "");
-        if (raw.includes("FEATURE_LOCKED")) {
-          setAdvancedSetupError("Switch Node Mode to Advanced to configure Lightning.");
-        } else if (raw.includes("NOT_CONFIGURED")) {
-          setAdvancedSetupError("Lightning not configured yet. Open Finance and save LND settings.");
-        } else if (raw.includes("NOT_READY")) {
-          setAdvancedSetupError("Lightning not ready yet. Check node sync and channels.");
-        } else {
-          setAdvancedSetupError("Could not load Lightning readiness.");
-        }
-      }
-    };
-    load();
-    return () => {
-      alive = false;
-    };
-  }, [modeInfo?.nodeMode]);
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const res = await api<NodeModeStatus>(`/api/node/mode`, "GET");
-        if (!alive) return;
-        setModeInfo(res);
-      } catch {
-        if (!alive) return;
-        setModeInfo(null);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    const hash = window.location.hash || "";
-    if (hash.includes("payments")) {
-      paymentsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-  }, []);
 
   const loadPayoutSettings = async () => {
     try {
@@ -186,10 +49,13 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const productTier = identityDetail?.productTier || "basic";
   const isBasicTier = productTier === "basic";
   const ownerEmail = identityDetail?.ownerEmail || null;
-  const nodeBadge = nodeMode === "advanced" ? "Owner account" : nodeMode === "lan" ? "Shared node account" : "Trial account";
+  const nodeBadge =
+    nodeMode === "advanced"
+      ? "Sovereign creator profile"
+      : nodeMode === "lan"
+        ? "Studio creator profile"
+        : "Basic creator profile";
 
-  const modeLocked = Boolean(modeInfo?.tierLocked);
-  const restartCommand = "npm run dev";
   const apiBase = getApiBase();
   const profileAvatarUrl = (() => {
     const raw = String(me?.avatarUrl || "").trim();
@@ -244,254 +110,12 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
     }
   };
 
-  const handleRestartNow = async () => {
-    setReconnectMsg(null);
-    setReconnecting(true);
-    try {
-      await api(`/api/node/restart`, "POST");
-    } catch (e: any) {
-      const msg = String(e?.message || "");
-      if (msg.includes("RESTART_NOT_SUPERVISED") || msg.includes("409")) {
-        setReconnectMsg("Auto-restart is not available. Please restart manually.");
-      } else {
-        setReconnectMsg("Couldn't request restart. Please restart manually.");
-      }
-      setReconnecting(false);
-      return;
-    }
-    const deadline = Date.now() + 30000;
-    let ok = false;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch(`${apiBase}/health`, { method: "GET" });
-        if (res.ok) {
-          ok = true;
-          break;
-        }
-      } catch {}
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    if (!ok) {
-      setReconnectMsg("Couldn't reconnect automatically. Please restart the app manually.");
-      setReconnecting(false);
-      return;
-    }
-    try {
-      await api(`/api/identity`, "GET");
-      onIdentityRefresh();
-      setReconnecting(false);
-    } catch (e: any) {
-      const msg = String(e?.message || "");
-      if (msg.includes("SINGLE_IDENTITY_NODE") || msg.includes("401")) {
-        onForceLogin("Restarted in Advanced mode. Sign in as owner.");
-        return;
-      }
-      setReconnectMsg("Restarted, but couldn't verify session. Please sign in again.");
-      onForceLogin("Restarted. Please sign in again.");
-    }
-  };
-
   return (
     <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
       <div className="text-lg font-semibold">Profile</div>
       <div className="text-sm text-neutral-400 mt-1">Creator identity and public profile.</div>
 
       <div className="mt-5 space-y-4">
-        <div ref={paymentsRef} id="payments" className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <div className="text-sm font-medium">Node Mode</div>
-              <div className="text-xs text-neutral-500">Choose how this node behaves. Storage stays the same.</div>
-            </div>
-            <div className="text-xs rounded-full border border-neutral-800 px-2 py-1 text-neutral-300">
-              {modeInfo?.nodeMode ? modeLabel(modeInfo.nodeMode) : "Unknown"}
-            </div>
-          </div>
-
-          {modeLocked ? (
-            <div className="mt-2 text-xs text-amber-300">{modeInfo?.lockReason || "Mode is locked by server environment settings."}</div>
-          ) : null}
-
-          <div className="mt-3 grid gap-2 text-sm">
-            {(["basic", "advanced", "lan"] as const).map((opt) => {
-              const lanDisabled = opt === "lan" && modeInfo?.nodeMode !== "lan";
-              const disabled = modeLocked || modeBusy || lanDisabled;
-              return (
-                <label key={opt} className={`flex items-center gap-2 ${lanDisabled ? "text-neutral-500" : ""}`}>
-                  <input
-                    id={`node-mode-${opt}`}
-                    type="radio"
-                    name="node-mode"
-                    value={opt}
-                    disabled={disabled}
-                    checked={modeInfo?.nodeMode === opt}
-                    onChange={async () => {
-                      if (!modeInfo) return;
-                      if (opt === modeInfo.nodeMode) return;
-                      if (opt === "advanced") {
-                        const ok = window.confirm(
-                          "Advanced is single identity. If another local account exists, only the owner can log in."
-                        );
-                        if (!ok) return;
-                      }
-                      setModeBusy(true);
-                      setModeMsg(null);
-                      try {
-                        const res = await api<NodeModeStatus>(
-                          `/api/node/mode`,
-                          "POST",
-                          { nodeMode: opt }
-                        );
-                        setModeInfo(res);
-                        setShowRestart(false);
-                        setModeMsg("Saved.");
-                        setPendingMode(null);
-                        setShowRestartConfirm(false);
-                        onIdentityRefresh();
-                      } catch (e: any) {
-                        setModeMsg(e?.message || "Failed to update node mode.");
-                      } finally {
-                        setModeBusy(false);
-                      }
-                    }}
-                  />
-                  <span>
-                    {opt === "basic"
-                      ? "Basic (Trial)"
-                      : opt === "advanced"
-                        ? "Advanced (Sovereign Node — single identity)"
-                        : "LAN (Studio Node — multi-user)"}
-                  </span>
-                  {lanDisabled ? <span className="text-[11px] text-neutral-500">(coming soon)</span> : null}
-                </label>
-              );
-            })}
-          </div>
-
-          {modeInfo ? (
-            <div className="mt-2 text-xs text-neutral-500">
-              Source: mode={modeInfo.nodeModeSource}, tier={modeInfo.productTierSource}
-            </div>
-          ) : null}
-
-          {modeMsg ? <div className="mt-2 text-xs text-amber-300">{modeMsg}</div> : null}
-
-          <div className="mt-4 rounded-md border border-neutral-800 bg-neutral-950/40 px-3 py-3">
-            <div className="text-xs font-medium text-neutral-200">Advanced setup readiness</div>
-            <div className="mt-2 grid gap-1 text-xs text-neutral-400">
-              <div>
-                Node mode:{" "}
-                <span className={modeInfo?.nodeMode === "advanced" ? "text-emerald-300" : "text-amber-300"}>
-                  {modeInfo?.nodeMode === "advanced" ? "ready" : "switch to Advanced in this panel"}
-                </span>
-              </div>
-              <div>
-                Public link (named tunnel):{" "}
-                <span
-                  className={
-                    modeInfo?.nodeMode !== "advanced"
-                      ? "text-neutral-400"
-                      : advancedNamedReady
-                        ? "text-emerald-300"
-                        : "text-amber-300"
-                  }
-                >
-                  {modeInfo?.nodeMode !== "advanced"
-                    ? "not required in Basic mode"
-                    : advancedNamedReady
-                      ? "ready"
-                      : advancedNamedReason === "NAMED_TUNNEL_OFFLINE"
-                        ? "incomplete (configured but offline)"
-                        : "pending (named tunnel not configured)"}
-                </span>
-              </div>
-              {modeInfo?.nodeMode === "advanced" ? (
-                <div className="text-neutral-500">
-                  {namedConfigured
-                    ? `Named tunnel: ${namedOnline ? "online" : "offline"}${publicStatus?.transport?.named?.tunnelName ? ` (${publicStatus.transport.named.tunnelName})` : ""}`
-                    : "Named tunnel: not configured (quick tunnel does not satisfy Advanced activation)."}
-                </div>
-              ) : null}
-              <div>
-                Quick tunnel:{" "}
-                <span className={activeMode === "quick" && quickStatus === "ACTIVE" ? "text-emerald-300" : "text-neutral-400"}>
-                  {activeMode === "quick" && quickStatus === "ACTIVE"
-                    ? "online (temporary)"
-                    : activeMode === "quick"
-                      ? `available (${quickStatus.toLowerCase()})`
-                      : "inactive"}
-                </span>
-              </div>
-              <div>
-                cloudflared binary:{" "}
-                <span className={publicStatus?.cloudflared?.available ? "text-emerald-300" : "text-amber-300"}>
-                  {publicStatus?.cloudflared?.available ? "installed" : "missing (needed for tunnel features)"}
-                </span>
-              </div>
-              <div>
-                LND:{" "}
-                <span
-                  className={
-                    modeInfo?.nodeMode !== "advanced"
-                      ? "text-neutral-400"
-                      : lightningReadiness?.receiveReady
-                        ? "text-emerald-300"
-                        : lightningReadiness?.configured
-                          ? "text-amber-300"
-                          : "text-amber-300"
-                  }
-                >
-                  {modeInfo?.nodeMode !== "advanced"
-                    ? "not checked in Basic mode"
-                    : lightningReadiness?.receiveReady
-                      ? "ready"
-                      : lightningReadiness?.configured
-                        ? "needs channel/liquidity"
-                        : "needs config"}
-                </span>
-              </div>
-              {advancedSetupError ? <div className="text-amber-300">{advancedSetupError}</div> : null}
-              {modeInfo?.nodeMode === "advanced" && lightningReadiness?.hints?.length ? (
-                <div className="text-neutral-500">{lightningReadiness.hints[0]}</div>
-              ) : null}
-              <div className="text-neutral-500">Power users: run <code>apps/api/upgrade-advanced.ps1</code> (Windows).</div>
-            </div>
-          </div>
-
-          {showRestart ? (
-            <div className="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200 flex flex-wrap items-center gap-2">
-              <div className="flex-1 min-w-[160px]">Restart required to apply mode change.</div>
-              <button
-                type="button"
-                onClick={handleRestartNow}
-                className="text-xs rounded-lg border border-amber-800 px-2 py-1 hover:bg-amber-900/30 font-medium"
-              >
-                Restart now
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  try {
-                    navigator.clipboard.writeText(restartCommand);
-                    setModeMsg("Restart command copied.");
-                  } catch {
-                    setModeMsg("Copy failed. Use: npm run dev");
-                  }
-                }}
-                className="text-xs rounded-lg border border-amber-800 px-2 py-1 hover:bg-amber-900/30"
-              >
-                Copy restart command
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowRestart(false)}
-                className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-              >
-                I’ll restart later
-              </button>
-            </div>
-          ) : null}
-        </div>
 
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -703,7 +327,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
               {payoutLoading ? "Loading…" : "Save payout settings"}
             </button>
             {payoutMsg ? <div className="text-xs text-amber-300">{payoutMsg}</div> : null}
-            <div className="text-xs text-neutral-500">Mode: {modeLabel(nodeMode)} • {PAYOUT_DESTINATIONS_LABEL}</div>
+            <div className="text-xs text-neutral-500">{PAYOUT_DESTINATIONS_LABEL}</div>
             <div className="text-xs text-neutral-500">NIP-05 and advanced identity proofs are managed in Verification.</div>
           </div>
         </div>
@@ -711,55 +335,6 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
         <AuditPanel scopeType="identity" title="Audit" exportName="identity-audit.json" />
       </div>
 
-      {showRestartConfirm && pendingMode ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
-            <div className="text-sm font-medium">Switching node mode requires restart.</div>
-            <div className="text-xs text-neutral-400 mt-1">Restart now?</div>
-            <div className="mt-4 flex gap-2 justify-end">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowRestartConfirm(false);
-                  setPendingMode(null);
-                }}
-                className="text-xs rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={async () => {
-                  setShowRestartConfirm(false);
-                  await handleRestartNow();
-                  setPendingMode(null);
-                }}
-                className="text-xs rounded-lg border border-amber-800 bg-amber-900/20 px-3 py-1 hover:bg-amber-900/30"
-              >
-                Restart now
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      {reconnecting ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-          <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
-            <div className="text-sm font-medium">Reconnecting…</div>
-            <div className="text-xs text-neutral-400 mt-1">Waiting for the node to restart.</div>
-            {reconnectMsg ? (
-              <div className="mt-3 text-xs text-amber-300">{reconnectMsg}</div>
-            ) : null}
-            {reconnectMsg ? (
-              <div className="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-                Manual restart:\n                <div className="mt-2 text-[11px] text-neutral-200">API: Ctrl+C then {restartCommand}</div>
-                <div className="mt-1 text-[11px] text-neutral-200">Dashboard: npm run dev</div>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
