@@ -1856,7 +1856,14 @@ async function requestDelegatedProviderPaymentIntent(input: {
   buyerSessionId: string | null;
 }): Promise<{ paymentIntentId: string; bolt11: string; providerInvoiceRef: string | null }> {
   const providerCfg = getNetworkProviderConfig();
-  const providerTrust = evaluateProviderExecutionTrustReadiness();
+  let providerTrust = evaluateProviderExecutionTrustReadiness();
+  if (!providerTrust.allowed && isNetworkProviderConfigured(providerCfg)) {
+    try {
+      const refreshed = await verifyConfiguredProvider(providerCfg);
+      persistProviderVerificationPosture(refreshed);
+      providerTrust = getProviderExecutionTrustReadiness(getProviderVerificationStatus(providerCfg));
+    } catch {}
+  }
   const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "");
   if (!isNetworkProviderConfigured(providerCfg) || !providerTrust.allowed || !providerUrl) {
     throw new Error("provider_not_ready");
@@ -16045,7 +16052,14 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     if (!lightning?.bolt11) {
       const providerCfg = getNetworkProviderConfig();
-      const providerTrust = evaluateProviderExecutionTrustReadiness();
+      let providerTrust = evaluateProviderExecutionTrustReadiness();
+      if (!providerTrust.allowed && isNetworkProviderConfigured(providerCfg)) {
+        try {
+          const refreshed = await verifyConfiguredProvider(providerCfg);
+          persistProviderVerificationPosture(refreshed);
+          providerTrust = getProviderExecutionTrustReadiness(getProviderVerificationStatus(providerCfg));
+        } catch {}
+      }
       const providerUrl = String(providerCfg.providerUrl || "").trim();
       if (isNetworkProviderConfigured(providerCfg) && providerTrust.allowed && providerUrl) {
         try {
