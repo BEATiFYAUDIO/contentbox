@@ -45,6 +45,10 @@ function isLan(ctx: CapabilityContext): boolean {
   return ctx.productTier === "lan";
 }
 
+function hasCommerceRail(ctx: CapabilityContext, state: PublishState): boolean {
+  return Boolean(state.paymentsReady || ctx.providerTrusted);
+}
+
 export function assertCanPublish(ctx: CapabilityContext, intent: PublishIntent, state: PublishState): PublishGateResult {
   if (ctx.productTier === "advanced" && !isAdvancedActive(ctx)) {
     throw { code: "advanced_not_active", reason: ADVANCED_INACTIVE_REASON } satisfies PublishGateError;
@@ -74,29 +78,15 @@ export function assertCanPublish(ctx: CapabilityContext, intent: PublishIntent, 
       if (!state.splitLocked) {
         throw { code: "split_not_locked", reason: SPLIT_LOCK_REASON } satisfies PublishGateError;
       }
-      if (ctx.paymentsMode === "node") {
-        if (intent.forSale && !state.paymentsReady) {
-          throw { code: "payments_not_configured", reason: PAYMENTS_REASON } satisfies PublishGateError;
-        }
-      } else if (!ctx.providerTrusted) {
-        throw { code: "provider_not_ready", reason: PROVIDER_COMMERCE_REASON } satisfies PublishGateError;
-      }
-      if (ctx.paymentsMode !== "node" && intent.forSale && !ctx.providerTrusted) {
-        throw { code: "payments_not_configured", reason: PAYMENTS_REASON } satisfies PublishGateError;
+      if (intent.forSale && !hasCommerceRail(ctx, state)) {
+        throw { code: "network_publish_payments_not_ready", reason: PROVIDER_COMMERCE_REASON } satisfies PublishGateError;
       }
       return { publishKind: intent.publishKind };
     }
 
     if (intent.publishKind === "share_link") {
-      if (ctx.paymentsMode === "node") {
-        if (intent.forSale && !state.paymentsReady) {
-          throw { code: "payments_not_configured", reason: PAYMENTS_REASON } satisfies PublishGateError;
-        }
-      } else if (!ctx.providerTrusted) {
-        throw { code: "provider_not_ready", reason: PROVIDER_COMMERCE_REASON } satisfies PublishGateError;
-      }
-      if (ctx.paymentsMode !== "node" && intent.forSale && !ctx.providerTrusted) {
-        throw { code: "payments_not_configured", reason: PAYMENTS_REASON } satisfies PublishGateError;
+      if (intent.forSale && !hasCommerceRail(ctx, state)) {
+        throw { code: "network_publish_payments_not_ready", reason: PROVIDER_COMMERCE_REASON } satisfies PublishGateError;
       }
       return { publishKind: intent.publishKind };
     }
