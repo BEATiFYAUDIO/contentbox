@@ -16188,10 +16188,6 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         "publicPaymentsIntents.invoice_create_failed"
       );
     }
-    if (!lightning?.bolt11 && !lightningReason) {
-      lightningReason = "PROVIDER_NOT_CONFIGURED";
-    }
-
     if (!lightning?.bolt11) {
       const providerCfg = getNetworkProviderConfig();
       let providerTrust = evaluateProviderExecutionTrustReadiness();
@@ -16208,7 +16204,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         providerUrlPresent: Boolean(providerUrl),
         trustReadiness: providerTrust.readiness
       };
-      if (hasProviderPaymentTarget(providerCfg) && providerTrust.allowed && providerUrl) {
+      if (hasProviderPaymentTarget(providerCfg) && providerUrl) {
         try {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
           const delegated = await requestDelegatedProviderPaymentIntent({
@@ -16243,6 +16239,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       } else if (!lightningReason) {
         lightningReason = hasProviderPaymentTarget(providerCfg) ? "PROVIDER_NOT_READY" : "PROVIDER_NOT_CONFIGURED";
       }
+    }
+    if (!lightning?.bolt11 && !lightningReason) {
+      lightningReason = "PROVIDER_NOT_CONFIGURED";
     }
 
     intentLog.lightning = {
