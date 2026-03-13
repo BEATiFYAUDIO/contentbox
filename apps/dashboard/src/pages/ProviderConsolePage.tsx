@@ -6,6 +6,13 @@ type ProviderSummary = {
   publishedItems: number;
   activePaymentIntents: number;
   settledPayments: number;
+  totals?: {
+    grossCollectedSats: string;
+    providerFeeEarnedSats: string;
+    creatorNetOwedSats: string;
+    creatorNetPaidSats: string;
+    creatorNetPendingSats: string;
+  };
 };
 
 type ProviderCreatorLink = {
@@ -47,7 +54,12 @@ type ProviderPaymentIntent = {
   bolt11: string | null;
   providerInvoiceRef: string | null;
   amountSats: string;
+  grossAmountSats: string;
+  providerFeeSats: string;
+  creatorNetSats: string;
   status: "created" | "issued" | "paid" | "cancelled" | "expired";
+  payoutStatus: "pending" | "paid" | "failed";
+  payoutRail: "provider_custody" | "forwarded" | "creator_node" | null;
   paymentReceiptId: string | null;
   buyerSessionId: string | null;
   createdAt: string;
@@ -84,6 +96,12 @@ function statusPillClass(status: string) {
     return "border-amber-800/70 bg-amber-900/20 text-amber-300";
   }
   return "border-neutral-700 bg-neutral-900/50 text-neutral-300";
+}
+
+function sats(raw: string | number | null | undefined) {
+  const n = Number(raw || 0);
+  if (!Number.isFinite(n)) return "0";
+  return Math.round(n).toLocaleString();
 }
 
 function ExecutionPill({ allowed }: { allowed: boolean }) {
@@ -144,6 +162,12 @@ export default function ProviderConsolePage() {
     { label: "Active Payment Intents", value: summary?.activePaymentIntents ?? paymentIntents.filter((p) => p.status === "created" || p.status === "issued").length },
     { label: "Settled Payments", value: summary?.settledPayments ?? paymentReceipts.length }
   ];
+  const economicsCards = [
+    { label: "Gross Collected", value: `${sats(summary?.totals?.grossCollectedSats)} sats` },
+    { label: "Provider Fee Earned", value: `${sats(summary?.totals?.providerFeeEarnedSats)} sats` },
+    { label: "Creator Net Owed", value: `${sats(summary?.totals?.creatorNetOwedSats)} sats` },
+    { label: "Creator Net Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` }
+  ];
   const visiblePaymentIntents =
     paymentStatusFilter === "all" ? paymentIntents : paymentIntents.filter((intent) => intent.status === paymentStatusFilter);
 
@@ -170,6 +194,15 @@ export default function ProviderConsolePage() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {summaryCards.map((card) => (
+          <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
+            <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {economicsCards.map((card) => (
           <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
             <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
@@ -271,7 +304,7 @@ export default function ProviderConsolePage() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="text-sm font-semibold">Payment Settlements</div>
-            <div className="mt-1 text-xs text-neutral-500">Provider-side BOLT11 intents and settlement receipts for delegated commerce.</div>
+            <div className="mt-1 text-xs text-neutral-500">Provider-side BOLT11 intents, fee accounting, and creator net payout posture for delegated commerce.</div>
           </div>
           <label className="inline-flex items-center gap-2 text-xs text-neutral-400">
             <span>Status</span>
@@ -301,7 +334,11 @@ export default function ProviderConsolePage() {
                   <th className="py-2 pr-3 font-medium">Content</th>
                   <th className="py-2 pr-3 font-medium">BOLT11</th>
                   <th className="py-2 pr-3 font-medium">Amount</th>
+                  <th className="py-2 pr-3 font-medium">Provider Fee</th>
+                  <th className="py-2 pr-3 font-medium">Creator Net</th>
                   <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="py-2 pr-3 font-medium">Payout</th>
+                  <th className="py-2 pr-3 font-medium">Payout Rail</th>
                   <th className="py-2 pr-3 font-medium">Payment Receipt</th>
                   <th className="py-2 pr-3 font-medium">Created</th>
                   <th className="py-2 pr-3 font-medium">Paid</th>
@@ -321,12 +358,20 @@ export default function ProviderConsolePage() {
                         {row.bolt11 || "—"}
                       </span>
                     </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{row.amountSats} sats</td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">{row.grossAmountSats || row.amountSats} sats</td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">{row.providerFeeSats} sats</td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">{row.creatorNetSats} sats</td>
                     <td className="py-2 pr-3 align-top">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>
                         {row.status}
                       </span>
                     </td>
+                    <td className="py-2 pr-3 align-top">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.payoutStatus)}`}>
+                        {row.payoutStatus}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">{row.payoutRail || "—"}</td>
                     <td className="py-2 pr-3 align-top text-neutral-300 break-all">{row.paymentReceiptId || "—"}</td>
                     <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.createdAt)}</td>
                     <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.paidAt)}</td>

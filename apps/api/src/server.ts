@@ -1514,6 +1514,8 @@ type ProviderTrustStatus = "unknown" | "verified" | "blocked";
 type ProviderHandshakeStatus = "none" | "accepted" | "failed";
 type ProviderPublishStatus = "published" | "failed";
 type ProviderPaymentIntentStatus = "created" | "issued" | "paid" | "cancelled" | "expired";
+type ProviderPayoutStatus = "pending" | "paid" | "failed";
+type ProviderPayoutRail = "provider_custody" | "forwarded" | "creator_node" | null;
 
 type ProviderCreatorLinkRecord = {
   id: string;
@@ -1554,7 +1556,12 @@ type ProviderPaymentIntentRecord = {
   bolt11: string | null;
   providerInvoiceRef: string | null;
   amountSats: string;
+  grossAmountSats: string;
+  providerFeeSats: string;
+  creatorNetSats: string;
   status: ProviderPaymentIntentStatus;
+  payoutStatus: ProviderPayoutStatus;
+  payoutRail: ProviderPayoutRail;
   paymentReceiptId: string | null;
   buyerSessionId: string | null;
   createdAt: string;
@@ -1571,10 +1578,35 @@ type ProviderPaymentReceiptRecord = {
   paymentReceiptId: string;
   bolt11: string | null;
   amountSats: string;
+  grossAmountSats: string;
+  providerFeeSats: string;
+  creatorNetSats: string;
+  payoutStatus: ProviderPayoutStatus;
+  payoutRail: ProviderPayoutRail;
   paidAt: string;
   createdAt: string;
   updatedAt: string;
 };
+
+function computeProviderFeeBreakdown(amountSats: string | bigint | number): {
+  grossAmountSats: string;
+  providerFeeSats: string;
+  creatorNetSats: string;
+} {
+  const gross = typeof amountSats === "bigint" ? amountSats : BigInt(String(amountSats || "0"));
+  if (gross <= 0n) {
+    return { grossAmountSats: "0", providerFeeSats: "0", creatorNetSats: "0" };
+  }
+  // Policy v1: provider fee = max(1 sat, 1% rounded down)
+  const fee = gross >= 100n ? gross / 100n : 1n;
+  const providerFee = fee < 1n ? 1n : fee > gross ? gross : fee;
+  const creatorNet = gross - providerFee;
+  return {
+    grossAmountSats: gross.toString(),
+    providerFeeSats: providerFee.toString(),
+    creatorNetSats: creatorNet.toString()
+  };
+}
 
 function readJsonArrayState<T>(filePath: string): T[] {
   try {
@@ -1680,8 +1712,18 @@ function createProviderDelegatedPublish(
 }
 
 function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
-  return readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE)
-    .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+  const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE).map((row) => {
+    const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0");
+    return {
+      ...row,
+      grossAmountSats: row.grossAmountSats || fee.grossAmountSats,
+      providerFeeSats: row.providerFeeSats || fee.providerFeeSats,
+      creatorNetSats: row.creatorNetSats || fee.creatorNetSats,
+      payoutStatus: row.payoutStatus || "pending",
+      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail
+    };
+  });
+  return rows.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 }
 
 function findProviderPaymentIntentByPaymentIntentId(paymentIntentId: string): ProviderPaymentIntentRecord | null {
@@ -1732,7 +1774,18 @@ function updateProviderPaymentIntent(
   patch: Partial<
     Pick<
       ProviderPaymentIntentRecord,
-      "status" | "bolt11" | "providerInvoiceRef" | "paymentReceiptId" | "paidAt" | "amountSats" | "buyerSessionId"
+      | "status"
+      | "bolt11"
+      | "providerInvoiceRef"
+      | "paymentReceiptId"
+      | "paidAt"
+      | "amountSats"
+      | "grossAmountSats"
+      | "providerFeeSats"
+      | "creatorNetSats"
+      | "payoutStatus"
+      | "payoutRail"
+      | "buyerSessionId"
     >
   >
 ): ProviderPaymentIntentRecord | null {
@@ -1745,9 +1798,14 @@ function updateProviderPaymentIntent(
     bolt11: patch.bolt11 !== undefined ? patch.bolt11 : rows[idx].bolt11,
     providerInvoiceRef: patch.providerInvoiceRef !== undefined ? patch.providerInvoiceRef : rows[idx].providerInvoiceRef,
     paymentReceiptId: patch.paymentReceiptId !== undefined ? patch.paymentReceiptId : rows[idx].paymentReceiptId,
+    payoutStatus: patch.payoutStatus !== undefined ? patch.payoutStatus : rows[idx].payoutStatus,
+    payoutRail: patch.payoutRail !== undefined ? patch.payoutRail : rows[idx].payoutRail,
     buyerSessionId: patch.buyerSessionId !== undefined ? patch.buyerSessionId : rows[idx].buyerSessionId,
     paidAt: patch.paidAt !== undefined ? patch.paidAt : rows[idx].paidAt,
     amountSats: patch.amountSats !== undefined ? patch.amountSats : rows[idx].amountSats,
+    grossAmountSats: patch.grossAmountSats !== undefined ? patch.grossAmountSats : rows[idx].grossAmountSats,
+    providerFeeSats: patch.providerFeeSats !== undefined ? patch.providerFeeSats : rows[idx].providerFeeSats,
+    creatorNetSats: patch.creatorNetSats !== undefined ? patch.creatorNetSats : rows[idx].creatorNetSats,
     updatedAt: new Date().toISOString()
   };
   writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
@@ -1755,9 +1813,18 @@ function updateProviderPaymentIntent(
 }
 
 function listProviderPaymentReceipts(): ProviderPaymentReceiptRecord[] {
-  return readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE).sort((a, b) =>
-    String(b.paidAt || b.updatedAt || "").localeCompare(String(a.paidAt || a.updatedAt || ""))
-  );
+  const rows = readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE).map((row) => {
+    const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0");
+    return {
+      ...row,
+      grossAmountSats: row.grossAmountSats || fee.grossAmountSats,
+      providerFeeSats: row.providerFeeSats || fee.providerFeeSats,
+      creatorNetSats: row.creatorNetSats || fee.creatorNetSats,
+      payoutStatus: row.payoutStatus || "pending",
+      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail
+    };
+  });
+  return rows.sort((a, b) => String(b.paidAt || b.updatedAt || "").localeCompare(String(a.paidAt || a.updatedAt || "")));
 }
 
 function createProviderPaymentReceipt(
@@ -1790,6 +1857,11 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
     paymentReceiptId,
     bolt11: intent.bolt11,
     amountSats: intent.amountSats,
+    grossAmountSats: intent.grossAmountSats || intent.amountSats,
+    providerFeeSats: intent.providerFeeSats || "0",
+    creatorNetSats: intent.creatorNetSats || intent.amountSats,
+    payoutStatus: intent.payoutStatus || "pending",
+    payoutRail: intent.payoutRail ?? "provider_custody",
     paidAt
   });
 
@@ -1805,6 +1877,11 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
       creatorNodeId: intent.creatorNodeId,
       providerNodeId: intent.providerNodeId,
       amountSats: intent.amountSats,
+      grossAmountSats: intent.grossAmountSats || intent.amountSats,
+      providerFeeSats: intent.providerFeeSats || "0",
+      creatorNetSats: intent.creatorNetSats || intent.amountSats,
+      payoutStatus: intent.payoutStatus || "pending",
+      payoutRail: intent.payoutRail ?? "provider_custody",
       paidAt
     }
   });
@@ -5205,7 +5282,10 @@ function registerPublicRoutes(appPublic: any) {
       bolt11,
       providerInvoiceRef,
       amountSats,
+      ...computeProviderFeeBreakdown(amountSats),
       status: bolt11 ? "issued" : "created",
+      payoutStatus: "pending",
+      payoutRail: "provider_custody",
       paymentReceiptId: null,
       buyerSessionId: String(body.buyerSessionId || "").trim() || null,
       paidAt: null
@@ -7507,7 +7587,10 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     bolt11,
     providerInvoiceRef,
     amountSats,
+    ...computeProviderFeeBreakdown(amountSats),
     status: bolt11 ? "issued" : "created",
+    payoutStatus: "pending",
+    payoutRail: "provider_custody",
     paymentReceiptId: null,
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
@@ -7543,6 +7626,79 @@ app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: 
     paid: current.status === "paid",
     paidAt: current.paidAt || null,
     paymentReceiptId: current.paymentReceiptId || null
+  });
+});
+
+app.get("/public/provider/revenue/:creatorNodeId", async (req: any, reply: any) => {
+  const creatorNodeId = String((req.params as any)?.creatorNodeId || "").trim();
+  if (!creatorNodeId) return badRequest(reply, "creatorNodeId required");
+
+  const link = getProviderCreatorLink(creatorNodeId);
+  if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
+    return reply.code(409).send({
+      error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED",
+      message: "Provider relationship is not ready for delegated revenue snapshots."
+    });
+  }
+
+  const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
+  const providerNodeId = providerIdentity?.nodeId || null;
+  const intents = listProviderPaymentIntents().filter((row) => row.creatorNodeId === creatorNodeId && Boolean(row.contentId));
+  const grouped = new Map<
+    string,
+    {
+      content_id: string;
+      gross_sats: bigint;
+      provider_fee_sats: bigint;
+      creator_net_sats: bigint;
+      payout_status: ProviderPayoutStatus;
+      payout_rail: ProviderPayoutRail;
+      last_updated: string;
+    }
+  >();
+
+  for (const row of intents) {
+    const contentId = String(row.contentId || "").trim();
+    if (!contentId) continue;
+    const current = grouped.get(contentId) || {
+      content_id: contentId,
+      gross_sats: 0n,
+      provider_fee_sats: 0n,
+      creator_net_sats: 0n,
+      payout_status: "pending" as ProviderPayoutStatus,
+      payout_rail: row.payoutRail ?? "provider_custody",
+      last_updated: row.updatedAt || row.createdAt
+    };
+    current.gross_sats += BigInt(String(row.grossAmountSats || row.amountSats || "0"));
+    current.provider_fee_sats += BigInt(String(row.providerFeeSats || "0"));
+    current.creator_net_sats += BigInt(String(row.creatorNetSats || row.amountSats || "0"));
+    if (row.payoutStatus === "failed") current.payout_status = "failed";
+    else if (row.payoutStatus === "pending" && current.payout_status !== "failed") current.payout_status = "pending";
+    else if (row.payoutStatus === "paid" && current.payout_status === "paid") current.payout_status = "paid";
+    if (new Date(row.updatedAt || row.createdAt).getTime() > new Date(current.last_updated).getTime()) {
+      current.last_updated = row.updatedAt || row.createdAt;
+      current.payout_rail = row.payoutRail ?? current.payout_rail;
+      if (current.payout_status !== "failed") current.payout_status = row.payoutStatus || current.payout_status;
+    }
+    grouped.set(contentId, current);
+  }
+
+  return reply.send({
+    ok: true,
+    providerNodeId,
+    creatorNodeId,
+    asOf: new Date().toISOString(),
+    items: Array.from(grouped.values())
+      .map((row) => ({
+        content_id: row.content_id,
+        gross_sats: Number(row.gross_sats),
+        provider_fee_sats: Number(row.provider_fee_sats),
+        creator_net_sats: Number(row.creator_net_sats),
+        payout_status: row.payout_status,
+        payout_rail: row.payout_rail,
+        last_updated: row.last_updated
+      }))
+      .sort((a, b) => String(b.last_updated).localeCompare(String(a.last_updated)))
   });
 });
 
@@ -8590,11 +8746,38 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
   const intents = listProviderPaymentIntents();
   const activePaymentIntents = intents.filter((intent) => intent.status === "created" || intent.status === "issued").length;
   const settledPayments = intents.filter((intent) => intent.status === "paid").length;
+  const totals = intents.reduce(
+    (acc, intent) => {
+      const gross = BigInt(String(intent.grossAmountSats || intent.amountSats || "0"));
+      const fee = BigInt(String(intent.providerFeeSats || "0"));
+      const net = BigInt(String(intent.creatorNetSats || intent.amountSats || "0"));
+      acc.grossCollectedSats += gross;
+      acc.providerFeeEarnedSats += fee;
+      acc.creatorNetOwedSats += net;
+      if (intent.payoutStatus === "paid") acc.creatorNetPaidSats += net;
+      if (intent.payoutStatus === "pending") acc.creatorNetPendingSats += net;
+      return acc;
+    },
+    {
+      grossCollectedSats: 0n,
+      providerFeeEarnedSats: 0n,
+      creatorNetOwedSats: 0n,
+      creatorNetPaidSats: 0n,
+      creatorNetPendingSats: 0n
+    }
+  );
   return reply.send({
     delegatedCreators: links.length,
     publishedItems: publishes.length,
     activePaymentIntents,
-    settledPayments
+    settledPayments,
+    totals: {
+      grossCollectedSats: totals.grossCollectedSats.toString(),
+      providerFeeEarnedSats: totals.providerFeeEarnedSats.toString(),
+      creatorNetOwedSats: totals.creatorNetOwedSats.toString(),
+      creatorNetPaidSats: totals.creatorNetPaidSats.toString(),
+      creatorNetPendingSats: totals.creatorNetPendingSats.toString()
+    }
   });
 });
 
@@ -8667,7 +8850,10 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     bolt11,
     providerInvoiceRef,
     amountSats,
+    ...computeProviderFeeBreakdown(amountSats),
     status: bolt11 ? "issued" : "created",
+    payoutStatus: "pending",
+    payoutRail: "provider_custody",
     paymentReceiptId: null,
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
@@ -8728,7 +8914,10 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     bolt11,
     providerInvoiceRef,
     amountSats,
+    ...computeProviderFeeBreakdown(amountSats),
     status: bolt11 ? "issued" : "created",
+    payoutStatus: "pending",
+    payoutRail: "provider_custody",
     paymentReceiptId: null,
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
@@ -8767,12 +8956,16 @@ app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, asyn
     }
   }
 
+  const recalculated = body.amountSats !== undefined ? computeProviderFeeBreakdown(String(body.amountSats ?? "").trim() || "0") : null;
   const updated = updateProviderPaymentIntent(id, {
     status: nextStatus,
     bolt11: body.bolt11 !== undefined ? String(body.bolt11 || "").trim() || null : undefined,
     paymentReceiptId: undefined,
     paidAt: body.paidAt !== undefined ? String(body.paidAt || "").trim() || null : undefined,
     amountSats: body.amountSats !== undefined ? String(body.amountSats ?? "").trim() || "0" : undefined,
+    grossAmountSats: recalculated?.grossAmountSats,
+    providerFeeSats: recalculated?.providerFeeSats,
+    creatorNetSats: recalculated?.creatorNetSats,
     buyerSessionId: body.buyerSessionId !== undefined ? String(body.buyerSessionId || "").trim() || null : undefined
   });
   if (!updated) return notFound(reply, "Payment intent not found");
@@ -16463,6 +16656,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === contentId);
     if (delegatedPublish) {
+      const fee = computeProviderFeeBreakdown(amountSats.toString());
       upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
         providerNodeId: delegatedPublish.providerNodeId,
         creatorNodeId: delegatedPublish.creatorNodeId,
@@ -16471,7 +16665,12 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         bolt11: lightning?.bolt11 || null,
         providerInvoiceRef: lightning?.providerId || null,
         amountSats: amountSats.toString(),
+        grossAmountSats: fee.grossAmountSats,
+        providerFeeSats: fee.providerFeeSats,
+        creatorNetSats: fee.creatorNetSats,
         status: lightning?.bolt11 ? "issued" : "created",
+        payoutStatus: "pending",
+        payoutRail: "provider_custody",
         paymentReceiptId: null,
         buyerSessionId: buyerSession?.id || null,
         paidAt: null
@@ -20172,7 +20371,33 @@ app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("r
     include: { content: true },
     orderBy: { recognizedAt: "desc" }
   });
+  const intents = await prisma.paymentIntent.findMany({
+    where: { id: { in: sales.map((s) => s.intentId) } },
+    select: { id: true, providerId: true }
+  });
+  const intentById = new Map(intents.map((i) => [i.id, i]));
+  const creatorIdentity = await buildLocalNodeIdentityDoc(userId).catch(() => null);
+  const creatorNodeId = creatorIdentity?.nodeId || null;
+  const providerCfg = getNetworkProviderConfig();
+  const configuredProviderNodeId = String(providerCfg.providerNodeId || "").trim() || null;
   return sales.map((s) => ({
+    ...(function () {
+      const gross = BigInt(s.amountSats as any);
+      const providerIntent = intentById.get(s.intentId);
+      const providerBacked = String(providerIntent?.providerId || "").startsWith("providerpi:");
+      const fee = providerBacked ? (gross >= 100n ? gross / 100n : 1n) : 0n;
+      const providerFeeSats = fee > gross ? gross : fee;
+      const creatorNetSats = gross - providerFeeSats;
+      return {
+        grossAmountSats: gross.toString(),
+        providerFeeSats: providerFeeSats.toString(),
+        creatorNetSats: creatorNetSats.toString(),
+        payoutStatus: providerBacked ? ("pending" as const) : ("paid" as const),
+        payoutRail: providerBacked ? ("provider_custody" as const) : ("creator_node" as const),
+        providerNodeId: providerBacked ? configuredProviderNodeId : null,
+        creatorNodeId
+      };
+    })(),
     id: s.id,
     intentId: s.intentId,
     contentId: s.contentId,

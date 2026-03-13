@@ -1,6 +1,7 @@
 import React from "react";
 import { api, getApiBase } from "../lib/api";
 import { fetchIdentityDetail } from "../lib/identity";
+import { networkUserTypeLabel, participationModeMeta, resolveNetworkUserType, resolveParticipationMode } from "../lib/networkUserType";
 
 type NetworkSummary = {
   nodeMode: "basic" | "advanced" | "lan";
@@ -213,6 +214,7 @@ type RuntimeStatus = {
     nodeId: string;
     capabilityLevel: "basic" | "advanced" | "lan";
   };
+  restartAvailable?: boolean;
 };
 
 type NodePresence = {
@@ -276,6 +278,36 @@ type PublishProfileResult = {
   message: string;
   publishId?: string;
   publishedAt?: string;
+};
+
+type LifecycleReceipt = {
+  id: string;
+  type: "provider_acknowledgment" | "operation_permit" | "profile_activation" | "profile_publish" | "content_publish";
+  version: 1;
+  createdAt: string;
+  subjectNodeId: string;
+  providerNodeId: string | null;
+  objectId: string | null;
+  payloadHash: string;
+  prevReceiptId: string | null;
+  payload: unknown;
+  signatures: Array<{ alg: string; keyId?: string | null; value: string }>;
+};
+
+type ReceiptsSummary = {
+  latestAcknowledgmentReceipt: LifecycleReceipt | null;
+  latestPermitReceipt: LifecycleReceipt | null;
+  latestActivationReceipt: LifecycleReceipt | null;
+  latestPublishReceipt: LifecycleReceipt | null;
+  latestContentPublishReceipt?: LifecycleReceipt | null;
+  totalReceiptCount: number;
+};
+
+type ReceiptVerifyResult = {
+  exists: boolean;
+  hashValid: boolean;
+  structuralValid: boolean;
+  type: LifecycleReceipt["type"] | null;
 };
 
 function guessApiBase() {
@@ -351,6 +383,14 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [publishProfileBusy, setPublishProfileBusy] = React.useState(false);
   const [publishProfileResult, setPublishProfileResult] = React.useState<PublishProfileResult | null>(null);
   const [publishProfileErr, setPublishProfileErr] = React.useState<string | null>(null);
+  const [receiptsPanelOpen, setReceiptsPanelOpen] = React.useState(false);
+  const [receiptsLoading, setReceiptsLoading] = React.useState(false);
+  const [receiptsErr, setReceiptsErr] = React.useState<string | null>(null);
+  const [receiptsSummary, setReceiptsSummary] = React.useState<ReceiptsSummary | null>(null);
+  const [receiptsRecent, setReceiptsRecent] = React.useState<LifecycleReceipt[]>([]);
+  const [selectedReceiptId, setSelectedReceiptId] = React.useState<string | null>(null);
+  const [selectedReceipt, setSelectedReceipt] = React.useState<LifecycleReceipt | null>(null);
+  const [selectedReceiptVerify, setSelectedReceiptVerify] = React.useState<ReceiptVerifyResult | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -662,6 +702,56 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       return null;
     }
   }
+
+  async function loadReceiptsOverview() {
+    setReceiptsLoading(true);
+    setReceiptsErr(null);
+    try {
+      const [summary, recent] = await Promise.all([
+        api<ReceiptsSummary>("/api/receipts/summary", "GET"),
+        api<LifecycleReceipt[]>("/api/receipts?limit=20", "GET")
+      ]);
+      const safeRecent = Array.isArray(recent) ? recent : [];
+      setReceiptsSummary(summary || null);
+      setReceiptsRecent(safeRecent);
+      if (safeRecent.length > 0 && !selectedReceiptId) {
+        setSelectedReceiptId(safeRecent[0].id);
+      }
+    } catch (e: any) {
+      setReceiptsSummary(null);
+      setReceiptsRecent([]);
+      setReceiptsErr(e?.message || "Failed to load receipts.");
+    } finally {
+      setReceiptsLoading(false);
+    }
+  }
+
+  async function loadReceiptDetail(id: string) {
+    if (!id) return;
+    setReceiptsErr(null);
+    try {
+      const [detail, verify] = await Promise.all([
+        api<LifecycleReceipt>(`/api/receipts/${id}`, "GET"),
+        api<ReceiptVerifyResult>(`/api/receipts/verify/${id}`, "GET")
+      ]);
+      setSelectedReceipt(detail || null);
+      setSelectedReceiptVerify(verify || null);
+    } catch (e: any) {
+      setSelectedReceipt(null);
+      setSelectedReceiptVerify(null);
+      setReceiptsErr(e?.message || "Failed to load receipt details.");
+    }
+  }
+
+  React.useEffect(() => {
+    if (!receiptsPanelOpen) return;
+    void loadReceiptsOverview();
+  }, [receiptsPanelOpen]);
+
+  React.useEffect(() => {
+    if (!receiptsPanelOpen || !selectedReceiptId) return;
+    void loadReceiptDetail(selectedReceiptId);
+  }, [receiptsPanelOpen, selectedReceiptId]);
 
   function guidedVerificationFailureMessage(status: ProviderVerification["verification"]["status"]) {
     if (status === "unreachable") return "We couldn’t reach your provider.";
@@ -1019,7 +1109,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     window.location.assign(`${host}/buy/${contentId}`);
   }
 
-  const profileType = diagnostics?.productTier === "advanced" ? "Advanced" : "Basic";
+  const profileType = diagnostics?.productTier === "advanced" ? "Sovereign Creator" : "Basic Creator";
   const productTier = String(diagnostics?.productTier || "basic").toLowerCase();
   const paymentMode = String(diagnostics?.paymentsMode || "wallet").toLowerCase();
   const reachabilityMode =
@@ -1035,7 +1125,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       : "Offline / not currently reachable";
   const networkService =
     paymentMode === "node"
-      ? "This node can provide BOLT11 invoice generation."
+      ? "This node can provide BOLT11 invoice infrastructure while creator ownership remains local."
       : "This profile can consume network payment services via wallet/fallback mode.";
   const runtimeNodeMode = String(identity?.nodeMode || "").toLowerCase();
   const resolvedNodeMode =
@@ -1054,14 +1144,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         : "Basic (tunnel-backed)";
   const fallbackServiceRoleLabel =
     paymentMode === "node" && resolvedNodeMode === "advanced"
-      ? "Providing invoice infrastructure"
-      : "Creator";
+      ? "Provider infrastructure"
+      : "Creator identity";
   const fallbackVisibilitySummary =
     diagnostics?.publicStatus?.status === "online"
       ? "Direct Link"
       : "Hidden";
   const fallbackPaymentCapabilityLabel =
-    paymentMode === "node" ? "Local Lightning invoice minting enabled" : "Tips only";
+    paymentMode === "node"
+      ? "Sovereign payment rails (local Lightning invoice minting)"
+      : "Tips / direct wallet payments";
   const fallbackTunnel = diagnostics?.publicStatus?.mode === "named" || diagnostics?.publicStatus?.mode === "quick";
 
   const summaryNodeModeLabel =
@@ -1082,18 +1174,18 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           : fallbackVisibilitySummary;
   const summaryServiceRole = networkSummary
     ? networkSummary.serviceRoles.hybrid
-      ? "Creator + invoice provider"
+      ? "Creator + provider infrastructure"
       : networkSummary.serviceRoles.invoiceProvider
-        ? "Providing invoice infrastructure"
-        : "Creator"
+        ? "Provider infrastructure"
+        : "Creator identity"
     : fallbackServiceRoleLabel;
   const summaryPaymentCapability = networkSummary
     ? networkSummary.paymentCapability.localInvoiceMinting
-      ? "Local Lightning invoice minting enabled"
+      ? "Sovereign payment rails (local Lightning invoice minting)"
       : networkSummary.paymentCapability.delegatedInvoiceSupport
-        ? "Delegated invoice infrastructure enabled"
+        ? "Delegated invoice infrastructure (provider-assisted)"
         : networkSummary.paymentCapability.tipsOnly
-          ? "Tips only"
+          ? "Tips / direct wallet payments"
           : "Unavailable"
     : fallbackPaymentCapabilityLabel;
   const summaryPublicEndpoint = networkSummary?.reachability?.publicUrl || publicEndpoint;
@@ -1106,9 +1198,41 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     : reachabilityMode;
   const summaryNetworkService = networkSummary
     ? networkSummary.serviceRoles.hybrid || networkSummary.serviceRoles.invoiceProvider
-      ? "This node can serve invoice-generation infrastructure."
-      : "This profile participates as a creator network identity."
+      ? "This node can provide invoice infrastructure. Creator identity, sale history, and entitlements remain creator-owned."
+      : "This profile participates as a creator identity and can consume provider infrastructure when configured."
     : networkService;
+  const summaryProvidesInvoiceInfrastructure = networkSummary
+    ? Boolean(networkSummary.serviceRoles.invoiceProvider || networkSummary.serviceRoles.hybrid)
+    : Boolean(paymentMode === "node" && resolvedNodeMode === "advanced");
+  const summaryUserType = networkUserTypeLabel(
+    resolveNetworkUserType({
+      nodeMode: (networkSummary?.nodeMode || resolvedNodeMode) as "basic" | "advanced" | "lan",
+      providesInvoiceInfrastructure: summaryProvidesInvoiceInfrastructure
+    })
+  );
+  const participationMode = resolveParticipationMode({
+    nodeMode: (networkSummary?.nodeMode || resolvedNodeMode) as "basic" | "advanced" | "lan",
+    providerConfigured: Boolean(providerConfig?.configured),
+    providerInfrastructureCapability: summaryProvidesInvoiceInfrastructure
+  });
+  const participationMeta = participationModeMeta(participationMode);
+  const providerVerified = providerVerification?.verification?.status === "verified";
+  const providerExecutionAllowed = providerVerified && Boolean(providerConfig?.configured);
+  const modeProviderState = providerConfig?.configured
+    ? providerExecutionAllowed
+      ? "connected / verified / execution allowed"
+      : providerVerified
+        ? "connected / verified / execution limited"
+        : "connected / verification pending"
+    : "not configured";
+  const modePaymentState = summaryPaymentCapability.includes("Delegated invoice")
+    ? "provider-backed"
+    : summaryPaymentCapability.includes("Sovereign payment rails")
+      ? "local sovereign rails"
+      : "not configured";
+  const modeDirectInvoice = networkSummary?.paymentCapability?.localInvoiceMinting ? "configured" : "not configured";
+  const modeDirectReceive = modeDirectInvoice;
+  const modePublicInfraRole = summaryProvidesInvoiceInfrastructure ? "active on this node" : "not active on this node";
   const runtimeStateLabel =
     runtimeStatus?.runtime?.status === "running"
       ? "Running"
@@ -1126,7 +1250,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const runtimeLastRestart = runtimeStatus?.runtime?.lastRestartAt
     ? new Date(runtimeStatus.runtime.lastRestartAt).toLocaleString()
     : "—";
-  const runtimeRestartAvailable = Boolean(runtimeStatus);
+  const runtimeRestartAvailable = Boolean(runtimeStatus?.restartAvailable);
   const presenceNodeIdRaw = nodePresence?.node?.nodeId || "Unavailable";
   const presenceNodeId =
     presenceNodeIdRaw.length > 42
@@ -1142,9 +1266,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           : summaryNodeModeLabel;
   const presenceRoles = nodePresence?.node?.serviceRoles?.length
     ? nodePresence.node.serviceRoles
-        .map((r) => (r === "provider" ? "provider" : "creator"))
+        .map((r) => (r === "provider" ? "provider infrastructure" : "creator identity"))
         .join(" + ")
-    : "creator";
+    : "creator identity";
   const presenceEndpointUrl = nodePresence?.endpoint?.url || runtimeEndpointUrl || "Unavailable";
   const presenceEndpointStability =
     nodePresence?.endpoint?.stability === "stable"
@@ -1278,6 +1402,10 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <span className="text-neutral-200 text-right">{summaryNodeModeLabel}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
+              <span className="text-neutral-500">User Type</span>
+              <span className="text-neutral-200 text-right">{summaryUserType}</span>
+            </div>
+            <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
               <span className="text-neutral-500">Service Role</span>
               <span className="text-neutral-200 text-right">{summaryServiceRole}</span>
             </div>
@@ -1291,15 +1419,36 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 md:col-span-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Mode Summary</div>
+            <div className="mt-1 text-sm text-neutral-200">Mode: {participationMeta.label}</div>
+            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+              <div>Provider: {modeProviderState}</div>
+              <div>Payment mode: {modePaymentState}</div>
+              <div>Direct invoice minting on this node: {modeDirectInvoice}</div>
+              <div>Direct receive on this node: {modeDirectReceive}</div>
+              <div>Public infrastructure role: {modePublicInfraRole}</div>
+            </div>
+            <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-900/40 p-2 text-xs text-neutral-400">
+              <div className="font-medium text-neutral-300">Upgrade to Sovereign Node</div>
+              <div className="mt-1">
+                Connect Lightning Node to enable local invoice minting and direct receipt of funds on this node.
+                This is optional in Sovereign Creator (with Provider) mode and required for direct sovereign infrastructure/payment handling.
+              </div>
+            </div>
+          </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
             <div className="mt-1 text-sm text-neutral-200">Certifyd Creator Profile</div>
-            <div className="text-xs text-neutral-400 mt-1">Profile type: {profileType}</div>
+            <div className="text-xs text-neutral-400 mt-1">Profile type: {summaryUserType === "Provider Node" ? profileType : summaryUserType}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Payment Capability</div>
             <div className="mt-1 text-sm text-neutral-200">{summaryPaymentCapability}</div>
             <div className="text-xs text-neutral-400 mt-1">{summaryNetworkService}</div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Provider infrastructure can execute invoices, but creator identity, entitlement truth, and sale history remain creator-owned.
+            </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Reachability</div>
@@ -1424,7 +1573,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Configuration</div>
           <div className="mt-1 text-xs text-neutral-400">
-            Configure a trusted network provider for future delegated invoice infrastructure. Saving a provider here does not enable delegated purchases by itself.
+            Configure a trusted provider node for delegated invoice infrastructure. This config does not transfer creator identity, ownership, entitlement truth, or sale history to the provider.
           </div>
           <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Guided setup</div>
@@ -1614,6 +1763,120 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <div>Execute-test checkedAt: <span className="text-neutral-300">{providerExecuteTest?.execution?.checkedAt ? new Date(providerExecuteTest.execution.checkedAt).toLocaleString() : "—"}</span></div>
             </div>
             {providerExecuteTestErr ? <div className="mt-2 text-xs text-rose-300">{providerExecuteTestErr}</div> : null}
+          </div>
+          <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[11px] uppercase tracking-wide text-neutral-500">Receipts Debug Panel</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setReceiptsPanelOpen((v) => !v)}
+                  className="rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900"
+                >
+                  {receiptsPanelOpen ? "Hide" : "Show"}
+                </button>
+                {receiptsPanelOpen ? (
+                  <button
+                    onClick={() => void loadReceiptsOverview()}
+                    disabled={receiptsLoading}
+                    className="rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900 disabled:opacity-50"
+                  >
+                    {receiptsLoading ? "Refreshing..." : "Refresh"}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            {receiptsPanelOpen ? (
+              <div className="mt-3 space-y-3">
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/80 px-3 py-2">
+                  <div className="text-xs text-neutral-300">Receipt Summary</div>
+                  <div className="mt-2 grid gap-1 text-xs text-neutral-400">
+                    <div>Total Receipts: <span className="text-neutral-300">{receiptsSummary?.totalReceiptCount ?? "—"}</span></div>
+                    <div>Latest Acknowledgment: <span className="text-neutral-300 break-all">{receiptsSummary?.latestAcknowledgmentReceipt?.id || "—"}</span></div>
+                    <div>Latest Permit: <span className="text-neutral-300 break-all">{receiptsSummary?.latestPermitReceipt?.id || "—"}</span></div>
+                    <div>Latest Activation: <span className="text-neutral-300 break-all">{receiptsSummary?.latestActivationReceipt?.id || "—"}</span></div>
+                    <div>Latest Publish: <span className="text-neutral-300 break-all">{receiptsSummary?.latestPublishReceipt?.id || "—"}</span></div>
+                    <div>Latest Content Publish: <span className="text-neutral-300 break-all">{receiptsSummary?.latestContentPublishReceipt?.id || "—"}</span></div>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/80 px-3 py-2">
+                  <div className="text-xs text-neutral-300">Recent Receipts</div>
+                  <div className="mt-2 overflow-auto">
+                    <table className="w-full min-w-[760px] text-xs">
+                      <thead className="text-neutral-500">
+                        <tr>
+                          <th className="text-left font-normal py-1 pr-3">Type</th>
+                          <th className="text-left font-normal py-1 pr-3">Created</th>
+                          <th className="text-left font-normal py-1 pr-3">ID</th>
+                          <th className="text-left font-normal py-1 pr-3">Object</th>
+                          <th className="text-left font-normal py-1">Provider Node ID</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {receiptsRecent.map((r) => (
+                          <tr
+                            key={r.id}
+                            className={`border-t border-neutral-900 cursor-pointer hover:bg-neutral-900/40 ${selectedReceiptId === r.id ? "bg-neutral-900/50" : ""}`}
+                            onClick={() => setSelectedReceiptId(r.id)}
+                          >
+                            <td className="py-1 pr-3 text-neutral-300">{r.type}</td>
+                            <td className="py-1 pr-3 text-neutral-300">{r.createdAt ? new Date(r.createdAt).toLocaleString() : "—"}</td>
+                            <td className="py-1 pr-3 text-neutral-300 break-all">{r.id}</td>
+                            <td className="py-1 pr-3 text-neutral-300 break-all">{r.objectId || "—"}</td>
+                            <td className="py-1 text-neutral-300 break-all">{r.providerNodeId || "—"}</td>
+                          </tr>
+                        ))}
+                        {receiptsRecent.length === 0 ? (
+                          <tr className="border-t border-neutral-900">
+                            <td className="py-2 text-neutral-500" colSpan={5}>No receipts found.</td>
+                          </tr>
+                        ) : null}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/80 px-3 py-2">
+                  <div className="text-xs text-neutral-300">Receipt Details</div>
+                  <div className="mt-2 grid gap-1 text-xs text-neutral-400">
+                    <div>ID: <span className="text-neutral-300 break-all">{selectedReceipt?.id || "—"}</span></div>
+                    <div>Type: <span className="text-neutral-300">{selectedReceipt?.type || "—"}</span></div>
+                    <div>Created: <span className="text-neutral-300">{selectedReceipt?.createdAt ? new Date(selectedReceipt.createdAt).toLocaleString() : "—"}</span></div>
+                    <div>Object ID: <span className="text-neutral-300 break-all">{selectedReceipt?.objectId || "—"}</span></div>
+                    <div>Provider Node ID: <span className="text-neutral-300 break-all">{selectedReceipt?.providerNodeId || "—"}</span></div>
+                    <div>Prev Receipt ID: <span className="text-neutral-300 break-all">{selectedReceipt?.prevReceiptId || "—"}</span></div>
+                    <div>Payload Hash: <span className="text-neutral-300 break-all">{selectedReceipt?.payloadHash || "—"}</span></div>
+                    <div>Signatures: <span className="text-neutral-300">{selectedReceipt?.signatures?.length ?? "—"}</span></div>
+                  </div>
+                  <div className="mt-3 text-xs text-neutral-300">Verification</div>
+                  <div className="mt-1 grid gap-1 text-xs text-neutral-400">
+                    <div>
+                      exists:{" "}
+                      <span className={selectedReceiptVerify?.exists ? "text-emerald-300" : "text-rose-300"}>
+                        {selectedReceiptVerify ? (selectedReceiptVerify.exists ? "true" : "false") : "—"}
+                      </span>
+                    </div>
+                    <div>
+                      hashValid:{" "}
+                      <span className={selectedReceiptVerify?.hashValid ? "text-emerald-300" : "text-rose-300"}>
+                        {selectedReceiptVerify ? (selectedReceiptVerify.hashValid ? "true" : "false") : "—"}
+                      </span>
+                    </div>
+                    <div>
+                      structuralValid:{" "}
+                      <span className={selectedReceiptVerify?.structuralValid ? "text-emerald-300" : "text-rose-300"}>
+                        {selectedReceiptVerify ? (selectedReceiptVerify.structuralValid ? "true" : "false") : "—"}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="mt-3 text-xs text-neutral-300">Payload</div>
+                  <pre className="mt-1 max-h-56 overflow-auto rounded border border-neutral-800 bg-neutral-950 p-2 text-[11px] text-neutral-300">
+                    {selectedReceipt ? JSON.stringify(selectedReceipt.payload, null, 2) : "—"}
+                  </pre>
+                </div>
+              </div>
+            ) : null}
+            {receiptsErr ? <div className="mt-2 text-xs text-rose-300">{receiptsErr}</div> : null}
           </div>
           <div className="mt-2 text-xs">
             {networkSummary?.providerBinding?.configured

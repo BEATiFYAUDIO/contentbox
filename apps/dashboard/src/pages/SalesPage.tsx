@@ -2,6 +2,7 @@ import React from "react";
 import { api } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
+import { readDelegatedRevenue, upsertDelegatedRevenue, type DelegatedRevenueRow } from "../lib/delegatedRevenueStore";
 
 type PendingRow = {
   id: string;
@@ -19,11 +20,36 @@ type SaleRow = {
   intentId: string;
   contentId: string;
   amountSats: string | number;
+  grossAmountSats?: string | number;
+  providerFeeSats?: string | number;
+  creatorNetSats?: string | number;
+  payoutStatus?: "pending" | "paid" | "failed";
+  payoutRail?: "provider_custody" | "forwarded" | "creator_node" | null;
+  providerNodeId?: string | null;
+  creatorNodeId?: string | null;
   currency: string;
   rail: string;
   memo?: string | null;
   recognizedAt: string;
   content?: { id: string; title: string; type: string } | null;
+};
+
+type ProviderConfig = {
+  providerUrl: string | null;
+  enabled: boolean;
+  configured?: boolean;
+};
+
+type NodeIdentity = {
+  nodeId: string;
+};
+
+type ProviderRevenueSnapshotResponse = {
+  ok: boolean;
+  providerNodeId: string | null;
+  creatorNodeId: string;
+  asOf: string;
+  items: DelegatedRevenueRow[];
 };
 
 type SalesPageProps = {
@@ -40,6 +66,62 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
   const [actionError, setActionError] = React.useState<string | null>(null);
   const [actionLoading, setActionLoading] = React.useState(false);
   const [toastMsg, setToastMsg] = React.useState<string | null>(null);
+  const [delegatedRows, setDelegatedRows] = React.useState<DelegatedRevenueRow[]>([]);
+  const [delegatedMode, setDelegatedMode] = React.useState<"fresh" | "offline_snapshot" | "not_provider_mode" | "none">("none");
+  const [delegatedMsg, setDelegatedMsg] = React.useState<string | null>(null);
+  const [delegatedLastSyncAt, setDelegatedLastSyncAt] = React.useState<string | null>(null);
+  const [delegatedSnapshotAsOf, setDelegatedSnapshotAsOf] = React.useState<string | null>(null);
+
+  const syncDelegatedSnapshot = React.useCallback(async () => {
+    try {
+      const [providerCfg, identity] = await Promise.all([
+        api<ProviderConfig>("/api/network/provider", "GET"),
+        api<NodeIdentity>("/api/network/node-identity", "GET")
+      ]);
+      const providerUrl = String(providerCfg?.providerUrl || "").trim().replace(/\/+$/, "");
+      const creatorNodeId = String(identity?.nodeId || "").trim();
+      const providerConfigured = Boolean(providerCfg?.enabled && providerUrl && creatorNodeId);
+      if (!providerConfigured) {
+        setDelegatedMode("not_provider_mode");
+        setDelegatedMsg("Provider-backed mode is not configured on this node.");
+        setDelegatedRows(await readDelegatedRevenue());
+        return;
+      }
+      const res = await fetch(`${providerUrl}/public/provider/revenue/${encodeURIComponent(creatorNodeId)}`);
+      const text = await res.text();
+      let json: any = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        json = null;
+      }
+      if (!res.ok) throw new Error(String(json?.message || json?.error || `provider_http_${res.status}`));
+      const payload = (json || {}) as ProviderRevenueSnapshotResponse;
+      const rows = Array.isArray(payload.items) ? payload.items : [];
+      await upsertDelegatedRevenue(rows);
+      setDelegatedRows(rows);
+      setDelegatedLastSyncAt(new Date().toISOString());
+      setDelegatedSnapshotAsOf(String(payload.asOf || "").trim() || null);
+      setDelegatedMode("fresh");
+      setDelegatedMsg(`Provider-backed revenue synced from ${providerUrl}.`);
+    } catch (e: any) {
+      const cached = await readDelegatedRevenue();
+      if (cached.length > 0) {
+        setDelegatedRows(cached);
+        if (cached.length > 0) {
+          const newest = [...cached].sort((a, b) => String(b.last_updated).localeCompare(String(a.last_updated)))[0];
+          setDelegatedSnapshotAsOf(newest?.last_updated || null);
+        }
+        setDelegatedMode("offline_snapshot");
+        setDelegatedMsg("Provider unreachable. Showing last-known delegated revenue snapshot.");
+      } else {
+        setDelegatedRows([]);
+        setDelegatedSnapshotAsOf(null);
+        setDelegatedMode("none");
+        setDelegatedMsg(e?.message || "Provider-backed revenue unavailable.");
+      }
+    }
+  }, []);
 
   const loadData = React.useCallback(async () => {
     setLoading(true);
@@ -51,17 +133,32 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
       ]);
       setPending(pendingRes || []);
       setSales(salesRes || []);
+      await syncDelegatedSnapshot();
     } catch (e: any) {
       setError(e?.message || "Failed to load revenue data");
+      await syncDelegatedSnapshot();
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [syncDelegatedSnapshot]);
 
   React.useEffect(() => {
     if (disabled) return;
     loadData();
   }, [loadData, disabled]);
+
+  React.useEffect(() => {
+    if (disabled) return;
+    let active = true;
+    const interval = window.setInterval(() => {
+      if (!active) return;
+      void syncDelegatedSnapshot();
+    }, 45_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [disabled, syncDelegatedSnapshot]);
 
   React.useEffect(() => {
     if (!toastMsg) return;
@@ -79,6 +176,20 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
     if (!text || !navigator.clipboard) return;
     navigator.clipboard.writeText(text).catch(() => {});
   };
+
+  const totals = React.useMemo(() => {
+    return sales.reduce(
+      (acc, s) => {
+        acc.gross += Number(s.grossAmountSats ?? s.amountSats ?? 0) || 0;
+        acc.providerFee += Number(s.providerFeeSats ?? 0) || 0;
+        acc.creatorNet += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
+        if (s.payoutStatus === "paid") acc.payoutsReceived += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
+        if (s.payoutStatus === "pending") acc.pendingPayout += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
+        return acc;
+      },
+      { gross: 0, providerFee: 0, creatorNet: 0, payoutsReceived: 0, pendingPayout: 0 }
+    );
+  }, [sales]);
 
   const onConfirmMarkPaid = async () => {
     if (!confirmRow) return;
@@ -114,6 +225,79 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
       </div>
 
       {error ? <div className="text-sm text-red-300">{error}</div> : null}
+
+      {delegatedMode !== "none" ? (
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-base font-semibold">Delegated Revenue Snapshot</div>
+          <div className="mt-1 text-sm text-neutral-400">
+            {delegatedMode === "fresh"
+              ? "Provider-backed mode (fresh data)"
+              : delegatedMode === "offline_snapshot"
+                ? "Offline snapshot (stale but persisted)"
+                : delegatedMode === "not_provider_mode"
+                  ? "Provider-backed mode not active"
+                  : "Unavailable"}
+          </div>
+          {delegatedMsg ? <div className="mt-2 text-xs text-neutral-500">{delegatedMsg}</div> : null}
+          <div className="mt-2 grid gap-1 text-xs text-neutral-500 sm:grid-cols-2">
+            <div>Last sync: {delegatedLastSyncAt ? new Date(delegatedLastSyncAt).toLocaleString() : "—"}</div>
+            <div>Snapshot as-of: {delegatedSnapshotAsOf ? new Date(delegatedSnapshotAsOf).toLocaleString() : "—"}</div>
+          </div>
+          {delegatedRows.length > 0 ? (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-neutral-400">
+                    <th className="py-2 px-3">Content</th>
+                    <th className="py-2 px-3">Gross</th>
+                    <th className="py-2 px-3">Provider Fee</th>
+                    <th className="py-2 px-3">Creator Net</th>
+                    <th className="py-2 px-3">Payout</th>
+                    <th className="py-2 px-3">Rail</th>
+                    <th className="py-2 px-3">Last Updated</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {delegatedRows.map((row) => (
+                    <tr key={row.content_id} className="border-t border-neutral-800">
+                      <td className="py-2 px-3 font-mono text-xs">{row.content_id}</td>
+                      <td className="py-2 px-3">{formatSats(row.gross_sats)} sats</td>
+                      <td className="py-2 px-3">{formatSats(row.provider_fee_sats)} sats</td>
+                      <td className="py-2 px-3">{formatSats(row.creator_net_sats)} sats</td>
+                      <td className="py-2 px-3">{row.payout_status}</td>
+                      <td className="py-2 px-3">{row.payout_rail || "—"}</td>
+                      <td className="py-2 px-3 text-xs text-neutral-500">{new Date(row.last_updated).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Gross Sales</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.gross)} sats</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Provider Fee</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerFee)} sats</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net Creator Earnings</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.creatorNet)} sats</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Payouts Received</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.payoutsReceived)} sats</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Pending Payout</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(totals.pendingPayout)} sats</div>
+        </div>
+      </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
         <div className="text-base font-semibold">Pending manual payments</div>
@@ -183,21 +367,24 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                 <th className="py-2 px-3">Recognized</th>
                 <th className="py-2 px-3">Item</th>
                 <th className="py-2 px-3">Amount</th>
+                <th className="py-2 px-3">Provider Fee</th>
+                <th className="py-2 px-3">Creator Net</th>
                 <th className="py-2 px-3">Rail</th>
+                <th className="py-2 px-3">Payout</th>
                 <th className="py-2 px-3">Memo</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={8} className="py-4 px-3 text-sm text-neutral-400">
                     Loading sales ledger…
                   </td>
                 </tr>
               ) : null}
               {!loading && sales.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={8} className="py-4 px-3 text-sm text-neutral-400">
                     No sales recorded yet.
                   </td>
                 </tr>
@@ -207,8 +394,14 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                   <tr key={s.id} className="border-t border-neutral-800">
                     <td className="py-2 px-3 text-xs text-neutral-400">{new Date(s.recognizedAt).toLocaleString()}</td>
                     <td className="py-2 px-3">{s.content?.title || "Content"}</td>
-                    <td className="py-2 px-3">{formatSats(s.amountSats)} {s.currency || "SAT"}</td>
+                    <td className="py-2 px-3">{formatSats(s.grossAmountSats ?? s.amountSats)} {s.currency || "SAT"}</td>
+                    <td className="py-2 px-3">{formatSats(s.providerFeeSats ?? 0)} SAT</td>
+                    <td className="py-2 px-3">{formatSats(s.creatorNetSats ?? s.amountSats)} SAT</td>
                     <td className="py-2 px-3">{s.rail}</td>
+                    <td className="py-2 px-3">
+                      <div>{s.payoutStatus || "paid"}</div>
+                      <div className="text-xs text-neutral-500">{s.payoutRail || "creator_node"}</div>
+                    </td>
                     <td className="py-2 px-3 font-mono text-xs">{s.memo || "—"}</td>
                   </tr>
                 ))}
