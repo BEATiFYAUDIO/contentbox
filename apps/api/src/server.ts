@@ -16047,6 +16047,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
                   normalized = normalized.replace(new RegExp(escaped, "g"), canonical);
                 }
+                const upstreamNote = `<div style="max-width:860px;margin:10px auto 0;padding:10px 14px;border:1px solid #2a2a2a;border-radius:10px;background:#101113;color:#a1a1aa;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;">
+  upstream delivery: ${escHtml(upstream || "unknown")} (via host: ${escHtml(canonical || upstream || "unknown")})
+</div>`;
+                if (/<\/body>/i.test(normalized)) {
+                  normalized = normalized.replace(/<\/body>/i, `${upstreamNote}</body>`);
+                } else {
+                  normalized += upstreamNote;
+                }
                 req.log.info(
                   {
                     creatorHandle: requested,
