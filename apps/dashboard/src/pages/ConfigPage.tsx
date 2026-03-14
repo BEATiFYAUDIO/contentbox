@@ -444,6 +444,14 @@ export default function ConfigPage({
       ok: Boolean(networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost)
     }
   ];
+  const sovereignNodeRequirements = [
+    { label: "Stable public host", ready: stablePublicHostDetected },
+    { label: "Lightning (LND)", ready: lndReadyDetected },
+    { label: "Chain backend", ready: chainReadyDetected },
+    { label: "Replay delivery", ready: replayCapableDetected }
+  ];
+  const sovereignNodeMissing = sovereignNodeRequirements.filter((r) => !r.ready).map((r) => r.label);
+  const canSelectSovereignNode = sovereignNodeMissing.length === 0;
   const invalidOrigins = [
     { label: "Commerce host", value: normalizedPublicBuyOrigin },
     { label: "Creator app host", value: normalizedPublicStudioOrigin },
@@ -477,6 +485,12 @@ export default function ConfigPage({
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
     if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
+    if (nextMode === "lan" && !canSelectSovereignNode) {
+      setModeMsg(
+        `Sovereign Node Operator requires readiness first. Missing: ${sovereignNodeMissing.join(", ")}.`
+      );
+      return;
+    }
     if (nextMode === "advanced") {
       const ok = window.confirm(
         "Switching to Sovereign Creator Node enforces single-identity local ownership. Continue?"
@@ -1080,12 +1094,17 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={selectedParticipationMode === "sovereign_node"}
-              disabled={!modeInfo || modeBusy || modeLocked}
+              disabled={!modeInfo || modeBusy || modeLocked || !canSelectSovereignNode}
               onChange={() => updateNodeMode("lan")}
             />
             <span>
               <div>Sovereign Node Operator</div>
               <div style={{ opacity: 0.7, fontSize: 12 }}>Run your own stable infrastructure to eliminate provider dependency and fees.</div>
+              {!canSelectSovereignNode ? (
+                <div style={{ marginTop: 4, fontSize: 12, color: "#fbbf24" }}>
+                  Locked until ready: {sovereignNodeMissing.join(", ")}.
+                </div>
+              ) : null}
             </span>
           </label>
         </div>
