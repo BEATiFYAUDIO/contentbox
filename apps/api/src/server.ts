@@ -98,6 +98,7 @@ import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.j
 import { buildCanonicalBuyerRecoveryUrls } from "./lib/buyerRecoveryUrls.js";
 import { resolveReplayMode } from "./lib/replayResolution.js";
 import { buildDeliveryRoutingDescriptor } from "./lib/deliveryRouting.js";
+import { resolveBuyRoutingOrigins } from "./lib/buyRoutingOrigins.js";
 import { canEnablePaidCommerce, type CreatorCommerceMode, type EndpointStability } from "./lib/paidCommerceGate.js";
 import { resolveContentCommerceValidity } from "./lib/contentCommerceValidity.js";
 import {
@@ -13240,7 +13241,7 @@ app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async
     throw e;
   }
   if (!shareLink) return reply.send({ shareLink: null });
-  const base = getPublicOrigin(req).replace(/\/$/, "");
+  const base = (await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId)).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     shareLink: {
@@ -13313,7 +13314,7 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
     }
     throw e;
   }
-  const base = getPublicOrigin(req).replace(/\/$/, "");
+  const base = (await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId)).replace(/\/$/, "");
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     ok: true,
@@ -17947,7 +17948,27 @@ async function resolveCanonicalBuyerRecoveryOrigin(
     providerCfg,
     ctx: capabilityCtx
   });
-  return normalizePublicOriginBase(profile.canonicalCommerceOrigin || fallbackOrigin);
+  const routing = resolveBuyRoutingOrigins({
+    participationMode: profile.participationMode,
+    fallbackOrigin,
+    providerOrigin: normalizePublicOriginBase(profile.providerUrl || ""),
+    stableLocalOrigin: normalizePublicOriginBase(profile.stablePublicRouteOrigin || ""),
+    localEndpointOrigin: normalizePublicOriginBase(profile.localNodeEndpointOrigin || ""),
+    temporaryPreviewOrigin: normalizePublicOriginBase(profile.temporaryNodeEndpointOrigin || "")
+  });
+  app.log.debug(
+    {
+      ownerUserId,
+      participationMode: profile.participationMode,
+      providerActive: profile.providerConfigured && profile.providerTrusted,
+      commerceOrigin: routing.commerceOrigin,
+      previewOrigin: routing.previewOrigin,
+      tempPreviewOrigin: routing.temporaryPreviewOrigin,
+      tempTunnelIgnoredForCommerce: routing.tempTunnelIgnoredForCommerce
+    },
+    "buy.routing.resolve"
+  );
+  return normalizePublicOriginBase(routing.commerceOrigin || fallbackOrigin);
 }
 
 function getCreatorScopeId(req: any): string | null {
