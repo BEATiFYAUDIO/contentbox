@@ -1,5 +1,6 @@
 type BuyerRecoveryInput = {
   canonicalOrigin: string;
+  creatorId?: string | null;
   contentId?: string | null;
   paymentId?: string | null;
   receiptToken?: string | null;
@@ -31,28 +32,35 @@ export type BuyerRecoveryUrls = {
 
 export function buildCanonicalBuyerRecoveryUrls(input: BuyerRecoveryInput): BuyerRecoveryUrls {
   const canonicalOrigin = normalizeOrigin(input.canonicalOrigin);
+  const creatorId = String(input.creatorId || "").trim() || null;
   const contentId = String(input.contentId || "").trim() || null;
   const paymentId = String(input.paymentId || "").trim() || null;
   const receiptToken = String(input.receiptToken || "").trim() || null;
   const entitlementId = String(input.entitlementId || "").trim() || null;
   const libraryToken = String(input.libraryToken || receiptToken || "").trim() || null;
+  const scopedBase = creatorId ? `/c/${encodeURIComponent(creatorId)}` : "";
+  const buyPath = contentId ? `${scopedBase}/buy/${encodeURIComponent(contentId)}` : null;
+  const receiptPath = paymentId
+    ? `${scopedBase}/receipt/${encodeURIComponent(paymentId)}`
+    : receiptToken
+      ? `${scopedBase}/receipt/${encodeURIComponent(receiptToken)}`
+      : null;
+  const receiptStatusPath = receiptToken
+    ? `${scopedBase}/buy/receipts/${encodeURIComponent(receiptToken)}/status`
+    : paymentId
+      ? `${scopedBase}/buy/receipts/${encodeURIComponent(paymentId)}/status`
+      : null;
+  const libraryPath = libraryToken
+    ? `${scopedBase}/library/${encodeURIComponent(libraryToken)}`
+    : `${scopedBase}/library`;
+  const replayPath = entitlementId ? `${scopedBase}/replay/${encodeURIComponent(entitlementId)}` : null;
 
   return {
     canonicalCommerceOrigin: canonicalOrigin,
-    buyUrl: contentId ? joinOrigin(canonicalOrigin, `/buy/${encodeURIComponent(contentId)}`) : null,
-    receiptStatusUrl: receiptToken
-      ? joinOrigin(canonicalOrigin, `/buy/receipts/${encodeURIComponent(receiptToken)}/status`)
-      : paymentId
-        ? joinOrigin(canonicalOrigin, `/buy/receipts/${encodeURIComponent(paymentId)}/status`)
-        : null,
-    receiptUrl: paymentId
-      ? joinOrigin(canonicalOrigin, `/receipt/${encodeURIComponent(paymentId)}`)
-      : receiptToken
-        ? joinOrigin(canonicalOrigin, `/receipt/${encodeURIComponent(receiptToken)}`)
-        : null,
-    libraryUrl: libraryToken
-      ? joinOrigin(canonicalOrigin, `/library/${encodeURIComponent(libraryToken)}`)
-      : joinOrigin(canonicalOrigin, "/library"),
-    replayUrl: entitlementId ? joinOrigin(canonicalOrigin, `/replay/${encodeURIComponent(entitlementId)}`) : null
+    buyUrl: buyPath ? joinOrigin(canonicalOrigin, buyPath) : null,
+    receiptStatusUrl: receiptStatusPath ? joinOrigin(canonicalOrigin, receiptStatusPath) : null,
+    receiptUrl: receiptPath ? joinOrigin(canonicalOrigin, receiptPath) : null,
+    libraryUrl: joinOrigin(canonicalOrigin, libraryPath),
+    replayUrl: replayPath ? joinOrigin(canonicalOrigin, replayPath) : null
   };
 }

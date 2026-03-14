@@ -6277,7 +6277,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.addHook("onRequest", (req: any, reply: any, done: any) => {
     const url = asString(req?.raw?.url || req?.url || "");
     const path = url.split("?")[0] || "";
-    if (path === "/buy" || path.startsWith("/buy/")) {
+    if (path === "/buy" || path.startsWith("/buy/") || /^\/c\/[^/]+\/buy(\/|$)/.test(path)) {
       setPublicDebugHeaders(req, reply);
     }
     done();
@@ -6303,14 +6303,23 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/u/:handle/proofs.json", handlePublicProofBundle);
   appPublic.get("/profile", handlePublicProfileRedirect);
   appPublic.get("/buy/:contentId", handleBuyPage);
+  appPublic.get("/c/:creatorId/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/library/:buyerKeyOrReceiptToken", handleBuyerLibraryPage);
+  appPublic.get("/c/:creatorId/library", handleBuyerLibraryPage);
+  appPublic.get("/c/:creatorId/library/:buyerKeyOrReceiptToken", handleBuyerLibraryPage);
   appPublic.get("/receipt/:paymentId", handlePublicReceiptPage);
+  appPublic.get("/c/:creatorId/receipt/:paymentId", handlePublicReceiptPage);
   appPublic.get("/replay/:entitlementId", handleReplayRedirectPage);
   appPublic.get("/replay/:entitlementId/access", handleReplayAccessPage);
+  appPublic.get("/c/:creatorId/replay/:entitlementId", handleReplayRedirectPage);
+  appPublic.get("/c/:creatorId/replay/:entitlementId/access", handleReplayAccessPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
+  appPublic.get("/c/:creatorId/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+  appPublic.get("/c/:creatorId/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
+  appPublic.get("/c/:creatorId/buy/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/content/:id", handlePublicContent);
   appPublic.get("/public/content/:id/attribution", handlePublicAttribution);
   appPublic.get("/public/content/:id/access", handlePublicContentAccess);
@@ -6527,11 +6536,16 @@ function registerPublicRoutes(appPublic: any) {
     return reply.send({ ok: true, entitlementId: created.id });
   });
   appPublic.post("/buy/payments/intents", handlePublicPaymentsIntents);
+  appPublic.post("/c/:creatorId/buy/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/api/public/payments/intents", handlePublicPaymentsIntents);
   appPublic.post("/buy/permits", handlePublicPermits);
+  appPublic.post("/c/:creatorId/buy/permits", handlePublicPermits);
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
+  appPublic.get("/c/:creatorId/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
   appPublic.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
+  appPublic.get("/c/:creatorId/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
   appPublic.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
+  appPublic.get("/c/:creatorId/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
   appPublic.get("/invites/:token", handlePublicInviteLookup);
   appPublic.get("/invite/:token", handlePublicInvitePage);
   appPublic.post("/invites/:token/accept", handlePublicInviteAccept);
@@ -11431,6 +11445,9 @@ app.get("/api/public/origin", async (req: any, reply: any) => {
     publicOrigin,
     canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
     canonicalCommerceKind: profile.canonicalCommerceKind,
+    commerceHost: profile.canonicalCommerceOrigin,
+    nodeDomain: profile.stablePublicRouteOrigin,
+    previewHost: profile.temporaryNodeEndpointOrigin,
     localNodeEndpointOrigin: profile.localNodeEndpointOrigin,
     temporaryNodeEndpointOrigin: profile.temporaryNodeEndpointOrigin,
     paidCommerceAllowed: paidCommerceGate.allowed,
@@ -13447,7 +13464,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   const now = new Date();
   const publishServiceProfile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
   const commerceOriginForPublish =
-    publishServiceProfile.canonicalCommerceOrigin || getPublicOrigin(req);
+    publishServiceProfile.canonicalCommerceOrigin || normalizePublicOriginBase(APP_BASE_URL);
   await prisma.$transaction(async (tx) => {
     await tx.manifest.update({
       where: { id: manifest.id },
@@ -13465,7 +13482,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     await tx.publishEvent.create({
       data: {
         contentId,
-        publicUrl: `${publicOrigin}/buy/${contentId}`,
+        publicUrl: `${publicOrigin}${buildCreatorScopedPath(content.ownerUserId, `/buy/${contentId}`)}`,
         targetHash: canonicalManifestHash,
         splitVersionId,
         clearanceId: derivativeInfo.clearanceId,
@@ -15448,7 +15465,7 @@ async function handleBuyPreviewRedirect(req: any, reply: any) {
 app.addHook("onRequest", (req: any, reply: any, done: any) => {
   const url = asString(req?.raw?.url || req?.url || "");
   const path = url.split("?")[0] || "";
-  if (path === "/buy" || path.startsWith("/buy/")) {
+  if (path === "/buy" || path.startsWith("/buy/") || /^\/c\/[^/]+\/buy(\/|$)/.test(path)) {
     setPublicDebugHeaders(req, reply);
   }
   done();
@@ -15456,8 +15473,10 @@ app.addHook("onRequest", (req: any, reply: any, done: any) => {
 
 app.get("/public/content/:id/preview-file", handlePublicPreviewFile);
 app.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
+app.get("/c/:creatorId/buy/content/:id/preview-file", handleBuyPreviewRedirect);
 app.get("/public/content/:id/cover", handlePublicCoverFile);
 app.get("/buy/content/:id/cover", handlePublicCoverFile);
+app.get("/c/:creatorId/buy/content/:id/cover", handlePublicCoverFile);
 
 // Public credits (only when content is publicly visible)
 async function handlePublicCredits(req: any, reply: any) {
@@ -15682,7 +15701,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const currentPublicOrigin = normalizePublicOriginBase(nodeUrl);
   const canonicalCommerceOrigin =
     resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin ||
-    currentPublicOrigin;
+    normalizePublicOriginBase(APP_BASE_URL);
 
   const domainProofsHtml =
     verifiedDomainProofs.length > 0
@@ -15864,7 +15883,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               : manifestThumbnailRaw
                 ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(manifestThumbnailRaw)}`)
                 : externalThumbUrl || coverUrl || posterUrl;
-            const buyUrl = buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
+            const buyUrl = buildPublicUrlFromOrigin(
+              canonicalCommerceOrigin,
+              buildCreatorScopedPath(asString((item as any).ownerUserId || "").trim() || null, `/buy/${encodeURIComponent(item.id)}`)
+            );
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
@@ -16186,7 +16208,9 @@ async function handleShortPublicLink(req: any, reply: any) {
   if (share && share.status === "ACTIVE") {
     const content = await prisma.contentItem.findUnique({ where: { id: share.contentId } });
     if (!content || content.deletedAt) return notFound(reply, "Not found");
-    return reply.redirect(`/buy/${encodeURIComponent(content.id)}?share=${encodeURIComponent(token)}`);
+    return reply.redirect(
+      `${buildCreatorScopedPath(content.ownerUserId, `/buy/${encodeURIComponent(content.id)}`)}?share=${encodeURIComponent(token)}`
+    );
   }
 
   const sendNotAvailable = (content?: { title?: string | null }) => {
@@ -16220,7 +16244,7 @@ async function handleShortPublicLink(req: any, reply: any) {
   const content = await prisma.contentItem.findUnique({ where: { id: token } });
   if (!content) return notFound(reply, "Not found");
   if (content.status !== "published") return sendNotAvailable(content);
-  return reply.redirect(`/buy/${encodeURIComponent(token)}`);
+  return reply.redirect(buildCreatorScopedPath(content.ownerUserId, `/buy/${encodeURIComponent(token)}`));
 }
 
 app.get("/p/:token", handleShortPublicLink);
@@ -16420,6 +16444,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
 
 async function handleBuyPage(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
+  const creatorScopeId = getCreatorScopeId(req);
   if (!contentId) return notFound(reply, "Not found");
   const productTier = resolveProductTier().productTier;
   const content = await prisma.contentItem.findUnique({
@@ -16427,6 +16452,9 @@ async function handleBuyPage(req: any, reply: any) {
     include: { owner: { select: { displayName: true, email: true } } }
   });
   if (!content) return notFound(reply, "Not found");
+  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+    return notFound(reply, "Not found");
+  }
   const canonicalBuyerRecoveryBase = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
   const sellerDisplayName = content.owner?.displayName || content.owner?.email || null;
   let sellerLightningAddress: string | null = null;
@@ -16536,6 +16564,7 @@ async function handleBuyPage(req: any, reply: any) {
   const app = document.getElementById("app");
   const apiBase = location.origin;
   const buyerRecoveryBase = ${JSON.stringify(canonicalBuyerRecoveryBase)};
+  const creatorScopePrefix = ${JSON.stringify(buildCreatorScopedPath(content.ownerUserId, ""))};
   let receiptToken = null;
   let pollTimer = null;
   let refreshTimer = null;
@@ -16560,7 +16589,17 @@ async function handleBuyPage(req: any, reply: any) {
     return (b || apiBase) + (p.startsWith("/") ? p : ("/" + p));
   }
   function recoveryUrl(route){
-    return joinBase(buyerRecoveryBase || apiBase, route);
+    const r = String(route || "").trim();
+    const scoped = /^https?:\/\//i.test(r)
+      ? r
+      : ((creatorScopePrefix || "") + (r.startsWith("/") ? r : ("/" + r)));
+    return joinBase(buyerRecoveryBase || apiBase, scoped);
+  }
+
+  function scopePath(route){
+    const r = String(route || "").trim();
+    if (!r) return creatorScopePrefix || "";
+    return (creatorScopePrefix || "") + (r.startsWith("/") ? r : ("/" + r));
   }
   function heartFor(c){
     if (c?.verification?.badge !== "beatify_heart") return "";
@@ -16771,7 +16810,7 @@ async function handleBuyPage(req: any, reply: any) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 2500);
     try {
-      const res = await fetch("/public/content/" + encodeURIComponent(cid) + "/attribution", {
+      const res = await fetch(scopePath("/public/content/" + encodeURIComponent(cid) + "/attribution"), {
         method: "GET",
         signal: ctl.signal
       });
@@ -17306,7 +17345,7 @@ async function handleBuyPage(req: any, reply: any) {
 
   async function pollStatus(){
     if (!receiptToken) return;
-    const status = await fetchJson("/buy/receipts/" + receiptToken + "/status");
+    const status = await fetchJson(scopePath("/buy/receipts/" + receiptToken + "/status"));
     if (status?.receiptToken && status.receiptToken !== receiptToken) {
       receiptToken = status.receiptToken;
     }
@@ -17323,7 +17362,7 @@ async function handleBuyPage(req: any, reply: any) {
     if (paid) {
       clearManualIntent();
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
+      const payload = await fetchJson(scopePath("/buy/receipts/" + receiptToken + "/fulfill"));
       renderDownloads(payload);
       if (currentOffer?.manifestSha256) {
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
@@ -17389,7 +17428,7 @@ async function handleBuyPage(req: any, reply: any) {
     }
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
-    const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    const intent = await fetchJson(scopePath("/buy/payments/intents"), { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
     if (intent?.status === "manual_required") {
       const manualId = intent.intentId || null;
       receiptToken = manualId;
@@ -17404,7 +17443,7 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   if (productTier === "basic") {
-    fetchJson("/buy/content/" + contentId + "/offer")
+    fetchJson(scopePath("/buy/content/" + contentId + "/offer"))
       .then((offer) => renderBasicOffer(offer))
       .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
     return;
@@ -17414,7 +17453,7 @@ async function handleBuyPage(req: any, reply: any) {
     .finally(() => {
       fetchOwnedEntitlement()
         .finally(() => {
-          fetchJson("/buy/content/" + contentId + "/offer")
+          fetchJson(scopePath("/buy/content/" + contentId + "/offer"))
             .then(async (offer)=> {
               currentOffer = offer;
               livePaymentProof = null;
@@ -17433,7 +17472,7 @@ async function handleBuyPage(req: any, reply: any) {
               if (Number(offer.priceSats || 0) > 0) {
                 try {
                   const desiredScope = alreadyOwned ? "stream" : "preview";
-                  const p = await fetchJson("/buy/permits", {
+                  const p = await fetchJson(scopePath("/buy/permits"), {
                     method: "POST",
                     body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: (buyer && buyer.id) ? buyer.id : "guest", requestedScope: desiredScope }
                   });
@@ -17462,9 +17501,12 @@ async function handleBuyPage(req: any, reply: any) {
 }
 
 app.get("/buy/:contentId", handleBuyPage);
+app.get("/c/:creatorId/buy/:contentId", handleBuyPage);
 
 async function handleBuyerLibraryPage(req: any, reply: any) {
   const canonicalBuyerRecoveryBase = await resolveCanonicalBuyerRecoveryOrigin(req, null);
+  const creatorScopeId = getCreatorScopeId(req);
+  const creatorScopePrefix = creatorScopeId ? `/c/${encodeURIComponent(creatorScopeId)}` : "";
   const libraryRecoveryToken = asString((req.params as any)?.buyerKeyOrReceiptToken || "").trim() || null;
   const html = `<!doctype html>
 <html lang="en">
@@ -17510,6 +17552,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
   const app = document.getElementById("app");
   const apiBase = location.origin;
   const buyerRecoveryBase = ${JSON.stringify(canonicalBuyerRecoveryBase)};
+  const creatorScopePrefix = ${JSON.stringify(creatorScopePrefix)};
   const libraryRecoveryToken = ${JSON.stringify(libraryRecoveryToken)};
   let buyer = null;
   let entitlements = [];
@@ -17523,7 +17566,9 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
   }
 
   function recoveryUrl(route){
-    return joinBase(buyerRecoveryBase || apiBase, route);
+    const r = String(route || "");
+    const scoped = r.startsWith("/") ? (creatorScopePrefix + r) : (creatorScopePrefix + "/" + r);
+    return joinBase(buyerRecoveryBase || apiBase, scoped);
   }
 
   async function fetchJson(path, opts){
@@ -17558,7 +17603,7 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
   async function recoverFromLibraryToken(){
     if (!libraryRecoveryToken) return;
     try {
-      await fetchJson("/buy/receipts/" + encodeURIComponent(libraryRecoveryToken) + "/status");
+      await fetchJson(creatorScopePrefix + "/buy/receipts/" + encodeURIComponent(libraryRecoveryToken) + "/status");
     } catch {}
   }
 
@@ -17657,6 +17702,8 @@ async function handleBuyerLibraryPage(req: any, reply: any) {
 
 app.get("/library", handleBuyerLibraryPage);
 app.get("/library/:buyerKeyOrReceiptToken", handleBuyerLibraryPage);
+app.get("/c/:creatorId/library", handleBuyerLibraryPage);
+app.get("/c/:creatorId/library/:buyerKeyOrReceiptToken", handleBuyerLibraryPage);
 
 app.get("/embed.js", async (req: any, reply) => {
   if (getIdentityLevel() !== IdentityLevel.PERSISTENT) {
@@ -17829,8 +17876,21 @@ async function resolveCanonicalBuyerRecoveryOrigin(
   return normalizePublicOriginBase(profile.canonicalCommerceOrigin || fallbackOrigin);
 }
 
+function getCreatorScopeId(req: any): string | null {
+  const raw = asString((req.params as any)?.creatorId || "").trim();
+  return raw || null;
+}
+
+function buildCreatorScopedPath(creatorId: string | null, suffixPath: string): string {
+  const suffix = String(suffixPath || "").trim();
+  if (!creatorId) return suffix.startsWith("/") ? suffix : `/${suffix}`;
+  const scoped = `/c/${encodeURIComponent(creatorId)}`;
+  return `${scoped}${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
+}
+
 async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
+  const creatorScopeId = getCreatorScopeId(req);
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
   if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
@@ -17853,6 +17913,9 @@ async function handlePublicOffer(req: any, reply: any) {
     return notFound(reply, "Not found");
   }
   const content = gated.content;
+  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+    return notFound(reply, "Not found");
+  }
   const allowDraftPreview = false;
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
@@ -17958,6 +18021,7 @@ async function handlePublicOffer(req: any, reply: any) {
   };
   const canonicalUrls = buildCanonicalBuyerRecoveryUrls({
     canonicalOrigin: canonicalBuyerOrigin,
+    creatorId: creatorScopeId || content.ownerUserId,
     contentId: content.id
   });
   const capabilityCtx = getCapabilityContext();
@@ -18010,7 +18074,12 @@ async function handlePublicOffer(req: any, reply: any) {
   const deliveryRouting = buildDeliveryRoutingDescriptor({
     canonicalCommerceOrigin: canonicalBuyerOrigin,
     canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
-    canonicalFallbackUrl: canonicalUrls.buyUrl || buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/buy/${encodeURIComponent(content.id)}`),
+    canonicalFallbackUrl:
+      canonicalUrls.buyUrl ||
+      buildPublicUrlFromOrigin(
+        canonicalBuyerOrigin,
+        buildCreatorScopedPath(content.ownerUserId, `/buy/${encodeURIComponent(content.id)}`)
+      ),
     deliveryMode: asString((content as any).deliveryMode || "").trim() || null,
     creatorOriginKind,
     creatorPlaybackUrl: creatorPlaybackUrlCandidate,
@@ -18071,6 +18140,7 @@ async function handlePublicOffer(req: any, reply: any) {
 app.get("/p2p/content/:contentId/offer", { preHandler: optionalAuth }, handlePublicOffer);
 app.get("/public/content/:contentId/offer", handlePublicOffer);
 app.get("/buy/content/:contentId/offer", handlePublicOffer);
+app.get("/c/:creatorId/buy/content/:contentId/offer", handlePublicOffer);
 
 async function handlePublicPaymentsIntents(req: any, reply: any) {
   const body = (req.body ?? {}) as {
@@ -18080,6 +18150,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
   };
 
   const contentId = asString(body.contentId || "").trim();
+  const creatorScopeId = getCreatorScopeId(req);
   if (!contentId) return badRequest(reply, "contentId required");
 
   const intentLog: Record<string, unknown> = {
@@ -18114,6 +18185,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     const amountSatsInput = parseSats(body.amountSats);
     const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
     if (!content) return notFound(reply, "Content not found");
+    if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+      return notFound(reply, "Not found");
+    }
     const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
     intentLog.sellerId = content.ownerUserId;
     intentLog.saleable = isSaleable(content);
@@ -18573,6 +18647,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     );
     const canonicalUrls = buildCanonicalBuyerRecoveryUrls({
       canonicalOrigin: canonicalBuyerOrigin,
+      creatorId: creatorScopeId || content.ownerUserId,
       contentId,
       paymentId: intent.id,
       receiptToken
@@ -18644,6 +18719,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 app.post("/p2p/payments/intents", handlePublicPaymentsIntents);
 app.post("/public/payments/intents", handlePublicPaymentsIntents);
 app.post("/buy/payments/intents", handlePublicPaymentsIntents);
+app.post("/c/:creatorId/buy/payments/intents", handlePublicPaymentsIntents);
 
 async function handlePublicPermits(req: any, reply: any) {
   if (!PERMIT_SECRET) return reply.code(500).send({ error: "permit secret missing" });
@@ -18710,6 +18786,7 @@ async function handlePublicPermits(req: any, reply: any) {
 app.post("/p2p/permits", handlePublicPermits);
 app.post("/public/permits", handlePublicPermits);
 app.post("/buy/permits", handlePublicPermits);
+app.post("/c/:creatorId/buy/permits", handlePublicPermits);
 
 async function hasAccess(buyerId: string | null | undefined, contentId: string): Promise<boolean> {
   const bid = String(buyerId || "").trim();
@@ -18875,6 +18952,7 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
 
 async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
+  const creatorScopeId = getCreatorScopeId(req);
   if (!receiptToken) return badRequest(reply, "receiptToken required");
 
   let intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
@@ -18923,6 +19001,9 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     where: { id: intent.contentId },
     select: { ownerUserId: true }
   });
+  if (creatorScopeId && contentOwner?.ownerUserId && creatorScopeId !== contentOwner.ownerUserId) {
+    return notFound(reply, "Not found");
+  }
   const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, contentOwner?.ownerUserId || null);
   const providerCfg = getNetworkProviderConfig();
   const invoiceProviderNodeId =
@@ -18931,6 +19012,7 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
       : null;
   const canonicalUrls = buildCanonicalBuyerRecoveryUrls({
     canonicalOrigin: canonicalBuyerOrigin,
+    creatorId: creatorScopeId || contentOwner?.ownerUserId || null,
     contentId: intent.contentId,
     paymentId: intent.id,
     receiptToken: intent.receiptToken || intent.id,
@@ -18964,7 +19046,12 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     canonicalCommerceOrigin: canonicalBuyerOrigin,
     canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
     canonicalFallbackUrl:
-      canonicalUrls.replayUrl || canonicalUrls.buyUrl || buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/buy/${encodeURIComponent(intent.contentId)}`),
+      canonicalUrls.replayUrl ||
+      canonicalUrls.buyUrl ||
+      buildPublicUrlFromOrigin(
+        canonicalBuyerOrigin,
+        buildCreatorScopedPath(contentOwner?.ownerUserId || null, `/buy/${encodeURIComponent(intent.contentId)}`)
+      ),
     deliveryMode: asString((contentForRouting as any)?.deliveryMode || "").trim() || null,
     creatorOriginKind,
     creatorPlaybackUrl: null,
@@ -19004,9 +19091,12 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
 
 app.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
 app.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
+app.get("/c/:creatorId/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
 
 async function handlePublicReceiptPage(req: any, reply: any) {
   const paymentId = asString((req.params as any).paymentId || "").trim();
+  const creatorScopeId = getCreatorScopeId(req);
+  const statusPath = buildCreatorScopedPath(creatorScopeId, `/buy/receipts/${encodeURIComponent(paymentId)}/status`);
   if (!paymentId) return badRequest(reply, "paymentId required");
   const html = `<!doctype html>
 <html lang="en">
@@ -19041,7 +19131,7 @@ async function handlePublicReceiptPage(req: any, reply: any) {
       const statusEl = document.getElementById("status");
       const linksEl = document.getElementById("links");
       const esc = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      fetch("/buy/receipts/" + encodeURIComponent(paymentId) + "/status", { credentials: "include" })
+      fetch(${JSON.stringify(statusPath)}, { credentials: "include" })
         .then(async (res) => {
           const text = await res.text();
           let json = null;
@@ -19073,9 +19163,11 @@ async function handlePublicReceiptPage(req: any, reply: any) {
 }
 
 app.get("/receipt/:paymentId", handlePublicReceiptPage);
+app.get("/c/:creatorId/receipt/:paymentId", handlePublicReceiptPage);
 
 async function handlePublicReceiptFulfill(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
+  const creatorScopeId = getCreatorScopeId(req);
   if (!receiptToken) return badRequest(reply, "receiptToken required");
 
   const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
@@ -19121,6 +19213,9 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content) return notFound(reply, "Content not found");
+  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+    return notFound(reply, "Not found");
+  }
   const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
   const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
   if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
@@ -19145,6 +19240,7 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
     manifestJson,
     urls: buildCanonicalBuyerRecoveryUrls({
       canonicalOrigin: canonicalBuyerOrigin,
+      creatorId: creatorScopeId || content.ownerUserId,
       contentId: latestIntent.contentId,
       paymentId: latestIntent.id,
       receiptToken: latestIntent.receiptToken || latestIntent.id,
@@ -19168,9 +19264,11 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
 
 app.get("/public/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
 app.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
+app.get("/c/:creatorId/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
 
 async function handlePublicReceiptFile(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
+  const creatorScopeId = getCreatorScopeId(req);
   const objectKey = asString((req.query || {})?.objectKey || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
   if (!objectKey) return badRequest(reply, "objectKey required");
@@ -19193,6 +19291,15 @@ async function handlePublicReceiptFile(req: any, reply: any) {
   const buyerId = accessBuyer.buyerId;
   const canAccess = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
   if (!canAccess) return reply.code(402).send({ error: "Payment not settled" });
+  if (creatorScopeId) {
+    const owner = await prisma.contentItem.findUnique({
+      where: { id: latestIntent.contentId },
+      select: { ownerUserId: true }
+    });
+    if (owner?.ownerUserId && creatorScopeId !== owner.ownerUserId) {
+      return notFound(reply, "Not found");
+    }
+  }
   if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
 
   const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
@@ -19226,6 +19333,7 @@ async function handlePublicReceiptFile(req: any, reply: any) {
 
 app.get("/public/receipts/:receiptToken/file", handlePublicReceiptFile);
 app.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
+app.get("/c/:creatorId/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
 
 type ReplayResolution =
   | {
@@ -19240,6 +19348,7 @@ async function resolveReplayAccessForEntitlement(
   reply: any,
   entitlementId: string
 ): Promise<ReplayResolution | null> {
+  const creatorScopeId = getCreatorScopeId(req);
   const session = await resolveBuyerSession(req, reply);
   const buyerId = asString(session?.buyer?.id || "").trim() || null;
   if (!buyerId) return null;
@@ -19251,8 +19360,14 @@ async function resolveReplayAccessForEntitlement(
   if (!entitlement?.content) return null;
 
   const content = entitlement.content as any;
+  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+    return null;
+  }
   const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId || null);
-  const buyUrl = buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/buy/${encodeURIComponent(content.id)}`);
+  const buyUrl = buildPublicUrlFromOrigin(
+    canonicalBuyerOrigin,
+    buildCreatorScopedPath(content.ownerUserId, `/buy/${encodeURIComponent(content.id)}`)
+  );
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId: content.id } });
   const primaryObjectKey = getPrimaryObjectKey((manifest?.json || null) as any);
@@ -19390,6 +19505,8 @@ async function handleReplayRedirectPage(req: any, reply: any) {
 
 app.get("/replay/:entitlementId/access", handleReplayAccessPage);
 app.get("/replay/:entitlementId", handleReplayRedirectPage);
+app.get("/c/:creatorId/replay/:entitlementId/access", handleReplayAccessPage);
+app.get("/c/:creatorId/replay/:entitlementId", handleReplayRedirectPage);
 
 // List files for a content item
 app.get("/content/:id/files", { preHandler: requireAuth }, async (req: any, reply) => {

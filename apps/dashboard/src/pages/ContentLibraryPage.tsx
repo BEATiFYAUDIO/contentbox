@@ -4022,8 +4022,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (localNodeOriginFromApi || activeOrigin || "").trim();
                             const effectiveBuyOrigin = (publicBuyOrigin || publicOriginFromApi || "").trim();
-                            const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
-                            const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
+                            const buyBase = (effectiveBuyOrigin || "").replace(/\/$/, "");
+                            const creatorScope = String(it.ownerUserId || "").trim();
+                            const creatorScopedBuyPath = creatorScope
+                              ? `/c/${encodeURIComponent(creatorScope)}/buy/${encodeURIComponent(it.id)}`
+                              : `/buy/${encodeURIComponent(it.id)}`;
+                            const buyLink = buyBase ? `${buyBase}${creatorScopedBuyPath}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");
                             const canEmbed = Boolean(discoveryPublishAllowed && publicStatus?.isCanonical && embedBase);
                             const embedScript = canEmbed ? `${embedBase}/embed.js` : "";
@@ -4034,7 +4038,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ? `<iframe src="${buyLink}" style="width:100%;max-width:900px;height:720px;border:1px solid #222;border-radius:16px;"></iframe>`
                               : "";
                             const loopbackBase = "http://127.0.0.1:4000";
-                            const loopbackLink = `${loopbackBase}/buy/${it.id}`;
+                            const loopbackLink = `${loopbackBase}${creatorScopedBuyPath}`;
                             const isBuyLoopback = isLoopbackUrl(buyLink);
                             const isPaidContent = Number(it.priceSats || 0) > 0;
                             const paidCommerceBlocked = isPaidContent && !paidCommerceAllowedFromApi;
@@ -4047,7 +4051,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 lanBase = u.origin.replace(/\/$/, "");
                               }
                             } catch {}
-                            const lanLink = lanBase ? `${lanBase}/buy/${it.id}` : "";
+                            const lanLink = lanBase ? `${lanBase}${creatorScopedBuyPath}` : "";
                             return (
                               <>
                                 {isBasicTier ? null : (
