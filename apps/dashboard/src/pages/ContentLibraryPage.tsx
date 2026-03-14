@@ -4,6 +4,7 @@ import { getToken } from "../lib/auth";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
+import UpgradeToCommercePrompt from "../components/UpgradeToCommercePrompt";
 import { canArchive, canPublish, canRestore, canTrash, canUpload, computeContentUiState } from "../lib/contentState";
 import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
 
@@ -89,6 +90,24 @@ type Identity = {
     id: string;
     code: string;
     displayName: string;
+  };
+};
+
+type NetworkSummaryLite = {
+  nodeMode: "basic" | "advanced" | "lan";
+  modeProfile?: {
+    selectedParticipationMode?: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
+    effectiveParticipationMode?:
+      | "basic_creator"
+      | "sovereign_creator_with_provider"
+      | "sovereign_node_operator"
+      | "sovereign_creator_unready";
+  };
+  capabilityResolution?: {
+    readinessBlockers?: string[];
+  };
+  providerServices?: {
+    totalProviderFeePercent?: number;
   };
 };
 
@@ -525,6 +544,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
   const [publicOriginFromApi, setPublicOriginFromApi] = React.useState<string>("");
+  const [localNodeOriginFromApi, setLocalNodeOriginFromApi] = React.useState<string>("");
+  const [temporaryNodeOriginFromApi, setTemporaryNodeOriginFromApi] = React.useState<string>("");
+  const [paidCommerceAllowedFromApi, setPaidCommerceAllowedFromApi] = React.useState<boolean>(true);
+  const [paidCommerceReasonFromApi, setPaidCommerceReasonFromApi] = React.useState<string | null>(null);
+  const [networkSummary, setNetworkSummary] = React.useState<NetworkSummaryLite | null>(null);
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
@@ -652,14 +676,63 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       try {
         const res = await fetch(`${apiBase}/api/public/origin`, { method: "GET" });
         const data = await res.json().catch(() => null);
-        if (res.ok && data?.publicOrigin) {
-          setPublicOriginFromApi(String(data.publicOrigin).replace(/\/$/, ""));
+        if (res.ok) {
+          const canonical = String(data?.canonicalCommerceOrigin || "").replace(/\/$/, "");
+          const fallback = String(data?.publicOrigin || "").replace(/\/$/, "");
+          setPublicOriginFromApi(canonical || fallback);
+          setLocalNodeOriginFromApi(String(data?.localNodeEndpointOrigin || data?.publicOrigin || "").replace(/\/$/, ""));
+          setTemporaryNodeOriginFromApi(String(data?.temporaryNodeEndpointOrigin || "").replace(/\/$/, ""));
+          setPaidCommerceAllowedFromApi(Boolean(data?.paidCommerceAllowed ?? true));
+          setPaidCommerceReasonFromApi(
+            typeof data?.paidCommerceReason === "string" && data.paidCommerceReason.trim()
+              ? data.paidCommerceReason.trim()
+              : null
+          );
         }
       } catch {
         // ignore
       }
     })();
   }, [apiBase]);
+
+  React.useEffect(() => {
+    (async () => {
+      try {
+        const summary = await api<NetworkSummaryLite>("/api/network/summary", "GET");
+        setNetworkSummary(summary || null);
+      } catch {
+        setNetworkSummary(null);
+      }
+    })();
+  }, []);
+
+  const selectedMode =
+    networkSummary?.modeProfile?.selectedParticipationMode === "basic_creator"
+      ? "basic_creator"
+      : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_node_operator"
+        ? "sovereign_node"
+        : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_creator"
+          ? "sovereign_creator_with_provider"
+          : networkSummary?.nodeMode === "basic"
+            ? "basic_creator"
+            : networkSummary?.nodeMode === "lan"
+              ? "sovereign_node"
+              : "sovereign_creator_with_provider";
+  const effectiveMode =
+    networkSummary?.modeProfile?.effectiveParticipationMode ||
+    (selectedMode === "basic_creator" ? "basic_creator" : "sovereign_creator_with_provider");
+  const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
+
+  async function enablePaidCommerceMode() {
+    try {
+      await api("/api/node/mode", "POST", { nodeMode: "advanced" });
+      const summary = await api<NetworkSummaryLite>("/api/network/summary", "GET");
+      setNetworkSummary(summary || null);
+      setPaidCommerceReasonFromApi("Sovereign Creator mode enabled. Durable commerce capabilities are now available through provider infrastructure.");
+    } catch (e: any) {
+      setPaidCommerceReasonFromApi(e?.message || "Failed to switch mode. Open Config to update participation mode.");
+    }
+  }
 
   async function refreshPublicStatus() {
     try {
@@ -3608,6 +3681,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setPriceMsg((m) => ({ ...m, [it.id]: "Price must be 0 or more." }));
                                   return;
                                 }
+                                if (sats > 0 && selectedMode === "basic_creator") {
+                                  setPriceMsg((m) => ({
+                                    ...m,
+                                    [it.id]: "Durable paid commerce requires Sovereign Creator mode."
+                                  }));
+                                  return;
+                                }
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPriceMsg((m) => ({ ...m, [it.id]: "" }));
@@ -3624,6 +3704,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               Save price
                             </button>
                             {priceMsg[it.id] ? <div className="text-xs text-amber-300">{priceMsg[it.id]}</div> : null}
+                            {selectedMode === "basic_creator" ? (
+                              <div className="mt-2">
+                                <UpgradeToCommercePrompt
+                                  selectedMode={selectedMode}
+                                  effectiveMode={effectiveMode}
+                                  attemptedCapability="set_price"
+                                  readinessBlockers={readinessBlockers}
+                                  providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
+                                  onEnablePaidCommerce={enablePaidCommerceMode}
+                                />
+                              </div>
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -3917,8 +4009,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
-                            const effectivePublicOrigin = (publicOriginFromApi || activeOrigin || "").trim();
-                            const effectiveBuyOrigin = (publicOriginFromApi || publicBuyOrigin || activeOrigin || "").trim();
+                            const effectivePublicOrigin = (localNodeOriginFromApi || activeOrigin || "").trim();
+                            const effectiveBuyOrigin = (publicBuyOrigin || publicOriginFromApi || localNodeOriginFromApi || activeOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");
@@ -3933,7 +4025,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             const loopbackBase = "http://127.0.0.1:4000";
                             const loopbackLink = `${loopbackBase}/buy/${it.id}`;
                             const isBuyLoopback = isLoopbackUrl(buyLink);
-                            const hasPublicBuy = Boolean(buyBase) && !isBuyLoopback;
+                            const isPaidContent = Number(it.priceSats || 0) > 0;
+                            const paidCommerceBlocked = isPaidContent && !paidCommerceAllowedFromApi;
+                            const hasPublicBuy = Boolean(buyBase) && !isBuyLoopback && !paidCommerceBlocked;
                             const isLocalOnly = !hasPublicBuy;
                             let lanBase = "";
                             try {
@@ -3981,13 +4075,35 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                           <div className="min-w-0">
                                             {hasPublicBuy ? (
                                               <>
-                                                Public buy link: <span className="text-neutral-300 break-all">{buyLink}</span>
+                                                Canonical buy link: <span className="text-neutral-300 break-all">{buyLink}</span>
                                               </>
                                             ) : (
                                               <span className="text-neutral-500">
-                                                Public buy link not available. Set up public links in Config.
+                                                {paidCommerceBlocked
+                                                  ? "Temporary endpoint detected. Preview only. Configure a stable public host to enable paid commerce."
+                                                  : "Public buy link not available. Set up public links in Config."}
                                               </span>
                                             )}
+                                            {paidCommerceBlocked && paidCommerceReasonFromApi ? (
+                                              <div className="mt-1 text-[11px] text-neutral-500">{paidCommerceReasonFromApi}</div>
+                                            ) : null}
+                                            {isPaidContent ? (
+                                              <div className="mt-2">
+                                                <UpgradeToCommercePrompt
+                                                  selectedMode={selectedMode}
+                                                  effectiveMode={effectiveMode}
+                                                  attemptedCapability="durable_buy_link"
+                                                  readinessBlockers={readinessBlockers}
+                                                  providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
+                                                  onEnablePaidCommerce={enablePaidCommerceMode}
+                                                />
+                                              </div>
+                                            ) : null}
+                                            {temporaryNodeOriginFromApi ? (
+                                              <div className="mt-1 text-[11px] text-amber-300 break-all">
+                                                Temporary node endpoint: {temporaryNodeOriginFromApi}/buy/{it.id}
+                                              </div>
+                                            ) : null}
                                           </div>
                                           <div className="flex items-center gap-2 shrink-0">
                                             <button

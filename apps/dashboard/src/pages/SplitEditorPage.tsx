@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
+import UpgradeToCommercePrompt from "../components/UpgradeToCommercePrompt";
 
 type ContentItem = {
   id: string;
@@ -50,6 +51,24 @@ type ProofData = {
   splitsHash: string;
   payload: any;
   signatures?: any[];
+};
+
+type NetworkSummaryLite = {
+  nodeMode: "basic" | "advanced" | "lan";
+  modeProfile?: {
+    selectedParticipationMode?: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
+    effectiveParticipationMode?:
+      | "basic_creator"
+      | "sovereign_creator_with_provider"
+      | "sovereign_node_operator"
+      | "sovereign_creator_unready";
+  };
+  capabilityResolution?: {
+    readinessBlockers?: string[];
+  };
+  providerServices?: {
+    totalProviderFeePercent?: number;
+  };
 };
 
 function num(x: any) {
@@ -186,6 +205,7 @@ export default function SplitEditorPage(props: {
   const [purchase, setPurchase] = React.useState<{ id: string; bolt11: string; status: "unpaid" | "paid" | "expired"; receiptId?: string | null } | null>(null);
   const [payMsg, setPayMsg] = React.useState<string | null>(null);
   const [paymentsReadiness, setPaymentsReadiness] = React.useState<{ lightning: { ready: boolean; reason?: string | null } } | null>(null);
+  const [networkSummary, setNetworkSummary] = React.useState<NetworkSummaryLite | null>(null);
 
   const total = round3(rows.reduce((s, r) => s + num(r.percent), 0));
   const totalOk = total === 100;
@@ -193,6 +213,22 @@ export default function SplitEditorPage(props: {
   const lightningReady = paymentsReadiness?.lightning?.ready ?? true;
   const lightningReason = paymentsReadiness?.lightning?.reason ?? "UNKNOWN";
   const lightningBlocked = readinessLoaded && !lightningReady;
+  const selectedMode =
+    networkSummary?.modeProfile?.selectedParticipationMode === "basic_creator"
+      ? "basic_creator"
+      : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_node_operator"
+        ? "sovereign_node"
+        : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_creator"
+          ? "sovereign_creator_with_provider"
+          : networkSummary?.nodeMode === "basic"
+            ? "basic_creator"
+            : networkSummary?.nodeMode === "lan"
+              ? "sovereign_node"
+              : "sovereign_creator_with_provider";
+  const effectiveMode =
+    networkSummary?.modeProfile?.effectiveParticipationMode ||
+    (selectedMode === "basic_creator" ? "basic_creator" : "sovereign_creator_with_provider");
+  const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
 
   function isNotFoundError(err: any) {
     const msg = String(err?.message || err || "");
@@ -280,6 +316,16 @@ export default function SplitEditorPage(props: {
     api<{ lightning: { ready: boolean; reason?: string | null } }>("/api/payments/readiness", "GET")
       .then((r) => setPaymentsReadiness(r))
       .catch(() => setPaymentsReadiness(null));
+  }, [splitsAllowed]);
+
+  React.useEffect(() => {
+    if (!splitsAllowed) {
+      setNetworkSummary(null);
+      return;
+    }
+    api<NetworkSummaryLite>("/api/network/summary", "GET")
+      .then((r) => setNetworkSummary(r || null))
+      .catch(() => setNetworkSummary(null));
   }, [splitsAllowed]);
 
   React.useEffect(() => {
@@ -483,6 +529,17 @@ export default function SplitEditorPage(props: {
       setMsg(e?.message || "Create version failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function enablePaidCommerceMode() {
+    try {
+      await api("/api/node/mode", "POST", { nodeMode: "advanced" });
+      const summary = await api<NetworkSummaryLite>("/api/network/summary", "GET");
+      setNetworkSummary(summary || null);
+      setPayMsg("Sovereign Creator mode enabled. Retry invoice generation.");
+    } catch (e: any) {
+      setPayMsg(e?.message || "Failed to switch mode. Open Config to update participation mode.");
     }
   }
 
@@ -882,6 +939,19 @@ export default function SplitEditorPage(props: {
                               <div className="mt-1 text-[11px] text-amber-200/70">Details: {lightningReason}</div>
                             </div>
                           )}
+                          {(selectedMode === "basic_creator" || effectiveMode === "sovereign_creator_unready") && (
+                            <UpgradeToCommercePrompt
+                              selectedMode={selectedMode}
+                              effectiveMode={effectiveMode}
+                              attemptedCapability="invoice_minting"
+                              readinessBlockers={readinessBlockers}
+                              providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
+                              onEnablePaidCommerce={enablePaidCommerceMode}
+                              onRunOwnNode={() => {
+                                if (typeof window !== "undefined") window.location.href = "/config#node-mode";
+                              }}
+                            />
+                          )}
                           <div className="flex items-center gap-2">
                             <label className="sr-only" htmlFor={`playback-units-${contentId}`}>
                               Playback units
@@ -901,6 +971,10 @@ export default function SplitEditorPage(props: {
                               onClick={async () => {
                                 if (lightningBlocked) {
                                   setPayMsg("Lightning is not configured. Configure payments to generate invoices.");
+                                  return;
+                                }
+                                if (selectedMode === "basic_creator") {
+                                  setPayMsg("Durable paid commerce requires Sovereign Creator mode.");
                                   return;
                                 }
                                 const units = Math.max(1, Math.floor(Number(payUnits || "0")));

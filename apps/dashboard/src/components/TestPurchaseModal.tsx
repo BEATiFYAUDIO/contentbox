@@ -2,6 +2,7 @@ import React from "react";
 import QRCode from "qrcode";
 import { getToken } from "../lib/auth";
 import { getApiBase } from "../lib/api";
+import UpgradeToCommercePrompt from "./UpgradeToCommercePrompt";
 
 type Props = {
   open: boolean;
@@ -11,6 +12,24 @@ type Props = {
   defaultAmountSats?: string;
   storefrontStatus?: string | null;
   contentStatus?: string | null;
+};
+
+type NetworkSummaryLite = {
+  nodeMode: "basic" | "advanced" | "lan";
+  modeProfile?: {
+    selectedParticipationMode?: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
+    effectiveParticipationMode?:
+      | "basic_creator"
+      | "sovereign_creator_with_provider"
+      | "sovereign_node_operator"
+      | "sovereign_creator_unready";
+  };
+  capabilityResolution?: {
+    readinessBlockers?: string[];
+  };
+  providerServices?: {
+    totalProviderFeePercent?: number;
+  };
 };
 
 function apiBase() {
@@ -71,6 +90,7 @@ export default function TestPurchaseModal({
   const [loading, setLoading] = React.useState(false);
   const [bolt11Qr, setBolt11Qr] = React.useState<string | null>(null);
   const [onchainQr, setOnchainQr] = React.useState<string | null>(null);
+  const [networkSummary, setNetworkSummary] = React.useState<NetworkSummaryLite | null>(null);
 
   React.useEffect(() => {
     if (open) {
@@ -91,6 +111,22 @@ export default function TestPurchaseModal({
       setOnchainQr(null);
     }
   }, [open, defaultAmountSats]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await fetchJson(`${apiBase()}/api/network/summary`, { method: "GET" });
+        if (!cancelled) setNetworkSummary((data as NetworkSummaryLite) || null);
+      } catch {
+        if (!cancelled) setNetworkSummary(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   React.useEffect(() => {
     if (!intentId || manualPayment) return;
@@ -206,6 +242,37 @@ export default function TestPurchaseModal({
   const missingManifest = !manifestSha256;
   const isAuthed = Boolean(authToken);
   const modeLabel = isAuthed ? "Private (authenticated)" : "Public network route";
+  const selectedMode =
+    networkSummary?.modeProfile?.selectedParticipationMode === "basic_creator"
+      ? "basic_creator"
+      : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_node_operator"
+        ? "sovereign_node"
+        : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_creator"
+          ? "sovereign_creator_with_provider"
+          : networkSummary?.nodeMode === "basic"
+            ? "basic_creator"
+            : networkSummary?.nodeMode === "lan"
+              ? "sovereign_node"
+              : "sovereign_creator_with_provider";
+  const effectiveMode =
+    networkSummary?.modeProfile?.effectiveParticipationMode ||
+    (selectedMode === "basic_creator" ? "basic_creator" : "sovereign_creator_with_provider");
+  const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
+
+  async function enablePaidCommerceMode() {
+    try {
+      await fetchJson(`${apiBase()}/api/node/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nodeMode: "advanced" })
+      });
+      const summary = await fetchJson(`${apiBase()}/api/network/summary`, { method: "GET" });
+      setNetworkSummary((summary as NetworkSummaryLite) || null);
+      setError("Sovereign Creator mode enabled. Retry payment intent creation.");
+    } catch (e: any) {
+      setError(e?.message || "Failed to switch mode. Open Config to update participation mode.");
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
@@ -264,6 +331,11 @@ export default function TestPurchaseModal({
               setLoading(true);
               setManualPayment(null);
               try {
+                const sats = Number(String(amountSats || "0").trim() || "0");
+                if (sats > 0 && selectedMode === "basic_creator") {
+                  setError("Durable paid commerce requires Sovereign Creator mode.");
+                  return;
+                }
                 const payload = {
                   purpose: "CONTENT_PURCHASE",
                   subjectType: "CONTENT",
@@ -324,6 +396,19 @@ export default function TestPurchaseModal({
           >
             {loading ? "Creating…" : "Create public intent"}
           </button>
+          {(selectedMode === "basic_creator" || effectiveMode === "sovereign_creator_unready") && (
+            <UpgradeToCommercePrompt
+              selectedMode={selectedMode}
+              effectiveMode={effectiveMode}
+              attemptedCapability="invoice_minting"
+              readinessBlockers={readinessBlockers}
+              providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
+              onEnablePaidCommerce={enablePaidCommerceMode}
+              onRunOwnNode={() => {
+                if (typeof window !== "undefined") window.location.href = "/config#node-mode";
+              }}
+            />
+          )}
 
           {error && <div className="rounded-lg border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
 

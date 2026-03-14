@@ -169,8 +169,8 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
           {isAdvanced && ownerEmail ? (
             <div>This node belongs to {ownerEmail}. Sign in as the owner account.</div>
           ) : null}
-          {isLan ? <div>LAN (Studio) node — multiple local accounts allowed.</div> : null}
-          {isBasic ? <div>Basic (Trial) node — limited features until advanced is enabled.</div> : null}
+          {isLan ? <div>LAN studio node — sovereign creator identity with shared local operator access.</div> : null}
+          {isBasic ? <div>Basic creator node — creator identity with optional provider-backed invoice infrastructure.</div> : null}
           {!signupAllowed && lockReasons?.multi_user ? (
             <div className="text-neutral-500">{lockReasons.multi_user}</div>
           ) : null}

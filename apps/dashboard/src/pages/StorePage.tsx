@@ -2,6 +2,7 @@ import React from "react";
 import { api, getApiBase } from "../lib/api";
 import { fetchIdentityDetail } from "../lib/identity";
 import { networkUserTypeLabel, participationModeMeta, resolveNetworkUserType, resolveParticipationMode } from "../lib/networkUserType";
+import UpgradeToCommercePrompt from "../components/UpgradeToCommercePrompt";
 
 type NetworkSummary = {
   nodeMode: "basic" | "advanced" | "lan";
@@ -14,6 +15,10 @@ type NetworkSummary = {
     localInvoiceMinting: boolean;
     delegatedInvoiceSupport: boolean;
     tipsOnly: boolean;
+    paidCommerceAllowed?: boolean;
+    paidCommerceReason?: string | null;
+    endpointStability?: "temporary" | "stable" | "unknown";
+    canonicalCommerceConfigured?: boolean;
     providerInvoicingAvailable?: boolean;
     creatorPayoutDestinationConfigured?: boolean;
     creatorPayoutRail?: "provider_custody" | "forwarded" | "creator_node" | null;
@@ -22,10 +27,19 @@ type NetworkSummary = {
   };
   modeProfile?: {
     participationMode?: "basic_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+    selectedParticipationMode?: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
+    effectiveParticipationMode?:
+      | "basic_creator"
+      | "sovereign_creator_with_provider"
+      | "sovereign_node_operator"
+      | "sovereign_creator_unready";
     hasStablePublicRoute?: boolean;
     hasLocalInvoiceMinting?: boolean;
     providerConfigured?: boolean;
     providerTrusted?: boolean;
+  };
+  capabilityResolution?: {
+    readinessBlockers?: string[];
   };
   payoutDestination?: {
     payoutDestinationType?: "lightning_address" | "local_lnd" | "onchain_address" | null;
@@ -1387,6 +1401,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       ? "Public route available"
       : "No active public route"
     : reachabilityMode;
+  const summaryPaidCommerceAllowed = networkSummary?.paymentCapability?.paidCommerceAllowed ?? true;
+  const summaryPaidCommerceReason = networkSummary?.paymentCapability?.paidCommerceReason || null;
   const summaryNetworkService = networkSummary
     ? networkSummary.serviceRoles.hybrid || networkSummary.serviceRoles.invoiceProvider
       ? "This node can provide invoice infrastructure. Creator identity, sale history, and entitlements remain creator-owned."
@@ -1641,6 +1657,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       : participationMeta.label === "Sovereign Creator Node"
         ? "Sovereign Node"
         : "Basic";
+  const selectedModeForPrompt =
+    networkSummary?.modeProfile?.selectedParticipationMode === "basic_creator"
+      ? "basic_creator"
+      : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_node_operator"
+        ? "sovereign_node"
+        : "sovereign_creator_with_provider";
+  const effectiveModeForPrompt =
+    networkSummary?.modeProfile?.effectiveParticipationMode ||
+    (selectedModeForPrompt === "basic_creator" ? "basic_creator" : "sovereign_creator_with_provider");
+  const readinessBlockersForPrompt = networkSummary?.capabilityResolution?.readinessBlockers || [];
   const guardPillClass =
     commerceGuardLevel === "ready"
       ? "border-emerald-800/70 bg-emerald-900/20 text-emerald-300"
@@ -1724,6 +1750,24 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 In Sovereign Creator (with Provider), these are optional capability upgrades. Self-providing both moves this node to full Sovereign Node posture.
               </div>
             </div>
+            <div className="mt-3">
+              <UpgradeToCommercePrompt
+                selectedMode={selectedModeForPrompt}
+                effectiveMode={effectiveModeForPrompt}
+                readinessBlockers={readinessBlockersForPrompt}
+                attemptedCapability="invoice_minting"
+                providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
+                onRunOwnNode={() => {
+                  window.location.href = "/config#node-mode";
+                }}
+                onEnablePaidCommerce={async () => {
+                  try {
+                    await api("/api/node/mode", "POST", { nodeMode: "advanced" });
+                    window.location.href = "/config#node-mode";
+                  } catch {}
+                }}
+              />
+            </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
@@ -1768,6 +1812,14 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="text-xs text-neutral-500 mt-1">
               Current node endpoint may be temporary; buyers should use the stable share URL.
             </div>
+            {!summaryPaidCommerceAllowed ? (
+              <div className="text-xs text-amber-300 mt-1">
+                Temporary endpoint detected. Preview only. Configure a stable public host to enable paid commerce.
+              </div>
+            ) : null}
+            {summaryPaidCommerceReason ? (
+              <div className="text-xs text-neutral-500 mt-1">{summaryPaidCommerceReason}</div>
+            ) : null}
             <div className="text-xs text-neutral-500 mt-1">Tunnel: {summaryTunnel ? "yes" : "no"}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 md:col-span-2">
