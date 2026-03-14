@@ -38,6 +38,10 @@ type NetworkSummary = {
     localInvoiceMinting: boolean;
     delegatedInvoiceSupport: boolean;
     tipsOnly: boolean;
+    paidCommerceAllowed?: boolean;
+    paidCommerceReason?: string | null;
+    canonicalCommerceConfigured?: boolean;
+    endpointStability?: "stable" | "temporary" | "unknown";
   };
   providerBinding: {
     configured: boolean;
@@ -56,6 +60,18 @@ type NetworkSummary = {
     effectiveCommerceHost?: string | null;
     effectiveSettlementHost?: string | null;
     effectiveBuyerRecoveryHost?: string | null;
+  };
+  reachability?: {
+    localNodeEndpointUrl?: string | null;
+    temporaryNodeEndpointUrl?: string | null;
+    canonicalCommerceUrl?: string | null;
+    canonicalCommerceKind?: string;
+    routing?: {
+      replayMode?: string;
+      providerDurablePlaybackAvailable?: boolean;
+      creatorPlaybackAvailable?: boolean;
+      selectedOriginType?: string;
+    };
   };
 };
 
@@ -395,6 +411,36 @@ export default function ConfigPage({
   );
   const delegatedCapabilities = networkSummary?.capabilityResolution?.delegatedCapabilities || [];
   const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
+  const stablePublicHostDetected = Boolean(networkSummary?.modeProfile?.hasStablePublicRoute);
+  const lndReadyDetected = Boolean(networkSummary?.modeProfile?.hasLocalInvoiceMinting);
+  const chainReadyDetected = Boolean(networkSummary?.modeProfile?.hasChainBackendReady);
+  const canonicalCommerceConfiguredDetected = Boolean(networkSummary?.paymentCapability?.canonicalCommerceConfigured);
+  const temporaryEndpointDetected = Boolean(
+    networkSummary?.reachability?.temporaryNodeEndpointUrl || publicStatus?.mode === "quick"
+  );
+  const replayCapableDetected = Boolean(
+    networkSummary?.reachability?.routing?.providerDurablePlaybackAvailable ||
+      networkSummary?.reachability?.routing?.creatorPlaybackAvailable
+  );
+  const nodeReadinessRows = [
+    { label: "Dashboard/App", value: health?.ok ? "Running" : "Not confirmed", ok: Boolean(health?.ok) },
+    { label: "Local API Base", value: apiBase || "Not resolved", ok: Boolean(apiBase) },
+    { label: "Stable Public Host", value: stablePublicHostDetected ? "Configured" : "Not configured", ok: stablePublicHostDetected },
+    { label: "Temporary Endpoint", value: temporaryEndpointDetected ? "Active" : "Inactive", ok: !temporaryEndpointDetected },
+    {
+      label: "Canonical Commerce",
+      value: canonicalCommerceConfiguredDetected ? "Configured" : "Not configured",
+      ok: canonicalCommerceConfiguredDetected
+    },
+    { label: "Lightning (LND)", value: lndReadyDetected ? "Ready" : "Not ready", ok: lndReadyDetected },
+    { label: "Chain Backend", value: chainReadyDetected ? "Ready" : "Not ready", ok: chainReadyDetected },
+    { label: "Replay Delivery", value: replayCapableDetected ? "Capable" : "Not ready", ok: replayCapableDetected },
+    {
+      label: "Buyer Recovery Host",
+      value: networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved",
+      ok: Boolean(networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost)
+    }
+  ];
   const invalidOrigins = [
     { label: "Commerce host", value: normalizedPublicBuyOrigin },
     { label: "Creator app host", value: normalizedPublicStudioOrigin },
@@ -837,39 +883,31 @@ export default function ConfigPage({
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>Config health</div>
-            <div style={{ opacity: 0.75, fontSize: 13 }}>{configHealthDescription}</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span
-              style={{
-                fontSize: 12,
-                padding: "4px 10px",
-                borderRadius: 999,
-                border: "1px solid rgba(255,255,255,0.2)",
-                background:
-                  configHealthStatus === "consistent"
-                    ? "rgba(16,185,129,0.14)"
-                    : configHealthStatus === "mixed"
-                      ? "rgba(251,191,36,0.14)"
-                      : "rgba(248,113,113,0.14)",
-                color: configHealthStatus === "consistent" ? "#6ee7b7" : configHealthStatus === "mixed" ? "#fde68a" : "#fda4af"
-              }}
-            >
-              {configHealthTitle}
-            </span>
-            <button onClick={normalizeConfig} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-              Normalize config
-            </button>
-          </div>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Auto-Detected Node Readiness</div>
+        <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
+          Runtime status is detected automatically. Configure only participation intent and identity-critical settings.
         </div>
-        {configMsg ? (
-          <div style={{ marginTop: 10, fontSize: 12, color: configMsg.toLowerCase().includes("invalid") ? "#fda4af" : "#fbbf24" }}>
-            {configMsg}
-          </div>
-        ) : null}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
+          {nodeReadinessRows.map((row) => (
+            <div key={row.label} style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: 10 }}>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>{row.label}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 4 }}>
+                <div style={{ fontSize: 13 }}>{row.value}</div>
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: "3px 8px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    color: row.ok ? "#6ee7b7" : "#fbbf24"
+                  }}
+                >
+                  {row.ok ? "Ready" : "Needs attention"}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {(apiMismatch || overrideMismatch) && (
@@ -916,6 +954,46 @@ export default function ConfigPage({
           </div>
         </div>
       )}
+
+      <details
+        open={Boolean(showAdvanced)}
+        style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
+      >
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced Diagnostics & Config Health</summary>
+        <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 6 }}>Config health</div>
+            <div style={{ opacity: 0.75, fontSize: 13 }}>{configHealthDescription}</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span
+              style={{
+                fontSize: 12,
+                padding: "4px 10px",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.2)",
+                background:
+                  configHealthStatus === "consistent"
+                    ? "rgba(16,185,129,0.14)"
+                    : configHealthStatus === "mixed"
+                      ? "rgba(251,191,36,0.14)"
+                      : "rgba(248,113,113,0.14)",
+                color: configHealthStatus === "consistent" ? "#6ee7b7" : configHealthStatus === "mixed" ? "#fde68a" : "#fda4af"
+              }}
+            >
+              {configHealthTitle}
+            </span>
+            <button onClick={normalizeConfig} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+              Normalize config
+            </button>
+          </div>
+        </div>
+        {configMsg ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: configMsg.toLowerCase().includes("invalid") ? "#fda4af" : "#fbbf24" }}>
+            {configMsg}
+          </div>
+        ) : null}
+      </details>
 
       <div id="node-mode" style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 4, flexWrap: "wrap" }}>
@@ -1105,10 +1183,10 @@ export default function ConfigPage({
       </div>
 
       <details
-        open={showNodeIdentityByDefault}
+        open={Boolean(showAdvanced && showNodeIdentityByDefault)}
         style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
       >
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Node Identity</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Node Identity & Host Overrides (Advanced)</summary>
         {resolvedParticipationMode === "basic_creator" ? (
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             Basic Creator mode keeps node infrastructure simple. Expand when you are ready to configure a stable node domain.
@@ -1120,6 +1198,13 @@ export default function ConfigPage({
         <div style={{ opacity: 0.7, marginBottom: 12, fontSize: 12 }}>
           Your node domain represents public node identity when running as a Sovereign Creator Node.
         </div>
+        {!showAdvanced ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#93c5fd" }}>
+            Hidden by default. Enable Advanced mode to edit host overrides.
+          </div>
+        ) : null}
+        {!showAdvanced ? null : (
+          <>
         {(partialPrimaryHosts || fallbackWithoutPrimary || fallbackDuplicatesPrimary || invalidOrigins.length > 0) && (
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             {invalidOrigins.length > 0
@@ -1244,6 +1329,8 @@ export default function ConfigPage({
         <div style={{ marginTop: 12, opacity: 0.7 }}>
           Buyer recovery health path: <b>{DEFAULT_HEALTH_PATH}</b>
         </div>
+          </>
+        )}
       </details>
 
       <details
