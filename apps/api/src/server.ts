@@ -2105,6 +2105,28 @@ function resolveDelegatedCreatorOriginForContent(input: {
   return origin;
 }
 
+function resolveDelegatedCreatorOriginForCreator(input: {
+  req?: any;
+  creatorNodeId: string;
+}): string | null {
+  const creatorNodeId = asString(input.creatorNodeId || "").trim();
+  if (!creatorNodeId) return null;
+  const link = getProviderCreatorLink(creatorNodeId);
+  const latestPublish = listProviderDelegatedPublishes().find(
+    (row) =>
+      asString(row.creatorNodeId || "").trim() === creatorNodeId &&
+      asString(row.status || "").trim().toLowerCase() === "published" &&
+      Boolean(normalizePublicOriginBase(asString(row.creatorPreviewOrigin || "").trim()))
+  );
+  const origin =
+    normalizePublicOriginBase(asString(link?.creatorUpstreamOrigin || "").trim()) ||
+    normalizePublicOriginBase(asString(latestPublish?.creatorPreviewOrigin || "").trim());
+  if (!origin) return null;
+  const requestOrigin = normalizePublicOriginBase(getPublicOrigin(input.req));
+  if (requestOrigin && origin === requestOrigin) return null;
+  return origin;
+}
+
 function createProviderDelegatedPublish(
   input: Omit<ProviderDelegatedPublishRecord, "id" | "createdAt" | "updatedAt">
 ): ProviderDelegatedPublishRecord {
@@ -15950,6 +15972,44 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         hasLocalInvoiceMinting: false,
         creatorHandle: requested
       }).canonicalCommerceOrigin || normalizePublicOriginBase(APP_BASE_URL);
+    const delegatedUpstreamOrigin =
+      resolveDelegatedCreatorOriginForCreator({
+        req,
+        creatorNodeId: asString(delegatedLink.creatorNodeId || "").trim()
+      }) || null;
+    if (delegatedUpstreamOrigin) {
+      try {
+        const upstreamProfileUrl = buildPublicUrlFromOrigin(
+          delegatedUpstreamOrigin,
+          `/u/${encodeURIComponent(requested)}`
+        );
+        const upstreamRes = await fetch(upstreamProfileUrl, { method: "GET" } as any);
+        if (upstreamRes.ok) {
+          const upstreamHtml = await upstreamRes.text();
+          if (upstreamHtml && /<html[\s>]/i.test(upstreamHtml)) {
+            const canonical = normalizePublicOriginBase(canonicalCommerceOrigin || "");
+            const upstream = normalizePublicOriginBase(delegatedUpstreamOrigin || "");
+            let normalized = upstreamHtml;
+            if (canonical && upstream && canonical !== upstream) {
+              const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              normalized = normalized.replace(new RegExp(escaped, "g"), canonical);
+            }
+            req.log.info(
+              {
+                creatorHandle: requested,
+                routingMode: "provider_backed",
+                storefrontContract: "upstream_proxy",
+                providerAuthorityOrigin: canonical,
+                currentCreatorUpstreamOrigin: upstream
+              },
+              "provider_backed.storefront_profile.proxy"
+            );
+            reply.type("text/html; charset=utf-8");
+            return reply.send(normalized);
+          }
+        }
+      } catch {}
+    }
 
     const safeDisplayName = escHtml(displayName);
     const safeHandle = escHtml(`@${requested}`);
