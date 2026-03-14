@@ -897,6 +897,29 @@ export default function ConfigPage({
       <h2 style={{ margin: "8px 0 12px" }}>Config</h2>
       <p style={{ opacity: 0.7, marginBottom: 16 }}>Networking + system settings used across Certifyd Creator.</p>
 
+      {modeLocked ? (
+        <div
+          style={{
+            border: "1px solid rgba(251,191,36,0.45)",
+            background: "rgba(251,191,36,0.08)",
+            borderRadius: 12,
+            padding: 14,
+            marginBottom: 14
+          }}
+        >
+          <div style={{ fontWeight: 700, color: "#fde68a", marginBottom: 6 }}>Mode Locked by Environment</div>
+          <div style={{ fontSize: 13, color: "#f5f5f4" }}>
+            Participation mode is locked outside the dashboard. UI mode changes will not apply until the environment lock is removed.
+          </div>
+          <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 8 }}>
+            <b>Lock reason:</b> {modeInfo?.lockReason || "Runtime mode is locked by environment configuration."}
+          </div>
+          <div style={{ fontSize: 12, opacity: 0.85, marginTop: 6 }}>
+            Check and unset `NODE_MODE` / `CONTENTBOX_LAN` on this machine, then restart the API runtime.
+          </div>
+        </div>
+      ) : null}
+
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ fontWeight: 600 }}>Current Node Status</div>
