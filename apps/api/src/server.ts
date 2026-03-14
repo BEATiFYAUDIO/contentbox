@@ -16067,6 +16067,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   },
                   "provider_backed.storefront_profile.proxy"
                 );
+                reply.header("Cache-Control", "no-store, no-cache, must-revalidate");
+                reply.header("Pragma", "no-cache");
+                reply.header("X-Certifyd-Profile-Source", "upstream-proxy");
                 reply.type("text/html; charset=utf-8");
                 return reply.send(normalized);
               }
@@ -16092,6 +16095,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 <title>Creator storefront</title>
 <style>body{margin:0;background:#0b0b0b;color:#f4f4f5;font-family:system-ui,-apple-system,Segoe UI,sans-serif}.wrap{max-width:860px;margin:0 auto;padding:24px}.card{border:1px solid #222;background:#111;border-radius:14px;padding:18px}.muted{color:#a1a1aa}.btn{display:inline-flex;padding:10px 14px;border-radius:10px;border:1px solid #2a2a2a;color:#fff;text-decoration:none}</style>
 </head><body><main class="wrap"><section class="card"><h2 style="margin:0 0 8px;">${escHtml(asString(delegatedLink.creatorDisplayName || requested || "Creator"))}</h2><div class="muted">Creator storefront is temporarily unavailable. Canonical commerce host is still active.</div><div style="margin-top:12px;"><a class="btn" href="${escHtml(buildPublicUrlFromOrigin(canonicalBase, "/"))}">Back to provider host</a></div></section></main></body></html>`;
+    reply.header("Cache-Control", "no-store, no-cache, must-revalidate");
+    reply.header("Pragma", "no-cache");
+    reply.header("X-Certifyd-Profile-Source", "degraded");
     reply.type("text/html; charset=utf-8");
     return reply.send(degradedHtml);
   }
@@ -16631,6 +16637,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 </html>`;
 
   reply.type("text/html; charset=utf-8");
+  reply.header("Cache-Control", "no-store, no-cache, must-revalidate");
+  reply.header("Pragma", "no-cache");
+  reply.header("X-Certifyd-Profile-Source", "local-profile");
   return reply.send(html);
 }
 
