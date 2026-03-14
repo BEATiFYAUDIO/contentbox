@@ -4916,7 +4916,7 @@ async function resolvePaidCommerceRuntimeGate(input: {
 
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
-    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
+    hasChainBackendReady: Boolean(paymentsReadiness?.chainBackend?.ready),
     providerCfg,
     ctx
   });
@@ -4964,7 +4964,7 @@ async function buildSelfNodeRegistryEntry(userId: string | null): Promise<NodeRe
   const localInvoiceMinting = ctx.paymentsMode === "node" && Boolean(paymentsReadiness?.lightning?.ready);
   const profile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
-    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
+    hasChainBackendReady: Boolean(paymentsReadiness?.chainBackend?.ready),
     providerCfg,
     ctx
   });
@@ -9636,7 +9636,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
-    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
+    hasChainBackendReady: Boolean(paymentsReadiness?.chainBackend?.ready),
     providerCfg: providerConfig,
     ctx
   });
@@ -9888,7 +9888,7 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
     hasLocalInvoiceMinting:
       ctx.paymentsMode === "node" &&
       Boolean(paymentsReadiness?.lightning?.ready),
-    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
+    hasChainBackendReady: Boolean(paymentsReadiness?.chainBackend?.ready),
     providerCfg: providerTarget,
     ctx
   });
@@ -18283,7 +18283,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       hasLocalInvoiceMinting:
         capabilityCtx.paymentsMode === "node" &&
         Boolean(sellerPaymentsReadiness?.lightning?.ready),
-      hasChainBackendReady: Boolean(sellerPaymentsReadiness?.onchain?.ready),
+    hasChainBackendReady: Boolean(sellerPaymentsReadiness?.chainBackend?.ready),
       providerCfg: getNetworkProviderConfig(),
       ctx: capabilityCtx
     });
@@ -22091,7 +22091,8 @@ async function getPaymentsReadiness(userId: string) {
       mode: "wallet",
       ready: lightningReady,
       lightning: { ready: lightningReady, reason: lightningReason },
-      onchain: { ready: false, reason: "NOT_SUPPORTED_BASIC" }
+      onchain: { ready: false, reason: "NOT_SUPPORTED_BASIC" },
+      chainBackend: { ready: false, reason: "NOT_REQUIRED_BASIC" }
     };
   }
 
@@ -22121,6 +22122,10 @@ async function getPaymentsReadiness(userId: string) {
       }
     }
 
+    const chainHealth = await bitcoindHealthCheck();
+    const chainBackendReady = chainHealth.status === "healthy";
+    const chainBackendReason = chainBackendReady ? null : chainHealth.message || "BACKEND_UNREACHABLE";
+
     let onchainReady = false;
     let onchainReason: string | null = "NOT_CONFIGURED";
     const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
@@ -22136,9 +22141,10 @@ async function getPaymentsReadiness(userId: string) {
 
     return {
       mode: "node",
-      ready: lightningReady || onchainReady,
+      ready: lightningReady || onchainReady || chainBackendReady,
       lightning: { ready: lightningReady, reason: lightningReason },
-      onchain: { ready: onchainReady, reason: onchainReason }
+      onchain: { ready: onchainReady, reason: onchainReason },
+      chainBackend: { ready: chainBackendReady, reason: chainBackendReason }
     };
   }
 
@@ -22187,7 +22193,8 @@ async function getPaymentsReadiness(userId: string) {
     mode: paymentsMode,
     ready: lightningReady || onchainReady,
     lightning: { ready: lightningReady, reason: lightningReason },
-    onchain: { ready: onchainReady, reason: onchainReason }
+    onchain: { ready: onchainReady, reason: onchainReason },
+    chainBackend: { ready: false, reason: "NOT_NODE_MODE" }
   };
 }
 
