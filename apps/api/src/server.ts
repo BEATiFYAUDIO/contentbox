@@ -1564,6 +1564,7 @@ type ProviderCreatorLinkRecord = {
   creatorNodeId: string;
   creatorDisplayName: string | null;
   providerEndpoint: string | null;
+  creatorUpstreamOrigin: string | null;
   trustStatus: ProviderTrustStatus;
   handshakeStatus: ProviderHandshakeStatus;
   executionAllowed: boolean;
@@ -1985,6 +1986,11 @@ function buildProviderRecordId(prefix: string): string {
 
 function listProviderCreatorLinks(): ProviderCreatorLinkRecord[] {
   return readJsonArrayState<ProviderCreatorLinkRecord>(PROVIDER_CREATOR_LINKS_FILE)
+    .map((row) => ({
+      ...row,
+      providerEndpoint: normalizePublicOriginBase((row as any).providerEndpoint || "") || null,
+      creatorUpstreamOrigin: normalizePublicOriginBase((row as any).creatorUpstreamOrigin || "") || null
+    }))
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 }
 
@@ -1999,6 +2005,7 @@ function upsertProviderCreatorLink(input: {
   creatorNodeId: string;
   creatorDisplayName?: string | null;
   providerEndpoint?: string | null;
+  creatorUpstreamOrigin?: string | null;
   trustStatus?: ProviderTrustStatus;
   handshakeStatus?: ProviderHandshakeStatus;
   executionAllowed?: boolean;
@@ -2014,6 +2021,10 @@ function upsertProviderCreatorLink(input: {
         input.creatorDisplayName !== undefined ? (input.creatorDisplayName || null) : rows[idx].creatorDisplayName,
       providerEndpoint:
         input.providerEndpoint !== undefined ? (input.providerEndpoint || null) : rows[idx].providerEndpoint,
+      creatorUpstreamOrigin:
+        input.creatorUpstreamOrigin !== undefined
+          ? (input.creatorUpstreamOrigin || null)
+          : rows[idx].creatorUpstreamOrigin || null,
       trustStatus: input.trustStatus || rows[idx].trustStatus,
       handshakeStatus: input.handshakeStatus || rows[idx].handshakeStatus,
       executionAllowed: input.executionAllowed !== undefined ? Boolean(input.executionAllowed) : rows[idx].executionAllowed,
@@ -2029,6 +2040,7 @@ function upsertProviderCreatorLink(input: {
     creatorNodeId: input.creatorNodeId,
     creatorDisplayName: input.creatorDisplayName || null,
     providerEndpoint: input.providerEndpoint || null,
+    creatorUpstreamOrigin: input.creatorUpstreamOrigin || null,
     trustStatus: input.trustStatus || "unknown",
     handshakeStatus: input.handshakeStatus || "none",
     executionAllowed: Boolean(input.executionAllowed),
@@ -2086,7 +2098,7 @@ function resolveDelegatedCreatorOriginForContent(input: {
     : null;
   const origin =
     normalizePublicOriginBase(delegated?.creatorPreviewOrigin || "") ||
-    normalizePublicOriginBase(creatorLink?.providerEndpoint || "");
+    normalizePublicOriginBase(creatorLink?.creatorUpstreamOrigin || "");
   if (!origin) return null;
   const requestOrigin = normalizePublicOriginBase(getPublicOrigin(input.req));
   if (requestOrigin && origin === requestOrigin) return null;
@@ -10307,7 +10319,8 @@ app.post("/api/network/provider/acknowledge-client", async (req: any, reply: any
   upsertProviderCreatorLink({
     providerNodeId: identity.nodeId,
     creatorNodeId: clientNodeId,
-    providerEndpoint: clientPreviewOrigin || getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    creatorUpstreamOrigin: clientPreviewOrigin,
     trustStatus: "verified",
     handshakeStatus: "accepted",
     executionAllowed: false,
@@ -10374,7 +10387,8 @@ app.post("/api/network/provider/accept-operation-intent", async (req: any, reply
   upsertProviderCreatorLink({
     providerNodeId: identity.nodeId,
     creatorNodeId: clientNodeId,
-    providerEndpoint: clientPreviewOrigin || getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    creatorUpstreamOrigin: clientPreviewOrigin,
     trustStatus: "verified",
     handshakeStatus: "accepted",
     executionAllowed: true,
@@ -10465,7 +10479,8 @@ app.post("/api/network/provider/delegated-publish", async (req: any, reply: any)
     providerNodeId: providerIdentity.nodeId,
     creatorNodeId,
     creatorDisplayName: String(body.creatorDisplayName || "").trim() || null,
-    providerEndpoint: creatorPreviewOrigin || getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    creatorUpstreamOrigin: creatorPreviewOrigin,
     trustStatus: "verified",
     handshakeStatus: "accepted",
     executionAllowed: true,
@@ -15775,6 +15790,23 @@ async function handlePublicCoverFile(req: any, reply: any) {
       cacheControl: "public, max-age=300"
     });
     if (proxied) return;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#111827"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="1200" fill="url(#g)"/>
+  <circle cx="260" cy="220" r="120" fill="rgba(148,163,184,0.18)"/>
+  <circle cx="980" cy="980" r="180" fill="rgba(96,165,250,0.12)"/>
+  <text x="80" y="620" fill="#e5e7eb" font-family="system-ui,Segoe UI,Roboto,Arial,sans-serif" font-size="68" font-weight="700">Certifyd</text>
+  <text x="80" y="700" fill="#93c5fd" font-family="system-ui,Segoe UI,Roboto,Arial,sans-serif" font-size="44">Provider-backed release</text>
+  <text x="80" y="780" fill="#9ca3af" font-family="system-ui,Segoe UI,Roboto,Arial,sans-serif" font-size="30">Creator upstream is temporarily unavailable</text>
+</svg>`;
+    reply.type("image/svg+xml; charset=utf-8");
+    reply.header("Cache-Control", "public, max-age=60");
+    return reply.send(svg);
   }
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Not found");
@@ -15961,6 +15993,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             })
             .join("")
         : `<div class="line muted">No delegated publish records yet.</div>`;
+    const providerIntentsByContent = new Map(
+      listProviderPaymentIntents()
+        .filter((row) => asString(row.creatorNodeId || "").trim() === asString(delegatedLink.creatorNodeId || "").trim())
+        .map((row) => [asString(row.contentId || "").trim(), row] as const)
+    );
     const cardsHtml =
       delegatedPublishes.length > 0
         ? delegatedPublishes
@@ -15980,6 +16017,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 canonicalCommerceOrigin,
                 buildCreatorScopedPath(scopedCreatorId, `/buy/content/${encodeURIComponent(asString(row.contentId || "").trim())}/cover`)
               );
+              const upstreamOrigin =
+                resolveDelegatedCreatorOriginForContent({
+                  req,
+                  contentId: asString(row.contentId || "").trim(),
+                  creatorScopeId: scopedCreatorId
+                }) || null;
+              const latestIntent = providerIntentsByContent.get(asString(row.contentId || "").trim()) || null;
+              const paymentState = latestIntent?.status === "paid" ? "paid" : "payment_required";
+              const entitlementState = latestIntent?.status === "paid" ? "entitled" : "locked";
               const buyUrl = buildPublicUrlFromOrigin(
                 canonicalCommerceOrigin,
                 buildCreatorScopedPath(
@@ -15999,10 +16045,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   providerPreviewUrl,
                   providerImageUrl,
                   providerBuyUrl: buyUrl,
+                  currentCreatorUpstreamOrigin: upstreamOrigin,
+                  upstreamAvailability: Boolean(upstreamOrigin),
+                  paymentState,
+                  entitlementState,
                   source: {
                     content: "provider",
-                    preview: "provider_proxy",
-                    image: "provider_proxy",
+                    preview: upstreamOrigin ? "provider_proxy" : "provider_degraded",
+                    image: upstreamOrigin ? "provider_proxy" : "provider_degraded",
                     buy: "provider"
                   }
                 },
@@ -17022,6 +17072,9 @@ async function handleBuyPage(req: any, reply: any) {
     include: { owner: { select: { displayName: true, email: true } } }
   });
   if (!content) {
+    const delegatedPublish =
+      findProviderDelegatedPublishForRequest({ contentId, creatorScopeId }) ||
+      findProviderDelegatedPublishForRequest({ contentId });
     const delegatedOrigin = resolveDelegatedCreatorOriginForContent({
       req,
       contentId,
@@ -17037,6 +17090,37 @@ async function handleBuyPage(req: any, reply: any) {
           return reply.type("text/html; charset=utf-8").send(html);
         }
       } catch {}
+    }
+    if (delegatedPublish) {
+      const providerCanonicalOrigin =
+        normalizePublicOriginBase(
+          resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin || ""
+        ) || null;
+      const canonicalBuyerRecoveryBase =
+        providerCanonicalOrigin || (await resolveCanonicalBuyerRecoveryOrigin(req, null));
+      const scopedCreatorId =
+        asString(creatorScopeId || delegatedPublish.creatorNodeId || "").trim() || null;
+      const receiptUrl = buildPublicUrlFromOrigin(
+        canonicalBuyerRecoveryBase,
+        buildCreatorScopedPath(scopedCreatorId, "/library")
+      );
+      const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Buy</title>
+<style>
+body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;background:#0b0b0b;color:#f4f4f5}
+.wrap{max-width:820px;margin:0 auto;padding:24px}.card{background:#111;border:1px solid #222;border-radius:16px;padding:20px}
+.muted{color:#a1a1aa}.btn{display:inline-flex;padding:10px 14px;border-radius:10px;border:1px solid #2a2a2a;color:#fff;text-decoration:none}
+</style></head><body><div class="wrap"><div class="card">
+<h2 style="margin:0 0 10px;">${escHtml(asString(delegatedPublish.title || "Release"))}</h2>
+<div class="muted">Creator upstream is temporarily unavailable.</div>
+<div class="muted" style="margin-top:8px;">Your purchase, receipt, and library recovery remain available on this provider host.</div>
+<div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
+  <a class="btn" href="${escHtml(receiptUrl)}">Open library</a>
+  <a class="btn" href="${escHtml(buildPublicUrlFromOrigin(canonicalBuyerRecoveryBase, "/"))}">Back to provider host</a>
+</div>
+</div></div></body></html>`;
+      return reply.type("text/html; charset=utf-8").send(html);
     }
     return notFound(reply, "Not found");
   }
@@ -18565,19 +18649,27 @@ async function handlePublicOffer(req: any, reply: any) {
     select: { id: true }
   });
   if (!localContentExists) {
+    const delegatedPublish =
+      findProviderDelegatedPublishForRequest({ contentId, creatorScopeId }) ||
+      findProviderDelegatedPublishForRequest({ contentId });
     const delegatedOrigin = resolveDelegatedCreatorOriginForContent({
       req,
       contentId,
       creatorScopeId
     });
-    if (delegatedOrigin) {
+    if (delegatedOrigin && delegatedPublish) {
       const delegatedPath = `/buy/content/${encodeURIComponent(contentId)}/offer${manifestShaQuery ? `?manifestSha256=${encodeURIComponent(manifestShaQuery)}` : ""}`;
       try {
         const res = await fetch(new URL(delegatedPath, delegatedOrigin).toString(), { method: "GET" } as any);
         if (res.ok) {
           const payload = (await res.json().catch(() => null)) as any;
           if (payload && typeof payload === "object") {
-            const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, null);
+            const providerCanonicalOrigin =
+              normalizePublicOriginBase(
+                resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin || ""
+              ) || null;
+            const canonicalBuyerOrigin =
+              providerCanonicalOrigin || (await resolveCanonicalBuyerRecoveryOrigin(req, null));
             const scopedCreatorId =
               asString(creatorScopeId || findProviderDelegatedPublishForRequest({ contentId })?.creatorNodeId || "").trim() ||
               null;
@@ -18627,6 +18719,98 @@ async function handlePublicOffer(req: any, reply: any) {
           }
         }
       } catch {}
+    }
+    if (delegatedPublish) {
+      const providerCanonicalOrigin =
+        normalizePublicOriginBase(
+          resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin || ""
+        ) || null;
+      const canonicalBuyerOrigin =
+        providerCanonicalOrigin || (await resolveCanonicalBuyerRecoveryOrigin(req, null));
+      const scopedCreatorId =
+        asString(creatorScopeId || delegatedPublish.creatorNodeId || "").trim() || null;
+      const providerPreviewUrl = buildPublicUrlFromOrigin(
+        canonicalBuyerOrigin,
+        buildCreatorScopedPath(scopedCreatorId, `/buy/content/${encodeURIComponent(contentId)}/preview-file`)
+      );
+      const providerCoverUrl = buildPublicUrlFromOrigin(
+        canonicalBuyerOrigin,
+        buildCreatorScopedPath(scopedCreatorId, `/buy/content/${encodeURIComponent(contentId)}/cover`)
+      );
+      const providerBuyUrl = buildPublicUrlFromOrigin(
+        canonicalBuyerOrigin,
+        buildCreatorScopedPath(scopedCreatorId, `/buy/${encodeURIComponent(contentId)}`)
+      );
+      const latestIntent = listProviderPaymentIntents().find((row) => asString(row.contentId || "").trim() === contentId);
+      const fallbackPrice = latestIntent ? Number.parseInt(asString(latestIntent.amountSats || "0"), 10) || 0 : 0;
+      const canonicalUrls = buildCanonicalBuyerRecoveryUrls({
+        canonicalOrigin: canonicalBuyerOrigin,
+        creatorId: scopedCreatorId || asString(delegatedPublish.creatorNodeId || "").trim(),
+        contentId
+      });
+      req.log.warn(
+        {
+          contentId,
+          creatorScopeId: scopedCreatorId,
+          routingMode: "provider_backed",
+          providerAuthorityOrigin: canonicalBuyerOrigin,
+          currentCreatorUpstreamOrigin: delegatedOrigin || null,
+          upstreamAvailability: false,
+          providerPreviewUrl,
+          providerImageUrl: providerCoverUrl,
+          providerBuyUrl,
+          paymentState: fallbackPrice > 0 ? "payment_required" : "free",
+          entitlementState: "locked",
+          source: {
+            preview: delegatedOrigin ? "provider_proxy_degraded" : "none",
+            image: delegatedOrigin ? "provider_proxy_degraded" : "none",
+            buy: "provider_canonical"
+          }
+        },
+        "provider_backed.offer.degraded"
+      );
+      return reply.send({
+        contentId,
+        title: delegatedPublish.title || "Untitled",
+        type: delegatedPublish.contentType || "content",
+        manifestSha256: delegatedPublish.manifestHash,
+        primaryFileId: null,
+        primaryFileMime: null,
+        previewUrl: providerPreviewUrl || null,
+        coverUrl: providerCoverUrl || null,
+        previewSeconds: 20,
+        priceSats: fallbackPrice,
+        paymentState: fallbackPrice > 0 ? "payment_required" : "free",
+        entitlementState: "locked",
+        paymentAccessProof: {
+          contentId,
+          paymentState: fallbackPrice > 0 ? "payment_required" : "free",
+          entitlementState: "locked",
+          paymentReceiptId: null,
+          paidAt: null,
+          paymentMethod: null,
+          invoiceProviderNodeId: asString(delegatedPublish.providerNodeId || "").trim() || null
+        },
+        canonicalUrls: {
+          ...canonicalUrls,
+          buyUrl: providerBuyUrl || canonicalUrls.buyUrl
+        },
+        publishProof: {
+          contentId,
+          publishedAt: delegatedPublish.publishedAt,
+          manifestHash: delegatedPublish.manifestHash,
+          receiptId: delegatedPublish.publishReceiptId,
+          creatorNodeId: delegatedPublish.creatorNodeId,
+          providerNodeId: delegatedPublish.providerNodeId
+        },
+        upstreamAvailability: {
+          available: false,
+          origin: delegatedOrigin || null,
+          status: "unreachable"
+        },
+        degradedMessage:
+          "Creator upstream is temporarily unavailable. Receipt and recovery remain available on this provider host."
+      });
     }
   }
   if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
