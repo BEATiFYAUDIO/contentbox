@@ -97,6 +97,7 @@ import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import { buildCanonicalBuyerRecoveryUrls } from "./lib/buyerRecoveryUrls.js";
 import { resolveReplayMode } from "./lib/replayResolution.js";
+import { buildDeliveryRoutingDescriptor } from "./lib/deliveryRouting.js";
 import {
   buildContentPublishReceiptPayload,
   computeCanonicalManifestHash,
@@ -9352,6 +9353,27 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       temporaryNodeEndpointUrl: serviceProfile.temporaryNodeEndpointOrigin,
       canonicalCommerceUrl: serviceProfile.canonicalCommerceOrigin,
       canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
+      routing: buildDeliveryRoutingDescriptor({
+        canonicalCommerceOrigin: serviceProfile.canonicalCommerceOrigin,
+        canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
+        canonicalFallbackUrl: buildPublicUrlFromOrigin(
+          serviceProfile.canonicalCommerceOrigin || normalizePublicOriginBase(getPublicOrigin(req)),
+          "/buy/:contentId"
+        ),
+        deliveryMode: null,
+        creatorOriginKind: serviceProfile.hasStablePublicRoute
+          ? "stable"
+          : serviceProfile.temporaryNodeEndpointOrigin
+            ? "temporary"
+            : "unavailable",
+        creatorPlaybackUrl: serviceProfile.hasStablePublicRoute && serviceProfile.stablePublicRouteOrigin
+          ? buildPublicUrlFromOrigin(serviceProfile.stablePublicRouteOrigin, "/content/:manifestHash/:fileId")
+          : null,
+        providerDurablePlaybackAvailable:
+          EDGE_DELIVERY_ENABLED &&
+          Boolean(EDGE_TICKET_SECRET) &&
+          Boolean(EDGE_BASE_URL)
+      }),
       tunnel,
       ipfs: false
     }
@@ -17575,11 +17597,49 @@ async function handlePublicOffer(req: any, reply: any) {
     canonicalOrigin: canonicalBuyerOrigin,
     contentId: content.id
   });
+  const capabilityCtx = getCapabilityContext();
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false,
+    providerCfg: getNetworkProviderConfig(),
+    ctx: capabilityCtx
+  });
+  const edgeCandidateMode = resolveReplayMode({
+    edgeDeliveryEnabled: EDGE_DELIVERY_ENABLED,
+    edgeTicketSecretConfigured: Boolean(EDGE_TICKET_SECRET),
+    edgeBaseUrlConfigured: Boolean(EDGE_BASE_URL),
+    manifestSha256Present: Boolean(manifest?.sha256),
+    primaryObjectKeyPresent: Boolean(primaryFileId)
+  });
+  const creatorOriginKind =
+    serviceProfile.hasStablePublicRoute
+      ? "stable"
+      : serviceProfile.temporaryNodeEndpointOrigin
+        ? "temporary"
+        : "unavailable";
+  const creatorPlaybackUrlCandidate =
+    creatorOriginKind === "stable" && manifest?.sha256 && primaryFileId
+      ? buildPublicUrlFromOrigin(
+          serviceProfile.stablePublicRouteOrigin || canonicalBuyerOrigin,
+          `/content/${encodeURIComponent(manifest.sha256)}/${encodeURIComponent(primaryFileId)}`
+        )
+      : null;
+  const deliveryRouting = buildDeliveryRoutingDescriptor({
+    canonicalCommerceOrigin: canonicalBuyerOrigin,
+    canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
+    canonicalFallbackUrl: canonicalUrls.buyUrl || buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/buy/${encodeURIComponent(content.id)}`),
+    deliveryMode: asString((content as any).deliveryMode || "").trim() || null,
+    creatorOriginKind,
+    creatorPlaybackUrl: creatorPlaybackUrlCandidate,
+    providerDurablePlaybackAvailable: edgeCandidateMode === "edge_ticket"
+  });
   app.log.debug(
     {
       contentId: content.id,
       canonicalCommerceOrigin: canonicalBuyerOrigin,
-      canonicalBuyUrl: canonicalUrls.buyUrl
+      canonicalBuyUrl: canonicalUrls.buyUrl,
+      replayMode: deliveryRouting.replayMode,
+      selectedOriginType: deliveryRouting.selectedOriginType,
+      stability: deliveryRouting.stability
     },
     "buyer.canonical_urls.offer"
   );
@@ -17613,6 +17673,7 @@ async function handlePublicOffer(req: any, reply: any) {
     },
     sellerEndpoints: canonicalBuyerOrigin ? [{ baseUrl: canonicalBuyerOrigin, p2p: `${canonicalBuyerOrigin}/p2p`, public: `${canonicalBuyerOrigin}/public` }] : [],
     urls: canonicalUrls,
+    routing: deliveryRouting,
     fulfillment: { mode: "receiptToken", ttlSeconds }
   });
 }
@@ -18445,13 +18506,48 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     entitlementId: entitlement?.id || null,
     libraryToken: intent.receiptToken || intent.id
   });
+  const contentForRouting = await prisma.contentItem.findUnique({
+    where: { id: intent.contentId },
+    select: { id: true, deliveryMode: true }
+  });
+  const capabilityCtx = getCapabilityContext();
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false,
+    providerCfg: getNetworkProviderConfig(),
+    ctx: capabilityCtx
+  });
+  const creatorOriginKind =
+    serviceProfile.hasStablePublicRoute
+      ? "stable"
+      : serviceProfile.temporaryNodeEndpointOrigin
+        ? "temporary"
+        : "unavailable";
+  const edgeCandidateMode = resolveReplayMode({
+    edgeDeliveryEnabled: EDGE_DELIVERY_ENABLED,
+    edgeTicketSecretConfigured: Boolean(EDGE_TICKET_SECRET),
+    edgeBaseUrlConfigured: Boolean(EDGE_BASE_URL),
+    manifestSha256Present: Boolean(intent.manifestSha256),
+    primaryObjectKeyPresent: true
+  });
+  const receiptRouting = buildDeliveryRoutingDescriptor({
+    canonicalCommerceOrigin: canonicalBuyerOrigin,
+    canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
+    canonicalFallbackUrl:
+      canonicalUrls.replayUrl || canonicalUrls.buyUrl || buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/buy/${encodeURIComponent(intent.contentId)}`),
+    deliveryMode: asString((contentForRouting as any)?.deliveryMode || "").trim() || null,
+    creatorOriginKind,
+    creatorPlaybackUrl: null,
+    providerDurablePlaybackAvailable: edgeCandidateMode === "edge_ticket"
+  });
   app.log.debug(
     {
       paymentIntentId: intent.id,
       contentId: intent.contentId,
       access: accessUnlocked ? "unlocked" : "pending",
       canonicalReceiptUrl: canonicalUrls.receiptUrl,
-      canonicalReplayUrl: canonicalUrls.replayUrl
+      canonicalReplayUrl: canonicalUrls.replayUrl,
+      replayMode: receiptRouting.replayMode,
+      selectedOriginType: receiptRouting.selectedOriginType
     },
     "buyer.canonical_urls.receipt_status"
   );
@@ -18467,6 +18563,7 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     manifestSha256: intent.manifestSha256,
     receiptToken: intent.receiptToken || null,
     urls: canonicalUrls,
+    routing: receiptRouting,
     invoiceProviderNodeId,
     canFulfill: accessUnlocked,
     access: accessUnlocked ? "unlocked" : "pending",
@@ -18700,8 +18797,12 @@ app.get("/public/receipts/:receiptToken/file", handlePublicReceiptFile);
 app.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
 
 type ReplayResolution =
-  | { mode: "edge_ticket"; url: string; expiresAt: string | null }
-  | { mode: "buy_page"; url: string; expiresAt: null };
+  | {
+      mode: "edge_ticket" | "creator_origin" | "buy_page";
+      url: string;
+      expiresAt: string | null;
+      routing: ReturnType<typeof buildDeliveryRoutingDescriptor>;
+    };
 
 async function resolveReplayAccessForEntitlement(
   req: any,
@@ -18724,24 +18825,83 @@ async function resolveReplayAccessForEntitlement(
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId: content.id } });
   const primaryObjectKey = getPrimaryObjectKey((manifest?.json || null) as any);
-  const replayMode = resolveReplayMode({
+  const replayModeCandidate = resolveReplayMode({
     edgeDeliveryEnabled: EDGE_DELIVERY_ENABLED,
     edgeTicketSecretConfigured: Boolean(EDGE_TICKET_SECRET),
     edgeBaseUrlConfigured: Boolean(EDGE_BASE_URL),
     manifestSha256Present: Boolean(manifest?.sha256),
     primaryObjectKeyPresent: Boolean(primaryObjectKey)
   });
-  if (replayMode !== "edge_ticket" || !manifest?.sha256 || !primaryObjectKey) {
+  const capabilityCtx = getCapabilityContext();
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false,
+    providerCfg: getNetworkProviderConfig(),
+    ctx: capabilityCtx
+  });
+  const creatorOriginKind =
+    serviceProfile.hasStablePublicRoute
+      ? "stable"
+      : serviceProfile.temporaryNodeEndpointOrigin
+        ? "temporary"
+        : "unavailable";
+  const creatorPlaybackUrl =
+    creatorOriginKind === "stable" && manifest?.sha256 && primaryObjectKey
+      ? buildPublicUrlFromOrigin(
+          serviceProfile.stablePublicRouteOrigin || canonicalBuyerOrigin,
+          `/content/${encodeURIComponent(manifest.sha256)}/${encodeURIComponent(primaryObjectKey)}`
+        )
+      : null;
+  const routing = buildDeliveryRoutingDescriptor({
+    canonicalCommerceOrigin: canonicalBuyerOrigin,
+    canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
+    canonicalFallbackUrl: buyUrl,
+    deliveryMode: asString(content.deliveryMode || "").trim() || null,
+    creatorOriginKind,
+    creatorPlaybackUrl,
+    providerDurablePlaybackAvailable: replayModeCandidate === "edge_ticket"
+  });
+  if (routing.replayMode === "creator_origin" && routing.selectedUrl) {
+    app.log.info(
+      {
+        entitlementId,
+        contentId: content.id,
+        mediaSelection: "creator_origin",
+        creatorOriginKind: routing.creatorOriginKind,
+        selectedOriginType: routing.selectedOriginType
+      },
+      "buyer.replay.media_origin_selected"
+    );
+    return {
+      mode: "creator_origin",
+      url: routing.selectedUrl,
+      expiresAt: null,
+      routing
+    };
+  }
+
+  if (routing.replayMode !== "edge_ticket" || !manifest?.sha256 || !primaryObjectKey) {
     app.log.info(
       {
         entitlementId,
         contentId: content.id,
         mediaSelection: "buy_page_fallback",
-        reason: !manifest?.sha256 ? "manifest_missing" : !primaryObjectKey ? "primary_missing" : "edge_disabled"
+        reason:
+          !manifest?.sha256
+            ? "manifest_missing"
+            : !primaryObjectKey
+              ? "primary_missing"
+              : routing.reason,
+        creatorOriginKind: routing.creatorOriginKind,
+        selectedOriginType: routing.selectedOriginType
       },
       "buyer.replay.media_origin_selected"
     );
-    return { mode: "buy_page", url: buyUrl, expiresAt: null };
+    return {
+      mode: "buy_page",
+      url: buyUrl,
+      expiresAt: null,
+      routing
+    };
   }
 
   const exp = Math.floor(Date.now() / 1000) + EDGE_TICKET_TTL_SECONDS;
@@ -18761,11 +18921,17 @@ async function resolveReplayAccessForEntitlement(
       contentId: content.id,
       mediaSelection: "edge_ticket",
       edgeBase: EDGE_BASE_URL,
-      expiresAt: new Date(exp * 1000).toISOString()
+      expiresAt: new Date(exp * 1000).toISOString(),
+      selectedOriginType: routing.selectedOriginType
     },
     "buyer.replay.media_origin_selected"
   );
-  return { mode: "edge_ticket", url: edgeUrl, expiresAt: new Date(exp * 1000).toISOString() };
+  return {
+    mode: "edge_ticket",
+    url: edgeUrl,
+    expiresAt: new Date(exp * 1000).toISOString(),
+    routing
+  };
 }
 
 async function handleReplayAccessPage(req: any, reply: any) {
@@ -18778,7 +18944,8 @@ async function handleReplayAccessPage(req: any, reply: any) {
     entitlementId,
     mode: resolution.mode,
     accessUrl: resolution.url,
-    expiresAt: resolution.expiresAt
+    expiresAt: resolution.expiresAt,
+    routing: resolution.routing
   });
 }
 
