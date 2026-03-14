@@ -15919,6 +15919,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const matchedHandle = asString((req.params as any).handle || "").trim();
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
+  const requestedAlias = matchedHandle.includes("@")
+    ? normalizePublicProfileHandle(matchedHandle.split("@")[0] || "")
+    : null;
+  const requestedHandles = new Set([requested, requestedAlias].filter((v): v is string => Boolean(v)));
 
   const userSelect = {
     id: true,
@@ -15944,14 +15948,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       where: { displayName: { not: null } },
       select: userSelect
     });
-    user = candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) || null;
+    user =
+      candidates.find((candidate) =>
+        requestedHandles.has(normalizePublicProfileHandle(candidate.displayName) || "")
+      ) || null;
   }
   if (!user) {
     const delegatedLink =
       listProviderCreatorLinks().find((row) => {
         const displayHandle = normalizePublicProfileHandle(asString(row.creatorDisplayName || "").trim());
         const nodeHandle = normalizePublicProfileHandle(asString(row.creatorNodeId || "").trim());
-        return displayHandle === requested || nodeHandle === requested;
+        return requestedHandles.has(displayHandle || "") || requestedHandles.has(nodeHandle || "");
       }) || null;
     if (!delegatedLink) return notFound(reply, "Not found");
 
@@ -15979,37 +15986,61 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       }) || null;
     if (delegatedUpstreamOrigin) {
       try {
-        const upstreamProfileUrl = buildPublicUrlFromOrigin(
-          delegatedUpstreamOrigin,
-          `/u/${encodeURIComponent(requested)}`
+        const upstreamHandleCandidates = Array.from(
+          new Set([matchedHandle, requested, requestedAlias].filter((v): v is string => Boolean(v)))
         );
-        const upstreamRes = await fetch(upstreamProfileUrl, { method: "GET" } as any);
-        if (upstreamRes.ok) {
-          const upstreamHtml = await upstreamRes.text();
-          if (upstreamHtml && /<html[\s>]/i.test(upstreamHtml)) {
-            const canonical = normalizePublicOriginBase(canonicalCommerceOrigin || "");
-            const upstream = normalizePublicOriginBase(delegatedUpstreamOrigin || "");
-            let normalized = upstreamHtml;
-            if (canonical && upstream && canonical !== upstream) {
-              const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-              normalized = normalized.replace(new RegExp(escaped, "g"), canonical);
+        for (const upstreamHandle of upstreamHandleCandidates) {
+          const upstreamProfileUrl = buildPublicUrlFromOrigin(
+            delegatedUpstreamOrigin,
+            `/u/${encodeURIComponent(upstreamHandle)}`
+          );
+          const upstreamRes = await fetch(upstreamProfileUrl, { method: "GET" } as any);
+          if (upstreamRes.ok) {
+            const upstreamHtml = await upstreamRes.text();
+            if (upstreamHtml && /<html[\s>]/i.test(upstreamHtml)) {
+              const canonical = normalizePublicOriginBase(canonicalCommerceOrigin || "");
+              const upstream = normalizePublicOriginBase(delegatedUpstreamOrigin || "");
+              let normalized = upstreamHtml;
+              if (canonical && upstream && canonical !== upstream) {
+                const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                normalized = normalized.replace(new RegExp(escaped, "g"), canonical);
+              }
+              req.log.info(
+                {
+                  creatorHandle: requested,
+                  upstreamHandle,
+                  routingMode: "provider_backed",
+                  storefrontContract: "upstream_proxy",
+                  providerAuthorityOrigin: canonical,
+                  currentCreatorUpstreamOrigin: upstream
+                },
+                "provider_backed.storefront_profile.proxy"
+              );
+              reply.type("text/html; charset=utf-8");
+              return reply.send(normalized);
             }
-            req.log.info(
-              {
-                creatorHandle: requested,
-                routingMode: "provider_backed",
-                storefrontContract: "upstream_proxy",
-                providerAuthorityOrigin: canonical,
-                currentCreatorUpstreamOrigin: upstream
-              },
-              "provider_backed.storefront_profile.proxy"
-            );
-            reply.type("text/html; charset=utf-8");
-            return reply.send(normalized);
           }
         }
       } catch {}
     }
+    req.log.warn(
+      {
+        creatorHandle: requested,
+        routingMode: "provider_backed",
+        storefrontContract: "upstream_proxy",
+        providerAuthorityOrigin: normalizePublicOriginBase(canonicalCommerceOrigin || ""),
+        currentCreatorUpstreamOrigin: delegatedUpstreamOrigin,
+        degraded: true
+      },
+      "provider_backed.storefront_profile.degraded"
+    );
+    const canonicalBase = normalizePublicOriginBase(canonicalCommerceOrigin || "") || normalizePublicOriginBase(APP_BASE_URL);
+    const degradedHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Creator storefront</title>
+<style>body{margin:0;background:#0b0b0b;color:#f4f4f5;font-family:system-ui,-apple-system,Segoe UI,sans-serif}.wrap{max-width:860px;margin:0 auto;padding:24px}.card{border:1px solid #222;background:#111;border-radius:14px;padding:18px}.muted{color:#a1a1aa}.btn{display:inline-flex;padding:10px 14px;border-radius:10px;border:1px solid #2a2a2a;color:#fff;text-decoration:none}</style>
+</head><body><main class="wrap"><section class="card"><h2 style="margin:0 0 8px;">${escHtml(asString(delegatedLink.creatorDisplayName || requested || "Creator"))}</h2><div class="muted">Creator storefront is temporarily unavailable. Canonical commerce host is still active.</div><div style="margin-top:12px;"><a class="btn" href="${escHtml(buildPublicUrlFromOrigin(canonicalBase, "/"))}">Back to provider host</a></div></section></main></body></html>`;
+    reply.type("text/html; charset=utf-8");
+    return reply.send(degradedHtml);
 
     const safeDisplayName = escHtml(displayName);
     const safeHandle = escHtml(`@${requested}`);
