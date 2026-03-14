@@ -4697,6 +4697,11 @@ function isPersistentOrigin(origin: string | null): boolean {
   if (!origin) return false;
   try {
     const host = new URL(origin).hostname.toLowerCase();
+    if (host === "localhost" || host === "::1" || host.endsWith(".local")) return false;
+    if (/^127\./.test(host)) return false;
+    if (/^10\./.test(host)) return false;
+    if (/^192\.168\./.test(host)) return false;
+    if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(host)) return false;
     if (host.endsWith(".trycloudflare.com")) return false;
     return true;
   } catch {
@@ -4819,8 +4824,13 @@ function resolveProviderServiceProfile(input: {
   );
   const stablePublicRouteOrigin = hasStablePublicRoute ? activeLocalOrigin : null;
   const temporaryNodeEndpointOrigin = activeLocalOrigin && !hasStablePublicRoute ? activeLocalOrigin : null;
+  const namedConfiguredOrigin = normalizePublicOriginBase(getNamedTunnelConfig()?.publicOrigin || "");
+  const preferredDurableLocalOrigin = stablePublicRouteOrigin || namedConfiguredOrigin || null;
 
-  const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "") || null;
+  const providerUrlRaw = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "") || null;
+  const providerUrl = providerUrlRaw ? normalizePublicOriginBase(providerUrlRaw) : null;
+  const providerDurableOrigin = providerUrl && isPersistentOrigin(providerUrl) ? providerUrl : null;
+  const routingProviderOrigin = providerDurableOrigin || preferredDurableLocalOrigin || providerUrl || null;
   const providerConfigured = hasProviderPaymentTarget(providerCfg);
   const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
   const providerCapable = providerConfigured && providerTrusted && Boolean(providerUrl);
@@ -4877,7 +4887,7 @@ function resolveProviderServiceProfile(input: {
   const authority = resolveRoutingAuthority({
     participationMode,
     fallbackOrigin: normalizePublicOriginBase(APP_BASE_URL),
-    providerOrigin: providerUrl,
+    providerOrigin: routingProviderOrigin,
     stableLocalOrigin: stablePublicRouteOrigin,
     localEndpointOrigin: activeLocalOrigin,
     temporaryPreviewOrigin: temporaryNodeEndpointOrigin,
@@ -6759,11 +6769,35 @@ async function buildWellKnownContentboxPayload(req: any): Promise<{ nodeUrl: str
   const xfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
   const proto = xfProto === "http" || xfProto === "https" ? xfProto : "https";
   const host = getPublicHostnameFromReq(req);
+  const requestOrigin = host ? `${proto}://${host}` : null;
   const fallbackPublicOrigin =
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
     normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
     normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
-  const nodeUrl = host ? `${proto}://${host}` : (fallbackPublicOrigin || "https://contentbox.local");
+  const creatorHandle =
+    normalizePublicProfileHandle(asString((req?.params as any)?.handle || "")) || null;
+  const profile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false,
+    creatorHandle
+  });
+  const canonicalCommerceOrigin = normalizeOrigin(profile.canonicalCommerceOrigin || "");
+  const stableLocalOrigin = normalizeOrigin(profile.stablePublicRouteOrigin || "");
+  const namedCfg = getNamedTunnelConfig();
+  const namedConfiguredOrigin = normalizeOrigin(namedCfg?.publicOrigin || "");
+  const publicStatus = getPublicStatus();
+  const configuredPublicOrigin = normalizePublicOriginCandidate(getPublicOriginConfig().domain || null);
+  const detectedPublicOrigin = normalizeOrigin(
+    asString(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "")
+  );
+  const nodeUrl =
+    canonicalCommerceOrigin ||
+    stableLocalOrigin ||
+    namedConfiguredOrigin ||
+    configuredPublicOrigin ||
+    detectedPublicOrigin ||
+    fallbackPublicOrigin ||
+    requestOrigin ||
+    "https://contentbox.local";
 
   try {
     const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
