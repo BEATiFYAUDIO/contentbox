@@ -4801,7 +4801,10 @@ function resolveProviderServiceProfile(input: {
 
   let canonicalCommerceOrigin: string | null = null;
   let canonicalCommerceKind: ProviderServiceProfile["canonicalCommerceKind"] = "unavailable";
-  if (capabilityResolution.effectiveCommerceHost && providerUrl && capabilityResolution.effectiveCommerceHost === providerUrl) {
+  if (participationMode === "basic_creator") {
+    canonicalCommerceOrigin = null;
+    canonicalCommerceKind = "unavailable";
+  } else if (capabilityResolution.effectiveCommerceHost && providerUrl && capabilityResolution.effectiveCommerceHost === providerUrl) {
     canonicalCommerceOrigin = providerUrl;
     canonicalCommerceKind = "provider_hosted";
   } else if (stablePublicRouteOrigin) {
@@ -9538,6 +9541,12 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     endpointStability,
     canonicalCommerceConfigured
   });
+  const runtimeCommerceBlocked =
+    serviceProfile.effectiveParticipationMode === "sovereign_creator_unready";
+  const runtimeCommerceReason = runtimeCommerceBlocked
+    ? serviceProfile.capabilityResolution.readinessBlockers[0] ||
+      "Sovereign commerce dependencies are not ready and no capable delegated node is configured."
+    : null;
   const delegatedInvoiceSupport = serviceProfile.providerConfigured && serviceProfile.providerTrusted;
   const payoutDestination = await resolveEffectivePayoutDestination(userId, {
     localLndReady: localInvoiceMinting,
@@ -9568,8 +9577,8 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       localInvoiceMinting,
       delegatedInvoiceSupport,
       tipsOnly: !localInvoiceMinting && !delegatedInvoiceSupport,
-      paidCommerceAllowed: paidCommerceGate.allowed,
-      paidCommerceReason: paidCommerceGate.reason,
+      paidCommerceAllowed: paidCommerceGate.allowed && !runtimeCommerceBlocked,
+      paidCommerceReason: runtimeCommerceReason || paidCommerceGate.reason,
       endpointStability,
       canonicalCommerceConfigured,
       providerInvoicingAvailable: serviceProfile.needsProviderInvoicing,
@@ -17905,8 +17914,14 @@ async function handlePublicOffer(req: any, reply: any) {
     endpointStability,
     canonicalCommerceConfigured
   });
-  const paidCommerceAllowed = !hasPrice || paidCommerceGate.allowed;
-  const paidCommerceReason = !hasPrice ? null : paidCommerceGate.reason;
+  const runtimeCommerceBlocked =
+    serviceProfile.effectiveParticipationMode === "sovereign_creator_unready";
+  const runtimeCommerceReason = runtimeCommerceBlocked
+    ? serviceProfile.capabilityResolution.readinessBlockers[0] ||
+      "Sovereign commerce dependencies are not ready and no capable delegated node is configured."
+    : null;
+  const paidCommerceAllowed = !hasPrice || (paidCommerceGate.allowed && !runtimeCommerceBlocked);
+  const paidCommerceReason = !hasPrice ? null : runtimeCommerceReason || paidCommerceGate.reason;
   const exposedCanonicalUrls = paidCommerceAllowed
     ? canonicalUrls
     : { ...canonicalUrls, buyUrl: null };
@@ -18092,22 +18107,32 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       endpointStability,
       canonicalCommerceConfigured
     });
-    if (!paidCommerceGate.allowed) {
+    const runtimeCommerceBlocked =
+      serviceProfile.effectiveParticipationMode === "sovereign_creator_unready";
+    const runtimeCommerceReason = runtimeCommerceBlocked
+      ? serviceProfile.capabilityResolution.readinessBlockers[0] ||
+        "Sovereign commerce dependencies are not ready and no capable delegated node is configured."
+      : null;
+    if (!paidCommerceGate.allowed || runtimeCommerceBlocked) {
       app.log.warn(
         {
           event: "commerce_blocked_temporary_endpoint",
           mode: paidCommerceMode,
           endpointStability,
           canonicalCommerceConfigured,
+          runtimeCommerceBlocked,
           contentId
         },
         "commerce_blocked_temporary_endpoint"
       );
       return reply.code(409).send({
         code: "PAID_COMMERCE_REQUIRES_STABLE_HOST",
-        message: paidCommerceGate.reason || "Paid commerce requires a stable public host. Temporary links are preview-only.",
+        message:
+          runtimeCommerceReason ||
+          paidCommerceGate.reason ||
+          "Paid commerce requires a stable public host. Temporary links are preview-only.",
         paidCommerceAllowed: false,
-        paidCommerceReason: paidCommerceGate.reason,
+        paidCommerceReason: runtimeCommerceReason || paidCommerceGate.reason,
         endpointStability,
         canonicalCommerceConfigured
       });

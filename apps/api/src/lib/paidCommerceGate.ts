@@ -15,7 +15,7 @@ export function canEnablePaidCommerce(input: {
   if (mode === "basic") {
     return {
       allowed: false,
-      reason: "Basic mode does not provide durable paid commerce."
+      reason: "Enable durable paid commerce by upgrading to Sovereign Creator mode."
     };
   }
 
@@ -35,4 +35,3 @@ export function canEnablePaidCommerce(input: {
 
   return { allowed: true, reason: null };
 }
-

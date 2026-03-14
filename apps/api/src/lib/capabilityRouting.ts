@@ -70,15 +70,16 @@ function addBlocker(blockers: string[], value: string) {
 }
 
 export function resolveCapabilityRouting(input: CapabilityRoutingInput): CapabilityRoutingResolution {
+  const basicSelected = input.selectedParticipationMode === "basic_creator";
   const localCapabilities: ResolvedCapabilities = {
     preview: true,
     publish: input.localPublishReady !== false,
-    commerce_host: input.stablePublicHostConfigured && input.canonicalCommerceConfigured,
-    buyer_recovery: input.stablePublicHostConfigured && input.canonicalCommerceConfigured,
-    replay_delivery: input.replayReady,
-    invoice_minting: input.lndReady,
-    settlement: input.lndReady && input.chainReady,
-    payout: input.lndReady && input.chainReady
+    commerce_host: !basicSelected && input.stablePublicHostConfigured && input.canonicalCommerceConfigured,
+    buyer_recovery: !basicSelected && input.stablePublicHostConfigured && input.canonicalCommerceConfigured,
+    replay_delivery: !basicSelected && input.replayReady,
+    invoice_minting: !basicSelected && input.lndReady,
+    settlement: !basicSelected && input.lndReady && input.chainReady,
+    payout: !basicSelected && input.lndReady && input.chainReady
   };
 
   const delegatedCapabilities: ResolvedCapabilityName[] = [];
@@ -126,18 +127,15 @@ export function resolveCapabilityRouting(input: CapabilityRoutingInput): Capabil
       );
     }
   } else {
-    const creatorMissing = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES]
-      .filter((name) => !localCapabilities[name]);
-    if (creatorMissing.length === 0) {
-      effectiveParticipationMode = "sovereign_node_operator";
-    } else if (input.providerCapable) {
-      delegatedCapabilities.push(...creatorMissing);
+    const providerBackedCapabilities = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES];
+    if (input.providerCapable) {
+      delegatedCapabilities.push(...providerBackedCapabilities);
       effectiveParticipationMode = "sovereign_creator_with_provider";
     } else {
       effectiveParticipationMode = "sovereign_creator_unready";
       addBlocker(
         readinessBlockers,
-        "Provider delegation is required until local sovereign infrastructure is ready."
+        "Provider-backed infrastructure is required for Sovereign Creator mode."
       );
     }
   }

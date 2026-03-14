@@ -61,6 +61,9 @@ type NetworkSummary = {
     effectiveSettlementHost?: string | null;
     effectiveBuyerRecoveryHost?: string | null;
   };
+  providerServices?: {
+    totalProviderFeePercent?: number;
+  };
   reachability?: {
     localNodeEndpointUrl?: string | null;
     temporaryNodeEndpointUrl?: string | null;
@@ -804,19 +807,19 @@ export default function ConfigPage({
               key: "basic_creator",
               title: "Basic Creator",
               subtitle: "Start with tips",
-              capabilities: "Publish, tipping, and temporary preview links while you get started."
+              capabilities: "Publish, tips, and temporary preview links. No durable paid commerce."
             },
             {
               key: "sovereign_with_provider",
-              title: "Sovereign Creator",
+              title: "Sovereign Creator (with Provider)",
               subtitle: "Enable paid commerce",
-              capabilities: "Durable buy links, receipts, library, replay, and payouts using provider infrastructure."
+              capabilities: "Durable buy links, receipts, library, replay, and payouts via provider infrastructure (~2% fee)."
             },
             {
               key: "sovereign_node",
               title: "Sovereign Node Operator",
               subtitle: "Run your own node",
-              capabilities: "Operate a stable branded node domain and run your own commerce infrastructure."
+              capabilities: "Operate your own stable domain + Lightning/chain stack and remove provider infrastructure fees."
             }
           ].map((stage, index) => {
             const status =
@@ -871,7 +874,7 @@ export default function ConfigPage({
             {participationStageIndex === 0
               ? "Next step: Enable durable paid commerce with a provider."
               : participationStageIndex === 1
-                ? "Next step: Become a sovereign node operator with a stable node domain and local infrastructure."
+                ? "Next step: Become a Sovereign Node Operator to remove provider infrastructure fees."
                 : "You are operating as a Sovereign Node Operator."}
           </div>
           {participationStageIndex < 2 ? (
@@ -1048,13 +1051,13 @@ export default function ConfigPage({
               id="cfg-node-mode-basic"
               type="radio"
               name="cfg-node-mode"
-              checked={resolvedParticipationMode === "basic_creator"}
+              checked={selectedParticipationMode === "basic_creator"}
               disabled={!modeInfo || modeBusy || modeLocked}
               onChange={() => updateNodeMode("basic")}
             />
             <span>
               <div>Basic Creator</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator identity with provider-backed infrastructure.</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Publish, tips, and preview links only. Upgrade to enable durable paid commerce.</div>
             </span>
           </label>
           <label htmlFor="cfg-node-mode-advanced" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
@@ -1062,13 +1065,13 @@ export default function ConfigPage({
               id="cfg-node-mode-advanced"
               type="radio"
               name="cfg-node-mode"
-              checked={resolvedParticipationMode === "sovereign_with_provider"}
+              checked={selectedParticipationMode === "sovereign_with_provider"}
               disabled={!modeInfo || modeBusy || modeLocked}
               onChange={() => updateNodeMode("advanced")}
             />
             <span>
               <div>Sovereign Creator (with Provider)</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs a sovereign node but uses a provider for payment infrastructure.</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>First durable paid-commerce tier using provider infrastructure (with provider fee).</div>
             </span>
           </label>
           <label htmlFor="cfg-node-mode-lan" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
@@ -1076,13 +1079,13 @@ export default function ConfigPage({
               id="cfg-node-mode-lan"
               type="radio"
               name="cfg-node-mode"
-              checked={resolvedParticipationMode === "sovereign_node"}
+              checked={selectedParticipationMode === "sovereign_node"}
               disabled={!modeInfo || modeBusy || modeLocked}
               onChange={() => updateNodeMode("lan")}
             />
             <span>
-              <div>Sovereign Creator Node</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs full local infrastructure and can provide services to other creators.</div>
+              <div>Sovereign Node Operator</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Run your own stable infrastructure to eliminate provider dependency and fees.</div>
             </span>
           </label>
         </div>
@@ -1126,6 +1129,12 @@ export default function ConfigPage({
           <div>
             <b>Provider-backed commerce</b>:{" "}
             {resolvedParticipationMode === "sovereign_with_provider" && providerConfigured ? "Enabled" : "Not active"}
+          </div>
+          <div>
+            <b>Provider fee posture</b>:{" "}
+            {typeof networkSummary?.providerServices?.totalProviderFeePercent === "number"
+              ? `${networkSummary.providerServices.totalProviderFeePercent}%`
+              : "Not resolved"}
           </div>
           <div>
             <b>Sovereign node infrastructure</b>: {resolvedParticipationMode === "sovereign_node" ? "Enabled" : "Not active"}

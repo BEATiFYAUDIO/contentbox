@@ -15,7 +15,7 @@ test("basic mode is not allowed for durable paid commerce", () => {
     canonicalCommerceConfigured: true
   });
   assert.equal(gate.allowed, false);
-  assert.match(String(gate.reason), /Basic mode/i);
+  assert.match(String(gate.reason), /Sovereign Creator|durable paid commerce/i);
 });
 
 test("sovereign paid commerce requires stable and configured canonical host", () => {
@@ -41,4 +41,3 @@ test("sovereign paid commerce requires stable and configured canonical host", ()
   assert.equal(ready.allowed, true);
   assert.equal(ready.reason, null);
 });
-
