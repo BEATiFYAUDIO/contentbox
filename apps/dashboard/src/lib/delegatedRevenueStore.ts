@@ -3,8 +3,15 @@ export type DelegatedRevenueRow = {
   gross_sats: number;
   provider_fee_sats: number;
   creator_net_sats: number;
-  payout_status: "pending" | "paid" | "failed";
+  payout_status: "pending" | "forwarding" | "paid" | "failed";
   payout_rail: "provider_custody" | "forwarded" | "creator_node" | null;
+  provider_invoicing_fee_sats?: number | null;
+  provider_durable_hosting_fee_sats?: number | null;
+  payout_destination_summary?: string | null;
+  payout_destination_type?: string | null;
+  provider_remit_mode?: string | null;
+  payout_reference?: string | null;
+  remitted_at?: string | null;
   last_updated: string;
 };
 
@@ -38,11 +45,23 @@ function sanitizeRow(row: DelegatedRevenueRow): DelegatedRevenueRow {
     gross_sats: Number(row.gross_sats || 0) || 0,
     provider_fee_sats: Number(row.provider_fee_sats || 0) || 0,
     creator_net_sats: Number(row.creator_net_sats || 0) || 0,
-    payout_status: row.payout_status === "paid" || row.payout_status === "failed" ? row.payout_status : "pending",
+    provider_invoicing_fee_sats:
+      row.provider_invoicing_fee_sats == null ? null : Number(row.provider_invoicing_fee_sats) || 0,
+    provider_durable_hosting_fee_sats:
+      row.provider_durable_hosting_fee_sats == null ? null : Number(row.provider_durable_hosting_fee_sats) || 0,
+    payout_status:
+      row.payout_status === "paid" || row.payout_status === "failed" || row.payout_status === "forwarding"
+        ? row.payout_status
+        : "pending",
     payout_rail:
       row.payout_rail === "provider_custody" || row.payout_rail === "forwarded" || row.payout_rail === "creator_node"
         ? row.payout_rail
         : null,
+    payout_destination_type: row.payout_destination_type == null ? null : String(row.payout_destination_type),
+    payout_destination_summary: row.payout_destination_summary ? String(row.payout_destination_summary) : null,
+    provider_remit_mode: row.provider_remit_mode == null ? null : String(row.provider_remit_mode),
+    payout_reference: row.payout_reference ? String(row.payout_reference) : null,
+    remitted_at: row.remitted_at ? String(row.remitted_at) : null,
     last_updated: String(row.last_updated || new Date().toISOString())
   };
 }
@@ -80,4 +99,3 @@ export async function readDelegatedRevenue(): Promise<DelegatedRevenueRow[]> {
     req.onerror = () => reject(req.error || new Error("indexeddb_read_failed"));
   }).finally(() => db.close());
 }
-
