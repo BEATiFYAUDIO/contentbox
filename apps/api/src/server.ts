@@ -4810,11 +4810,7 @@ function resolveProviderServiceProfile(input: {
   } else if (stablePublicRouteOrigin) {
     canonicalCommerceOrigin = stablePublicRouteOrigin;
     canonicalCommerceKind = "self_hosted_stable";
-  } else if (temporaryNodeEndpointOrigin) {
-    canonicalCommerceOrigin = temporaryNodeEndpointOrigin;
-    canonicalCommerceKind = "temporary_endpoint";
   }
-
   return {
     selectedParticipationMode,
     effectiveParticipationMode,
@@ -17744,7 +17740,7 @@ async function resolveCanonicalBuyerRecoveryOrigin(
   req: any,
   ownerUserId: string | null
 ): Promise<string> {
-  const fallbackOrigin = normalizePublicOriginBase(getPublicOrigin(req));
+  const fallbackOrigin = normalizePublicOriginBase(APP_BASE_URL);
   const providerCfg = getNetworkProviderConfig();
   const capabilityCtx = getCapabilityContext();
   let hasLocalInvoiceMinting = false;

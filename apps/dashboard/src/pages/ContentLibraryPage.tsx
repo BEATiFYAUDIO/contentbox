@@ -678,8 +678,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         const data = await res.json().catch(() => null);
         if (res.ok) {
           const canonical = String(data?.canonicalCommerceOrigin || "").replace(/\/$/, "");
-          const fallback = String(data?.publicOrigin || "").replace(/\/$/, "");
-          setPublicOriginFromApi(canonical || fallback);
+          setPublicOriginFromApi(canonical);
           setLocalNodeOriginFromApi(String(data?.localNodeEndpointOrigin || data?.publicOrigin || "").replace(/\/$/, ""));
           setTemporaryNodeOriginFromApi(String(data?.temporaryNodeEndpointOrigin || "").replace(/\/$/, ""));
           setPaidCommerceAllowedFromApi(Boolean(data?.paidCommerceAllowed ?? true));
@@ -2706,6 +2705,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                   {!showTrash && !showTombstones && isOpen && (
                     <div className="border-t border-neutral-800 px-3 py-3 space-y-3">
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="text-xs text-neutral-300 font-medium">Content Overview</div>
+                        <div className="mt-1 text-xs text-neutral-400">
+                          Title: <span className="text-neutral-200">{it.title}</span> • Status:{" "}
+                          <span className="text-neutral-200">{titleCase(it.status)}</span> • Integrity:{" "}
+                          <span className={manifestSha256 ? "text-emerald-200" : "text-amber-300"}>
+                            {manifestSha256 ? "Manifest tracked" : "Manifest pending"}
+                          </span>
+                        </div>
+                      </div>
+
                       {(() => {
                         const preview = previewByContent[it.id] || null;
                         const previewUrl = preview?.previewUrl || null;
@@ -2790,9 +2800,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </button>
                       </div>
 
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="text-xs text-neutral-300 font-medium">File identity</div>
+                      <details className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <summary className="cursor-pointer text-xs text-neutral-300 font-medium">Technical Integrity</summary>
+                        <div className="mt-2 flex items-center justify-between gap-2">
+                          <div className="text-xs text-neutral-400">Manifest, hashes, and storage paths</div>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -2941,7 +2952,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             })}
                           </div>
                         )}
-                      </div>
+                      </details>
 
                       {/* NEW: Split lock notarization preview */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
@@ -3625,7 +3636,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                       {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">Monetization</div>
+                        <div className="text-xs text-neutral-300 font-medium">Access & Pricing</div>
                         <div className="mt-2 rounded-md border border-sky-900/40 bg-sky-950/20 p-3">
                           <div className="text-xs font-medium text-sky-200">Payment / Access Proof</div>
                           <div className="mt-2 grid gap-1 text-xs text-neutral-300">
@@ -4010,7 +4021,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (localNodeOriginFromApi || activeOrigin || "").trim();
-                            const effectiveBuyOrigin = (publicBuyOrigin || publicOriginFromApi || localNodeOriginFromApi || activeOrigin || "").trim();
+                            const effectiveBuyOrigin = (publicBuyOrigin || publicOriginFromApi || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");
@@ -4073,6 +4084,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       <>
                                         <div className="flex items-center justify-between gap-3">
                                           <div className="min-w-0">
+                                            <div className="text-[11px] text-neutral-500 mb-1">
+                                              Commerce host: <span className="text-neutral-300 break-all">{buyBase || "Not configured"}</span>
+                                            </div>
                                             {hasPublicBuy ? (
                                               <>
                                                 Canonical buy link: <span className="text-neutral-300 break-all">{buyLink}</span>
@@ -4101,7 +4115,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                             ) : null}
                                             {temporaryNodeOriginFromApi ? (
                                               <div className="mt-1 text-[11px] text-amber-300 break-all">
-                                                Temporary node endpoint: {temporaryNodeOriginFromApi}/buy/{it.id}
+                                                Temporary preview endpoint: {temporaryNodeOriginFromApi}/buy/{it.id}
                                               </div>
                                             ) : null}
                                           </div>
@@ -4338,63 +4352,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           )}
                         </div>
 
-                        {publishMsg[it.id] ? (
-                          <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div>
-                        ) : null}
-                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
-                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
-                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
-                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
-                              <div>
-                                Status: <span className="text-emerald-200">Published</span>
-                              </div>
-                              <div>
-                                Published at:{" "}
-                                <span className="text-neutral-200">
-                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
-                                </span>
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span>
-                                  Manifest hash:{" "}
-                                  <span className="text-neutral-200 break-all">
-                                    {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
-                                  </span>
-                                </span>
-                                {(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256) ? (
-                                  <button
-                                    type="button"
-                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
-                                    onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "")}
-                                  >
-                                    Copy
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span>
-                                  Publish receipt ID:{" "}
-                                  <span className="text-neutral-200 break-all">{networkPublishByContent[it.id]?.receiptId || "—"}</span>
-                                </span>
-                                {networkPublishByContent[it.id]?.receiptId ? (
-                                  <button
-                                    type="button"
-                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
-                                    onClick={() => copyText(networkPublishByContent[it.id]?.receiptId || "")}
-                                  >
-                                    Copy
-                                  </button>
-                                ) : null}
-                              </div>
-                              <div>
-                                Provider node ID:{" "}
-                                <span className="text-neutral-200 break-all">
-                                  {networkPublishByContent[it.id]?.providerNodeId || "—"}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
+                        {publishMsg[it.id] ? <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div> : null}
 
                         <div className="mt-3 grid gap-2 md:grid-cols-2">
                           <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
@@ -4448,10 +4406,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         {creditMsg[it.id] ? <div className="mt-1 text-xs text-amber-300">{creditMsg[it.id]}</div> : null}
                       </div>
 
-                      {/* Network visibility panel */}
+                      {/* Distribution */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs text-neutral-300 font-medium">Network Visibility</div>
+                          <div className="text-xs text-neutral-300 font-medium">Distribution</div>
                           <div className="flex items-center gap-2">
                             <span
                               className={`text-[10px] px-2 py-1 rounded-full border ${
@@ -4473,6 +4431,34 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             <span className="text-neutral-200">
                               {parentLinkByContent[it.id]?.approvedAt ? "Cleared" : "Pending clearance"}
                             </span>
+                          </div>
+                        ) : null}
+                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
+                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
+                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
+                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+                              <div>
+                                Status: <span className="text-emerald-200">Published</span>
+                              </div>
+                              <div>
+                                Published at:{" "}
+                                <span className="text-neutral-200">
+                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
+                                </span>
+                              </div>
+                              <div>
+                                Publishing node:{" "}
+                                <span className="text-neutral-200 break-all">
+                                  {networkPublishByContent[it.id]?.providerNodeId || "Local/unknown"}
+                                </span>
+                              </div>
+                              <div>
+                                Manifest hash:{" "}
+                                <span className="text-neutral-200 break-all">
+                                  {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
+                                </span>
+                              </div>
+                            </div>
                           </div>
                         ) : null}
                         {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (
