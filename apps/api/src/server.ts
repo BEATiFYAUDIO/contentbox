@@ -15965,6 +15965,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       `/u/${encodeURIComponent(requested)}`
     );
     const safeCreatorPublicBase = escHtml(creatorPublicBase);
+    const safeProfileRoute = escHtml(
+      buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/u/${encodeURIComponent(requested)}`)
+    );
     const shortHash = (value: string) => {
       const v = asString(value || "").trim();
       if (!v) return "—";
@@ -16058,24 +16061,48 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 },
                 "provider_backed.profile_card_urls"
               );
+              const kind = asString(row.contentType || "").trim().toLowerCase();
+              const ctaLabel = kind === "video" ? "Watch" : kind === "song" ? "Listen" : "Open";
+              const previewBlock =
+                kind === "video"
+                  ? `<video controls preload="metadata" style="width:100%;max-width:420px;border-radius:8px;background:#0b0b0b;">
+                      <source src="${escHtml(providerPreviewUrl)}" />
+                    </video>`
+                  : `<audio controls preload="none" style="width:100%;max-width:420px;">
+                      <source src="${escHtml(providerPreviewUrl)}" />
+                    </audio>`;
               return `<article class="featured-item">
                 <div class="featured-media">
                   <img src="${escHtml(providerImageUrl)}" alt="${title} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
                   <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${type}</span></div>
                 </div>
                 <div class="featured-meta" style="min-width:0;">
+                  <div class="featured-topline">
+                    <span class="featured-type-badge">${type}</span>
+                    <span class="featured-verified">Certifyd</span>
+                  </div>
                   <div class="featured-title">${title}</div>
                   <div style="margin-top:8px;">
-                    <audio controls preload="none" style="width:100%;max-width:420px;">
-                      <source src="${escHtml(providerPreviewUrl)}" />
-                    </audio>
+                    ${previewBlock}
                   </div>
-                  <div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(buyUrl)}">Open ↗</a></div>
+                  <div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ↗</a></div>
                 </div>
               </article>`;
             })
             .join("")
         : `<div class="line muted">No published items available yet.</div>`;
+    req.log.info(
+      {
+        creatorHandle: requested,
+        routingMode: "provider_backed",
+        storefrontContract: "provider_delegated_storefront",
+        providerAuthorityOrigin: canonicalCommerceOrigin,
+        currentCreatorUpstreamOrigin:
+          normalizePublicOriginBase(asString(delegatedLink.creatorUpstreamOrigin || "").trim()) || null,
+        creatorPublicBase
+      },
+      "provider_backed.storefront_profile.render"
+    );
 
     const html = `<!doctype html>
 <html lang="en">
@@ -16087,11 +16114,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
     .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
+    .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; }
     .muted { color:#9aa0a6; font-size:13px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
     .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
+    .hero { display:flex; gap:14px; align-items:center; margin-top:14px; }
+    .avatar { width:84px; height:84px; border-radius:9999px; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
+    .hero-meta { min-width:0; }
+    .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
+    .hero-handle { margin-top:4px; }
     .pill { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; border:1px solid #2a2a2a; font-size:12px; }
     .pill.ok { color:#22c55e; border-color:rgba(34,197,94,.45); background:rgba(34,197,94,.1); }
     .pill.warn { color:#f59e0b; border-color:rgba(245,158,11,.45); background:rgba(245,158,11,.1); }
@@ -16103,15 +16136,30 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-item { display:grid; grid-template-columns:110px 1fr; gap:12px; border:1px solid #1f1f1f; border-radius:10px; padding:10px; background:#0d0f12; }
     .featured-image { width:100%; height:90px; object-fit:cover; border-radius:8px; border:1px solid #1f1f1f; display:block; }
     .featured-image-fallback { width:100%; height:90px; border-radius:8px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#1a1a1a,#111); color:#cfd8dc; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .featured-topline { display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap; }
+    .featured-type-badge { font-size:11px; letter-spacing:0.02em; color:#b9c2cf; background:#1a2028; border:1px solid #303948; border-radius:999px; padding:3px 8px; }
+    .featured-verified { font-size:11px; color:#7dd3fc; background:#10212e; border:1px solid #284557; border-radius:999px; padding:3px 8px; }
     .featured-title { font-weight:700; line-height:1.3; }
     .featured-cta { display:inline-flex; align-items:center; justify-content:center; padding:6px 12px; border-radius:999px; border:1px solid #2f7cbf; color:#9bdcff; font-size:13px; text-decoration:none; }
+    @media (max-width: 640px) {
+      body { padding:14px; }
+      .card { padding:16px; }
+      .page-title { font-size:30px; }
+      .hero-name { font-size:20px; }
+    }
   </style>
 </head>
 <body>
   <main class="card">
-    <h1 style="margin:0;font-size:32px;line-height:1.15;letter-spacing:-0.02em;">${safeDisplayName}</h1>
-    <div class="line muted">${safeHandle}</div>
-    <div class="line muted">Delegated creator profile served by provider commerce host.</div>
+    <h2 class="page-title">Certifyd Creator Profile</h2>
+    <section class="hero">
+      <div aria-label="avatar fallback" class="avatar">Creator</div>
+      <div class="hero-meta">
+        <div class="hero-name">${safeDisplayName}</div>
+        <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
+        <div class="line muted">Provider-hosted storefront for this sovereign creator.</div>
+      </div>
+    </section>
     <div class="section">
       <h3>Public Creator Profile</h3>
       <div class="meta-grid">
@@ -16120,16 +16168,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           <div class="mono">${safeNodeUrl}</div>
         </div>
         <div class="meta-item">
+          <div class="meta-label">Public Route</div>
+          <div class="mono"><a href="${safeProfileRoute}" style="color:#9bdcff;text-decoration:none;">${safeProfileRoute}</a></div>
+        </div>
+        <div class="meta-item">
           <div class="meta-label">Creator Public Base</div>
           <div class="mono"><a href="${safeCreatorPublicBase}" style="color:#9bdcff;text-decoration:none;">${safeCreatorPublicBase}</a></div>
         </div>
         <div class="meta-item">
-          <div class="meta-label">Creator Node ID</div>
-          <div class="mono">${safeCreatorNodeId}</div>
-        </div>
-        <div class="meta-item">
-          <div class="meta-label">Provider Node ID</div>
-          <div class="mono">${safeProviderNodeId}</div>
+          <div class="meta-label">Routing</div>
+          <div class="muted">Durable identity and commerce are served on provider host.</div>
         </div>
       </div>
       <div class="line" style="display:flex;gap:8px;flex-wrap:wrap;">
@@ -16147,6 +16195,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <h3>Featured Releases</h3>
       <div class="featured-list">${cardsHtml}</div>
     </div>
+    <div class="line muted">Provider node: <span class="mono">${safeProviderNodeId}</span> · Creator node: <span class="mono">${safeCreatorNodeId}</span></div>
   </main>
 </body>
 </html>`;
