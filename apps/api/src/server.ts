@@ -98,9 +98,14 @@ import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.j
 import { buildCanonicalBuyerRecoveryUrls } from "./lib/buyerRecoveryUrls.js";
 import { resolveReplayMode } from "./lib/replayResolution.js";
 import { buildDeliveryRoutingDescriptor } from "./lib/deliveryRouting.js";
-import { resolveBuyRoutingOrigins } from "./lib/buyRoutingOrigins.js";
+import { resolveBuyRoutingOrigins, resolveRoutingAuthority } from "./lib/buyRoutingOrigins.js";
 import { canEnablePaidCommerce, type CreatorCommerceMode, type EndpointStability } from "./lib/paidCommerceGate.js";
 import { resolveContentCommerceValidity } from "./lib/contentCommerceValidity.js";
+import {
+  PROVIDER_DELIVERY_FEE_FLOOR_SATS,
+  PROVIDER_STREAM_ONLY_RISK_CAP_SATS,
+  validateProviderBackedDeliveryPolicy
+} from "./lib/providerDeliveryPolicy.js";
 import {
   resolveCapabilityRouting,
   type CapabilityRoutingResolution
@@ -4772,6 +4777,11 @@ type ProviderServiceProfile = {
   providerUrl: string | null;
   canonicalCommerceOrigin: string | null;
   canonicalCommerceKind: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
+  creatorPublicBase: string | null;
+  creatorIdentityOrigin: string | null;
+  previewEphemeralOrigin: string | null;
+  routingAuthoritySource: "preview_ephemeral" | "provider_durable" | "local_durable" | "fallback";
+  providerCreatorNamespaceReady: boolean;
 };
 
 function toCreatorCommerceMode(
@@ -4795,6 +4805,7 @@ function resolveProviderServiceProfile(input: {
   hasChainBackendReady?: boolean;
   providerCfg?: NetworkProviderConfig;
   ctx?: ReturnType<typeof getCapabilityContext>;
+  creatorHandle?: string | null;
 }): ProviderServiceProfile {
   const ctx = input.ctx || getCapabilityContext();
   const providerCfg = input.providerCfg || getNetworkProviderConfig();
@@ -4863,18 +4874,24 @@ function resolveProviderServiceProfile(input: {
   const providerDurableHostingFeePercent = needsDurablePublicHosting ? PROVIDER_DURABLE_HOSTING_FEE_PERCENT : 0;
   const totalProviderFeePercent = providerInvoicingFeePercent + providerDurableHostingFeePercent;
 
-  let canonicalCommerceOrigin: string | null = null;
-  let canonicalCommerceKind: ProviderServiceProfile["canonicalCommerceKind"] = "unavailable";
-  if (participationMode === "basic_creator") {
-    canonicalCommerceOrigin = null;
-    canonicalCommerceKind = "unavailable";
-  } else if (capabilityResolution.effectiveCommerceHost && providerUrl && capabilityResolution.effectiveCommerceHost === providerUrl) {
-    canonicalCommerceOrigin = providerUrl;
-    canonicalCommerceKind = "provider_hosted";
-  } else if (stablePublicRouteOrigin) {
-    canonicalCommerceOrigin = stablePublicRouteOrigin;
-    canonicalCommerceKind = "self_hosted_stable";
-  }
+  const authority = resolveRoutingAuthority({
+    participationMode,
+    fallbackOrigin: normalizePublicOriginBase(APP_BASE_URL),
+    providerOrigin: providerUrl,
+    stableLocalOrigin: stablePublicRouteOrigin,
+    localEndpointOrigin: activeLocalOrigin,
+    temporaryPreviewOrigin: temporaryNodeEndpointOrigin,
+    creatorHandle: input.creatorHandle || null
+  });
+  const canonicalCommerceOrigin = authority.canonicalCommerceOrigin;
+  const canonicalCommerceKind: ProviderServiceProfile["canonicalCommerceKind"] =
+    participationMode === "basic_creator"
+      ? "unavailable"
+      : authority.routingMode === "provider_backed" && authority.canonicalCommerceOrigin
+        ? "provider_hosted"
+        : authority.routingMode === "sovereign_local" && authority.canonicalCommerceOrigin
+          ? "self_hosted_stable"
+          : "unavailable";
   return {
     selectedParticipationMode,
     effectiveParticipationMode,
@@ -4895,7 +4912,12 @@ function resolveProviderServiceProfile(input: {
     providerTrusted,
     providerUrl,
     canonicalCommerceOrigin,
-    canonicalCommerceKind
+    canonicalCommerceKind,
+    creatorPublicBase: authority.creatorPublicBase,
+    creatorIdentityOrigin: authority.creatorIdentityOrigin,
+    previewEphemeralOrigin: authority.previewEphemeralOrigin,
+    routingAuthoritySource: authority.authoritySource,
+    providerCreatorNamespaceReady: authority.providerCreatorNamespaceReady
   };
 }
 
@@ -4945,6 +4967,36 @@ async function resolvePaidCommerceRuntimeGate(input: {
     endpointStability,
     canonicalCommerceConfigured
   };
+}
+
+async function resolveDeliveryPolicyForUser(input: {
+  userId: string;
+  priceSats: bigint;
+  deliveryMode: "stream_only" | "download_only" | "stream_and_download" | null;
+}) {
+  const ctx = getCapabilityContext();
+  const paymentsReadiness = await getPaymentsReadiness(input.userId).catch(() => null);
+  const owner = await prisma.user.findUnique({
+    where: { id: input.userId },
+    select: { displayName: true }
+  }).catch(() => null);
+  const creatorHandle = normalizePublicProfileHandle(owner?.displayName || "") || input.userId;
+  const profile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting:
+      ctx.paymentsMode === "node" &&
+      (ctx.nodeMode === "advanced" || ctx.nodeMode === "lan") &&
+      Boolean(paymentsReadiness?.lightning?.ready),
+    hasChainBackendReady: Boolean(paymentsReadiness?.chainBackend?.ready),
+    providerCfg: getNetworkProviderConfig(),
+    ctx,
+    creatorHandle
+  });
+  const policy = validateProviderBackedDeliveryPolicy({
+    participationMode: profile.participationMode,
+    priceSats: input.priceSats,
+    deliveryMode: input.deliveryMode
+  });
+  return { profile, policy };
 }
 
 type NodeRegistryEntry = {
@@ -9282,6 +9334,31 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   const body = (req.body ?? {}) as { nodeMode?: string };
   const next = validateNodeMode(body?.nodeMode);
   if (!next) return badRequest(reply, "Invalid node mode");
+  if (next === "advanced") {
+    const userId = (req.user as JwtUser).sub;
+    const owner = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { displayName: true }
+    }).catch(() => null);
+    const creatorHandle = normalizePublicProfileHandle(owner?.displayName || "") || userId;
+    const previewCtx = getCapabilityContext();
+    const preview = resolveProviderServiceProfile({
+      hasLocalInvoiceMinting: false,
+      hasChainBackendReady: false,
+      providerCfg: getNetworkProviderConfig(),
+      ctx: { ...previewCtx, nodeMode: "advanced" as any },
+      creatorHandle
+    });
+    if (!preview.providerConfigured || !preview.providerTrusted || !preview.providerUrl) {
+      return reply.code(409).send({
+        error: "PROVIDER_REQUIRED",
+        message: "Sovereign Creator with Provider mode requires a trusted provider durable host.",
+        providerConfigured: preview.providerConfigured,
+        providerTrusted: preview.providerTrusted,
+        providerUrl: preview.providerUrl
+      });
+    }
+  }
   try {
     await writeNodeConfig(next);
     await writeProductTier(next);
@@ -9629,6 +9706,11 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const ctx = getCapabilityContext();
   const providerConfig = getNetworkProviderConfig();
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const ownerProfile = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { displayName: true }
+  }).catch(() => null);
+  const creatorHandle = normalizePublicProfileHandle(ownerProfile?.displayName || "") || userId;
 
   const localInvoiceMinting =
     ctx.paymentsMode === "node" &&
@@ -9639,7 +9721,8 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     hasLocalInvoiceMinting: localInvoiceMinting,
     hasChainBackendReady: Boolean(paymentsReadiness?.chainBackend?.ready),
     providerCfg: providerConfig,
-    ctx
+    ctx,
+    creatorHandle
   });
   app.log.debug(
     {
@@ -9707,7 +9790,11 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       creatorPayoutDestinationConfigured: payoutDestination.valid,
       creatorPayoutRail: payoutDestination.effectivePayoutRail,
       providerBackedCommerceReady,
-      providerBackedCommerceMessage
+      providerBackedCommerceMessage,
+      providerDeliveryPolicy: {
+        providerFeeFloorSats: PROVIDER_DELIVERY_FEE_FLOOR_SATS,
+        streamOnlyRiskCapSats: PROVIDER_STREAM_ONLY_RISK_CAP_SATS
+      }
     },
     modeProfile: {
       selectedParticipationMode: serviceProfile.selectedParticipationMode,
@@ -9758,6 +9845,10 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       temporaryNodeEndpointUrl: serviceProfile.temporaryNodeEndpointOrigin,
       canonicalCommerceUrl: serviceProfile.canonicalCommerceOrigin,
       canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
+      creatorPublicBase: serviceProfile.creatorPublicBase,
+      creatorIdentityOrigin: serviceProfile.creatorIdentityOrigin,
+      routingAuthoritySource: serviceProfile.routingAuthoritySource,
+      providerCreatorNamespaceReady: serviceProfile.providerCreatorNamespaceReady,
       effectiveCommerceHost: serviceProfile.capabilityResolution.effectiveCommerceHost,
       effectiveSettlementHost: serviceProfile.capabilityResolution.effectiveSettlementHost,
       effectiveBuyerRecoveryHost: serviceProfile.capabilityResolution.effectiveBuyerRecoveryHost,
@@ -11481,6 +11572,14 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
 app.get("/api/public/origin", async (req: any, reply: any) => {
   const publicOrigin = getPublicOrigin(req);
   const profile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
+  const authority = resolveRoutingAuthority({
+    participationMode: profile.participationMode,
+    fallbackOrigin: normalizePublicOriginBase(APP_BASE_URL),
+    providerOrigin: normalizePublicOriginBase(profile.providerUrl || ""),
+    stableLocalOrigin: normalizePublicOriginBase(profile.stablePublicRouteOrigin || ""),
+    localEndpointOrigin: normalizePublicOriginBase(profile.localNodeEndpointOrigin || ""),
+    temporaryPreviewOrigin: normalizePublicOriginBase(profile.temporaryNodeEndpointOrigin || "")
+  });
   const commerceMode = toCreatorCommerceMode(profile.participationMode);
   const endpointStability = toEndpointStability(profile.canonicalCommerceKind);
   const canonicalCommerceConfigured = Boolean(
@@ -11495,8 +11594,12 @@ app.get("/api/public/origin", async (req: any, reply: any) => {
     publicOrigin,
     canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
     canonicalCommerceKind: profile.canonicalCommerceKind,
+    routingMode: authority.routingMode,
+    authoritySource: authority.authoritySource,
     commerceHost: profile.canonicalCommerceOrigin,
     nodeDomain: profile.stablePublicRouteOrigin,
+    creatorPublicBase: profile.creatorPublicBase,
+    creatorIdentityOrigin: profile.creatorIdentityOrigin,
     previewHost: profile.temporaryNodeEndpointOrigin,
     localNodeEndpointOrigin: profile.localNodeEndpointOrigin,
     temporaryNodeEndpointOrigin: profile.temporaryNodeEndpointOrigin,
@@ -17955,6 +18058,18 @@ async function resolveCanonicalBuyerRecoveryOrigin(
   ownerUserId: string | null
 ): Promise<string> {
   const fallbackOrigin = normalizePublicOriginBase(APP_BASE_URL);
+  let creatorHandle: string | null = null;
+  if (ownerUserId) {
+    try {
+      const owner = await prisma.user.findUnique({
+        where: { id: ownerUserId },
+        select: { displayName: true }
+      });
+      creatorHandle = normalizePublicProfileHandle(owner?.displayName || "") || ownerUserId;
+    } catch {
+      creatorHandle = ownerUserId;
+    }
+  }
   const providerCfg = getNetworkProviderConfig();
   const capabilityCtx = getCapabilityContext();
   let hasLocalInvoiceMinting = false;
@@ -17972,7 +18087,8 @@ async function resolveCanonicalBuyerRecoveryOrigin(
     hasLocalInvoiceMinting,
     hasChainBackendReady: false,
     providerCfg,
-    ctx: capabilityCtx
+    ctx: capabilityCtx,
+    creatorHandle
   });
   const routing = resolveBuyRoutingOrigins({
     participationMode: profile.participationMode,
@@ -17980,14 +18096,17 @@ async function resolveCanonicalBuyerRecoveryOrigin(
     providerOrigin: normalizePublicOriginBase(profile.providerUrl || ""),
     stableLocalOrigin: normalizePublicOriginBase(profile.stablePublicRouteOrigin || ""),
     localEndpointOrigin: normalizePublicOriginBase(profile.localNodeEndpointOrigin || ""),
-    temporaryPreviewOrigin: normalizePublicOriginBase(profile.temporaryNodeEndpointOrigin || "")
+    temporaryPreviewOrigin: normalizePublicOriginBase(profile.temporaryNodeEndpointOrigin || ""),
+    creatorHandle
   });
   app.log.debug(
     {
       ownerUserId,
       participationMode: profile.participationMode,
+      authoritySource: profile.routingAuthoritySource,
       providerActive: profile.providerConfigured && profile.providerTrusted,
       commerceOrigin: routing.commerceOrigin,
+      creatorPublicBase: profile.creatorPublicBase,
       previewOrigin: routing.previewOrigin,
       tempPreviewOrigin: routing.temporaryPreviewOrigin,
       tempTunnelIgnoredForCommerce: routing.tempTunnelIgnoredForCommerce
@@ -18214,6 +18333,30 @@ async function handlePublicOffer(req: any, reply: any) {
     providerDurablePlaybackAvailable: edgeCandidateMode === "edge_ticket"
   });
   const saleMode = hasPrice ? "paid" : tipsEnabled ? "tip" : "free";
+  const deliveryPolicy = validateProviderBackedDeliveryPolicy({
+    participationMode: serviceProfile.participationMode,
+    priceSats: priceSats ?? 0n,
+    deliveryMode:
+      (asString((content as any).deliveryMode || "").trim() as
+        | "stream_only"
+        | "download_only"
+        | "stream_and_download"
+        | "") || null
+  });
+  if (deliveryPolicy.warning || !deliveryPolicy.allowed) {
+    app.log.debug(
+      {
+        contentId: content.id,
+        participationMode: serviceProfile.participationMode,
+        priceSats: (priceSats ?? 0n).toString(),
+        deliveryMode: asString((content as any).deliveryMode || "").trim() || null,
+        deliveryPolicyAllowed: deliveryPolicy.allowed,
+        blockedReasonCode: deliveryPolicy.blockedReasonCode,
+        hasWarning: Boolean(deliveryPolicy.warning)
+      },
+      "delivery.policy.evaluated"
+    );
+  }
   const commerceValidity = resolveContentCommerceValidity({
     title: content.title,
     status: content.status,
@@ -18262,6 +18405,13 @@ async function handlePublicOffer(req: any, reply: any) {
     owned: gated.entitled,
     publishProof,
     paymentAccessProof,
+    deliveryPolicy: {
+      allowed: deliveryPolicy.allowed,
+      warning: deliveryPolicy.warning,
+      blockedReasonCode: deliveryPolicy.blockedReasonCode,
+      providerFeeFloorSats: deliveryPolicy.providerFeeFloorSats,
+      streamOnlyRiskCapSats: deliveryPolicy.streamOnlyRiskCapSats
+    },
     paidCommerceAllowed,
     paidCommerceReason,
     commerceValidity,
@@ -20845,11 +20995,45 @@ app.patch("/content/:id/price", { preHandler: requireAuth }, async (req: any, re
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
 
+  const nextDeliveryMode =
+    (asString(content.deliveryMode || "").trim() as "stream_only" | "download_only" | "stream_and_download" | "") ||
+    null;
+  const deliveryPolicy = await resolveDeliveryPolicyForUser({
+    userId,
+    priceSats: sats,
+    deliveryMode: nextDeliveryMode
+  });
+  if (!deliveryPolicy.policy.allowed) {
+    app.log.info(
+      {
+        route: "/content/:id/price",
+        contentId,
+        userId,
+        participationMode: deliveryPolicy.profile.participationMode,
+        priceSats: sats.toString(),
+        deliveryMode: nextDeliveryMode,
+        blockedReasonCode: deliveryPolicy.policy.blockedReasonCode
+      },
+      "delivery.policy.blocked"
+    );
+    return reply.code(409).send({
+      error: "DELIVERY_POLICY_BLOCKED",
+      code: deliveryPolicy.policy.blockedReasonCode,
+      message: deliveryPolicy.policy.message,
+      providerFeeFloorSats: deliveryPolicy.policy.providerFeeFloorSats,
+      streamOnlyRiskCapSats: deliveryPolicy.policy.streamOnlyRiskCapSats
+    });
+  }
+
   const updated = await prisma.contentItem.update({
     where: { id: contentId },
     data: { priceSats: sats }
   });
-  return reply.send({ ok: true, priceSats: updated.priceSats?.toString() ?? null });
+  return reply.send({
+    ok: true,
+    priceSats: updated.priceSats?.toString() ?? null,
+    deliveryPolicyWarning: deliveryPolicy.policy.warning
+  });
 });
 
 // Set delivery mode for content (Basic: streaming vs download)
@@ -20869,12 +21053,45 @@ app.patch("/content/:id/delivery-mode", { preHandler: requireAuth }, async (req:
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
 
+  const nextPrice = content.priceSats ?? 0n;
+  const nextDeliveryMode = (mode as "stream_only" | "download_only" | "stream_and_download" | null) || null;
+  const deliveryPolicy = await resolveDeliveryPolicyForUser({
+    userId,
+    priceSats: nextPrice,
+    deliveryMode: nextDeliveryMode
+  });
+  if (!deliveryPolicy.policy.allowed) {
+    app.log.info(
+      {
+        route: "/content/:id/delivery-mode",
+        contentId,
+        userId,
+        participationMode: deliveryPolicy.profile.participationMode,
+        priceSats: nextPrice.toString(),
+        deliveryMode: nextDeliveryMode,
+        blockedReasonCode: deliveryPolicy.policy.blockedReasonCode
+      },
+      "delivery.policy.blocked"
+    );
+    return reply.code(409).send({
+      error: "DELIVERY_POLICY_BLOCKED",
+      code: deliveryPolicy.policy.blockedReasonCode,
+      message: deliveryPolicy.policy.message,
+      providerFeeFloorSats: deliveryPolicy.policy.providerFeeFloorSats,
+      streamOnlyRiskCapSats: deliveryPolicy.policy.streamOnlyRiskCapSats
+    });
+  }
+
   const updated = await prisma.contentItem.update({
     where: { id: contentId },
     data: { deliveryMode: mode || null }
   });
 
-  return reply.send({ ok: true, deliveryMode: updated.deliveryMode || null });
+  return reply.send({
+    ok: true,
+    deliveryMode: updated.deliveryMode || null,
+    deliveryPolicyWarning: deliveryPolicy.policy.warning
+  });
 });
 
 app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async (req: any, reply) => {

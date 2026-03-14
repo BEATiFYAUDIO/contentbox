@@ -3841,9 +3841,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPriceMsg((m) => ({ ...m, [it.id]: "" }));
-                                  await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
+                                  const out = await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
                                   await refreshCurrentView();
-                                  setPriceMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                                  const warning = String((out as any)?.deliveryPolicyWarning || "").trim();
+                                  setPriceMsg((m) => ({
+                                    ...m,
+                                    [it.id]: warning ? `Saved. ${warning}` : "Saved."
+                                  }));
                                 } catch (e: any) {
                                   setPriceMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save price." }));
                                 } finally {
@@ -3906,9 +3910,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "" }));
-                                  await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
+                                  const out = await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
                                   await refreshCurrentView();
-                                  setDeliveryMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                                  const warning = String((out as any)?.deliveryPolicyWarning || "").trim();
+                                  setDeliveryMsg((m) => ({
+                                    ...m,
+                                    [it.id]: warning ? `Saved. ${warning}` : "Saved."
+                                  }));
                                 } catch (e: any) {
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save delivery mode." }));
                                 } finally {
