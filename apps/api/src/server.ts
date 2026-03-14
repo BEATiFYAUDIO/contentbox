@@ -18175,12 +18175,6 @@ async function handlePublicOffer(req: any, reply: any) {
     "buyer.canonical_urls.offer"
   );
 
-  if (!allowDraftPreview) {
-    if (priceSats == null) {
-      return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
-    }
-  }
-
   return reply.send({
     contentId: content.id,
     title: content.title,

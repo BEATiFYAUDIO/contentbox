@@ -4160,7 +4160,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (localNodeOriginFromApi || activeOrigin || "").trim();
-                            const effectiveBuyOrigin = (publicBuyOrigin || publicOriginFromApi || "").trim();
+                            const effectiveBuyOrigin = (
+                              publicBuyOrigin ||
+                              publicOriginFromApi ||
+                              (isBasicTier ? activeOrigin : "") ||
+                              ""
+                            ).trim();
                             const buyBase = (effectiveBuyOrigin || "").replace(/\/$/, "");
                             const creatorScope = String(it.ownerUserId || "").trim();
                             const creatorScopedBuyPath = creatorScope
@@ -4193,10 +4198,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             const lanLink = lanBase ? `${lanBase}${creatorScopedBuyPath}` : "";
                             return (
                               <>
-                                {isBasicTier ? null : (
-                                  <>
+                                <>
                                     <div className="flex items-center justify-between gap-2">
-                                      <div className="text-[11px] text-neutral-500">Buy links</div>
+                                      <div className="text-[11px] text-neutral-500">{isBasicTier ? "Page links" : "Buy links"}</div>
                                       <div className="flex items-center gap-2">
                                         {(["public", "config"] as const).map((tab) => {
                                           const active = (buyLinksTabByContent[it.id] || "public") === tab;
@@ -4435,7 +4439,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       </>
                                     )}
                                   </>
-                                )}
                               </>
                             );
                           })()}
