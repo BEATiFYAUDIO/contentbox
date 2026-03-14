@@ -98,6 +98,17 @@ import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.j
 import { buildCanonicalBuyerRecoveryUrls } from "./lib/buyerRecoveryUrls.js";
 import { resolveReplayMode } from "./lib/replayResolution.js";
 import { buildDeliveryRoutingDescriptor } from "./lib/deliveryRouting.js";
+import { canEnablePaidCommerce, type CreatorCommerceMode, type EndpointStability } from "./lib/paidCommerceGate.js";
+import {
+  resolveCapabilityRouting,
+  type CapabilityRoutingResolution
+} from "./lib/capabilityRouting.js";
+import {
+  canActAsCommerceHost,
+  canJoinNetworkAsNode,
+  classifyEndpointStability,
+  type CertifydNodeDescriptor
+} from "./lib/nodeRegistry.js";
 import {
   buildContentPublishReceiptPayload,
   computeCanonicalManifestHash,
@@ -4682,12 +4693,20 @@ function getCapabilityContext() {
 }
 
 type ProviderServiceProfile = {
+  selectedParticipationMode: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
+  effectiveParticipationMode:
+    | "basic_creator"
+    | "sovereign_creator_with_provider"
+    | "sovereign_node_operator"
+    | "sovereign_creator_unready";
   participationMode: "basic_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+  capabilityResolution: CapabilityRoutingResolution;
   hasStablePublicRoute: boolean;
   stablePublicRouteOrigin: string | null;
   temporaryNodeEndpointOrigin: string | null;
   localNodeEndpointOrigin: string | null;
   hasLocalInvoiceMinting: boolean;
+  hasChainBackendReady: boolean;
   needsProviderInvoicing: boolean;
   needsDurablePublicHosting: boolean;
   providerInvoicingFeePercent: number;
@@ -4700,8 +4719,25 @@ type ProviderServiceProfile = {
   canonicalCommerceKind: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
 };
 
+function toCreatorCommerceMode(
+  mode: ProviderServiceProfile["participationMode"]
+): CreatorCommerceMode {
+  if (mode === "basic_creator") return "basic";
+  if (mode === "sovereign_creator_with_provider") return "sovereign_provider";
+  return "sovereign_node";
+}
+
+function toEndpointStability(
+  kind: ProviderServiceProfile["canonicalCommerceKind"]
+): EndpointStability {
+  if (kind === "provider_hosted" || kind === "self_hosted_stable") return "stable";
+  if (kind === "temporary_endpoint") return "temporary";
+  return "unknown";
+}
+
 function resolveProviderServiceProfile(input: {
   hasLocalInvoiceMinting: boolean;
+  hasChainBackendReady?: boolean;
   providerCfg?: NetworkProviderConfig;
   ctx?: ReturnType<typeof getCapabilityContext>;
 }): ProviderServiceProfile {
@@ -4721,24 +4757,43 @@ function resolveProviderServiceProfile(input: {
   const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "") || null;
   const providerConfigured = hasProviderPaymentTarget(providerCfg);
   const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
+  const providerCapable = providerConfigured && providerTrusted && Boolean(providerUrl);
   const hasLocalInvoiceMinting = Boolean(input.hasLocalInvoiceMinting);
+  const hasChainBackendReady = Boolean(input.hasChainBackendReady);
 
-  const isBasicCreator = ctx.nodeMode === "basic";
-  const isLanNode = ctx.nodeMode === "lan";
-  const fullySelfProvided = hasStablePublicRoute && hasLocalInvoiceMinting;
-  const isSovereignCreatorWithProvider =
-    !isBasicCreator &&
-    !isLanNode &&
-    providerConfigured &&
-    !fullySelfProvided;
-  const participationMode: ProviderServiceProfile["participationMode"] = isBasicCreator
-    ? "basic_creator"
-    : isSovereignCreatorWithProvider
-      ? "sovereign_creator_with_provider"
-      : "sovereign_node";
+  const selectedParticipationMode: ProviderServiceProfile["selectedParticipationMode"] =
+    ctx.nodeMode === "basic"
+      ? "basic_creator"
+      : ctx.nodeMode === "lan"
+        ? "sovereign_node_operator"
+        : "sovereign_creator";
 
-  const needsProviderInvoicing = participationMode === "sovereign_creator_with_provider" && !hasLocalInvoiceMinting;
-  const needsDurablePublicHosting = participationMode === "sovereign_creator_with_provider" && !hasStablePublicRoute;
+  const capabilityResolution = resolveCapabilityRouting({
+    selectedParticipationMode,
+    stablePublicHostConfigured: hasStablePublicRoute,
+    temporaryEndpointActive: Boolean(temporaryNodeEndpointOrigin),
+    canonicalCommerceConfigured: hasStablePublicRoute,
+    lndReady: hasLocalInvoiceMinting,
+    chainReady: hasChainBackendReady,
+    replayReady: hasStablePublicRoute,
+    providerCapable,
+    localCommerceHost: stablePublicRouteOrigin,
+    localSettlementHost: stablePublicRouteOrigin,
+    providerHost: providerUrl
+  });
+
+  const effectiveParticipationMode = capabilityResolution.effectiveParticipationMode;
+  const participationMode: ProviderServiceProfile["participationMode"] =
+    effectiveParticipationMode === "basic_creator"
+      ? "basic_creator"
+      : effectiveParticipationMode === "sovereign_node_operator"
+        ? "sovereign_node"
+        : "sovereign_creator_with_provider";
+
+  const needsProviderInvoicing = capabilityResolution.delegatedCapabilities.some((name) =>
+    name === "invoice_minting" || name === "settlement" || name === "payout");
+  const needsDurablePublicHosting = capabilityResolution.delegatedCapabilities.some((name) =>
+    name === "commerce_host" || name === "buyer_recovery" || name === "replay_delivery");
 
   const providerInvoicingFeePercent = needsProviderInvoicing ? PROVIDER_INVOICING_FEE_PERCENT : 0;
   const providerDurableHostingFeePercent = needsDurablePublicHosting ? PROVIDER_DURABLE_HOSTING_FEE_PERCENT : 0;
@@ -4746,7 +4801,7 @@ function resolveProviderServiceProfile(input: {
 
   let canonicalCommerceOrigin: string | null = null;
   let canonicalCommerceKind: ProviderServiceProfile["canonicalCommerceKind"] = "unavailable";
-  if (needsDurablePublicHosting && providerTrusted && providerUrl) {
+  if (capabilityResolution.effectiveCommerceHost && providerUrl && capabilityResolution.effectiveCommerceHost === providerUrl) {
     canonicalCommerceOrigin = providerUrl;
     canonicalCommerceKind = "provider_hosted";
   } else if (stablePublicRouteOrigin) {
@@ -4758,12 +4813,16 @@ function resolveProviderServiceProfile(input: {
   }
 
   return {
+    selectedParticipationMode,
+    effectiveParticipationMode,
     participationMode,
+    capabilityResolution,
     hasStablePublicRoute,
     stablePublicRouteOrigin,
     temporaryNodeEndpointOrigin,
     localNodeEndpointOrigin: activeLocalOrigin,
     hasLocalInvoiceMinting,
+    hasChainBackendReady,
     needsProviderInvoicing,
     needsDurablePublicHosting,
     providerInvoicingFeePercent,
@@ -4774,6 +4833,110 @@ function resolveProviderServiceProfile(input: {
     providerUrl,
     canonicalCommerceOrigin,
     canonicalCommerceKind
+  };
+}
+
+type NodeRegistryEntry = {
+  node: CertifydNodeDescriptor;
+  eligible: {
+    stableNode: boolean;
+    canActAsCommerceHost: boolean;
+    canJoinNetworkAsNode: boolean;
+  };
+  source: "self_runtime" | "configured_provider";
+};
+
+async function buildSelfNodeRegistryEntry(userId: string | null): Promise<NodeRegistryEntry> {
+  const identity = await buildLocalNodeIdentityDoc(userId);
+  const providerCfg = getNetworkProviderConfig();
+  const ctx = getCapabilityContext();
+  const paymentsReadiness = userId ? await getPaymentsReadiness(userId).catch(() => null) : null;
+  const localInvoiceMinting = ctx.paymentsMode === "node" && Boolean(paymentsReadiness?.lightning?.ready);
+  const profile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: localInvoiceMinting,
+    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
+    providerCfg,
+    ctx
+  });
+  const endpoint = identity.endpoints[0] || null;
+  const endpointKind =
+    endpoint?.kind === "quick" || endpoint?.kind === "named" || endpoint?.kind === "custom"
+      ? endpoint.kind
+      : "unknown";
+  const stability = classifyEndpointStability({
+    endpointUrl: endpoint?.url || null,
+    endpointKind
+  });
+  const node: CertifydNodeDescriptor = {
+    nodeId: identity.nodeId,
+    nodeKind: identity.serviceRoles.invoiceProvider ? "provider" : "sovereign_creator",
+    endpointUrl: endpoint?.url || null,
+    endpointKind,
+    stability,
+    canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
+    canonicalCommerceKind: profile.canonicalCommerceKind,
+    commerceCapable: localInvoiceMinting,
+    replayCapable: stability === "stable" && Boolean(endpoint?.active),
+    settlementCapable: localInvoiceMinting,
+    publicKey: identity.nodePubKey,
+    displayName: null,
+    brandLabel: null
+  };
+  if (userId) {
+    try {
+      const owner = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { displayName: true, email: true }
+      });
+      const name = asString(owner?.displayName || "").trim() || asString(owner?.email || "").trim() || null;
+      node.displayName = name;
+      node.brandLabel = name;
+    } catch {}
+  }
+  return {
+    node,
+    eligible: {
+      stableNode: node.stability === "stable",
+      canActAsCommerceHost: canActAsCommerceHost(node),
+      canJoinNetworkAsNode: canJoinNetworkAsNode(node)
+    },
+    source: "self_runtime"
+  };
+}
+
+function buildConfiguredProviderRegistryEntry(): NodeRegistryEntry | null {
+  const providerCfg = getNetworkProviderConfig();
+  if (!isNetworkProviderConfigured(providerCfg)) return null;
+  const providerUrl = asString(providerCfg.providerUrl || "").trim();
+  if (!providerUrl) return null;
+  const stability = classifyEndpointStability({
+    endpointUrl: providerUrl,
+    endpointKind: "custom"
+  });
+  const trusted = evaluateProviderExecutionTrustReadiness().allowed;
+  const node: CertifydNodeDescriptor = {
+    nodeId: providerCfg.providerNodeId,
+    nodeKind: "provider",
+    endpointUrl: providerUrl,
+    endpointKind: "custom",
+    stability,
+    canonicalCommerceOrigin: providerUrl,
+    canonicalCommerceKind: stability === "stable" ? "self_hosted_stable" : "temporary_endpoint",
+    commerceCapable: trusted,
+    replayCapable: stability === "stable",
+    settlementCapable: trusted,
+    publicKey: providerCfg.providerPubKey,
+    displayName: "Configured provider node",
+    brandLabel: "Configured provider"
+  };
+  return {
+    node,
+    eligible: {
+      stableNode: node.stability === "stable",
+      canActAsCommerceHost: canActAsCommerceHost(node),
+      canJoinNetworkAsNode: canJoinNetworkAsNode(node)
+    },
+    source: "configured_provider"
   };
 }
 
@@ -9258,6 +9421,83 @@ function deriveNetworkVisibility(publicStatus: ReturnType<typeof getPublicStatus
   return "UNLISTED";
 }
 
+app.get("/node/self", async (_req: any, reply: any) => {
+  const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } }).catch(() => null);
+  const self = await buildSelfNodeRegistryEntry(owner?.id || null);
+  app.log.debug(
+    {
+      nodeId: self.node.nodeId,
+      nodeKind: self.node.nodeKind,
+      stability: self.node.stability,
+      canonicalCommerceOrigin: self.node.canonicalCommerceOrigin,
+      canJoinNetworkAsNode: self.eligible.canJoinNetworkAsNode
+    },
+    "node.identity.resolved"
+  );
+  return reply.send(self);
+});
+
+app.get("/network/nodes", async (_req: any, reply: any) => {
+  const owner = await prisma.user.findFirst({ orderBy: { createdAt: "asc" }, select: { id: true } }).catch(() => null);
+  const self = await buildSelfNodeRegistryEntry(owner?.id || null);
+  const configuredProvider = buildConfiguredProviderRegistryEntry();
+  const nodes = configuredProvider ? [self, configuredProvider] : [self];
+  app.log.debug(
+    {
+      nodes: nodes.length,
+      selfNodeKind: self.node.nodeKind,
+      selfStability: self.node.stability,
+      providerConfigured: Boolean(configuredProvider)
+    },
+    "node.registry.resolved"
+  );
+  return reply.send({
+    nodes,
+    source: "bootstrap_local",
+    message:
+      "Bootstrap node registry. Stable nodes can participate as commerce hosts; temporary endpoints are preview/testing only."
+  });
+});
+
+app.get("/api/node/self", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const self = await buildSelfNodeRegistryEntry(userId);
+  app.log.debug(
+    {
+      nodeId: self.node.nodeId,
+      nodeKind: self.node.nodeKind,
+      stability: self.node.stability,
+      canonicalCommerceOrigin: self.node.canonicalCommerceOrigin,
+      canActAsCommerceHost: self.eligible.canActAsCommerceHost,
+      canJoinNetworkAsNode: self.eligible.canJoinNetworkAsNode
+    },
+    "node.identity.resolved"
+  );
+  return reply.send(self);
+});
+
+app.get("/api/network/nodes", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const self = await buildSelfNodeRegistryEntry(userId);
+  const configuredProvider = buildConfiguredProviderRegistryEntry();
+  const nodes = configuredProvider ? [self, configuredProvider] : [self];
+  app.log.debug(
+    {
+      nodes: nodes.length,
+      selfNodeKind: self.node.nodeKind,
+      selfStability: self.node.stability,
+      providerConfigured: Boolean(configuredProvider)
+    },
+    "node.registry.resolved"
+  );
+  return reply.send({
+    nodes,
+    source: "bootstrap_local",
+    message:
+      "Bootstrap node registry. Stable nodes can participate as commerce hosts; temporary endpoints are preview/testing only."
+  });
+});
+
 app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const runtime = resolveRuntimeConfig();
@@ -9272,8 +9512,31 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
+    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
     providerCfg: providerConfig,
     ctx
+  });
+  app.log.debug(
+    {
+      selectedParticipationMode: serviceProfile.selectedParticipationMode,
+      effectiveParticipationMode: serviceProfile.effectiveParticipationMode,
+      delegatedCapabilities: serviceProfile.capabilityResolution.delegatedCapabilities,
+      readinessBlockers: serviceProfile.capabilityResolution.readinessBlockers,
+      effectiveCommerceHost: serviceProfile.capabilityResolution.effectiveCommerceHost,
+      effectiveSettlementHost: serviceProfile.capabilityResolution.effectiveSettlementHost
+    },
+    "network.capability_resolution"
+  );
+  const selfNode = await buildSelfNodeRegistryEntry(userId);
+  const commerceMode = toCreatorCommerceMode(serviceProfile.participationMode);
+  const endpointStability = toEndpointStability(serviceProfile.canonicalCommerceKind);
+  const canonicalCommerceConfigured = Boolean(
+    asString(serviceProfile.canonicalCommerceOrigin || "").trim()
+  );
+  const paidCommerceGate = canEnablePaidCommerce({
+    mode: commerceMode,
+    endpointStability,
+    canonicalCommerceConfigured
   });
   const delegatedInvoiceSupport = serviceProfile.providerConfigured && serviceProfile.providerTrusted;
   const payoutDestination = await resolveEffectivePayoutDestination(userId, {
@@ -9305,6 +9568,10 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       localInvoiceMinting,
       delegatedInvoiceSupport,
       tipsOnly: !localInvoiceMinting && !delegatedInvoiceSupport,
+      paidCommerceAllowed: paidCommerceGate.allowed,
+      paidCommerceReason: paidCommerceGate.reason,
+      endpointStability,
+      canonicalCommerceConfigured,
       providerInvoicingAvailable: serviceProfile.needsProviderInvoicing,
       creatorPayoutDestinationConfigured: payoutDestination.valid,
       creatorPayoutRail: payoutDestination.effectivePayoutRail,
@@ -9312,12 +9579,16 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       providerBackedCommerceMessage
     },
     modeProfile: {
+      selectedParticipationMode: serviceProfile.selectedParticipationMode,
+      effectiveParticipationMode: serviceProfile.effectiveParticipationMode,
       participationMode: serviceProfile.participationMode,
       hasStablePublicRoute: serviceProfile.hasStablePublicRoute,
       hasLocalInvoiceMinting: serviceProfile.hasLocalInvoiceMinting,
+      hasChainBackendReady: serviceProfile.hasChainBackendReady,
       providerConfigured: serviceProfile.providerConfigured,
       providerTrusted: serviceProfile.providerTrusted
     },
+    capabilityResolution: serviceProfile.capabilityResolution,
     providerServices: {
       invoicing: {
         mode: serviceProfile.needsProviderInvoicing ? "provider_backed" : "self_provided",
@@ -9346,6 +9617,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       configured: providerConfigured,
       providerNodeId: providerConfigured ? providerConfig.providerNodeId : null
     },
+    nodeIdentity: selfNode,
     visibility,
     reachability: {
       publicUrl,
@@ -9353,6 +9625,9 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       temporaryNodeEndpointUrl: serviceProfile.temporaryNodeEndpointOrigin,
       canonicalCommerceUrl: serviceProfile.canonicalCommerceOrigin,
       canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
+      effectiveCommerceHost: serviceProfile.capabilityResolution.effectiveCommerceHost,
+      effectiveSettlementHost: serviceProfile.capabilityResolution.effectiveSettlementHost,
+      effectiveBuyerRecoveryHost: serviceProfile.capabilityResolution.effectiveBuyerRecoveryHost,
       routing: buildDeliveryRoutingDescriptor({
         canonicalCommerceOrigin: serviceProfile.canonicalCommerceOrigin,
         canonicalCommerceKind: serviceProfile.canonicalCommerceKind,
@@ -9481,6 +9756,7 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
     hasLocalInvoiceMinting:
       ctx.paymentsMode === "node" &&
       Boolean(paymentsReadiness?.lightning?.ready),
+    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
     providerCfg: providerTarget,
     ctx
   });
@@ -9502,6 +9778,7 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
     acknowledgment,
     permit,
     serviceProfile,
+    capabilityResolution: serviceProfile.capabilityResolution,
     payoutDestination,
     userStatus,
     activation,
@@ -11069,12 +11346,26 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
 app.get("/api/public/origin", async (req: any, reply: any) => {
   const publicOrigin = getPublicOrigin(req);
   const profile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
+  const commerceMode = toCreatorCommerceMode(profile.participationMode);
+  const endpointStability = toEndpointStability(profile.canonicalCommerceKind);
+  const canonicalCommerceConfigured = Boolean(
+    asString(profile.canonicalCommerceOrigin || "").trim()
+  );
+  const paidCommerceGate = canEnablePaidCommerce({
+    mode: commerceMode,
+    endpointStability,
+    canonicalCommerceConfigured
+  });
   return reply.send({
     publicOrigin,
     canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
     canonicalCommerceKind: profile.canonicalCommerceKind,
     localNodeEndpointOrigin: profile.localNodeEndpointOrigin,
-    temporaryNodeEndpointOrigin: profile.temporaryNodeEndpointOrigin
+    temporaryNodeEndpointOrigin: profile.temporaryNodeEndpointOrigin,
+    paidCommerceAllowed: paidCommerceGate.allowed,
+    paidCommerceReason: paidCommerceGate.reason,
+    endpointStability,
+    canonicalCommerceConfigured
   });
 });
 
@@ -17460,6 +17751,7 @@ async function resolveCanonicalBuyerRecoveryOrigin(
   }
   const profile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting,
+    hasChainBackendReady: false,
     providerCfg,
     ctx: capabilityCtx
   });
@@ -17603,6 +17895,21 @@ async function handlePublicOffer(req: any, reply: any) {
     providerCfg: getNetworkProviderConfig(),
     ctx: capabilityCtx
   });
+  const paidCommerceMode = toCreatorCommerceMode(serviceProfile.participationMode);
+  const endpointStability = toEndpointStability(serviceProfile.canonicalCommerceKind);
+  const canonicalCommerceConfigured = Boolean(
+    asString(serviceProfile.canonicalCommerceOrigin || "").trim()
+  );
+  const paidCommerceGate = canEnablePaidCommerce({
+    mode: paidCommerceMode,
+    endpointStability,
+    canonicalCommerceConfigured
+  });
+  const paidCommerceAllowed = !hasPrice || paidCommerceGate.allowed;
+  const paidCommerceReason = !hasPrice ? null : paidCommerceGate.reason;
+  const exposedCanonicalUrls = paidCommerceAllowed
+    ? canonicalUrls
+    : { ...canonicalUrls, buyUrl: null };
   const edgeCandidateMode = resolveReplayMode({
     edgeDeliveryEnabled: EDGE_DELIVERY_ENABLED,
     edgeTicketSecretConfigured: Boolean(EDGE_TICKET_SECRET),
@@ -17636,10 +17943,12 @@ async function handlePublicOffer(req: any, reply: any) {
     {
       contentId: content.id,
       canonicalCommerceOrigin: canonicalBuyerOrigin,
-      canonicalBuyUrl: canonicalUrls.buyUrl,
+      canonicalBuyUrl: exposedCanonicalUrls.buyUrl,
       replayMode: deliveryRouting.replayMode,
       selectedOriginType: deliveryRouting.selectedOriginType,
-      stability: deliveryRouting.stability
+      stability: deliveryRouting.stability,
+      paidCommerceAllowed,
+      endpointStability
     },
     "buyer.canonical_urls.offer"
   );
@@ -17667,12 +17976,16 @@ async function handlePublicOffer(req: any, reply: any) {
     owned: gated.entitled,
     publishProof,
     paymentAccessProof,
+    paidCommerceAllowed,
+    paidCommerceReason,
+    endpointStability,
+    canonicalCommerceConfigured,
     seller: {
       hostOrigin: canonicalBuyerOrigin,
       requestOrigin: normalizePublicOriginBase(baseUrl || "")
     },
     sellerEndpoints: canonicalBuyerOrigin ? [{ baseUrl: canonicalBuyerOrigin, p2p: `${canonicalBuyerOrigin}/p2p`, public: `${canonicalBuyerOrigin}/public` }] : [],
-    urls: canonicalUrls,
+    urls: exposedCanonicalUrls,
     routing: deliveryRouting,
     fulfillment: { mode: "receiptToken", ttlSeconds }
   });
@@ -17742,6 +18055,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       hasLocalInvoiceMinting:
         capabilityCtx.paymentsMode === "node" &&
         Boolean(sellerPaymentsReadiness?.lightning?.ready),
+      hasChainBackendReady: Boolean(sellerPaymentsReadiness?.onchain?.ready),
       providerCfg: getNetworkProviderConfig(),
       ctx: capabilityCtx
     });
@@ -17767,6 +18081,36 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     if (amountSatsInput > 0n && amountSatsInput !== content.priceSats) {
       app.log.info({ ...intentLog, mappedCategory: "amount_mismatch", mappedCode: "AMOUNT_MISMATCH" }, "publicPaymentsIntents.blocked");
       return reply.code(409).send({ code: "AMOUNT_MISMATCH", message: "Amount must match creator price." });
+    }
+    const paidCommerceMode = toCreatorCommerceMode(serviceProfile.participationMode);
+    const endpointStability = toEndpointStability(serviceProfile.canonicalCommerceKind);
+    const canonicalCommerceConfigured = Boolean(
+      asString(serviceProfile.canonicalCommerceOrigin || "").trim()
+    );
+    const paidCommerceGate = canEnablePaidCommerce({
+      mode: paidCommerceMode,
+      endpointStability,
+      canonicalCommerceConfigured
+    });
+    if (!paidCommerceGate.allowed) {
+      app.log.warn(
+        {
+          event: "commerce_blocked_temporary_endpoint",
+          mode: paidCommerceMode,
+          endpointStability,
+          canonicalCommerceConfigured,
+          contentId
+        },
+        "commerce_blocked_temporary_endpoint"
+      );
+      return reply.code(409).send({
+        code: "PAID_COMMERCE_REQUIRES_STABLE_HOST",
+        message: paidCommerceGate.reason || "Paid commerce requires a stable public host. Temporary links are preview-only.",
+        paidCommerceAllowed: false,
+        paidCommerceReason: paidCommerceGate.reason,
+        endpointStability,
+        canonicalCommerceConfigured
+      });
     }
 
     const manifest = await prisma.manifest.findUnique({ where: { contentId } });

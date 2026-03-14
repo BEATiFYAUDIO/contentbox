@@ -43,6 +43,20 @@ type NetworkSummary = {
     configured: boolean;
     providerNodeId: string | null;
   };
+  modeProfile?: {
+    selectedParticipationMode?: string;
+    effectiveParticipationMode?: string;
+    hasStablePublicRoute?: boolean;
+    hasLocalInvoiceMinting?: boolean;
+    hasChainBackendReady?: boolean;
+  };
+  capabilityResolution?: {
+    delegatedCapabilities?: string[];
+    readinessBlockers?: string[];
+    effectiveCommerceHost?: string | null;
+    effectiveSettlementHost?: string | null;
+    effectiveBuyerRecoveryHost?: string | null;
+  };
 };
 
 type NetworkProviderConfig = {
@@ -123,6 +137,13 @@ export default function ConfigPage({
   onOpenPayments?: () => void;
   onIdentityRefresh?: () => void;
 }) {
+  const mapSummaryModeToParticipationMode = (mode: string | null | undefined): ParticipationMode | null => {
+    if (!mode) return null;
+    if (mode === "basic_creator") return "basic_creator";
+    if (mode === "sovereign_node_operator" || mode === "sovereign_node") return "sovereign_node";
+    if (mode === "sovereign_creator_with_provider" || mode === "sovereign_creator") return "sovereign_with_provider";
+    return null;
+  };
   const devMode = Boolean((import.meta as any).env?.DEV);
   const apiBase = useMemo(() => getApiBase(), []);
   const uiOrigin = typeof window !== "undefined" ? window.location.origin : "";
@@ -344,11 +365,15 @@ export default function ConfigPage({
       networkSummary?.serviceRoles?.hybrid ||
       networkSummary?.paymentCapability?.localInvoiceMinting
   );
-  const resolvedParticipationMode: ParticipationMode = resolveParticipationMode({
+  const fallbackParticipationMode: ParticipationMode = resolveParticipationMode({
     nodeMode: modeInfo?.nodeMode ?? null,
     providerConfigured,
     providerInfrastructureCapability
   });
+  const selectedFromSummary = mapSummaryModeToParticipationMode(networkSummary?.modeProfile?.selectedParticipationMode);
+  const effectiveFromSummary = mapSummaryModeToParticipationMode(networkSummary?.modeProfile?.effectiveParticipationMode);
+  const resolvedParticipationMode: ParticipationMode = effectiveFromSummary || fallbackParticipationMode;
+  const selectedParticipationMode: ParticipationMode = selectedFromSummary || fallbackParticipationMode;
   const participationMode = participationModeMeta(resolvedParticipationMode);
   const participationStageIndex =
     resolvedParticipationMode === "basic_creator" ? 0 : resolvedParticipationMode === "sovereign_with_provider" ? 1 : 2;
@@ -368,6 +393,8 @@ export default function ConfigPage({
       health?.publicBuyOrigin ||
       (publicStatus?.mode === "named" && (publicStatus?.canonicalOrigin || publicStatus?.publicOrigin))
   );
+  const delegatedCapabilities = networkSummary?.capabilityResolution?.delegatedCapabilities || [];
+  const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
   const invalidOrigins = [
     { label: "Commerce host", value: normalizedPublicBuyOrigin },
     { label: "Creator app host", value: normalizedPublicStudioOrigin },
@@ -916,6 +943,22 @@ export default function ConfigPage({
           This controls node infrastructure capabilities. Creator identity and content remain unchanged.
         </div>
         <div style={{ marginBottom: 10, fontSize: 12, opacity: 0.7 }}>{participationMode.description}</div>
+        {selectedParticipationMode !== resolvedParticipationMode ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+            Selected posture: <b>{participationModeMeta(selectedParticipationMode).label}</b> • Effective runtime:{" "}
+            <b>{participationMode.label}</b>
+          </div>
+        ) : null}
+        {readinessBlockers.length > 0 ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+            Readiness blockers: {readinessBlockers.join(" ")}
+          </div>
+        ) : null}
+        {delegatedCapabilities.length > 0 ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#93c5fd" }}>
+            Delegated capabilities: {delegatedCapabilities.join(", ")}
+          </div>
+        ) : null}
         {modeLocked ? (
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             {modeInfo?.lockReason || "Mode is locked by server environment settings."}
@@ -987,6 +1030,16 @@ export default function ConfigPage({
         <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
           <div>
             <b>Public commerce host</b>: {stableCommerceConfigured ? canonicalCommerceHost : "Not configured"}
+          </div>
+          <div>
+            <b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}
+          </div>
+          <div>
+            <b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}
+          </div>
+          <div>
+            <b>Effective buyer recovery host</b>:{" "}
+            {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}
           </div>
           <div>
             <b>Temporary preview endpoint</b>:{" "}
