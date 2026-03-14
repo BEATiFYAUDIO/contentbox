@@ -2127,6 +2127,48 @@ function resolveDelegatedCreatorOriginForCreator(input: {
   return origin;
 }
 
+function resolveDelegatedCreatorOriginCandidatesForCreator(input: {
+  req?: any;
+  creatorNodeId: string;
+}): string[] {
+  const creatorNodeId = asString(input.creatorNodeId || "").trim();
+  if (!creatorNodeId) return [];
+  const requestOrigin = normalizePublicOriginBase(getPublicOrigin(input.req));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (raw: unknown) => {
+    const normalized = normalizePublicOriginBase(asString(raw || "").trim());
+    if (!normalized) return;
+    if (requestOrigin && normalized === requestOrigin) return;
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(normalized);
+  };
+
+  const link = getProviderCreatorLink(creatorNodeId);
+  add(link?.creatorUpstreamOrigin);
+
+  const publishes = listProviderDelegatedPublishes()
+    .filter(
+      (row) =>
+        asString(row.creatorNodeId || "").trim() === creatorNodeId &&
+        asString(row.status || "").trim().toLowerCase() === "published"
+    )
+    .sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
+
+  for (const row of publishes) {
+    add(row.creatorPreviewOrigin);
+    add(
+      resolveDelegatedCreatorOriginForContent({
+        req: input.req,
+        contentId: asString(row.contentId || "").trim(),
+        creatorScopeId: creatorNodeId
+      })
+    );
+  }
+  return out;
+}
+
 function createProviderDelegatedPublish(
   input: Omit<ProviderDelegatedPublishRecord, "id" | "createdAt" | "updatedAt">
 ): ProviderDelegatedPublishRecord {
@@ -15979,45 +16021,47 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         hasLocalInvoiceMinting: false,
         creatorHandle: requested
       }).canonicalCommerceOrigin || normalizePublicOriginBase(APP_BASE_URL);
-    const delegatedUpstreamOrigin =
-      resolveDelegatedCreatorOriginForCreator({
-        req,
-        creatorNodeId: asString(delegatedLink.creatorNodeId || "").trim()
-      }) || null;
-    if (delegatedUpstreamOrigin) {
+    const delegatedUpstreamOrigins = resolveDelegatedCreatorOriginCandidatesForCreator({
+      req,
+      creatorNodeId: asString(delegatedLink.creatorNodeId || "").trim()
+    });
+    if (delegatedUpstreamOrigins.length > 0) {
       try {
         const upstreamHandleCandidates = Array.from(
           new Set([matchedHandle, requested, requestedAlias].filter((v): v is string => Boolean(v)))
         );
-        for (const upstreamHandle of upstreamHandleCandidates) {
-          const upstreamProfileUrl = buildPublicUrlFromOrigin(
-            delegatedUpstreamOrigin,
-            `/u/${encodeURIComponent(upstreamHandle)}`
-          );
-          const upstreamRes = await fetch(upstreamProfileUrl, { method: "GET" } as any);
-          if (upstreamRes.ok) {
-            const upstreamHtml = await upstreamRes.text();
-            if (upstreamHtml && /<html[\s>]/i.test(upstreamHtml)) {
-              const canonical = normalizePublicOriginBase(canonicalCommerceOrigin || "");
-              const upstream = normalizePublicOriginBase(delegatedUpstreamOrigin || "");
-              let normalized = upstreamHtml;
-              if (canonical && upstream && canonical !== upstream) {
-                const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-                normalized = normalized.replace(new RegExp(escaped, "g"), canonical);
+        for (const upstreamOrigin of delegatedUpstreamOrigins) {
+          for (const upstreamHandle of upstreamHandleCandidates) {
+            const upstreamProfileUrl = buildPublicUrlFromOrigin(
+              upstreamOrigin,
+              `/u/${encodeURIComponent(upstreamHandle)}`
+            );
+            const upstreamRes = await fetch(upstreamProfileUrl, { method: "GET" } as any);
+            if (upstreamRes.ok) {
+              const upstreamHtml = await upstreamRes.text();
+              if (upstreamHtml && /<html[\s>]/i.test(upstreamHtml)) {
+                const canonical = normalizePublicOriginBase(canonicalCommerceOrigin || "");
+                const upstream = normalizePublicOriginBase(upstreamOrigin || "");
+                let normalized = upstreamHtml;
+                if (canonical && upstream && canonical !== upstream) {
+                  const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                  normalized = normalized.replace(new RegExp(escaped, "g"), canonical);
+                }
+                req.log.info(
+                  {
+                    creatorHandle: requested,
+                    upstreamHandle,
+                    routingMode: "provider_backed",
+                    storefrontContract: "upstream_proxy",
+                    providerAuthorityOrigin: canonical,
+                    currentCreatorUpstreamOrigin: upstream,
+                    upstreamCandidates: delegatedUpstreamOrigins.length
+                  },
+                  "provider_backed.storefront_profile.proxy"
+                );
+                reply.type("text/html; charset=utf-8");
+                return reply.send(normalized);
               }
-              req.log.info(
-                {
-                  creatorHandle: requested,
-                  upstreamHandle,
-                  routingMode: "provider_backed",
-                  storefrontContract: "upstream_proxy",
-                  providerAuthorityOrigin: canonical,
-                  currentCreatorUpstreamOrigin: upstream
-                },
-                "provider_backed.storefront_profile.proxy"
-              );
-              reply.type("text/html; charset=utf-8");
-              return reply.send(normalized);
             }
           }
         }
@@ -16029,7 +16073,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         routingMode: "provider_backed",
         storefrontContract: "upstream_proxy",
         providerAuthorityOrigin: normalizePublicOriginBase(canonicalCommerceOrigin || ""),
-        currentCreatorUpstreamOrigin: delegatedUpstreamOrigin,
+        currentCreatorUpstreamOrigin: delegatedUpstreamOrigins[0] || null,
+        upstreamCandidates: delegatedUpstreamOrigins.length,
         degraded: true
       },
       "provider_backed.storefront_profile.degraded"
