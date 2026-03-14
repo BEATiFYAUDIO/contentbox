@@ -7,6 +7,34 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     proxy: {
+      '/buy': {
+        target: 'http://127.0.0.1:4000',
+        changeOrigin: true
+      },
+      '/p': {
+        target: 'http://127.0.0.1:4000',
+        changeOrigin: true
+      },
+      '/c': {
+        target: 'http://127.0.0.1:4000',
+        changeOrigin: true
+      },
+      '/library': {
+        target: 'http://127.0.0.1:4000',
+        changeOrigin: true
+      },
+      '/receipt': {
+        target: 'http://127.0.0.1:4000',
+        changeOrigin: true
+      },
+      '/replay': {
+        target: 'http://127.0.0.1:4000',
+        changeOrigin: true
+      },
+      '/public': {
+        target: 'http://127.0.0.1:4000',
+        changeOrigin: true
+      },
       '/api': {
         target: 'http://127.0.0.1:4000',
         changeOrigin: true

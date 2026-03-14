@@ -16527,7 +16527,13 @@ async function handleBuyPage(req: any, reply: any) {
     include: { owner: { select: { displayName: true, email: true } } }
   });
   if (!content) return notFound(reply, "Not found");
-  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+  if (
+    !isCreatorScopeAllowedForContent({
+      creatorScopeId,
+      contentId,
+      ownerUserId: asString(content.ownerUserId || "").trim() || null
+    })
+  ) {
     return notFound(reply, "Not found");
   }
   const canonicalBuyerRecoveryBase = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
@@ -16657,15 +16663,15 @@ async function handleBuyPage(req: any, reply: any) {
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
   function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
   function joinBase(base, route){
-    const b = String(base || "").trim().replace(/\/+$/, "");
+    const b = String(base || "").trim().replace(/\\/+$/, "");
     const p = String(route || "").trim();
     if (!p) return b || apiBase;
-    if (/^https?:\/\//i.test(p)) return p;
+    if (/^https?:\\/\\//i.test(p)) return p;
     return (b || apiBase) + (p.startsWith("/") ? p : ("/" + p));
   }
   function recoveryUrl(route){
     const r = String(route || "").trim();
-    const scoped = /^https?:\/\//i.test(r)
+    const scoped = /^https?:\\/\\//i.test(r)
       ? r
       : ((creatorScopePrefix || "") + (r.startsWith("/") ? r : ("/" + r)));
     return joinBase(buyerRecoveryBase || apiBase, scoped);
@@ -17137,6 +17143,10 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   function renderOffer(offer, entitlement, owned){
+    if (!offer || typeof offer !== "object") {
+      app.innerHTML = "<div class='muted'>Offer is unavailable right now. Please refresh.</div>";
+      return;
+    }
     const already = Boolean(owned);
     const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
     const isPaid = Number(offer.priceSats || 0) > 0;
@@ -17452,6 +17462,11 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   async function startPurchase(offer){
+    if (!offer || typeof offer !== "object") {
+      const statusEl = document.getElementById("status");
+      if (statusEl) statusEl.textContent = "Offer is unavailable right now.";
+      return;
+    }
     if (!buyer || !buyer.id) {
       try {
         const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
@@ -17519,7 +17534,13 @@ async function handleBuyPage(req: any, reply: any) {
 
   if (productTier === "basic") {
     fetchJson(scopePath("/buy/content/" + contentId + "/offer"))
-      .then((offer) => renderBasicOffer(offer))
+      .then((offer) => {
+        if (!offer || typeof offer !== "object") {
+          app.textContent = "Offer is unavailable right now. Please refresh.";
+          return;
+        }
+        renderBasicOffer(offer);
+      })
       .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
     return;
   }
@@ -17530,6 +17551,11 @@ async function handleBuyPage(req: any, reply: any) {
         .finally(() => {
           fetchJson(scopePath("/buy/content/" + contentId + "/offer"))
             .then(async (offer)=> {
+              if (!offer || typeof offer !== "object") {
+                currentOffer = null;
+                app.textContent = "Offer is unavailable right now. Please refresh.";
+                return;
+              }
               currentOffer = offer;
               livePaymentProof = null;
               const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
@@ -17976,10 +18002,27 @@ function getCreatorScopeId(req: any): string | null {
   return raw || null;
 }
 
+function isCreatorScopeAllowedForContent(input: {
+  creatorScopeId: string | null;
+  contentId: string;
+  ownerUserId: string | null;
+}): boolean {
+  const creatorScopeId = asString(input.creatorScopeId || "").trim();
+  if (!creatorScopeId) return true;
+  const ownerUserId = asString(input.ownerUserId || "").trim();
+  if (ownerUserId && creatorScopeId === ownerUserId) return true;
+  const delegated = listProviderDelegatedPublishes().find(
+    (row) => row.contentId === input.contentId && row.status === "published"
+  );
+  if (!delegated) return false;
+  return creatorScopeId === asString(delegated.creatorNodeId || "").trim();
+}
+
 function buildCreatorScopedPath(creatorId: string | null, suffixPath: string): string {
   const suffix = String(suffixPath || "").trim();
-  if (!creatorId) return suffix.startsWith("/") ? suffix : `/${suffix}`;
+  if (!creatorId) return suffix ? (suffix.startsWith("/") ? suffix : `/${suffix}`) : "";
   const scoped = `/c/${encodeURIComponent(creatorId)}`;
+  if (!suffix) return scoped;
   return `${scoped}${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
 }
 
@@ -18008,7 +18051,13 @@ async function handlePublicOffer(req: any, reply: any) {
     return notFound(reply, "Not found");
   }
   const content = gated.content;
-  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+  if (
+    !isCreatorScopeAllowedForContent({
+      creatorScopeId,
+      contentId,
+      ownerUserId: asString(content.ownerUserId || "").trim() || null
+    })
+  ) {
     return notFound(reply, "Not found");
   }
   const allowDraftPreview = false;
@@ -18277,7 +18326,13 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     const amountSatsInput = parseSats(body.amountSats);
     const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
     if (!content) return notFound(reply, "Content not found");
-    if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+    if (
+      !isCreatorScopeAllowedForContent({
+        creatorScopeId,
+        contentId,
+        ownerUserId: asString(content.ownerUserId || "").trim() || null
+      })
+    ) {
       return notFound(reply, "Not found");
     }
     const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
@@ -19093,7 +19148,13 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     where: { id: intent.contentId },
     select: { ownerUserId: true }
   });
-  if (creatorScopeId && contentOwner?.ownerUserId && creatorScopeId !== contentOwner.ownerUserId) {
+  if (
+    !isCreatorScopeAllowedForContent({
+      creatorScopeId,
+      contentId: asString(intent.contentId || "").trim(),
+      ownerUserId: asString(contentOwner?.ownerUserId || "").trim() || null
+    })
+  ) {
     return notFound(reply, "Not found");
   }
   const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, contentOwner?.ownerUserId || null);
@@ -19305,7 +19366,13 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
 
   const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content) return notFound(reply, "Content not found");
-  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+  if (
+    !isCreatorScopeAllowedForContent({
+      creatorScopeId,
+      contentId: asString(content.id || "").trim(),
+      ownerUserId: asString(content.ownerUserId || "").trim() || null
+    })
+  ) {
     return notFound(reply, "Not found");
   }
   const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
@@ -19452,7 +19519,13 @@ async function resolveReplayAccessForEntitlement(
   if (!entitlement?.content) return null;
 
   const content = entitlement.content as any;
-  if (creatorScopeId && content.ownerUserId && creatorScopeId !== content.ownerUserId) {
+  if (
+    !isCreatorScopeAllowedForContent({
+      creatorScopeId,
+      contentId: asString(content.id || "").trim(),
+      ownerUserId: asString(content.ownerUserId || "").trim() || null
+    })
+  ) {
     return null;
   }
   const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId || null);
