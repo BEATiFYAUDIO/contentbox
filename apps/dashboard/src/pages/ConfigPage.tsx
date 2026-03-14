@@ -46,6 +46,8 @@ type NetworkSummary = {
   providerBinding: {
     configured: boolean;
     providerNodeId: string | null;
+    providerUrl?: string | null;
+    delegatedCapabilities?: NetworkProviderConfig["delegatedCapabilities"];
   };
   modeProfile?: {
     selectedParticipationMode?: string;
@@ -80,8 +82,17 @@ type NetworkSummary = {
 
 type NetworkProviderConfig = {
   providerNodeId: string | null;
+  providerProfileId?: string | null;
   providerUrl: string | null;
+  providerPubKey?: string | null;
   enabled: boolean;
+  delegatedCapabilities?: {
+    durablePublicCommerceHost?: boolean;
+    buyerRecovery?: boolean;
+    bolt11Invoicing?: boolean;
+    settlement?: boolean;
+    payoutForwarding?: boolean;
+  };
 };
 
 const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
@@ -200,6 +211,8 @@ export default function ConfigPage({
   const [modeMsg, setModeMsg] = useState<string | null>(null);
   const [networkSummary, setNetworkSummary] = useState<NetworkSummary | null>(null);
   const [providerConfig, setProviderConfig] = useState<NetworkProviderConfig | null>(null);
+  const [providerBusy, setProviderBusy] = useState(false);
+  const [providerMsg, setProviderMsg] = useState<string | null>(null);
   const [configMsg, setConfigMsg] = useState<string | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
@@ -379,6 +392,13 @@ export default function ConfigPage({
     networkSummary?.providerBinding?.configured ||
       (providerConfig?.enabled && providerConfig?.providerNodeId && providerConfig?.providerUrl)
   );
+  const providerDelegation = {
+    durablePublicCommerceHost: providerConfig?.delegatedCapabilities?.durablePublicCommerceHost !== false,
+    buyerRecovery: providerConfig?.delegatedCapabilities?.buyerRecovery !== false,
+    bolt11Invoicing: providerConfig?.delegatedCapabilities?.bolt11Invoicing !== false,
+    settlement: providerConfig?.delegatedCapabilities?.settlement !== false,
+    payoutForwarding: providerConfig?.delegatedCapabilities?.payoutForwarding !== false
+  };
   const providerInfrastructureCapability = Boolean(
     networkSummary?.serviceRoles?.invoiceProvider ||
       networkSummary?.serviceRoles?.hybrid ||
@@ -528,6 +548,38 @@ export default function ConfigPage({
       setPublicStatus(json || null);
     } catch {
       setPublicStatus(null);
+    }
+  };
+
+  const saveProviderDelegation = async () => {
+    if (!token || !providerConfig) return;
+    setProviderBusy(true);
+    setProviderMsg(null);
+    try {
+      const res = await fetch(`${apiBase}/api/network/provider`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          providerNodeId: providerConfig.providerNodeId || null,
+          providerUrl: providerConfig.providerUrl || null,
+          enabled: Boolean(providerConfig.enabled),
+          delegatedCapabilities: {
+            durablePublicCommerceHost: providerDelegation.durablePublicCommerceHost,
+            buyerRecovery: providerDelegation.buyerRecovery,
+            bolt11Invoicing: providerDelegation.bolt11Invoicing,
+            settlement: providerDelegation.settlement,
+            payoutForwarding: providerDelegation.payoutForwarding
+          }
+        })
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.error || json?.message || "Failed to save provider configuration.");
+      setProviderConfig(json as NetworkProviderConfig);
+      setProviderMsg("Provider delegation saved.");
+    } catch (e: any) {
+      setProviderMsg(e?.message || "Failed to save provider configuration.");
+    } finally {
+      setProviderBusy(false);
     }
   };
 
@@ -896,6 +948,154 @@ export default function ConfigPage({
             </button>
           ) : null}
         </div>
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Provider Capability Delegation</div>
+        <div style={{ opacity: 0.75, fontSize: 13, marginBottom: 10 }}>
+          Step 1: choose provider node. Step 2: choose which infrastructure capabilities to borrow from that node.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, marginBottom: 12 }}>
+          <label htmlFor="provider-node-id">
+            <div style={{ opacity: 0.75, marginBottom: 4, fontSize: 12 }}>Provider Node ID</div>
+            <input
+              id="provider-node-id"
+              className={inputClass}
+              value={providerConfig?.providerNodeId || ""}
+              onChange={(e) =>
+                setProviderConfig((prev) => ({
+                  ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                  providerNodeId: e.target.value
+                }))
+              }
+              placeholder="node:..."
+            />
+          </label>
+          <label htmlFor="provider-url">
+            <div style={{ opacity: 0.75, marginBottom: 4, fontSize: 12 }}>Provider URL</div>
+            <input
+              id="provider-url"
+              className={inputClass}
+              value={providerConfig?.providerUrl || ""}
+              onChange={(e) =>
+                setProviderConfig((prev) => ({
+                  ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                  providerUrl: e.target.value
+                }))
+              }
+              placeholder="https://provider.example.com"
+            />
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={Boolean(providerConfig?.enabled)}
+              onChange={(e) =>
+                setProviderConfig((prev) => ({
+                  ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                  enabled: e.target.checked
+                }))
+              }
+            />
+            Provider enabled
+          </label>
+        </div>
+        <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>Delegated capabilities</div>
+          <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={providerDelegation.durablePublicCommerceHost}
+                onChange={(e) =>
+                  setProviderConfig((prev) => ({
+                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                    delegatedCapabilities: {
+                      ...(prev?.delegatedCapabilities || {}),
+                      durablePublicCommerceHost: e.target.checked
+                    }
+                  }))
+                }
+              />
+              Durable public commerce host
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={providerDelegation.buyerRecovery}
+                onChange={(e) =>
+                  setProviderConfig((prev) => ({
+                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                    delegatedCapabilities: {
+                      ...(prev?.delegatedCapabilities || {}),
+                      buyerRecovery: e.target.checked
+                    }
+                  }))
+                }
+              />
+              Buyer recovery
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={providerDelegation.bolt11Invoicing}
+                onChange={(e) =>
+                  setProviderConfig((prev) => ({
+                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                    delegatedCapabilities: {
+                      ...(prev?.delegatedCapabilities || {}),
+                      bolt11Invoicing: e.target.checked
+                    }
+                  }))
+                }
+              />
+              BOLT11 invoicing
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={providerDelegation.settlement}
+                onChange={(e) =>
+                  setProviderConfig((prev) => ({
+                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                    delegatedCapabilities: {
+                      ...(prev?.delegatedCapabilities || {}),
+                      settlement: e.target.checked
+                    }
+                  }))
+                }
+              />
+              Settlement
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={providerDelegation.payoutForwarding}
+                onChange={(e) =>
+                  setProviderConfig((prev) => ({
+                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
+                    delegatedCapabilities: {
+                      ...(prev?.delegatedCapabilities || {}),
+                      payoutForwarding: e.target.checked
+                    }
+                  }))
+                }
+              />
+              Payout forwarding
+            </label>
+          </div>
+        </div>
+        <div style={{ fontSize: 12, opacity: 0.78, marginBottom: 8 }}>
+          Unchecked capabilities must run locally and will require local readiness. Checked capabilities borrow provider infrastructure.
+        </div>
+        <button onClick={saveProviderDelegation} disabled={providerBusy || !token} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+          {providerBusy ? "Saving..." : "Save provider delegation"}
+        </button>
+        {providerMsg ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: providerMsg.toLowerCase().includes("failed") ? "#fda4af" : "#93c5fd" }}>
+            {providerMsg}
+          </div>
+        ) : null}
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>

@@ -30,6 +30,7 @@ export type CapabilityRoutingInput = {
   chainReady: boolean;
   replayReady: boolean;
   providerCapable: boolean;
+  providerCapabilityDelegation?: Partial<Record<ResolvedCapabilityName, boolean>>;
   localPublishReady?: boolean;
   localCommerceHost: string | null;
   localSettlementHost: string | null;
@@ -84,6 +85,9 @@ export function resolveCapabilityRouting(input: CapabilityRoutingInput): Capabil
 
   const delegatedCapabilities: ResolvedCapabilityName[] = [];
   const readinessBlockers: string[] = [];
+  const providerDelegation = input.providerCapabilityDelegation || {};
+  const canDelegate = (name: ResolvedCapabilityName) => input.providerCapable && providerDelegation[name] !== false;
+  const canSatisfy = (name: ResolvedCapabilityName) => localCapabilities[name] || canDelegate(name);
   const missingSovereignNodeCapabilities = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES]
     .filter((name) => !localCapabilities[name]);
 
@@ -116,26 +120,39 @@ export function resolveCapabilityRouting(input: CapabilityRoutingInput): Capabil
   } else if (input.selectedParticipationMode === "sovereign_node_operator") {
     if (missingSovereignNodeCapabilities.length === 0) {
       effectiveParticipationMode = "sovereign_node_operator";
-    } else if (input.providerCapable) {
-      delegatedCapabilities.push(...missingSovereignNodeCapabilities);
-      effectiveParticipationMode = "sovereign_creator_with_provider";
     } else {
-      effectiveParticipationMode = "sovereign_creator_unready";
-      addBlocker(
-        readinessBlockers,
-        "No capable delegated node is configured for missing sovereign infrastructure."
-      );
+      const unresolved = missingSovereignNodeCapabilities.filter((name) => !canDelegate(name));
+      if (input.providerCapable) {
+        delegatedCapabilities.push(...missingSovereignNodeCapabilities.filter((name) => canDelegate(name)));
+      }
+      if (unresolved.length === 0 && delegatedCapabilities.length > 0) {
+        effectiveParticipationMode = "sovereign_creator_with_provider";
+      } else if (unresolved.length === 0) {
+        effectiveParticipationMode = "sovereign_node_operator";
+      } else {
+        effectiveParticipationMode = "sovereign_creator_unready";
+        addBlocker(
+          readinessBlockers,
+          `Missing local sovereignty dependencies and provider delegation is disabled for: ${unresolved.join(", ")}.`
+        );
+      }
     }
   } else {
-    const providerBackedCapabilities = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES];
-    if (input.providerCapable) {
+    const providerBackedCapabilities = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES]
+      .filter((name) => canDelegate(name));
+    const unresolved = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES].filter((name) => !canSatisfy(name));
+    if (providerBackedCapabilities.length > 0) {
       delegatedCapabilities.push(...providerBackedCapabilities);
+    }
+    if (unresolved.length === 0 && (delegatedCapabilities.length > 0 || input.providerCapable)) {
       effectiveParticipationMode = "sovereign_creator_with_provider";
+    } else if (unresolved.length === 0) {
+      effectiveParticipationMode = "sovereign_node_operator";
     } else {
       effectiveParticipationMode = "sovereign_creator_unready";
       addBlocker(
         readinessBlockers,
-        "Provider-backed infrastructure is required for Sovereign Creator mode."
+        `Sovereign Creator mode requires provider delegation or local readiness for: ${unresolved.join(", ")}.`
       );
     }
   }

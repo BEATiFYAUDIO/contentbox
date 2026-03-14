@@ -1043,6 +1043,7 @@ type LocalState = {
     providerUrl?: string | null;
     providerPubKey?: string | null;
     enabled?: boolean;
+    delegatedCapabilities?: Partial<ProviderDelegatedCapabilities> | null;
     createdAt?: string | null;
     updatedAt?: string | null;
   };
@@ -1171,8 +1172,17 @@ type NetworkProviderConfig = {
   providerUrl: string | null;
   providerPubKey: string | null;
   enabled: boolean;
+  delegatedCapabilities: ProviderDelegatedCapabilities;
   createdAt: string | null;
   updatedAt: string | null;
+};
+
+type ProviderDelegatedCapabilities = {
+  durablePublicCommerceHost: boolean;
+  buyerRecovery: boolean;
+  bolt11Invoicing: boolean;
+  settlement: boolean;
+  payoutForwarding: boolean;
 };
 
 type ProviderVerificationStatus =
@@ -3167,6 +3177,42 @@ function normalizeProviderUrl(value: string | null | undefined): string | null {
   }
 }
 
+const DEFAULT_PROVIDER_DELEGATED_CAPABILITIES: ProviderDelegatedCapabilities = {
+  durablePublicCommerceHost: true,
+  buyerRecovery: true,
+  bolt11Invoicing: true,
+  settlement: true,
+  payoutForwarding: true
+};
+
+function normalizeProviderDelegatedCapabilities(
+  value: Partial<ProviderDelegatedCapabilities> | null | undefined
+): ProviderDelegatedCapabilities {
+  const input = value || {};
+  return {
+    durablePublicCommerceHost:
+      input.durablePublicCommerceHost === undefined
+        ? DEFAULT_PROVIDER_DELEGATED_CAPABILITIES.durablePublicCommerceHost
+        : Boolean(input.durablePublicCommerceHost),
+    buyerRecovery:
+      input.buyerRecovery === undefined
+        ? DEFAULT_PROVIDER_DELEGATED_CAPABILITIES.buyerRecovery
+        : Boolean(input.buyerRecovery),
+    bolt11Invoicing:
+      input.bolt11Invoicing === undefined
+        ? DEFAULT_PROVIDER_DELEGATED_CAPABILITIES.bolt11Invoicing
+        : Boolean(input.bolt11Invoicing),
+    settlement:
+      input.settlement === undefined
+        ? DEFAULT_PROVIDER_DELEGATED_CAPABILITIES.settlement
+        : Boolean(input.settlement),
+    payoutForwarding:
+      input.payoutForwarding === undefined
+        ? DEFAULT_PROVIDER_DELEGATED_CAPABILITIES.payoutForwarding
+        : Boolean(input.payoutForwarding)
+  };
+}
+
 function getNetworkProviderConfig(): NetworkProviderConfig {
   const s = readLocalState();
   const p = s.networkProvider || {};
@@ -3177,6 +3223,7 @@ function getNetworkProviderConfig(): NetworkProviderConfig {
     providerUrl,
     providerPubKey: asString(p.providerPubKey || "").trim() || null,
     enabled: Boolean(p.enabled),
+    delegatedCapabilities: normalizeProviderDelegatedCapabilities(p.delegatedCapabilities),
     createdAt: asString(p.createdAt || "").trim() || null,
     updatedAt: asString(p.updatedAt || "").trim() || null
   };
@@ -3285,6 +3332,7 @@ function setNetworkProviderConfig(input: {
   providerUrl?: string | null;
   providerPubKey?: string | null;
   enabled?: boolean;
+  delegatedCapabilities?: Partial<ProviderDelegatedCapabilities> | null;
 }): NetworkProviderConfig {
   const current = getNetworkProviderConfig();
   const now = new Date().toISOString();
@@ -3299,6 +3347,10 @@ function setNetworkProviderConfig(input: {
     providerPubKey:
       input.providerPubKey !== undefined ? asString(input.providerPubKey || "").trim() || null : current.providerPubKey,
     enabled: input.enabled !== undefined ? Boolean(input.enabled) : current.enabled,
+    delegatedCapabilities:
+      input.delegatedCapabilities !== undefined
+        ? normalizeProviderDelegatedCapabilities(input.delegatedCapabilities)
+        : current.delegatedCapabilities,
     createdAt: current.createdAt || now,
     updatedAt: now
   };
@@ -3310,6 +3362,7 @@ function setNetworkProviderConfig(input: {
     providerUrl: next.providerUrl,
     providerPubKey: next.providerPubKey,
     enabled: next.enabled,
+    delegatedCapabilities: next.delegatedCapabilities,
     createdAt: next.createdAt,
     updatedAt: next.updatedAt
   };
@@ -4758,6 +4811,7 @@ function resolveProviderServiceProfile(input: {
   const providerConfigured = hasProviderPaymentTarget(providerCfg);
   const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
   const providerCapable = providerConfigured && providerTrusted && Boolean(providerUrl);
+  const delegated = providerCfg.delegatedCapabilities || DEFAULT_PROVIDER_DELEGATED_CAPABILITIES;
   const hasLocalInvoiceMinting = Boolean(input.hasLocalInvoiceMinting);
   const hasChainBackendReady = Boolean(input.hasChainBackendReady);
 
@@ -4777,6 +4831,14 @@ function resolveProviderServiceProfile(input: {
     chainReady: hasChainBackendReady,
     replayReady: hasStablePublicRoute,
     providerCapable,
+    providerCapabilityDelegation: {
+      commerce_host: delegated.durablePublicCommerceHost,
+      buyer_recovery: delegated.buyerRecovery,
+      replay_delivery: delegated.buyerRecovery,
+      invoice_minting: delegated.bolt11Invoicing,
+      settlement: delegated.settlement,
+      payout: delegated.payoutForwarding
+    },
     localCommerceHost: stablePublicRouteOrigin,
     localSettlementHost: stablePublicRouteOrigin,
     providerHost: providerUrl
@@ -9620,7 +9682,9 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     },
     providerBinding: {
       configured: providerConfigured,
-      providerNodeId: providerConfigured ? providerConfig.providerNodeId : null
+      providerNodeId: providerConfigured ? providerConfig.providerNodeId : null,
+      providerUrl: providerConfigured ? providerConfig.providerUrl : null,
+      delegatedCapabilities: providerConfig.delegatedCapabilities
     },
     nodeIdentity: selfNode,
     visibility,
@@ -11327,6 +11391,7 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
     providerUrl?: string | null;
     providerPubKey?: string | null;
     enabled?: boolean;
+    delegatedCapabilities?: Partial<ProviderDelegatedCapabilities> | null;
   };
 
   if (body.providerUrl !== undefined && body.providerUrl !== null) {
@@ -11339,7 +11404,8 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
     providerProfileId: body.providerProfileId,
     providerUrl: body.providerUrl,
     providerPubKey: body.providerPubKey,
-    enabled: body.enabled
+    enabled: body.enabled,
+    delegatedCapabilities: body.delegatedCapabilities
   });
   return reply.send({
     ...next,
