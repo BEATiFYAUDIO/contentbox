@@ -22122,10 +22122,6 @@ async function getPaymentsReadiness(userId: string) {
       }
     }
 
-    const chainHealth = await bitcoindHealthCheck();
-    const chainBackendReady = chainHealth.status === "healthy";
-    const chainBackendReason = chainBackendReady ? null : chainHealth.message || "BACKEND_UNREACHABLE";
-
     let onchainReady = false;
     let onchainReason: string | null = "NOT_CONFIGURED";
     const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "btc_onchain" as any } });
@@ -22138,6 +22134,12 @@ async function getPaymentsReadiness(userId: string) {
         onchainReason = null;
       }
     }
+
+    const chainHealth = await bitcoindHealthCheck();
+    const chainBackendReady = chainHealth.status === "healthy" || lightningReady;
+    const chainBackendReason = chainBackendReady
+      ? null
+      : chainHealth.message || "BACKEND_UNREACHABLE";
 
     return {
       mode: "node",
