@@ -15923,6 +15923,44 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     const safeHandle = escHtml(`@${requested}`);
     const safeNodeUrl = escHtml(nodeUrl);
     const safeCreatorNodeId = escHtml(asString(delegatedLink.creatorNodeId || "").trim());
+    const safeProviderNodeId = escHtml(asString(delegatedLink.providerNodeId || "").trim());
+    const safeTrust = escHtml(asString(delegatedLink.trustStatus || "unknown"));
+    const safeHandshake = escHtml(asString(delegatedLink.handshakeStatus || "none"));
+    const safeExecution = delegatedLink.executionAllowed ? "Allowed" : "Blocked";
+    const safeExecutionClass = delegatedLink.executionAllowed ? "pill ok" : "pill warn";
+    const creatorPublicBase = buildPublicUrlFromOrigin(
+      canonicalCommerceOrigin,
+      `/u/${encodeURIComponent(requested)}`
+    );
+    const safeCreatorPublicBase = escHtml(creatorPublicBase);
+    const shortHash = (value: string) => {
+      const v = asString(value || "").trim();
+      if (!v) return "—";
+      if (v.length <= 22) return v;
+      return `${v.slice(0, 10)}…${v.slice(-8)}`;
+    };
+    const formatTs = (value: string | null | undefined) => {
+      const raw = asString(value || "").trim();
+      if (!raw) return "—";
+      const d = new Date(raw);
+      if (Number.isNaN(d.getTime())) return raw;
+      return d.toLocaleString();
+    };
+    const networkPublishesHtml =
+      delegatedPublishes.length > 0
+        ? delegatedPublishes
+            .map((row) => {
+              const publishedAt = escHtml(formatTs(row.publishedAt));
+              const receipt = escHtml(shortHash(asString(row.publishReceiptId || "")));
+              const manifestHash = escHtml(shortHash(asString(row.manifestHash || "")));
+              return `<div class="publish-row">
+                <div><strong>${escHtml(asString(row.title || "Untitled"))}</strong> <span class="muted">(${escHtml(asString(row.contentType || "content"))})</span></div>
+                <div class="muted">Published: ${publishedAt}</div>
+                <div class="muted">Receipt: <span class="mono">${receipt}</span> · Manifest: <span class="mono">${manifestHash}</span></div>
+              </div>`;
+            })
+            .join("")
+        : `<div class="line muted">No delegated publish records yet.</div>`;
     const cardsHtml =
       delegatedPublishes.length > 0
         ? delegatedPublishes
@@ -16004,6 +16042,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
     .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
+    .pill { display:inline-flex; align-items:center; padding:4px 10px; border-radius:999px; border:1px solid #2a2a2a; font-size:12px; }
+    .pill.ok { color:#22c55e; border-color:rgba(34,197,94,.45); background:rgba(34,197,94,.1); }
+    .pill.warn { color:#f59e0b; border-color:rgba(245,158,11,.45); background:rgba(245,158,11,.1); }
+    .meta-grid { display:grid; gap:10px; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); margin-top:10px; }
+    .meta-item { border:1px solid #1f1f1f; border-radius:10px; background:#101113; padding:10px; }
+    .meta-label { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
+    .publish-row { border:1px solid #1f1f1f; border-radius:10px; background:#101113; padding:10px; margin-top:8px; }
     .featured-list { margin-top:12px; display:grid; gap:10px; }
     .featured-item { display:grid; grid-template-columns:110px 1fr; gap:12px; border:1px solid #1f1f1f; border-radius:10px; padding:10px; background:#0d0f12; }
     .featured-image { width:100%; height:90px; object-fit:cover; border-radius:8px; border:1px solid #1f1f1f; display:block; }
@@ -16018,9 +16063,35 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     <div class="line muted">${safeHandle}</div>
     <div class="line muted">Delegated creator profile served by provider commerce host.</div>
     <div class="section">
-      <h3>Node</h3>
-      <div class="line"><strong>Provider host:</strong> <span class="mono">${safeNodeUrl}</span></div>
-      <div class="line"><strong>Creator node:</strong> <span class="mono">${safeCreatorNodeId}</span></div>
+      <h3>Public Creator Profile</h3>
+      <div class="meta-grid">
+        <div class="meta-item">
+          <div class="meta-label">Provider Host</div>
+          <div class="mono">${safeNodeUrl}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Creator Public Base</div>
+          <div class="mono"><a href="${safeCreatorPublicBase}" style="color:#9bdcff;text-decoration:none;">${safeCreatorPublicBase}</a></div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Creator Node ID</div>
+          <div class="mono">${safeCreatorNodeId}</div>
+        </div>
+        <div class="meta-item">
+          <div class="meta-label">Provider Node ID</div>
+          <div class="mono">${safeProviderNodeId}</div>
+        </div>
+      </div>
+      <div class="line" style="display:flex;gap:8px;flex-wrap:wrap;">
+        <span class="pill ok">trust: ${safeTrust}</span>
+        <span class="pill ok">handshake: ${safeHandshake}</span>
+        <span class="${safeExecutionClass}">execution: ${safeExecution}</span>
+      </div>
+    </div>
+    <div class="section">
+      <h3>Published to Certifyd Network</h3>
+      <div class="line muted">Provider-backed delegated publish records for this creator.</div>
+      ${networkPublishesHtml}
     </div>
     <div class="section">
       <h3>Featured Releases</h3>
