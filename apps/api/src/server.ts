@@ -15746,6 +15746,31 @@ async function proxyDelegatedPublicAsset(req: any, reply: any, input: {
   }
 }
 
+function rewriteStorefrontHtmlToProviderAuthority(input: {
+  html: string;
+  upstreamOrigin: string | null;
+  canonicalOrigin: string | null;
+}): string {
+  let out = String(input.html || "");
+  const upstream = normalizePublicOriginBase(input.upstreamOrigin || "");
+  const canonical = normalizePublicOriginBase(input.canonicalOrigin || "");
+  if (!out || !canonical) return out;
+  if (upstream && upstream !== canonical) {
+    const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out = out.replace(new RegExp(escaped, "g"), canonical);
+    const encodedUpstream = encodeURIComponent(upstream);
+    const encodedCanonical = encodeURIComponent(canonical);
+    if (encodedUpstream && encodedUpstream !== encodedCanonical) {
+      out = out.split(encodedUpstream).join(encodedCanonical);
+    }
+  }
+  // Force any leaked temporary/local app URLs for public app paths back to canonical host.
+  const publicRouteLeak =
+    /https?:\/\/(?:[a-z0-9-]+\.trycloudflare\.com|localhost|127\.0\.0\.1|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[0-1])\.\d+\.\d+)(?::\d+)?(?=\/(?:u|buy|public|c|api)\b)/gi;
+  out = out.replace(publicRouteLeak, canonical);
+  return out;
+}
+
 async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const creatorScopeId = getCreatorScopeId(req);
@@ -16042,11 +16067,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               if (upstreamHtml && /<html[\s>]/i.test(upstreamHtml)) {
                 const canonical = normalizePublicOriginBase(canonicalCommerceOrigin || "");
                 const upstream = normalizePublicOriginBase(upstreamOrigin || "");
-                let normalized = upstreamHtml;
-                if (canonical && upstream && canonical !== upstream) {
-                  const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-                  normalized = normalized.replace(new RegExp(escaped, "g"), canonical);
-                }
+                let normalized = rewriteStorefrontHtmlToProviderAuthority({
+                  html: upstreamHtml,
+                  upstreamOrigin: upstream,
+                  canonicalOrigin: canonical
+                });
                 const upstreamNote = `<div style="max-width:860px;margin:10px auto 0;padding:10px 14px;border:1px solid #2a2a2a;border-radius:10px;background:#101113;color:#a1a1aa;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;">
   upstream delivery: ${escHtml(upstream || "unknown")} (via host: ${escHtml(canonical || upstream || "unknown")})
 </div>`;
