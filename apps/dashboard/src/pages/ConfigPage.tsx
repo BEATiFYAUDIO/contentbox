@@ -804,11 +804,99 @@ export default function ConfigPage({
     const element = typeof document !== "undefined" ? document.getElementById("node-mode") : null;
     element?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
+  const goToHostOverrides = () => {
+    const element = typeof document !== "undefined" ? document.getElementById("host-overrides") : null;
+    element?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  const goToPreviewControls = () => {
+    const element = typeof document !== "undefined" ? document.getElementById("preview-controls") : null;
+    element?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const nodeStatusSummary = readinessBlockers.length
+    ? delegatedCapabilities.length
+      ? "Delegated"
+      : "Degraded"
+    : stablePublicHostDetected && canonicalCommerceConfiguredDetected
+      ? "Ready"
+      : temporaryEndpointDetected
+        ? "Preview only"
+        : "Needs setup";
+  const nodeStatusTone =
+    nodeStatusSummary === "Ready"
+      ? "#6ee7b7"
+      : nodeStatusSummary === "Delegated"
+        ? "#93c5fd"
+        : nodeStatusSummary === "Preview only"
+          ? "#fbbf24"
+          : "#fda4af";
+  const selectedModeLabel = participationModeMeta(selectedParticipationMode).label;
+  const effectiveModeLabel = participationMode.label;
+  const providerFallbackAvailable = providerConfigured;
+  const executionSummary =
+    delegatedCapabilities.length > 0
+      ? `Delegated: ${delegatedCapabilities.join(", ")}`
+      : "Local execution active for current capabilities.";
+  const delegationSummary =
+    delegatedCapabilities.length > 0 ? delegatedCapabilities.join(", ") : "No delegated capabilities";
 
   return (
     <div style={{ padding: 16, maxWidth: 980 }}>
       <h2 style={{ margin: "8px 0 12px" }}>Config</h2>
       <p style={{ opacity: 0.7, marginBottom: 16 }}>Networking + system settings used across Certifyd Creator.</p>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 600 }}>Current Node Status</div>
+          <span
+            style={{
+              fontSize: 11,
+              padding: "3px 8px",
+              borderRadius: 999,
+              border: "1px solid rgba(255,255,255,0.22)",
+              color: nodeStatusTone
+            }}
+          >
+            {nodeStatusSummary}
+          </span>
+        </div>
+        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8, fontSize: 13 }}>
+          <div><b>Selected Mode</b>: {selectedModeLabel}</div>
+          <div><b>Effective Mode</b>: {effectiveModeLabel}</div>
+          <div><b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}</div>
+          <div><b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}</div>
+          <div><b>Buyer recovery host</b>: {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}</div>
+          <div><b>Delegation</b>: {delegationSummary}</div>
+        </div>
+        {readinessBlockers.length > 0 ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#fbbf24" }}>
+            <b>Readiness blockers</b>: {readinessBlockers.join(" ")}
+          </div>
+        ) : null}
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Quick Actions</div>
+        <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
+          Most common creator actions without opening advanced sections.
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          <button onClick={goToModePicker} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+            Participation controls
+          </button>
+          <button onClick={goToHostOverrides} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+            Public commerce host
+          </button>
+          <button onClick={goToPreviewControls} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+            Preview link controls
+          </button>
+          {onOpenPayments ? (
+            <button onClick={onOpenPayments} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+              Payments settings
+            </button>
+          ) : null}
+        </div>
+      </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Creator Journey</div>
@@ -900,7 +988,7 @@ export default function ConfigPage({
       </div>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Auto-Detected Node Readiness</div>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Infrastructure Readiness</div>
         <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
           Runtime status is detected automatically. Configure only participation intent and identity-critical settings.
         </div>
@@ -924,20 +1012,27 @@ export default function ConfigPage({
               </div>
             </div>
           ))}
+          <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: 10 }}>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Provider fallback</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 4 }}>
+              <div style={{ fontSize: 13 }}>{providerFallbackAvailable ? "Available" : "Not configured"}</div>
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: "3px 8px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  color: providerFallbackAvailable ? "#6ee7b7" : "#fbbf24"
+                }}
+              >
+                {providerFallbackAvailable ? "Ready" : "Needs attention"}
+              </span>
+            </div>
+          </div>
         </div>
-      </div>
-
-      {(apiMismatch || overrideMismatch) && (
-        <div
-          style={{
-            border: "1px solid rgba(255,180,80,0.5)",
-            background: "rgba(255,180,80,0.08)",
-            borderRadius: 12,
-            padding: 12,
-            marginBottom: 14
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>Diagnostics</div>
+        {(apiMismatch || overrideMismatch) && (
+          <div style={{ marginTop: 10, border: "1px solid rgba(255,180,80,0.5)", background: "rgba(255,180,80,0.08)", borderRadius: 10, padding: 10 }}>
+            <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>Config mismatch detected</div>
           {apiMismatch && (
             <div style={{ fontSize: 13, marginBottom: 4 }}>
               This dashboard is pointed at a different machine. UI host: <b>{uiHost || "unknown"}</b> • API host:{" "}
@@ -969,14 +1064,37 @@ export default function ConfigPage({
               </button>
             )}
           </div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Public Commerce & Routing</div>
+        <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
+          Buyer-facing network truth. This is where purchases, receipts, library recovery, and settlement route.
         </div>
-      )}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8, fontSize: 13 }}>
+          <div><b>Node identity domain</b>: {normalizedPublicOrigin || health?.publicOrigin || "Not configured"}</div>
+          <div><b>Public commerce host</b>: {stableCommerceConfigured ? canonicalCommerceHost : "Not configured"}</div>
+          <div><b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}</div>
+          <div><b>Effective buyer recovery host</b>: {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}</div>
+          <div><b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}</div>
+          <div><b>Execution posture</b>: {executionSummary}</div>
+          <div><b>Temporary preview endpoint</b>: {temporaryPreviewEndpoint ? "Active (preview/testing only)" : "Not active"}</div>
+          <div>
+            <b>Provider fee posture</b>:{" "}
+            {typeof networkSummary?.providerServices?.totalProviderFeePercent === "number"
+              ? `${networkSummary.providerServices.totalProviderFeePercent}%`
+              : "Not resolved"}
+          </div>
+        </div>
+      </div>
 
       <details
         open={Boolean(showAdvanced)}
         style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
       >
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced Diagnostics & Config Health</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced</summary>
         <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <div>
             <div style={{ fontWeight: 600, marginBottom: 6 }}>Config health</div>
@@ -1012,7 +1130,8 @@ export default function ConfigPage({
         ) : null}
       </details>
 
-      <div id="node-mode" style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+      <details id="node-mode" style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Participation Controls</summary>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 4, flexWrap: "wrap" }}>
           <div style={{ fontWeight: 600 }}>Network Participation Mode</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1123,58 +1242,24 @@ export default function ConfigPage({
             {modeMsg}
           </div>
         ) : null}
-      </div>
+      </details>
 
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Mode Service Summary</div>
-        <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
-          <div>
-            <b>Public commerce host</b>: {stableCommerceConfigured ? canonicalCommerceHost : "Not configured"}
-          </div>
-          <div>
-            <b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}
-          </div>
-          <div>
-            <b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}
-          </div>
-          <div>
-            <b>Effective buyer recovery host</b>:{" "}
-            {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}
-          </div>
-          <div>
-            <b>Temporary preview endpoint</b>:{" "}
-            {temporaryPreviewEndpoint ? "Active (preview/testing only)" : "Not active"}
-          </div>
-          <div>
-            <b>Provider-backed commerce</b>:{" "}
-            {resolvedParticipationMode === "sovereign_with_provider" && providerConfigured ? "Enabled" : "Not active"}
-          </div>
-          <div>
-            <b>Provider fee posture</b>:{" "}
-            {typeof networkSummary?.providerServices?.totalProviderFeePercent === "number"
-              ? `${networkSummary.providerServices.totalProviderFeePercent}%`
-              : "Not resolved"}
-          </div>
-          <div>
-            <b>Sovereign node infrastructure</b>: {resolvedParticipationMode === "sovereign_node" ? "Enabled" : "Not active"}
-          </div>
-        </div>
-      </div>
-
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Creator App</div>
+      <details style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Local App & Runtime</summary>
         <div style={{ opacity: 0.7, marginBottom: 8 }}>
           Local API Base: <b>{apiBase}</b>
         </div>
+        <div><b>Build</b>: {buildInfo}</div>
+        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
         {overrideMismatch ? (
-          <div style={{ marginBottom: 8, fontSize: 12, color: "#fbbf24" }}>
+          <div style={{ margin: "8px 0", fontSize: 12, color: "#fbbf24" }}>
             API override points to another machine. Clear override to keep this node local.
           </div>
         ) : null}
         {showAdvanced ? (
           <>
             <label htmlFor="api-base-override">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>App Base Override (advanced)</div>
+              <div style={{ opacity: 0.7, marginBottom: 4, marginTop: 8 }}>App Base Override (advanced)</div>
               <input
                 id="api-base-override"
                 name="apiBaseOverride"
@@ -1185,36 +1270,33 @@ export default function ConfigPage({
                 autoComplete="url"
               />
             </label>
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button
-                onClick={saveApiBaseOverride}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
+            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <button onClick={saveApiBaseOverride} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
                 Save & reload
               </button>
+              <button onClick={clearApiBaseOverride} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+                Clear override
+              </button>
               <button
-                onClick={clearApiBaseOverride}
+                onClick={() => { clearToken(); window.location.reload(); }}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
-                Clear override
+                Clear token & reload
               </button>
             </div>
             <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
               This is the local creator control endpoint. It is not the buyer-facing public commerce host.
             </div>
           </>
-        ) : (
-          <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
-            Advanced mode required to override API base.
-          </div>
-        )}
-      </div>
+        ) : null}
+      </details>
 
       <details
+        id="host-overrides"
         open={Boolean(showAdvanced && showNodeIdentityByDefault)}
         style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
       >
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Node Identity & Host Overrides (Advanced)</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Host Overrides</summary>
         {resolvedParticipationMode === "basic_creator" ? (
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             Basic Creator mode keeps node infrastructure simple. Expand when you are ready to configure a stable node domain.
@@ -1362,10 +1444,11 @@ export default function ConfigPage({
       </details>
 
       <details
+        id="preview-controls"
         open={showPreviewByDefault}
         style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
       >
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Temporary Preview Link</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Temporary Preview Link</summary>
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             <button
@@ -1487,169 +1570,157 @@ export default function ConfigPage({
           </div>
         )}
 
-        {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
+        <details style={{ marginTop: 12, border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
+          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Tunnel Config</summary>
+          {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
 
-        {token && (
-          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-            {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
-            {publicStatus?.mode && publicStatus.mode !== "named" ? (
-              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                Named tunnel settings apply only when PUBLIC_MODE=named.
-              </div>
-            ) : null}
-            <label htmlFor="tunnel-provider">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
-              <input
-                id="tunnel-provider"
-                name="tunnelProvider"
-                value={tunnelProvider}
-                onChange={(e) => setTunnelProvider(e.target.value)}
-                placeholder="cloudflare"
-                className={inputClass}
-                disabled={!tunnelEnabled}
-                autoComplete="off"
-              />
-            </label>
-            <label htmlFor="tunnel-domain">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>Node domain (base)</div>
-              <input
-                id="tunnel-domain"
-                name="tunnelDomain"
-                value={tunnelDomain}
-                onChange={(e) => setTunnelDomain(e.target.value)}
-                placeholder="contentbox.link"
-                className={inputClass}
-                disabled={!tunnelEnabled}
-                autoComplete="off"
-              />
-            <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
-                Base domain for stable node identity and buyer-facing commerce links.
-              </div>
-            </label>
-            <label htmlFor="tunnel-name">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
-              <input
-                id="tunnel-name"
-                name="tunnelName"
-                value={tunnelName}
-                onChange={(e) => setTunnelName(e.target.value)}
-                placeholder="contentbox"
-                className={inputClass}
-                disabled={!tunnelEnabled}
-                autoComplete="off"
-              />
-            </label>
-            {tunnelEnabled ? (
-              <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
-                <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
-                  Paste the Cloudflare connector token once. Certifyd Creator will reuse it to start the tunnel.
+          {token && (
+            <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+              {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
+              {publicStatus?.mode && publicStatus.mode !== "named" ? (
+                <div style={{ fontSize: 12, opacity: 0.75 }}>
+                  Named tunnel settings apply only when PUBLIC_MODE=named.
                 </div>
+              ) : null}
+              <label htmlFor="tunnel-provider">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
                 <input
-                  id="tunnel-connector-token"
-                  name="tunnelConnectorToken"
-                  value={namedTokenInput}
-                  onChange={(e) => setNamedTokenInput(e.target.value)}
-                  placeholder="Cloudflare connector token"
+                  id="tunnel-provider"
+                  name="tunnelProvider"
+                  value={tunnelProvider}
+                  onChange={(e) => setTunnelProvider(e.target.value)}
+                  placeholder="cloudflare"
                   className={inputClass}
                   disabled={!tunnelEnabled}
                   autoComplete="off"
                 />
-                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                  <button
-                    onClick={generateNamedToken}
-                    disabled={namedTokenBusy || !tunnelEnabled}
-                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                  >
-                    Generate token
-                  </button>
-                  <button
-                    onClick={() => saveNamedToken(false)}
-                    disabled={namedTokenBusy || !tunnelEnabled}
-                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                  >
-                    Save token
-                  </button>
-                  <button
-                    onClick={() => saveNamedToken(true)}
-                    disabled={namedTokenBusy || !tunnelEnabled}
-                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                  >
-                    Save & start tunnel
-                  </button>
-                  {publicStatus?.namedTokenStored ? (
+              </label>
+              <label htmlFor="tunnel-domain">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Node domain (base)</div>
+                <input
+                  id="tunnel-domain"
+                  name="tunnelDomain"
+                  value={tunnelDomain}
+                  onChange={(e) => setTunnelDomain(e.target.value)}
+                  placeholder="contentbox.link"
+                  className={inputClass}
+                  disabled={!tunnelEnabled}
+                  autoComplete="off"
+                />
+              <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
+                  Base domain for stable node identity and buyer-facing commerce links.
+                </div>
+              </label>
+              <label htmlFor="tunnel-name">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
+                <input
+                  id="tunnel-name"
+                  name="tunnelName"
+                  value={tunnelName}
+                  onChange={(e) => setTunnelName(e.target.value)}
+                  placeholder="contentbox"
+                  className={inputClass}
+                  disabled={!tunnelEnabled}
+                  autoComplete="off"
+                />
+              </label>
+              {tunnelEnabled ? (
+                <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
+                  <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
+                    Paste the Cloudflare connector token once. Certifyd Creator will reuse it to start the tunnel.
+                  </div>
+                  <input
+                    id="tunnel-connector-token"
+                    name="tunnelConnectorToken"
+                    value={namedTokenInput}
+                    onChange={(e) => setNamedTokenInput(e.target.value)}
+                    placeholder="Cloudflare connector token"
+                    className={inputClass}
+                    disabled={!tunnelEnabled}
+                    autoComplete="off"
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
                     <button
-                      onClick={clearNamedToken}
+                      onClick={generateNamedToken}
                       disabled={namedTokenBusy || !tunnelEnabled}
                       style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
                     >
-                      Clear saved token
+                      Generate token
                     </button>
-                  ) : null}
-                </div>
-                {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
-              </div>
-            ) : null}
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                onClick={saveTunnelConfig}
-                disabled={tunnelLoading || !tunnelEnabled}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Save tunnel config
-              </button>
-              <button
-                onClick={discoverTunnels}
-                disabled={tunnelLoading || !tunnelEnabled}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Discover tunnels
-              </button>
-            </div>
-            {tunnelList.length > 0 && (
-              <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                  {tunnelList.map((t, i) => {
-                    const label = t?.name || t?.id || String(i + 1);
-                    return (
+                    <button
+                      onClick={() => saveNamedToken(false)}
+                      disabled={namedTokenBusy || !tunnelEnabled}
+                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                    >
+                      Save token
+                    </button>
+                    <button
+                      onClick={() => saveNamedToken(true)}
+                      disabled={namedTokenBusy || !tunnelEnabled}
+                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                    >
+                      Save & start tunnel
+                    </button>
+                    {publicStatus?.namedTokenStored ? (
                       <button
-                        key={`${t?.id || t?.name || i}`}
-                        type="button"
-                        onClick={() => setTunnelName(String(label))}
-                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                        onClick={clearNamedToken}
+                        disabled={namedTokenBusy || !tunnelEnabled}
+                        style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
                       >
-                        {label}
+                        Clear saved token
                       </button>
-                    );
-                  })}
+                    ) : null}
+                  </div>
+                  {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
                 </div>
+              ) : null}
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={saveTunnelConfig}
+                  disabled={tunnelLoading || !tunnelEnabled}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Save tunnel config
+                </button>
+                <button
+                  onClick={discoverTunnels}
+                  disabled={tunnelLoading || !tunnelEnabled}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Discover tunnels
+                </button>
               </div>
-            )}
-          </div>
-        )}
+              {tunnelList.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {tunnelList.map((t, i) => {
+                      const label = t?.name || t?.id || String(i + 1);
+                      return (
+                        <button
+                          key={`${t?.id || t?.name || i}`}
+                          type="button"
+                          onClick={() => setTunnelName(String(label))}
+                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </details>
       </details>
-
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
-        <div><b>API base</b>: {apiBase}</div>
-        <div><b>Build</b>: {buildInfo}</div>
-        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
-        <div style={{ marginTop: 10 }}>
-          <button
-            onClick={() => { clearToken(); window.location.reload(); }}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Clear token & reload
-          </button>
-        </div>
-      </div>
 
       <details
         open={showReachabilityByDefault}
         style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
       >
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Node Reachability Status</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Raw Diagnostics</summary>
         {err && <div style={{ color: "#ff8080" }}>Error: {err}</div>}
         {!err && !health && <div>Checking…</div>}
         {health && (
@@ -1777,25 +1848,6 @@ export default function ConfigPage({
         )}
       </details>
 
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Payments</div>
-        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 10 }}>
-          Set your Lightning address or LNURL to receive payments in Basic mode.
-        </div>
-        <button
-          onClick={() => onOpenPayments?.()}
-          style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-        >
-          Open payments settings
-        </button>
-      </div>
-
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Publishing</div>
-        <div style={{ opacity: 0.75 }}>
-          Use “Publish to Website” on a content item to generate embed snippets and a public buy link. No secrets are stored here.
-        </div>
-      </div>
     </div>
   );
 }
