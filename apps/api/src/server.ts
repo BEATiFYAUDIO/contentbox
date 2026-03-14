@@ -95,6 +95,8 @@ import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
 import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
+import { buildCanonicalBuyerRecoveryUrls } from "./lib/buyerRecoveryUrls.js";
+import { resolveReplayMode } from "./lib/replayResolution.js";
 import {
   buildContentPublishReceiptPayload,
   computeCanonicalManifestHash,
@@ -6077,6 +6079,10 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/profile", handlePublicProfileRedirect);
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
+  appPublic.get("/library/:buyerKeyOrReceiptToken", handleBuyerLibraryPage);
+  appPublic.get("/receipt/:paymentId", handlePublicReceiptPage);
+  appPublic.get("/replay/:entitlementId", handleReplayRedirectPage);
+  appPublic.get("/replay/:entitlementId/access", handleReplayAccessPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
@@ -16037,6 +16043,7 @@ async function handleBuyPage(req: any, reply: any) {
     include: { owner: { select: { displayName: true, email: true } } }
   });
   if (!content) return notFound(reply, "Not found");
+  const canonicalBuyerRecoveryBase = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
   const sellerDisplayName = content.owner?.displayName || content.owner?.email || null;
   let sellerLightningAddress: string | null = null;
   try {
@@ -16144,6 +16151,7 @@ async function handleBuyPage(req: any, reply: any) {
   const priceSats = ${content.priceSats != null ? Number(content.priceSats) : "null"};
   const app = document.getElementById("app");
   const apiBase = location.origin;
+  const buyerRecoveryBase = ${JSON.stringify(canonicalBuyerRecoveryBase)};
   let receiptToken = null;
   let pollTimer = null;
   let refreshTimer = null;
@@ -16160,6 +16168,16 @@ async function handleBuyPage(req: any, reply: any) {
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
   function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function joinBase(base, route){
+    const b = String(base || "").trim().replace(/\/+$/, "");
+    const p = String(route || "").trim();
+    if (!p) return b || apiBase;
+    if (/^https?:\/\//i.test(p)) return p;
+    return (b || apiBase) + (p.startsWith("/") ? p : ("/" + p));
+  }
+  function recoveryUrl(route){
+    return joinBase(buyerRecoveryBase || apiBase, route);
+  }
   function heartFor(c){
     if (c?.verification?.badge !== "beatify_heart") return "";
     const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
@@ -16636,6 +16654,8 @@ async function handleBuyPage(req: any, reply: any) {
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
     const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
+    const libraryToken = String(receiptToken || entitlement?.token || "").trim();
+    const libraryHref = libraryToken ? recoveryUrl("/library/" + encodeURIComponent(libraryToken)) : recoveryUrl("/library");
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
@@ -16648,7 +16668,7 @@ async function handleBuyPage(req: any, reply: any) {
           <div class="step" style="border-color:#14532d;background:#0b1f14;">
             <div style="font-weight:600;">Already owned</div>
             <div class="muted" style="margin-top:6px;">This item is in your library.</div>
-            <div class="library-return-wrap"><a class="btn library-return" href="/library">Go to library</a></div>
+            <div class="library-return-wrap"><a class="btn library-return" href="\${recoveryUrl("/library")}">Open in Library</a></div>
           </div>
         \` : ""}
         \${mediaSrc && canStream ? \`
@@ -16659,7 +16679,7 @@ async function handleBuyPage(req: any, reply: any) {
             \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
         \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
-        \${entitlement?.status === "paid" || entitlement?.status === "bypassed" ? \`<div id="unlockBanner" class="step" style="border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\` : \`<div id="unlockBanner" class="step" style="display:none;border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\`}
+        \${entitlement?.status === "paid" || entitlement?.status === "bypassed" ? \`<div id="unlockBanner" class="step" style="border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Saved to Library</div><div style="margin-top:8px;"><a class="btn small" href="\${libraryHref}">Open in Library</a></div></div>\` : \`<div id="unlockBanner" class="step" style="display:none;border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Saved to Library</div><div style="margin-top:8px;"><a id="unlockLibraryLink" class="btn small" href="\${libraryHref}">Open in Library</a></div></div>\`}
         \${isPaid ? \`
           <div class="purchase-card">
             <div class="purchase-kicker">Unlock this release</div>
@@ -16780,7 +16800,7 @@ async function handleBuyPage(req: any, reply: any) {
     const rails = document.getElementById("rails");
     const lightning = intent.paymentOptions?.lightning || {};
     const onchain = intent.paymentOptions?.onchain || {};
-    const receiptLink = apiBase + "/buy/receipts/" + intent.receiptToken + "/status";
+    const receiptLink = recoveryUrl("/buy/receipts/" + intent.receiptToken + "/status");
     const lightningInvoice = String(lightning.bolt11 || "");
     const hasLightningInvoice = Boolean(lightningInvoice);
     const onchainAddress = String(onchain.address || "");
@@ -16826,7 +16846,7 @@ async function handleBuyPage(req: any, reply: any) {
         </div>
       \` : ""}
       <div class="receipt-row">
-        <div class="muted">Receipt link</div>
+        <div class="muted">View receipt</div>
         <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
       </div>
     \`;
@@ -16873,7 +16893,7 @@ async function handleBuyPage(req: any, reply: any) {
     }
     downloads.innerHTML = \`
       <div style="font-weight:600;margin-bottom:6px;">Download</div>
-      <ul>\${list.map(f=>\`<li><a href="\${apiBase}/buy/receipts/\${receiptToken}/file?objectKey=\${qs(f.objectKey)}">\${f.originalName || f.objectKey}</a> <span class="muted">(\${f.sizeBytes} bytes)</span></li>\`).join("")}</ul>
+      <ul>\${list.map(f=>\`<li><a href="\${recoveryUrl("/buy/receipts/" + receiptToken + "/file?objectKey=" + qs(f.objectKey))}">\${f.originalName || f.objectKey}</a> <span class="muted">(\${f.sizeBytes} bytes)</span></li>\`).join("")}</ul>
     \`;
   }
 
@@ -16962,7 +16982,9 @@ async function handleBuyPage(req: any, reply: any) {
         try { json = text ? JSON.parse(text) : null; } catch {}
         if (res.ok && json && json.ok) {
           if (statusEl) statusEl.textContent = "Unlocked. Redirecting…";
-          const redirectUrl = json.redirectUrl || "/library";
+          const redirectUrl = /^https?:\/\//i.test(String(json.redirectUrl || ""))
+            ? String(json.redirectUrl || "")
+            : recoveryUrl(String(json.redirectUrl || "/library"));
           window.location.assign(redirectUrl);
           return true;
         }
@@ -17057,7 +17079,9 @@ async function handleBuyPage(req: any, reply: any) {
 
 app.get("/buy/:contentId", handleBuyPage);
 
-async function handleBuyerLibraryPage(_req: any, reply: any) {
+async function handleBuyerLibraryPage(req: any, reply: any) {
+  const canonicalBuyerRecoveryBase = await resolveCanonicalBuyerRecoveryOrigin(req, null);
+  const libraryRecoveryToken = asString((req.params as any)?.buyerKeyOrReceiptToken || "").trim() || null;
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -17101,8 +17125,22 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
 (function(){
   const app = document.getElementById("app");
   const apiBase = location.origin;
+  const buyerRecoveryBase = ${JSON.stringify(canonicalBuyerRecoveryBase)};
+  const libraryRecoveryToken = ${JSON.stringify(libraryRecoveryToken)};
   let buyer = null;
   let entitlements = [];
+
+  function joinBase(base, route){
+    const b = String(base || "").trim().replace(/\/+$/, "");
+    const p = String(route || "").trim();
+    if (!p) return b || apiBase;
+    if (/^https?:\/\//i.test(p)) return p;
+    return (b || apiBase) + (p.startsWith("/") ? p : ("/" + p));
+  }
+
+  function recoveryUrl(route){
+    return joinBase(buyerRecoveryBase || apiBase, route);
+  }
 
   async function fetchJson(path, opts){
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", credentials: "include", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
@@ -17133,6 +17171,13 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     }
   }
 
+  async function recoverFromLibraryToken(){
+    if (!libraryRecoveryToken) return;
+    try {
+      await fetchJson("/buy/receipts/" + encodeURIComponent(libraryRecoveryToken) + "/status");
+    } catch {}
+  }
+
   function render(){
     if (!buyer || !buyer.id) {
       renderAuth();
@@ -17146,7 +17191,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
             '<div class="item">' +
               '<div style="font-weight:600;">' + (e.content?.title || e.contentId || "Untitled") + '</div>' +
               '<div class="muted">Content ID:<span class="content-id">' + e.contentId + '</span></div>' +
-              '<div class="muted" style="margin-top:6px;"><a href="/buy/' + encodeURIComponent(e.contentId) + '">Open buy page</a></div>' +
+              '<div class="muted" style="margin-top:6px;"><a href="' + recoveryUrl('/buy/' + encodeURIComponent(e.contentId)) + '">Replay from Library</a></div>' +
             '</div>'
           )
           .join("")
@@ -17200,7 +17245,9 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
         try {
           const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
           buyer = res?.buyer || null;
-          fetchEntitlements().then(render);
+          recoverFromLibraryToken()
+            .then(fetchEntitlements)
+            .finally(render);
         } catch (e) {
           const msg = (e && e.message) ? e.message : "Unable to start.";
           if (errorEl) errorEl.textContent = msg;
@@ -17210,7 +17257,10 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
   }
 
   fetchBuyerMe()
-    .then(fetchEntitlements)
+    .then(async () => {
+      await recoverFromLibraryToken();
+      await fetchEntitlements();
+    })
     .finally(render);
 })();
 </script>
@@ -17222,6 +17272,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
 }
 
 app.get("/library", handleBuyerLibraryPage);
+app.get("/library/:buyerKeyOrReceiptToken", handleBuyerLibraryPage);
 
 app.get("/embed.js", async (req: any, reply) => {
   if (getIdentityLevel() !== IdentityLevel.PERSISTENT) {
@@ -17367,6 +17418,32 @@ function resolvePaymentMethodFromIntent(intent: any): string | null {
   return null;
 }
 
+async function resolveCanonicalBuyerRecoveryOrigin(
+  req: any,
+  ownerUserId: string | null
+): Promise<string> {
+  const fallbackOrigin = normalizePublicOriginBase(getPublicOrigin(req));
+  const providerCfg = getNetworkProviderConfig();
+  const capabilityCtx = getCapabilityContext();
+  let hasLocalInvoiceMinting = false;
+  if (ownerUserId) {
+    try {
+      const readiness = await getPaymentsReadiness(ownerUserId);
+      hasLocalInvoiceMinting =
+        capabilityCtx.paymentsMode === "node" &&
+        Boolean(readiness?.lightning?.ready);
+    } catch {
+      hasLocalInvoiceMinting = false;
+    }
+  }
+  const profile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting,
+    providerCfg,
+    ctx: capabilityCtx
+  });
+  return normalizePublicOriginBase(profile.canonicalCommerceOrigin || fallbackOrigin);
+}
+
 async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
@@ -17427,7 +17504,8 @@ async function handlePublicOffer(req: any, reply: any) {
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
   const baseUrl = host ? `${proto}://${host}` : null;
-  const coverUrl = coverObjectKey ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/cover` : null;
+  const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
+  const coverUrl = coverObjectKey ? buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`) : null;
   const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
   const priceSats = content.priceSats ?? null;
@@ -17493,6 +17571,18 @@ async function handlePublicOffer(req: any, reply: any) {
     paymentMethod: resolvePaymentMethodFromIntent(latestEntitlement?.payment || null),
     invoiceProviderNodeId
   };
+  const canonicalUrls = buildCanonicalBuyerRecoveryUrls({
+    canonicalOrigin: canonicalBuyerOrigin,
+    contentId: content.id
+  });
+  app.log.debug(
+    {
+      contentId: content.id,
+      canonicalCommerceOrigin: canonicalBuyerOrigin,
+      canonicalBuyUrl: canonicalUrls.buyUrl
+    },
+    "buyer.canonical_urls.offer"
+  );
 
   if (!allowDraftPreview) {
     if (priceSats == null) {
@@ -17517,8 +17607,12 @@ async function handlePublicOffer(req: any, reply: any) {
     owned: gated.entitled,
     publishProof,
     paymentAccessProof,
-    seller: { hostOrigin: baseUrl },
-    sellerEndpoints: baseUrl ? [{ baseUrl, p2p: `${baseUrl}/p2p`, public: `${baseUrl}/public` }] : [],
+    seller: {
+      hostOrigin: canonicalBuyerOrigin,
+      requestOrigin: normalizePublicOriginBase(baseUrl || "")
+    },
+    sellerEndpoints: canonicalBuyerOrigin ? [{ baseUrl: canonicalBuyerOrigin, p2p: `${canonicalBuyerOrigin}/p2p`, public: `${canonicalBuyerOrigin}/public` }] : [],
+    urls: canonicalUrls,
     fulfillment: { mode: "receiptToken", ttlSeconds }
   });
 }
@@ -17569,6 +17663,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     const amountSatsInput = parseSats(body.amountSats);
     const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
     if (!content) return notFound(reply, "Content not found");
+    const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
     intentLog.sellerId = content.ownerUserId;
     intentLog.saleable = isSaleable(content);
 
@@ -17984,6 +18079,21 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       },
       "publicPaymentsIntents.created"
     );
+    const canonicalUrls = buildCanonicalBuyerRecoveryUrls({
+      canonicalOrigin: canonicalBuyerOrigin,
+      contentId,
+      paymentId: intent.id,
+      receiptToken
+    });
+    app.log.debug(
+      {
+        paymentIntentId: intent.id,
+        contentId,
+        canonicalCommerceOrigin: canonicalBuyerOrigin,
+        canonicalReceiptUrl: canonicalUrls.receiptUrl
+      },
+      "buyer.canonical_urls.payment_intent"
+    );
 
     return reply.send({
       ok: true,
@@ -18020,6 +18130,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         providerRemitMode: payoutDestination.providerRemitMode,
         message: payoutDestination.message
       },
+      urls: canonicalUrls,
       receiptToken,
       receiptTokenExpiresAt: receiptTokenExpiresAt.toISOString()
     });
@@ -18309,11 +18420,41 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     }).catch(() => {});
   }
   const accessUnlocked = intent.status === "paid" || (buyerId ? await hasAccess(buyerId, intent.contentId) : false);
+  const entitlement = buyerId
+    ? await prisma.entitlement.findFirst({
+        where: { buyerId, contentId: intent.contentId },
+        orderBy: { grantedAt: "desc" },
+        select: { id: true }
+      })
+    : null;
+  const contentOwner = await prisma.contentItem.findUnique({
+    where: { id: intent.contentId },
+    select: { ownerUserId: true }
+  });
+  const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, contentOwner?.ownerUserId || null);
   const providerCfg = getNetworkProviderConfig();
   const invoiceProviderNodeId =
     !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
       ? providerCfg.providerNodeId
       : null;
+  const canonicalUrls = buildCanonicalBuyerRecoveryUrls({
+    canonicalOrigin: canonicalBuyerOrigin,
+    contentId: intent.contentId,
+    paymentId: intent.id,
+    receiptToken: intent.receiptToken || intent.id,
+    entitlementId: entitlement?.id || null,
+    libraryToken: intent.receiptToken || intent.id
+  });
+  app.log.debug(
+    {
+      paymentIntentId: intent.id,
+      contentId: intent.contentId,
+      access: accessUnlocked ? "unlocked" : "pending",
+      canonicalReceiptUrl: canonicalUrls.receiptUrl,
+      canonicalReplayUrl: canonicalUrls.replayUrl
+    },
+    "buyer.canonical_urls.receipt_status"
+  );
 
   return reply.send({
     status: intent.status,
@@ -18322,8 +18463,10 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     paidAt: intent.paidAt ? new Date(intent.paidAt).toISOString() : null,
     paymentIntentId: intent.id,
     contentId: intent.contentId,
+    entitlementId: entitlement?.id || null,
     manifestSha256: intent.manifestSha256,
     receiptToken: intent.receiptToken || null,
+    urls: canonicalUrls,
     invoiceProviderNodeId,
     canFulfill: accessUnlocked,
     access: accessUnlocked ? "unlocked" : "pending",
@@ -18333,6 +18476,75 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
 
 app.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
 app.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
+
+async function handlePublicReceiptPage(req: any, reply: any) {
+  const paymentId = asString((req.params as any).paymentId || "").trim();
+  if (!paymentId) return badRequest(reply, "paymentId required");
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Receipt</title>
+  <style>
+    body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:#0b0b0b; color:#f4f4f5; }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 24px; }
+    .card { background:#111; border:1px solid #222; border-radius:14px; padding:16px; }
+    .muted { color:#a1a1aa; font-size: 13px; }
+    .row { margin-top:10px; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+    .btn { display:inline-flex; text-decoration:none; border:1px solid #2b2b2b; border-radius:10px; padding:8px 12px; color:#f4f4f5; background:#121212; font-size:13px; }
+    .btn.primary { background:#f3f4f6; color:#0b0b0b; border-color:#e5e7eb; }
+    .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; font-size:12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div style="font-size:20px;font-weight:700;">Receipt</div>
+      <div class="muted">Durable purchase status and recovery links.</div>
+      <div id="status" class="row muted">Loading…</div>
+      <div id="links" class="actions"></div>
+    </div>
+  </div>
+  <script>
+    (function() {
+      const paymentId = ${JSON.stringify(paymentId)};
+      const statusEl = document.getElementById("status");
+      const linksEl = document.getElementById("links");
+      const esc = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      fetch("/buy/receipts/" + encodeURIComponent(paymentId) + "/status", { credentials: "include" })
+        .then(async (res) => {
+          const text = await res.text();
+          let json = null;
+          try { json = text ? JSON.parse(text) : null; } catch {}
+          if (!res.ok) throw new Error((json && (json.error || json.message)) || text || "Unable to load receipt.");
+          return json;
+        })
+        .then((json) => {
+          const urls = json && typeof json.urls === "object" ? json.urls : {};
+          statusEl.innerHTML =
+            "<div><strong>Status:</strong> " + esc(json.status || "unknown") + "</div>" +
+            "<div class='muted row'>Payment intent: <span class='code'>" + esc(json.paymentIntentId || paymentId) + "</span></div>";
+          const actions = [];
+          if (urls && urls.receiptStatusUrl) actions.push("<a class='btn' href='" + esc(urls.receiptStatusUrl) + "'>View receipt status</a>");
+          if (urls && urls.libraryUrl) actions.push("<a class='btn primary' href='" + esc(urls.libraryUrl) + "'>Open in Library</a>");
+          if (urls && urls.replayUrl) actions.push("<a class='btn' href='" + esc(urls.replayUrl) + "'>Replay</a>");
+          if (urls && urls.buyUrl) actions.push("<a class='btn' href='" + esc(urls.buyUrl) + "'>Open content</a>");
+          linksEl.innerHTML = actions.join("");
+        })
+        .catch((err) => {
+          statusEl.textContent = err && err.message ? err.message : "Unable to load receipt.";
+        });
+    })();
+  </script>
+</body>
+</html>`;
+  reply.type("text/html; charset=utf-8");
+  return reply.send(html);
+}
+
+app.get("/receipt/:paymentId", handlePublicReceiptPage);
 
 async function handlePublicReceiptFulfill(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
@@ -18371,9 +18583,17 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
   const canAccessAfterGrant = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
   if (!canAccessAfterGrant) return reply.code(402).send({ error: "Payment not settled" });
   if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
+  const entitlement = buyerId
+    ? await prisma.entitlement.findFirst({
+        where: { buyerId, contentId: latestIntent.contentId },
+        orderBy: { grantedAt: "desc" },
+        select: { id: true }
+      })
+    : null;
 
   const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
   if (!content) return notFound(reply, "Content not found");
+  const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId);
   const manifest = await prisma.manifest.findUnique({ where: { contentId: latestIntent.contentId } });
   if (!manifest || manifest.sha256 !== latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 does not match content manifest");
 
@@ -18392,8 +18612,17 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
     ok: true,
     contentId: latestIntent.contentId,
     manifestSha256: manifest.sha256,
+    entitlementId: entitlement?.id || null,
     manifest: manifestJson,
     manifestJson,
+    urls: buildCanonicalBuyerRecoveryUrls({
+      canonicalOrigin: canonicalBuyerOrigin,
+      contentId: latestIntent.contentId,
+      paymentId: latestIntent.id,
+      receiptToken: latestIntent.receiptToken || latestIntent.id,
+      entitlementId: entitlement?.id || null,
+      libraryToken: latestIntent.receiptToken || latestIntent.id
+    }),
     files: files.map((f) => ({
       objectKey: f.objectKey,
       originalName: f.originalName,
@@ -18469,6 +18698,100 @@ async function handlePublicReceiptFile(req: any, reply: any) {
 
 app.get("/public/receipts/:receiptToken/file", handlePublicReceiptFile);
 app.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
+
+type ReplayResolution =
+  | { mode: "edge_ticket"; url: string; expiresAt: string | null }
+  | { mode: "buy_page"; url: string; expiresAt: null };
+
+async function resolveReplayAccessForEntitlement(
+  req: any,
+  reply: any,
+  entitlementId: string
+): Promise<ReplayResolution | null> {
+  const session = await resolveBuyerSession(req, reply);
+  const buyerId = asString(session?.buyer?.id || "").trim() || null;
+  if (!buyerId) return null;
+
+  const entitlement = await prisma.entitlement.findFirst({
+    where: { id: entitlementId, buyerId },
+    include: { content: true }
+  });
+  if (!entitlement?.content) return null;
+
+  const content = entitlement.content as any;
+  const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, content.ownerUserId || null);
+  const buyUrl = buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/buy/${encodeURIComponent(content.id)}`);
+
+  const manifest = await prisma.manifest.findUnique({ where: { contentId: content.id } });
+  const primaryObjectKey = getPrimaryObjectKey((manifest?.json || null) as any);
+  const replayMode = resolveReplayMode({
+    edgeDeliveryEnabled: EDGE_DELIVERY_ENABLED,
+    edgeTicketSecretConfigured: Boolean(EDGE_TICKET_SECRET),
+    edgeBaseUrlConfigured: Boolean(EDGE_BASE_URL),
+    manifestSha256Present: Boolean(manifest?.sha256),
+    primaryObjectKeyPresent: Boolean(primaryObjectKey)
+  });
+  if (replayMode !== "edge_ticket" || !manifest?.sha256 || !primaryObjectKey) {
+    app.log.info(
+      {
+        entitlementId,
+        contentId: content.id,
+        mediaSelection: "buy_page_fallback",
+        reason: !manifest?.sha256 ? "manifest_missing" : !primaryObjectKey ? "primary_missing" : "edge_disabled"
+      },
+      "buyer.replay.media_origin_selected"
+    );
+    return { mode: "buy_page", url: buyUrl, expiresAt: null };
+  }
+
+  const exp = Math.floor(Date.now() / 1000) + EDGE_TICKET_TTL_SECONDS;
+  const token = mintEdgeTicketToken(
+    {
+      mh: manifest.sha256,
+      fid: primaryObjectKey,
+      exp,
+      b: buyerId
+    },
+    EDGE_TICKET_SECRET
+  );
+  const edgeUrl = `${EDGE_BASE_URL}/edge/content/${encodeURIComponent(manifest.sha256)}/${encodeURIComponent(primaryObjectKey)}?t=${encodeURIComponent(token)}`;
+  app.log.info(
+    {
+      entitlementId,
+      contentId: content.id,
+      mediaSelection: "edge_ticket",
+      edgeBase: EDGE_BASE_URL,
+      expiresAt: new Date(exp * 1000).toISOString()
+    },
+    "buyer.replay.media_origin_selected"
+  );
+  return { mode: "edge_ticket", url: edgeUrl, expiresAt: new Date(exp * 1000).toISOString() };
+}
+
+async function handleReplayAccessPage(req: any, reply: any) {
+  const entitlementId = asString((req.params as any).entitlementId || "").trim();
+  if (!entitlementId) return badRequest(reply, "entitlementId required");
+  const resolution = await resolveReplayAccessForEntitlement(req, reply, entitlementId);
+  if (!resolution) return notFound(reply, "Replay access not found");
+  return reply.send({
+    ok: true,
+    entitlementId,
+    mode: resolution.mode,
+    accessUrl: resolution.url,
+    expiresAt: resolution.expiresAt
+  });
+}
+
+async function handleReplayRedirectPage(req: any, reply: any) {
+  const entitlementId = asString((req.params as any).entitlementId || "").trim();
+  if (!entitlementId) return badRequest(reply, "entitlementId required");
+  const resolution = await resolveReplayAccessForEntitlement(req, reply, entitlementId);
+  if (!resolution) return notFound(reply, "Replay access not found");
+  return reply.redirect(302, resolution.url);
+}
+
+app.get("/replay/:entitlementId/access", handleReplayAccessPage);
+app.get("/replay/:entitlementId", handleReplayRedirectPage);
 
 // List files for a content item
 app.get("/content/:id/files", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -22122,6 +22445,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
   }
 
   if (paidVia) {
+    let entitlementAction: "created" | "updated" | "none" = "none";
     await prisma.$transaction(async (tx) => {
       const updatedIntent = await tx.paymentIntent.update({
         where: { id: intent.id },
@@ -22146,6 +22470,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
             where: { id: existing.id },
             data: { paymentIntentId: updatedIntent.id }
           });
+          entitlementAction = "updated";
         } else {
           await tx.entitlement.create({
             data: {
@@ -22156,6 +22481,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
               paymentIntentId: updatedIntent.id
             }
           });
+          entitlementAction = "created";
         }
       }
     });
@@ -22176,6 +22502,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
         contentId: intent.contentId,
         invoiceSettledObserved: true,
         purchaseFinalized: true,
+        entitlementAction,
         entitlementGranted: Boolean(entitlement?.id),
         revenueEventInserted: Boolean(sale?.id)
       },
