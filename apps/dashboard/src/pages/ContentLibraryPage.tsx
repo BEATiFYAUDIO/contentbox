@@ -66,6 +66,13 @@ type ContentItem = {
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
   childOrigin?: string | null;
   _count?: { files: number };
+  commerceValidity?: {
+    contentValid?: boolean;
+    saleMode?: SaleMode;
+    commerceValid?: boolean;
+    routingTarget?: CommerceRoutingTarget;
+    blockingReason?: string | null;
+  } | null;
 };
 
 type ContentFile = {
@@ -382,6 +389,98 @@ async function copyText(text: string) {
   try {
     await navigator.clipboard.writeText(text);
   } catch {}
+}
+
+type SaleMode = "free" | "tip" | "paid";
+type CommerceRoutingTarget = "none" | "provider" | "local";
+type EffectiveParticipationMode =
+  | "basic_creator"
+  | "sovereign_creator_with_provider"
+  | "sovereign_node_operator"
+  | "sovereign_creator_unready";
+
+type ContentCommerceValidity = {
+  contentValid: boolean;
+  saleMode: SaleMode;
+  commerceValid: boolean;
+  routingTarget: CommerceRoutingTarget;
+  blockingReason: string | null;
+};
+
+function resolveContentCommerceValidity(input: {
+  item: ContentItem;
+  filesCount: number;
+  manifestSha256: string;
+  hasNetworkPublishRecord: boolean;
+  saleMode: SaleMode;
+  effectiveMode: EffectiveParticipationMode;
+  paidCommerceAllowed: boolean;
+  paidCommerceReason: string | null;
+}): ContentCommerceValidity {
+  const {
+    item,
+    filesCount,
+    manifestSha256,
+    hasNetworkPublishRecord,
+    saleMode,
+    effectiveMode,
+    paidCommerceAllowed,
+    paidCommerceReason
+  } = input;
+
+  const titleOk = Boolean(String(item.title || "").trim());
+  const hasPrimaryAsset = filesCount > 0;
+  const isPublished = item.status === "published";
+  const hasManifest = Boolean(String(manifestSha256 || "").trim());
+  const hasPublishRecord = Boolean(item.publishedAt || hasNetworkPublishRecord);
+
+  let contentBlockingReason: string | null = null;
+  if (!titleOk) contentBlockingReason = "Content title is missing.";
+  else if (!hasPrimaryAsset) contentBlockingReason = "Upload a primary file to validate this content item.";
+  else if (isPublished && !hasManifest) contentBlockingReason = "Published content requires a manifest hash.";
+  else if (isPublished && !hasPublishRecord) contentBlockingReason = "Published content is missing a publish record.";
+
+  const contentValid = !contentBlockingReason;
+  if (!contentValid) {
+    return {
+      contentValid: false,
+      saleMode,
+      commerceValid: false,
+      routingTarget: "none",
+      blockingReason: contentBlockingReason
+    };
+  }
+
+  if (saleMode !== "paid") {
+    return {
+      contentValid: true,
+      saleMode,
+      commerceValid: true,
+      routingTarget: "none",
+      blockingReason: null
+    };
+  }
+
+  if (!paidCommerceAllowed) {
+    return {
+      contentValid: true,
+      saleMode,
+      commerceValid: false,
+      routingTarget: "none",
+      blockingReason: paidCommerceReason || "Paid commerce requires durable host routing."
+    };
+  }
+
+  const routingTarget: CommerceRoutingTarget =
+    effectiveMode === "sovereign_node_operator" ? "local" : "provider";
+
+  return {
+    contentValid: true,
+    saleMode,
+    commerceValid: true,
+    routingTarget,
+    blockingReason: null
+  };
 }
 
 export default function ContentLibraryPage({
@@ -2441,6 +2540,30 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               );
               const currentPriceSats = Number(it.priceSats ?? 0);
               const paidUnlockEnabled = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
+              const saleMode: SaleMode = paidUnlockEnabled ? "paid" : lightningAvailable ? "tip" : "free";
+              const hasNetworkPublishRecord = Boolean(
+                networkPublishByContent[it.id]?.publishedAt ||
+                  networkPublishByContent[it.id]?.receiptId ||
+                  networkPublishByContent[it.id]?.hasReceipt
+              );
+              const contentCommerceValidity = resolveContentCommerceValidity({
+                item: it,
+                filesCount,
+                manifestSha256,
+                hasNetworkPublishRecord,
+                saleMode,
+                effectiveMode,
+                paidCommerceAllowed: paidCommerceAllowedFromApi,
+                paidCommerceReason: paidCommerceReasonFromApi
+              });
+              const backendCommerceValidity = it.commerceValidity;
+              const resolvedContentCommerceValidity: ContentCommerceValidity = {
+                contentValid: backendCommerceValidity?.contentValid ?? contentCommerceValidity.contentValid,
+                saleMode: backendCommerceValidity?.saleMode ?? contentCommerceValidity.saleMode,
+                commerceValid: backendCommerceValidity?.commerceValid ?? contentCommerceValidity.commerceValid,
+                routingTarget: backendCommerceValidity?.routingTarget ?? contentCommerceValidity.routingTarget,
+                blockingReason: backendCommerceValidity?.blockingReason ?? contentCommerceValidity.blockingReason
+              };
               const creatorSales = salesByContent[it.id] || null;
               const recentSales = Array.isArray(creatorSales?.recent) ? creatorSales.recent : [];
               const lastSale = recentSales[0] || null;
@@ -2593,6 +2716,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 disabled={
                                   publishBusy[it.id] ||
                                   !networkPublishAllowed ||
+                                  !resolvedContentCommerceValidity.contentValid ||
                                   !allowPublish ||
                                   (isBasicTier && isDerivativeType)
                                 }
@@ -2601,6 +2725,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     ? "Derivatives require Advanced mode and clearance before publishing."
                                     : !allowPublish
                                       ? "Already published"
+                                      : !resolvedContentCommerceValidity.contentValid
+                                        ? resolvedContentCommerceValidity.blockingReason || "Complete content before publishing."
                                       : !networkPublishAllowed
                                         ? networkPublishReason
                                         : "Publish this content"
@@ -2683,22 +2809,35 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ) : null}
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>
-                        Network publish:{" "}
-                        <span className={networkPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {networkPublishAllowed ? "Ready" : "Not ready"}
+                        Content validity:{" "}
+                        <span className={resolvedContentCommerceValidity.contentValid ? "text-emerald-300" : "text-amber-300"}>
+                          {resolvedContentCommerceValidity.contentValid ? "Valid" : "Needs attention"}
                         </span>
                       </div>
-                      {!networkPublishAllowed ? (
-                        <div className="text-amber-300">{networkPublishReason}</div>
+                      {!resolvedContentCommerceValidity.contentValid && resolvedContentCommerceValidity.blockingReason ? (
+                        <div className="text-amber-300">{resolvedContentCommerceValidity.blockingReason}</div>
                       ) : null}
                       <div>
-                        Public discovery:{" "}
-                        <span className={discoveryPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {discoveryPublishAllowed ? "Ready" : "Not ready"}
+                        Commerce validity ({resolvedContentCommerceValidity.saleMode}):{" "}
+                        <span className={resolvedContentCommerceValidity.commerceValid ? "text-emerald-300" : "text-amber-300"}>
+                          {resolvedContentCommerceValidity.commerceValid ? "Valid" : "Blocked"}
+                        </span>
+                      </div>
+                      {!resolvedContentCommerceValidity.commerceValid && resolvedContentCommerceValidity.blockingReason ? (
+                        <div className="text-amber-300">{resolvedContentCommerceValidity.blockingReason}</div>
+                      ) : null}
+                      <div>
+                        Routing target:{" "}
+                        <span className="text-neutral-200">
+                          {resolvedContentCommerceValidity.routingTarget === "provider"
+                            ? "Provider"
+                            : resolvedContentCommerceValidity.routingTarget === "local"
+                              ? "Local node"
+                              : "None (preview/free path)"}
                         </span>
                       </div>
                       {!discoveryPublishAllowed ? (
-                        <div className="text-amber-300">{discoveryPublishReason}</div>
+                        <div className="text-neutral-500">Public discovery remains separate: {discoveryPublishReason}</div>
                       ) : null}
                     </div>
                   </div>
@@ -4040,8 +4179,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             const loopbackBase = "http://127.0.0.1:4000";
                             const loopbackLink = `${loopbackBase}${creatorScopedBuyPath}`;
                             const isBuyLoopback = isLoopbackUrl(buyLink);
-                            const isPaidContent = Number(it.priceSats || 0) > 0;
-                            const paidCommerceBlocked = isPaidContent && !paidCommerceAllowedFromApi;
+                            const isPaidContent = resolvedContentCommerceValidity.saleMode === "paid";
+                            const paidCommerceBlocked = isPaidContent && !resolvedContentCommerceValidity.commerceValid;
                             const hasPublicBuy = Boolean(buyBase) && !isBuyLoopback && !paidCommerceBlocked;
                             const isLocalOnly = !hasPublicBuy;
                             let lanBase = "";
@@ -4098,12 +4237,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                             ) : (
                                               <span className="text-neutral-500">
                                                 {paidCommerceBlocked
-                                                  ? "Temporary endpoint detected. Preview only. Configure a stable public host to enable paid commerce."
+                                                  ? resolvedContentCommerceValidity.blockingReason || "Paid commerce requires durable host routing."
                                                   : "Public buy link not available. Set up public links in Config."}
                                               </span>
                                             )}
-                                            {paidCommerceBlocked && paidCommerceReasonFromApi ? (
-                                              <div className="mt-1 text-[11px] text-neutral-500">{paidCommerceReasonFromApi}</div>
+                                            {paidCommerceBlocked && resolvedContentCommerceValidity.blockingReason ? (
+                                              <div className="mt-1 text-[11px] text-neutral-500">{resolvedContentCommerceValidity.blockingReason}</div>
                                             ) : null}
                                             {isPaidContent ? (
                                               <div className="mt-2">

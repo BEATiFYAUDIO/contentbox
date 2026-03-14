@@ -99,6 +99,7 @@ import { buildCanonicalBuyerRecoveryUrls } from "./lib/buyerRecoveryUrls.js";
 import { resolveReplayMode } from "./lib/replayResolution.js";
 import { buildDeliveryRoutingDescriptor } from "./lib/deliveryRouting.js";
 import { canEnablePaidCommerce, type CreatorCommerceMode, type EndpointStability } from "./lib/paidCommerceGate.js";
+import { resolveContentCommerceValidity } from "./lib/contentCommerceValidity.js";
 import {
   resolveCapabilityRouting,
   type CapabilityRoutingResolution
@@ -4894,6 +4895,54 @@ function resolveProviderServiceProfile(input: {
     providerUrl,
     canonicalCommerceOrigin,
     canonicalCommerceKind
+  };
+}
+
+async function resolvePaidCommerceRuntimeGate(input: {
+  userId: string;
+  ctx?: ReturnType<typeof getCapabilityContext>;
+  providerCfg?: NetworkProviderConfig;
+  hasLocalInvoiceMintingOverride?: boolean;
+}) {
+  const ctx = input.ctx || getCapabilityContext();
+  const providerCfg = input.providerCfg || getNetworkProviderConfig();
+  const paymentsReadiness = await getPaymentsReadiness(input.userId).catch(() => null);
+  const localInvoiceMinting =
+    typeof input.hasLocalInvoiceMintingOverride === "boolean"
+      ? input.hasLocalInvoiceMintingOverride
+      : ctx.paymentsMode === "node" &&
+        (ctx.nodeMode === "advanced" || ctx.nodeMode === "lan") &&
+        Boolean(paymentsReadiness?.lightning?.ready);
+
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: localInvoiceMinting,
+    hasChainBackendReady: Boolean(paymentsReadiness?.onchain?.ready),
+    providerCfg,
+    ctx
+  });
+  const commerceMode = toCreatorCommerceMode(serviceProfile.participationMode);
+  const endpointStability = toEndpointStability(serviceProfile.canonicalCommerceKind);
+  const canonicalCommerceConfigured = Boolean(
+    asString(serviceProfile.canonicalCommerceOrigin || "").trim()
+  );
+  const paidCommerceGate = canEnablePaidCommerce({
+    mode: commerceMode,
+    endpointStability,
+    canonicalCommerceConfigured
+  });
+  const runtimeCommerceBlocked =
+    serviceProfile.effectiveParticipationMode === "sovereign_creator_unready";
+  const runtimeCommerceReason = runtimeCommerceBlocked
+    ? serviceProfile.capabilityResolution.readinessBlockers[0] ||
+      "Sovereign commerce dependencies are not ready and no capable delegated node is configured."
+    : null;
+
+  return {
+    serviceProfile,
+    paidCommerceAllowed: paidCommerceGate.allowed && !runtimeCommerceBlocked,
+    paidCommerceReason: runtimeCommerceReason || paidCommerceGate.reason,
+    endpointStability,
+    canonicalCommerceConfigured
   };
 }
 
@@ -12561,6 +12610,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     title: true,
     type: true,
     status: true,
+    publishedAt: true,
     previousVersionContentId: true,
     previousVersion: { select: { id: true, title: true, status: true } },
     featureOnProfile: true,
@@ -12674,7 +12724,33 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     return true;
   });
 
+  const paidCommerceRuntime = await resolvePaidCommerceRuntimeGate({ userId });
+  const serviceProfile = paidCommerceRuntime.serviceProfile;
+  const paidCommerceAllowedGlobal = paidCommerceRuntime.paidCommerceAllowed;
+
   return unique.map((i: any) => ({
+    ...(() => {
+      const price = i.priceSats != null ? BigInt(i.priceSats as any) : 0n;
+      const saleMode = price > 0n ? "paid" : "free";
+      const effectiveHost = asString(serviceProfile.capabilityResolution.effectiveCommerceHost || "").trim();
+      const providerHost = asString(serviceProfile.providerUrl || "").trim();
+      const paidRoutingTarget =
+        effectiveHost && providerHost && effectiveHost === providerHost ? "provider" : "local";
+      return {
+        commerceValidity: resolveContentCommerceValidity({
+          title: i.title,
+          status: i.status,
+          filesCount: i?._count?.files ?? 0,
+          manifestHash: i?.manifest?.sha256 || null,
+          publishedAt: i?.publishedAt || null,
+          hasPublishRecord: Boolean(i?.publishedAt),
+          saleMode,
+          paidCommerceAllowed: paidCommerceAllowedGlobal,
+          paidCommerceReason: paidCommerceRuntime.paidCommerceReason,
+          paidRoutingTarget
+        })
+      };
+    })(),
     ...i,
     priceSats: i.priceSats != null ? i.priceSats.toString() : null,
     coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`,
@@ -18024,30 +18100,14 @@ async function handlePublicOffer(req: any, reply: any) {
     creatorId: creatorScopeId || content.ownerUserId,
     contentId: content.id
   });
-  const capabilityCtx = getCapabilityContext();
-  const serviceProfile = resolveProviderServiceProfile({
-    hasLocalInvoiceMinting: false,
-    providerCfg: getNetworkProviderConfig(),
-    ctx: capabilityCtx
+  const paidCommerceRuntime = await resolvePaidCommerceRuntimeGate({
+    userId: content.ownerUserId
   });
-  const paidCommerceMode = toCreatorCommerceMode(serviceProfile.participationMode);
-  const endpointStability = toEndpointStability(serviceProfile.canonicalCommerceKind);
-  const canonicalCommerceConfigured = Boolean(
-    asString(serviceProfile.canonicalCommerceOrigin || "").trim()
-  );
-  const paidCommerceGate = canEnablePaidCommerce({
-    mode: paidCommerceMode,
-    endpointStability,
-    canonicalCommerceConfigured
-  });
-  const runtimeCommerceBlocked =
-    serviceProfile.effectiveParticipationMode === "sovereign_creator_unready";
-  const runtimeCommerceReason = runtimeCommerceBlocked
-    ? serviceProfile.capabilityResolution.readinessBlockers[0] ||
-      "Sovereign commerce dependencies are not ready and no capable delegated node is configured."
-    : null;
-  const paidCommerceAllowed = !hasPrice || (paidCommerceGate.allowed && !runtimeCommerceBlocked);
-  const paidCommerceReason = !hasPrice ? null : runtimeCommerceReason || paidCommerceGate.reason;
+  const serviceProfile = paidCommerceRuntime.serviceProfile;
+  const paidCommerceAllowed = !hasPrice || paidCommerceRuntime.paidCommerceAllowed;
+  const paidCommerceReason = !hasPrice ? null : paidCommerceRuntime.paidCommerceReason;
+  const endpointStability = paidCommerceRuntime.endpointStability;
+  const canonicalCommerceConfigured = paidCommerceRuntime.canonicalCommerceConfigured;
   const exposedCanonicalUrls = paidCommerceAllowed
     ? canonicalUrls
     : { ...canonicalUrls, buyUrl: null };
@@ -18084,6 +18144,24 @@ async function handlePublicOffer(req: any, reply: any) {
     creatorOriginKind,
     creatorPlaybackUrl: creatorPlaybackUrlCandidate,
     providerDurablePlaybackAvailable: edgeCandidateMode === "edge_ticket"
+  });
+  const saleMode = hasPrice ? "paid" : tipsEnabled ? "tip" : "free";
+  const commerceValidity = resolveContentCommerceValidity({
+    title: content.title,
+    status: content.status,
+    filesCount: primaryFileId ? 1 : 0,
+    manifestHash: manifest?.sha256 || null,
+    publishedAt: content.publishedAt ? new Date(content.publishedAt).toISOString() : null,
+    hasPublishRecord: Boolean(publishProof),
+    saleMode,
+    paidCommerceAllowed: paidCommerceAllowed,
+    paidCommerceReason,
+    paidRoutingTarget:
+      serviceProfile.capabilityResolution.effectiveCommerceHost &&
+      serviceProfile.providerUrl &&
+      serviceProfile.capabilityResolution.effectiveCommerceHost === serviceProfile.providerUrl
+        ? "provider"
+        : "local"
   });
   app.log.debug(
     {
@@ -18124,6 +18202,7 @@ async function handlePublicOffer(req: any, reply: any) {
     paymentAccessProof,
     paidCommerceAllowed,
     paidCommerceReason,
+    commerceValidity,
     endpointStability,
     canonicalCommerceConfigured,
     seller: {
@@ -20042,6 +20121,31 @@ app.get("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => 
     where: { contentId },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }]
   });
+  const [manifest, filesCount] = await Promise.all([
+    prisma.manifest.findUnique({ where: { contentId }, select: { sha256: true } }),
+    prisma.contentFile.count({ where: { contentId } })
+  ]);
+  const paidCommerceRuntime = await resolvePaidCommerceRuntimeGate({ userId });
+  const saleMode = c.priceSats != null && c.priceSats > 0n ? "paid" : "free";
+  const serviceProfile = paidCommerceRuntime.serviceProfile;
+  const paidRoutingTarget =
+    serviceProfile.capabilityResolution.effectiveCommerceHost &&
+    serviceProfile.providerUrl &&
+    serviceProfile.capabilityResolution.effectiveCommerceHost === serviceProfile.providerUrl
+      ? "provider"
+      : "local";
+  const commerceValidity = resolveContentCommerceValidity({
+    title: c.title,
+    status: c.status,
+    filesCount,
+    manifestHash: manifest?.sha256 || null,
+    publishedAt: c.publishedAt ? new Date(c.publishedAt).toISOString() : null,
+    hasPublishRecord: Boolean(c.publishedAt),
+    saleMode,
+    paidCommerceAllowed: saleMode !== "paid" ? true : paidCommerceRuntime.paidCommerceAllowed,
+    paidCommerceReason: saleMode !== "paid" ? null : paidCommerceRuntime.paidCommerceReason,
+    paidRoutingTarget
+  });
 
   const parentLink = await prisma.contentLink.findFirst({
     where: { childContentId: contentId },
@@ -20072,6 +20176,7 @@ app.get("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => 
     priceSats: c.priceSats != null ? c.priceSats.toString() : null,
     storefrontStatus: c.storefrontStatus,
     createdAt: c.createdAt,
+    commerceValidity,
     canEdit,
     credits,
     parentLink: parentLink
