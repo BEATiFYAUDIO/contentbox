@@ -1326,6 +1326,7 @@ type ProviderCapabilitiesDoc = {
 type ProviderAcknowledgmentRequest = {
   clientNodeId: string;
   clientNodePubKey?: string | null;
+  clientPreviewOrigin?: string | null;
   clientCapabilityLevel?: "basic" | "advanced" | "lan" | null;
   requestedAt?: string | null;
   intent?: string | null;
@@ -1354,6 +1355,7 @@ type ProviderAcknowledgmentResponse = {
 type ProviderOperationIntentRequest = {
   clientNodeId: string;
   clientNodePubKey?: string | null;
+  clientPreviewOrigin?: string | null;
   intent: string;
   requestedAt?: string | null;
 };
@@ -1574,6 +1576,7 @@ type ProviderDelegatedPublishRecord = {
   id: string;
   providerNodeId: string;
   creatorNodeId: string;
+  creatorPreviewOrigin: string | null;
   contentId: string;
   title: string | null;
   contentType: string | null;
@@ -2040,7 +2043,54 @@ function upsertProviderCreatorLink(input: {
 
 function listProviderDelegatedPublishes(): ProviderDelegatedPublishRecord[] {
   return readJsonArrayState<ProviderDelegatedPublishRecord>(PROVIDER_DELEGATED_PUBLISHES_FILE)
+    .map((row) => ({
+      ...row,
+      creatorPreviewOrigin: normalizePublicOriginBase((row as any).creatorPreviewOrigin || "") || null
+    }))
     .sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
+}
+
+function findProviderDelegatedPublishForRequest(input: {
+  contentId: string;
+  creatorScopeId?: string | null;
+}): ProviderDelegatedPublishRecord | null {
+  const contentId = asString(input.contentId || "").trim();
+  const creatorScopeId = asString(input.creatorScopeId || "").trim();
+  if (!contentId) return null;
+  const rows = listProviderDelegatedPublishes().filter(
+    (row) =>
+      asString(row.contentId || "").trim() === contentId &&
+      asString(row.status || "").trim().toLowerCase() === "published"
+  );
+  if (!rows.length) return null;
+  if (creatorScopeId) {
+    return (
+      rows.find((row) => asString(row.creatorNodeId || "").trim() === creatorScopeId) ||
+      null
+    );
+  }
+  return rows[0] || null;
+}
+
+function resolveDelegatedCreatorOriginForContent(input: {
+  req?: any;
+  contentId: string;
+  creatorScopeId?: string | null;
+}): string | null {
+  const delegated = findProviderDelegatedPublishForRequest({
+    contentId: input.contentId,
+    creatorScopeId: input.creatorScopeId
+  });
+  const creatorLink = delegated
+    ? getProviderCreatorLink(asString(delegated.creatorNodeId || "").trim())
+    : null;
+  const origin =
+    normalizePublicOriginBase(delegated?.creatorPreviewOrigin || "") ||
+    normalizePublicOriginBase(creatorLink?.providerEndpoint || "");
+  if (!origin) return null;
+  const requestOrigin = normalizePublicOriginBase(getPublicOrigin(input.req));
+  if (requestOrigin && origin === requestOrigin) return null;
+  return origin;
 }
 
 function createProviderDelegatedPublish(
@@ -10209,6 +10259,7 @@ app.post("/api/network/provider/acknowledge-client", async (req: any, reply: any
   const body = (req.body ?? {}) as ProviderAcknowledgmentRequest;
   const clientNodeId = String(body?.clientNodeId || "").trim();
   const clientNodePubKey = String(body?.clientNodePubKey || "").trim() || null;
+  const clientPreviewOrigin = normalizePublicOriginBase(body?.clientPreviewOrigin || "") || null;
   const requestedAt = String(body?.requestedAt || "").trim() || null;
   const intent = String(body?.intent || "").trim() || "provider_handshake";
   if (!clientNodeId) {
@@ -10256,7 +10307,7 @@ app.post("/api/network/provider/acknowledge-client", async (req: any, reply: any
   upsertProviderCreatorLink({
     providerNodeId: identity.nodeId,
     creatorNodeId: clientNodeId,
-    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    providerEndpoint: clientPreviewOrigin || getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
     trustStatus: "verified",
     handshakeStatus: "accepted",
     executionAllowed: false,
@@ -10269,6 +10320,7 @@ app.post("/api/network/provider/accept-operation-intent", async (req: any, reply
   const body = (req.body ?? {}) as ProviderOperationIntentRequest;
   const clientNodeId = String(body?.clientNodeId || "").trim();
   const clientNodePubKey = String(body?.clientNodePubKey || "").trim() || null;
+  const clientPreviewOrigin = normalizePublicOriginBase(body?.clientPreviewOrigin || "") || null;
   const intent = String(body?.intent || "").trim();
   if (!clientNodeId) return badRequest(reply, "clientNodeId is required");
   if (!intent) return badRequest(reply, "intent is required");
@@ -10322,7 +10374,7 @@ app.post("/api/network/provider/accept-operation-intent", async (req: any, reply
   upsertProviderCreatorLink({
     providerNodeId: identity.nodeId,
     creatorNodeId: clientNodeId,
-    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    providerEndpoint: clientPreviewOrigin || getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
     trustStatus: "verified",
     handshakeStatus: "accepted",
     executionAllowed: true,
@@ -10336,6 +10388,7 @@ app.post("/api/network/provider/delegated-publish", async (req: any, reply: any)
     creatorNodeId?: string | null;
     creatorNodePubKey?: string | null;
     creatorDisplayName?: string | null;
+    creatorPreviewOrigin?: string | null;
     contentId?: string | null;
     title?: string | null;
     contentType?: string | null;
@@ -10347,6 +10400,7 @@ app.post("/api/network/provider/delegated-publish", async (req: any, reply: any)
   const creatorNodeId = String(body.creatorNodeId || "").trim();
   const creatorNodePubKey = String(body.creatorNodePubKey || "").trim() || null;
   const contentId = String(body.contentId || "").trim();
+  const creatorPreviewOrigin = normalizePublicOriginBase(body.creatorPreviewOrigin || "") || null;
   const manifestHash = String(body.manifestHash || "").trim();
   if (!creatorNodeId) return badRequest(reply, "creatorNodeId is required");
   if (!contentId) return badRequest(reply, "contentId is required");
@@ -10396,6 +10450,7 @@ app.post("/api/network/provider/delegated-publish", async (req: any, reply: any)
   const delegatedPublish = createProviderDelegatedPublish({
     providerNodeId: providerIdentity.nodeId,
     creatorNodeId,
+    creatorPreviewOrigin,
     contentId,
     title: String(body.title || "").trim() || null,
     contentType: String(body.contentType || "").trim() || null,
@@ -10410,7 +10465,7 @@ app.post("/api/network/provider/delegated-publish", async (req: any, reply: any)
     providerNodeId: providerIdentity.nodeId,
     creatorNodeId,
     creatorDisplayName: String(body.creatorDisplayName || "").trim() || null,
-    providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
+    providerEndpoint: creatorPreviewOrigin || getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
     trustStatus: "verified",
     handshakeStatus: "accepted",
     executionAllowed: true,
@@ -10979,9 +11034,17 @@ app.post("/api/network/provider/request-acknowledgment", { preHandler: requireAu
 
   const userId = (req.user as JwtUser).sub;
   const localNode = await buildLocalNodeIdentityDoc(userId);
+  const localRoutingProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false
+  });
+  const clientPreviewOrigin =
+    normalizePublicOriginBase(
+      localRoutingProfile.previewEphemeralOrigin || localRoutingProfile.localNodeEndpointOrigin || ""
+    ) || null;
   const requestBody: ProviderAcknowledgmentRequest = {
     clientNodeId: localNode.nodeId,
     clientNodePubKey: localNode.nodePubKey,
+    clientPreviewOrigin,
     clientCapabilityLevel: localNode.capabilityLevel,
     requestedAt: checkedAt,
     intent: "provider_handshake"
@@ -11244,9 +11307,17 @@ app.post("/api/network/provider/request-operation-intent", { preHandler: require
 
   const userId = (req.user as JwtUser).sub;
   const localNode = await buildLocalNodeIdentityDoc(userId);
+  const localRoutingProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false
+  });
+  const clientPreviewOrigin =
+    normalizePublicOriginBase(
+      localRoutingProfile.previewEphemeralOrigin || localRoutingProfile.localNodeEndpointOrigin || ""
+    ) || null;
   const requestBody: ProviderOperationIntentRequest = {
     clientNodeId: localNode.nodeId,
     clientNodePubKey: localNode.nodePubKey,
+    clientPreviewOrigin,
     intent: "provider_execution_test",
     requestedAt: checkedAt
   };
@@ -13623,6 +13694,19 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       select: { displayName: true, email: true }
     });
     const creatorDisplayName = String(owner?.displayName || "").trim() || String(owner?.email || "").trim() || null;
+    const creatorRoutingProfile = resolveProviderServiceProfile({
+      hasLocalInvoiceMinting:
+        ctx.paymentsMode === "node" &&
+        Boolean(readiness?.lightning?.ready),
+      hasChainBackendReady: Boolean(readiness?.chainBackend?.ready),
+      providerCfg,
+      ctx,
+      creatorHandle: normalizePublicProfileHandle(owner?.displayName || "") || content.ownerUserId
+    });
+    const creatorPreviewOrigin =
+      normalizePublicOriginBase(
+        creatorRoutingProfile.previewEphemeralOrigin || creatorRoutingProfile.localNodeEndpointOrigin || ""
+      ) || null;
     const target = `${String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "")}/api/network/provider/delegated-publish`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
@@ -13634,6 +13718,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
           creatorNodeId: creatorIdentity.nodeId,
           creatorNodePubKey: creatorIdentity.nodePubKey,
           creatorDisplayName,
+          creatorPreviewOrigin,
           contentId,
           title: (canonicalManifestJson as any)?.title ?? null,
           contentType: (canonicalManifestJson as any)?.type ?? null,
@@ -15543,10 +15628,62 @@ async function handlePublicAttribution(req: any, reply: any) {
 }
 
 // Public preview file (no auth; only when content is publicly visible)
+async function proxyDelegatedPublicAsset(req: any, reply: any, input: {
+  contentId: string;
+  creatorScopeId?: string | null;
+  assetPath: string;
+  passRange?: boolean;
+  cacheControl?: string | null;
+}): Promise<boolean> {
+  const creatorOrigin = resolveDelegatedCreatorOriginForContent({
+    req,
+    contentId: input.contentId,
+    creatorScopeId: input.creatorScopeId
+  });
+  if (!creatorOrigin) return false;
+  try {
+    const url = new URL(input.assetPath, creatorOrigin);
+    const headers: Record<string, string> = {};
+    if (input.passRange && req.headers?.range) headers.range = asString(req.headers.range);
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: Object.keys(headers).length ? headers : undefined
+    } as any);
+    if (!res.ok || !res.body) return false;
+    const contentType = asString(res.headers.get("content-type") || "").trim();
+    const contentLength = asString(res.headers.get("content-length") || "").trim();
+    const contentRange = asString(res.headers.get("content-range") || "").trim();
+    const acceptRanges = asString(res.headers.get("accept-ranges") || "").trim();
+    if (res.status === 206) reply.code(206);
+    if (contentType) reply.type(contentType);
+    if (contentLength) reply.header("Content-Length", contentLength);
+    if (contentRange) reply.header("Content-Range", contentRange);
+    if (acceptRanges) reply.header("Accept-Ranges", acceptRanges);
+    if (input.cacheControl) reply.header("Cache-Control", input.cacheControl);
+    await reply.send(Readable.fromWeb(res.body as any));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
+  const creatorScopeId = getCreatorScopeId(req);
   const objectKeyRaw = asString((req.query || {})?.objectKey || "").trim();
   const shareToken = asString((req.query || {})?.share || "").trim();
+  const existsLocally = await prisma.contentItem.findUnique({ where: { id: contentId }, select: { id: true } });
+  if (!existsLocally) {
+    const rawUrl = asString(req?.raw?.url || req?.url || "");
+    const qs = rawUrl.includes("?") ? rawUrl.split("?").slice(1).join("?") : "";
+    const proxied = await proxyDelegatedPublicAsset(req, reply, {
+      contentId,
+      creatorScopeId,
+      assetPath: `/public/content/${encodeURIComponent(contentId)}/preview-file${qs ? `?${qs}` : ""}`,
+      passRange: true
+    });
+    if (proxied) return;
+  }
 
   const gated = await getPublicOfferGate(contentId, req, reply);
   if (!gated.content) {
@@ -15628,6 +15765,17 @@ async function handlePublicPreviewFile(req: any, reply: any) {
 
 async function handlePublicCoverFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
+  const creatorScopeId = getCreatorScopeId(req);
+  const existsLocally = await prisma.contentItem.findUnique({ where: { id: contentId }, select: { id: true } });
+  if (!existsLocally) {
+    const proxied = await proxyDelegatedPublicAsset(req, reply, {
+      contentId,
+      creatorScopeId,
+      assetPath: `/public/content/${encodeURIComponent(contentId)}/cover`,
+      cacheControl: "public, max-age=300"
+    });
+    if (proxied) return;
+  }
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Not found");
   if (!content?.repoPath) return notFound(reply, "Not found");
@@ -15671,7 +15819,7 @@ async function handleBuyPreviewRedirect(req: any, reply: any) {
   const rawUrl = asString(req?.raw?.url || req?.url || "");
   const qs = rawUrl.includes("?") ? rawUrl.split("?").slice(1).join("?") : "";
   const target = `/public/content/${encodeURIComponent(contentId)}/preview-file${qs ? `?${qs}` : ""}`;
-  return reply.redirect(302, target);
+  return reply.redirect(target, 302);
 }
 
 app.addHook("onRequest", (req: any, reply: any, done: any) => {
@@ -15781,17 +15929,59 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             .map((row) => {
               const title = escHtml(asString(row.title || "").trim() || "Untitled");
               const type = escHtml(asString(row.contentType || "").trim() || "content");
+              const scopedCreatorId = asString(row.creatorNodeId || "").trim() || null;
+              const providerContentUrl = buildPublicUrlFromOrigin(
+                canonicalCommerceOrigin,
+                buildCreatorScopedPath(scopedCreatorId, `/buy/${encodeURIComponent(asString(row.contentId || "").trim())}`)
+              );
+              const providerPreviewUrl = buildPublicUrlFromOrigin(
+                canonicalCommerceOrigin,
+                buildCreatorScopedPath(scopedCreatorId, `/buy/content/${encodeURIComponent(asString(row.contentId || "").trim())}/preview-file`)
+              );
+              const providerImageUrl = buildPublicUrlFromOrigin(
+                canonicalCommerceOrigin,
+                buildCreatorScopedPath(scopedCreatorId, `/buy/content/${encodeURIComponent(asString(row.contentId || "").trim())}/cover`)
+              );
               const buyUrl = buildPublicUrlFromOrigin(
                 canonicalCommerceOrigin,
                 buildCreatorScopedPath(
-                  asString(row.creatorNodeId || "").trim() || null,
+                  scopedCreatorId,
                   `/buy/${encodeURIComponent(asString(row.contentId || "").trim())}`
                 )
               );
+              req.log.debug(
+                {
+                  creatorHandle: requested,
+                  creatorScopeId: scopedCreatorId,
+                  contentId: asString(row.contentId || "").trim(),
+                  routingMode: "provider_backed",
+                  providerAuthorityOrigin: canonicalCommerceOrigin,
+                  creatorPublicBase: buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/u/${encodeURIComponent(requested)}`),
+                  providerContentUrl,
+                  providerPreviewUrl,
+                  providerImageUrl,
+                  providerBuyUrl: buyUrl,
+                  source: {
+                    content: "provider",
+                    preview: "provider_proxy",
+                    image: "provider_proxy",
+                    buy: "provider"
+                  }
+                },
+                "provider_backed.profile_card_urls"
+              );
               return `<article class="featured-item">
-                <div class="featured-media"><div class="featured-image-fallback"><span class="featured-fallback">${type}</span></div></div>
+                <div class="featured-media">
+                  <img src="${escHtml(providerImageUrl)}" alt="${title} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                  <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${type}</span></div>
+                </div>
                 <div class="featured-meta" style="min-width:0;">
                   <div class="featured-title">${title}</div>
+                  <div style="margin-top:8px;">
+                    <audio controls preload="none" style="width:100%;max-width:420px;">
+                      <source src="${escHtml(providerPreviewUrl)}" />
+                    </audio>
+                  </div>
                   <div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(buyUrl)}">Open ↗</a></div>
                 </div>
               </article>`;
@@ -15816,6 +16006,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
     .featured-list { margin-top:12px; display:grid; gap:10px; }
     .featured-item { display:grid; grid-template-columns:110px 1fr; gap:12px; border:1px solid #1f1f1f; border-radius:10px; padding:10px; background:#0d0f12; }
+    .featured-image { width:100%; height:90px; object-fit:cover; border-radius:8px; border:1px solid #1f1f1f; display:block; }
     .featured-image-fallback { width:100%; height:90px; border-radius:8px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#1a1a1a,#111); color:#cfd8dc; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
     .featured-title { font-weight:700; line-height:1.3; }
     .featured-cta { display:inline-flex; align-items:center; justify-content:center; padding:6px 12px; border-radius:999px; border:1px solid #2f7cbf; color:#9bdcff; font-size:13px; text-decoration:none; }
@@ -16562,7 +16753,7 @@ async function handlePublicProfileRedirect(req: any, reply: any) {
   const conf = await readBeatifyNodeProof();
   const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
   if (!beatifyHandle) return notFound(reply, "Not found");
-  return reply.redirect(302, `/u/${encodeURIComponent(beatifyHandle)}`);
+  return reply.redirect(`/u/${encodeURIComponent(beatifyHandle)}`, 302);
 }
 
 app.get("/profile", handlePublicProfileRedirect);
@@ -16759,7 +16950,25 @@ async function handleBuyPage(req: any, reply: any) {
     where: { id: contentId },
     include: { owner: { select: { displayName: true, email: true } } }
   });
-  if (!content) return notFound(reply, "Not found");
+  if (!content) {
+    const delegatedOrigin = resolveDelegatedCreatorOriginForContent({
+      req,
+      contentId,
+      creatorScopeId
+    });
+    if (delegatedOrigin) {
+      try {
+        const upstream = await fetch(new URL(`/buy/${encodeURIComponent(contentId)}`, delegatedOrigin).toString(), {
+          method: "GET"
+        } as any);
+        if (upstream.ok) {
+          const html = await upstream.text();
+          return reply.type("text/html; charset=utf-8").send(html);
+        }
+      } catch {}
+    }
+    return notFound(reply, "Not found");
+  }
   if (
     !isCreatorScopeAllowedForContent({
       creatorScopeId,
@@ -18280,6 +18489,75 @@ async function handlePublicOffer(req: any, reply: any) {
   const creatorScopeId = getCreatorScopeId(req);
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
+  const localContentExists = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    select: { id: true }
+  });
+  if (!localContentExists) {
+    const delegatedOrigin = resolveDelegatedCreatorOriginForContent({
+      req,
+      contentId,
+      creatorScopeId
+    });
+    if (delegatedOrigin) {
+      const delegatedPath = `/buy/content/${encodeURIComponent(contentId)}/offer${manifestShaQuery ? `?manifestSha256=${encodeURIComponent(manifestShaQuery)}` : ""}`;
+      try {
+        const res = await fetch(new URL(delegatedPath, delegatedOrigin).toString(), { method: "GET" } as any);
+        if (res.ok) {
+          const payload = (await res.json().catch(() => null)) as any;
+          if (payload && typeof payload === "object") {
+            const canonicalBuyerOrigin = await resolveCanonicalBuyerRecoveryOrigin(req, null);
+            const scopedCreatorId =
+              asString(creatorScopeId || findProviderDelegatedPublishForRequest({ contentId })?.creatorNodeId || "").trim() ||
+              null;
+            const providerPreviewUrl = buildPublicUrlFromOrigin(
+              canonicalBuyerOrigin,
+              buildCreatorScopedPath(scopedCreatorId, `/buy/content/${encodeURIComponent(contentId)}/preview-file`)
+            );
+            const providerCoverUrl = buildPublicUrlFromOrigin(
+              canonicalBuyerOrigin,
+              buildCreatorScopedPath(scopedCreatorId, `/buy/content/${encodeURIComponent(contentId)}/cover`)
+            );
+            const providerBuyUrl = buildPublicUrlFromOrigin(
+              canonicalBuyerOrigin,
+              buildCreatorScopedPath(scopedCreatorId, `/buy/${encodeURIComponent(contentId)}`)
+            );
+            const normalized = {
+              ...payload,
+              previewUrl: providerPreviewUrl || payload.previewUrl || null,
+              coverUrl: providerCoverUrl || payload.coverUrl || null,
+              canonicalUrls: payload?.canonicalUrls
+                ? { ...payload.canonicalUrls, buyUrl: providerBuyUrl || payload?.canonicalUrls?.buyUrl || null }
+                : { buyUrl: providerBuyUrl || null },
+              deliveryRouting: payload?.deliveryRouting
+                ? {
+                    ...payload.deliveryRouting,
+                    canonicalCommerceOrigin:
+                      canonicalBuyerOrigin || payload.deliveryRouting.canonicalCommerceOrigin || null
+                  }
+                : payload?.deliveryRouting || null
+            };
+            req.log.debug(
+              {
+                contentId,
+                creatorScopeId: scopedCreatorId,
+                routingMode: "provider_backed",
+                providerAuthorityOrigin: canonicalBuyerOrigin,
+                providerPreviewUrl,
+                providerCoverUrl,
+                providerBuyUrl,
+                previewSource: "provider_proxy",
+                coverSource: "provider_proxy",
+                buySource: "provider_canonical"
+              },
+              "provider_backed.offer.normalized"
+            );
+            return reply.send(normalized);
+          }
+        }
+      } catch {}
+    }
+  }
   if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
     const dbg = await prisma.contentItem.findUnique({
       where: { id: contentId },
@@ -18604,8 +18882,37 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
   try {
     const amountSatsInput = parseSats(body.amountSats);
-    const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-    if (!content) return notFound(reply, "Content not found");
+    let content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+    if (!content) {
+      const delegatedOrigin = resolveDelegatedCreatorOriginForContent({
+        req,
+        contentId,
+        creatorScopeId
+      });
+      if (delegatedOrigin) {
+        try {
+          const forwarded = await fetch(new URL("/buy/payments/intents", delegatedOrigin).toString(), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body)
+          } as any);
+          const text = await forwarded.text();
+          let json: any = null;
+          try {
+            json = text ? JSON.parse(text) : null;
+          } catch {
+            json = { error: text || "Delegated payment intent failed." };
+          }
+          return reply.code(forwarded.status).send(json);
+        } catch {
+          return reply.code(502).send({
+            code: "PROVIDER_DELEGATED_CONTENT_UNREACHABLE",
+            message: "Delegated creator payment endpoint is unreachable."
+          });
+        }
+      }
+      return notFound(reply, "Content not found");
+    }
     if (
       !isCreatorScopeAllowedForContent({
         creatorScopeId,
@@ -19945,7 +20252,7 @@ async function handleReplayRedirectPage(req: any, reply: any) {
   if (!entitlementId) return badRequest(reply, "entitlementId required");
   const resolution = await resolveReplayAccessForEntitlement(req, reply, entitlementId);
   if (!resolution) return notFound(reply, "Replay access not found");
-  return reply.redirect(302, resolution.url);
+  return reply.redirect(resolution.url, 302);
 }
 
 app.get("/replay/:entitlementId/access", handleReplayAccessPage);
