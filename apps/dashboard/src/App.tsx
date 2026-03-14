@@ -56,6 +56,7 @@ type NetworkSummaryLite = {
     canonicalCommerceUrl?: string | null;
     canonicalCommerceKind?: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
     localNodeEndpointUrl?: string | null;
+    creatorPublicBase?: string | null;
   };
 };
 
@@ -474,9 +475,10 @@ export default function App() {
         ? "Self-hosted"
         : "Unavailable";
   const publicCreatorUrl =
-    preferredPublicBase
+    String(networkSummary?.reachability?.creatorPublicBase || "").trim() ||
+    (preferredPublicBase
       ? new URL(creatorProfileHref || "/profile", preferredPublicBase).toString()
-      : null;
+      : null);
 
   return (
     <div className="h-screen overflow-hidden bg-neutral-950 text-neutral-100 flex">
