@@ -15744,7 +15744,103 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     });
     user = candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) || null;
   }
-  if (!user) return notFound(reply, "Not found");
+  if (!user) {
+    const delegatedLink =
+      listProviderCreatorLinks().find((row) => {
+        const displayHandle = normalizePublicProfileHandle(asString(row.creatorDisplayName || "").trim());
+        const nodeHandle = normalizePublicProfileHandle(asString(row.creatorNodeId || "").trim());
+        return displayHandle === requested || nodeHandle === requested;
+      }) || null;
+    if (!delegatedLink) return notFound(reply, "Not found");
+
+    const delegatedPublishes = listProviderDelegatedPublishes()
+      .filter(
+        (row) =>
+          asString(row.creatorNodeId || "").trim() === asString(delegatedLink.creatorNodeId || "").trim() &&
+          asString(row.status || "").trim().toLowerCase() === "published"
+      )
+      .sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
+
+    const displayName =
+      asString(delegatedLink.creatorDisplayName || "").trim() || `Delegated creator`;
+    const wk = await buildWellKnownContentboxPayload(req);
+    const nodeUrl = asString(wk.nodeUrl || "").trim() || normalizePublicOriginBase(APP_BASE_URL);
+    const canonicalCommerceOrigin =
+      resolveProviderServiceProfile({
+        hasLocalInvoiceMinting: false,
+        creatorHandle: requested
+      }).canonicalCommerceOrigin || normalizePublicOriginBase(APP_BASE_URL);
+
+    const safeDisplayName = escHtml(displayName);
+    const safeHandle = escHtml(`@${requested}`);
+    const safeNodeUrl = escHtml(nodeUrl);
+    const safeCreatorNodeId = escHtml(asString(delegatedLink.creatorNodeId || "").trim());
+    const cardsHtml =
+      delegatedPublishes.length > 0
+        ? delegatedPublishes
+            .map((row) => {
+              const title = escHtml(asString(row.title || "").trim() || "Untitled");
+              const type = escHtml(asString(row.contentType || "").trim() || "content");
+              const buyUrl = buildPublicUrlFromOrigin(
+                canonicalCommerceOrigin,
+                buildCreatorScopedPath(
+                  asString(row.creatorNodeId || "").trim() || null,
+                  `/buy/${encodeURIComponent(asString(row.contentId || "").trim())}`
+                )
+              );
+              return `<article class="featured-item">
+                <div class="featured-media"><div class="featured-image-fallback"><span class="featured-fallback">${type}</span></div></div>
+                <div class="featured-meta" style="min-width:0;">
+                  <div class="featured-title">${title}</div>
+                  <div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(buyUrl)}">Open ↗</a></div>
+                </div>
+              </article>`;
+            })
+            .join("")
+        : `<div class="line muted">No published items available yet.</div>`;
+
+    const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Certifyd Creator Profile</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
+    .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
+    .muted { color:#9aa0a6; font-size:13px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
+    .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
+    .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
+    .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
+    .featured-list { margin-top:12px; display:grid; gap:10px; }
+    .featured-item { display:grid; grid-template-columns:110px 1fr; gap:12px; border:1px solid #1f1f1f; border-radius:10px; padding:10px; background:#0d0f12; }
+    .featured-image-fallback { width:100%; height:90px; border-radius:8px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#1a1a1a,#111); color:#cfd8dc; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }
+    .featured-title { font-weight:700; line-height:1.3; }
+    .featured-cta { display:inline-flex; align-items:center; justify-content:center; padding:6px 12px; border-radius:999px; border:1px solid #2f7cbf; color:#9bdcff; font-size:13px; text-decoration:none; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1 style="margin:0;font-size:32px;line-height:1.15;letter-spacing:-0.02em;">${safeDisplayName}</h1>
+    <div class="line muted">${safeHandle}</div>
+    <div class="line muted">Delegated creator profile served by provider commerce host.</div>
+    <div class="section">
+      <h3>Node</h3>
+      <div class="line"><strong>Provider host:</strong> <span class="mono">${safeNodeUrl}</span></div>
+      <div class="line"><strong>Creator node:</strong> <span class="mono">${safeCreatorNodeId}</span></div>
+    </div>
+    <div class="section">
+      <h3>Featured Releases</h3>
+      <div class="featured-list">${cardsHtml}</div>
+    </div>
+  </main>
+</body>
+</html>`;
+    reply.type("text/html; charset=utf-8");
+    return reply.send(html);
+  }
 
   const verifiedProofs = await prisma.proofRecord.findMany({
     where: {
