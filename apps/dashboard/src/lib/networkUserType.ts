@@ -29,12 +29,12 @@ export function resolveParticipationMode(input: {
   nodeMode: NodeMode | null | undefined;
   providerConfigured?: boolean;
   providerInfrastructureCapability?: boolean;
+  localSovereignReady?: boolean;
 }): ParticipationMode {
   if (input.nodeMode === "basic") return "basic_creator";
-  if (input.nodeMode === "lan") return "sovereign_node";
-  if (input.providerInfrastructureCapability) return "sovereign_node";
-  if (input.providerConfigured) return "sovereign_with_provider";
-  return "sovereign_node";
+  if (input.localSovereignReady) return "sovereign_node";
+  if (input.providerConfigured || input.providerInfrastructureCapability) return "sovereign_with_provider";
+  return "sovereign_with_provider";
 }
 
 export function participationModeMeta(mode: ParticipationMode): { label: string; description: string } {
@@ -46,12 +46,12 @@ export function participationModeMeta(mode: ParticipationMode): { label: string;
   }
   if (mode === "sovereign_with_provider") {
     return {
-      label: "Sovereign Creator (with Provider)",
-      description: "Runs a sovereign node but uses a provider for payment infrastructure."
+      label: "Sovereign Creator",
+      description: "Creator-hosted storefront with optional provider-backed commerce services."
     };
   }
   return {
-    label: "Sovereign Creator Node",
-    description: "Runs full local infrastructure and can provide services to other creators."
+    label: "Sovereign Node",
+    description: "Creator-hosted storefront with verified local BTC/LND/invoice commerce stack."
   };
 }

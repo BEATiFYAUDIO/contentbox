@@ -395,6 +395,7 @@ export default function App() {
   };
   const capabilityReasons = identityDetail?.capabilityReasons || {};
   const advancedInactive = productTier === "advanced" && !sovereignCapabilities.canActAsSovereignCreator;
+  const canSeeProviderConsole = Boolean(sovereignCapabilities.canActAsProviderNode && nodeMode === "lan");
 
   // Navigation options for the sidebar
   const accessNav = [
@@ -428,7 +429,7 @@ export default function App() {
     { key: "config" as const, label: "Configuration", hint: "Node + tunnel setup" },
     { key: "diagnostics" as const, label: "Diagnostics", hint: "Health + connectivity" }
   ].filter((item) => {
-    if (item.key === "provider-console") return sovereignCapabilities.canActAsProviderNode;
+    if (item.key === "provider-console") return canSeeProviderConsole;
     return true;
   });
 
@@ -456,6 +457,12 @@ export default function App() {
   const showAdvancedLocked =
     advancedInactive && (page === "splits" || page === "invite" || page === "split-editor");
   const isOperatorPage = page === "config" || page === "diagnostics" || page === "provider-console";
+
+  useEffect(() => {
+    if (page === "provider-console" && !canSeeProviderConsole) {
+      setPage("store");
+    }
+  }, [page, canSeeProviderConsole]);
   const advancedCtaLabel =
     publicStatus?.mode === "named" && publicStatus?.status !== "online"
       ? "Bring named link online"

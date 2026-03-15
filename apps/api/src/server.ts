@@ -4679,11 +4679,12 @@ function getCapabilityContext() {
 }
 
 type ProviderServiceProfile = {
-  participationMode: "basic_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+  participationMode: "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
   hasStablePublicRoute: boolean;
   stablePublicRouteOrigin: string | null;
   temporaryNodeEndpointOrigin: string | null;
   localNodeEndpointOrigin: string | null;
+  localSovereignReady: boolean;
   hasLocalInvoiceMinting: boolean;
   needsProviderInvoicing: boolean;
   needsDurablePublicHosting: boolean;
@@ -4699,6 +4700,7 @@ type ProviderServiceProfile = {
 
 function resolveProviderServiceProfile(input: {
   hasLocalInvoiceMinting: boolean;
+  localSovereignReady?: boolean;
   providerCfg?: NetworkProviderConfig;
   ctx?: ReturnType<typeof getCapabilityContext>;
 }): ProviderServiceProfile {
@@ -4719,23 +4721,20 @@ function resolveProviderServiceProfile(input: {
   const providerConfigured = hasProviderPaymentTarget(providerCfg);
   const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
   const hasLocalInvoiceMinting = Boolean(input.hasLocalInvoiceMinting);
+  const localSovereignReady = Boolean(input.localSovereignReady);
 
   const isBasicCreator = ctx.nodeMode === "basic";
-  const isLanNode = ctx.nodeMode === "lan";
-  const fullySelfProvided = hasStablePublicRoute && hasLocalInvoiceMinting;
-  const isSovereignCreatorWithProvider =
-    !isBasicCreator &&
-    !isLanNode &&
-    providerConfigured &&
-    !fullySelfProvided;
+  const isSovereignCreatorWithProvider = !isBasicCreator && providerConfigured && !localSovereignReady;
   const participationMode: ProviderServiceProfile["participationMode"] = isBasicCreator
     ? "basic_creator"
-    : isSovereignCreatorWithProvider
-      ? "sovereign_creator_with_provider"
-      : "sovereign_node";
+    : localSovereignReady
+      ? "sovereign_node"
+      : isSovereignCreatorWithProvider
+        ? "sovereign_creator_with_provider"
+        : "sovereign_creator";
 
-  const needsProviderInvoicing = participationMode === "sovereign_creator_with_provider" && !hasLocalInvoiceMinting;
-  const needsDurablePublicHosting = participationMode === "sovereign_creator_with_provider" && !hasStablePublicRoute;
+  const needsProviderInvoicing = !hasLocalInvoiceMinting && providerConfigured;
+  const needsDurablePublicHosting = !hasStablePublicRoute && providerConfigured;
 
   const providerInvoicingFeePercent = needsProviderInvoicing ? PROVIDER_INVOICING_FEE_PERCENT : 0;
   const providerDurableHostingFeePercent = needsDurablePublicHosting ? PROVIDER_DURABLE_HOSTING_FEE_PERCENT : 0;
@@ -4760,6 +4759,7 @@ function resolveProviderServiceProfile(input: {
     stablePublicRouteOrigin,
     temporaryNodeEndpointOrigin,
     localNodeEndpointOrigin: activeLocalOrigin,
+    localSovereignReady,
     hasLocalInvoiceMinting,
     needsProviderInvoicing,
     needsDurablePublicHosting,
@@ -9534,6 +9534,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const ctx = getCapabilityContext();
   const providerConfig = getNetworkProviderConfig();
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const sovereignReadiness = await getLocalSovereignReadiness();
 
   const localInvoiceMinting =
     ctx.paymentsMode === "node" &&
@@ -9542,6 +9543,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
+    localSovereignReady: sovereignReadiness.ready,
     providerCfg: providerConfig,
     ctx
   });
@@ -9583,6 +9585,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     },
     modeProfile: {
       participationMode: serviceProfile.participationMode,
+      localSovereignReady: serviceProfile.localSovereignReady,
       hasStablePublicRoute: serviceProfile.hasStablePublicRoute,
       hasLocalInvoiceMinting: serviceProfile.hasLocalInvoiceMinting,
       providerConfigured: serviceProfile.providerConfigured,

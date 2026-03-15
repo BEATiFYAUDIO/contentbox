@@ -21,7 +21,8 @@ type NetworkSummary = {
     providerBackedCommerceMessage?: string;
   };
   modeProfile?: {
-    participationMode?: "basic_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+    participationMode?: "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+    localSovereignReady?: boolean;
     hasStablePublicRoute?: boolean;
     hasLocalInvoiceMinting?: boolean;
     providerConfigured?: boolean;
@@ -1385,12 +1386,15 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const participationMode = resolveParticipationMode({
     nodeMode: (networkSummary?.nodeMode || resolvedNodeMode) as "basic" | "advanced" | "lan",
     providerConfigured: Boolean(providerConfig?.configured),
-    providerInfrastructureCapability: summaryProvidesInvoiceInfrastructure
+    providerInfrastructureCapability: summaryProvidesInvoiceInfrastructure,
+    localSovereignReady: Boolean(networkSummary?.modeProfile?.localSovereignReady)
   });
   const participationModeFromSummary = networkSummary?.modeProfile?.participationMode;
   const participationMeta = participationModeMeta(
     participationModeFromSummary === "basic_creator"
       ? "basic_creator"
+      : participationModeFromSummary === "sovereign_creator"
+        ? "sovereign_with_provider"
       : participationModeFromSummary === "sovereign_creator_with_provider"
         ? "sovereign_with_provider"
         : participationModeFromSummary === "sovereign_node"
