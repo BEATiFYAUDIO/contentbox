@@ -1,7 +1,6 @@
 import React from "react";
 import { api, getApiBase } from "../lib/api";
 import { fetchIdentityDetail } from "../lib/identity";
-import { participationModeMeta, resolveParticipationMode } from "../lib/networkUserType";
 
 type NetworkSummary = {
   nodeMode: "basic" | "advanced" | "lan";
@@ -1316,9 +1315,17 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     Boolean(namedTunnelOriginCandidate) &&
     !isTemporaryPublicOrigin(namedTunnelOriginCandidate);
   const providerConfigLocked = !hasDetectedNamedTunnel;
-  const isSovereignCreatorMode = resolvedNodeMode === "advanced";
+  const participationModeFromSummary = networkSummary?.modeProfile?.participationMode;
+  const isBasicParticipation =
+    participationModeFromSummary !== undefined
+      ? participationModeFromSummary === "basic_creator"
+      : isBasicMode;
+  const isSovereignCreatorMode =
+    participationModeFromSummary !== undefined
+      ? participationModeFromSummary === "sovereign_creator" || participationModeFromSummary === "sovereign_creator_with_provider"
+      : resolvedNodeMode === "advanced";
   const showAdvancedProviderPanels = !isSovereignCreatorMode || showProviderAdvanced;
-  const showNetworkDiagnostics = !isBasicMode || showBasicDiagnostics;
+  const showNetworkDiagnostics = !isBasicParticipation || showBasicDiagnostics;
 
   const summaryNodeModeLabel =
     networkSummary?.nodeMode === "advanced"
@@ -1362,26 +1369,11 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       ? "Public route available"
       : "No active public route"
     : reachabilityMode;
-  const summaryNetworkService = networkSummary
-    ? networkSummary.serviceRoles.hybrid || networkSummary.serviceRoles.invoiceProvider
-      ? "This node can provide invoice infrastructure. Creator identity, sale history, and entitlements remain creator-owned."
-      : "This profile participates as a creator identity and can consume provider infrastructure when configured."
-    : networkService;
-  const summaryProvidesInvoiceInfrastructure = networkSummary
-    ? Boolean(networkSummary.serviceRoles.invoiceProvider || networkSummary.serviceRoles.hybrid)
-    : Boolean(paymentMode === "node" && resolvedNodeMode === "advanced");
-  const participationMode = resolveParticipationMode({
-    nodeMode: (networkSummary?.nodeMode || resolvedNodeMode) as "basic" | "advanced" | "lan",
-    providerConfigured: Boolean(providerConfig?.configured),
-    providerInfrastructureCapability: summaryProvidesInvoiceInfrastructure,
-    localSovereignReady: Boolean(networkSummary?.modeProfile?.localSovereignReady)
-  });
-  const participationModeFromSummary = networkSummary?.modeProfile?.participationMode;
   const summaryParticipationMode =
     participationModeFromSummary === "basic_creator"
       ? "Basic Creator"
       : participationModeFromSummary === "sovereign_creator_with_provider"
-        ? "Sovereign Creator"
+        ? "Sovereign Creator (Provider Commerce)"
         : participationModeFromSummary === "sovereign_creator"
           ? "Sovereign Creator"
           : participationModeFromSummary === "sovereign_node"
@@ -1397,17 +1389,13 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     : providerCommerceActive
       ? "Connected provider commerce"
       : "Basic tips only";
-  const participationMeta = participationModeMeta(
-    participationModeFromSummary === "basic_creator"
-      ? "basic_creator"
-      : participationModeFromSummary === "sovereign_creator"
-        ? "sovereign_with_provider"
-      : participationModeFromSummary === "sovereign_creator_with_provider"
-        ? "sovereign_with_provider"
-        : participationModeFromSummary === "sovereign_node"
-          ? "sovereign_node"
-          : participationMode
-  );
+  const summaryNetworkService = networkSummary
+    ? summaryCommerceAuthority === "Local sovereign commerce"
+      ? "Local sovereign invoice and commerce services are active on this machine."
+      : summaryCommerceAuthority === "Connected provider commerce"
+        ? "Provider-backed commerce services are active. Storefront ownership remains creator-hosted."
+        : "Basic monetization posture is active (tips / direct wallet). Connect provider or run local node stack to unlock paid commerce."
+    : networkService;
   const invoicingService = networkSummary?.providerServices?.invoicing;
   const durableHostingService = networkSummary?.providerServices?.durablePublicHosting;
   const payoutState = payoutDestination || networkSummary?.payoutDestination || null;
@@ -1566,8 +1554,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const hasLocalInvoiceMinting = Boolean(
     networkSummary?.modeProfile?.hasLocalInvoiceMinting || networkSummary?.paymentCapability?.localInvoiceMinting
   );
-  const needsProviderInvoicing = !hasLocalInvoiceMinting;
-  const needsDurablePublicHosting = !hasStablePublicRoute;
+  const needsProviderInvoicing = providerCommerceActive && !hasLocalInvoiceMinting;
+  const needsDurablePublicHosting = providerCommerceActive && !hasStablePublicRoute;
   const supportsAutoForward = Boolean(payoutConfigured && payoutState?.effectiveDestinationType === "lightning_address");
   const usingManualWhenAutoAvailable = supportsAutoForward && payoutRemitModeLabel === "manual_payout";
   type GuardLevel = "ready" | "warn" | "block";
@@ -1580,7 +1568,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         ? "warn"
         : "ready";
   const commerceGuardMessage =
-    commerceGuardLevel === "block"
+    !providerCommerceActive
+      ? "Basic monetization posture is active for this mode. Connect provider commerce or run local sovereign node to enable paid commerce."
+    : commerceGuardLevel === "block"
       ? "Configure a valid creator payout destination before provider-backed commerce can run safely."
       : usingManualWhenAutoAvailable
         ? "Manual payout is active. Auto-forward is available and recommended to complete payout automatically."
@@ -1593,18 +1583,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     paid: "Paid out",
     failed: "Payout failed"
   };
-  const modeDelineationLabel =
-    participationModeFromSummary === "sovereign_node"
-      ? "Sovereign Node"
-      : participationModeFromSummary === "sovereign_creator_with_provider"
-        ? "Sovereign Creator (Provider Commerce)"
-        : participationModeFromSummary === "sovereign_creator"
-          ? "Sovereign Creator"
-      : participationMeta.label === "Sovereign Creator"
-        ? providerCommerceActive
-          ? "Sovereign Creator (Provider Commerce)"
-          : "Sovereign Creator"
-        : "Basic Creator";
+  const modeDelineationLabel = summaryParticipationMode;
   const nextStepLabel =
     participationModeFromSummary === "sovereign_node"
       ? "Sovereign Node is active."
@@ -1692,9 +1671,11 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Payment Capability</div>
             <div className="mt-1 text-sm text-neutral-200">{summaryPaymentCapability}</div>
             <div className="text-xs text-neutral-400 mt-1">{summaryNetworkService}</div>
-            <div className="text-xs text-neutral-500 mt-1">
-              Provider infrastructure can execute invoices, but creator identity, entitlement truth, and sale history remain creator-owned.
-            </div>
+            {providerCommerceActive ? (
+              <div className="text-xs text-neutral-500 mt-1">
+                Provider infrastructure executes invoicing/settlement while creator identity, entitlement truth, and sale history remain creator-owned.
+              </div>
+            ) : null}
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Reachability</div>
@@ -1725,7 +1706,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </div>
         </div>
 
-        {isBasicMode ? (
+        {isBasicParticipation ? (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Basic Mode Focus</div>
             <div className="mt-2 grid gap-2 text-xs">
@@ -1961,7 +1942,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </>
         ) : null}
 
-        {isBasicMode ? (
+        {isBasicParticipation ? (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Configuration</div>
             <div className="mt-1 text-xs text-neutral-400">

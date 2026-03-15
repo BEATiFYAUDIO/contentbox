@@ -3304,9 +3304,8 @@ function getLocalNodePrivatePem(): string | null {
 }
 
 function hasInvoiceProviderRole(nodeMode: "basic" | "advanced" | "lan"): boolean {
-  // Minimal truthful role signal for current architecture:
-  // advanced and lan nodes can expose provider capability surfaces.
-  return nodeMode === "advanced" || nodeMode === "lan";
+  // Only full Sovereign Node should advertise invoice-provider capability.
+  return nodeMode === "lan";
 }
 
 async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeIdentityDoc> {
@@ -4800,6 +4799,7 @@ type ProviderServiceProfile = {
 function resolveProviderServiceProfile(input: {
   hasLocalInvoiceMinting: boolean;
   localSovereignReady?: boolean;
+  providerConnected?: boolean;
   providerCfg?: NetworkProviderConfig;
   ctx?: ReturnType<typeof getCapabilityContext>;
 }): ProviderServiceProfile {
@@ -4819,16 +4819,19 @@ function resolveProviderServiceProfile(input: {
   const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "") || null;
   const providerConfigured = isNetworkProviderConfigured(providerCfg);
   const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
+  const providerConnected = Boolean(input.providerConnected);
   const hasLocalInvoiceMinting = Boolean(input.hasLocalInvoiceMinting);
   const localSovereignReady = Boolean(input.localSovereignReady);
 
-  const isBasicCreator = ctx.nodeMode === "basic";
-  const isSovereignCreatorWithProvider = !isBasicCreator && providerConfigured && !localSovereignReady;
-  const participationMode: ProviderServiceProfile["participationMode"] = isBasicCreator
+  // Participation posture is effective capability truth:
+  // - Basic: no stable named route yet
+  // - Sovereign Creator: stable named route, optional provider commerce
+  // - Sovereign Node: stable named route + verified local sovereign stack
+  const participationMode: ProviderServiceProfile["participationMode"] = !hasStablePublicRoute
     ? "basic_creator"
     : localSovereignReady
       ? "sovereign_node"
-      : isSovereignCreatorWithProvider
+      : providerConnected
         ? "sovereign_creator_with_provider"
         : "sovereign_creator";
 
@@ -9684,6 +9687,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
     localSovereignReady: sovereignReadiness.ready,
+    providerConnected: providerConnection.providerConnected,
     providerCfg: providerConfig,
     ctx
   });
@@ -23860,6 +23864,21 @@ async function start() {
 
   await ensureNodeKeys();
   await ensurePayoutMethods();
+  // Refresh provider verification posture on boot so connected-provider state
+  // rehydrates automatically after restart when config is already present.
+  await (async () => {
+    const cfg = getNetworkProviderConfig();
+    if (!isNetworkProviderConfigured(cfg)) return;
+    try {
+      const refreshed = await verifyConfiguredProvider(cfg);
+      persistProviderVerificationPosture(refreshed);
+    } catch (err: any) {
+      app.log.warn(
+        { err: String(err?.message || err) },
+        "providerConnection.startup_refresh.failed"
+      );
+    }
+  })();
   await preflightPrismaReadiness();
   await preflightDb();
   const port = Number(process.env.PORT || 4000);
