@@ -1538,6 +1538,10 @@ const RUNTIME_SUPERVISED = String(process.env.CERTIFYD_SUPERVISOR_ACTIVE || "") 
 const PROVIDER_ACK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PROVIDER_PERMIT_DEFAULT_TTL_MS = 30 * 60 * 1000;
 const PROVIDER_PERMIT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const PROVIDER_UPSTREAM_SYNC_INTERVAL_MS = Math.max(
+  15_000,
+  Number.parseInt(String(process.env.CERTIFYD_PROVIDER_UPSTREAM_SYNC_MS || "30000"), 10) || 30_000
+);
 const REMITTANCE_FLIGHTS = new Set<string>();
 const REMITTANCE_FORWARDING_STALE_MS = Math.max(
   30_000,
@@ -1548,6 +1552,23 @@ const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider
 const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
 const PROVIDER_PAYMENT_RECEIPTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-receipts.json");
 const CREATOR_PAYOUT_DESTINATIONS_FILE = path.join(RUNTIME_STATE_DIR, "creator-payout-destinations.json");
+const PROVIDER_UPSTREAM_SYNC_STATE: {
+  inFlight: boolean;
+  lastProviderUrl: string | null;
+  lastPreviewOrigin: string | null;
+  lastAttemptAt: number;
+  lastSyncedAt: number;
+  loopStarted: boolean;
+  timer: ReturnType<typeof setInterval> | null;
+} = {
+  inFlight: false,
+  lastProviderUrl: null,
+  lastPreviewOrigin: null,
+  lastAttemptAt: 0,
+  lastSyncedAt: 0,
+  loopStarted: false,
+  timer: null
+};
 
 type ProviderTrustStatus = "unknown" | "verified" | "blocked";
 type ProviderHandshakeStatus = "none" | "accepted" | "failed";
@@ -5055,6 +5076,143 @@ function resolveProviderServiceProfile(input: {
     routingAuthoritySource: authority.authoritySource,
     providerCreatorNamespaceReady: authority.providerCreatorNamespaceReady
   };
+}
+
+async function syncProviderCreatorUpstreamOrigin(input: {
+  reason: "startup" | "interval";
+  force?: boolean;
+}) {
+  const force = Boolean(input.force);
+  const cfg = getNetworkProviderConfig();
+  if (!isNetworkProviderConfigured(cfg)) return;
+  const trust = evaluateProviderExecutionTrustReadiness();
+  if (!trust.allowed) return;
+  const providerUrl = normalizePublicOriginBase(asString(cfg.providerUrl || "").trim());
+  if (!providerUrl) return;
+
+  const localRoutingProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false,
+    providerCfg: cfg
+  });
+  const clientPreviewOrigin =
+    normalizePublicOriginBase(
+      localRoutingProfile.previewEphemeralOrigin || localRoutingProfile.localNodeEndpointOrigin || ""
+    ) || null;
+  if (!clientPreviewOrigin) return;
+
+  const sameTarget =
+    PROVIDER_UPSTREAM_SYNC_STATE.lastProviderUrl === providerUrl &&
+    PROVIDER_UPSTREAM_SYNC_STATE.lastPreviewOrigin === clientPreviewOrigin;
+  if (!force && sameTarget) return;
+  if (PROVIDER_UPSTREAM_SYNC_STATE.inFlight) return;
+  PROVIDER_UPSTREAM_SYNC_STATE.inFlight = true;
+  PROVIDER_UPSTREAM_SYNC_STATE.lastAttemptAt = Date.now();
+
+  try {
+    const localNode = await buildLocalNodeIdentityDoc();
+    const requestBody: ProviderAcknowledgmentRequest = {
+      clientNodeId: localNode.nodeId,
+      clientNodePubKey: localNode.nodePubKey,
+      clientPreviewOrigin,
+      clientCapabilityLevel: localNode.capabilityLevel,
+      requestedAt: new Date().toISOString(),
+      intent: "provider_upstream_sync"
+    };
+    const target = `${providerUrl.replace(/\/+$/, "")}/api/network/provider/acknowledge-client`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 6000);
+    try {
+      const res = await fetch(target, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      } as any);
+      if (!res.ok) {
+        app.log.warn(
+          {
+            event: "provider_upstream_sync_failed",
+            reason: input.reason,
+            providerUrl,
+            clientPreviewOrigin,
+            status: res.status
+          },
+          "Provider upstream sync failed"
+        );
+        return;
+      }
+      const body: any = await res.json().catch(() => null);
+      const accepted = body?.acknowledgment?.status === "accepted";
+      if (!accepted) {
+        app.log.warn(
+          {
+            event: "provider_upstream_sync_rejected",
+            reason: input.reason,
+            providerUrl,
+            clientPreviewOrigin
+          },
+          "Provider upstream sync did not return accepted acknowledgment"
+        );
+        return;
+      }
+      PROVIDER_UPSTREAM_SYNC_STATE.lastProviderUrl = providerUrl;
+      PROVIDER_UPSTREAM_SYNC_STATE.lastPreviewOrigin = clientPreviewOrigin;
+      PROVIDER_UPSTREAM_SYNC_STATE.lastSyncedAt = Date.now();
+      app.log.info(
+        {
+          event: "provider_upstream_sync_ok",
+          reason: input.reason,
+          providerUrl,
+          clientPreviewOrigin
+        },
+        "Provider upstream origin synchronized"
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch (err: any) {
+    app.log.warn(
+      {
+        event: "provider_upstream_sync_failed",
+        reason: input.reason,
+        providerUrl,
+        clientPreviewOrigin,
+        err: String(err?.message || err)
+      },
+      "Provider upstream sync failed"
+    );
+  } finally {
+    PROVIDER_UPSTREAM_SYNC_STATE.inFlight = false;
+  }
+}
+
+function startProviderUpstreamSyncLoop() {
+  if (PROVIDER_UPSTREAM_SYNC_STATE.loopStarted) return;
+  PROVIDER_UPSTREAM_SYNC_STATE.loopStarted = true;
+  setTimeout(() => {
+    syncProviderCreatorUpstreamOrigin({ reason: "startup", force: true }).catch((err) => {
+      app.log.warn(
+        {
+          event: "provider_upstream_sync_failed",
+          reason: "startup",
+          err: String((err as any)?.message || err)
+        },
+        "Provider upstream sync failed"
+      );
+    });
+  }, 1500);
+  PROVIDER_UPSTREAM_SYNC_STATE.timer = setInterval(() => {
+    syncProviderCreatorUpstreamOrigin({ reason: "interval" }).catch((err) => {
+      app.log.warn(
+        {
+          event: "provider_upstream_sync_failed",
+          reason: "interval",
+          err: String((err as any)?.message || err)
+        },
+        "Provider upstream sync failed"
+      );
+    });
+  }, PROVIDER_UPSTREAM_SYNC_INTERVAL_MS);
 }
 
 async function resolvePaidCommerceRuntimeGate(input: {
@@ -25451,6 +25609,7 @@ async function start() {
       }
     }
   }
+  startProviderUpstreamSyncLoop();
 }
 
 process.on("SIGTERM", () => {
