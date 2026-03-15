@@ -17220,6 +17220,12 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
   } catch {
     sellerLightningAddress = null;
   }
+  const ownerRuntime = await resolvePaidCommerceRuntimeGate({
+    userId: content.ownerUserId
+  });
+  const basicTipsOnlyMode = ownerRuntime.serviceProfile.participationMode === "basic_creator";
+  const initialPriceSats =
+    basicTipsOnlyMode || content.priceSats == null ? null : Number(content.priceSats);
 
   const html = `<!doctype html>
 <html lang="en">
@@ -17309,7 +17315,7 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
   const sellerLightningAddress = ${JSON.stringify(sellerLightningAddress)};
   const sellerDisplayName = ${JSON.stringify(sellerDisplayName)};
   const edgeDeliveryEnabled = ${JSON.stringify(EDGE_DELIVERY_ENABLED)};
-  const priceSats = ${content.priceSats != null ? Number(content.priceSats) : "null"};
+  const priceSats = ${initialPriceSats != null ? initialPriceSats : "null"};
   const app = document.getElementById("app");
   const apiBase = location.origin;
   const buyerRecoveryBase = ${JSON.stringify(canonicalBuyerRecoveryBase)};
@@ -18920,8 +18926,7 @@ async function handlePublicOffer(req: any, reply: any) {
   const coverUrl = coverObjectKey ? buildPublicUrlFromOrigin(canonicalBuyerOrigin, `/public/content/${encodeURIComponent(content.id)}/cover`) : null;
   const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
-  const priceSats = content.priceSats ?? null;
-  const hasPrice = priceSats != null && priceSats > 0n;
+  const rawPriceSats = content.priceSats ?? null;
   let buyerId: string | null = null;
   let entitled = Boolean(gated.entitled);
   try {
@@ -18944,6 +18949,14 @@ async function handlePublicOffer(req: any, reply: any) {
     });
   }
 
+  const providerCfg = getNetworkProviderConfig();
+  const paidCommerceRuntime = await resolvePaidCommerceRuntimeGate({
+    userId: content.ownerUserId
+  });
+  const serviceProfile = paidCommerceRuntime.serviceProfile;
+  const basicTipsOnlyMode = serviceProfile.participationMode === "basic_creator";
+  const priceSats = basicTipsOnlyMode ? null : rawPriceSats;
+  const hasPrice = priceSats != null && priceSats > 0n;
   let tipsEnabled = false;
   if (!hasPrice) {
     try {
@@ -18959,8 +18972,6 @@ async function handlePublicOffer(req: any, reply: any) {
       tipsEnabled = false;
     }
   }
-
-  const providerCfg = getNetworkProviderConfig();
   const publishProofProviderNodeId = asString(publishProof?.providerNodeId || "").trim() || null;
   const configuredProviderNodeId = asString(providerCfg.providerNodeId || "").trim() || null;
   const providerBackedPaymentAvailable = hasProviderPaymentTarget(providerCfg);
@@ -18988,10 +18999,6 @@ async function handlePublicOffer(req: any, reply: any) {
     creatorId: creatorScopeId || content.ownerUserId,
     contentId: content.id
   });
-  const paidCommerceRuntime = await resolvePaidCommerceRuntimeGate({
-    userId: content.ownerUserId
-  });
-  const serviceProfile = paidCommerceRuntime.serviceProfile;
   const paidCommerceAllowed = !hasPrice || paidCommerceRuntime.paidCommerceAllowed;
   const paidCommerceReason = !hasPrice ? null : paidCommerceRuntime.paidCommerceReason;
   const endpointStability = paidCommerceRuntime.endpointStability;

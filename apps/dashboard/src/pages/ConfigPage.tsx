@@ -414,11 +414,15 @@ export default function ConfigPage({
   const resolvedParticipationMode: ParticipationMode = effectiveFromSummary || fallbackParticipationMode;
   const selectedParticipationMode: ParticipationMode = selectedFromSummary || fallbackParticipationMode;
   const participationMode = participationModeMeta(resolvedParticipationMode);
-  const participationStageIndex =
-    resolvedParticipationMode === "basic_creator" ? 0 : resolvedParticipationMode === "sovereign_with_provider" ? 1 : 2;
+  const selectedStageIndex =
+    selectedParticipationMode === "basic_creator" ? 0 : selectedParticipationMode === "sovereign_with_provider" ? 1 : 2;
+  const selectedModeSatisfied = selectedParticipationMode === resolvedParticipationMode;
+  const basicModeActive = selectedParticipationMode === "basic_creator";
   const showNodeIdentityByDefault = resolvedParticipationMode !== "basic_creator";
   const showPreviewByDefault = resolvedParticipationMode === "basic_creator";
   const showReachabilityByDefault = resolvedParticipationMode === "sovereign_node";
+  const showInfrastructureSummary = !basicModeActive || Boolean(showAdvanced);
+  const showRoutingSummary = !basicModeActive || Boolean(showAdvanced);
   const temporaryPreviewEndpoint = publicStatus?.mode === "quick";
   const normalizedPublicBuyOrigin = normalizeOrigin(publicBuyOrigin);
   const normalizedPublicStudioOrigin = normalizeOrigin(publicStudioOrigin);
@@ -914,6 +918,8 @@ export default function ConfigPage({
         </div>
       ) : null}
 
+      {showInfrastructureSummary ? (
+      <>
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div style={{ fontWeight: 600 }}>Current Node Status</div>
@@ -932,11 +938,25 @@ export default function ConfigPage({
         <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8, fontSize: 13 }}>
           <div><b>Selected Mode</b>: {selectedModeLabel}</div>
           <div><b>Effective Mode</b>: {effectiveModeLabel}</div>
-          <div><b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}</div>
-          <div><b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}</div>
-          <div><b>Buyer recovery host</b>: {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}</div>
-          <div><b>Delegation</b>: {delegationSummary}</div>
+          {basicModeActive ? (
+            <>
+              <div><b>Public page</b>: {publicStatus?.publicOrigin || "Start temporary link to publish your page"}</div>
+              <div><b>Tips</b>: {networkSummary?.paymentCapability?.tipsOnly ? "Enabled by default" : "Enabled"}</div>
+            </>
+          ) : (
+            <>
+              <div><b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}</div>
+              <div><b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}</div>
+              <div><b>Buyer recovery host</b>: {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}</div>
+              <div><b>Delegation</b>: {delegationSummary}</div>
+            </>
+          )}
         </div>
+        {!selectedModeSatisfied ? (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#fbbf24" }}>
+            Selected mode needs setup before it becomes active.
+          </div>
+        ) : null}
         {readinessBlockers.length > 0 ? (
           <div style={{ marginTop: 10, fontSize: 12, color: "#fbbf24" }}>
             <b>Readiness blockers</b>: {readinessBlockers.join(" ")}
@@ -947,7 +967,9 @@ export default function ConfigPage({
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Quick Actions</div>
         <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
-          Most common creator actions without opening advanced sections.
+          {basicModeActive
+            ? "Basic essentials: publish your public page, share content, and accept tips."
+            : "Most common creator actions without opening advanced sections."}
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
           <button onClick={goToModePicker} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
@@ -1145,11 +1167,13 @@ export default function ConfigPage({
             }
           ].map((stage, index) => {
             const status =
-              index === participationStageIndex
-                ? "current"
-                : index === participationStageIndex + 1
+              index === selectedStageIndex
+                ? selectedModeSatisfied
+                  ? "current"
+                  : "needs setup"
+                : index === selectedStageIndex + 1
                   ? "next step"
-                  : index > participationStageIndex
+                  : index > selectedStageIndex
                     ? "available"
                     : "completed";
             return (
@@ -1159,7 +1183,7 @@ export default function ConfigPage({
                   border: "1px solid rgba(255,255,255,0.12)",
                   borderRadius: 10,
                   padding: 10,
-                  background: index === participationStageIndex ? "rgba(255,255,255,0.04)" : "transparent"
+                  background: index === selectedStageIndex ? "rgba(255,255,255,0.04)" : "transparent"
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -1176,6 +1200,8 @@ export default function ConfigPage({
                       color:
                         status === "current"
                           ? "#6ee7b7"
+                          : status === "needs setup"
+                            ? "#fbbf24"
                           : status === "next step"
                             ? "#fbbf24"
                             : status === "completed"
@@ -1193,15 +1219,15 @@ export default function ConfigPage({
         </div>
         <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <div style={{ fontSize: 12, opacity: 0.8 }}>
-            {participationStageIndex === 0
+            {selectedStageIndex === 0
               ? "Next step: Enable durable paid commerce with a provider."
-              : participationStageIndex === 1
+              : selectedStageIndex === 1
                 ? "Next step: Become a Sovereign Node Operator to remove provider infrastructure fees."
                 : "You are operating as a Sovereign Node Operator."}
           </div>
-          {participationStageIndex < 2 ? (
+          {selectedStageIndex < 2 ? (
             <button onClick={goToModePicker} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-              {participationStageIndex === 0 ? "Enable Paid Commerce" : "Become a Sovereign Node"}
+              {selectedStageIndex === 0 ? "Enable Paid Commerce" : "Become a Sovereign Node"}
             </button>
           ) : null}
         </div>
@@ -1287,7 +1313,10 @@ export default function ConfigPage({
           </div>
         )}
       </div>
+      </>
+      ) : null}
 
+      {showRoutingSummary ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Public Commerce & Routing</div>
         <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
@@ -1309,6 +1338,7 @@ export default function ConfigPage({
           </div>
         </div>
       </div>
+      ) : null}
 
       <details
         open={Boolean(showAdvanced)}
