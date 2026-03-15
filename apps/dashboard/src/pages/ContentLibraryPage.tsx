@@ -4169,10 +4169,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
                             const effectivePublicOrigin = (localNodeOriginFromApi || activeOrigin || "").trim();
                             const effectiveBuyOrigin = (
-                              publicBuyOrigin ||
-                              publicOriginFromApi ||
-                              (isBasicTier ? activeOrigin : "") ||
-                              ""
+                              isBasicTier
+                                ? (activeOrigin || publicOriginFromApi || publicBuyOrigin || "")
+                                : (publicBuyOrigin || publicOriginFromApi || activeOrigin || "")
                             ).trim();
                             const buyBase = (effectiveBuyOrigin || "").replace(/\/$/, "");
                             const creatorScope = String(it.ownerUserId || "").trim();

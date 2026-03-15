@@ -17455,7 +17455,29 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
   }
 
   function renderPublishProofBlock(offer){
-    return "";
+    const proof = (offer && typeof offer === "object" && offer.publishProof && typeof offer.publishProof === "object")
+      ? offer.publishProof
+      : null;
+    if (!proof) return "";
+    const publishedAt = formatProofTime(proof.publishedAt);
+    const visibility = String(proof.visibility || "").trim() || "—";
+    const publisherNodeId = String(proof.publisherNodeId || "").trim() || null;
+    const providerNodeId = String(proof.providerNodeId || "").trim() || null;
+    const receiptId = String(proof.receiptId || "").trim() || null;
+    const manifestHash = String(proof.manifestHash || "").trim() || null;
+    const delivery = String(proof.deliveryMode || "").trim() || null;
+    return "<div class=\\"proof-card\\">" +
+      "<div class=\\"proof-title\\">Published to Certifyd Network</div>" +
+      "<div class=\\"proof-grid\\">" +
+        "<div><span class=\\"proof-label\\">Visibility:</span> " + esc(visibility) + "</div>" +
+        "<div><span class=\\"proof-label\\">Published:</span> " + esc(publishedAt) + "</div>" +
+        (delivery ? "<div><span class=\\"proof-label\\">Delivery:</span> " + esc(delivery) + "</div>" : "") +
+        (publisherNodeId ? "<div><span class=\\"proof-label\\">Publishing node:</span> <span class=\\"code\\">" + esc(shortHash(publisherNodeId)) + "</span></div>" : "") +
+        (providerNodeId ? "<div><span class=\\"proof-label\\">Provider node:</span> <span class=\\"code\\">" + esc(shortHash(providerNodeId)) + "</span></div>" : "") +
+        (receiptId ? "<div><span class=\\"proof-label\\">Publish receipt:</span> <span class=\\"code\\">" + esc(shortHash(receiptId)) + "</span></div>" : "") +
+        (manifestHash ? "<div><span class=\\"proof-label\\">Manifest:</span> <span class=\\"code\\">" + esc(shortHash(manifestHash)) + "</span></div>" : "") +
+      "</div>" +
+    "</div>";
   }
 
   function normalizePaymentState(v){
@@ -17523,7 +17545,32 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
   }
 
   function renderPaymentAccessProofBlock(offer, entitlement, owned){
-    return "";
+    const proof = resolvePaymentAccessProof(offer, entitlement, owned);
+    if (!proof) return "";
+    const paymentState = proof.paymentState || "free";
+    const entitlementState = proof.entitlementState || "entitled";
+    return "<div class=\\"access-card\\">" +
+      "<div class=\\"access-title\\">Payment / Access Proof</div>" +
+      "<div class=\\"access-grid\\">" +
+        "<div><span class=\\"access-label\\">Payment state:</span> " + esc(paymentMessageForState(paymentState)) + "</div>" +
+        "<div><span class=\\"access-label\\">Entitlement:</span> " + esc(entitlementState) + "</div>" +
+        (proof.paymentReceiptId ? "<div><span class=\\"access-label\\">Payment receipt:</span> <span class=\\"code\\">" + esc(shortHash(proof.paymentReceiptId)) + "</span></div>" : "") +
+        (proof.paymentMethod ? "<div><span class=\\"access-label\\">Payment method:</span> " + esc(proof.paymentMethod) + "</div>" : "") +
+        (proof.paidAt ? "<div><span class=\\"access-label\\">Paid at:</span> " + esc(formatProofTime(proof.paidAt)) + "</div>" : "") +
+        (proof.invoiceProviderNodeId ? "<div><span class=\\"access-label\\">Invoice authority:</span> <span class=\\"code\\">" + esc(shortHash(proof.invoiceProviderNodeId)) + "</span></div>" : "") +
+      "</div>" +
+    "</div>";
+  }
+
+  function renderHiddenCreatorDetails(offer, entitlement, owned){
+    const publish = renderPublishProofBlock(offer);
+    const access = renderPaymentAccessProofBlock(offer, entitlement, owned);
+    if (!publish && !access) return "";
+    return "<details style=\\"margin-top:10px;\\">" +
+      "<summary class=\\"muted\\" style=\\"cursor:pointer;\\">Show publishing + payment details</summary>" +
+      publish +
+      access +
+    "</details>";
   }
 
   async function loadAttribution(){
@@ -17748,17 +17795,17 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
             "<button class=\\"copy\\" data-copy=\\"" + sellerLightningAddress + "\\">Copy</button>" +
           "</div>" +
           "<div class=\\"muted\\" style=\\"margin-top:8px;font-size:12px;\\">Tips support the creator (no unlock required in Basic).</div>" +
+          renderHiddenCreatorDetails(offer, null, Boolean(offer?.owned)) +
         "</div>"
       : "<div class=\\"rail\\" style=\\"margin-top:10px; opacity:0.7;\\">" +
           "<div style=\\"font-weight:600;\\">Tip the creator</div>" +
           "<div class=\\"muted\\" style=\\"margin-top:6px;\\">Creator hasn't enabled tips yet.</div>" +
+          renderHiddenCreatorDetails(offer, null, Boolean(offer?.owned)) +
         "</div>";
     app.innerHTML =
       "<div>" +
         "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
         "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
-        renderPublishProofBlock(offer) +
-        renderPaymentAccessProofBlock(offer, null, Boolean(offer?.owned)) +
         "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
         (isAudio
           ? (coverSrc
@@ -17809,8 +17856,6 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
-        \${renderPublishProofBlock(offer)}
-        \${renderPaymentAccessProofBlock(offer, entitlement, owned)}
         <section id="cb-attribution" style="display:none"></section>
         \${isAudio ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${already ? \`
@@ -17860,6 +17905,7 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
         <div id="rails" class="rails-wrap"></div>
         \${isPaid ? \`</div>\` : ""}
         <div id="downloads" style="margin-top:16px;"></div>
+        \${renderHiddenCreatorDetails(offer, entitlement, owned)}
       </div>
     \`;
     const btn = document.getElementById("buyBtn");
