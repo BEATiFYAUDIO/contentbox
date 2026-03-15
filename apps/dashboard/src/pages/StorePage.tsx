@@ -1,7 +1,7 @@
 import React from "react";
 import { api, getApiBase } from "../lib/api";
 import { fetchIdentityDetail } from "../lib/identity";
-import { networkUserTypeLabel, participationModeMeta, resolveNetworkUserType, resolveParticipationMode } from "../lib/networkUserType";
+import { participationModeMeta, resolveParticipationMode } from "../lib/networkUserType";
 
 type NetworkSummary = {
   nodeMode: "basic" | "advanced" | "lan";
@@ -27,6 +27,8 @@ type NetworkSummary = {
     hasLocalInvoiceMinting?: boolean;
     providerConfigured?: boolean;
     providerTrusted?: boolean;
+    providerConnected?: boolean;
+    providerConnectionReason?: string;
   };
   payoutDestination?: {
     payoutDestinationType?: "lightning_address" | "local_lnd" | "onchain_address" | null;
@@ -1260,7 +1262,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     window.location.assign(`${host}/buy/${contentId}`);
   }
 
-  const profileType = diagnostics?.productTier === "advanced" ? "Sovereign Creator" : "Basic Creator";
   const productTier = String(diagnostics?.productTier || "basic").toLowerCase();
   const paymentMode = String(diagnostics?.paymentsMode || "wallet").toLowerCase();
   const reachabilityMode =
@@ -1293,10 +1294,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       : resolvedNodeMode === "lan"
         ? "LAN"
         : "Basic (tunnel-backed)";
-  const fallbackServiceRoleLabel =
-    paymentMode === "node" && resolvedNodeMode === "advanced"
-      ? "Provider infrastructure"
-      : "Creator identity";
   const fallbackVisibilitySummary =
     diagnostics?.publicStatus?.status === "online"
       ? "Direct Link"
@@ -1325,11 +1322,11 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
   const summaryNodeModeLabel =
     networkSummary?.nodeMode === "advanced"
-      ? "Advanced"
+      ? "Sovereign Creator"
       : networkSummary?.nodeMode === "lan"
-        ? "LAN"
+        ? "Sovereign Node"
         : networkSummary?.nodeMode === "basic"
-          ? "Basic (tunnel-backed)"
+          ? "Basic Creator"
           : nodeModeLabel;
   const summaryVisibility =
     networkSummary?.visibility === "LISTED"
@@ -1339,13 +1336,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         : networkSummary?.visibility === "DISABLED"
           ? "Hidden"
           : fallbackVisibilitySummary;
-  const summaryServiceRole = networkSummary
-    ? networkSummary.serviceRoles.hybrid
-      ? "Creator + provider infrastructure"
-      : networkSummary.serviceRoles.invoiceProvider
-        ? "Provider infrastructure"
-        : "Creator identity"
-    : fallbackServiceRoleLabel;
   const summaryPaymentCapability = networkSummary
     ? networkSummary.paymentCapability.localInvoiceMinting
       ? "Sovereign payment rails (local Lightning invoice minting)"
@@ -1380,12 +1370,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const summaryProvidesInvoiceInfrastructure = networkSummary
     ? Boolean(networkSummary.serviceRoles.invoiceProvider || networkSummary.serviceRoles.hybrid)
     : Boolean(paymentMode === "node" && resolvedNodeMode === "advanced");
-  const summaryUserType = networkUserTypeLabel(
-    resolveNetworkUserType({
-      nodeMode: (networkSummary?.nodeMode || resolvedNodeMode) as "basic" | "advanced" | "lan",
-      providesInvoiceInfrastructure: summaryProvidesInvoiceInfrastructure
-    })
-  );
   const participationMode = resolveParticipationMode({
     nodeMode: (networkSummary?.nodeMode || resolvedNodeMode) as "basic" | "advanced" | "lan",
     providerConfigured: Boolean(providerConfig?.configured),
@@ -1393,6 +1377,26 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     localSovereignReady: Boolean(networkSummary?.modeProfile?.localSovereignReady)
   });
   const participationModeFromSummary = networkSummary?.modeProfile?.participationMode;
+  const summaryParticipationMode =
+    participationModeFromSummary === "basic_creator"
+      ? "Basic Creator"
+      : participationModeFromSummary === "sovereign_creator_with_provider"
+        ? "Sovereign Creator"
+        : participationModeFromSummary === "sovereign_creator"
+          ? "Sovereign Creator"
+          : participationModeFromSummary === "sovereign_node"
+            ? "Sovereign Node"
+            : summaryNodeModeLabel;
+  const summaryStorefrontAuthority =
+    (networkSummary?.modeProfile?.hasStablePublicRoute || summaryCanonicalCommerceKind === "self_hosted_stable")
+      ? "Creator-hosted (stable named tunnel)"
+      : "Creator-hosted (temporary tunnel)";
+  const providerCommerceActive = participationModeFromSummary === "sovereign_creator_with_provider";
+  const summaryCommerceAuthority = networkSummary?.modeProfile?.localSovereignReady
+    ? "Local sovereign commerce"
+    : providerCommerceActive
+      ? "Connected provider commerce"
+      : "Basic tips only";
   const participationMeta = participationModeMeta(
     participationModeFromSummary === "basic_creator"
       ? "basic_creator"
@@ -1404,34 +1408,11 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           ? "sovereign_node"
           : participationMode
   );
-  const providerVerified = providerVerification?.verification?.status === "verified";
-  const providerExecutionAllowed = providerVerified && Boolean(providerConfig?.configured);
-  const modeProviderState = providerConfig?.configured
-    ? providerExecutionAllowed
-      ? "connected / verified / execution allowed"
-      : providerVerified
-        ? "connected / verified / execution limited"
-        : "connected / verification pending"
-    : "not configured";
   const invoicingService = networkSummary?.providerServices?.invoicing;
   const durableHostingService = networkSummary?.providerServices?.durablePublicHosting;
-  const modePaymentState =
-    invoicingService?.mode === "provider_backed"
-      ? "provider-backed"
-      : networkSummary?.paymentCapability?.localInvoiceMinting
-        ? "self-provided (local sovereign rails)"
-        : "not configured";
-  const modeDirectInvoice = networkSummary?.paymentCapability?.localInvoiceMinting ? "configured" : "not configured";
-  const modeDirectReceive = networkSummary?.paymentCapability?.localInvoiceMinting ? "configured" : "not configured";
-  const modePublicInfraRole = summaryProvidesInvoiceInfrastructure ? "active on this node" : "not active on this node";
-  const totalProviderFeeLabel =
-    typeof networkSummary?.providerServices?.totalProviderFeePercent === "number"
-      ? `${networkSummary.providerServices.totalProviderFeePercent}%`
-      : "—";
   const payoutState = payoutDestination || networkSummary?.payoutDestination || null;
   const payoutConfigured = Boolean(payoutState?.valid);
   const payoutDestinationLabel = payoutState?.effectiveDestinationSummary || payoutState?.effectiveDestinationType || "Not configured";
-  const payoutRailLabel = payoutState?.effectivePayoutRail || "—";
   const payoutRemitModeLabel = payoutState?.providerRemitMode || "manual_payout";
   const providerBackedCommerceReady = Boolean(networkSummary?.paymentCapability?.providerBackedCommerceReady);
   const providerBackedCommerceMessage =
@@ -1606,17 +1587,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         : commerceGuardLevel === "warn"
           ? "Provider-backed fallback is active and valid. You can self-provide capabilities later to reduce provider fees."
           : "Commerce path is fully configured for this mode.";
-  const providerInvoicingModeLabel = needsProviderInvoicing
-    ? invoicingService?.mode === "provider_backed"
-      ? `provider-backed (${Number(invoicingService?.feePercent || 0)}%)`
-      : "provider-backed (expected)"
-    : "self-provided";
-  const durableHostingModeLabel = needsDurablePublicHosting
-    ? durableHostingService?.mode === "provider_backed"
-      ? `provider-backed (${Number(durableHostingService?.feePercent || 0)}%)`
-      : "provider-backed (expected)"
-    : "self-provided";
-  const creatorPayoutModeLabel = payoutRailLabel === "creator_node" ? "self-received" : "provider-remitted";
   const payoutStatusVocabulary = {
     pending: "Pending payout",
     forwarding: "Forwarding payout",
@@ -1624,11 +1594,27 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     failed: "Payout failed"
   };
   const modeDelineationLabel =
-    participationMeta.label === "Sovereign Creator with Provider"
-      ? "Sovereign Creator with Provider"
-      : participationMeta.label === "Sovereign Creator Node"
-        ? "Sovereign Node"
-        : "Basic";
+    participationModeFromSummary === "sovereign_node"
+      ? "Sovereign Node"
+      : participationModeFromSummary === "sovereign_creator_with_provider"
+        ? "Sovereign Creator (Provider Commerce)"
+        : participationModeFromSummary === "sovereign_creator"
+          ? "Sovereign Creator"
+      : participationMeta.label === "Sovereign Creator"
+        ? providerCommerceActive
+          ? "Sovereign Creator (Provider Commerce)"
+          : "Sovereign Creator"
+        : "Basic Creator";
+  const nextStepLabel =
+    participationModeFromSummary === "sovereign_node"
+      ? "Sovereign Node is active."
+      : participationModeFromSummary === "sovereign_creator_with_provider"
+        ? "Next step: run local BTC/LND + invoice stack to upgrade to Sovereign Node."
+        : participationModeFromSummary === "sovereign_creator"
+          ? "Next step: connect a commerce provider or run local node stack."
+          : networkSummary?.modeProfile?.providerConnected
+            ? "Provider is connected. Next step: switch to Sovereign Creator to activate provider commerce."
+          : "Next step: bring named tunnel online to unlock Sovereign Creator.";
   const guardPillClass =
     commerceGuardLevel === "ready"
       ? "border-emerald-800/70 bg-emerald-900/20 text-emerald-300"
@@ -1660,16 +1646,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <span className="text-neutral-200 text-right">{summaryPaymentCapability}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-              <span className="text-neutral-500">Node Mode</span>
-              <span className="text-neutral-200 text-right">{summaryNodeModeLabel}</span>
+              <span className="text-neutral-500">Participation</span>
+              <span className="text-neutral-200 text-right">{summaryParticipationMode}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-              <span className="text-neutral-500">User Type</span>
-              <span className="text-neutral-200 text-right">{summaryUserType}</span>
+              <span className="text-neutral-500">Storefront authority</span>
+              <span className="text-neutral-200 text-right">{summaryStorefrontAuthority}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-              <span className="text-neutral-500">Service Role</span>
-              <span className="text-neutral-200 text-right">{summaryServiceRole}</span>
+              <span className="text-neutral-500">Commerce authority</span>
+              <span className="text-neutral-200 text-right">{summaryCommerceAuthority}</span>
             </div>
             <div className="flex items-start justify-between gap-3">
               <span className="text-neutral-500">Visibility</span>
@@ -1691,32 +1677,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <span className="ml-2 text-xs text-neutral-400">{commerceGuardMessage}</span>
             </div>
             <div className="mt-2 grid gap-1 text-xs text-neutral-300">
-              <div>Provider: {modeProviderState}</div>
-              <div>Payment mode: {modePaymentState}</div>
-              <div>Invoicing service: {providerInvoicingModeLabel}</div>
-              <div>Public hosting service: {durableHostingModeLabel}</div>
-              <div>Creator payout: {creatorPayoutModeLabel}</div>
+              <div>Storefront authority: {summaryStorefrontAuthority}</div>
+              <div>Commerce authority: {summaryCommerceAuthority}</div>
               <div>Payout destination: {payoutDestinationLabel}</div>
-              <div>Total provider fee: {totalProviderFeeLabel}</div>
-              <div>Payment collection rail: {invoicingService?.mode === "provider_backed" ? "provider-backed invoicing" : "creator node invoicing"}</div>
-              <div>Creator payout rail: {payoutRailLabel}</div>
-              <div>Direct invoice minting on this node: {modeDirectInvoice}</div>
-              <div>Direct receive on this node: {modeDirectReceive}</div>
-              <div>Public infrastructure role: {modePublicInfraRole}</div>
-            </div>
-            <div className="mt-3 rounded-md border border-neutral-800 bg-neutral-900/40 p-2 text-xs text-neutral-400">
-              <div className="font-medium text-neutral-300">Upgrade to Sovereign Node</div>
-              <div className="mt-1">
-                Add a named tunnel / stable public route to self-provide durable public hosting.
-                Connect Lightning Node to self-provide invoice minting and direct receipt on this node.
-                In Sovereign Creator (with Provider), these are optional capability upgrades. Self-providing both moves this node to full Sovereign Node posture.
-              </div>
+              <div>{nextStepLabel}</div>
             </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
             <div className="mt-1 text-sm text-neutral-200">Certifyd Creator Profile</div>
-            <div className="text-xs text-neutral-400 mt-1">Profile type: {summaryUserType === "Provider Node" ? profileType : summaryUserType}</div>
+            <div className="text-xs text-neutral-400 mt-1">Profile type: {summaryParticipationMode}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Payment Capability</div>

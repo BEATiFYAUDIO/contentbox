@@ -4832,8 +4832,9 @@ function resolveProviderServiceProfile(input: {
         ? "sovereign_creator_with_provider"
         : "sovereign_creator";
 
-  const needsProviderInvoicing = !hasLocalInvoiceMinting && providerConfigured;
-  const needsDurablePublicHosting = !hasStablePublicRoute && providerConfigured;
+  const providerCommerceEligible = participationMode !== "basic_creator";
+  const needsProviderInvoicing = providerCommerceEligible && !hasLocalInvoiceMinting && providerConfigured;
+  const needsDurablePublicHosting = providerCommerceEligible && !hasStablePublicRoute && providerConfigured;
 
   const providerInvoicingFeePercent = needsProviderInvoicing ? PROVIDER_INVOICING_FEE_PERCENT : 0;
   const providerDurableHostingFeePercent = needsDurablePublicHosting ? PROVIDER_DURABLE_HOSTING_FEE_PERCENT : 0;
@@ -9686,15 +9687,19 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     providerCfg: providerConfig,
     ctx
   });
-  const delegatedInvoiceSupport = providerConnection.providerConnected;
+  const providerCommerceActive =
+    providerConnection.providerConnected && serviceProfile.participationMode !== "basic_creator";
+  const delegatedInvoiceSupport = providerCommerceActive;
   const payoutDestination = await resolveEffectivePayoutDestination(userId, {
     localLndReady: localInvoiceMinting,
     paymentsReadiness
   });
   const providerBackedCommerceReady = !serviceProfile.needsProviderInvoicing || payoutDestination.valid;
-  const providerBackedCommerceMessage = providerBackedCommerceReady
-    ? "Provider-backed commerce is payout-ready."
-    : "Configure a creator payout destination before provider-backed invoicing can be fully activated.";
+  const providerBackedCommerceMessage = !providerCommerceActive
+    ? "Provider commerce is connected but inactive in Basic posture. Switch to Sovereign Creator to activate provider-backed invoicing."
+    : providerBackedCommerceReady
+      ? "Provider-backed commerce is payout-ready."
+      : "Configure a creator payout destination before provider-backed invoicing can be fully activated.";
 
   const invoiceProviderRole = hasInvoiceProviderRole(runtime.nodeMode as "basic" | "advanced" | "lan");
   const creatorRole = true;
