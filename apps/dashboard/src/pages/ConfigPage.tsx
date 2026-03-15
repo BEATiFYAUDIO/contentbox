@@ -118,6 +118,8 @@ export default function ConfigPage({
   const [tunnelError, setTunnelError] = useState<string | null>(null);
   const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
+  const [discoveredTunnelNameState, setDiscoveredTunnelNameState] = useState<string | null>(null);
+  const [namedTunnelDetectedState, setNamedTunnelDetectedState] = useState<boolean>(false);
   const [namedTokenInput, setNamedTokenInput] = useState<string>("");
   const [namedTokenBusy, setNamedTokenBusy] = useState<boolean>(false);
   const [namedTokenMsg, setNamedTokenMsg] = useState<string | null>(null);
@@ -297,8 +299,9 @@ export default function ConfigPage({
     const expected = configuredTunnelName.toLowerCase();
     return Boolean(expected) && (candidateName === expected || candidateId === expected);
   });
-  const discoveredTunnelName = String(discoveredTunnel?.name || discoveredTunnel?.id || "").trim() || null;
-  const namedTunnelDetected = Boolean(discoveredTunnelName);
+  const discoveredTunnelNameFromList = String(discoveredTunnel?.name || discoveredTunnel?.id || "").trim() || null;
+  const discoveredTunnelName = discoveredTunnelNameState || discoveredTunnelNameFromList;
+  const namedTunnelDetected = namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList);
   const tokenBootstrapRequired = tunnelEnabled && !namedTunnelDetected;
   const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
   const cloudflaredAvailable = Boolean(publicStatus?.cloudflared?.available);
@@ -514,6 +517,10 @@ export default function ConfigPage({
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to list tunnels");
       setTunnelList(Array.isArray(json?.tunnels) ? json.tunnels : []);
+      setNamedTunnelDetectedState(Boolean(json?.namedTunnelDetected));
+      setDiscoveredTunnelNameState(
+        json?.namedTunnelDetected && json?.discoveredTunnelName ? String(json.discoveredTunnelName) : null
+      );
       if (json?.namedTunnelDetected && json?.discoveredTunnelName) {
         setNamedTokenMsg(`Existing named tunnel detected (${json.discoveredTunnelName}). Token bootstrap is not required.`);
       } else if (json?.configuredTunnelName) {
@@ -525,6 +532,13 @@ export default function ConfigPage({
       setTunnelLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!token || !tunnelEnabled) return;
+    if (!configuredTunnelName) return;
+    discoverTunnels().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, tunnelEnabled, configuredTunnelName]);
 
   const saveNamedToken = async (autoStart?: boolean) => {
     if (!token) return;
