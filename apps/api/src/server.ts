@@ -5084,6 +5084,62 @@ function toEpochMs(value: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
+function detectTunnelControlMode() {
+  const serviceScriptPath = "/etc/init.d/cloudflared";
+  const localConfigPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || path.join(os.homedir(), ".cloudflared", "config.yml");
+  const localConfigPresent = fsSync.existsSync(localConfigPath);
+
+  let serviceScriptHasToken = false;
+  if (fsSync.existsSync(serviceScriptPath)) {
+    try {
+      const script = fsSync.readFileSync(serviceScriptPath, "utf8");
+      serviceScriptHasToken =
+        /tunnel\s+run\s+--token/i.test(script) ||
+        /--token\s+["'$]?\w+/i.test(script);
+    } catch {}
+  }
+
+  let activeProcessToken = false;
+  let activeProcessConfig = false;
+  try {
+    const ps = spawnSync("ps", ["-eo", "args"], { encoding: "utf8" });
+    const output = String(ps?.stdout || "");
+    for (const line of output.split("\n")) {
+      const lower = line.toLowerCase();
+      if (!lower.includes("cloudflared")) continue;
+      if (!lower.includes("tunnel")) continue;
+      if (!lower.includes("run")) continue;
+      if (lower.includes("--token")) activeProcessToken = true;
+      if (lower.includes("--config")) activeProcessConfig = true;
+    }
+  } catch {}
+
+  const mode: "service_token" | "local_config" | "unknown" =
+    activeProcessToken || serviceScriptHasToken
+      ? "service_token"
+      : activeProcessConfig || localConfigPresent
+        ? "local_config"
+        : "unknown";
+
+  const message =
+    mode === "service_token"
+      ? "Service-managed token tunnel is authoritative. Configure hostname routing in Cloudflare Dashboard."
+      : mode === "local_config"
+        ? "Local cloudflared config mode detected."
+        : "Tunnel control mode could not be determined.";
+
+  return {
+    mode,
+    message,
+    serviceScriptPath: fsSync.existsSync(serviceScriptPath) ? serviceScriptPath : null,
+    serviceScriptHasToken,
+    localConfigPath: localConfigPath || null,
+    localConfigPresent,
+    activeProcessToken,
+    activeProcessConfig
+  };
+}
+
 const namedHealthCache: { ok: boolean | null; checkedAt: number | null; inflight: boolean } = {
   ok: null,
   checkedAt: null,
@@ -5143,6 +5199,7 @@ function getPublicLinkState(): PublicLinkState {
 function getPublicStatus() {
   const state = getPublicLinkState();
   const cloudflared = getCloudflaredStatus();
+  const tunnelControl = detectTunnelControlMode();
   const namedCfg = getNamedTunnelConfig();
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
@@ -5206,6 +5263,7 @@ function getPublicStatus() {
     lastError: errorDetail,
     lastCheckedAt: namedHealthCache.checkedAt,
     cloudflared,
+    tunnelControl,
     consentRequired,
     autoStartEnabled
   };
@@ -6402,7 +6460,8 @@ app.get("/api/public/diagnostics", async (_req: any, reply: any) => {
     publicStatus: {
       mode: publicStatus.mode,
       status: publicStatus.status,
-      url
+      url,
+      tunnelControlMode: publicStatus.tunnelControl?.mode || "unknown"
     },
     paymentsMode
   });

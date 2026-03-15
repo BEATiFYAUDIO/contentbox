@@ -116,10 +116,13 @@ export default function ConfigPage({
   const [tunnelDomain, setTunnelDomain] = useState<string>("");
   const [tunnelName, setTunnelName] = useState<string>("");
   const [tunnelError, setTunnelError] = useState<string | null>(null);
+  const [tunnelActionMsg, setTunnelActionMsg] = useState<string | null>(null);
   const [tunnelLoading, setTunnelLoading] = useState<boolean>(false);
   const [tunnelList, setTunnelList] = useState<Array<{ name?: string; id?: string }>>([]);
   const [discoveredTunnelNameState, setDiscoveredTunnelNameState] = useState<string | null>(null);
   const [namedTunnelDetectedState, setNamedTunnelDetectedState] = useState<boolean>(false);
+  const [selectedTunnelModeState, setSelectedTunnelModeState] = useState<"existing_named" | "token_bootstrap">("token_bootstrap");
+  const [tokenBootstrapRequiredState, setTokenBootstrapRequiredState] = useState<boolean>(true);
   const [namedTokenInput, setNamedTokenInput] = useState<string>("");
   const [namedTokenBusy, setNamedTokenBusy] = useState<boolean>(false);
   const [namedTokenMsg, setNamedTokenMsg] = useState<string | null>(null);
@@ -302,15 +305,19 @@ export default function ConfigPage({
   const discoveredTunnelNameFromList = String(discoveredTunnel?.name || discoveredTunnel?.id || "").trim() || null;
   const discoveredTunnelName = discoveredTunnelNameState || discoveredTunnelNameFromList;
   const namedTunnelDetected = namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList);
-  const tokenBootstrapRequired = tunnelEnabled && !namedTunnelDetected;
-  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
+  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : selectedTunnelModeState;
+  const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const cloudflaredAvailable = Boolean(publicStatus?.cloudflared?.available);
+  const tunnelControlMode = String(publicStatus?.tunnelControl?.mode || "unknown");
+  const tunnelControlMessage = String(publicStatus?.tunnelControl?.message || "").trim();
+  const serviceManagedTokenMode = tunnelControlMode === "service_token";
+  const namedTunnelManageableLocally = Boolean(cloudflaredAvailable && (publicStatus?.namedTokenStored || namedTunnelDetected));
   const startActionLabel = selectedTunnelMode === "existing_named" ? "Start named tunnel" : "Start temporary link";
   const startActionDisabled =
     publicBusy ||
     publicStatus?.status === "starting" ||
     publicStatus?.status === "online" ||
-    (selectedTunnelMode === "token_bootstrap" ? quickDisabled : !cloudflaredAvailable);
+    (selectedTunnelMode === "token_bootstrap" ? quickDisabled : !namedTunnelManageableLocally);
   const selectedMode =
     modeInfo?.nodeMode === "lan"
       ? { label: "Sovereign Node", description: "Creator-hosted storefront with local invoice + commerce stack." }
@@ -354,8 +361,15 @@ export default function ConfigPage({
     }
   };
 
-  const refreshPublicStatus = async () => {
+  useEffect(() => {
+    const mode = namedTunnelDetected ? "existing_named" : "token_bootstrap";
+    setSelectedTunnelModeState(mode);
+    setTokenBootstrapRequiredState(mode === "token_bootstrap");
+  }, [namedTunnelDetected]);
+
+  const refreshPublicStatus = async (opts?: { silent?: boolean; discover?: boolean }) => {
     if (!token) return;
+    const silent = Boolean(opts?.silent);
     try {
       const res = await fetch(`${apiBase}/api/public/status`, {
         method: "GET",
@@ -363,8 +377,17 @@ export default function ConfigPage({
       });
       const json = await res.json();
       setPublicStatus(json || null);
+      if (opts?.discover) {
+        await discoverTunnels({ silent: true });
+      }
+      if (!silent) {
+        setPublicMsg("Tunnel status refreshed.");
+      }
     } catch {
       setPublicStatus(null);
+      if (!silent) {
+        setPublicMsg("Failed to refresh tunnel status.");
+      }
     }
   };
 
@@ -394,6 +417,15 @@ export default function ConfigPage({
       if (!res.ok) {
         setPublicMsg(json?.message || json?.error || "Failed to start public link.");
       }
+      if (res.ok && !json?.message) {
+        setPublicMsg(
+          json?.mode === "named"
+            ? json?.status === "online"
+              ? "Named tunnel started."
+              : "Named tunnel start requested."
+            : "Temporary link start requested."
+        );
+      }
     } catch (e: any) {
       setPublicMsg(e?.message || "Failed to start public link.");
     } finally {
@@ -412,7 +444,8 @@ export default function ConfigPage({
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to update named override.");
-      await refreshPublicStatus();
+      await refreshPublicStatus({ silent: true, discover: true });
+      setPublicMsg(disabled ? "Named tunnel override enabled." : "Named tunnel override disabled.");
     } catch (e: any) {
       setPublicMsg(e?.message || "Failed to update named override.");
     } finally {
@@ -431,6 +464,11 @@ export default function ConfigPage({
       });
       const json = await res.json();
       setPublicStatus(json || null);
+      if (!res.ok) {
+        setPublicMsg(json?.error || "Failed to stop sharing.");
+      } else {
+        setPublicMsg("Public sharing stopped.");
+      }
     } catch (e: any) {
       setPublicMsg(e?.message || "Failed to stop public link.");
     } finally {
@@ -482,6 +520,7 @@ export default function ConfigPage({
   const saveTunnelConfig = async () => {
     if (!token) return;
     setTunnelError(null);
+    setTunnelActionMsg(null);
     setTunnelLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/public/config`, {
@@ -498,6 +537,8 @@ export default function ConfigPage({
       setTunnelProvider(json?.provider || "cloudflare");
       setTunnelDomain(json?.domain || "");
       setTunnelName(json?.tunnelName || "");
+      setTunnelActionMsg("Tunnel config saved.");
+      await refreshPublicStatus({ silent: true, discover: true });
     } catch (e: any) {
       setTunnelError(e?.message || String(e));
     } finally {
@@ -505,9 +546,10 @@ export default function ConfigPage({
     }
   };
 
-  const discoverTunnels = async () => {
+  const discoverTunnels = async (opts?: { silent?: boolean }) => {
     if (!token) return;
     setTunnelError(null);
+    if (!opts?.silent) setTunnelActionMsg(null);
     setTunnelLoading(true);
     try {
       const res = await fetch(`${apiBase}/api/public/tunnels`, {
@@ -523,8 +565,12 @@ export default function ConfigPage({
       );
       if (json?.namedTunnelDetected && json?.discoveredTunnelName) {
         setNamedTokenMsg(`Existing named tunnel detected (${json.discoveredTunnelName}). Token bootstrap is not required.`);
+        if (!opts?.silent) setTunnelActionMsg(`Named tunnel detected: ${json.discoveredTunnelName}`);
       } else if (json?.configuredTunnelName) {
         setNamedTokenMsg(`Configured tunnel "${json.configuredTunnelName}" not found in discovered tunnels yet.`);
+        if (!opts?.silent) setTunnelActionMsg(`Configured tunnel "${json.configuredTunnelName}" not discovered yet.`);
+      } else if (!opts?.silent) {
+        setTunnelActionMsg("No configured named tunnel to discover.");
       }
     } catch (e: any) {
       setTunnelError(e?.message || String(e));
@@ -536,7 +582,7 @@ export default function ConfigPage({
   useEffect(() => {
     if (!token || !tunnelEnabled) return;
     if (!configuredTunnelName) return;
-    discoverTunnels().catch(() => {});
+    discoverTunnels({ silent: true }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, tunnelEnabled, configuredTunnelName]);
 
@@ -564,13 +610,13 @@ export default function ConfigPage({
       if (!res.ok) throw new Error(json?.error || "Failed to save token");
       if (json?.skipped) {
         setNamedTokenMsg("Existing named tunnel detected. Token save skipped.");
-        await refreshPublicStatus();
+        await refreshPublicStatus({ silent: true, discover: true });
         return;
       }
       setNamedTokenInput("");
       setNamedTokenMsg("Token saved.");
       if (autoStart) await startPublicLink();
-      await refreshPublicStatus();
+      await refreshPublicStatus({ silent: true, discover: true });
     } catch (e: any) {
       setNamedTokenMsg(e?.message || "Failed to save token.");
     } finally {
@@ -595,7 +641,7 @@ export default function ConfigPage({
       if (!res.ok) throw new Error(json?.error || "Failed to generate token");
       if (json?.skipped) {
         setNamedTokenMsg("Existing named tunnel detected. Token generation skipped.");
-        await refreshPublicStatus();
+        await refreshPublicStatus({ silent: true, discover: true });
         return;
       }
       const tok = String(json?.token || "").trim();
@@ -622,7 +668,7 @@ export default function ConfigPage({
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to clear token");
       setNamedTokenMsg("Token cleared.");
-      await refreshPublicStatus();
+      await refreshPublicStatus({ silent: true, discover: true });
     } catch (e: any) {
       setNamedTokenMsg(e?.message || "Failed to clear token.");
     } finally {
@@ -803,8 +849,19 @@ export default function ConfigPage({
       </div>
 
       {showAdvancedInfraPanels ? (
-      <div style={{ margin: "8px 0 10px", fontSize: 12, opacity: 0.75 }}>
-        Step 2-3: Sovereign Creator / Sovereign Node advanced infrastructure.
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
+        <div><b>API base</b>: {apiBase}</div>
+        <div><b>Build</b>: {buildInfo}</div>
+        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => { clearToken(); window.location.reload(); }}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Clear token & reload
+          </button>
+        </div>
       </div>
       ) : null}
 
@@ -854,113 +911,6 @@ export default function ConfigPage({
       </div>
       ) : null}
 
-      {showAdvancedInfraPanels ? (
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
-        <div style={{ opacity: 0.7, marginBottom: 12 }}>
-          Public hosts used for buy + studio + creator-profile routing.
-        </div>
-
-        <div style={{ display: "grid", gap: 8 }}>
-          <label htmlFor="public-buy-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host (public)</div>
-            <input
-              id="public-buy-origin"
-              name="publicBuyOrigin"
-              value={publicBuyOrigin}
-              onChange={(e) => setPublicBuyOrigin(e.target.value)}
-              placeholder="https://buy.yourdomain.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-studio-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host (public)</div>
-            <input
-              id="public-studio-origin"
-              name="publicStudioOrigin"
-              value={publicStudioOrigin}
-              onChange={(e) => setPublicStudioOrigin(e.target.value)}
-              placeholder="https://studio.yourdomain.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator host (public)</div>
-            <input
-              id="public-origin"
-              name="publicOrigin"
-              value={publicOrigin}
-              onChange={(e) => setPublicOrigin(e.target.value)}
-              placeholder="https://creator.yourdomain.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-        </div>
-
-        <div style={{ marginTop: 12, fontWeight: 600 }}>Fallback hosts (optional)</div>
-        <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-          <label htmlFor="public-buy-origin-fallback">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy fallback</div>
-            <input
-              id="public-buy-origin-fallback"
-              name="publicBuyOriginFallback"
-              value={publicBuyOriginFallback}
-              onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
-              placeholder="https://buy.fallback.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-studio-origin-fallback">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio fallback</div>
-            <input
-              id="public-studio-origin-fallback"
-              name="publicStudioOriginFallback"
-              value={publicStudioOriginFallback}
-              onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
-              placeholder="https://studio.fallback.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-origin-fallback">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator fallback</div>
-            <input
-              id="public-origin-fallback"
-              name="publicOriginFallback"
-              value={publicOriginFallback}
-              onChange={(e) => setPublicOriginFallback(e.target.value)}
-              placeholder="https://creator.fallback.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <button
-            onClick={saveNetworking}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Save networking
-          </button>
-          <button
-            onClick={clearNetworking}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Clear overrides
-          </button>
-        </div>
-
-        <div style={{ marginTop: 12, opacity: 0.7 }}>
-          Health path used: <b>{DEFAULT_HEALTH_PATH}</b>
-        </div>
-      </div>
-      ) : null}
-
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>Step 1: Basic Creator tunnel setup</div>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
@@ -981,6 +931,11 @@ export default function ConfigPage({
             {selectedTunnelMode === "existing_named" && !cloudflaredAvailable ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 cloudflared is unavailable on this machine, so local named-tunnel launch is disabled.
+              </div>
+            ) : null}
+            {selectedTunnelMode === "existing_named" && cloudflaredAvailable && !namedTunnelManageableLocally ? (
+              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
+                Named tunnel launch is not available yet on this machine. Discover the named tunnel first.
               </div>
             ) : null}
             {productTier === "advanced" && publicStatus?.mode === "quick" && publicStatus?.publicOrigin ? (
@@ -1009,7 +964,7 @@ export default function ConfigPage({
               Stop sharing
             </button>
             <button
-              onClick={refreshPublicStatus}
+              onClick={() => refreshPublicStatus({ discover: true })}
               disabled={publicBusy}
               style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
             >
@@ -1040,9 +995,14 @@ export default function ConfigPage({
             ) : null}
           </div>
         ) : null}
-        <div style={{ opacity: 0.7, marginBottom: 10 }}>
-          Advanced routing for public links.
-        </div>
+            <div style={{ opacity: 0.7, marginBottom: 10 }}>
+              Advanced routing for public links.
+            </div>
+            {serviceManagedTokenMode ? (
+              <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+                Service-managed token tunnel detected. Local `~/.cloudflared/config.yml` ingress is not authoritative in this mode.
+              </div>
+            ) : null}
         <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="tunnel-settings-enabled">
           <input
             id="tunnel-settings-enabled"
@@ -1105,7 +1065,12 @@ export default function ConfigPage({
                 <div>Tunnel detected: <b>{namedTunnelDetected ? "yes" : "no"}</b></div>
                 <div>Tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
                 <div>Active mode: <b>{selectedTunnelMode === "existing_named" ? "Existing named tunnel" : "Token bootstrap"}</b></div>
+                <div>Tunnel control mode: <b>{serviceManagedTokenMode ? "Service-managed token" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
+                <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
               </div>
+              {tunnelControlMessage ? (
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{tunnelControlMessage}</div>
+              ) : null}
               {selectedTunnelMode === "existing_named" ? (
                 <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>
                   Existing named tunnel detected{discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}. Token bootstrap is not required.
@@ -1125,9 +1090,14 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelProvider(e.target.value)}
                 placeholder="cloudflare"
                 className={inputClass}
-                disabled={!tunnelEnabled}
+                disabled={!tunnelEnabled || !namedTunnelDetected}
                 autoComplete="off"
               />
+              {!namedTunnelDetected ? (
+                <div style={{ opacity: 0.7, marginTop: 4, fontSize: 12 }}>
+                  Provider host settings unlock after the named tunnel is detected.
+                </div>
+              ) : null}
             </label>
             <label htmlFor="tunnel-domain">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Public domain (base)</div>
@@ -1226,13 +1196,16 @@ export default function ConfigPage({
                 Save tunnel config
               </button>
               <button
-                onClick={discoverTunnels}
+                onClick={() => {
+                  discoverTunnels().catch(() => {});
+                }}
                 disabled={tunnelLoading || !tunnelEnabled}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
                 Discover tunnels
               </button>
             </div>
+            {tunnelActionMsg ? <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>{tunnelActionMsg}</div> : null}
             {tunnelList.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
@@ -1256,23 +1229,6 @@ export default function ConfigPage({
           </div>
         )}
       </div>
-
-      {showAdvancedInfraPanels ? (
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
-        <div><b>API base</b>: {apiBase}</div>
-        <div><b>Build</b>: {buildInfo}</div>
-        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
-        <div style={{ marginTop: 10 }}>
-          <button
-            onClick={() => { clearToken(); window.location.reload(); }}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Clear token & reload
-          </button>
-        </div>
-      </div>
-      ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel status</div>
@@ -1403,6 +1359,122 @@ export default function ConfigPage({
         )}
       </div>
 
+      {showAdvancedInfraPanels ? (
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
+        <div style={{ opacity: 0.7, marginBottom: 12 }}>
+          Public hosts used for buy + studio + creator-profile routing.
+        </div>
+
+        <div style={{ display: "grid", gap: 8 }}>
+          <label htmlFor="public-buy-origin">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host (public)</div>
+            <input
+              id="public-buy-origin"
+              name="publicBuyOrigin"
+              value={publicBuyOrigin}
+              onChange={(e) => setPublicBuyOrigin(e.target.value)}
+              placeholder="https://buy.yourdomain.com"
+              className={inputClass}
+              disabled={!namedTunnelOnline}
+              autoComplete="url"
+            />
+          </label>
+          <label htmlFor="public-studio-origin">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host (public)</div>
+            <input
+              id="public-studio-origin"
+              name="publicStudioOrigin"
+              value={publicStudioOrigin}
+              onChange={(e) => setPublicStudioOrigin(e.target.value)}
+              placeholder="https://studio.yourdomain.com"
+              className={inputClass}
+              disabled={!namedTunnelOnline}
+              autoComplete="url"
+            />
+          </label>
+          <label htmlFor="public-origin">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator host (public)</div>
+            <input
+              id="public-origin"
+              name="publicOrigin"
+              value={publicOrigin}
+              onChange={(e) => setPublicOrigin(e.target.value)}
+              placeholder="https://creator.yourdomain.com"
+              className={inputClass}
+              disabled={!namedTunnelOnline}
+              autoComplete="url"
+            />
+          </label>
+        </div>
+        {!namedTunnelOnline ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>
+            Commerce/public host overrides unlock only after named tunnel is online.
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 12, fontWeight: 600 }}>Fallback hosts (optional)</div>
+        <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+          <label htmlFor="public-buy-origin-fallback">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy fallback</div>
+            <input
+              id="public-buy-origin-fallback"
+              name="publicBuyOriginFallback"
+              value={publicBuyOriginFallback}
+              onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
+              placeholder="https://buy.fallback.com"
+              className={inputClass}
+              autoComplete="url"
+            />
+          </label>
+          <label htmlFor="public-studio-origin-fallback">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio fallback</div>
+            <input
+              id="public-studio-origin-fallback"
+              name="publicStudioOriginFallback"
+              value={publicStudioOriginFallback}
+              onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
+              placeholder="https://studio.fallback.com"
+              className={inputClass}
+              autoComplete="url"
+            />
+          </label>
+          <label htmlFor="public-origin-fallback">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator fallback</div>
+            <input
+              id="public-origin-fallback"
+              name="publicOriginFallback"
+              value={publicOriginFallback}
+              onChange={(e) => setPublicOriginFallback(e.target.value)}
+              placeholder="https://creator.fallback.com"
+              className={inputClass}
+              autoComplete="url"
+            />
+          </label>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <button
+            onClick={saveNetworking}
+            disabled={!namedTunnelOnline}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Save networking
+          </button>
+          <button
+            onClick={clearNetworking}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Clear overrides
+          </button>
+        </div>
+
+        <div style={{ marginTop: 12, opacity: 0.7 }}>
+          Health path used: <b>{DEFAULT_HEALTH_PATH}</b>
+        </div>
+      </div>
+      ) : null}
+
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Payments</div>
         <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 10 }}>
@@ -1414,13 +1486,6 @@ export default function ConfigPage({
         >
           Open payments settings
         </button>
-      </div>
-
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Publishing</div>
-        <div style={{ opacity: 0.75 }}>
-          Use “Publish to Website” on a content item to generate embed snippets and a public buy link. No secrets are stored here.
-        </div>
       </div>
     </div>
   );
