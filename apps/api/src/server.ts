@@ -16388,7 +16388,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   };
   const currentPublicOrigin = normalizePublicOriginBase(nodeUrl);
   const canonicalCommerceOrigin =
-    resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin ||
+    (await resolveCanonicalBuyerRecoveryOrigin(req, user.id)) ||
+    currentPublicOrigin ||
     normalizePublicOriginBase(APP_BASE_URL);
 
   const domainProofsHtml =
