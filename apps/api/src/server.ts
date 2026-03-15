@@ -491,7 +491,26 @@ async function lndHealthCheck() {
 
 async function bitcoindHealthCheck() {
   const url = (process.env.BITCOIND_RPC_URL || "").trim();
-  if (!url) return { status: "missing", message: "BITCOIND_RPC_URL not configured", endpoint: null, hint: "Set BITCOIND_RPC_URL" };
+  if (!url) {
+    // If direct bitcoind RPC is not configured but local LND is healthy on loopback,
+    // treat chain/backend as locally ready for sovereign-node gating.
+    const lnd = await lndHealthCheck().catch(() => null as any);
+    const lndEndpoint = String(lnd?.endpoint || "").trim().toLowerCase();
+    const lndLocal =
+      lndEndpoint.startsWith("https://127.0.0.1:") ||
+      lndEndpoint.startsWith("http://127.0.0.1:") ||
+      lndEndpoint.startsWith("https://localhost:") ||
+      lndEndpoint.startsWith("http://localhost:");
+    if (lnd?.status === "healthy" && lndLocal) {
+      return {
+        status: "healthy",
+        message: "bitcoind inferred healthy via local LND backend",
+        endpoint: lnd.endpoint || null,
+        hint: null
+      };
+    }
+    return { status: "missing", message: "BITCOIND_RPC_URL not configured", endpoint: null, hint: "Set BITCOIND_RPC_URL" };
+  }
   const user = process.env.BITCOIND_RPC_USER || "";
   const pass = process.env.BITCOIND_RPC_PASS || "";
   if (!user || !pass) return { status: "degraded", message: "RPC user/pass missing", endpoint: url, hint: "Set BITCOIND_RPC_USER/BITCOIND_RPC_PASS" };
@@ -9198,7 +9217,9 @@ async function resolveCommerceAuthorityForUser(userId: string): Promise<{
   const namedTunnelDetected = sovereignReadiness.namedTunnelDetected;
   const providerConnected = providerConnection.providerConnected;
   const providerAuthority = namedTunnelDetected && providerConnected;
-  const localAuthority = sovereignReadiness.ready;
+  // Local commerce authority is only active in Sovereign Node (lan), never in
+  // Sovereign Creator (advanced) without provider-backed commerce.
+  const localAuthority = modeStatus.nodeMode === "lan" && sovereignReadiness.ready;
   if (String(process.env.CERTIFYD_DEBUG_COMMERCE_TRUTH || "").trim() === "1") {
     console.info(
       "[commerce-authority]",
@@ -9656,7 +9677,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
   const localInvoiceMinting =
     ctx.paymentsMode === "node" &&
-    (ctx.nodeMode === "advanced" || ctx.nodeMode === "lan") &&
+    ctx.nodeMode === "lan" &&
     Boolean(paymentsReadiness?.lightning?.ready);
 
   const serviceProfile = resolveProviderServiceProfile({
@@ -18101,6 +18122,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     const serviceProfile = resolveProviderServiceProfile({
       hasLocalInvoiceMinting:
         capabilityCtx.paymentsMode === "node" &&
+        capabilityCtx.nodeMode === "lan" &&
         Boolean(sellerPaymentsReadiness?.lightning?.ready),
       providerCfg: getNetworkProviderConfig(),
       ctx: capabilityCtx
@@ -18108,6 +18130,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId, {
       localLndReady:
         capabilityCtx.paymentsMode === "node" &&
+        capabilityCtx.nodeMode === "lan" &&
         Boolean(sellerPaymentsReadiness?.lightning?.ready),
       paymentsReadiness: sellerPaymentsReadiness
     });
