@@ -2,7 +2,6 @@ import React from "react";
 import QRCode from "qrcode";
 import { getToken } from "../lib/auth";
 import { getApiBase } from "../lib/api";
-import UpgradeToCommercePrompt from "./UpgradeToCommercePrompt";
 
 type Props = {
   open: boolean;
@@ -12,24 +11,6 @@ type Props = {
   defaultAmountSats?: string;
   storefrontStatus?: string | null;
   contentStatus?: string | null;
-};
-
-type NetworkSummaryLite = {
-  nodeMode: "basic" | "advanced" | "lan";
-  modeProfile?: {
-    selectedParticipationMode?: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
-    effectiveParticipationMode?:
-      | "basic_creator"
-      | "sovereign_creator_with_provider"
-      | "sovereign_node_operator"
-      | "sovereign_creator_unready";
-  };
-  capabilityResolution?: {
-    readinessBlockers?: string[];
-  };
-  providerServices?: {
-    totalProviderFeePercent?: number;
-  };
 };
 
 function apiBase() {
@@ -79,18 +60,10 @@ export default function TestPurchaseModal({
   } | null>(null);
   const [receiptToken, setReceiptToken] = React.useState<string | null>(null);
   const [unlockPayload, setUnlockPayload] = React.useState<any | null>(null);
-  const [canonicalUrls, setCanonicalUrls] = React.useState<{
-    buyUrl?: string | null;
-    receiptUrl?: string | null;
-    receiptStatusUrl?: string | null;
-    libraryUrl?: string | null;
-    replayUrl?: string | null;
-  } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [bolt11Qr, setBolt11Qr] = React.useState<string | null>(null);
   const [onchainQr, setOnchainQr] = React.useState<string | null>(null);
-  const [networkSummary, setNetworkSummary] = React.useState<NetworkSummaryLite | null>(null);
 
   React.useEffect(() => {
     if (open) {
@@ -104,29 +77,12 @@ export default function TestPurchaseModal({
       setManualPayment(null);
       setReceiptToken(null);
       setUnlockPayload(null);
-      setCanonicalUrls(null);
       setError(null);
       setLoading(false);
       setBolt11Qr(null);
       setOnchainQr(null);
     }
   }, [open, defaultAmountSats]);
-
-  React.useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const data = await fetchJson(`${apiBase()}/api/network/summary`, { method: "GET" });
-        if (!cancelled) setNetworkSummary((data as NetworkSummaryLite) || null);
-      } catch {
-        if (!cancelled) setNetworkSummary(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
 
   React.useEffect(() => {
     if (!intentId || manualPayment) return;
@@ -140,9 +96,6 @@ export default function TestPurchaseModal({
         const data = await fetchJson(`${apiBase()}/api/payments/intents/${intentId}`);
         if (stopped) return;
         setStatus(String(data?.status || ""));
-        if (data?.urls && typeof data.urls === "object") {
-          setCanonicalUrls(data.urls);
-        }
         if (data?.receiptToken && !receiptToken) {
           setReceiptToken(String(data.receiptToken));
         }
@@ -156,9 +109,6 @@ export default function TestPurchaseModal({
         const data = await fetchJson(`${apiBase()}/api/payments/intents/${intentId}/refresh`, { method: "POST" });
         if (stopped) return;
         setStatus(String(data?.status || ""));
-        if (data?.urls && typeof data.urls === "object") {
-          setCanonicalUrls(data.urls);
-        }
         if (data?.receiptToken && !receiptToken) {
           setReceiptToken(String(data.receiptToken));
         }
@@ -241,38 +191,7 @@ export default function TestPurchaseModal({
   const notPublished = contentStatus !== "published";
   const missingManifest = !manifestSha256;
   const isAuthed = Boolean(authToken);
-  const modeLabel = isAuthed ? "Private (authenticated)" : "Public network route";
-  const selectedMode =
-    networkSummary?.modeProfile?.selectedParticipationMode === "basic_creator"
-      ? "basic_creator"
-      : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_node_operator"
-        ? "sovereign_node"
-        : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_creator"
-          ? "sovereign_creator_with_provider"
-          : networkSummary?.nodeMode === "basic"
-            ? "basic_creator"
-            : networkSummary?.nodeMode === "lan"
-              ? "sovereign_node"
-              : "sovereign_creator_with_provider";
-  const effectiveMode =
-    networkSummary?.modeProfile?.effectiveParticipationMode ||
-    (selectedMode === "basic_creator" ? "basic_creator" : "sovereign_creator_with_provider");
-  const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
-
-  async function enablePaidCommerceMode() {
-    try {
-      await fetchJson(`${apiBase()}/api/node/mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodeMode: "advanced" })
-      });
-      const summary = await fetchJson(`${apiBase()}/api/network/summary`, { method: "GET" });
-      setNetworkSummary((summary as NetworkSummaryLite) || null);
-      setError("Sovereign Creator mode enabled. Retry payment intent creation.");
-    } catch (e: any) {
-      setError(e?.message || "Failed to switch mode. Open Config to update participation mode.");
-    }
-  }
+  const modeLabel = isAuthed ? "Private (authenticated)" : "Public storefront";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
@@ -316,7 +235,7 @@ export default function TestPurchaseModal({
 
           {((!isAuthed && storefrontBlocked) || notPublished || missingManifest) && (
             <div className="rounded-lg border border-amber-900 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-              {!isAuthed && storefrontBlocked && "Enable network visibility (Direct Link or Discoverable) to test public purchase flow."}
+              {!isAuthed && storefrontBlocked && "Enable storefront (Unlisted or Listed) to test public purchase flow."}
               {!storefrontBlocked && notPublished && "Publish content to generate a manifest before purchase."}
               {!storefrontBlocked && !notPublished && missingManifest && "Manifest missing. Publish content to generate one."}
             </div>
@@ -331,11 +250,6 @@ export default function TestPurchaseModal({
               setLoading(true);
               setManualPayment(null);
               try {
-                const sats = Number(String(amountSats || "0").trim() || "0");
-                if (sats > 0 && selectedMode === "basic_creator") {
-                  setError("Durable paid commerce requires Sovereign Creator mode.");
-                  return;
-                }
                 const payload = {
                   purpose: "CONTENT_PURCHASE",
                   subjectType: "CONTENT",
@@ -359,9 +273,6 @@ export default function TestPurchaseModal({
                   setOnchainAddress(null);
                   setOnchainReason(null);
                   setStatus("manual_required");
-                  if (data?.urls && typeof data.urls === "object") {
-                    setCanonicalUrls(data.urls);
-                  }
                   setManualPayment({
                     amountSats: Number(data?.amountSats || 0),
                     intentId: nextIntentId,
@@ -383,9 +294,6 @@ export default function TestPurchaseModal({
                   setOnchainAddress(data?.onchain?.address || null);
                   setOnchainReason(data?.onchainReason || null);
                   setStatus("pending");
-                  if (data?.urls && typeof data.urls === "object") {
-                    setCanonicalUrls(data.urls);
-                  }
                 }
               } catch (e: any) {
                 setError(e?.message || "Failed to create intent");
@@ -396,19 +304,6 @@ export default function TestPurchaseModal({
           >
             {loading ? "Creating…" : "Create public intent"}
           </button>
-          {(selectedMode === "basic_creator" || effectiveMode === "sovereign_creator_unready") && (
-            <UpgradeToCommercePrompt
-              selectedMode={selectedMode}
-              effectiveMode={effectiveMode}
-              attemptedCapability="invoice_minting"
-              readinessBlockers={readinessBlockers}
-              providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
-              onEnablePaidCommerce={enablePaidCommerceMode}
-              onRunOwnNode={() => {
-                if (typeof window !== "undefined") window.location.href = "/config#node-mode";
-              }}
-            />
-          )}
 
           {error && <div className="rounded-lg border border-red-900 bg-red-950/40 px-3 py-2 text-xs text-red-200">{error}</div>}
 
@@ -526,34 +421,6 @@ export default function TestPurchaseModal({
                   Paid — {receiptToken ? "unlocking…" : "waiting for receipt token"}
                 </div>
               )}
-
-              {canonicalUrls ? (
-                <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
-                  <div className="text-xs text-neutral-400 mb-2">Canonical buyer recovery links</div>
-                  <div className="flex flex-wrap gap-2">
-                    {canonicalUrls.receiptStatusUrl ? (
-                      <a className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900" href={canonicalUrls.receiptStatusUrl} target="_blank" rel="noreferrer">
-                        View receipt
-                      </a>
-                    ) : null}
-                    {canonicalUrls.libraryUrl ? (
-                      <a className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900" href={canonicalUrls.libraryUrl} target="_blank" rel="noreferrer">
-                        Open in Library
-                      </a>
-                    ) : null}
-                    {canonicalUrls.replayUrl ? (
-                      <a className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900" href={canonicalUrls.replayUrl} target="_blank" rel="noreferrer">
-                        Replay
-                      </a>
-                    ) : null}
-                    {canonicalUrls.buyUrl ? (
-                      <a className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900" href={canonicalUrls.buyUrl} target="_blank" rel="noreferrer">
-                        Open content
-                      </a>
-                    ) : null}
-                  </div>
-                </div>
-              ) : null}
 
               {unlockPayload && (
                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">

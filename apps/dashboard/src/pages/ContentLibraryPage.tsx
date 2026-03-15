@@ -4,7 +4,6 @@ import { getToken } from "../lib/auth";
 import TestPurchaseModal from "../components/TestPurchaseModal";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
-import UpgradeToCommercePrompt from "../components/UpgradeToCommercePrompt";
 import { canArchive, canPublish, canRestore, canTrash, canUpload, computeContentUiState } from "../lib/contentState";
 import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
 
@@ -66,13 +65,6 @@ type ContentItem = {
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
   childOrigin?: string | null;
   _count?: { files: number };
-  commerceValidity?: {
-    contentValid?: boolean;
-    saleMode?: SaleMode;
-    commerceValid?: boolean;
-    routingTarget?: CommerceRoutingTarget;
-    blockingReason?: string | null;
-  } | null;
 };
 
 type ContentFile = {
@@ -97,24 +89,6 @@ type Identity = {
     id: string;
     code: string;
     displayName: string;
-  };
-};
-
-type NetworkSummaryLite = {
-  nodeMode: "basic" | "advanced" | "lan";
-  modeProfile?: {
-    selectedParticipationMode?: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
-    effectiveParticipationMode?:
-      | "basic_creator"
-      | "sovereign_creator_with_provider"
-      | "sovereign_node_operator"
-      | "sovereign_creator_unready";
-  };
-  capabilityResolution?: {
-    readinessBlockers?: string[];
-  };
-  providerServices?: {
-    totalProviderFeePercent?: number;
   };
 };
 
@@ -391,98 +365,6 @@ async function copyText(text: string) {
   } catch {}
 }
 
-type SaleMode = "free" | "tip" | "paid";
-type CommerceRoutingTarget = "none" | "provider" | "local";
-type EffectiveParticipationMode =
-  | "basic_creator"
-  | "sovereign_creator_with_provider"
-  | "sovereign_node_operator"
-  | "sovereign_creator_unready";
-
-type ContentCommerceValidity = {
-  contentValid: boolean;
-  saleMode: SaleMode;
-  commerceValid: boolean;
-  routingTarget: CommerceRoutingTarget;
-  blockingReason: string | null;
-};
-
-function resolveContentCommerceValidity(input: {
-  item: ContentItem;
-  filesCount: number;
-  manifestSha256: string;
-  hasNetworkPublishRecord: boolean;
-  saleMode: SaleMode;
-  effectiveMode: EffectiveParticipationMode;
-  paidCommerceAllowed: boolean;
-  paidCommerceReason: string | null;
-}): ContentCommerceValidity {
-  const {
-    item,
-    filesCount,
-    manifestSha256,
-    hasNetworkPublishRecord,
-    saleMode,
-    effectiveMode,
-    paidCommerceAllowed,
-    paidCommerceReason
-  } = input;
-
-  const titleOk = Boolean(String(item.title || "").trim());
-  const hasPrimaryAsset = filesCount > 0;
-  const isPublished = item.status === "published";
-  const hasManifest = Boolean(String(manifestSha256 || "").trim());
-  const hasPublishRecord = Boolean(item.publishedAt || hasNetworkPublishRecord);
-
-  let contentBlockingReason: string | null = null;
-  if (!titleOk) contentBlockingReason = "Content title is missing.";
-  else if (!hasPrimaryAsset) contentBlockingReason = "Upload a primary file to validate this content item.";
-  else if (isPublished && !hasManifest) contentBlockingReason = "Published content requires a manifest hash.";
-  else if (isPublished && !hasPublishRecord) contentBlockingReason = "Published content is missing a publish record.";
-
-  const contentValid = !contentBlockingReason;
-  if (!contentValid) {
-    return {
-      contentValid: false,
-      saleMode,
-      commerceValid: false,
-      routingTarget: "none",
-      blockingReason: contentBlockingReason
-    };
-  }
-
-  if (saleMode !== "paid") {
-    return {
-      contentValid: true,
-      saleMode,
-      commerceValid: true,
-      routingTarget: "none",
-      blockingReason: null
-    };
-  }
-
-  if (!paidCommerceAllowed) {
-    return {
-      contentValid: true,
-      saleMode,
-      commerceValid: false,
-      routingTarget: "none",
-      blockingReason: paidCommerceReason || "Paid commerce requires durable host routing."
-    };
-  }
-
-  const routingTarget: CommerceRoutingTarget =
-    effectiveMode === "sovereign_node_operator" ? "local" : "provider";
-
-  return {
-    contentValid: true,
-    saleMode,
-    commerceValid: true,
-    routingTarget,
-    blockingReason: null
-  };
-}
-
 export default function ContentLibraryPage({
   onOpenSplits,
   features,
@@ -643,11 +525,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
   const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
   const [publicOriginFromApi, setPublicOriginFromApi] = React.useState<string>("");
-  const [localNodeOriginFromApi, setLocalNodeOriginFromApi] = React.useState<string>("");
-  const [temporaryNodeOriginFromApi, setTemporaryNodeOriginFromApi] = React.useState<string>("");
-  const [paidCommerceAllowedFromApi, setPaidCommerceAllowedFromApi] = React.useState<boolean>(true);
-  const [paidCommerceReasonFromApi, setPaidCommerceReasonFromApi] = React.useState<string | null>(null);
-  const [networkSummary, setNetworkSummary] = React.useState<NetworkSummaryLite | null>(null);
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
@@ -775,65 +652,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       try {
         const res = await fetch(`${apiBase}/api/public/origin`, { method: "GET" });
         const data = await res.json().catch(() => null);
-        if (res.ok) {
-          const canonical = String(data?.canonicalCommerceOrigin || "").replace(/\/$/, "");
-          const resolvedPublicOrigin = String(
-            data?.publicOrigin || data?.temporaryNodeEndpointOrigin || data?.previewHost || ""
-          ).replace(/\/$/, "");
-          setPublicOriginFromApi(canonical || resolvedPublicOrigin);
-          setLocalNodeOriginFromApi(String(data?.localNodeEndpointOrigin || data?.publicOrigin || "").replace(/\/$/, ""));
-          setTemporaryNodeOriginFromApi(String(data?.temporaryNodeEndpointOrigin || "").replace(/\/$/, ""));
-          setPaidCommerceAllowedFromApi(Boolean(data?.paidCommerceAllowed ?? true));
-          setPaidCommerceReasonFromApi(
-            typeof data?.paidCommerceReason === "string" && data.paidCommerceReason.trim()
-              ? data.paidCommerceReason.trim()
-              : null
-          );
+        if (res.ok && data?.publicOrigin) {
+          setPublicOriginFromApi(String(data.publicOrigin).replace(/\/$/, ""));
         }
       } catch {
         // ignore
       }
     })();
   }, [apiBase]);
-
-  React.useEffect(() => {
-    (async () => {
-      try {
-        const summary = await api<NetworkSummaryLite>("/api/network/summary", "GET");
-        setNetworkSummary(summary || null);
-      } catch {
-        setNetworkSummary(null);
-      }
-    })();
-  }, []);
-
-  const selectedMode =
-    networkSummary?.modeProfile?.selectedParticipationMode === "basic_creator"
-      ? "basic_creator"
-      : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_node_operator"
-        ? "sovereign_node"
-        : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_creator"
-          ? "sovereign_creator_with_provider"
-          : networkSummary?.nodeMode === "basic"
-            ? "basic_creator"
-            : networkSummary?.nodeMode === "lan"
-              ? "sovereign_node"
-              : "sovereign_creator_with_provider";
-  const effectiveMode =
-    networkSummary?.modeProfile?.effectiveParticipationMode ||
-    (selectedMode === "basic_creator" ? "basic_creator" : "sovereign_creator_with_provider");
-  const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
-
-  async function enablePaidCommerceMode() {
-    try {
-      await api("/api/node/mode", "POST", { nodeMode: "advanced" });
-      const summary = await api<NetworkSummaryLite>("/api/network/summary", "GET");
-      setNetworkSummary(summary || null);
-      setPaidCommerceReasonFromApi("Sovereign Creator mode enabled. Durable commerce capabilities are now available through provider infrastructure.");
-    } catch (e: any) {
-      setPaidCommerceReasonFromApi(e?.message || "Failed to switch mode. Open Config to update participation mode.");
-    }
-  }
 
   async function refreshPublicStatus() {
     try {
@@ -2543,30 +2369,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               );
               const currentPriceSats = Number(it.priceSats ?? 0);
               const paidUnlockEnabled = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
-              const saleMode: SaleMode = paidUnlockEnabled ? "paid" : lightningAvailable ? "tip" : "free";
-              const hasNetworkPublishRecord = Boolean(
-                networkPublishByContent[it.id]?.publishedAt ||
-                  networkPublishByContent[it.id]?.receiptId ||
-                  networkPublishByContent[it.id]?.hasReceipt
-              );
-              const contentCommerceValidity = resolveContentCommerceValidity({
-                item: it,
-                filesCount,
-                manifestSha256,
-                hasNetworkPublishRecord,
-                saleMode,
-                effectiveMode,
-                paidCommerceAllowed: paidCommerceAllowedFromApi,
-                paidCommerceReason: paidCommerceReasonFromApi
-              });
-              const backendCommerceValidity = it.commerceValidity;
-              const resolvedContentCommerceValidity: ContentCommerceValidity = {
-                contentValid: backendCommerceValidity?.contentValid ?? contentCommerceValidity.contentValid,
-                saleMode: backendCommerceValidity?.saleMode ?? contentCommerceValidity.saleMode,
-                commerceValid: backendCommerceValidity?.commerceValid ?? contentCommerceValidity.commerceValid,
-                routingTarget: backendCommerceValidity?.routingTarget ?? contentCommerceValidity.routingTarget,
-                blockingReason: backendCommerceValidity?.blockingReason ?? contentCommerceValidity.blockingReason
-              };
               const creatorSales = salesByContent[it.id] || null;
               const recentSales = Array.isArray(creatorSales?.recent) ? creatorSales.recent : [];
               const lastSale = recentSales[0] || null;
@@ -2719,7 +2521,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 disabled={
                                   publishBusy[it.id] ||
                                   !networkPublishAllowed ||
-                                  !resolvedContentCommerceValidity.contentValid ||
                                   !allowPublish ||
                                   (isBasicTier && isDerivativeType)
                                 }
@@ -2728,8 +2529,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     ? "Derivatives require Advanced mode and clearance before publishing."
                                     : !allowPublish
                                       ? "Already published"
-                                      : !resolvedContentCommerceValidity.contentValid
-                                        ? resolvedContentCommerceValidity.blockingReason || "Complete content before publishing."
                                       : !networkPublishAllowed
                                         ? networkPublishReason
                                         : "Publish this content"
@@ -2812,52 +2611,28 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ) : null}
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>
-                        Content validity:{" "}
-                        <span className={resolvedContentCommerceValidity.contentValid ? "text-emerald-300" : "text-amber-300"}>
-                          {resolvedContentCommerceValidity.contentValid ? "Valid" : "Needs attention"}
+                        Network publish:{" "}
+                        <span className={networkPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
+                          {networkPublishAllowed ? "Ready" : "Not ready"}
                         </span>
                       </div>
-                      {!resolvedContentCommerceValidity.contentValid && resolvedContentCommerceValidity.blockingReason ? (
-                        <div className="text-amber-300">{resolvedContentCommerceValidity.blockingReason}</div>
+                      {!networkPublishAllowed ? (
+                        <div className="text-amber-300">{networkPublishReason}</div>
                       ) : null}
                       <div>
-                        Commerce validity ({resolvedContentCommerceValidity.saleMode}):{" "}
-                        <span className={resolvedContentCommerceValidity.commerceValid ? "text-emerald-300" : "text-amber-300"}>
-                          {resolvedContentCommerceValidity.commerceValid ? "Valid" : "Blocked"}
-                        </span>
-                      </div>
-                      {!resolvedContentCommerceValidity.commerceValid && resolvedContentCommerceValidity.blockingReason ? (
-                        <div className="text-amber-300">{resolvedContentCommerceValidity.blockingReason}</div>
-                      ) : null}
-                      <div>
-                        Routing target:{" "}
-                        <span className="text-neutral-200">
-                          {resolvedContentCommerceValidity.routingTarget === "provider"
-                            ? "Provider"
-                            : resolvedContentCommerceValidity.routingTarget === "local"
-                              ? "Local node"
-                              : "None (preview/free path)"}
+                        Public discovery:{" "}
+                        <span className={discoveryPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
+                          {discoveryPublishAllowed ? "Ready" : "Not ready"}
                         </span>
                       </div>
                       {!discoveryPublishAllowed ? (
-                        <div className="text-neutral-500">Public discovery remains separate: {discoveryPublishReason}</div>
+                        <div className="text-amber-300">{discoveryPublishReason}</div>
                       ) : null}
                     </div>
                   </div>
 
                   {!showTrash && !showTombstones && isOpen && (
                     <div className="border-t border-neutral-800 px-3 py-3 space-y-3">
-                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">Content Overview</div>
-                        <div className="mt-1 text-xs text-neutral-400">
-                          Title: <span className="text-neutral-200">{it.title}</span> • Status:{" "}
-                          <span className="text-neutral-200">{titleCase(it.status)}</span> • Integrity:{" "}
-                          <span className={manifestSha256 ? "text-emerald-200" : "text-amber-300"}>
-                            {manifestSha256 ? "Manifest tracked" : "Manifest pending"}
-                          </span>
-                        </div>
-                      </div>
-
                       {(() => {
                         const preview = previewByContent[it.id] || null;
                         const previewUrl = preview?.previewUrl || null;
@@ -2942,10 +2717,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </button>
                       </div>
 
-                      <details className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <summary className="cursor-pointer text-xs text-neutral-300 font-medium">Technical Integrity</summary>
-                        <div className="mt-2 flex items-center justify-between gap-2">
-                          <div className="text-xs text-neutral-400">Manifest, hashes, and storage paths</div>
+                      <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="text-xs text-neutral-300 font-medium">File identity</div>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -3094,7 +2868,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             })}
                           </div>
                         )}
-                      </details>
+                      </div>
 
                       {/* NEW: Split lock notarization preview */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
@@ -3778,7 +3552,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                       {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-                        <div className="text-xs text-neutral-300 font-medium">Access & Pricing</div>
+                        <div className="text-xs text-neutral-300 font-medium">Monetization</div>
                         <div className="mt-2 rounded-md border border-sky-900/40 bg-sky-950/20 p-3">
                           <div className="text-xs font-medium text-sky-200">Payment / Access Proof</div>
                           <div className="mt-2 grid gap-1 text-xs text-neutral-300">
@@ -3834,23 +3608,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setPriceMsg((m) => ({ ...m, [it.id]: "Price must be 0 or more." }));
                                   return;
                                 }
-                                if (sats > 0 && selectedMode === "basic_creator") {
-                                  setPriceMsg((m) => ({
-                                    ...m,
-                                    [it.id]: "Durable paid commerce requires Sovereign Creator mode."
-                                  }));
-                                  return;
-                                }
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPriceMsg((m) => ({ ...m, [it.id]: "" }));
-                                  const out = await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
+                                  await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
                                   await refreshCurrentView();
-                                  const warning = String((out as any)?.deliveryPolicyWarning || "").trim();
-                                  setPriceMsg((m) => ({
-                                    ...m,
-                                    [it.id]: warning ? `Saved. ${warning}` : "Saved."
-                                  }));
+                                  setPriceMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setPriceMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save price." }));
                                 } finally {
@@ -3861,18 +3624,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               Save price
                             </button>
                             {priceMsg[it.id] ? <div className="text-xs text-amber-300">{priceMsg[it.id]}</div> : null}
-                            {selectedMode === "basic_creator" ? (
-                              <div className="mt-2">
-                                <UpgradeToCommercePrompt
-                                  selectedMode={selectedMode}
-                                  effectiveMode={effectiveMode}
-                                  attemptedCapability="set_price"
-                                  readinessBlockers={readinessBlockers}
-                                  providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
-                                  onEnablePaidCommerce={enablePaidCommerceMode}
-                                />
-                              </div>
-                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -3913,13 +3664,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: "" }));
-                                  const out = await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
+                                  await api(`/content/${it.id}/delivery-mode`, "PATCH", { deliveryMode: raw || null });
                                   await refreshCurrentView();
-                                  const warning = String((out as any)?.deliveryPolicyWarning || "").trim();
-                                  setDeliveryMsg((m) => ({
-                                    ...m,
-                                    [it.id]: warning ? `Saved. ${warning}` : "Saved."
-                                  }));
+                                  setDeliveryMsg((m) => ({ ...m, [it.id]: "Saved." }));
                                 } catch (e: any) {
                                   setDeliveryMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save delivery mode." }));
                                 } finally {
@@ -4170,18 +3917,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
-                            const effectivePublicOrigin = (localNodeOriginFromApi || activeOrigin || "").trim();
-                            const effectiveBuyOrigin = (
-                              isBasicTier
-                                ? (activeOrigin || publicOriginFromApi || publicBuyOrigin || "")
-                                : (publicBuyOrigin || publicOriginFromApi || activeOrigin || "")
-                            ).trim();
-                            const buyBase = (effectiveBuyOrigin || "").replace(/\/$/, "");
-                            const creatorScope = String(it.ownerUserId || "").trim();
-                            const creatorScopedBuyPath = creatorScope
-                              ? `/c/${encodeURIComponent(creatorScope)}/buy/${encodeURIComponent(it.id)}`
-                              : `/buy/${encodeURIComponent(it.id)}`;
-                            const buyLink = buyBase ? `${buyBase}${creatorScopedBuyPath}` : "";
+                            const effectivePublicOrigin = (publicOriginFromApi || activeOrigin || "").trim();
+                            const effectiveBuyOrigin = (publicOriginFromApi || publicBuyOrigin || activeOrigin || "").trim();
+                            const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
+                            const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");
                             const canEmbed = Boolean(discoveryPublishAllowed && publicStatus?.isCanonical && embedBase);
                             const embedScript = canEmbed ? `${embedBase}/embed.js` : "";
@@ -4192,11 +3931,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ? `<iframe src="${buyLink}" style="width:100%;max-width:900px;height:720px;border:1px solid #222;border-radius:16px;"></iframe>`
                               : "";
                             const loopbackBase = "http://127.0.0.1:4000";
-                            const loopbackLink = `${loopbackBase}${creatorScopedBuyPath}`;
+                            const loopbackLink = `${loopbackBase}/buy/${it.id}`;
                             const isBuyLoopback = isLoopbackUrl(buyLink);
-                            const isPaidContent = resolvedContentCommerceValidity.saleMode === "paid";
-                            const paidCommerceBlocked = isPaidContent && !resolvedContentCommerceValidity.commerceValid;
-                            const hasPublicBuy = Boolean(buyBase) && !isBuyLoopback && !paidCommerceBlocked;
+                            const hasPublicBuy = Boolean(buyBase) && !isBuyLoopback;
                             const isLocalOnly = !hasPublicBuy;
                             let lanBase = "";
                             try {
@@ -4205,12 +3942,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 lanBase = u.origin.replace(/\/$/, "");
                               }
                             } catch {}
-                            const lanLink = lanBase ? `${lanBase}${creatorScopedBuyPath}` : "";
+                            const lanLink = lanBase ? `${lanBase}/buy/${it.id}` : "";
                             return (
                               <>
-                                <>
+                                {isBasicTier ? null : (
+                                  <>
                                     <div className="flex items-center justify-between gap-2">
-                                      <div className="text-[11px] text-neutral-500">{isBasicTier ? "Page links" : "Buy links"}</div>
+                                      <div className="text-[11px] text-neutral-500">Buy links</div>
                                       <div className="flex items-center gap-2">
                                         {(["public", "config"] as const).map((tab) => {
                                           const active = (buyLinksTabByContent[it.id] || "public") === tab;
@@ -4241,40 +3979,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       <>
                                         <div className="flex items-center justify-between gap-3">
                                           <div className="min-w-0">
-                                            <div className="text-[11px] text-neutral-500 mb-1">
-                                              Commerce host: <span className="text-neutral-300 break-all">{buyBase || "Not configured"}</span>
-                                            </div>
                                             {hasPublicBuy ? (
                                               <>
-                                                Canonical buy link: <span className="text-neutral-300 break-all">{buyLink}</span>
+                                                Public buy link: <span className="text-neutral-300 break-all">{buyLink}</span>
                                               </>
                                             ) : (
                                               <span className="text-neutral-500">
-                                                {paidCommerceBlocked
-                                                  ? resolvedContentCommerceValidity.blockingReason || "Paid commerce requires durable host routing."
-                                                  : "Public buy link not available. Set up public links in Config."}
+                                                Public buy link not available. Set up public links in Config.
                                               </span>
                                             )}
-                                            {paidCommerceBlocked && resolvedContentCommerceValidity.blockingReason ? (
-                                              <div className="mt-1 text-[11px] text-neutral-500">{resolvedContentCommerceValidity.blockingReason}</div>
-                                            ) : null}
-                                            {isPaidContent ? (
-                                              <div className="mt-2">
-                                                <UpgradeToCommercePrompt
-                                                  selectedMode={selectedMode}
-                                                  effectiveMode={effectiveMode}
-                                                  attemptedCapability="durable_buy_link"
-                                                  readinessBlockers={readinessBlockers}
-                                                  providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
-                                                  onEnablePaidCommerce={enablePaidCommerceMode}
-                                                />
-                                              </div>
-                                            ) : null}
-                                            {temporaryNodeOriginFromApi ? (
-                                              <div className="mt-1 text-[11px] text-amber-300 break-all">
-                                                Temporary preview endpoint: {temporaryNodeOriginFromApi}/buy/{it.id}
-                                              </div>
-                                            ) : null}
                                           </div>
                                           <div className="flex items-center gap-2 shrink-0">
                                             <button
@@ -4449,6 +4162,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       </>
                                     )}
                                   </>
+                                )}
                               </>
                             );
                           })()}
@@ -4508,7 +4222,63 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           )}
                         </div>
 
-                        {publishMsg[it.id] ? <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div> : null}
+                        {publishMsg[it.id] ? (
+                          <div className="mt-2 text-xs text-neutral-400">{publishMsg[it.id]}</div>
+                        ) : null}
+                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
+                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
+                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
+                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
+                              <div>
+                                Status: <span className="text-emerald-200">Published</span>
+                              </div>
+                              <div>
+                                Published at:{" "}
+                                <span className="text-neutral-200">
+                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Manifest hash:{" "}
+                                  <span className="text-neutral-200 break-all">
+                                    {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
+                                  </span>
+                                </span>
+                                {(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256) ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span>
+                                  Publish receipt ID:{" "}
+                                  <span className="text-neutral-200 break-all">{networkPublishByContent[it.id]?.receiptId || "—"}</span>
+                                </span>
+                                {networkPublishByContent[it.id]?.receiptId ? (
+                                  <button
+                                    type="button"
+                                    className="rounded border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                                    onClick={() => copyText(networkPublishByContent[it.id]?.receiptId || "")}
+                                  >
+                                    Copy
+                                  </button>
+                                ) : null}
+                              </div>
+                              <div>
+                                Provider node ID:{" "}
+                                <span className="text-neutral-200 break-all">
+                                  {networkPublishByContent[it.id]?.providerNodeId || "—"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
 
                         <div className="mt-3 grid gap-2 md:grid-cols-2">
                           <label className="sr-only" htmlFor={`credit-name-${it.id}`}>
@@ -4562,10 +4332,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         {creditMsg[it.id] ? <div className="mt-1 text-xs text-amber-300">{creditMsg[it.id]}</div> : null}
                       </div>
 
-                      {/* Distribution */}
+                      {/* Network visibility panel */}
                       <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                         <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs text-neutral-300 font-medium">Distribution</div>
+                          <div className="text-xs text-neutral-300 font-medium">Network Visibility</div>
                           <div className="flex items-center gap-2">
                             <span
                               className={`text-[10px] px-2 py-1 rounded-full border ${
@@ -4587,34 +4357,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             <span className="text-neutral-200">
                               {parentLinkByContent[it.id]?.approvedAt ? "Cleared" : "Pending clearance"}
                             </span>
-                          </div>
-                        ) : null}
-                        {it.status === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
-                          <div className="mt-3 rounded-md border border-emerald-900/50 bg-emerald-950/20 p-3">
-                            <div className="text-xs font-medium text-emerald-200">Published to Certifyd Network</div>
-                            <div className="mt-2 grid gap-1 text-xs text-neutral-300">
-                              <div>
-                                Status: <span className="text-emerald-200">Published</span>
-                              </div>
-                              <div>
-                                Published at:{" "}
-                                <span className="text-neutral-200">
-                                  {formatDateLabel(networkPublishByContent[it.id]?.publishedAt || it.publishedAt)}
-                                </span>
-                              </div>
-                              <div>
-                                Publishing node:{" "}
-                                <span className="text-neutral-200 break-all">
-                                  {networkPublishByContent[it.id]?.providerNodeId || "Local/unknown"}
-                                </span>
-                              </div>
-                              <div>
-                                Manifest hash:{" "}
-                                <span className="text-neutral-200 break-all">
-                                  {networkPublishByContent[it.id]?.manifestHash || it.manifest?.sha256 || "—"}
-                                </span>
-                              </div>
-                            </div>
                           </div>
                         ) : null}
                         {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (

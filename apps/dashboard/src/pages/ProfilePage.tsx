@@ -53,7 +53,7 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
     nodeMode === "advanced"
       ? "Sovereign creator profile"
       : nodeMode === "lan"
-        ? "Sovereign Creator Node (LAN Studio)"
+        ? "Studio creator profile"
         : "Basic creator profile";
 
   const apiBase = getApiBase();

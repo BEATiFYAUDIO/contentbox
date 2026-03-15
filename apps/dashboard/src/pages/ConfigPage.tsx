@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { clearToken, getToken } from "../lib/auth";
 import { getApiBase } from "../lib/api";
-import { participationModeMeta, resolveParticipationMode, type ParticipationMode } from "../lib/networkUserType";
 
 const DEFAULT_HEALTH_PATH = "/health";
 
@@ -38,61 +37,17 @@ type NetworkSummary = {
     localInvoiceMinting: boolean;
     delegatedInvoiceSupport: boolean;
     tipsOnly: boolean;
-    paidCommerceAllowed?: boolean;
-    paidCommerceReason?: string | null;
-    canonicalCommerceConfigured?: boolean;
-    endpointStability?: "stable" | "temporary" | "unknown";
   };
   providerBinding: {
     configured: boolean;
     providerNodeId: string | null;
-    providerUrl?: string | null;
-    delegatedCapabilities?: NetworkProviderConfig["delegatedCapabilities"];
-  };
-  modeProfile?: {
-    selectedParticipationMode?: string;
-    effectiveParticipationMode?: string;
-    hasStablePublicRoute?: boolean;
-    hasLocalInvoiceMinting?: boolean;
-    hasChainBackendReady?: boolean;
-  };
-  capabilityResolution?: {
-    delegatedCapabilities?: string[];
-    readinessBlockers?: string[];
-    effectiveCommerceHost?: string | null;
-    effectiveSettlementHost?: string | null;
-    effectiveBuyerRecoveryHost?: string | null;
-  };
-  providerServices?: {
-    totalProviderFeePercent?: number;
-  };
-  reachability?: {
-    localNodeEndpointUrl?: string | null;
-    temporaryNodeEndpointUrl?: string | null;
-    canonicalCommerceUrl?: string | null;
-    canonicalCommerceKind?: string;
-    routing?: {
-      replayMode?: string;
-      providerDurablePlaybackAvailable?: boolean;
-      creatorPlaybackAvailable?: boolean;
-      selectedOriginType?: string;
-    };
   };
 };
 
 type NetworkProviderConfig = {
   providerNodeId: string | null;
-  providerProfileId?: string | null;
   providerUrl: string | null;
-  providerPubKey?: string | null;
   enabled: boolean;
-  delegatedCapabilities?: {
-    durablePublicCommerceHost?: boolean;
-    buyerRecovery?: boolean;
-    bolt11Invoicing?: boolean;
-    settlement?: boolean;
-    payoutForwarding?: boolean;
-  };
 };
 
 const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
@@ -148,16 +103,6 @@ function safeHost(value: string): string {
   }
 }
 
-function isValidOrigin(value: string): boolean {
-  if (!value) return true;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 export default function ConfigPage({
   showAdvanced,
   onOpenPayments,
@@ -167,13 +112,6 @@ export default function ConfigPage({
   onOpenPayments?: () => void;
   onIdentityRefresh?: () => void;
 }) {
-  const mapSummaryModeToParticipationMode = (mode: string | null | undefined): ParticipationMode | null => {
-    if (!mode) return null;
-    if (mode === "basic_creator") return "basic_creator";
-    if (mode === "sovereign_node_operator" || mode === "sovereign_node") return "sovereign_node";
-    if (mode === "sovereign_creator_with_provider" || mode === "sovereign_creator") return "sovereign_with_provider";
-    return null;
-  };
   const devMode = Boolean((import.meta as any).env?.DEV);
   const apiBase = useMemo(() => getApiBase(), []);
   const uiOrigin = typeof window !== "undefined" ? window.location.origin : "";
@@ -211,9 +149,6 @@ export default function ConfigPage({
   const [modeMsg, setModeMsg] = useState<string | null>(null);
   const [networkSummary, setNetworkSummary] = useState<NetworkSummary | null>(null);
   const [providerConfig, setProviderConfig] = useState<NetworkProviderConfig | null>(null);
-  const [providerBusy, setProviderBusy] = useState(false);
-  const [providerMsg, setProviderMsg] = useState<string | null>(null);
-  const [configMsg, setConfigMsg] = useState<string | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -392,132 +327,34 @@ export default function ConfigPage({
     networkSummary?.providerBinding?.configured ||
       (providerConfig?.enabled && providerConfig?.providerNodeId && providerConfig?.providerUrl)
   );
-  const providerDelegation = {
-    durablePublicCommerceHost: providerConfig?.delegatedCapabilities?.durablePublicCommerceHost !== false,
-    buyerRecovery: providerConfig?.delegatedCapabilities?.buyerRecovery !== false,
-    bolt11Invoicing: providerConfig?.delegatedCapabilities?.bolt11Invoicing !== false,
-    settlement: providerConfig?.delegatedCapabilities?.settlement !== false,
-    payoutForwarding: providerConfig?.delegatedCapabilities?.payoutForwarding !== false
-  };
   const providerInfrastructureCapability = Boolean(
     networkSummary?.serviceRoles?.invoiceProvider ||
       networkSummary?.serviceRoles?.hybrid ||
       networkSummary?.paymentCapability?.localInvoiceMinting
   );
-  const fallbackParticipationMode: ParticipationMode = resolveParticipationMode({
-    nodeMode: modeInfo?.nodeMode ?? null,
-    providerConfigured,
-    providerInfrastructureCapability
-  });
-  const selectedFromSummary = mapSummaryModeToParticipationMode(networkSummary?.modeProfile?.selectedParticipationMode);
-  const effectiveFromSummary = mapSummaryModeToParticipationMode(networkSummary?.modeProfile?.effectiveParticipationMode);
-  const resolvedParticipationMode: ParticipationMode = effectiveFromSummary || fallbackParticipationMode;
-  const selectedParticipationMode: ParticipationMode = selectedFromSummary || fallbackParticipationMode;
-  const participationMode = participationModeMeta(resolvedParticipationMode);
-  const selectedStageIndex =
-    selectedParticipationMode === "basic_creator" ? 0 : selectedParticipationMode === "sovereign_with_provider" ? 1 : 2;
-  const selectedModeSatisfied = selectedParticipationMode === resolvedParticipationMode;
-  const basicModeActive = selectedParticipationMode === "basic_creator";
-  const showNodeIdentityByDefault = resolvedParticipationMode !== "basic_creator";
-  const showPreviewByDefault = resolvedParticipationMode === "basic_creator";
-  const showReachabilityByDefault = resolvedParticipationMode === "sovereign_node";
-  const showInfrastructureSummary = !basicModeActive || Boolean(showAdvanced);
-  const showRoutingSummary = !basicModeActive || Boolean(showAdvanced);
-  const temporaryPreviewEndpoint = publicStatus?.mode === "quick";
-  const normalizedPublicBuyOrigin = normalizeOrigin(publicBuyOrigin);
-  const normalizedPublicStudioOrigin = normalizeOrigin(publicStudioOrigin);
-  const normalizedPublicOrigin = normalizeOrigin(publicOrigin);
-  const normalizedPublicBuyOriginFallback = normalizeOrigin(publicBuyOriginFallback);
-  const normalizedPublicStudioOriginFallback = normalizeOrigin(publicStudioOriginFallback);
-  const normalizedPublicOriginFallback = normalizeOrigin(publicOriginFallback);
-  const canonicalCommerceHost = normalizedPublicBuyOrigin || health?.publicBuyOrigin || publicStatus?.canonicalOrigin || "Not configured";
-  const stableCommerceConfigured = Boolean(
-    normalizedPublicBuyOrigin ||
-      health?.publicBuyOrigin ||
-      (publicStatus?.mode === "named" && (publicStatus?.canonicalOrigin || publicStatus?.publicOrigin))
-  );
-  const delegatedCapabilities = networkSummary?.capabilityResolution?.delegatedCapabilities || [];
-  const readinessBlockers = networkSummary?.capabilityResolution?.readinessBlockers || [];
-  const stablePublicHostDetected = Boolean(networkSummary?.modeProfile?.hasStablePublicRoute);
-  const lndReadyDetected = Boolean(networkSummary?.modeProfile?.hasLocalInvoiceMinting);
-  const chainReadyDetected = Boolean(networkSummary?.modeProfile?.hasChainBackendReady);
-  const canonicalCommerceConfiguredDetected = Boolean(networkSummary?.paymentCapability?.canonicalCommerceConfigured);
-  const temporaryEndpointDetected = Boolean(
-    networkSummary?.reachability?.temporaryNodeEndpointUrl || publicStatus?.mode === "quick"
-  );
-  const detectedNamedTunnelOrigin = normalizeOrigin(
-    publicStatus?.mode === "named" && publicStatus?.status === "online"
-      ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "")
-      : ""
-  );
-  const hasDetectedNamedTunnel = Boolean(detectedNamedTunnelOrigin);
-  const sovereignCreatorAvailable = hasDetectedNamedTunnel;
-  const providerCommerceControlsEnabled = hasDetectedNamedTunnel;
-  const commerceHostControlsEnabled = hasDetectedNamedTunnel;
-  const replayCapableDetected = Boolean(
-    networkSummary?.reachability?.routing?.providerDurablePlaybackAvailable ||
-      networkSummary?.reachability?.routing?.creatorPlaybackAvailable
-  );
-  const nodeReadinessRows = [
-    { label: "Dashboard/App", value: health?.ok ? "Running" : "Not confirmed", ok: Boolean(health?.ok) },
-    { label: "Local API Base", value: apiBase || "Not resolved", ok: Boolean(apiBase) },
-    { label: "Stable Public Host", value: stablePublicHostDetected ? "Configured" : "Not configured", ok: stablePublicHostDetected },
-    { label: "Temporary Endpoint", value: temporaryEndpointDetected ? "Active" : "Inactive", ok: !temporaryEndpointDetected },
-    { label: "Canonical Commerce", value: canonicalCommerceConfiguredDetected ? "Configured" : "Not configured", ok: canonicalCommerceConfiguredDetected },
-    { label: "Lightning (LND)", value: lndReadyDetected ? "Ready" : "Not ready", ok: lndReadyDetected },
-    { label: "Chain Backend", value: chainReadyDetected ? "Ready" : "Not ready", ok: chainReadyDetected }
-  ];
-  const sovereignNodeRequirements = [
-    { label: "Stable public host", ready: stablePublicHostDetected },
-    { label: "Lightning (LND)", ready: lndReadyDetected },
-    { label: "Chain backend", ready: chainReadyDetected },
-    { label: "Replay delivery", ready: replayCapableDetected }
-  ];
-  const sovereignNodeMissing = sovereignNodeRequirements.filter((r) => !r.ready).map((r) => r.label);
-  const canSelectSovereignNode = sovereignNodeMissing.length === 0;
-  const invalidOrigins = [
-    { label: "Commerce host", value: normalizedPublicBuyOrigin },
-    { label: "Creator app host", value: normalizedPublicStudioOrigin },
-    { label: "Node domain", value: normalizedPublicOrigin },
-    { label: "Commerce fallback", value: normalizedPublicBuyOriginFallback },
-    { label: "Creator app fallback", value: normalizedPublicStudioOriginFallback },
-    { label: "Node fallback", value: normalizedPublicOriginFallback }
-  ].filter((entry) => entry.value && !isValidOrigin(entry.value));
-  const primaryFilledCount = [normalizedPublicBuyOrigin, normalizedPublicStudioOrigin, normalizedPublicOrigin].filter(Boolean).length;
-  const partialPrimaryHosts = primaryFilledCount > 0 && primaryFilledCount < 3;
-  const fallbackWithoutPrimary =
-    (normalizedPublicBuyOriginFallback && !normalizedPublicBuyOrigin) ||
-    (normalizedPublicStudioOriginFallback && !normalizedPublicStudioOrigin) ||
-    (normalizedPublicOriginFallback && !normalizedPublicOrigin);
-  const fallbackDuplicatesPrimary =
-    (normalizedPublicBuyOrigin && normalizedPublicBuyOriginFallback && normalizedPublicBuyOrigin === normalizedPublicBuyOriginFallback) ||
-    (normalizedPublicStudioOrigin && normalizedPublicStudioOriginFallback && normalizedPublicStudioOrigin === normalizedPublicStudioOriginFallback) ||
-    (normalizedPublicOrigin && normalizedPublicOriginFallback && normalizedPublicOrigin === normalizedPublicOriginFallback);
-  const configHealthStatus: "consistent" | "mixed" | "invalid" = invalidOrigins.length
-    ? "invalid"
-    : apiMismatch || overrideMismatch || partialPrimaryHosts || fallbackWithoutPrimary || fallbackDuplicatesPrimary
-      ? "mixed"
-      : "consistent";
-  const configHealthTitle = configHealthStatus === "consistent" ? "Consistent" : configHealthStatus === "mixed" ? "Mixed" : "Invalid";
-  const configHealthDescription =
-    configHealthStatus === "consistent"
-      ? "Config values are aligned for this machine."
-      : configHealthStatus === "mixed"
-        ? "Some config values are conflicting or incomplete."
-        : "One or more host values are not valid http/https origins.";
+  const participationMode =
+    modeInfo?.nodeMode === "basic"
+      ? {
+          label: "Basic Creator",
+          description: "Creator identity with provider-backed infrastructure."
+        }
+      : providerInfrastructureCapability
+        ? {
+            label: "Sovereign Creator Node",
+            description: "Runs full local infrastructure and can provide services to other creators."
+          }
+        : providerConfigured
+          ? {
+              label: "Sovereign Creator (with Provider)",
+              description: "Runs a sovereign node but uses a provider for payment infrastructure."
+            }
+          : {
+              label: "Sovereign Creator Node",
+              description: "Runs full local infrastructure and can provide services to other creators."
+            };
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
     if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
-    if (nextMode === "advanced" && !sovereignCreatorAvailable) {
-      setModeMsg("Sovereign Creator requires a detected named tunnel before switching modes.");
-      return;
-    }
-    if (nextMode === "lan" && !canSelectSovereignNode) {
-      setModeMsg(
-        `Sovereign Node Operator requires readiness first. Missing: ${sovereignNodeMissing.join(", ")}.`
-      );
-      return;
-    }
     if (nextMode === "advanced") {
       const ok = window.confirm(
         "Switching to Sovereign Creator Node enforces single-identity local ownership. Continue?"
@@ -544,12 +381,6 @@ export default function ConfigPage({
     }
   };
 
-  useEffect(() => {
-    if (!hasDetectedNamedTunnel) return;
-    if (normalizeOrigin(publicOrigin)) return;
-    setPublicOrigin(detectedNamedTunnelOrigin);
-  }, [hasDetectedNamedTunnel, detectedNamedTunnelOrigin, publicOrigin]);
-
   const refreshPublicStatus = async () => {
     if (!token) return;
     try {
@@ -561,38 +392,6 @@ export default function ConfigPage({
       setPublicStatus(json || null);
     } catch {
       setPublicStatus(null);
-    }
-  };
-
-  const saveProviderDelegation = async () => {
-    if (!token || !providerConfig) return;
-    setProviderBusy(true);
-    setProviderMsg(null);
-    try {
-      const res = await fetch(`${apiBase}/api/network/provider`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          providerNodeId: providerConfig.providerNodeId || null,
-          providerUrl: providerConfig.providerUrl || null,
-          enabled: Boolean(providerConfig.enabled),
-          delegatedCapabilities: {
-            durablePublicCommerceHost: providerDelegation.durablePublicCommerceHost,
-            buyerRecovery: providerDelegation.buyerRecovery,
-            bolt11Invoicing: providerDelegation.bolt11Invoicing,
-            settlement: providerDelegation.settlement,
-            payoutForwarding: providerDelegation.payoutForwarding
-          }
-        })
-      });
-      const json = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(json?.error || json?.message || "Failed to save provider configuration.");
-      setProviderConfig(json as NetworkProviderConfig);
-      setProviderMsg("Provider delegation saved.");
-    } catch (e: any) {
-      setProviderMsg(e?.message || "Failed to save provider configuration.");
-    } finally {
-      setProviderBusy(false);
     }
   };
 
@@ -668,18 +467,12 @@ export default function ConfigPage({
   }`;
 
   const saveNetworking = () => {
-    setConfigMsg(null);
-    if (invalidOrigins.length > 0) {
-      setConfigMsg(`Fix invalid origins before saving: ${invalidOrigins.map((entry) => entry.label).join(", ")}.`);
-      return;
-    }
-    writeStoredValue(STORAGE_PUBLIC_ORIGIN, normalizedPublicOrigin);
-    writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN, normalizedPublicBuyOrigin);
-    writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN, normalizedPublicStudioOrigin);
-    writeStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK, normalizedPublicOriginFallback);
-    writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, normalizedPublicBuyOriginFallback);
-    writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, normalizedPublicStudioOriginFallback);
-    setConfigMsg("Networking config saved.");
+    writeStoredValue(STORAGE_PUBLIC_ORIGIN, normalizeOrigin(publicOrigin));
+    writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN, normalizeOrigin(publicBuyOrigin));
+    writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN, normalizeOrigin(publicStudioOrigin));
+    writeStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK, normalizeOrigin(publicOriginFallback));
+    writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, normalizeOrigin(publicBuyOriginFallback));
+    writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, normalizeOrigin(publicStudioOriginFallback));
   };
 
   const clearNetworking = () => {
@@ -695,47 +488,6 @@ export default function ConfigPage({
     writeStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, "");
-    setConfigMsg("Networking overrides cleared.");
-  };
-
-  const normalizeConfig = () => {
-    setConfigMsg(null);
-    const nextBuy = normalizedPublicBuyOrigin || normalizedPublicBuyOriginFallback;
-    const nextStudio = normalizedPublicStudioOrigin || normalizedPublicStudioOriginFallback;
-    const nextCreator = normalizedPublicOrigin || normalizedPublicOriginFallback;
-    const nextBuyFallback = nextBuy && nextBuy === normalizedPublicBuyOriginFallback ? "" : normalizedPublicBuyOriginFallback;
-    const nextStudioFallback =
-      nextStudio && nextStudio === normalizedPublicStudioOriginFallback ? "" : normalizedPublicStudioOriginFallback;
-    const nextCreatorFallback = nextCreator && nextCreator === normalizedPublicOriginFallback ? "" : normalizedPublicOriginFallback;
-    const invalidAfterNormalize = [
-      { label: "Commerce host", value: nextBuy },
-      { label: "Creator app host", value: nextStudio },
-      { label: "Node domain", value: nextCreator },
-      { label: "Commerce fallback", value: nextBuyFallback },
-      { label: "Creator app fallback", value: nextStudioFallback },
-      { label: "Node fallback", value: nextCreatorFallback }
-    ].filter((entry) => entry.value && !isValidOrigin(entry.value));
-    if (invalidAfterNormalize.length > 0) {
-      setConfigMsg(`Cannot normalize: invalid origins in ${invalidAfterNormalize.map((entry) => entry.label).join(", ")}.`);
-      return;
-    }
-    setPublicBuyOrigin(nextBuy);
-    setPublicStudioOrigin(nextStudio);
-    setPublicOrigin(nextCreator);
-    setPublicBuyOriginFallback(nextBuyFallback);
-    setPublicStudioOriginFallback(nextStudioFallback);
-    setPublicOriginFallback(nextCreatorFallback);
-    writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN, nextBuy);
-    writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN, nextStudio);
-    writeStoredValue(STORAGE_PUBLIC_ORIGIN, nextCreator);
-    writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, nextBuyFallback);
-    writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, nextStudioFallback);
-    writeStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK, nextCreatorFallback);
-    if (overrideMismatch) {
-      setApiBaseOverride("");
-      writeStoredValue(STORAGE_API_BASE, "");
-    }
-    setConfigMsg("Config normalized.");
   };
 
   const saveApiBaseOverride = () => {
@@ -865,461 +617,22 @@ export default function ConfigPage({
     }
   };
 
-  const goToModePicker = () => {
-    const element = typeof document !== "undefined" ? document.getElementById("node-mode") : null;
-    element?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-  const goToHostOverrides = () => {
-    const element = typeof document !== "undefined" ? document.getElementById("host-overrides") : null;
-    element?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-  const goToPreviewControls = () => {
-    const element = typeof document !== "undefined" ? document.getElementById("preview-controls") : null;
-    element?.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
-  const nodeStatusSummary = readinessBlockers.length
-    ? delegatedCapabilities.length
-      ? "Delegated"
-      : "Degraded"
-    : stablePublicHostDetected && canonicalCommerceConfiguredDetected
-      ? "Ready"
-      : temporaryEndpointDetected
-        ? "Preview only"
-        : "Needs setup";
-  const nodeStatusTone =
-    nodeStatusSummary === "Ready"
-      ? "#6ee7b7"
-      : nodeStatusSummary === "Delegated"
-        ? "#93c5fd"
-        : nodeStatusSummary === "Preview only"
-          ? "#fbbf24"
-          : "#fda4af";
-  const selectedModeLabel = participationModeMeta(selectedParticipationMode).label;
-  const effectiveModeLabel = participationMode.label;
-  const providerFallbackAvailable = providerConfigured;
-  const executionSummary =
-    delegatedCapabilities.length > 0
-      ? `Delegated: ${delegatedCapabilities.join(", ")}`
-      : "Local execution active for current capabilities.";
-  const delegationSummary =
-    delegatedCapabilities.length > 0 ? delegatedCapabilities.join(", ") : "No delegated capabilities";
-
   return (
     <div style={{ padding: 16, maxWidth: 980 }}>
       <h2 style={{ margin: "8px 0 12px" }}>Config</h2>
       <p style={{ opacity: 0.7, marginBottom: 16 }}>Networking + system settings used across Certifyd Creator.</p>
 
-      {modeLocked ? (
+      {(apiMismatch || overrideMismatch) && (
         <div
           style={{
-            border: "1px solid rgba(251,191,36,0.45)",
-            background: "rgba(251,191,36,0.08)",
+            border: "1px solid rgba(255,180,80,0.5)",
+            background: "rgba(255,180,80,0.08)",
             borderRadius: 12,
-            padding: 14,
+            padding: 12,
             marginBottom: 14
           }}
         >
-          <div style={{ fontWeight: 700, color: "#fde68a", marginBottom: 6 }}>Mode Locked by Environment</div>
-          <div style={{ fontSize: 13, color: "#f5f5f4" }}>
-            Participation mode is locked outside the dashboard. UI mode changes will not apply until the environment lock is removed.
-          </div>
-          <div style={{ fontSize: 12, color: "#fbbf24", marginTop: 8 }}>
-            <b>Lock reason:</b> {modeInfo?.lockReason || "Runtime mode is locked by environment configuration."}
-          </div>
-          <div style={{ fontSize: 12, opacity: 0.85, marginTop: 6 }}>
-            Check and unset `NODE_MODE` / `CONTENTBOX_LAN` on this machine, then restart the API runtime.
-          </div>
-        </div>
-      ) : null}
-
-      {showInfrastructureSummary ? (
-      <>
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ fontWeight: 600 }}>Current Node Status</div>
-          <span
-            style={{
-              fontSize: 11,
-              padding: "3px 8px",
-              borderRadius: 999,
-              border: "1px solid rgba(255,255,255,0.22)",
-              color: nodeStatusTone
-            }}
-          >
-            {nodeStatusSummary}
-          </span>
-        </div>
-        <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8, fontSize: 13 }}>
-          <div><b>Selected Mode</b>: {selectedModeLabel}</div>
-          <div><b>Effective Mode</b>: {effectiveModeLabel}</div>
-          {basicModeActive ? (
-            <>
-              <div><b>Public page</b>: {publicStatus?.publicOrigin || "Start temporary link to publish your page"}</div>
-              <div><b>Tips</b>: {networkSummary?.paymentCapability?.tipsOnly ? "Enabled by default" : "Enabled"}</div>
-            </>
-          ) : (
-            <>
-              <div><b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}</div>
-              <div><b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}</div>
-              <div><b>Buyer recovery host</b>: {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}</div>
-              <div><b>Delegation</b>: {delegationSummary}</div>
-            </>
-          )}
-        </div>
-        {!selectedModeSatisfied ? (
-          <div style={{ marginTop: 10, fontSize: 12, color: "#fbbf24" }}>
-            Selected mode needs setup before it becomes active.
-          </div>
-        ) : null}
-        {readinessBlockers.length > 0 ? (
-          <div style={{ marginTop: 10, fontSize: 12, color: "#fbbf24" }}>
-            <b>Readiness blockers</b>: {readinessBlockers.join(" ")}
-          </div>
-        ) : null}
-      </div>
-
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Quick Actions</div>
-        <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
-          {basicModeActive
-            ? "Basic essentials: publish your public page, share content, and accept tips."
-            : "Most common creator actions without opening advanced sections."}
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          <button onClick={goToModePicker} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-            Participation controls
-          </button>
-          <button onClick={goToHostOverrides} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-            Public commerce host
-          </button>
-          <button onClick={goToPreviewControls} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-            Preview link controls
-          </button>
-          {onOpenPayments ? (
-            <button onClick={onOpenPayments} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-              Payments settings
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <details
-        open={Boolean(showAdvanced)}
-        style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
-      >
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced: Connected Node Services</summary>
-        {!providerCommerceControlsEnabled ? (
-          <div style={{ marginTop: 10, marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
-            Connect a named tunnel first. Provider commerce services unlock only after named tunnel detection.
-          </div>
-        ) : null}
-        <div style={{ opacity: 0.75, fontSize: 13, marginTop: 10, marginBottom: 10 }}>
-          Optional in Sovereign Creator mode. Connect a node for invoicing/settlement/payout services while storefront stays creator-hosted.
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, marginBottom: 12 }}>
-          <label htmlFor="provider-node-id">
-            <div style={{ opacity: 0.75, marginBottom: 4, fontSize: 12 }}>Provider Node ID</div>
-            <input
-              id="provider-node-id"
-              className={inputClass}
-              value={providerConfig?.providerNodeId || ""}
-              disabled={!providerCommerceControlsEnabled}
-              onChange={(e) =>
-                setProviderConfig((prev) => ({
-                  ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                  providerNodeId: e.target.value
-                }))
-              }
-              placeholder="node:..."
-            />
-          </label>
-          <label htmlFor="provider-url">
-            <div style={{ opacity: 0.75, marginBottom: 4, fontSize: 12 }}>Provider URL</div>
-            <input
-              id="provider-url"
-              className={inputClass}
-              value={providerConfig?.providerUrl || ""}
-              disabled={!providerCommerceControlsEnabled}
-              onChange={(e) =>
-                setProviderConfig((prev) => ({
-                  ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                  providerUrl: e.target.value
-                }))
-              }
-              placeholder="https://provider.example.com"
-            />
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-            <input
-              type="checkbox"
-              checked={Boolean(providerConfig?.enabled)}
-              disabled={!providerCommerceControlsEnabled}
-              onChange={(e) =>
-                setProviderConfig((prev) => ({
-                  ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                  enabled: e.target.checked
-                }))
-              }
-            />
-            Provider enabled
-          </label>
-        </div>
-        <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, marginBottom: 10 }}>
-          <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>Delegated capabilities</div>
-          <div style={{ display: "grid", gap: 6, fontSize: 13 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={providerDelegation.durablePublicCommerceHost}
-                disabled={!providerCommerceControlsEnabled}
-                onChange={(e) =>
-                  setProviderConfig((prev) => ({
-                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                    delegatedCapabilities: {
-                      ...(prev?.delegatedCapabilities || {}),
-                      durablePublicCommerceHost: e.target.checked
-                    }
-                  }))
-                }
-              />
-              Durable public commerce host
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={providerDelegation.buyerRecovery}
-                disabled={!providerCommerceControlsEnabled}
-                onChange={(e) =>
-                  setProviderConfig((prev) => ({
-                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                    delegatedCapabilities: {
-                      ...(prev?.delegatedCapabilities || {}),
-                      buyerRecovery: e.target.checked
-                    }
-                  }))
-                }
-              />
-              Buyer recovery
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={providerDelegation.bolt11Invoicing}
-                disabled={!providerCommerceControlsEnabled}
-                onChange={(e) =>
-                  setProviderConfig((prev) => ({
-                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                    delegatedCapabilities: {
-                      ...(prev?.delegatedCapabilities || {}),
-                      bolt11Invoicing: e.target.checked
-                    }
-                  }))
-                }
-              />
-              BOLT11 invoicing
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={providerDelegation.settlement}
-                disabled={!providerCommerceControlsEnabled}
-                onChange={(e) =>
-                  setProviderConfig((prev) => ({
-                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                    delegatedCapabilities: {
-                      ...(prev?.delegatedCapabilities || {}),
-                      settlement: e.target.checked
-                    }
-                  }))
-                }
-              />
-              Settlement
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={providerDelegation.payoutForwarding}
-                disabled={!providerCommerceControlsEnabled}
-                onChange={(e) =>
-                  setProviderConfig((prev) => ({
-                    ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
-                    delegatedCapabilities: {
-                      ...(prev?.delegatedCapabilities || {}),
-                      payoutForwarding: e.target.checked
-                    }
-                  }))
-                }
-              />
-              Payout forwarding
-            </label>
-          </div>
-        </div>
-        <div style={{ fontSize: 12, opacity: 0.78, marginBottom: 8 }}>
-          Unchecked capabilities must run locally and will require local readiness. Checked capabilities borrow provider infrastructure.
-        </div>
-        <button
-          onClick={saveProviderDelegation}
-          disabled={providerBusy || !token || !providerCommerceControlsEnabled}
-          style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-        >
-          {providerBusy ? "Saving..." : "Save provider delegation"}
-        </button>
-        {providerMsg ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: providerMsg.toLowerCase().includes("failed") ? "#fda4af" : "#93c5fd" }}>
-            {providerMsg}
-          </div>
-        ) : null}
-      </details>
-
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Creator Journey</div>
-        <div style={{ opacity: 0.75, fontSize: 13, marginBottom: 12 }}>
-          Grow from getting started to operating your own sovereign commerce node.
-        </div>
-        <div style={{ display: "grid", gap: 8 }}>
-          {[
-            {
-              key: "basic_creator",
-              title: "Basic Creator",
-              subtitle: "Start with tips",
-              capabilities: "Publish, tips, and temporary preview links. No durable paid commerce."
-            },
-            {
-              key: "sovereign_with_provider",
-              title: "Sovereign Creator",
-              subtitle: "Creator-hosted storefront + optional node services",
-              capabilities: "Named tunnel storefront, tipping by default, optional connected-node invoicing and commerce services."
-            },
-            {
-              key: "sovereign_node",
-              title: "Sovereign Node Operator",
-              subtitle: "Run your own node",
-              capabilities: "Operate your own stable domain + Lightning/chain stack and remove provider infrastructure fees."
-            }
-          ].map((stage, index) => {
-            const status =
-              index === selectedStageIndex
-                ? selectedModeSatisfied
-                  ? "current"
-                  : "needs setup"
-                : index === 1 && !sovereignCreatorAvailable
-                  ? "locked"
-                : index === selectedStageIndex + 1
-                  ? "next step"
-                  : index > selectedStageIndex
-                    ? "available"
-                    : "completed";
-            return (
-              <div
-                key={stage.key}
-                style={{
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  borderRadius: 10,
-                  padding: 10,
-                  background: index === selectedStageIndex ? "rgba(255,255,255,0.04)" : "transparent"
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{stage.title}</div>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>{stage.subtitle}</div>
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      padding: "3px 8px",
-                      borderRadius: 999,
-                      border: "1px solid rgba(255,255,255,0.22)",
-                      color:
-                        status === "current"
-                          ? "#6ee7b7"
-                          : status === "needs setup"
-                            ? "#fbbf24"
-                          : status === "locked"
-                            ? "#9ca3af"
-                          : status === "next step"
-                            ? "#fbbf24"
-                            : status === "completed"
-                              ? "#a7f3d0"
-                              : "#d1d5db"
-                    }}
-                  >
-                    {status}
-                  </span>
-                </div>
-                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.8 }}>{stage.capabilities}</div>
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>
-            {selectedStageIndex === 0
-              ? sovereignCreatorAvailable
-                ? "Next step: Enable durable paid commerce with a provider."
-                : "Next step: Configure and detect a named tunnel to unlock Sovereign Creator."
-              : selectedStageIndex === 1
-                ? "Next step: Become a Sovereign Node Operator to remove provider infrastructure fees."
-                : "You are operating as a Sovereign Node Operator."}
-          </div>
-          {selectedStageIndex < 2 ? (
-            <button
-              onClick={selectedStageIndex === 0 && !sovereignCreatorAvailable ? goToPreviewControls : goToModePicker}
-              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-            >
-              {selectedStageIndex === 0 ? (sovereignCreatorAvailable ? "Enable Paid Commerce" : "Configure Named Tunnel") : "Become a Sovereign Node"}
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Infrastructure Readiness</div>
-        <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
-          Runtime status is detected automatically. Configure only participation intent and identity-critical settings.
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8 }}>
-          {nodeReadinessRows.map((row) => (
-            <div key={row.label} style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: 10 }}>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>{row.label}</div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 4 }}>
-                <div style={{ fontSize: 13 }}>{row.value}</div>
-                <span
-                  style={{
-                    fontSize: 11,
-                    padding: "3px 8px",
-                    borderRadius: 999,
-                    border: "1px solid rgba(255,255,255,0.2)",
-                    color: row.ok ? "#6ee7b7" : "#fbbf24"
-                  }}
-                >
-                  {row.ok ? "Ready" : "Needs attention"}
-                </span>
-              </div>
-            </div>
-          ))}
-          <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: 10 }}>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>Provider fallback</div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 4 }}>
-              <div style={{ fontSize: 13 }}>{providerFallbackAvailable ? "Available" : "Not configured"}</div>
-              <span
-                style={{
-                  fontSize: 11,
-                  padding: "3px 8px",
-                  borderRadius: 999,
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  color: providerFallbackAvailable ? "#6ee7b7" : "#fbbf24"
-                }}
-              >
-                {providerFallbackAvailable ? "Ready" : "Needs attention"}
-              </span>
-            </div>
-          </div>
-        </div>
-        {(apiMismatch || overrideMismatch) && (
-          <div style={{ marginTop: 10, border: "1px solid rgba(255,180,80,0.5)", background: "rgba(255,180,80,0.08)", borderRadius: 10, padding: 10 }}>
-            <div style={{ fontWeight: 600, marginBottom: 6, fontSize: 13 }}>Config mismatch detected</div>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>Diagnostics</div>
           {apiMismatch && (
             <div style={{ fontSize: 13, marginBottom: 4 }}>
               This dashboard is pointed at a different machine. UI host: <b>{uiHost || "unknown"}</b> • API host:{" "}
@@ -1351,78 +664,10 @@ export default function ConfigPage({
               </button>
             )}
           </div>
-          </div>
-        )}
-      </div>
-      </>
-      ) : null}
-
-      {showRoutingSummary ? (
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Public Commerce & Routing</div>
-        <div style={{ opacity: 0.72, marginBottom: 10, fontSize: 13 }}>
-          Buyer-facing network truth. This is where purchases, receipts, library recovery, and settlement route.
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 8, fontSize: 13 }}>
-          <div><b>Node identity domain</b>: {normalizedPublicOrigin || health?.publicOrigin || "Not configured"}</div>
-          <div><b>Public commerce host</b>: {stableCommerceConfigured ? canonicalCommerceHost : "Not configured"}</div>
-          <div><b>Effective commerce host</b>: {networkSummary?.capabilityResolution?.effectiveCommerceHost || "Not resolved"}</div>
-          <div><b>Effective buyer recovery host</b>: {networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved"}</div>
-          <div><b>Effective settlement host</b>: {networkSummary?.capabilityResolution?.effectiveSettlementHost || "Not resolved"}</div>
-          <div><b>Execution posture</b>: {executionSummary}</div>
-          <div><b>Temporary preview endpoint</b>: {temporaryPreviewEndpoint ? "Active (preview/testing only)" : "Not active"}</div>
-          <div>
-            <b>Provider fee posture</b>:{" "}
-            {typeof networkSummary?.providerServices?.totalProviderFeePercent === "number"
-              ? `${networkSummary.providerServices.totalProviderFeePercent}%`
-              : "Not resolved"}
-          </div>
-        </div>
-      </div>
-      ) : null}
+      )}
 
-      <details
-        open={Boolean(showAdvanced)}
-        style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
-      >
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced</summary>
-        <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontWeight: 600, marginBottom: 6 }}>Config health</div>
-            <div style={{ opacity: 0.75, fontSize: 13 }}>{configHealthDescription}</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span
-              style={{
-                fontSize: 12,
-                padding: "4px 10px",
-                borderRadius: 999,
-                border: "1px solid rgba(255,255,255,0.2)",
-                background:
-                  configHealthStatus === "consistent"
-                    ? "rgba(16,185,129,0.14)"
-                    : configHealthStatus === "mixed"
-                      ? "rgba(251,191,36,0.14)"
-                      : "rgba(248,113,113,0.14)",
-                color: configHealthStatus === "consistent" ? "#6ee7b7" : configHealthStatus === "mixed" ? "#fde68a" : "#fda4af"
-              }}
-            >
-              {configHealthTitle}
-            </span>
-            <button onClick={normalizeConfig} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-              Normalize config
-            </button>
-          </div>
-        </div>
-        {configMsg ? (
-          <div style={{ marginTop: 10, fontSize: 12, color: configMsg.toLowerCase().includes("invalid") ? "#fda4af" : "#fbbf24" }}>
-            {configMsg}
-          </div>
-        ) : null}
-      </details>
-
-      <details id="node-mode" style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Participation Controls</summary>
+      <div id="node-mode" style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 4, flexWrap: "wrap" }}>
           <div style={{ fontWeight: 600 }}>Network Participation Mode</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1448,22 +693,6 @@ export default function ConfigPage({
           This controls node infrastructure capabilities. Creator identity and content remain unchanged.
         </div>
         <div style={{ marginBottom: 10, fontSize: 12, opacity: 0.7 }}>{participationMode.description}</div>
-        {selectedParticipationMode !== resolvedParticipationMode ? (
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
-            Selected posture: <b>{participationModeMeta(selectedParticipationMode).label}</b> • Effective runtime:{" "}
-            <b>{participationMode.label}</b>
-          </div>
-        ) : null}
-        {readinessBlockers.length > 0 ? (
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
-            Readiness blockers: {readinessBlockers.join(" ")}
-          </div>
-        ) : null}
-        {delegatedCapabilities.length > 0 ? (
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#93c5fd" }}>
-            Delegated capabilities: {delegatedCapabilities.join(", ")}
-          </div>
-        ) : null}
         {modeLocked ? (
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             {modeInfo?.lockReason || "Mode is locked by server environment settings."}
@@ -1475,13 +704,13 @@ export default function ConfigPage({
               id="cfg-node-mode-basic"
               type="radio"
               name="cfg-node-mode"
-              checked={selectedParticipationMode === "basic_creator"}
+              checked={modeInfo?.nodeMode === "basic"}
               disabled={!modeInfo || modeBusy || modeLocked}
               onChange={() => updateNodeMode("basic")}
             />
             <span>
               <div>Basic Creator</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Publish, tips, and preview links only. Upgrade to enable durable paid commerce.</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator identity with provider-backed infrastructure.</div>
             </span>
           </label>
           <label htmlFor="cfg-node-mode-advanced" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
@@ -1489,18 +718,13 @@ export default function ConfigPage({
               id="cfg-node-mode-advanced"
               type="radio"
               name="cfg-node-mode"
-              checked={selectedParticipationMode === "sovereign_with_provider"}
-              disabled={!modeInfo || modeBusy || modeLocked || !sovereignCreatorAvailable}
+              checked={modeInfo?.nodeMode === "advanced"}
+              disabled={!modeInfo || modeBusy || modeLocked}
               onChange={() => updateNodeMode("advanced")}
             />
             <span>
               <div>Sovereign Creator (with Provider)</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator-hosted storefront on named tunnel. Optional connected node adds invoicing and commerce services.</div>
-              {!sovereignCreatorAvailable ? (
-                <div style={{ marginTop: 4, fontSize: 12, color: "#fbbf24" }}>
-                  Locked until named tunnel is detected.
-                </div>
-              ) : null}
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs a sovereign node but uses a provider for payment infrastructure.</div>
             </span>
           </label>
           <label htmlFor="cfg-node-mode-lan" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
@@ -1508,18 +732,13 @@ export default function ConfigPage({
               id="cfg-node-mode-lan"
               type="radio"
               name="cfg-node-mode"
-              checked={selectedParticipationMode === "sovereign_node"}
-              disabled={!modeInfo || modeBusy || modeLocked || !canSelectSovereignNode}
+              checked={modeInfo?.nodeMode === "lan"}
+              disabled={!modeInfo || modeBusy || modeLocked}
               onChange={() => updateNodeMode("lan")}
             />
             <span>
-              <div>Sovereign Node Operator</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Run your own stable infrastructure to eliminate provider dependency and fees.</div>
-              {!canSelectSovereignNode ? (
-                <div style={{ marginTop: 4, fontSize: 12, color: "#fbbf24" }}>
-                  Locked until ready: {sovereignNodeMissing.join(", ")}.
-                </div>
-              ) : null}
+              <div>Sovereign Creator Node</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs full local infrastructure and can provide services to other creators.</div>
             </span>
           </label>
         </div>
@@ -1538,24 +757,17 @@ export default function ConfigPage({
             {modeMsg}
           </div>
         ) : null}
-      </details>
+      </div>
 
-      <details style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Local App & Runtime</summary>
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
         <div style={{ opacity: 0.7, marginBottom: 8 }}>
-          Local API Base: <b>{apiBase}</b>
+          Current API base: <b>{apiBase}</b>
         </div>
-        <div><b>Build</b>: {buildInfo}</div>
-        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
-        {overrideMismatch ? (
-          <div style={{ margin: "8px 0", fontSize: 12, color: "#fbbf24" }}>
-            API override points to another machine. Clear override to keep this node local.
-          </div>
-        ) : null}
         {showAdvanced ? (
           <>
             <label htmlFor="api-base-override">
-              <div style={{ opacity: 0.7, marginBottom: 4, marginTop: 8 }}>App Base Override (advanced)</div>
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
               <input
                 id="api-base-override"
                 name="apiBaseOverride"
@@ -1566,179 +778,125 @@ export default function ConfigPage({
                 autoComplete="url"
               />
             </label>
-            <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-              <button onClick={saveApiBaseOverride} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-                Save & reload
-              </button>
-              <button onClick={clearApiBaseOverride} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-                Clear override
-              </button>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button
-                onClick={() => { clearToken(); window.location.reload(); }}
+                onClick={saveApiBaseOverride}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
-                Clear token & reload
+                Save & reload
+              </button>
+              <button
+                onClick={clearApiBaseOverride}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Clear override
               </button>
             </div>
             <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
-              This is the local creator control endpoint. It is not the buyer-facing public commerce host.
+              If you see tunnels from another machine, your API base is pointing there.
             </div>
           </>
-        ) : null}
-      </details>
-
-      <details
-        id="host-overrides"
-        open={Boolean(showAdvanced && showNodeIdentityByDefault)}
-        style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
-      >
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Host Overrides</summary>
-        {resolvedParticipationMode === "basic_creator" ? (
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
-            Basic Creator mode keeps node infrastructure simple. Expand when you are ready to configure a stable node domain.
-          </div>
-        ) : null}
-        <div style={{ opacity: 0.7, marginBottom: 6 }}>
-          Configure how this node is identified and reached on the network.
-        </div>
-        <div style={{ opacity: 0.7, marginBottom: 12, fontSize: 12 }}>
-          Your node domain represents public node identity when running as a Sovereign Creator Node.
-        </div>
-        {!showAdvanced ? (
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#93c5fd" }}>
-            Hidden by default. Enable Advanced mode to edit host overrides.
-          </div>
-        ) : null}
-        {!commerceHostControlsEnabled ? (
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
-            Host and commerce overrides unlock after a named tunnel is detected.
-          </div>
-        ) : null}
-        {!showAdvanced ? null : (
-          <>
-        {(partialPrimaryHosts || fallbackWithoutPrimary || fallbackDuplicatesPrimary || invalidOrigins.length > 0) && (
-          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
-            {invalidOrigins.length > 0
-              ? `Invalid origins: ${invalidOrigins.map((entry) => entry.label).join(", ")}.`
-              : partialPrimaryHosts
-                ? "Primary node/commerce hosts are partially configured. Set all primary hosts or clear unused ones."
-                : fallbackWithoutPrimary
-                  ? "A fallback host is set without a matching primary host."
-                  : "Fallback host duplicates primary host and can be cleared."}
+        ) : (
+          <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+            Advanced mode required to override API base.
           </div>
         )}
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
+        <div style={{ opacity: 0.7, marginBottom: 12 }}>
+          Public hosts used for buy + studio + creator-profile routing.
+        </div>
 
         <div style={{ display: "grid", gap: 8 }}>
           <label htmlFor="public-buy-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Commerce Host (public)</div>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host (public)</div>
             <input
               id="public-buy-origin"
               name="publicBuyOrigin"
               value={publicBuyOrigin}
-              disabled={!commerceHostControlsEnabled}
               onChange={(e) => setPublicBuyOrigin(e.target.value)}
-              placeholder="https://commerce.yourdomain.com"
+              placeholder="https://buy.yourdomain.com"
               className={inputClass}
               autoComplete="url"
             />
           </label>
           <label htmlFor="public-studio-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Creator App Host (optional)</div>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host (public)</div>
             <input
               id="public-studio-origin"
               name="publicStudioOrigin"
               value={publicStudioOrigin}
-              disabled={!commerceHostControlsEnabled}
               onChange={(e) => setPublicStudioOrigin(e.target.value)}
-              placeholder="https://app.yourdomain.com"
+              placeholder="https://studio.yourdomain.com"
               className={inputClass}
               autoComplete="url"
             />
           </label>
           <label htmlFor="public-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Node Domain (public identity)</div>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator host (public)</div>
             <input
               id="public-origin"
               name="publicOrigin"
               value={publicOrigin}
-              disabled={!commerceHostControlsEnabled}
               onChange={(e) => setPublicOrigin(e.target.value)}
-              placeholder="https://node.yourdomain.com"
+              placeholder="https://creator.yourdomain.com"
               className={inputClass}
               autoComplete="url"
             />
           </label>
         </div>
 
-        <details style={{ marginTop: 12 }}>
-          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced fallback hosts (optional)</summary>
-          <div style={{ opacity: 0.65, marginTop: 6, fontSize: 12 }}>
-            Fallback routing values are kept for compatibility. They are not the primary node identity settings.
-          </div>
-          <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-            <label htmlFor="public-buy-origin-fallback">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>Commerce fallback</div>
-              <input
-                id="public-buy-origin-fallback"
-                name="publicBuyOriginFallback"
-                value={publicBuyOriginFallback}
-                disabled={!commerceHostControlsEnabled}
-                onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
-                placeholder="https://commerce.fallback.com"
-                className={inputClass}
-                autoComplete="url"
-              />
-            </label>
-            <label htmlFor="public-studio-origin-fallback">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>Creator app fallback</div>
-              <input
-                id="public-studio-origin-fallback"
-                name="publicStudioOriginFallback"
-                value={publicStudioOriginFallback}
-                disabled={!commerceHostControlsEnabled}
-                onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
-                placeholder="https://app.fallback.com"
-                className={inputClass}
-                autoComplete="url"
-              />
-            </label>
-            <label htmlFor="public-origin-fallback">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>Node fallback</div>
-              <input
-                id="public-origin-fallback"
-                name="publicOriginFallback"
-                value={publicOriginFallback}
-                disabled={!commerceHostControlsEnabled}
-                onChange={(e) => setPublicOriginFallback(e.target.value)}
-                placeholder="https://node.fallback.com"
-                className={inputClass}
-                autoComplete="url"
-              />
-            </label>
-          </div>
-        </details>
-
-        <div style={{ marginTop: 12, padding: 10, borderRadius: 10, border: "1px solid rgba(255,255,255,0.08)", opacity: 0.85 }}>
-          <div style={{ fontWeight: 600, marginBottom: 4 }}>Public Commerce</div>
-          <div style={{ fontSize: 12 }}>
-            Configure the stable public host used for buyer purchases, receipts, library, and replay.
-          </div>
-          <div style={{ fontSize: 12, marginTop: 4 }}>
-            Temporary links are for preview/testing only and are not used for durable paid commerce.
-          </div>
+        <div style={{ marginTop: 12, fontWeight: 600 }}>Fallback hosts (optional)</div>
+        <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+          <label htmlFor="public-buy-origin-fallback">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy fallback</div>
+            <input
+              id="public-buy-origin-fallback"
+              name="publicBuyOriginFallback"
+              value={publicBuyOriginFallback}
+              onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
+              placeholder="https://buy.fallback.com"
+              className={inputClass}
+              autoComplete="url"
+            />
+          </label>
+          <label htmlFor="public-studio-origin-fallback">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio fallback</div>
+            <input
+              id="public-studio-origin-fallback"
+              name="publicStudioOriginFallback"
+              value={publicStudioOriginFallback}
+              onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
+              placeholder="https://studio.fallback.com"
+              className={inputClass}
+              autoComplete="url"
+            />
+          </label>
+          <label htmlFor="public-origin-fallback">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator fallback</div>
+            <input
+              id="public-origin-fallback"
+              name="publicOriginFallback"
+              value={publicOriginFallback}
+              onChange={(e) => setPublicOriginFallback(e.target.value)}
+              placeholder="https://creator.fallback.com"
+              className={inputClass}
+              autoComplete="url"
+            />
+          </label>
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <button
             onClick={saveNetworking}
-            disabled={!commerceHostControlsEnabled}
             style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
           >
             Save networking
           </button>
           <button
             onClick={clearNetworking}
-            disabled={!commerceHostControlsEnabled}
             style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
           >
             Clear overrides
@@ -1746,18 +904,12 @@ export default function ConfigPage({
         </div>
 
         <div style={{ marginTop: 12, opacity: 0.7 }}>
-          Buyer recovery health path: <b>{DEFAULT_HEALTH_PATH}</b>
+          Health path used: <b>{DEFAULT_HEALTH_PATH}</b>
         </div>
-          </>
-        )}
-      </details>
+      </div>
 
-      <details
-        id="preview-controls"
-        open={showPreviewByDefault}
-        style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
-      >
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Temporary Preview Link</summary>
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
             <button
@@ -1768,9 +920,9 @@ export default function ConfigPage({
               Start temporary link
             </button>
             {quickDisabled ? (
-            <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-              Preview only. Advanced prefers stable named infrastructure when configured.
-            </div>
+              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
+                Temporary (testing only — admin access only). Advanced prefers named when configured.
+              </div>
             ) : null}
             {productTier === "advanced" && publicStatus?.mode === "quick" && publicStatus?.publicOrigin ? (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -1830,10 +982,7 @@ export default function ConfigPage({
           </div>
         ) : null}
         <div style={{ opacity: 0.7, marginBottom: 10 }}>
-          Preview/testing reachability controls.
-        </div>
-        <div style={{ opacity: 0.7, marginBottom: 10, fontSize: 12 }}>
-          Temporary preview links are not valid durable commerce infrastructure and are not used for buyer recovery.
+          Advanced routing for public links.
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="tunnel-settings-enabled">
           <input
@@ -1866,7 +1015,7 @@ export default function ConfigPage({
               }
             }}
           />
-          <span>Enable advanced preview routing settings</span>
+          <span>Enable advanced routing settings</span>
         </label>
         {!tunnelEnabled && publicStatus?.mode === "named" && publicStatus?.status !== "offline" ? (
           <div style={{ marginTop: 8, fontSize: 12, color: "#ffb4b4" }}>
@@ -1875,161 +1024,170 @@ export default function ConfigPage({
         ) : null}
         {!tunnelEnabled && (
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-            Advanced preview routing is off — Quick tunnel will be used for preview/testing only.
+            Advanced routing is off — Quick tunnel will be used (no DDNS/custom domain).
           </div>
         )}
 
-        <details style={{ marginTop: 12, border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
-          <summary style={{ cursor: "pointer", fontWeight: 600 }}>Tunnel Config</summary>
-          {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
+        {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
 
-          {token && (
-            <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-              {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
-              {publicStatus?.mode && publicStatus.mode !== "named" ? (
-                <div style={{ fontSize: 12, opacity: 0.75 }}>
-                  Named tunnel settings apply only when PUBLIC_MODE=named.
-                </div>
-              ) : null}
-              <label htmlFor="tunnel-provider">
-                <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
-                <input
-                  id="tunnel-provider"
-                  name="tunnelProvider"
-                  value={tunnelProvider}
-                  onChange={(e) => setTunnelProvider(e.target.value)}
-                  placeholder="cloudflare"
-                  className={inputClass}
-                  disabled={!tunnelEnabled}
-                  autoComplete="off"
-                />
-              </label>
-              <label htmlFor="tunnel-domain">
-                <div style={{ opacity: 0.7, marginBottom: 4 }}>Node domain (base)</div>
-                <input
-                  id="tunnel-domain"
-                  name="tunnelDomain"
-                  value={tunnelDomain}
-                  onChange={(e) => setTunnelDomain(e.target.value)}
-                  placeholder="contentbox.link"
-                  className={inputClass}
-                  disabled={!tunnelEnabled}
-                  autoComplete="off"
-                />
-              <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
-                  Base domain for stable node identity and buyer-facing commerce links.
-                </div>
-              </label>
-              <label htmlFor="tunnel-name">
-                <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
-                <input
-                  id="tunnel-name"
-                  name="tunnelName"
-                  value={tunnelName}
-                  onChange={(e) => setTunnelName(e.target.value)}
-                  placeholder="contentbox"
-                  className={inputClass}
-                  disabled={!tunnelEnabled}
-                  autoComplete="off"
-                />
-              </label>
-              {tunnelEnabled ? (
-                <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
-                  <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
-                    Paste the Cloudflare connector token once. Certifyd Creator will reuse it to start the tunnel.
-                  </div>
-                  <input
-                    id="tunnel-connector-token"
-                    name="tunnelConnectorToken"
-                    value={namedTokenInput}
-                    onChange={(e) => setNamedTokenInput(e.target.value)}
-                    placeholder="Cloudflare connector token"
-                    className={inputClass}
-                    disabled={!tunnelEnabled}
-                    autoComplete="off"
-                  />
-                  <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-                    <button
-                      onClick={generateNamedToken}
-                      disabled={namedTokenBusy || !tunnelEnabled}
-                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                    >
-                      Generate token
-                    </button>
-                    <button
-                      onClick={() => saveNamedToken(false)}
-                      disabled={namedTokenBusy || !tunnelEnabled}
-                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                    >
-                      Save token
-                    </button>
-                    <button
-                      onClick={() => saveNamedToken(true)}
-                      disabled={namedTokenBusy || !tunnelEnabled}
-                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                    >
-                      Save & start tunnel
-                    </button>
-                    {publicStatus?.namedTokenStored ? (
-                      <button
-                        onClick={clearNamedToken}
-                        disabled={namedTokenBusy || !tunnelEnabled}
-                        style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                      >
-                        Clear saved token
-                      </button>
-                    ) : null}
-                  </div>
-                  {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
-                </div>
-              ) : null}
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={saveTunnelConfig}
-                  disabled={tunnelLoading || !tunnelEnabled}
-                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Save tunnel config
-                </button>
-                <button
-                  onClick={discoverTunnels}
-                  disabled={tunnelLoading || !tunnelEnabled}
-                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-                >
-                  Discover tunnels
-                </button>
+        {token && (
+          <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+            {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
+            {publicStatus?.mode && publicStatus.mode !== "named" ? (
+              <div style={{ fontSize: 12, opacity: 0.75 }}>
+                Named tunnel settings apply only when PUBLIC_MODE=named.
               </div>
-              {tunnelList.length > 0 && (
-                <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
-                  <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                    {tunnelList.map((t, i) => {
-                      const label = t?.name || t?.id || String(i + 1);
-                      return (
-                        <button
-                          key={`${t?.id || t?.name || i}`}
-                          type="button"
-                          onClick={() => setTunnelName(String(label))}
-                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
-                  </div>
+            ) : null}
+            <label htmlFor="tunnel-provider">
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
+              <input
+                id="tunnel-provider"
+                name="tunnelProvider"
+                value={tunnelProvider}
+                onChange={(e) => setTunnelProvider(e.target.value)}
+                placeholder="cloudflare"
+                className={inputClass}
+                disabled={!tunnelEnabled}
+                autoComplete="off"
+              />
+            </label>
+            <label htmlFor="tunnel-domain">
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>Public domain (base)</div>
+              <input
+                id="tunnel-domain"
+                name="tunnelDomain"
+                value={tunnelDomain}
+                onChange={(e) => setTunnelDomain(e.target.value)}
+                placeholder="contentbox.link"
+                className={inputClass}
+                disabled={!tunnelEnabled}
+                autoComplete="off"
+              />
+              <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
+                Base domain for public links (e.g. <b>contentbox.link</b>). The tunnel list does not include domains.
+              </div>
+            </label>
+            <label htmlFor="tunnel-name">
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
+              <input
+                id="tunnel-name"
+                name="tunnelName"
+                value={tunnelName}
+                onChange={(e) => setTunnelName(e.target.value)}
+                placeholder="contentbox"
+                className={inputClass}
+                disabled={!tunnelEnabled}
+                autoComplete="off"
+              />
+            </label>
+            {tunnelEnabled ? (
+              <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
+                <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
+                  Paste the Cloudflare connector token once. Certifyd Creator will reuse it to start the tunnel.
                 </div>
-              )}
+                <input
+                  id="tunnel-connector-token"
+                  name="tunnelConnectorToken"
+                  value={namedTokenInput}
+                  onChange={(e) => setNamedTokenInput(e.target.value)}
+                  placeholder="Cloudflare connector token"
+                  className={inputClass}
+                  disabled={!tunnelEnabled}
+                  autoComplete="off"
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={generateNamedToken}
+                    disabled={namedTokenBusy || !tunnelEnabled}
+                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                  >
+                    Generate token
+                  </button>
+                  <button
+                    onClick={() => saveNamedToken(false)}
+                    disabled={namedTokenBusy || !tunnelEnabled}
+                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                  >
+                    Save token
+                  </button>
+                  <button
+                    onClick={() => saveNamedToken(true)}
+                    disabled={namedTokenBusy || !tunnelEnabled}
+                    style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                  >
+                    Save & start tunnel
+                  </button>
+                  {publicStatus?.namedTokenStored ? (
+                    <button
+                      onClick={clearNamedToken}
+                      disabled={namedTokenBusy || !tunnelEnabled}
+                      style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                    >
+                      Clear saved token
+                    </button>
+                  ) : null}
+                </div>
+                {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
+              </div>
+            ) : null}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={saveTunnelConfig}
+                disabled={tunnelLoading || !tunnelEnabled}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Save tunnel config
+              </button>
+              <button
+                onClick={discoverTunnels}
+                disabled={tunnelLoading || !tunnelEnabled}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Discover tunnels
+              </button>
             </div>
-          )}
-        </details>
-      </details>
+            {tunnelList.length > 0 && (
+              <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {tunnelList.map((t, i) => {
+                    const label = t?.name || t?.id || String(i + 1);
+                    return (
+                      <button
+                        key={`${t?.id || t?.name || i}`}
+                        type="button"
+                        onClick={() => setTunnelName(String(label))}
+                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
-      <details
-        open={showReachabilityByDefault}
-        style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
-      >
-        <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Advanced: Raw Diagnostics</summary>
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
+        <div><b>API base</b>: {apiBase}</div>
+        <div><b>Build</b>: {buildInfo}</div>
+        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => { clearToken(); window.location.reload(); }}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Clear token & reload
+          </button>
+        </div>
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel status</div>
         {err && <div style={{ color: "#ff8080" }}>Error: {err}</div>}
         {!err && !health && <div>Checking…</div>}
         {health && (
@@ -2060,25 +1218,25 @@ export default function ConfigPage({
                 </span>
                 <span className="text-[11px] rounded-full border border-neutral-800 bg-neutral-950 px-2 py-0.5 text-neutral-400">
                   {publicStatus?.mode === "named"
-                    ? `Stable node route (${(publicStatus as any)?.tunnelName || "Named"})`
+                    ? `Permanent (${(publicStatus as any)?.tunnelName || "Named"})`
                     : publicStatus?.mode === "quick"
                       ? productTier === "advanced"
-                        ? "Temporary preview (testing only)"
-                        : "Temporary preview"
+                        ? "Temporary (testing only — admin access only)"
+                        : "Temporary (Quick)"
                       : "Local"}
                 </span>
               </div>
             ) : null}
             {publicStatus ? (
               <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
-                Controls for temporary preview links are in <b>Temporary Preview Link</b>.
+                Controls for Quick link and sharing are in <b>Tunnel &amp; routing</b>.
               </div>
             ) : null}
             {publicMsg ? <div style={{ color: "#ffb4b4" }}>{publicMsg}</div> : null}
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>
-            <div><b>Commerce host</b>: {health.publicBuyOrigin || "—"}</div>
-            <div><b>Creator app host</b>: {health.publicStudioOrigin || "—"}</div>
-            <div><b>Node domain</b>: {health.publicOrigin || "—"}</div>
+            <div><b>Buy origin</b>: {health.publicBuyOrigin || "—"}</div>
+            <div><b>Studio origin</b>: {health.publicStudioOrigin || "—"}</div>
+            <div><b>Certifyd Creator origin</b>: {health.publicOrigin || "—"}</div>
             <div><b>Last seen</b>: {health.ts || "—"}</div>
             <div>
               <b>PUBLIC_ORIGIN detected</b>: {publicOriginWarn ? "⚠️" : "✅"}{" "}
@@ -2093,7 +1251,7 @@ export default function ConfigPage({
             ) : null}
             {publicStatus ? (
               <>
-                <div><b>Public node origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
+                <div><b>Public origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
                 <div><b>Last error</b>: {publicStatus?.lastError || "—"}</div>
                 <div><b>cloudflared</b>: {publicStatus?.cloudflared?.available ? "yes" : "no"}</div>
                 <div><b>cloudflared path</b>: {publicStatus?.cloudflared?.managedPath || "—"}</div>
@@ -2155,8 +1313,27 @@ export default function ConfigPage({
             ) : null}
           </div>
         )}
-      </details>
+      </div>
 
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Payments</div>
+        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 10 }}>
+          Set your Lightning address or LNURL to receive payments in Basic mode.
+        </div>
+        <button
+          onClick={() => onOpenPayments?.()}
+          style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+        >
+          Open payments settings
+        </button>
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Publishing</div>
+        <div style={{ opacity: 0.75 }}>
+          Use “Publish to Website” on a content item to generate embed snippets and a public buy link. No secrets are stored here.
+        </div>
+      </div>
     </div>
   );
 }

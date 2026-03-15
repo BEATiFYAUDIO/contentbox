@@ -2,7 +2,6 @@ import React from "react";
 import { api, getApiBase } from "../lib/api";
 import { fetchIdentityDetail } from "../lib/identity";
 import { networkUserTypeLabel, participationModeMeta, resolveNetworkUserType, resolveParticipationMode } from "../lib/networkUserType";
-import UpgradeToCommercePrompt from "../components/UpgradeToCommercePrompt";
 
 type NetworkSummary = {
   nodeMode: "basic" | "advanced" | "lan";
@@ -15,10 +14,6 @@ type NetworkSummary = {
     localInvoiceMinting: boolean;
     delegatedInvoiceSupport: boolean;
     tipsOnly: boolean;
-    paidCommerceAllowed?: boolean;
-    paidCommerceReason?: string | null;
-    endpointStability?: "temporary" | "stable" | "unknown";
-    canonicalCommerceConfigured?: boolean;
     providerInvoicingAvailable?: boolean;
     creatorPayoutDestinationConfigured?: boolean;
     creatorPayoutRail?: "provider_custody" | "forwarded" | "creator_node" | null;
@@ -27,19 +22,10 @@ type NetworkSummary = {
   };
   modeProfile?: {
     participationMode?: "basic_creator" | "sovereign_creator_with_provider" | "sovereign_node";
-    selectedParticipationMode?: "basic_creator" | "sovereign_creator" | "sovereign_node_operator";
-    effectiveParticipationMode?:
-      | "basic_creator"
-      | "sovereign_creator_with_provider"
-      | "sovereign_node_operator"
-      | "sovereign_creator_unready";
     hasStablePublicRoute?: boolean;
     hasLocalInvoiceMinting?: boolean;
     providerConfigured?: boolean;
     providerTrusted?: boolean;
-  };
-  capabilityResolution?: {
-    readinessBlockers?: string[];
   };
   payoutDestination?: {
     payoutDestinationType?: "lightning_address" | "local_lnd" | "onchain_address" | null;
@@ -76,25 +62,6 @@ type NetworkSummary = {
     temporaryNodeEndpointUrl?: string | null;
     canonicalCommerceUrl?: string | null;
     canonicalCommerceKind?: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
-    routing?: {
-      canonicalCommerceOrigin: string | null;
-      canonicalCommerceKind: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
-      deliveryMode: string | null;
-      preferredPlaybackOrigin: string | null;
-      fallbackPlaybackOrigin: string;
-      stability: "durable" | "temporary" | "unavailable";
-      replayMode: "edge_ticket" | "creator_origin" | "buy_page";
-      creatorOriginKind: "stable" | "temporary" | "unavailable";
-      selectedOriginType: "provider_durable_edge" | "creator_origin" | "canonical_fallback";
-      providerDurablePlaybackAvailable: boolean;
-      creatorPlaybackAvailable: boolean;
-      selectedUrl: string | null;
-      reason:
-        | "provider_durable_edge_available"
-        | "creator_origin_stable"
-        | "provider_edge_unavailable"
-        | "creator_origin_unavailable";
-    };
     tunnel: boolean;
     ipfs: boolean;
   };
@@ -1351,49 +1318,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     publicEndpoint;
   const summaryTemporaryNodeEndpoint = networkSummary?.reachability?.temporaryNodeEndpointUrl || null;
   const summaryCanonicalCommerceKind = networkSummary?.reachability?.canonicalCommerceKind || "unavailable";
-  const routing = networkSummary?.reachability?.routing || null;
-  const summaryPublicHostingService =
-    summaryCanonicalCommerceKind === "provider_hosted"
-      ? "Provider-backed"
-      : summaryCanonicalCommerceKind === "self_hosted_stable"
-        ? "Self-hosted"
-        : "Unavailable";
-  const summaryCurrentNodeEndpointLabel =
-    summaryLocalNodeEndpoint && summaryLocalNodeEndpoint !== "Unavailable" ? summaryLocalNodeEndpoint : "Unavailable";
-  const summaryStableShareUrl =
-    summaryCanonicalCommerceUrl && /^https?:\/\//i.test(summaryCanonicalCommerceUrl) ? summaryCanonicalCommerceUrl : "Unavailable";
-  const routingReplayModeLabel =
-    routing?.replayMode === "edge_ticket"
-      ? "Provider durable edge ticket"
-      : routing?.replayMode === "creator_origin"
-        ? "Creator origin direct"
-        : routing?.replayMode === "buy_page"
-          ? "Canonical buy/recovery fallback"
-          : "Unknown";
-  const routingSelectedOriginTypeLabel =
-    routing?.selectedOriginType === "provider_durable_edge"
-      ? "Provider durable edge/object path"
-      : routing?.selectedOriginType === "creator_origin"
-        ? "Creator origin"
-        : routing?.selectedOriginType === "canonical_fallback"
-          ? "Canonical fallback surface"
-          : "Unknown";
-  const routingPreferredPlaybackPath =
-    routing?.preferredPlaybackOrigin ||
-    (routing?.selectedUrl && /^https?:\/\//i.test(routing.selectedUrl) ? routing.selectedUrl : "Unavailable");
-  const routingFallbackPlaybackPath = routing?.fallbackPlaybackOrigin || summaryStableShareUrl;
-  const routingOriginStabilityLabel =
-    routing?.stability === "durable"
-      ? "Durable"
-      : routing?.stability === "temporary"
-        ? "Temporary"
-        : "Unavailable";
-  const routingCreatorOriginLabel =
-    routing?.creatorOriginKind === "stable"
-      ? "Stable"
-      : routing?.creatorOriginKind === "temporary"
-        ? "Temporary"
-        : "Unavailable";
   const summaryTunnel = networkSummary ? networkSummary.reachability.tunnel : fallbackTunnel;
   const summaryIpfsEnabled = networkSummary ? networkSummary.reachability.ipfs : false;
   const summaryReachabilityMode = networkSummary
@@ -1401,8 +1325,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       ? "Public route available"
       : "No active public route"
     : reachabilityMode;
-  const summaryPaidCommerceAllowed = networkSummary?.paymentCapability?.paidCommerceAllowed ?? true;
-  const summaryPaidCommerceReason = networkSummary?.paymentCapability?.paidCommerceReason || null;
   const summaryNetworkService = networkSummary
     ? networkSummary.serviceRoles.hybrid || networkSummary.serviceRoles.invoiceProvider
       ? "This node can provide invoice infrastructure. Creator identity, sale history, and entitlements remain creator-owned."
@@ -1657,16 +1579,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       : participationMeta.label === "Sovereign Creator Node"
         ? "Sovereign Node"
         : "Basic";
-  const selectedModeForPrompt =
-    networkSummary?.modeProfile?.selectedParticipationMode === "basic_creator"
-      ? "basic_creator"
-      : networkSummary?.modeProfile?.selectedParticipationMode === "sovereign_node_operator"
-        ? "sovereign_node"
-        : "sovereign_creator_with_provider";
-  const effectiveModeForPrompt =
-    networkSummary?.modeProfile?.effectiveParticipationMode ||
-    (selectedModeForPrompt === "basic_creator" ? "basic_creator" : "sovereign_creator_with_provider");
-  const readinessBlockersForPrompt = networkSummary?.capabilityResolution?.readinessBlockers || [];
   const guardPillClass =
     commerceGuardLevel === "ready"
       ? "border-emerald-800/70 bg-emerald-900/20 text-emerald-300"
@@ -1750,24 +1662,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 In Sovereign Creator (with Provider), these are optional capability upgrades. Self-providing both moves this node to full Sovereign Node posture.
               </div>
             </div>
-            <div className="mt-3">
-              <UpgradeToCommercePrompt
-                selectedMode={selectedModeForPrompt}
-                effectiveMode={effectiveModeForPrompt}
-                readinessBlockers={readinessBlockersForPrompt}
-                attemptedCapability="invoice_minting"
-                providerFeePercent={networkSummary?.providerServices?.totalProviderFeePercent}
-                onRunOwnNode={() => {
-                  window.location.href = "/config#node-mode";
-                }}
-                onEnablePaidCommerce={async () => {
-                  try {
-                    await api("/api/node/mode", "POST", { nodeMode: "advanced" });
-                    window.location.href = "/config#node-mode";
-                  } catch {}
-                }}
-              />
-            </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
@@ -1786,102 +1680,21 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Reachability</div>
             <div className="mt-1 text-sm text-neutral-200">{summaryReachabilityMode}</div>
             <div className="text-xs text-neutral-400 mt-1">
-              Current node endpoint:
-              <span className="text-neutral-300 break-all"> {summaryCurrentNodeEndpointLabel}</span>
-            </div>
-            <div className="text-xs text-neutral-400 mt-1">
-              Public commerce host:
-              <span className="text-neutral-300"> {summaryPublicHostingService}</span>
-            </div>
-            <div className="text-xs text-neutral-400 mt-1">
-              Canonical commerce URL:
-              <span className="text-neutral-300 break-all"> {summaryStableShareUrl}</span>
-            </div>
-            <div className="text-xs text-neutral-400 mt-1">
-              Stable share URL:
-              <span className="text-neutral-300 break-all"> {summaryStableShareUrl}</span>
+              Canonical public commerce URL:
+              <span className="text-neutral-300 break-all"> {summaryCanonicalCommerceUrl || "—"}</span>
             </div>
             <div className="text-xs text-neutral-500 mt-1">
               Canonical route: <span className="text-neutral-300">{summaryCanonicalCommerceKind.replace(/_/g, " ")}</span>
+            </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Local node endpoint: <span className="text-neutral-300 break-all">{summaryLocalNodeEndpoint || "—"}</span>
             </div>
             {summaryTemporaryNodeEndpoint ? (
               <div className="text-xs text-amber-300 mt-1 break-all">
                 Temporary node endpoint: {summaryTemporaryNodeEndpoint}
               </div>
             ) : null}
-            <div className="text-xs text-neutral-500 mt-1">
-              Current node endpoint may be temporary; buyers should use the stable share URL.
-            </div>
-            {!summaryPaidCommerceAllowed ? (
-              <div className="text-xs text-amber-300 mt-1">
-                Temporary endpoint detected. Preview only. Configure a stable public host to enable paid commerce.
-              </div>
-            ) : null}
-            {summaryPaidCommerceReason ? (
-              <div className="text-xs text-neutral-500 mt-1">{summaryPaidCommerceReason}</div>
-            ) : null}
             <div className="text-xs text-neutral-500 mt-1">Tunnel: {summaryTunnel ? "yes" : "no"}</div>
-          </div>
-          <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 md:col-span-2">
-            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Infrastructure Routing</div>
-            <div className="mt-2 grid gap-2 text-xs">
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Canonical Commerce Host</span>
-                <span className="text-neutral-200 text-right break-all">{summaryStableShareUrl}</span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Durable Buyer Recovery</span>
-                <span className="text-neutral-200 text-right">Machine 1 canonical host</span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Preferred Playback Path</span>
-                <span className="text-neutral-200 text-right">{routingReplayModeLabel}</span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Selected Origin Type</span>
-                <span className="text-neutral-200 text-right">{routingSelectedOriginTypeLabel}</span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Preferred Playback Origin</span>
-                <span className="text-neutral-200 text-right break-all">{routingPreferredPlaybackPath}</span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Fallback Playback Path</span>
-                <span className="text-neutral-200 text-right break-all">{routingFallbackPlaybackPath}</span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Origin Stability</span>
-                <span className={`${routingOriginStabilityLabel === "Temporary" ? "text-amber-300" : "text-neutral-200"} text-right`}>
-                  {routingOriginStabilityLabel}
-                </span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Creator Origin</span>
-                <span className={`${routingCreatorOriginLabel === "Temporary" ? "text-amber-300" : "text-neutral-200"} text-right`}>
-                  {routingCreatorOriginLabel}
-                </span>
-              </div>
-              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-                <span className="text-neutral-500">Provider Durable Playback</span>
-                <span className={`${routing?.providerDurablePlaybackAvailable ? "text-emerald-300" : "text-neutral-200"} text-right`}>
-                  {routing?.providerDurablePlaybackAvailable ? "Available" : "Unavailable"}
-                </span>
-              </div>
-              <div className="flex items-start justify-between gap-3">
-                <span className="text-neutral-500">Creator Playback Available</span>
-                <span className={`${routing?.creatorPlaybackAvailable ? "text-emerald-300" : "text-neutral-200"} text-right`}>
-                  {routing?.creatorPlaybackAvailable ? "Available" : "Unavailable"}
-                </span>
-              </div>
-              <div className="text-neutral-400">
-                Buyers recover purchases through the canonical commerce host. Playback may resolve to provider delivery or creator origin based on durability and availability.
-              </div>
-              {routingCreatorOriginLabel === "Temporary" ? (
-                <div className="text-amber-300">
-                  Current creator origin is temporary. Keep using the canonical commerce host for durable buyer recovery and share links.
-                </div>
-              ) : null}
-            </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Discoverability</div>

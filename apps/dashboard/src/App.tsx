@@ -51,15 +51,6 @@ type WhoamiInfo = {
   } | null;
 };
 
-type NetworkSummaryLite = {
-  reachability?: {
-    canonicalCommerceUrl?: string | null;
-    canonicalCommerceKind?: "provider_hosted" | "self_hosted_stable" | "temporary_endpoint" | "unavailable";
-    localNodeEndpointUrl?: string | null;
-    creatorPublicBase?: string | null;
-  };
-};
-
 type PageKey =
   | "library"
   | "store"
@@ -179,7 +170,6 @@ export default function App() {
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
   const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(null);
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
-  const [networkSummary, setNetworkSummary] = useState<NetworkSummaryLite | null>(null);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
   const [whoamiInfo, setWhoamiInfo] = useState<WhoamiInfo | null>(null);
   const [whoamiStatus, setWhoamiStatus] = useState<"idle" | "disabled" | "ok" | "error">("idle");
@@ -254,21 +244,22 @@ export default function App() {
     if (!token) {
       setIdentityDetail(null);
       setPublicStatus(null);
-      setNetworkSummary(null);
       return;
     }
     let alive = true;
     const refresh = () => {
       refreshIdentityDetail();
-      Promise.all([
-        api("/api/diagnostics/status", "GET").catch(() => null),
-        api<NetworkSummaryLite>("/api/network/summary", "GET").catch(() => null)
-      ]).then(([d, ns]) => {
-        if (!alive) return;
-        setDiagnosticsStatus((d as any) || null);
-        setPublicStatus((d as any)?.publicStatus || null);
-        setNetworkSummary(ns || null);
-      });
+      api("/api/diagnostics/status", "GET")
+        .then((d: any) => {
+          if (!alive) return;
+          setDiagnosticsStatus(d || null);
+          setPublicStatus(d?.publicStatus || null);
+        })
+        .catch(() => {
+          if (!alive) return;
+          setDiagnosticsStatus(null);
+          setPublicStatus(null);
+        });
     };
     refresh();
     const t = window.setInterval(refresh, 30000);
@@ -458,27 +449,10 @@ export default function App() {
   const creatorHandle = normalizePublicProfileHandle(me?.displayName || me?.email || "");
   const logoHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : "/";
   const creatorProfileHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : null;
-  const preferredPublicBase =
-    String(networkSummary?.reachability?.canonicalCommerceUrl || "").trim() ||
-    String(publicStatus?.url || "").trim() ||
-    String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim() ||
-    "";
-  const currentNodeEndpoint =
-    String(networkSummary?.reachability?.localNodeEndpointUrl || "").trim() ||
-    String(publicStatus?.url || "").trim() ||
-    "—";
-  const canonicalCommerceHostKind = networkSummary?.reachability?.canonicalCommerceKind || "unavailable";
-  const publicHostingServiceLabel =
-    canonicalCommerceHostKind === "provider_hosted"
-      ? "Provider-backed"
-      : canonicalCommerceHostKind === "self_hosted_stable"
-        ? "Self-hosted"
-        : "Unavailable";
   const publicCreatorUrl =
-    String(networkSummary?.reachability?.creatorPublicBase || "").trim() ||
-    (preferredPublicBase
-      ? new URL(creatorProfileHref || "/profile", preferredPublicBase).toString()
-      : null);
+    publicStatus?.url
+      ? new URL(creatorProfileHref || "/profile", String(publicStatus.url)).toString()
+      : null;
 
   return (
     <div className="h-screen overflow-hidden bg-neutral-950 text-neutral-100 flex">
@@ -744,21 +718,14 @@ export default function App() {
                         : "SEARCHING"}
                   </span>
                   <span className="text-neutral-500">•</span>
-                  <span className="truncate max-w-[380px]">{preferredPublicBase || "—"}</span>
+                  <span className="truncate max-w-[380px]">{publicStatus?.url || publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
                 </div>
-                <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-neutral-800 bg-neutral-950 px-3 py-1 text-xs text-neutral-300">
-                  <span>Current node endpoint: <span className="text-neutral-200">{currentNodeEndpoint}</span></span>
-                  <span className="text-neutral-500">•</span>
-                  <span>Public commerce host: <span className="text-neutral-200">{publicHostingServiceLabel}</span></span>
-                  <span className="text-neutral-500">•</span>
-                  <span>Stable share URL: <span className="text-neutral-200">{preferredPublicBase || "—"}</span></span>
-                </div>
-                {preferredPublicBase ? (
+                {publicStatus?.url ? (
                   <>
                     <button
                       onClick={() =>
                         window.open(
-                          publicCreatorUrl || preferredPublicBase,
+                          publicCreatorUrl || String(publicStatus.url),
                           "_blank",
                           "noopener,noreferrer"
                         )
@@ -769,7 +736,7 @@ export default function App() {
                     </button>
                     <button
                       onClick={() => {
-                        const copyTarget = publicCreatorUrl || preferredPublicBase;
+                        const copyTarget = publicCreatorUrl || (publicStatus?.url ? String(publicStatus.url) : "");
                         if (copyTarget) {
                           navigator.clipboard.writeText(copyTarget).catch(() => {});
                         }

@@ -7,16 +7,6 @@ type ReceiptStatus = {
   paymentIntentId: string;
   contentId: string;
   manifestSha256: string | null;
-  receiptToken?: string | null;
-  entitlementId?: string | null;
-  urls?: {
-    canonicalCommerceOrigin?: string | null;
-    buyUrl?: string | null;
-    receiptUrl?: string | null;
-    receiptStatusUrl?: string | null;
-    libraryUrl?: string | null;
-    replayUrl?: string | null;
-  } | null;
   canFulfill: boolean;
 };
 
@@ -64,43 +54,13 @@ export default function ReceiptPage(props: { token: string }) {
   }, [props.token]);
 
   const receiptLink = `${apiBase()}/public/receipts/${props.token}/status`;
-  const canonicalReceiptLink = status?.urls?.receiptStatusUrl || receiptLink;
-  const canonicalLibraryLink = status?.urls?.libraryUrl || null;
-  const canonicalReplayLink = status?.urls?.replayUrl || null;
-  const canonicalBuyLink = status?.urls?.buyUrl || null;
 
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Receipt</div>
         <div className="text-sm text-neutral-400 mt-1">Status and downloads for this purchase.</div>
-        <div className="mt-3 text-xs text-neutral-400 break-all">Receipt link: {canonicalReceiptLink}</div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {canonicalLibraryLink ? (
-            <a
-              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-              href={canonicalLibraryLink}
-            >
-              Open in Library
-            </a>
-          ) : null}
-          {canonicalReplayLink ? (
-            <a
-              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-              href={canonicalReplayLink}
-            >
-              Replay
-            </a>
-          ) : null}
-          {canonicalBuyLink ? (
-            <a
-              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-              href={canonicalBuyLink}
-            >
-              Open content
-            </a>
-          ) : null}
-        </div>
+        <div className="mt-3 text-xs text-neutral-400 break-all">Receipt link: {receiptLink}</div>
       </div>
 
       {msg ? <div className="text-sm text-red-300">{msg}</div> : null}
