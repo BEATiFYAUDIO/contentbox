@@ -324,7 +324,7 @@ export default function ConfigPage({
     ? null
     : "Named tunnel not detected yet. Sovereign modes unlock after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
-  const showAdvancedInfraPanels = !isBasicMode || Boolean(showAdvanced);
+  const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
     if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
@@ -787,6 +787,27 @@ export default function ConfigPage({
         ) : null}
       </div>
 
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Creator Progression Flow</div>
+        <div style={{ display: "grid", gap: 6, fontSize: 13, opacity: 0.9 }}>
+          <div>
+            <b>1. Basic Creator</b> → Configure <b>Tunnel & routing</b>, publish content, collect tips.
+          </div>
+          <div>
+            <b>2. Sovereign Creator</b> → Named tunnel online, then connect commerce services.
+          </div>
+          <div>
+            <b>3. Sovereign Node</b> → Named tunnel + local stack, then use advanced infra panels.
+          </div>
+        </div>
+      </div>
+
+      {showAdvancedInfraPanels ? (
+      <div style={{ margin: "8px 0 10px", fontSize: 12, opacity: 0.75 }}>
+        Step 2-3: Sovereign Creator / Sovereign Node advanced infrastructure.
+      </div>
+      ) : null}
+
       {showAdvancedInfraPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
@@ -941,6 +962,7 @@ export default function ConfigPage({
       ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>Step 1: Basic Creator tunnel setup</div>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>

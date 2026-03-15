@@ -247,25 +247,41 @@ export default function App() {
       return;
     }
     let alive = true;
-    const refresh = () => {
+    const refresh = async () => {
       refreshIdentityDetail();
-      api("/api/diagnostics/status", "GET")
-        .then((d: any) => {
+      try {
+        const d: any = await api("/api/diagnostics/status", "GET");
+        if (!alive) return;
+        setDiagnosticsStatus(d || null);
+        const diagnosticsPublic = d?.publicStatus || null;
+        try {
+          const runtimePublic: any = await api("/api/public/status", "GET");
           if (!alive) return;
-          setDiagnosticsStatus(d || null);
-          setPublicStatus(d?.publicStatus || null);
-        })
-        .catch(() => {
+          setPublicStatus({
+            ...diagnosticsPublic,
+            ...runtimePublic,
+            url: runtimePublic?.canonicalOrigin || runtimePublic?.publicOrigin || diagnosticsPublic?.url || null
+          });
+        } catch {
           if (!alive) return;
-          setDiagnosticsStatus(null);
-          setPublicStatus(null);
-        });
+          setPublicStatus(diagnosticsPublic);
+        }
+      } catch {
+        if (!alive) return;
+        setDiagnosticsStatus(null);
+        setPublicStatus(null);
+      }
     };
     refresh();
-    const t = window.setInterval(refresh, 30000);
+    const onFocus = () => {
+      refresh();
+    };
+    window.addEventListener("focus", onFocus);
+    const t = window.setInterval(refresh, 10000);
     return () => {
       alive = false;
       window.clearInterval(t);
+      window.removeEventListener("focus", onFocus);
     };
   }, [me?.id]);
 
@@ -449,8 +465,9 @@ export default function App() {
   const creatorHandle = normalizePublicProfileHandle(me?.displayName || me?.email || "");
   const logoHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : "/";
   const creatorProfileHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : null;
+  const publicStatusOnline = publicStatus?.status === "online";
   const publicCreatorUrl =
-    publicStatus?.url
+    publicStatusOnline && publicStatus?.url
       ? new URL(creatorProfileHref || "/profile", String(publicStatus.url)).toString()
       : null;
 
@@ -720,7 +737,7 @@ export default function App() {
                   <span className="text-neutral-500">•</span>
                   <span className="truncate max-w-[380px]">{publicStatus?.url || publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</span>
                 </div>
-                {publicStatus?.url ? (
+                {publicStatusOnline && publicStatus?.url ? (
                   <>
                     <button
                       onClick={() =>
@@ -746,6 +763,11 @@ export default function App() {
                       Copy public link
                     </button>
                   </>
+                ) : null}
+                {!publicStatusOnline && publicStatus?.url ? (
+                  <div className="text-xs rounded-full border border-amber-900/70 bg-amber-950/30 px-3 py-1 text-amber-200">
+                    Public profile link is offline. Bring tunnel online first.
+                  </div>
                 ) : null}
                 {productTier === "advanced" && !sovereignCapabilities.canActAsProviderNode ? (
                   <button
