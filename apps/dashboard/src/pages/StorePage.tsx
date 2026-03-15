@@ -1527,7 +1527,15 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 ? userNetworkStatus?.status === "offline"
                   ? "Offline"
                   : "Action Required"
-                : "Idle";
+                : userNetworkStatus?.status === "ready"
+                  ? "Ready"
+                  : userNetworkStatus?.status === "connecting"
+                    ? "Monitoring"
+                    : userNetworkStatus?.status === "action_required"
+                      ? "Action Required"
+                      : userNetworkStatus?.status === "offline"
+                        ? "Offline"
+                        : "Monitoring";
   const guidedActionLabel =
     userNetworkStatus?.status === "ready"
       ? "Refresh setup"
