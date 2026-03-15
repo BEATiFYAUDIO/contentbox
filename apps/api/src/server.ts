@@ -3398,38 +3398,47 @@ function setNetworkProviderConfig(input: {
   if (isNetworkProviderConfigEmpty(next)) {
     clearProviderRuntimeStateFiles();
   }
-  // Invalidate posture when target/config changes; live verification repopulates observed trust state.
-  persistProviderVerificationPosture(
-    buildProviderVerificationResult(next, "not_configured", "Provider configuration updated. Run a live verification check.")
-  );
-  persistProviderAcknowledgmentState(
-    buildProviderAcknowledgmentState(next, {
-      status: "provider_not_trusted",
-      intent: null,
-      issuedAt: null,
-      checkedAt: new Date().toISOString(),
-      message: "Provider configuration updated. Request a fresh acknowledgment.",
-      signatureValidated: false
-    })
-  );
-  persistProviderOperationIntentState(
-    buildProviderOperationIntentState(next, {
-      status: "provider_not_trusted",
-      intent: null,
-      issuedAt: null,
-      checkedAt: new Date().toISOString(),
-      message: "Provider configuration updated. Request a fresh provider execution permit.",
-      signatureValidated: false
-    })
-  );
-  persistProfileNetworkActivationState(
-    buildProfileNetworkActivationState(next, {
-      status: "not_ready",
-      message: "Provider configuration updated. Re-activate profile after setup is ready.",
-      checkedAt: new Date().toISOString(),
-      activatedAt: null
-    })
-  );
+  const providerTargetChanged =
+    current.providerNodeId !== next.providerNodeId ||
+    current.providerProfileId !== next.providerProfileId ||
+    current.providerUrl !== next.providerUrl ||
+    current.providerPubKey !== next.providerPubKey ||
+    current.enabled !== next.enabled;
+  // Invalidate posture only when provider target/config actually changes.
+  // Idempotent saves should keep existing verified/acknowledged/permitted state.
+  if (providerTargetChanged) {
+    persistProviderVerificationPosture(
+      buildProviderVerificationResult(next, "not_configured", "Provider configuration updated. Run a live verification check.")
+    );
+    persistProviderAcknowledgmentState(
+      buildProviderAcknowledgmentState(next, {
+        status: "provider_not_trusted",
+        intent: null,
+        issuedAt: null,
+        checkedAt: new Date().toISOString(),
+        message: "Provider configuration updated. Request a fresh acknowledgment.",
+        signatureValidated: false
+      })
+    );
+    persistProviderOperationIntentState(
+      buildProviderOperationIntentState(next, {
+        status: "provider_not_trusted",
+        intent: null,
+        issuedAt: null,
+        checkedAt: new Date().toISOString(),
+        message: "Provider configuration updated. Request a fresh provider execution permit.",
+        signatureValidated: false
+      })
+    );
+    persistProfileNetworkActivationState(
+      buildProfileNetworkActivationState(next, {
+        status: "not_ready",
+        message: "Provider configuration updated. Re-activate profile after setup is ready.",
+        checkedAt: new Date().toISOString(),
+        activatedAt: null
+      })
+    );
+  }
   return next;
 }
 
@@ -4382,15 +4391,6 @@ function evaluateProviderAcknowledgmentReadiness(
     };
   }
   if (state.acknowledgment.status === "accepted" && state.acknowledgment.signatureValidated) {
-    const issuedAtMs = Date.parse(String(state.acknowledgment.issuedAt || ""));
-    if (!Number.isFinite(issuedAtMs) || Date.now() - issuedAtMs > PROVIDER_ACK_MAX_AGE_MS) {
-      return {
-        readiness: "blocked",
-        allowed: false,
-        status: state.acknowledgment.status,
-        message: "Provider acknowledgment is stale and must be refreshed."
-      };
-    }
     return {
       readiness: "ready",
       allowed: true,
@@ -4446,25 +4446,6 @@ function evaluateProviderExecutionPermitReadiness(
       allowed: false,
       status: state.permit.status,
       message: "Valid provider execution permit is required for this action."
-    };
-  }
-  const now = Date.now();
-  const expiresAtMs = Date.parse(String(state.permit.expiresAt || ""));
-  if (Number.isFinite(expiresAtMs) && expiresAtMs <= now) {
-    return {
-      readiness: "expired",
-      allowed: false,
-      status: state.permit.status,
-      message: "Provider execution permit has expired."
-    };
-  }
-  const issuedAtMs = Date.parse(String(state.permit.issuedAt || ""));
-  if (!Number.isFinite(issuedAtMs) || now - issuedAtMs > PROVIDER_PERMIT_MAX_AGE_MS) {
-    return {
-      readiness: "expired",
-      allowed: false,
-      status: state.permit.status,
-      message: "Provider execution permit is stale and must be refreshed."
     };
   }
   return {
@@ -5737,6 +5718,35 @@ function getCoverAssetFromManifest(manifest: any): { path: string; sha256: strin
     sha256: file?.sha256 ? String(file.sha256) : null,
     mime: file?.mime ? String(file.mime) : null
   };
+}
+
+function getManifestAssetPath(
+  manifest: any,
+  keys: string[]
+): { path: string; sha256: string | null; mime: string | null } | null {
+  const json = (manifest || {}) as any;
+  const files = Array.isArray(json?.files) ? json.files : [];
+  for (const key of keys) {
+    const raw = json?.[key];
+    const objectKey = typeof raw === "string" ? raw.trim() : "";
+    if (!objectKey) continue;
+    // Skip external URLs for this file-serving route.
+    if (/^https?:\/\//i.test(objectKey)) continue;
+    const file = files.find((f: any) => {
+      const candidate =
+        (typeof f?.path === "string" && f.path) ||
+        (typeof f?.objectKey === "string" && f.objectKey) ||
+        (typeof f?.filename === "string" && f.filename) ||
+        "";
+      return candidate === objectKey;
+    });
+    return {
+      path: objectKey,
+      sha256: file?.sha256 ? String(file.sha256) : null,
+      mime: file?.mime ? String(file.mime) : null
+    };
+  }
+  return null;
 }
 
 function proofRelPath(versionNumber: number) {
@@ -15531,6 +15541,10 @@ async function handlePublicCoverFile(req: any, reply: any) {
   if (!content?.repoPath) return notFound(reply, "Not found");
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   let cover = getCoverAssetFromManifest(manifest?.json as any);
+  if (!cover?.path && String(content.type || "").toLowerCase() === "video") {
+    // For videos, prefer explicit poster/thumbnail assets before generic image fallback.
+    cover = getManifestAssetPath(manifest?.json as any, ["poster", "thumbnail", "thumb"]);
+  }
   if (!cover?.path) {
     const latestImage = await prisma.contentFile.findFirst({
       where: { contentId, mime: { startsWith: "image/" } as any },
