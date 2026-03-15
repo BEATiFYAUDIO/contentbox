@@ -388,6 +388,34 @@ function extractBuyUrl(input: string): string | null {
   return null;
 }
 
+function safeHost(value: string): string {
+  try {
+    return new URL(value).host;
+  } catch {
+    return "";
+  }
+}
+
+function isPrivateHost(hostname: string): boolean {
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  if (hostname.startsWith("10.") || hostname.startsWith("192.168.")) return true;
+  const range = hostname.match(/^172\.(\d+)\./);
+  if (range) {
+    const segment = Number(range[1]);
+    return segment >= 16 && segment <= 31;
+  }
+  return false;
+}
+
+function isTemporaryPublicOrigin(origin: string): boolean {
+  const host = safeHost(origin);
+  if (!host) return true;
+  const bareHost = host.split(":")[0] || host;
+  if (bareHost.endsWith(".trycloudflare.com")) return true;
+  return isPrivateHost(bareHost);
+}
+
 export default function StorePage(props: { onOpenReceipt: (token: string) => void }) {
   const [input, setInput] = React.useState("");
   const [nodeHost, setNodeHost] = React.useState(() => guessApiBase());
@@ -1275,6 +1303,19 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       ? "Sovereign payment rails (local Lightning invoice minting)"
       : "Tips / direct wallet payments";
   const fallbackTunnel = diagnostics?.publicStatus?.mode === "named" || diagnostics?.publicStatus?.mode === "quick";
+  const isBasicMode = resolvedNodeMode === "basic";
+  const namedTunnelOriginCandidate = String(
+    diagnostics?.publicStatus?.canonicalOrigin ||
+    diagnostics?.publicStatus?.publicOrigin ||
+    diagnostics?.publicStatus?.url ||
+    ""
+  ).trim();
+  const hasDetectedNamedTunnel =
+    diagnostics?.publicStatus?.mode === "named" &&
+    diagnostics?.publicStatus?.status === "online" &&
+    Boolean(namedTunnelOriginCandidate) &&
+    !isTemporaryPublicOrigin(namedTunnelOriginCandidate);
+  const providerConfigLocked = !hasDetectedNamedTunnel;
 
   const summaryNodeModeLabel =
     networkSummary?.nodeMode === "advanced"
@@ -1909,11 +1950,24 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </div>
         </div>
 
+        {isBasicMode ? (
+          <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Configuration</div>
+            <div className="mt-1 text-xs text-neutral-400">
+              Basic mode keeps provider configuration hidden. Add a named tunnel and switch out of Basic to enable provider commerce services.
+            </div>
+          </div>
+        ) : (
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Configuration</div>
           <div className="mt-1 text-xs text-neutral-400">
             Configure a trusted provider node for delegated invoice infrastructure. This config does not transfer creator identity, ownership, entitlement truth, or sale history to the provider.
           </div>
+          {providerConfigLocked ? (
+            <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              Named tunnel required before provider configuration. Bring a named tunnel online first.
+            </div>
+          ) : null}
           <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Guided setup</div>
             <div className="mt-1 text-xs text-neutral-200">Current step: {guidedSetupPhaseLabel}</div>
@@ -1924,7 +1978,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={connectProviderGuided}
-                disabled={providerLoading || providerSaving || guidedSetupBusy || !providerConfig}
+                disabled={providerConfigLocked || providerLoading || providerSaving || guidedSetupBusy || !providerConfig}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
               >
                 {guidedSetupBusy ? `${guidedSetupPhaseLabel}...` : guidedActionLabel}
@@ -1944,7 +1998,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={activateProfileOnNetwork}
-                disabled={profileActivationBusy || userNetworkStatus?.status !== "ready"}
+                disabled={providerConfigLocked || profileActivationBusy || userNetworkStatus?.status !== "ready"}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
                 title={userNetworkStatus?.status !== "ready" ? "Finish provider setup before activating." : undefined}
               >
@@ -1986,7 +2040,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={publishProfile}
-                disabled={publishProfileBusy || publishReadiness?.allowed === false}
+                disabled={providerConfigLocked || publishProfileBusy || publishReadiness?.allowed === false}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
                 title={publishReadiness?.allowed === false ? publishReadiness.message : undefined}
               >
@@ -2029,7 +2083,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={testProviderHandshake}
-                disabled={providerHandshakeLoading}
+                disabled={providerConfigLocked || providerHandshakeLoading}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
               >
                 {providerHandshakeLoading ? "Testing..." : "Test provider handshake"}
@@ -2047,7 +2101,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={requestProviderAcknowledgment}
-                disabled={providerAckLoading}
+                disabled={providerConfigLocked || providerAckLoading}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
               >
                 {providerAckLoading ? "Requesting..." : "Request provider acknowledgment"}
@@ -2067,7 +2121,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={requestProviderOperationIntent}
-                disabled={providerOperationLoading}
+                disabled={providerConfigLocked || providerOperationLoading}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
               >
                 {providerOperationLoading ? "Requesting..." : "Request provider execution permit"}
@@ -2090,7 +2144,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={requestProviderExecuteTest}
-                disabled={providerExecuteTestLoading}
+                disabled={providerConfigLocked || providerExecuteTestLoading}
                 className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900 disabled:opacity-50"
               >
                 {providerExecuteTestLoading ? "Executing..." : "Run provider execute-test"}
@@ -2232,7 +2286,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 onChange={(e) => updateProviderField("providerNodeId", e.target.value)}
                 className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
                 autoComplete="off"
-                disabled={providerLoading || providerSaving}
+                disabled={providerConfigLocked || providerLoading || providerSaving}
               />
             </div>
             <div>
@@ -2244,7 +2298,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 onChange={(e) => updateProviderField("providerProfileId", e.target.value)}
                 className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
                 autoComplete="off"
-                disabled={providerLoading || providerSaving}
+                disabled={providerConfigLocked || providerLoading || providerSaving}
               />
             </div>
             <div>
@@ -2257,7 +2311,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 placeholder="https://provider.example.com"
                 className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
                 autoComplete="url"
-                disabled={providerLoading || providerSaving}
+                disabled={providerConfigLocked || providerLoading || providerSaving}
               />
             </div>
             <div>
@@ -2269,7 +2323,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 onChange={(e) => updateProviderField("providerPubKey", e.target.value)}
                 className="mt-1 w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
                 autoComplete="off"
-                disabled={providerLoading || providerSaving}
+                disabled={providerConfigLocked || providerLoading || providerSaving}
               />
             </div>
           </div>
@@ -2280,14 +2334,14 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               type="checkbox"
               checked={Boolean(providerConfig?.enabled)}
               onChange={(e) => updateProviderField("enabled", e.target.checked)}
-              disabled={providerLoading || providerSaving}
+              disabled={providerConfigLocked || providerLoading || providerSaving}
             />
             Enabled
           </label>
           <div className="mt-3 flex items-center gap-3">
             <button
               onClick={saveProviderConfig}
-              disabled={providerLoading || providerSaving || !providerConfig}
+              disabled={providerConfigLocked || providerLoading || providerSaving || !providerConfig}
               className="rounded-lg border border-neutral-800 px-3 py-2 text-sm hover:bg-neutral-900 disabled:opacity-50"
             >
               {providerSaving ? "Saving..." : "Save provider"}
@@ -2296,6 +2350,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             {providerErr ? <div className="text-xs text-rose-300">{providerErr}</div> : null}
           </div>
         </div>
+        )}
 
         <div className="mt-4 space-y-2">
           <label className="text-sm" htmlFor="store-buy-link">
