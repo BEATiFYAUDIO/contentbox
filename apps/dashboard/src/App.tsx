@@ -152,6 +152,7 @@ function normalizePublicProfileHandle(value: unknown): string | null {
 
 export default function App() {
   const devApiUrl = getApiBase().replace(/\/$/, "");
+  const whoamiProbeEnabled = Boolean((import.meta as any).env?.VITE_ENABLE_WHOAMI);
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [authNotice] = useState<string | null>(() => {
@@ -172,7 +173,9 @@ export default function App() {
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
   const [whoamiInfo, setWhoamiInfo] = useState<WhoamiInfo | null>(null);
-  const [whoamiStatus, setWhoamiStatus] = useState<"idle" | "disabled" | "ok" | "error">("idle");
+  const [whoamiStatus, setWhoamiStatus] = useState<"idle" | "disabled" | "ok" | "error">(
+    whoamiProbeEnabled ? "idle" : "disabled"
+  );
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -189,7 +192,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!import.meta.env.DEV || !whoamiProbeEnabled) return;
     if (!devApiUrl) {
       setWhoamiStatus("disabled");
       return;
@@ -220,7 +223,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [devApiUrl]);
+  }, [devApiUrl, whoamiProbeEnabled]);
 
   useEffect(() => {
     try {
@@ -350,15 +353,6 @@ export default function App() {
     setPage("participations");
   };
 
-  // Show loading state or Auth page if not logged in
-  if (loading) {
-    return <div className="min-h-screen bg-neutral-950 text-neutral-200 p-6">Loading…</div>;
-  }
-
-  if (!me && inviteToken === null) {
-    return <AuthPage onAuthed={loadMe} notice={authNotice} />;
-  }
-
   const identityLevel = identityDetail?.level || "BASIC";
   const nodeMode = identityDetail?.nodeMode || (identityDetail?.dbMode === "advanced" ? "advanced" : "basic");
   const features = identityDetail?.features || {
@@ -463,6 +457,15 @@ export default function App() {
       setPage("store");
     }
   }, [page, canSeeProviderConsole]);
+
+  // Show loading state or Auth page if not logged in
+  if (loading) {
+    return <div className="min-h-screen bg-neutral-950 text-neutral-200 p-6">Loading…</div>;
+  }
+
+  if (!me && inviteToken === null) {
+    return <AuthPage onAuthed={loadMe} notice={authNotice} />;
+  }
   const advancedCtaLabel =
     publicStatus?.mode === "named" && publicStatus?.status !== "online"
       ? "Bring named link online"
