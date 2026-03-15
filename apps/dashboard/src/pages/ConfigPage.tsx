@@ -32,6 +32,7 @@ const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
 const STORAGE_PUBLIC_ORIGIN_FALLBACK = "contentbox.publicOriginFallback";
 const STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK = "contentbox.publicBuyOriginFallback";
 const STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK = "contentbox.publicStudioOriginFallback";
+const STORAGE_NETWORKING_CUSTOMIZED = "contentbox.networkingCustomized";
 const STORAGE_TUNNEL_CONFIG_ENABLED = "contentbox.tunnelConfig.enabled";
 const STORAGE_API_BASE = "contentbox.apiBase";
 
@@ -104,12 +105,12 @@ export default function ConfigPage({
   const token = getToken();
   const inputClass =
     "w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 text-sm text-white placeholder:text-neutral-600 outline-none focus:border-neutral-600";
-  const [publicOrigin, setPublicOrigin] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_ORIGIN));
-  const [publicBuyOrigin, setPublicBuyOrigin] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
-  const [publicStudioOrigin, setPublicStudioOrigin] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
-  const [publicOriginFallback, setPublicOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK));
-  const [publicBuyOriginFallback, setPublicBuyOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK));
-  const [publicStudioOriginFallback, setPublicStudioOriginFallback] = useState<string>(() => readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK));
+  const [publicOrigin, setPublicOrigin] = useState<string>("");
+  const [publicBuyOrigin, setPublicBuyOrigin] = useState<string>("");
+  const [publicStudioOrigin, setPublicStudioOrigin] = useState<string>("");
+  const [publicOriginFallback, setPublicOriginFallback] = useState<string>("");
+  const [publicBuyOriginFallback, setPublicBuyOriginFallback] = useState<string>("");
+  const [publicStudioOriginFallback, setPublicStudioOriginFallback] = useState<string>("");
   const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(() => readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED) === "1");
   const [tunnelProvider, setTunnelProvider] = useState<string>("cloudflare");
   const [tunnelDomain, setTunnelDomain] = useState<string>("");
@@ -138,6 +139,17 @@ export default function ConfigPage({
   const apiMismatch = Boolean(uiHost && apiHost && uiHost !== apiHost);
   const overrideMismatch = Boolean(overrideActive && overrideHost && overrideHost !== apiHost);
   const canForceLocal = Boolean(uiHost && (uiHost === "localhost" || uiHost === "127.0.0.1"));
+
+  useEffect(() => {
+    const customized = readStoredValue(STORAGE_NETWORKING_CUSTOMIZED) === "1";
+    if (!customized) return;
+    setPublicOrigin(readStoredValue(STORAGE_PUBLIC_ORIGIN));
+    setPublicBuyOrigin(readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
+    setPublicStudioOrigin(readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
+    setPublicOriginFallback(readStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK));
+    setPublicBuyOriginFallback(readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK));
+    setPublicStudioOriginFallback(readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -428,6 +440,7 @@ export default function ConfigPage({
   }`;
 
   const saveNetworking = () => {
+    writeStoredValue(STORAGE_NETWORKING_CUSTOMIZED, "1");
     writeStoredValue(STORAGE_PUBLIC_ORIGIN, normalizeOrigin(publicOrigin));
     writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN, normalizeOrigin(publicBuyOrigin));
     writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN, normalizeOrigin(publicStudioOrigin));
@@ -449,6 +462,7 @@ export default function ConfigPage({
     writeStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, "");
+    writeStoredValue(STORAGE_NETWORKING_CUSTOMIZED, "");
   };
 
   const saveApiBaseOverride = () => {
@@ -1272,10 +1286,10 @@ export default function ConfigPage({
             ) : null}
             {publicMsg ? <div style={{ color: "#ffb4b4" }}>{publicMsg}</div> : null}
             <div><b>OK</b>: {health.ok ? "yes" : "no"}</div>
-            <div><b>Buy origin</b>: {health.publicBuyOrigin || "—"}</div>
-            <div><b>Studio origin</b>: {health.publicStudioOrigin || "—"}</div>
-            <div><b>Certifyd Creator origin</b>: {health.publicOrigin || "—"}</div>
-            <div><b>Last seen</b>: {health.ts || "—"}</div>
+            <div><b>Canonical public origin</b>: {publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "—"}</div>
+            <div><b>Tunnel mode</b>: {publicStatus?.mode || "—"}</div>
+            <div><b>Tunnel status</b>: {publicStatus?.status || "—"}</div>
+            <div><b>Last seen</b>: {publicStatus?.lastCheckedAt ? new Date(publicStatus.lastCheckedAt).toLocaleString() : "—"}</div>
             <div>
               <b>PUBLIC_ORIGIN detected</b>: {publicOriginWarn ? "⚠️" : "✅"}{" "}
               {publicOriginDetected || "—"}
