@@ -450,19 +450,9 @@ export default function ConfigPage({
     { label: "Local API Base", value: apiBase || "Not resolved", ok: Boolean(apiBase) },
     { label: "Stable Public Host", value: stablePublicHostDetected ? "Configured" : "Not configured", ok: stablePublicHostDetected },
     { label: "Temporary Endpoint", value: temporaryEndpointDetected ? "Active" : "Inactive", ok: !temporaryEndpointDetected },
-    {
-      label: "Canonical Commerce",
-      value: canonicalCommerceConfiguredDetected ? "Configured" : "Not configured",
-      ok: canonicalCommerceConfiguredDetected
-    },
+    { label: "Canonical Commerce", value: canonicalCommerceConfiguredDetected ? "Configured" : "Not configured", ok: canonicalCommerceConfiguredDetected },
     { label: "Lightning (LND)", value: lndReadyDetected ? "Ready" : "Not ready", ok: lndReadyDetected },
-    { label: "Chain Backend", value: chainReadyDetected ? "Ready" : "Not ready", ok: chainReadyDetected },
-    { label: "Replay Delivery", value: replayCapableDetected ? "Capable" : "Not ready", ok: replayCapableDetected },
-    {
-      label: "Buyer Recovery Host",
-      value: networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost || "Not resolved",
-      ok: Boolean(networkSummary?.capabilityResolution?.effectiveBuyerRecoveryHost)
-    }
+    { label: "Chain Backend", value: chainReadyDetected ? "Ready" : "Not ready", ok: chainReadyDetected }
   ];
   const sovereignNodeRequirements = [
     { label: "Stable public host", ready: stablePublicHostDetected },
@@ -505,6 +495,10 @@ export default function ConfigPage({
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
     if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
+    if (nextMode === "advanced" && !stablePublicHostDetected) {
+      setModeMsg("Sovereign Creator requires a stable named tunnel/public host before switching modes.");
+      return;
+    }
     if (nextMode === "lan" && !canSelectSovereignNode) {
       setModeMsg(
         `Sovereign Node Operator requires readiness first. Missing: ${sovereignNodeMissing.join(", ")}.`
@@ -973,10 +967,13 @@ export default function ConfigPage({
         </div>
       </div>
 
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 6 }}>Provider Capability Delegation</div>
-        <div style={{ opacity: 0.75, fontSize: 13, marginBottom: 10 }}>
-          Step 1: choose provider node. Step 2: choose which infrastructure capabilities to borrow from that node.
+      <details
+        open={Boolean(showAdvanced)}
+        style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
+      >
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced: Connected Node Services</summary>
+        <div style={{ opacity: 0.75, fontSize: 13, marginTop: 10, marginBottom: 10 }}>
+          Optional in Sovereign Creator mode. Connect a node for invoicing/settlement/payout services while storefront stays creator-hosted.
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, marginBottom: 12 }}>
           <label htmlFor="provider-node-id">
@@ -1119,7 +1116,7 @@ export default function ConfigPage({
             {providerMsg}
           </div>
         ) : null}
-      </div>
+      </details>
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 6 }}>Creator Journey</div>
@@ -1136,9 +1133,9 @@ export default function ConfigPage({
             },
             {
               key: "sovereign_with_provider",
-              title: "Sovereign Creator (with Provider)",
-              subtitle: "Enable paid commerce",
-              capabilities: "Durable buy links, receipts, library, replay, and payouts via provider infrastructure (~2% fee)."
+              title: "Sovereign Creator",
+              subtitle: "Creator-hosted storefront + optional node services",
+              capabilities: "Named tunnel storefront, tipping by default, optional connected-node invoicing and commerce services."
             },
             {
               key: "sovereign_node",
@@ -1427,7 +1424,7 @@ export default function ConfigPage({
             />
             <span>
               <div>Sovereign Creator (with Provider)</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>First durable paid-commerce tier using provider infrastructure (with provider fee).</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator-hosted storefront on named tunnel. Optional connected node adds invoicing and commerce services.</div>
             </span>
           </label>
           <label htmlFor="cfg-node-mode-lan" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>

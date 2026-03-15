@@ -4965,6 +4965,7 @@ function resolveProviderServiceProfile(input: {
     ctx.publicStatus.status === "online"
       ? String(ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || "").trim().replace(/\/+$/, "") || null
       : null;
+  const hasNamedRouteOnline = Boolean(activeLocalOrigin && ctx.publicStatus.mode === "named");
   const hasStablePublicRoute = Boolean(
     activeLocalOrigin &&
       (ctx.publicStatus.mode === "named" || isPersistentOrigin(activeLocalOrigin))
@@ -4991,15 +4992,18 @@ function resolveProviderServiceProfile(input: {
       : ctx.nodeMode === "lan"
         ? "sovereign_node_operator"
         : "sovereign_creator";
+  const requiresNamedTunnel =
+    selectedParticipationMode === "sovereign_creator" || selectedParticipationMode === "sovereign_node_operator";
+  const storefrontStableReady = requiresNamedTunnel ? hasNamedRouteOnline : hasStablePublicRoute;
 
   const capabilityResolution = resolveCapabilityRouting({
     selectedParticipationMode,
-    stablePublicHostConfigured: hasStablePublicRoute,
+    stablePublicHostConfigured: storefrontStableReady,
     temporaryEndpointActive: Boolean(temporaryNodeEndpointOrigin),
-    canonicalCommerceConfigured: hasStablePublicRoute,
+    canonicalCommerceConfigured: storefrontStableReady,
     lndReady: hasLocalInvoiceMinting,
     chainReady: hasChainBackendReady,
-    replayReady: hasStablePublicRoute,
+    replayReady: storefrontStableReady,
     providerCapable,
     providerCapabilityDelegation: {
       commerce_host: delegated.durablePublicCommerceHost,
@@ -5009,8 +5013,8 @@ function resolveProviderServiceProfile(input: {
       settlement: delegated.settlement,
       payout: delegated.payoutForwarding
     },
-    localCommerceHost: stablePublicRouteOrigin,
-    localSettlementHost: stablePublicRouteOrigin,
+    localCommerceHost: preferredDurableLocalOrigin,
+    localSettlementHost: preferredDurableLocalOrigin,
     providerHost: providerUrl
   });
 
@@ -5035,7 +5039,7 @@ function resolveProviderServiceProfile(input: {
     participationMode,
     fallbackOrigin: normalizePublicOriginBase(APP_BASE_URL),
     providerOrigin: routingProviderOrigin,
-    stableLocalOrigin: stablePublicRouteOrigin,
+    stableLocalOrigin: preferredDurableLocalOrigin,
     localEndpointOrigin: activeLocalOrigin,
     temporaryPreviewOrigin: temporaryNodeEndpointOrigin,
     creatorHandle: input.creatorHandle || null
@@ -5044,9 +5048,8 @@ function resolveProviderServiceProfile(input: {
   const canonicalCommerceKind: ProviderServiceProfile["canonicalCommerceKind"] =
     participationMode === "basic_creator"
       ? "unavailable"
-      : authority.routingMode === "provider_backed" && authority.canonicalCommerceOrigin
-        ? "provider_hosted"
-        : authority.routingMode === "sovereign_local" && authority.canonicalCommerceOrigin
+      : (authority.routingMode === "sovereign_local" || authority.routingMode === "provider_services_creator_hosted") &&
+          authority.canonicalCommerceOrigin
           ? "self_hosted_stable"
           : "unavailable";
   return {
@@ -5054,7 +5057,7 @@ function resolveProviderServiceProfile(input: {
     effectiveParticipationMode,
     participationMode,
     capabilityResolution,
-    hasStablePublicRoute,
+    hasStablePublicRoute: storefrontStableReady,
     stablePublicRouteOrigin,
     temporaryNodeEndpointOrigin,
     localNodeEndpointOrigin: activeLocalOrigin,
@@ -5078,6 +5081,29 @@ function resolveProviderServiceProfile(input: {
   };
 }
 
+function resolveClientPreviewUpstreamOrigin(profile: Pick<
+  ProviderServiceProfile,
+  "previewEphemeralOrigin" | "temporaryNodeEndpointOrigin"
+>): string | null {
+  return (
+    normalizePublicOriginBase(
+      asString(profile.previewEphemeralOrigin || profile.temporaryNodeEndpointOrigin || "").trim()
+    ) || null
+  );
+}
+
+function sanitizeDelegatedCreatorUpstreamOrigin(req: any, rawOrigin: unknown): string | null {
+  const normalized = normalizePublicOriginBase(asString(rawOrigin || "").trim());
+  if (!normalized) return null;
+  const requestOrigin = normalizePublicOriginBase(getPublicOrigin(req));
+  if (requestOrigin && normalized === requestOrigin) return null;
+  const providerCanonical =
+    resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin || null;
+  const providerCanonicalOrigin = normalizePublicOriginBase(providerCanonical || "");
+  if (providerCanonicalOrigin && normalized === providerCanonicalOrigin) return null;
+  return normalized;
+}
+
 async function syncProviderCreatorUpstreamOrigin(input: {
   reason: "startup" | "interval";
   force?: boolean;
@@ -5094,10 +5120,7 @@ async function syncProviderCreatorUpstreamOrigin(input: {
     hasLocalInvoiceMinting: false,
     providerCfg: cfg
   });
-  const clientPreviewOrigin =
-    normalizePublicOriginBase(
-      localRoutingProfile.previewEphemeralOrigin || localRoutingProfile.localNodeEndpointOrigin || ""
-    ) || null;
+  const clientPreviewOrigin = resolveClientPreviewUpstreamOrigin(localRoutingProfile);
   if (!clientPreviewOrigin) return;
 
   const sameTarget =
@@ -10493,7 +10516,7 @@ app.post("/api/network/provider/acknowledge-client", async (req: any, reply: any
   const body = (req.body ?? {}) as ProviderAcknowledgmentRequest;
   const clientNodeId = String(body?.clientNodeId || "").trim();
   const clientNodePubKey = String(body?.clientNodePubKey || "").trim() || null;
-  const clientPreviewOrigin = normalizePublicOriginBase(body?.clientPreviewOrigin || "") || null;
+  const clientPreviewOrigin = sanitizeDelegatedCreatorUpstreamOrigin(req, body?.clientPreviewOrigin || "");
   const requestedAt = String(body?.requestedAt || "").trim() || null;
   const intent = String(body?.intent || "").trim() || "provider_handshake";
   if (!clientNodeId) {
@@ -10555,7 +10578,7 @@ app.post("/api/network/provider/accept-operation-intent", async (req: any, reply
   const body = (req.body ?? {}) as ProviderOperationIntentRequest;
   const clientNodeId = String(body?.clientNodeId || "").trim();
   const clientNodePubKey = String(body?.clientNodePubKey || "").trim() || null;
-  const clientPreviewOrigin = normalizePublicOriginBase(body?.clientPreviewOrigin || "") || null;
+  const clientPreviewOrigin = sanitizeDelegatedCreatorUpstreamOrigin(req, body?.clientPreviewOrigin || "");
   const intent = String(body?.intent || "").trim();
   if (!clientNodeId) return badRequest(reply, "clientNodeId is required");
   if (!intent) return badRequest(reply, "intent is required");
@@ -10636,7 +10659,7 @@ app.post("/api/network/provider/delegated-publish", async (req: any, reply: any)
   const creatorNodeId = String(body.creatorNodeId || "").trim();
   const creatorNodePubKey = String(body.creatorNodePubKey || "").trim() || null;
   const contentId = String(body.contentId || "").trim();
-  const creatorPreviewOrigin = normalizePublicOriginBase(body.creatorPreviewOrigin || "") || null;
+  const creatorPreviewOrigin = sanitizeDelegatedCreatorUpstreamOrigin(req, body.creatorPreviewOrigin || "");
   const manifestHash = String(body.manifestHash || "").trim();
   if (!creatorNodeId) return badRequest(reply, "creatorNodeId is required");
   if (!contentId) return badRequest(reply, "contentId is required");
@@ -11274,10 +11297,7 @@ app.post("/api/network/provider/request-acknowledgment", { preHandler: requireAu
   const localRoutingProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: false
   });
-  const clientPreviewOrigin =
-    normalizePublicOriginBase(
-      localRoutingProfile.previewEphemeralOrigin || localRoutingProfile.localNodeEndpointOrigin || ""
-    ) || null;
+  const clientPreviewOrigin = resolveClientPreviewUpstreamOrigin(localRoutingProfile);
   const requestBody: ProviderAcknowledgmentRequest = {
     clientNodeId: localNode.nodeId,
     clientNodePubKey: localNode.nodePubKey,
@@ -11547,10 +11567,7 @@ app.post("/api/network/provider/request-operation-intent", { preHandler: require
   const localRoutingProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: false
   });
-  const clientPreviewOrigin =
-    normalizePublicOriginBase(
-      localRoutingProfile.previewEphemeralOrigin || localRoutingProfile.localNodeEndpointOrigin || ""
-    ) || null;
+  const clientPreviewOrigin = resolveClientPreviewUpstreamOrigin(localRoutingProfile);
   const requestBody: ProviderOperationIntentRequest = {
     clientNodeId: localNode.nodeId,
     clientNodePubKey: localNode.nodePubKey,
@@ -13941,9 +13958,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       creatorHandle: normalizePublicProfileHandle(owner?.displayName || "") || content.ownerUserId
     });
     const creatorPreviewOrigin =
-      normalizePublicOriginBase(
-        creatorRoutingProfile.previewEphemeralOrigin || creatorRoutingProfile.localNodeEndpointOrigin || ""
-      ) || null;
+      resolveClientPreviewUpstreamOrigin(creatorRoutingProfile);
     const target = `${String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "")}/api/network/provider/delegated-publish`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
@@ -15904,31 +15919,6 @@ async function proxyDelegatedPublicAsset(req: any, reply: any, input: {
   }
 }
 
-function rewriteStorefrontHtmlToProviderAuthority(input: {
-  html: string;
-  upstreamOrigin: string | null;
-  canonicalOrigin: string | null;
-}): string {
-  let out = String(input.html || "");
-  const upstream = normalizePublicOriginBase(input.upstreamOrigin || "");
-  const canonical = normalizePublicOriginBase(input.canonicalOrigin || "");
-  if (!out || !canonical) return out;
-  if (upstream && upstream !== canonical) {
-    const escaped = upstream.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    out = out.replace(new RegExp(escaped, "g"), canonical);
-    const encodedUpstream = encodeURIComponent(upstream);
-    const encodedCanonical = encodeURIComponent(canonical);
-    if (encodedUpstream && encodedUpstream !== encodedCanonical) {
-      out = out.split(encodedUpstream).join(encodedCanonical);
-    }
-  }
-  // Force any leaked temporary/local app URLs for public app paths back to canonical host.
-  const publicRouteLeak =
-    /https?:\/\/(?:[a-z0-9-]+\.trycloudflare\.com|localhost|127\.0\.0\.1|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[0-1])\.\d+\.\d+)(?::\d+)?(?=\/(?:u|buy|public|c|api)\b)/gi;
-  out = out.replace(publicRouteLeak, canonical);
-  return out;
-}
-
 async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const creatorScopeId = getCreatorScopeId(req);
@@ -16186,98 +16176,45 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         return requestedHandles.has(displayHandle || "") || requestedHandles.has(nodeHandle || "");
       }) || null;
     if (!delegatedLink) return notFound(reply, "Not found");
-
-    const delegatedPublishes = listProviderDelegatedPublishes()
-      .filter(
-        (row) =>
-          asString(row.creatorNodeId || "").trim() === asString(delegatedLink.creatorNodeId || "").trim() &&
-          asString(row.status || "").trim().toLowerCase() === "published"
-      )
-      .sort((a, b) => String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")));
-
-    const displayName =
-      asString(delegatedLink.creatorDisplayName || "").trim() || `Delegated creator`;
-    const wk = await buildWellKnownContentboxPayload(req);
-    const nodeUrl = asString(wk.nodeUrl || "").trim() || normalizePublicOriginBase(APP_BASE_URL);
-    const canonicalCommerceOrigin =
-      resolveProviderServiceProfile({
-        hasLocalInvoiceMinting: false,
-        creatorHandle: requested
-      }).canonicalCommerceOrigin || normalizePublicOriginBase(APP_BASE_URL);
     const delegatedUpstreamOrigins = resolveDelegatedCreatorOriginCandidatesForCreator({
       req,
       creatorNodeId: asString(delegatedLink.creatorNodeId || "").trim()
     });
     if (delegatedUpstreamOrigins.length > 0) {
-      try {
-        const upstreamHandleCandidates = Array.from(
-          new Set([matchedHandle, requested, requestedAlias].filter((v): v is string => Boolean(v)))
-        );
-        for (const upstreamOrigin of delegatedUpstreamOrigins) {
-          for (const upstreamHandle of upstreamHandleCandidates) {
-            const upstreamProfileUrl = buildPublicUrlFromOrigin(
-              upstreamOrigin,
-              `/u/${encodeURIComponent(upstreamHandle)}`
-            );
-            const upstreamRes = await fetch(upstreamProfileUrl, { method: "GET" } as any);
-            if (upstreamRes.ok) {
-              const upstreamHtml = await upstreamRes.text();
-              if (upstreamHtml && /<html[\s>]/i.test(upstreamHtml)) {
-                const canonical = normalizePublicOriginBase(canonicalCommerceOrigin || "");
-                const upstream = normalizePublicOriginBase(upstreamOrigin || "");
-                let normalized = rewriteStorefrontHtmlToProviderAuthority({
-                  html: upstreamHtml,
-                  upstreamOrigin: upstream,
-                  canonicalOrigin: canonical
-                });
-                const upstreamNote = `<div style="max-width:860px;margin:10px auto 0;padding:10px 14px;border:1px solid #2a2a2a;border-radius:10px;background:#101113;color:#a1a1aa;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;">
-  upstream delivery: ${escHtml(upstream || "unknown")} (via host: ${escHtml(canonical || upstream || "unknown")})
-</div>`;
-                if (/<\/body>/i.test(normalized)) {
-                  normalized = normalized.replace(/<\/body>/i, `${upstreamNote}</body>`);
-                } else {
-                  normalized += upstreamNote;
-                }
-                req.log.info(
-                  {
-                    creatorHandle: requested,
-                    upstreamHandle,
-                    routingMode: "provider_backed",
-                    storefrontContract: "upstream_proxy",
-                    providerAuthorityOrigin: canonical,
-                    currentCreatorUpstreamOrigin: upstream,
-                    upstreamCandidates: delegatedUpstreamOrigins.length
-                  },
-                  "provider_backed.storefront_profile.proxy"
-                );
-                reply.header("Cache-Control", "no-store, no-cache, must-revalidate");
-                reply.header("Pragma", "no-cache");
-                reply.header("X-Certifyd-Profile-Source", "upstream-proxy");
-                reply.type("text/html; charset=utf-8");
-                return reply.send(normalized);
-              }
-            }
-          }
-        }
-      } catch {}
+      const upstreamOrigin = delegatedUpstreamOrigins[0];
+      const upstreamHandle = matchedHandle || requestedAlias || requested;
+      const target = buildPublicUrlFromOrigin(upstreamOrigin, `/u/${encodeURIComponent(upstreamHandle)}`);
+      req.log.info(
+        {
+          creatorHandle: requested,
+          routingMode: "creator_hosted_storefront",
+          storefrontContract: "upstream_redirect",
+          currentCreatorUpstreamOrigin: normalizePublicOriginBase(upstreamOrigin || ""),
+          upstreamCandidates: delegatedUpstreamOrigins.length
+        },
+        "storefront_profile.redirect_to_creator_origin"
+      );
+      reply.header("Cache-Control", "no-store, no-cache, must-revalidate");
+      reply.header("Pragma", "no-cache");
+      reply.header("X-Certifyd-Profile-Source", "creator-origin-redirect");
+      return reply.redirect(target, 302);
     }
+
     req.log.warn(
       {
         creatorHandle: requested,
-        routingMode: "provider_backed",
-        storefrontContract: "upstream_proxy",
-        providerAuthorityOrigin: normalizePublicOriginBase(canonicalCommerceOrigin || ""),
-        currentCreatorUpstreamOrigin: delegatedUpstreamOrigins[0] || null,
+        routingMode: "creator_hosted_storefront",
+        storefrontContract: "upstream_redirect",
+        currentCreatorUpstreamOrigin: null,
         upstreamCandidates: delegatedUpstreamOrigins.length,
         degraded: true
       },
-      "provider_backed.storefront_profile.degraded"
+      "storefront_profile.creator_origin_unavailable"
     );
-    const canonicalBase = normalizePublicOriginBase(canonicalCommerceOrigin || "") || normalizePublicOriginBase(APP_BASE_URL);
     const degradedHtml = `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Creator storefront</title>
 <style>body{margin:0;background:#0b0b0b;color:#f4f4f5;font-family:system-ui,-apple-system,Segoe UI,sans-serif}.wrap{max-width:860px;margin:0 auto;padding:24px}.card{border:1px solid #222;background:#111;border-radius:14px;padding:18px}.muted{color:#a1a1aa}.btn{display:inline-flex;padding:10px 14px;border-radius:10px;border:1px solid #2a2a2a;color:#fff;text-decoration:none}</style>
-</head><body><main class="wrap"><section class="card"><h2 style="margin:0 0 8px;">${escHtml(asString(delegatedLink.creatorDisplayName || requested || "Creator"))}</h2><div class="muted">Creator storefront is temporarily unavailable. Canonical commerce host is still active.</div><div style="margin-top:12px;"><a class="btn" href="${escHtml(buildPublicUrlFromOrigin(canonicalBase, "/"))}">Back to provider host</a></div></section></main></body></html>`;
+</head><body><main class="wrap"><section class="card"><h2 style="margin:0 0 8px;">${escHtml(asString(delegatedLink.creatorDisplayName || requested || "Creator"))}</h2><div class="muted">Creator storefront is temporarily unavailable. Try again shortly.</div><div style="margin-top:12px;"><a class="btn" href="/">Back</a></div></section></main></body></html>`;
     reply.header("Cache-Control", "no-store, no-cache, must-revalidate");
     reply.header("Pragma", "no-cache");
     reply.header("X-Certifyd-Profile-Source", "degraded");
@@ -17512,23 +17449,7 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
   }
 
   function renderPublishProofBlock(offer){
-    const proof = offer?.publishProof || null;
-    const receiptId = String(proof?.receiptId || "").trim();
-    const manifestHash = String(proof?.manifestHash || "").trim();
-    if (!receiptId || !manifestHash) return "";
-    const publishedAt = String(proof?.publishedAt || "").trim();
-    const creatorNodeId = String(proof?.creatorNodeId || "").trim();
-    const providerNodeId = String(proof?.providerNodeId || "").trim();
-    return "<div class=\\"proof-card\\">" +
-      "<div class=\\"proof-title\\">Published to Certifyd Network</div>" +
-      "<div class=\\"proof-grid\\">" +
-        "<div><span class=\\"proof-label\\">Published at:</span> " + esc(formatProofTime(publishedAt)) + "</div>" +
-        "<div><span class=\\"proof-label\\">Manifest hash:</span> <span class=\\"code\\">" + esc(shortHash(manifestHash)) + "</span></div>" +
-        "<div><span class=\\"proof-label\\">Receipt ID:</span> <span class=\\"code\\">" + esc(shortHash(receiptId)) + "</span></div>" +
-        (creatorNodeId ? "<div><span class=\\"proof-label\\">Creator node:</span> <span class=\\"code\\">" + esc(shortHash(creatorNodeId)) + "</span></div>" : "") +
-        (providerNodeId ? "<div><span class=\\"proof-label\\">Provider node:</span> <span class=\\"code\\">" + esc(shortHash(providerNodeId)) + "</span></div>" : "") +
-      "</div>" +
-    "</div>";
+    return "";
   }
 
   function normalizePaymentState(v){
@@ -17596,24 +17517,7 @@ body{font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica
   }
 
   function renderPaymentAccessProofBlock(offer, entitlement, owned){
-    const proof = resolvePaymentAccessProof(offer, entitlement, owned);
-    const receiptId = proof.paymentReceiptId ? shortHash(proof.paymentReceiptId) : "—";
-    const paidAt = proof.paidAt ? formatProofTime(proof.paidAt) : "—";
-    const paymentMethod = proof.paymentMethod ? proof.paymentMethod : "—";
-    const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "—";
-    const entitlementLabel = proof.entitlementState === "entitled" ? "Entitled" : proof.entitlementState === "preview" ? "Preview" : "Locked";
-    return "<div class=\\"access-card\\">" +
-      "<div class=\\"access-title\\">Payment / Access Proof</div>" +
-      "<div class=\\"access-grid\\">" +
-        "<div><span class=\\"access-label\\">Access:</span> " + esc(paymentStateLabel(proof.paymentState)) + "</div>" +
-        "<div><span class=\\"access-label\\">Entitlement:</span> " + esc(entitlementLabel) + "</div>" +
-        "<div class=\\"muted\\">" + esc(paymentMessageForState(proof.paymentState)) + "</div>" +
-        "<div><span class=\\"access-label\\">Payment receipt:</span> <span class=\\"code\\">" + esc(receiptId) + "</span></div>" +
-        "<div><span class=\\"access-label\\">Paid at:</span> " + esc(paidAt) + "</div>" +
-        "<div><span class=\\"access-label\\">Payment method:</span> " + esc(paymentMethod) + "</div>" +
-        "<div><span class=\\"access-label\\">Invoice provider node:</span> <span class=\\"code\\">" + esc(providerNode) + "</span></div>" +
-      "</div>" +
-    "</div>";
+    return "";
   }
 
   async function loadAttribution(){

@@ -61,7 +61,38 @@ test("marks sovereign creator unready when dependencies are missing and delegati
 
   assert.equal(result.effectiveParticipationMode, "sovereign_creator_unready");
   assert.equal(result.effectiveCommerceHost, null);
-  assert.ok(result.readinessBlockers.some((v) => v.includes("Provider-backed infrastructure is required")));
+  assert.ok(result.readinessBlockers.some((v) => v.includes("stable named public host")));
+});
+
+test("sovereign creator keeps storefront local and can delegate only payment services", () => {
+  const result = resolveCapabilityRouting({
+    selectedParticipationMode: "sovereign_creator",
+    stablePublicHostConfigured: true,
+    temporaryEndpointActive: false,
+    canonicalCommerceConfigured: true,
+    lndReady: false,
+    chainReady: false,
+    replayReady: true,
+    providerCapable: true,
+    providerCapabilityDelegation: {
+      invoice_minting: true,
+      settlement: true,
+      payout: true,
+      commerce_host: false,
+      buyer_recovery: false,
+      replay_delivery: false
+    },
+    localCommerceHost: "https://creator.named.example",
+    localSettlementHost: "https://creator.named.example",
+    providerHost: "https://provider.example.com"
+  });
+
+  assert.equal(result.effectiveParticipationMode, "sovereign_creator_with_provider");
+  assert.equal(result.effectiveCommerceHost, "https://creator.named.example");
+  assert.equal(result.effectiveBuyerRecoveryHost, "https://creator.named.example");
+  assert.equal(result.effectiveSettlementHost, "https://provider.example.com");
+  assert.ok(!result.delegatedCapabilities.includes("commerce_host"));
+  assert.ok(result.delegatedCapabilities.includes("invoice_minting"));
 });
 
 test("basic mode remains preview/publish only without durable commerce capabilities", () => {

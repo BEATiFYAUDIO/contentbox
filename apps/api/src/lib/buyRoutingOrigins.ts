@@ -4,8 +4,8 @@ export type BuyRoutingParticipationMode =
   | "sovereign_node";
 
 export type RoutingAuthority = {
-  routingMode: "basic_preview" | "provider_backed" | "sovereign_local";
-  authoritySource: "preview_ephemeral" | "provider_durable" | "local_durable" | "fallback";
+  routingMode: "basic_preview" | "provider_services_creator_hosted" | "sovereign_local";
+  authoritySource: "preview_ephemeral" | "local_durable" | "fallback";
   canonicalCommerceOrigin: string | null;
   creatorPublicBase: string | null;
   creatorIdentityOrigin: string | null;
@@ -69,18 +69,18 @@ export function resolveRoutingAuthority(input: {
   }
 
   if (input.participationMode === "sovereign_creator_with_provider") {
-    const canonicalCommerceOrigin = providerOrigin;
+    const canonicalCommerceOrigin = stableLocalOrigin;
     const creatorPublicBase = toCreatorPublicBase(canonicalCommerceOrigin, creatorHandle);
     return {
-      routingMode: "provider_backed",
-      authoritySource: canonicalCommerceOrigin ? "provider_durable" : "fallback",
+      routingMode: "provider_services_creator_hosted",
+      authoritySource: canonicalCommerceOrigin ? "local_durable" : "fallback",
       canonicalCommerceOrigin,
       creatorPublicBase,
       creatorIdentityOrigin: creatorPublicBase || canonicalCommerceOrigin,
       previewEphemeralOrigin: pick(temporaryPreviewOrigin, localEndpointOrigin),
       stability: canonicalCommerceOrigin ? "durable" : "unknown",
       providerNodeOrigin: providerOrigin,
-      providerCreatorNamespaceReady: Boolean(canonicalCommerceOrigin && creatorPublicBase)
+      providerCreatorNamespaceReady: false
     };
   }
 
@@ -123,7 +123,7 @@ export function resolveBuyRoutingOrigins(input: {
   const previewOrigin =
     input.participationMode === "sovereign_node"
       ? pick(commerceOrigin, authority.previewEphemeralOrigin)
-      : pick(authority.previewEphemeralOrigin, commerceOrigin);
+      : pick(commerceOrigin, authority.previewEphemeralOrigin);
   return {
     commerceOrigin,
     previewOrigin,

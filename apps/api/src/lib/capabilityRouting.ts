@@ -91,25 +91,27 @@ export function resolveCapabilityRouting(input: CapabilityRoutingInput): Capabil
   const missingSovereignNodeCapabilities = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES]
     .filter((name) => !localCapabilities[name]);
 
-  if (!input.stablePublicHostConfigured) {
+  const needsHost = input.selectedParticipationMode !== "basic_creator";
+  const needsFullSovereignInfra = input.selectedParticipationMode === "sovereign_node_operator";
+  if (needsHost && !input.stablePublicHostConfigured) {
     addBlocker(readinessBlockers, "Stable public host not configured.");
   }
-  if (input.temporaryEndpointActive) {
+  if (needsHost && input.temporaryEndpointActive) {
     addBlocker(
       readinessBlockers,
       "Temporary endpoint active. Preview/testing only; durable commerce requires a stable public host."
     );
   }
-  if (!input.canonicalCommerceConfigured) {
+  if (needsHost && !input.canonicalCommerceConfigured) {
     addBlocker(readinessBlockers, "Canonical commerce host is not configured.");
   }
-  if (!input.lndReady) {
+  if (needsFullSovereignInfra && !input.lndReady) {
     addBlocker(readinessBlockers, "LND is not ready.");
   }
-  if (!input.chainReady) {
+  if (needsFullSovereignInfra && !input.chainReady) {
     addBlocker(readinessBlockers, "Chain/backend is not ready.");
   }
-  if (!input.replayReady) {
+  if (needsFullSovereignInfra && !input.replayReady) {
     addBlocker(readinessBlockers, "Replay delivery path is not ready.");
   }
 
@@ -138,22 +140,28 @@ export function resolveCapabilityRouting(input: CapabilityRoutingInput): Capabil
       }
     }
   } else {
-    const providerBackedCapabilities = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES]
+    const providerBackedCapabilities = [...SOVEREIGN_PAYMENT_CAPABILITIES]
       .filter((name) => canDelegate(name));
-    const unresolved = [...SOVEREIGN_HOST_CAPABILITIES, ...SOVEREIGN_PAYMENT_CAPABILITIES].filter((name) => !canSatisfy(name));
+    const missingHostCapabilities = SOVEREIGN_HOST_CAPABILITIES.filter((name) => !localCapabilities[name]);
+    const unresolvedPaymentCapabilities = SOVEREIGN_PAYMENT_CAPABILITIES.filter((name) => !canSatisfy(name));
     if (providerBackedCapabilities.length > 0) {
       delegatedCapabilities.push(...providerBackedCapabilities);
     }
-    if (unresolved.length === 0 && (delegatedCapabilities.length > 0 || input.providerCapable)) {
-      effectiveParticipationMode = "sovereign_creator_with_provider";
-    } else if (unresolved.length === 0) {
-      effectiveParticipationMode = "sovereign_node_operator";
-    } else {
+    if (missingHostCapabilities.length > 0) {
       effectiveParticipationMode = "sovereign_creator_unready";
       addBlocker(
         readinessBlockers,
-        `Sovereign Creator mode requires provider delegation or local readiness for: ${unresolved.join(", ")}.`
+        "Sovereign Creator mode requires a stable named public host for creator-hosted storefront and buyer recovery."
       );
+    } else if (unresolvedPaymentCapabilities.length === 0 && (delegatedCapabilities.length > 0 || input.providerCapable)) {
+      effectiveParticipationMode = "sovereign_creator_with_provider";
+    } else if (unresolvedPaymentCapabilities.length === 0) {
+      effectiveParticipationMode = "sovereign_creator_with_provider";
+    } else {
+      // Sovereign Creator remains storefront-ready with tipping defaults when payment backends are unavailable.
+      // Keep the mode effective and surface payment-readiness as an upgrade blocker instead of hard failure.
+      effectiveParticipationMode = "sovereign_creator_with_provider";
+      addBlocker(readinessBlockers, `Local invoicing services not ready: ${unresolvedPaymentCapabilities.join(", ")}.`);
     }
   }
 
