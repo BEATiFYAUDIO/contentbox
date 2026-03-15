@@ -9060,11 +9060,98 @@ function hasDetectedNamedTunnel(): boolean {
   return isPersistentOrigin(origin);
 }
 
-app.get("/api/node/mode", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send(getNodeModeStatus());
+type LocalSovereignReadiness = {
+  namedTunnelDetected: boolean;
+  localBitcoinReady: boolean;
+  localLndReady: boolean;
+  localCommerceReady: boolean;
+  ready: boolean;
+  blockers: string[];
+};
+
+async function getLocalSovereignReadiness(): Promise<LocalSovereignReadiness> {
+  const namedTunnelDetected = hasDetectedNamedTunnel();
+  const [bitcoinHealth, lndHealth] = await Promise.all([bitcoindHealthCheck(), lndHealthCheck()]);
+  const localBitcoinReady = bitcoinHealth.status === "healthy";
+  const localLndReady = lndHealth.status === "healthy";
+  // Local invoice/service readiness currently depends on local Lightning readiness.
+  const localCommerceReady = localLndReady;
+  const blockers: string[] = [];
+  if (!namedTunnelDetected) blockers.push("named_tunnel_required");
+  if (!localBitcoinReady) blockers.push("local_bitcoin_node_required");
+  if (!localLndReady) blockers.push("local_lnd_required");
+  if (!localCommerceReady) blockers.push("local_commerce_service_required");
+  return {
+    namedTunnelDetected,
+    localBitcoinReady,
+    localLndReady,
+    localCommerceReady,
+    ready: blockers.length === 0,
+    blockers
+  };
+}
+
+async function resolveCommerceAuthorityForUser(userId: string): Promise<{
+  authority: boolean;
+  providerAuthority: boolean;
+  localAuthority: boolean;
+  namedTunnelDetected: boolean;
+  providerConnected: boolean;
+  sovereignReadiness: LocalSovereignReadiness;
+}> {
+  const sovereignReadiness = await getLocalSovereignReadiness();
+  const namedTunnelDetected = sovereignReadiness.namedTunnelDetected;
+  const providerCfg = getNetworkProviderConfig();
+  const providerConnected = hasProviderPaymentTarget(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed;
+  const providerAuthority = namedTunnelDetected && providerConnected;
+  const localAuthority = sovereignReadiness.ready;
+  return {
+    authority: providerAuthority || localAuthority,
+    providerAuthority,
+    localAuthority,
+    namedTunnelDetected,
+    providerConnected,
+    sovereignReadiness
+  };
+}
+
+app.get("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const modeStatus = getNodeModeStatus();
+  const readiness = await getLocalSovereignReadiness();
+  const authority = await resolveCommerceAuthorityForUser(userId);
+  const sovereignCreatorEligible = readiness.namedTunnelDetected;
+  const sovereignNodeEligible = readiness.ready;
+  const selectedMode = modeStatus.nodeMode;
+  const effectiveMode: "basic" | "advanced" | "lan" =
+    selectedMode === "lan"
+      ? sovereignNodeEligible
+        ? "lan"
+        : sovereignCreatorEligible
+          ? "advanced"
+          : "basic"
+      : selectedMode === "advanced"
+        ? sovereignCreatorEligible
+          ? "advanced"
+          : "basic"
+        : "basic";
+  return reply.send({
+    ...modeStatus,
+    selectedMode,
+    effectiveMode,
+    modeReadiness: {
+      sovereignCreatorEligible,
+      sovereignNodeEligible,
+      ...readiness
+    },
+    commerceAuthorityAvailable: authority.authority,
+    providerCommerceConnected: authority.providerConnected,
+    localSovereignReady: authority.localAuthority
+  });
 });
 
 app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
   const modeStatus = getNodeModeStatus();
   if (modeStatus.tierLocked) {
     return reply.code(403).send({
@@ -9076,10 +9163,19 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   const body = (req.body ?? {}) as { nodeMode?: string };
   const next = validateNodeMode(body?.nodeMode);
   if (!next) return badRequest(reply, "Invalid node mode");
-  if ((next === "advanced" || next === "lan") && !hasDetectedNamedTunnel()) {
+  const readiness = await getLocalSovereignReadiness();
+  if ((next === "advanced" || next === "lan") && !readiness.namedTunnelDetected) {
     return reply.code(409).send({
       error: "NAMED_TUNNEL_REQUIRED",
       message: "Sovereign modes require a detected named tunnel / stable public host."
+    });
+  }
+  if (next === "lan" && !readiness.ready) {
+    return reply.code(409).send({
+      error: "LOCAL_SOVEREIGN_STACK_REQUIRED",
+      blockers: readiness.blockers,
+      message:
+        "Sovereign Node requires a named tunnel plus local Bitcoin, local LND, and local commerce service readiness."
     });
   }
   try {
@@ -9088,7 +9184,21 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to persist node mode", message: String(e?.message || e) });
   }
-  return reply.send(getNodeModeStatus());
+  const updatedStatus = getNodeModeStatus();
+  const authority = await resolveCommerceAuthorityForUser(userId);
+  return reply.send({
+    ...updatedStatus,
+    selectedMode: updatedStatus.nodeMode,
+    effectiveMode: updatedStatus.nodeMode,
+    modeReadiness: {
+      sovereignCreatorEligible: readiness.namedTunnelDetected,
+      sovereignNodeEligible: readiness.ready,
+      ...readiness
+    },
+    commerceAuthorityAvailable: authority.authority,
+    providerCommerceConnected: authority.providerConnected,
+    localSovereignReady: authority.localAuthority
+  });
 });
 
 app.get("/api/runtime/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -17652,7 +17762,11 @@ async function handlePublicOffer(req: any, reply: any) {
   const coverUrl = coverObjectKey ? `${baseUrl || ""}/public/content/${encodeURIComponent(content.id)}/cover` : null;
   const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
 
-  const priceSats = content.priceSats ?? null;
+  const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
+  const rawPriceSats = content.priceSats ?? null;
+  const hasStoredPrice = rawPriceSats != null && rawPriceSats > 0n;
+  const paidCommerceActive = authority.authority;
+  const priceSats = hasStoredPrice && paidCommerceActive ? rawPriceSats : null;
   const hasPrice = priceSats != null && priceSats > 0n;
   let buyerId: string | null = null;
   let entitled = Boolean(gated.entitled);
@@ -17717,7 +17831,7 @@ async function handlePublicOffer(req: any, reply: any) {
   };
 
   if (!allowDraftPreview) {
-    if (priceSats == null) {
+    if (rawPriceSats == null) {
       return reply.code(409).send({ code: "PRICE_NOT_SET", message: "Creator has not set a price yet." });
     }
   }
@@ -17729,6 +17843,9 @@ async function handlePublicOffer(req: any, reply: any) {
     type: content.type,
     manifestSha256: manifest?.sha256 || null,
     priceSats: priceSats != null ? priceSats.toString() : null,
+    commerceAuthorityAvailable: paidCommerceActive,
+    commerceAuthoritySource: authority.localAuthority ? "local_sovereign_node" : authority.providerAuthority ? "provider" : "none",
+    commerceBlockers: authority.authority ? [] : authority.sovereignReadiness.blockers,
     primaryFileId,
     primaryFileMime,
     previewObjectKey,
@@ -17791,6 +17908,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     const amountSatsInput = parseSats(body.amountSats);
     const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
     if (!content) return notFound(reply, "Content not found");
+    const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
     intentLog.sellerId = content.ownerUserId;
     intentLog.saleable = isSaleable(content);
 
@@ -17828,6 +17946,23 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     if (content.priceSats < 1n) {
       app.log.info({ ...intentLog, mappedCategory: "price_free", mappedCode: "PRICE_FREE" }, "publicPaymentsIntents.blocked");
       return reply.code(409).send({ code: "PRICE_FREE", message: "This item is free and does not require payment." });
+    }
+    if (!authority.authority) {
+      app.log.info(
+        {
+          ...intentLog,
+          mappedCategory: "commerce_authority_missing",
+          mappedCode: "COMMERCE_AUTHORITY_REQUIRED",
+          commerceBlockers: authority.sovereignReadiness.blockers
+        },
+        "publicPaymentsIntents.blocked"
+      );
+      return reply.code(409).send({
+        code: "COMMERCE_AUTHORITY_REQUIRED",
+        message:
+          "Paid unlocks require connected provider commerce services or a verified local Sovereign Node stack.",
+        blockers: authority.sovereignReadiness.blockers
+      });
     }
     const amountSats = content.priceSats;
     if (amountSatsInput > 0n && amountSatsInput !== content.priceSats) {
@@ -19837,6 +19972,17 @@ app.patch("/content/:id/price", { preHandler: requireAuth }, async (req: any, re
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
+  if (sats > 0n) {
+    const authority = await resolveCommerceAuthorityForUser(userId);
+    if (!authority.authority) {
+      return reply.code(409).send({
+        error: "COMMERCE_AUTHORITY_REQUIRED",
+        message:
+          "Paid unlocks require connected provider commerce services or a verified local Sovereign Node stack.",
+        blockers: authority.sovereignReadiness.blockers
+      });
+    }
+  }
 
   const updated = await prisma.contentItem.update({
     where: { id: contentId },

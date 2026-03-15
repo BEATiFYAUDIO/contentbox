@@ -18,12 +18,23 @@ type Health = {
 
 type NodeModeStatus = {
   nodeMode: "basic" | "advanced" | "lan";
+  selectedMode?: "basic" | "advanced" | "lan";
+  effectiveMode?: "basic" | "advanced" | "lan";
   nodeModeSource: string;
   productTier: "basic" | "advanced" | "lan";
   productTierSource: string;
   tierLocked: boolean;
   lockReason: string;
   restartRequired: boolean;
+  modeReadiness?: {
+    sovereignCreatorEligible: boolean;
+    sovereignNodeEligible: boolean;
+    namedTunnelDetected: boolean;
+    localBitcoinReady: boolean;
+    localLndReady: boolean;
+    localCommerceReady: boolean;
+    blockers: string[];
+  };
 };
 
 const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
@@ -319,17 +330,22 @@ export default function ConfigPage({
     publicStatus?.status === "online" ||
     (selectedTunnelMode === "token_bootstrap" ? quickDisabled : !namedTunnelManageableLocally);
   const selectedMode =
-    modeInfo?.nodeMode === "lan"
+    (modeInfo?.selectedMode || modeInfo?.nodeMode) === "lan"
       ? { label: "Sovereign Node", description: "Creator-hosted storefront with local invoice + commerce stack." }
-      : modeInfo?.nodeMode === "advanced"
+      : (modeInfo?.selectedMode || modeInfo?.nodeMode) === "advanced"
         ? {
             label: "Sovereign Creator",
             description: "Creator-hosted storefront with optional connected-node invoicing and commerce services."
           }
         : { label: "Basic Creator", description: "Creator-hosted storefront via temporary tunnel and tipping by default." };
-  const sovereignModeBlockedReason = namedTunnelOnline
+  const effectiveModeLabel =
+    modeInfo?.effectiveMode === "lan" ? "Sovereign Node" : modeInfo?.effectiveMode === "advanced" ? "Sovereign Creator" : "Basic Creator";
+  const sovereignCreatorEligible = Boolean(modeInfo?.modeReadiness?.sovereignCreatorEligible ?? namedTunnelOnline);
+  const sovereignNodeEligible = Boolean(modeInfo?.modeReadiness?.sovereignNodeEligible);
+  const sovereignNodeBlockers = modeInfo?.modeReadiness?.blockers || [];
+  const sovereignModeBlockedReason = sovereignCreatorEligible
     ? null
-    : "Named tunnel not detected yet. Sovereign modes unlock after stable public host detection.";
+    : "Named tunnel not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
 
@@ -753,6 +769,7 @@ export default function ConfigPage({
             >
               {selectedMode.label}
             </span>
+            <span style={{ fontSize: 12, opacity: 0.75 }}>Effective: {effectiveModeLabel}</span>
           </div>
         </div>
         <div style={{ opacity: 0.7, marginBottom: 10 }}>
@@ -782,7 +799,7 @@ export default function ConfigPage({
             />
             <span>
               <div>Basic Creator</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator identity with provider-backed infrastructure.</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator-hosted public page via temporary tunnel with tipping and preview.</div>
             </span>
           </label>
           <label htmlFor="cfg-node-mode-advanced" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
@@ -791,7 +808,7 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={modeInfo?.nodeMode === "advanced"}
-              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelOnline}
+              disabled={!modeInfo || modeBusy || modeLocked || !sovereignCreatorEligible}
               onChange={() => updateNodeMode("advanced")}
             />
             <span>
@@ -807,7 +824,7 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={modeInfo?.nodeMode === "lan"}
-              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelOnline}
+              disabled={!modeInfo || modeBusy || modeLocked || !sovereignNodeEligible}
               onChange={() => updateNodeMode("lan")}
             />
             <span>
@@ -816,6 +833,23 @@ export default function ConfigPage({
             </span>
           </label>
         </div>
+        {sovereignCreatorEligible && !sovereignNodeEligible ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+            Sovereign Creator is available now. Sovereign Node still requires local Bitcoin, local LND, and local commerce readiness.
+            Next step: connect provider commerce services.
+          </div>
+        ) : null}
+        {sovereignNodeBlockers.length > 0 ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+            Sovereign Node requirements not met:
+            <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
+              {sovereignNodeBlockers.includes("named_tunnel_required") ? <li>Named tunnel required</li> : null}
+              {sovereignNodeBlockers.includes("local_bitcoin_node_required") ? <li>Local Bitcoin node required</li> : null}
+              {sovereignNodeBlockers.includes("local_lnd_required") ? <li>Local LND required</li> : null}
+              {sovereignNodeBlockers.includes("local_commerce_service_required") ? <li>Local commerce service required</li> : null}
+            </ul>
+          </div>
+        ) : null}
         {devMode && modeInfo ? (
           <details style={{ marginTop: 10, border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "8px 10px" }}>
             <summary style={{ cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Dev Info</summary>

@@ -148,6 +148,19 @@ type ContentLibraryPageProps = {
   onOpenSplits?: (contentId: string) => void;
 };
 
+type NodeModeSnapshot = {
+  nodeMode?: "basic" | "advanced" | "lan";
+  selectedMode?: "basic" | "advanced" | "lan";
+  effectiveMode?: "basic" | "advanced" | "lan";
+  commerceAuthorityAvailable?: boolean;
+  providerCommerceConnected?: boolean;
+  localSovereignReady?: boolean;
+  modeReadiness?: {
+    namedTunnelDetected?: boolean;
+    blockers?: string[];
+  };
+};
+
 type LifecycleReceiptType =
   | "provider_acknowledgment"
   | "operation_permit"
@@ -545,6 +558,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [pendingOpenContentId, setPendingOpenContentId] = React.useState<string | null>(null);
   const [clearanceByLink, setClearanceByLink] = React.useState<Record<string, any | null>>({});
   const [clearanceLoadingByLink, setClearanceLoadingByLink] = React.useState<Record<string, boolean>>({});
+  const [nodeModeSnapshot, setNodeModeSnapshot] = React.useState<NodeModeSnapshot | null>(null);
 
   const [testPurchaseFor, setTestPurchaseFor] = React.useState<{
     contentId: string;
@@ -600,6 +614,23 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     const onPopState = () => setLibraryTypeFilter(readLibraryTypeFromUrl());
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  React.useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const snapshot = await api<NodeModeSnapshot>("/api/node/mode", "GET");
+        if (!cancelled) setNodeModeSnapshot(snapshot || null);
+      } catch {
+        if (!cancelled) setNodeModeSnapshot(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   React.useEffect(() => {
@@ -2368,12 +2399,19 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 (i) => (i.payoutMethod.code === "lightning_address" || i.payoutMethod.code === "lnurl") && i.value
               );
               const currentPriceSats = Number(it.priceSats ?? 0);
-              const paidUnlockEnabled = Number.isFinite(currentPriceSats) && currentPriceSats > 0;
+              const commerceAuthorityAvailable = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
+              const pricedButCommerceBlocked = Number.isFinite(currentPriceSats) && currentPriceSats > 0 && !commerceAuthorityAvailable;
+              const paidUnlockEnabled =
+                Number.isFinite(currentPriceSats) &&
+                currentPriceSats > 0 &&
+                commerceAuthorityAvailable;
               const creatorSales = salesByContent[it.id] || null;
               const recentSales = Array.isArray(creatorSales?.recent) ? creatorSales.recent : [];
               const lastSale = recentSales[0] || null;
               const monetizationAccessLabel = paidUnlockEnabled
                 ? "Paid unlock enabled"
+                : pricedButCommerceBlocked
+                  ? "Price set, waiting for commerce authority"
                 : lightningAvailable
                   ? "Free access with tips enabled"
                   : "Free access";
@@ -3565,6 +3603,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 {paidUnlockEnabled ? "Payment required before unlock" : "No payment required"}
                               </span>
                             </div>
+                            {!commerceAuthorityAvailable ? (
+                              <div className="text-amber-300">
+                                Paid unlocks require connected provider commerce services or verified local Sovereign Node readiness.
+                              </div>
+                            ) : null}
                             <div>
                               Recent purchases recorded: <span className="text-neutral-100">{recentSales.length}</span>
                             </div>
@@ -3606,6 +3649,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 const sats = Number(raw);
                                 if (!Number.isFinite(sats) || sats < 0) {
                                   setPriceMsg((m) => ({ ...m, [it.id]: "Price must be 0 or more." }));
+                                  return;
+                                }
+                                if (!commerceAuthorityAvailable && sats > 0) {
+                                  setPriceMsg((m) => ({
+                                    ...m,
+                                    [it.id]:
+                                      "Connect provider commerce services or verify local Sovereign Node readiness before enabling paid unlocks."
+                                  }));
                                   return;
                                 }
                                 try {
