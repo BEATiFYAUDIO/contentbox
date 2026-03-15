@@ -449,6 +449,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [runtimeRestarting, setRuntimeRestarting] = React.useState(false);
   const [runtimeMsg, setRuntimeMsg] = React.useState<string | null>(null);
   const [runtimeErr, setRuntimeErr] = React.useState<string | null>(null);
+  const [showBasicDiagnostics, setShowBasicDiagnostics] = React.useState(false);
   const [nodePresence, setNodePresence] = React.useState<NodePresence | null>(null);
   const [userNetworkStatus, setUserNetworkStatus] = React.useState<UserNetworkStatus | null>(null);
   const [guidedSetupPhase, setGuidedSetupPhase] = React.useState<GuidedSetupPhase>("idle");
@@ -1316,6 +1317,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     Boolean(namedTunnelOriginCandidate) &&
     !isTemporaryPublicOrigin(namedTunnelOriginCandidate);
   const providerConfigLocked = !hasDetectedNamedTunnel;
+  const showNetworkDiagnostics = !isBasicMode || showBasicDiagnostics;
 
   const summaryNodeModeLabel =
     networkSummary?.nodeMode === "advanced"
@@ -1746,6 +1748,36 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </div>
         </div>
 
+        {isBasicMode ? (
+          <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Basic Mode Focus</div>
+            <div className="mt-2 grid gap-2 text-xs">
+              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
+                <span className="text-neutral-500">Public page</span>
+                <span className="text-neutral-200 text-right break-all">{publicEndpoint}</span>
+              </div>
+              <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
+                <span className="text-neutral-500">Reachability</span>
+                <span className="text-neutral-200 text-right">{discoverability}</span>
+              </div>
+              <div className="flex items-start justify-between gap-3">
+                <span className="text-neutral-500">Payments</span>
+                <span className="text-neutral-200 text-right">Tips by default</span>
+              </div>
+            </div>
+            <div className="mt-3">
+              <button
+                onClick={() => setShowBasicDiagnostics((v) => !v)}
+                className="rounded-lg border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900"
+              >
+                {showBasicDiagnostics ? "Hide advanced diagnostics" : "Show advanced diagnostics"}
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {showNetworkDiagnostics ? (
+        <>
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">User Network Status</div>
           <div className="mt-2 grid gap-2 text-xs">
@@ -1949,6 +1981,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="text-xs text-neutral-500">Fallback route: IPFS ({summaryIpfsEnabled ? "enabled" : "planned"})</div>
           </div>
         </div>
+        </>
+        ) : null}
 
         {isBasicMode ? (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
