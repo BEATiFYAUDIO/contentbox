@@ -777,7 +777,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         const data = await res.json().catch(() => null);
         if (res.ok) {
           const canonical = String(data?.canonicalCommerceOrigin || "").replace(/\/$/, "");
-          setPublicOriginFromApi(canonical);
+          const resolvedPublicOrigin = String(
+            data?.publicOrigin || data?.temporaryNodeEndpointOrigin || data?.previewHost || ""
+          ).replace(/\/$/, "");
+          setPublicOriginFromApi(canonical || resolvedPublicOrigin);
           setLocalNodeOriginFromApi(String(data?.localNodeEndpointOrigin || data?.publicOrigin || "").replace(/\/$/, ""));
           setTemporaryNodeOriginFromApi(String(data?.temporaryNodeEndpointOrigin || "").replace(/\/$/, ""));
           setPaidCommerceAllowedFromApi(Boolean(data?.paidCommerceAllowed ?? true));
