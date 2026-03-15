@@ -5096,7 +5096,8 @@ async function refreshNamedHealth(origin: string) {
   try {
     const localOk = await checkLocalPublicHealth();
     const publicOk = await checkPublicPing(origin);
-    const ok = Boolean(localOk && publicOk);
+    const namedConnectedOk = publicOk ? true : await checkNamedTunnelConnected().catch(() => false);
+    const ok = Boolean(localOk && (publicOk || namedConnectedOk));
     namedHealthCache.ok = ok;
     namedHealthCache.checkedAt = Date.now();
   } finally {
@@ -5241,6 +5242,27 @@ async function checkPublicPing(publicOrigin: string): Promise<boolean> {
   try {
     const res = await fetchWithTimeout(`${base}/health`, { method: "GET" } as any, 4000);
     return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function checkNamedTunnelConnected(): Promise<boolean> {
+  const cfg = getNamedTunnelConfig();
+  const tunnelName = String(cfg?.tunnelName || "").trim().toLowerCase();
+  if (!tunnelName) return false;
+  const cloudflaredCmd = resolveCloudflaredCmd();
+  if (!cloudflaredCmd) return false;
+  try {
+    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "list", "--output", "json"]);
+    const parsed = JSON.parse(stdout || "[]");
+    const tunnels = Array.isArray(parsed) ? parsed : [];
+    const match = tunnels.find((t: any) => {
+      const name = String(t?.name || "").trim().toLowerCase();
+      const id = String(t?.id || "").trim().toLowerCase();
+      return name === tunnelName || id === tunnelName;
+    });
+    return Boolean(match && Array.isArray(match.connections) && match.connections.length > 0);
   } catch {
     return false;
   }
