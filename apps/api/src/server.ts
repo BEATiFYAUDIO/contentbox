@@ -4718,7 +4718,7 @@ function resolveProviderServiceProfile(input: {
   const temporaryNodeEndpointOrigin = activeLocalOrigin && !hasStablePublicRoute ? activeLocalOrigin : null;
 
   const providerUrl = String(providerCfg.providerUrl || "").trim().replace(/\/+$/, "") || null;
-  const providerConfigured = hasProviderPaymentTarget(providerCfg);
+  const providerConfigured = isNetworkProviderConfigured(providerCfg);
   const providerTrusted = evaluateProviderExecutionTrustReadiness().allowed;
   const hasLocalInvoiceMinting = Boolean(input.hasLocalInvoiceMinting);
   const localSovereignReady = Boolean(input.localSovereignReady);
@@ -9108,14 +9108,14 @@ async function resolveCommerceAuthorityForUser(userId: string): Promise<{
       providerAuthority: false,
       localAuthority: false,
       namedTunnelDetected: sovereignReadiness.namedTunnelDetected,
-      providerConnected: hasProviderPaymentTarget(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed,
+      providerConnected: isNetworkProviderConfigured(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed,
       sovereignReadiness
     };
   }
   const sovereignReadiness = await getLocalSovereignReadiness();
   const namedTunnelDetected = sovereignReadiness.namedTunnelDetected;
   const providerCfg = getNetworkProviderConfig();
-  const providerConnected = hasProviderPaymentTarget(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed;
+  const providerConnected = isNetworkProviderConfigured(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed;
   const providerAuthority = namedTunnelDetected && providerConnected;
   const localAuthority = sovereignReadiness.ready;
   return {
