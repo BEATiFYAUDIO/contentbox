@@ -273,11 +273,29 @@ export default function ConfigPage({
   const quickDisabled = productTier === "advanced" && namedConfigured;
   const modeLocked = Boolean(modeInfo?.tierLocked);
   const namedOriginCandidate = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
-  const namedTunnelDetected =
+  const namedTunnelOnline =
     publicStatus?.mode === "named" &&
     publicStatus?.status === "online" &&
     Boolean(namedOriginCandidate) &&
     !isTemporaryPublicOrigin(namedOriginCandidate);
+  const configuredTunnelName = String(tunnelName || publicStatus?.tunnelName || "").trim();
+  const discoveredTunnel = tunnelList.find((t) => {
+    const candidateName = String(t?.name || "").trim().toLowerCase();
+    const candidateId = String(t?.id || "").trim().toLowerCase();
+    const expected = configuredTunnelName.toLowerCase();
+    return Boolean(expected) && (candidateName === expected || candidateId === expected);
+  });
+  const discoveredTunnelName = String(discoveredTunnel?.name || discoveredTunnel?.id || "").trim() || null;
+  const namedTunnelDetected = Boolean(discoveredTunnelName);
+  const tokenBootstrapRequired = tunnelEnabled && !namedTunnelDetected;
+  const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : "token_bootstrap";
+  const cloudflaredAvailable = Boolean(publicStatus?.cloudflared?.available);
+  const startActionLabel = selectedTunnelMode === "existing_named" ? "Start named tunnel" : "Start temporary link";
+  const startActionDisabled =
+    publicBusy ||
+    publicStatus?.status === "starting" ||
+    publicStatus?.status === "online" ||
+    (selectedTunnelMode === "token_bootstrap" ? quickDisabled : !cloudflaredAvailable);
   const selectedMode =
     modeInfo?.nodeMode === "lan"
       ? { label: "Sovereign Node", description: "Creator-hosted storefront with local invoice + commerce stack." }
@@ -287,7 +305,7 @@ export default function ConfigPage({
             description: "Creator-hosted storefront with optional connected-node invoicing and commerce services."
           }
         : { label: "Basic Creator", description: "Creator-hosted storefront via temporary tunnel and tipping by default." };
-  const sovereignModeBlockedReason = namedTunnelDetected
+  const sovereignModeBlockedReason = namedTunnelOnline
     ? null
     : "Named tunnel not detected yet. Sovereign modes unlock after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
@@ -354,6 +372,9 @@ export default function ConfigPage({
         if (ok) {
           window.open(String(json.publicOrigin), "_blank", "noopener,noreferrer");
         }
+      }
+      if (res.ok && json?.mode === "named") {
+        setPublicMsg(json?.message || (json?.status === "online" ? "Named tunnel is online." : "Named tunnel start requested."));
       }
       if (!res.ok) {
         setPublicMsg(json?.message || json?.error || "Failed to start public link.");
@@ -479,6 +500,11 @@ export default function ConfigPage({
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to list tunnels");
       setTunnelList(Array.isArray(json?.tunnels) ? json.tunnels : []);
+      if (json?.namedTunnelDetected && json?.discoveredTunnelName) {
+        setNamedTokenMsg(`Existing named tunnel detected (${json.discoveredTunnelName}). Token bootstrap is not required.`);
+      } else if (json?.configuredTunnelName) {
+        setNamedTokenMsg(`Configured tunnel "${json.configuredTunnelName}" not found in discovered tunnels yet.`);
+      }
     } catch (e: any) {
       setTunnelError(e?.message || String(e));
     } finally {
@@ -488,6 +514,11 @@ export default function ConfigPage({
 
   const saveNamedToken = async (autoStart?: boolean) => {
     if (!token) return;
+    if (selectedTunnelMode === "existing_named") {
+      setNamedTokenMsg("Existing named tunnel detected. Token bootstrap is not required.");
+      if (autoStart) await startPublicLink();
+      return;
+    }
     const trimmed = namedTokenInput.trim();
     if (!trimmed) {
       setNamedTokenMsg("Paste the connector token to continue.");
@@ -503,6 +534,11 @@ export default function ConfigPage({
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to save token");
+      if (json?.skipped) {
+        setNamedTokenMsg("Existing named tunnel detected. Token save skipped.");
+        await refreshPublicStatus();
+        return;
+      }
       setNamedTokenInput("");
       setNamedTokenMsg("Token saved.");
       if (autoStart) await startPublicLink();
@@ -516,6 +552,10 @@ export default function ConfigPage({
 
   const generateNamedToken = async () => {
     if (!token) return;
+    if (selectedTunnelMode === "existing_named") {
+      setNamedTokenMsg("Existing named tunnel detected. Token generation is not required.");
+      return;
+    }
     setNamedTokenBusy(true);
     setNamedTokenMsg(null);
     try {
@@ -525,6 +565,11 @@ export default function ConfigPage({
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || "Failed to generate token");
+      if (json?.skipped) {
+        setNamedTokenMsg("Existing named tunnel detected. Token generation skipped.");
+        await refreshPublicStatus();
+        return;
+      }
       const tok = String(json?.token || "").trim();
       if (!tok) throw new Error("Token generation failed");
       setNamedTokenInput(tok);
@@ -558,14 +603,14 @@ export default function ConfigPage({
   };
 
   useEffect(() => {
-    if (!namedTunnelDetected) return;
+    if (!namedTunnelOnline) return;
     const origin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
     const host = safeHost(origin).split(":")[0] || "";
     if (!host) return;
     if (!tunnelDomain.trim()) {
       setTunnelDomain(host);
     }
-  }, [namedTunnelDetected, publicStatus?.canonicalOrigin, publicStatus?.publicOrigin, tunnelDomain]);
+  }, [namedTunnelOnline, publicStatus?.canonicalOrigin, publicStatus?.publicOrigin, tunnelDomain]);
 
   return (
     <div style={{ padding: 16, maxWidth: 980 }}>
@@ -672,7 +717,7 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={modeInfo?.nodeMode === "advanced"}
-              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelDetected}
+              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelOnline}
               onChange={() => updateNodeMode("advanced")}
             />
             <span>
@@ -688,7 +733,7 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={modeInfo?.nodeMode === "lan"}
-              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelDetected}
+              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelOnline}
               onChange={() => updateNodeMode("lan")}
             />
             <span>
@@ -871,16 +916,21 @@ export default function ConfigPage({
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-            <button
-              onClick={startPublicLink}
-              disabled={quickDisabled || publicBusy || publicStatus?.status === "starting" || publicStatus?.status === "online"}
-              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-            >
-              Start temporary link
+              <button
+                onClick={startPublicLink}
+                disabled={startActionDisabled}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+              {startActionLabel}
             </button>
-            {quickDisabled ? (
+            {selectedTunnelMode === "token_bootstrap" && quickDisabled ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
                 Temporary (testing only — admin access only). Advanced prefers named when configured.
+              </div>
+            ) : null}
+            {selectedTunnelMode === "existing_named" && !cloudflaredAvailable ? (
+              <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
+                cloudflared is unavailable on this machine, so local named-tunnel launch is disabled.
               </div>
             ) : null}
             {productTier === "advanced" && publicStatus?.mode === "quick" && publicStatus?.publicOrigin ? (
@@ -997,6 +1047,25 @@ export default function ConfigPage({
                 Named tunnel settings apply only when PUBLIC_MODE=named.
               </div>
             ) : null}
+            <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Named tunnel mode status</div>
+              <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.9 }}>
+                <div>Tunnel provider: <b>{tunnelProvider || "cloudflare"}</b></div>
+                <div>Tunnel name: <b>{configuredTunnelName || "—"}</b></div>
+                <div>Tunnel detected: <b>{namedTunnelDetected ? "yes" : "no"}</b></div>
+                <div>Tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
+                <div>Active mode: <b>{selectedTunnelMode === "existing_named" ? "Existing named tunnel" : "Token bootstrap"}</b></div>
+              </div>
+              {selectedTunnelMode === "existing_named" ? (
+                <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>
+                  Existing named tunnel detected{discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}. Token bootstrap is not required.
+                </div>
+              ) : (
+                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+                  No matching named tunnel was detected yet. Use token bootstrap only if you are setting up this tunnel for the first time.
+                </div>
+              )}
+            </div>
             <label htmlFor="tunnel-provider">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
               <input
@@ -1025,7 +1094,7 @@ export default function ConfigPage({
               <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
                 Base domain for public links (e.g. <b>contentbox.link</b>). The tunnel list does not include domains.
               </div>
-              {!namedTunnelDetected ? (
+              {!namedTunnelOnline ? (
                 <div style={{ opacity: 0.7, marginTop: 4, fontSize: 12 }}>
                   Node domain auto-fills only after a named tunnel is detected online.
                 </div>
@@ -1044,7 +1113,7 @@ export default function ConfigPage({
                 autoComplete="off"
               />
             </label>
-            {tunnelEnabled ? (
+            {tunnelEnabled && tokenBootstrapRequired ? (
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
                 <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
@@ -1094,6 +1163,9 @@ export default function ConfigPage({
                 </div>
                 {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
               </div>
+            ) : null}
+            {tunnelEnabled && selectedTunnelMode === "existing_named" && namedTokenMsg ? (
+              <div style={{ marginTop: 4, color: "#a7f3d0", fontSize: 12 }}>{namedTokenMsg}</div>
             ) : null}
             <div style={{ display: "flex", gap: 8 }}>
               <button

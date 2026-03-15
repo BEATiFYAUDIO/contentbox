@@ -9192,6 +9192,74 @@ app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, rep
   return reply.send({ ok: true, provider: provider || null, domain: domain || null, tunnelName: tunnelName || null });
 });
 
+async function detectConfiguredNamedTunnel() {
+  const cfg = getNamedTunnelConfig();
+  const fallback = getPublicOriginConfig();
+  const configuredTunnelName =
+    String(cfg?.tunnelName || "").trim() ||
+    (String(fallback?.provider || "").trim() === "cloudflare" ? String(fallback?.tunnelName || "").trim() : "") ||
+    String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
+
+  if (!configuredTunnelName) {
+    return {
+      configuredTunnelName: null,
+      namedTunnelDetected: false,
+      discoveredTunnelName: null,
+      reason: "tunnel_name_not_configured",
+      tunnels: [] as any[]
+    };
+  }
+
+  const provider = String(fallback.provider || process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
+  if (provider !== "cloudflare") {
+    return {
+      configuredTunnelName,
+      namedTunnelDetected: false,
+      discoveredTunnelName: null,
+      reason: "provider_not_cloudflare",
+      tunnels: [] as any[]
+    };
+  }
+
+  const cloudflaredCmd = resolveCloudflaredCmd();
+  if (!cloudflaredCmd) {
+    return {
+      configuredTunnelName,
+      namedTunnelDetected: false,
+      discoveredTunnelName: null,
+      reason: "cloudflared_not_available",
+      tunnels: [] as any[]
+    };
+  }
+
+  try {
+    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "list", "--output", "json"]);
+    const parsed = JSON.parse(stdout || "[]");
+    const tunnels = Array.isArray(parsed) ? parsed : [];
+    const wanted = configuredTunnelName.toLowerCase();
+    const match = tunnels.find((t: any) => {
+      const name = String(t?.name || "").trim().toLowerCase();
+      const id = String(t?.id || "").trim().toLowerCase();
+      return name === wanted || id === wanted;
+    });
+    return {
+      configuredTunnelName,
+      namedTunnelDetected: Boolean(match),
+      discoveredTunnelName: match ? String(match?.name || match?.id || "") : null,
+      reason: match ? null : "not_found",
+      tunnels
+    };
+  } catch (e: any) {
+    return {
+      configuredTunnelName,
+      namedTunnelDetected: false,
+      discoveredTunnelName: null,
+      reason: String(e?.message || "list_failed"),
+      tunnels: [] as any[]
+    };
+  }
+}
+
 app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const config = getPublicOriginConfig();
   const provider = String(config.provider || process.env.PUBLIC_TUNNEL_PROVIDER || "").trim();
@@ -9200,11 +9268,15 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
   }
 
   try {
-    const cloudflaredCmd = resolveCloudflaredCmd();
-    if (!cloudflaredCmd) return reply.code(503).send({ error: "cloudflared not available" });
-    const { stdout } = await execFileAsync(cloudflaredCmd, ["tunnel", "list", "--output", "json"]);
-    const list = JSON.parse(stdout || "[]");
-    return reply.send({ ok: true, tunnels: list });
+    const detected = await detectConfiguredNamedTunnel();
+    return reply.send({
+      ok: true,
+      tunnels: detected.tunnels,
+      configuredTunnelName: detected.configuredTunnelName,
+      namedTunnelDetected: detected.namedTunnelDetected,
+      discoveredTunnelName: detected.discoveredTunnelName,
+      reason: detected.reason
+    });
   } catch (e: any) {
     return reply.code(500).send({ error: "Failed to list tunnels", details: e?.message || String(e) });
   }
@@ -11121,7 +11193,14 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     }
     const namedToken = getNamedTunnelToken();
     const configPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null;
+    let allowDiscoveredNamedBootstrap = false;
+    let discoveredTunnelName: string | null = null;
     if (!namedToken && !configPath) {
+      const detected = await detectConfiguredNamedTunnel();
+      allowDiscoveredNamedBootstrap = detected.namedTunnelDetected;
+      discoveredTunnelName = detected.discoveredTunnelName;
+    }
+    if (!namedToken && !configPath && !allowDiscoveredNamedBootstrap) {
       return reply.code(409).send({
         ...getPublicStatus(),
         lastError: "named_token_missing",
@@ -11143,7 +11222,8 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     });
     if (status.status === "ACTIVE") {
       return reply.send({
-        ...getPublicStatus()
+        ...getPublicStatus(),
+        discoveredTunnelName
       });
     }
     return reply.code(503).send({
@@ -11211,6 +11291,16 @@ app.post("/api/public/consent/reset", { preHandler: requireAuth }, async (_req: 
 });
 
 app.post("/api/public/named-token", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const detected = await detectConfiguredNamedTunnel();
+  if (detected.namedTunnelDetected) {
+    return reply.send({
+      ok: true,
+      stored: Boolean(getNamedTunnelToken()),
+      skipped: true,
+      reason: "existing_named_tunnel_detected",
+      tunnelName: detected.discoveredTunnelName || detected.configuredTunnelName
+    });
+  }
   const body = (_req.body ?? {}) as { token?: string };
   const token = String(body?.token || "").trim();
   if (!token || token.length < 20) {
@@ -11221,6 +11311,15 @@ app.post("/api/public/named-token", { preHandler: requireAuth }, async (_req: an
 });
 
 app.post("/api/public/named-token/generate", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const detected = await detectConfiguredNamedTunnel();
+  if (detected.namedTunnelDetected) {
+    return reply.send({
+      ok: true,
+      skipped: true,
+      reason: "existing_named_tunnel_detected",
+      tunnelName: detected.discoveredTunnelName || detected.configuredTunnelName
+    });
+  }
   const cfg = getNamedTunnelConfig();
   const fallback = getPublicOriginConfig();
   const tunnelName =
