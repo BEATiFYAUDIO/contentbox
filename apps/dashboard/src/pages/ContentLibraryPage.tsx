@@ -3917,8 +3917,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                           {(() => {
                             const activeOrigin = publicStatus?.status === "online" ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "") : "";
-                            const effectivePublicOrigin = (publicOriginFromApi || activeOrigin || "").trim();
-                            const effectiveBuyOrigin = (publicOriginFromApi || publicBuyOrigin || activeOrigin || "").trim();
+                            const effectivePublicOrigin = (activeOrigin || publicOriginFromApi || "").trim();
+                            const effectiveBuyOrigin = (activeOrigin || publicOriginFromApi || publicBuyOrigin || "").trim();
                             const buyBase = (effectiveBuyOrigin || effectivePublicOrigin || "").replace(/\/$/, "");
                             const buyLink = buyBase ? `${buyBase}/buy/${it.id}` : "";
                             const embedBase = effectivePublicOrigin.replace(/\/$/, "");

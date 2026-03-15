@@ -6,6 +6,11 @@ export type DelegatedRevenueRow = {
   payout_status: "pending" | "paid" | "failed";
   payout_rail: "provider_custody" | "forwarded" | "creator_node" | null;
   last_updated: string;
+  provider_invoicing_fee_sats?: number | null;
+  provider_durable_hosting_fee_sats?: number | null;
+  payout_destination_summary?: string | null;
+  payout_destination_type?: string | null;
+  provider_remit_mode?: string | null;
 };
 
 const DB_NAME = "certifyd_local_runtime";
@@ -43,7 +48,17 @@ function sanitizeRow(row: DelegatedRevenueRow): DelegatedRevenueRow {
       row.payout_rail === "provider_custody" || row.payout_rail === "forwarded" || row.payout_rail === "creator_node"
         ? row.payout_rail
         : null,
-    last_updated: String(row.last_updated || new Date().toISOString())
+    last_updated: String(row.last_updated || new Date().toISOString()),
+    provider_invoicing_fee_sats:
+      row.provider_invoicing_fee_sats == null ? null : Number(row.provider_invoicing_fee_sats) || 0,
+    provider_durable_hosting_fee_sats:
+      row.provider_durable_hosting_fee_sats == null ? null : Number(row.provider_durable_hosting_fee_sats) || 0,
+    payout_destination_summary:
+      row.payout_destination_summary == null ? null : String(row.payout_destination_summary),
+    payout_destination_type:
+      row.payout_destination_type == null ? null : String(row.payout_destination_type),
+    provider_remit_mode:
+      row.provider_remit_mode == null ? null : String(row.provider_remit_mode)
   };
 }
 
@@ -80,4 +95,3 @@ export async function readDelegatedRevenue(): Promise<DelegatedRevenueRow[]> {
     req.onerror = () => reject(req.error || new Error("indexeddb_read_failed"));
   }).finally(() => db.close());
 }
-

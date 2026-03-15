@@ -8971,6 +8971,14 @@ function getNodeModeStatus() {
   };
 }
 
+function hasDetectedNamedTunnel(): boolean {
+  const state = getPublicStatus();
+  if (state.mode !== "named" || state.status !== "online") return false;
+  const origin = normalizePublicOriginBase(String(state.canonicalOrigin || state.publicOrigin || "").trim());
+  if (!origin) return false;
+  return isPersistentOrigin(origin);
+}
+
 app.get("/api/node/mode", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.send(getNodeModeStatus());
 });
@@ -8987,6 +8995,12 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   const body = (req.body ?? {}) as { nodeMode?: string };
   const next = validateNodeMode(body?.nodeMode);
   if (!next) return badRequest(reply, "Invalid node mode");
+  if ((next === "advanced" || next === "lan") && !hasDetectedNamedTunnel()) {
+    return reply.code(409).send({
+      error: "NAMED_TUNNEL_REQUIRED",
+      message: "Sovereign modes require a detected named tunnel / stable public host."
+    });
+  }
   try {
     await writeNodeConfig(next);
     await writeProductTier(next);
@@ -11022,6 +11036,17 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
   if (body.providerUrl !== undefined && body.providerUrl !== null) {
     const normalized = normalizeProviderUrl(body.providerUrl);
     if (!normalized) return badRequest(reply, "providerUrl must be an absolute http(s) URL");
+  }
+  const wantsProviderConfig =
+    body.enabled === true ||
+    (body.providerNodeId !== undefined && String(body.providerNodeId || "").trim().length > 0) ||
+    (body.providerUrl !== undefined && String(body.providerUrl || "").trim().length > 0) ||
+    (body.providerPubKey !== undefined && String(body.providerPubKey || "").trim().length > 0);
+  if (wantsProviderConfig && !hasDetectedNamedTunnel()) {
+    return reply.code(409).send({
+      error: "NAMED_TUNNEL_REQUIRED",
+      message: "Connect a named tunnel first. Provider commerce services unlock after stable host detection."
+    });
   }
 
   const next = setNetworkProviderConfig({
@@ -16085,6 +16110,12 @@ async function handleBuyPage(req: any, reply: any) {
     .access-title { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#93c5fd; font-weight:700; }
     .access-grid { margin-top:8px; display:grid; gap:6px; font-size:12px; color:#d4d4d8; }
     .access-label { color:#9ca3af; }
+    .proof-drawer { margin-top:16px; border:1px solid #2b2d33; border-radius:12px; background:linear-gradient(180deg, #111318 0%, #0d0f13 100%); overflow:hidden; }
+    .proof-drawer > summary { list-style:none; cursor:pointer; padding:12px 14px; display:flex; align-items:center; justify-content:space-between; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#c7d2fe; font-weight:700; border-bottom:1px solid transparent; }
+    .proof-drawer > summary::-webkit-details-marker { display:none; }
+    .proof-drawer[open] > summary { border-bottom-color:#252a36; }
+    .proof-drawer-badge { font-size:11px; color:#a1a1aa; text-transform:none; letter-spacing:0; font-weight:500; }
+    .proof-drawer-body { padding:2px 12px 12px; }
     .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; word-break:break-all; }
     .copy { font-size:12px; border:1px solid #333; background:#151515; color:#fff; padding:6px 10px; border-radius:8px; cursor:pointer; }
     .section-title { margin-top:12px; font-size:16px; font-weight:600; }
@@ -16363,6 +16394,19 @@ async function handleBuyPage(req: any, reply: any) {
     "</div>";
   }
 
+  function renderTipUnlockDetails(offer, entitlement, owned){
+    const publish = renderPublishProofBlock(offer);
+    const access = renderPaymentAccessProofBlock(offer, entitlement, owned);
+    if (!publish && !access) return "";
+    return "<details class=\\"proof-drawer\\">" +
+      "<summary><span>Tip / Unlock details</span><span class=\\"proof-drawer-badge\\">Hidden by default</span></summary>" +
+      "<div class=\\"proof-drawer-body\\">" +
+        publish +
+        access +
+      "</div>" +
+    "</details>";
+  }
+
   async function loadAttribution(){
     const cid = resolveAttributionContentId();
     if (!cid) return;
@@ -16594,8 +16638,6 @@ async function handleBuyPage(req: any, reply: any) {
       "<div>" +
         "<div style=\\"font-size:22px;font-weight:700;\\">" + (offer.title || "Content") + "</div>" +
         "<div class=\\"muted\\">" + (offer.description || "") + "</div>" +
-        renderPublishProofBlock(offer) +
-        renderPaymentAccessProofBlock(offer, null, Boolean(offer?.owned)) +
         "<section id=\\"cb-attribution\\" style=\\"display:none\\"></section>" +
         (isAudio
           ? (coverSrc
@@ -16615,6 +16657,7 @@ async function handleBuyPage(req: any, reply: any) {
         "</div>" +
         (allowDownload && mediaSrc ? "<div class=\\"download-row\\"><a class=\\"btn primary full\\" href=\\"" + mediaSrc + "\\" download>Download file</a></div>" : "") +
         tipBlock +
+        renderTipUnlockDetails(offer, null, Boolean(offer?.owned)) +
       "</div>";
     app.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
     renderAttribution();
@@ -16640,8 +16683,6 @@ async function handleBuyPage(req: any, reply: any) {
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
-        \${renderPublishProofBlock(offer)}
-        \${renderPaymentAccessProofBlock(offer, entitlement, owned)}
         <section id="cb-attribution" style="display:none"></section>
         \${isAudio ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
         \${already ? \`
@@ -16691,6 +16732,7 @@ async function handleBuyPage(req: any, reply: any) {
         <div id="rails" class="rails-wrap"></div>
         \${isPaid ? \`</div>\` : ""}
         <div id="downloads" style="margin-top:16px;"></div>
+        \${renderTipUnlockDetails(offer, entitlement, owned)}
       </div>
     \`;
     const btn = document.getElementById("buyBtn");

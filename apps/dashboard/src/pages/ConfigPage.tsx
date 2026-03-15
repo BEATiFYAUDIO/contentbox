@@ -26,30 +26,6 @@ type NodeModeStatus = {
   restartRequired: boolean;
 };
 
-type NetworkSummary = {
-  nodeMode: "basic" | "advanced" | "lan";
-  serviceRoles: {
-    creator: boolean;
-    invoiceProvider: boolean;
-    hybrid: boolean;
-  };
-  paymentCapability: {
-    localInvoiceMinting: boolean;
-    delegatedInvoiceSupport: boolean;
-    tipsOnly: boolean;
-  };
-  providerBinding: {
-    configured: boolean;
-    providerNodeId: string | null;
-  };
-};
-
-type NetworkProviderConfig = {
-  providerNodeId: string | null;
-  providerUrl: string | null;
-  enabled: boolean;
-};
-
 const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
 const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
 const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
@@ -69,6 +45,14 @@ function isPrivateHost(hostname: string): boolean {
     return n >= 16 && n <= 31;
   }
   return false;
+}
+
+function isTemporaryPublicOrigin(origin: string): boolean {
+  const host = safeHost(origin);
+  if (!host) return true;
+  const bareHost = host.split(":")[0] || host;
+  if (bareHost.endsWith(".trycloudflare.com")) return true;
+  return isPrivateHost(bareHost);
 }
 
 function readStoredValue(key: string): string {
@@ -147,8 +131,6 @@ export default function ConfigPage({
   const [modeInfo, setModeInfo] = useState<NodeModeStatus | null>(null);
   const [modeBusy, setModeBusy] = useState(false);
   const [modeMsg, setModeMsg] = useState<string | null>(null);
-  const [networkSummary, setNetworkSummary] = useState<NetworkSummary | null>(null);
-  const [providerConfig, setProviderConfig] = useState<NetworkProviderConfig | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -251,39 +233,6 @@ export default function ConfigPage({
     let cancelled = false;
     (async () => {
       try {
-        const [summaryRes, providerRes] = await Promise.all([
-          fetch(`${apiBase}/api/network/summary`, {
-            method: "GET",
-            headers: { Authorization: `Bearer ${token}` }
-          }),
-          fetch(`${apiBase}/api/network/provider`, {
-            method: "GET",
-            headers: { Authorization: `Bearer ${token}` }
-          })
-        ]);
-        const [summaryJson, providerJson] = await Promise.all([
-          summaryRes.json().catch(() => null),
-          providerRes.json().catch(() => null)
-        ]);
-        if (cancelled) return;
-        setNetworkSummary(summaryRes.ok ? (summaryJson as NetworkSummary) : null);
-        setProviderConfig(providerRes.ok ? (providerJson as NetworkProviderConfig) : null);
-      } catch {
-        if (cancelled) return;
-        setNetworkSummary(null);
-        setProviderConfig(null);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [apiBase, token, modeInfo?.nodeMode]);
-
-  useEffect(() => {
-    if (!token) return;
-    let cancelled = false;
-    (async () => {
-      try {
         const res = await fetch(`${apiBase}/api/node/mode`, {
           method: "GET",
           headers: { Authorization: `Bearer ${token}` }
@@ -323,41 +272,32 @@ export default function ConfigPage({
   const namedConfigured = Boolean(diagnosticsStatus?.publicStatus?.namedConfigured);
   const quickDisabled = productTier === "advanced" && namedConfigured;
   const modeLocked = Boolean(modeInfo?.tierLocked);
-  const providerConfigured = Boolean(
-    networkSummary?.providerBinding?.configured ||
-      (providerConfig?.enabled && providerConfig?.providerNodeId && providerConfig?.providerUrl)
-  );
-  const providerInfrastructureCapability = Boolean(
-    networkSummary?.serviceRoles?.invoiceProvider ||
-      networkSummary?.serviceRoles?.hybrid ||
-      networkSummary?.paymentCapability?.localInvoiceMinting
-  );
-  const participationMode =
-    modeInfo?.nodeMode === "basic"
-      ? {
-          label: "Basic Creator",
-          description: "Creator identity with provider-backed infrastructure."
-        }
-      : providerInfrastructureCapability
+  const namedOriginCandidate = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
+  const namedTunnelDetected =
+    publicStatus?.mode === "named" &&
+    publicStatus?.status === "online" &&
+    Boolean(namedOriginCandidate) &&
+    !isTemporaryPublicOrigin(namedOriginCandidate);
+  const selectedMode =
+    modeInfo?.nodeMode === "lan"
+      ? { label: "Sovereign Node", description: "Creator-hosted storefront with local invoice + commerce stack." }
+      : modeInfo?.nodeMode === "advanced"
         ? {
-            label: "Sovereign Creator Node",
-            description: "Runs full local infrastructure and can provide services to other creators."
+            label: "Sovereign Creator",
+            description: "Creator-hosted storefront with optional connected-node invoicing and commerce services."
           }
-        : providerConfigured
-          ? {
-              label: "Sovereign Creator (with Provider)",
-              description: "Runs a sovereign node but uses a provider for payment infrastructure."
-            }
-          : {
-              label: "Sovereign Creator Node",
-              description: "Runs full local infrastructure and can provide services to other creators."
-            };
+        : { label: "Basic Creator", description: "Creator-hosted storefront via temporary tunnel and tipping by default." };
+  const sovereignModeBlockedReason = namedTunnelDetected
+    ? null
+    : "Named tunnel not detected yet. Sovereign modes unlock after stable public host detection.";
+  const isBasicMode = modeInfo?.nodeMode === "basic";
+  const showAdvancedInfraPanels = !isBasicMode || Boolean(showAdvanced);
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
     if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
     if (nextMode === "advanced") {
       const ok = window.confirm(
-        "Switching to Sovereign Creator Node enforces single-identity local ownership. Continue?"
+        "Switching to Sovereign Creator enables creator-hosted storefront with optional connected-node commerce services. Continue?"
       );
       if (!ok) return;
     }
@@ -617,6 +557,16 @@ export default function ConfigPage({
     }
   };
 
+  useEffect(() => {
+    if (!namedTunnelDetected) return;
+    const origin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
+    const host = safeHost(origin).split(":")[0] || "";
+    if (!host) return;
+    if (!tunnelDomain.trim()) {
+      setTunnelDomain(host);
+    }
+  }, [namedTunnelDetected, publicStatus?.canonicalOrigin, publicStatus?.publicOrigin, tunnelDomain]);
+
   return (
     <div style={{ padding: 16, maxWidth: 980 }}>
       <h2 style={{ margin: "8px 0 12px" }}>Config</h2>
@@ -682,7 +632,7 @@ export default function ConfigPage({
                 color: "#e5e7eb"
               }}
             >
-              {participationMode.label}
+              {selectedMode.label}
             </span>
           </div>
         </div>
@@ -692,7 +642,10 @@ export default function ConfigPage({
         <div style={{ marginBottom: 10, fontSize: 12, color: "#a3a3a3" }}>
           This controls node infrastructure capabilities. Creator identity and content remain unchanged.
         </div>
-        <div style={{ marginBottom: 10, fontSize: 12, opacity: 0.7 }}>{participationMode.description}</div>
+        <div style={{ marginBottom: 10, fontSize: 12, opacity: 0.7 }}>{selectedMode.description}</div>
+        {sovereignModeBlockedReason ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>{sovereignModeBlockedReason}</div>
+        ) : null}
         {modeLocked ? (
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             {modeInfo?.lockReason || "Mode is locked by server environment settings."}
@@ -719,12 +672,14 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={modeInfo?.nodeMode === "advanced"}
-              disabled={!modeInfo || modeBusy || modeLocked}
+              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelDetected}
               onChange={() => updateNodeMode("advanced")}
             />
             <span>
-              <div>Sovereign Creator (with Provider)</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs a sovereign node but uses a provider for payment infrastructure.</div>
+              <div>Sovereign Creator</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>
+                Creator-hosted storefront with optional connected-node invoicing and commerce services.
+              </div>
             </span>
           </label>
           <label htmlFor="cfg-node-mode-lan" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
@@ -733,12 +688,12 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={modeInfo?.nodeMode === "lan"}
-              disabled={!modeInfo || modeBusy || modeLocked}
+              disabled={!modeInfo || modeBusy || modeLocked || !namedTunnelDetected}
               onChange={() => updateNodeMode("lan")}
             />
             <span>
-              <div>Sovereign Creator Node</div>
-              <div style={{ opacity: 0.7, fontSize: 12 }}>Runs full local infrastructure and can provide services to other creators.</div>
+              <div>Sovereign Node</div>
+              <div style={{ opacity: 0.7, fontSize: 12 }}>Creator-hosted storefront with local invoices and local commerce stack.</div>
             </span>
           </label>
         </div>
@@ -759,6 +714,7 @@ export default function ConfigPage({
         ) : null}
       </div>
 
+      {showAdvancedInfraPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
         <div style={{ opacity: 0.7, marginBottom: 8 }}>
@@ -802,7 +758,9 @@ export default function ConfigPage({
           </div>
         )}
       </div>
+      ) : null}
 
+      {showAdvancedInfraPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
         <div style={{ opacity: 0.7, marginBottom: 12 }}>
@@ -907,6 +865,7 @@ export default function ConfigPage({
           Health path used: <b>{DEFAULT_HEALTH_PATH}</b>
         </div>
       </div>
+      ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
@@ -1066,6 +1025,11 @@ export default function ConfigPage({
               <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
                 Base domain for public links (e.g. <b>contentbox.link</b>). The tunnel list does not include domains.
               </div>
+              {!namedTunnelDetected ? (
+                <div style={{ opacity: 0.7, marginTop: 4, fontSize: 12 }}>
+                  Node domain auto-fills only after a named tunnel is detected online.
+                </div>
+              ) : null}
             </label>
             <label htmlFor="tunnel-name">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Tunnel name</div>
@@ -1171,6 +1135,7 @@ export default function ConfigPage({
         )}
       </div>
 
+      {showAdvancedInfraPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
         <div><b>API base</b>: {apiBase}</div>
@@ -1185,6 +1150,7 @@ export default function ConfigPage({
           </button>
         </div>
       </div>
+      ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel status</div>

@@ -1,0 +1,5 @@
+
+> api@1.0.0 dev
+> node ../../scripts/check-prisma-provider.js && tsx watch src/server.ts
+
+[prisma-provider-check] Provider aligned: sqlite
