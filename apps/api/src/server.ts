@@ -16130,44 +16130,55 @@ async function handlePublicCredits(req: any, reply: any) {
 
 app.get("/public/content/:id/credits", handlePublicCredits);
 
-async function handlePublicNodeProfilePage(req: any, reply: any) {
-  const matchedHandle = asString((req.params as any).handle || "").trim();
+const PUBLIC_PROFILE_USER_SELECT = {
+  id: true,
+  displayName: true,
+  bio: true,
+  avatarUrl: true,
+  witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+} as const;
+
+async function resolvePublicProfileUser(handleRaw: string) {
+  const matchedHandle = asString(handleRaw || "").trim();
   const requested = normalizePublicProfileHandle(matchedHandle);
-  if (!requested) return notFound(reply, "Not found");
+  if (!requested) return null;
   const requestedAlias = matchedHandle.includes("@")
     ? normalizePublicProfileHandle(matchedHandle.split("@")[0] || "")
     : null;
   const requestedHandles = new Set([requested, requestedAlias].filter((v): v is string => Boolean(v)));
-
-  const userSelect = {
-    id: true,
-    displayName: true,
-    bio: true,
-    avatarUrl: true,
-    witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-  } as const;
-
   const maybeName = requested.replace(/[-_.]+/g, " ").trim();
+
   let user =
     await prisma.user.findFirst({
       where: { displayName: { equals: requested } },
-      select: userSelect
+      select: PUBLIC_PROFILE_USER_SELECT
     }) ||
     await prisma.user.findFirst({
       where: { displayName: { equals: maybeName } },
-      select: userSelect
+      select: PUBLIC_PROFILE_USER_SELECT
     });
 
   if (!user) {
     const candidates = await prisma.user.findMany({
       where: { displayName: { not: null } },
-      select: userSelect
+      select: PUBLIC_PROFILE_USER_SELECT
     });
     user =
       candidates.find((candidate) =>
         requestedHandles.has(normalizePublicProfileHandle(candidate.displayName) || "")
       ) || null;
   }
+
+  if (!user) return { requested, requestedAlias, requestedHandles, user: null, canonicalHandle: requested };
+  const canonicalHandle = normalizePublicProfileHandle(asString(user.displayName || "").trim()) || requested;
+  return { requested, requestedAlias, requestedHandles, user, canonicalHandle };
+}
+
+async function handlePublicNodeProfilePage(req: any, reply: any) {
+  const resolvedProfile = await resolvePublicProfileUser(asString((req.params as any).handle || "").trim());
+  if (!resolvedProfile) return notFound(reply, "Not found");
+  const { requested, requestedAlias, requestedHandles, canonicalHandle } = resolvedProfile;
+  let user = resolvedProfile.user;
   if (!user) {
     const delegatedLink =
       listProviderCreatorLinks().find((row) => {
@@ -16322,11 +16333,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   }
   const safeAvatarUrl = avatarSrc ? escHtml(avatarSrc) : "";
-  const safeHandle = escHtml(`@${requested}`);
+  const safeHandle = escHtml(`@${canonicalHandle}`);
   const safeNodeUrl = escHtml(nodeUrl);
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
-  const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
+  const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(canonicalHandle)}/proofs.json`);
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -16748,7 +16759,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     <section class="section">
       <h3>Proof bundle</h3>
-      <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(requested)}/proofs.json">proofs.json</a></div>
+      <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(canonicalHandle)}/proofs.json">proofs.json</a></div>
       <div class="line muted">Public proofs and external ownership checks will appear here.</div>
       <div class="line"><strong>Lightning:</strong> <span class="muted">${lightningConfigured ? "configured" : "not configured"}</span></div>
       <div class="line muted">Absolute bundle URL: <span class="mono">${safeProofBundleUrl}</span></div>
@@ -16766,34 +16777,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 
 // Short public link -> buy page
 async function handlePublicProofBundle(req: any, reply: any) {
-  const matchedHandle = asString((req.params as any).handle || "").trim();
-  const requested = normalizePublicProfileHandle(matchedHandle);
-  if (!requested) return notFound(reply, "Not found");
-
-  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
-  const user =
-    await prisma.user.findFirst({
-      where: { displayName: { equals: requested } },
-      select: {
-        id: true,
-        displayName: true,
-        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-      }
-    }) ||
-    await prisma.user.findFirst({
-      where: { displayName: { equals: maybeName } },
-      select: {
-        id: true,
-        displayName: true,
-        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-      }
-    });
-  if (!user) return notFound(reply, "Not found");
+  const resolvedProfile = await resolvePublicProfileUser(asString((req.params as any).handle || "").trim());
+  if (!resolvedProfile || !resolvedProfile.user) return notFound(reply, "Not found");
+  const { requested, canonicalHandle, user } = resolvedProfile;
 
   const wk = await buildWellKnownContentboxPayload(req);
   const nodeUrl = asString(wk.nodeUrl || "").trim();
   if (!nodeUrl) return notFound(reply, "Not found");
-  const profileUrl = `${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}`;
+  const profileUrl = `${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(canonicalHandle)}`;
 
   const verifiedProofs = await prisma.proofRecord.findMany({
     where: {
@@ -16866,7 +16857,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
 
   const bundle = {
     version: 1,
-    handle: requested,
+    handle: canonicalHandle,
     displayName: asString(user.displayName || ""),
     profileUrl,
     nodeUrl,

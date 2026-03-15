@@ -445,6 +445,15 @@ export default function ConfigPage({
   const temporaryEndpointDetected = Boolean(
     networkSummary?.reachability?.temporaryNodeEndpointUrl || publicStatus?.mode === "quick"
   );
+  const detectedNamedTunnelOrigin = normalizeOrigin(
+    publicStatus?.mode === "named" && publicStatus?.status === "online"
+      ? String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "")
+      : ""
+  );
+  const hasDetectedNamedTunnel = Boolean(detectedNamedTunnelOrigin);
+  const sovereignCreatorAvailable = hasDetectedNamedTunnel;
+  const providerCommerceControlsEnabled = hasDetectedNamedTunnel;
+  const commerceHostControlsEnabled = hasDetectedNamedTunnel;
   const replayCapableDetected = Boolean(
     networkSummary?.reachability?.routing?.providerDurablePlaybackAvailable ||
       networkSummary?.reachability?.routing?.creatorPlaybackAvailable
@@ -499,8 +508,8 @@ export default function ConfigPage({
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
     if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
-    if (nextMode === "advanced" && !stablePublicHostDetected) {
-      setModeMsg("Sovereign Creator requires a stable named tunnel/public host before switching modes.");
+    if (nextMode === "advanced" && !sovereignCreatorAvailable) {
+      setModeMsg("Sovereign Creator requires a detected named tunnel before switching modes.");
       return;
     }
     if (nextMode === "lan" && !canSelectSovereignNode) {
@@ -534,6 +543,12 @@ export default function ConfigPage({
       setModeBusy(false);
     }
   };
+
+  useEffect(() => {
+    if (!hasDetectedNamedTunnel) return;
+    if (normalizeOrigin(publicOrigin)) return;
+    setPublicOrigin(detectedNamedTunnelOrigin);
+  }, [hasDetectedNamedTunnel, detectedNamedTunnelOrigin, publicOrigin]);
 
   const refreshPublicStatus = async () => {
     if (!token) return;
@@ -994,6 +1009,11 @@ export default function ConfigPage({
         style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}
       >
         <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced: Connected Node Services</summary>
+        {!providerCommerceControlsEnabled ? (
+          <div style={{ marginTop: 10, marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+            Connect a named tunnel first. Provider commerce services unlock only after named tunnel detection.
+          </div>
+        ) : null}
         <div style={{ opacity: 0.75, fontSize: 13, marginTop: 10, marginBottom: 10 }}>
           Optional in Sovereign Creator mode. Connect a node for invoicing/settlement/payout services while storefront stays creator-hosted.
         </div>
@@ -1004,6 +1024,7 @@ export default function ConfigPage({
               id="provider-node-id"
               className={inputClass}
               value={providerConfig?.providerNodeId || ""}
+              disabled={!providerCommerceControlsEnabled}
               onChange={(e) =>
                 setProviderConfig((prev) => ({
                   ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1019,6 +1040,7 @@ export default function ConfigPage({
               id="provider-url"
               className={inputClass}
               value={providerConfig?.providerUrl || ""}
+              disabled={!providerCommerceControlsEnabled}
               onChange={(e) =>
                 setProviderConfig((prev) => ({
                   ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1032,6 +1054,7 @@ export default function ConfigPage({
             <input
               type="checkbox"
               checked={Boolean(providerConfig?.enabled)}
+              disabled={!providerCommerceControlsEnabled}
               onChange={(e) =>
                 setProviderConfig((prev) => ({
                   ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1049,6 +1072,7 @@ export default function ConfigPage({
               <input
                 type="checkbox"
                 checked={providerDelegation.durablePublicCommerceHost}
+                disabled={!providerCommerceControlsEnabled}
                 onChange={(e) =>
                   setProviderConfig((prev) => ({
                     ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1065,6 +1089,7 @@ export default function ConfigPage({
               <input
                 type="checkbox"
                 checked={providerDelegation.buyerRecovery}
+                disabled={!providerCommerceControlsEnabled}
                 onChange={(e) =>
                   setProviderConfig((prev) => ({
                     ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1081,6 +1106,7 @@ export default function ConfigPage({
               <input
                 type="checkbox"
                 checked={providerDelegation.bolt11Invoicing}
+                disabled={!providerCommerceControlsEnabled}
                 onChange={(e) =>
                   setProviderConfig((prev) => ({
                     ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1097,6 +1123,7 @@ export default function ConfigPage({
               <input
                 type="checkbox"
                 checked={providerDelegation.settlement}
+                disabled={!providerCommerceControlsEnabled}
                 onChange={(e) =>
                   setProviderConfig((prev) => ({
                     ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1113,6 +1140,7 @@ export default function ConfigPage({
               <input
                 type="checkbox"
                 checked={providerDelegation.payoutForwarding}
+                disabled={!providerCommerceControlsEnabled}
                 onChange={(e) =>
                   setProviderConfig((prev) => ({
                     ...(prev || { providerNodeId: null, providerUrl: null, enabled: true }),
@@ -1130,7 +1158,11 @@ export default function ConfigPage({
         <div style={{ fontSize: 12, opacity: 0.78, marginBottom: 8 }}>
           Unchecked capabilities must run locally and will require local readiness. Checked capabilities borrow provider infrastructure.
         </div>
-        <button onClick={saveProviderDelegation} disabled={providerBusy || !token} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
+        <button
+          onClick={saveProviderDelegation}
+          disabled={providerBusy || !token || !providerCommerceControlsEnabled}
+          style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+        >
           {providerBusy ? "Saving..." : "Save provider delegation"}
         </button>
         {providerMsg ? (
@@ -1171,6 +1203,8 @@ export default function ConfigPage({
                 ? selectedModeSatisfied
                   ? "current"
                   : "needs setup"
+                : index === 1 && !sovereignCreatorAvailable
+                  ? "locked"
                 : index === selectedStageIndex + 1
                   ? "next step"
                   : index > selectedStageIndex
@@ -1202,6 +1236,8 @@ export default function ConfigPage({
                           ? "#6ee7b7"
                           : status === "needs setup"
                             ? "#fbbf24"
+                          : status === "locked"
+                            ? "#9ca3af"
                           : status === "next step"
                             ? "#fbbf24"
                             : status === "completed"
@@ -1220,14 +1256,19 @@ export default function ConfigPage({
         <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
           <div style={{ fontSize: 12, opacity: 0.8 }}>
             {selectedStageIndex === 0
-              ? "Next step: Enable durable paid commerce with a provider."
+              ? sovereignCreatorAvailable
+                ? "Next step: Enable durable paid commerce with a provider."
+                : "Next step: Configure and detect a named tunnel to unlock Sovereign Creator."
               : selectedStageIndex === 1
                 ? "Next step: Become a Sovereign Node Operator to remove provider infrastructure fees."
                 : "You are operating as a Sovereign Node Operator."}
           </div>
           {selectedStageIndex < 2 ? (
-            <button onClick={goToModePicker} style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}>
-              {selectedStageIndex === 0 ? "Enable Paid Commerce" : "Become a Sovereign Node"}
+            <button
+              onClick={selectedStageIndex === 0 && !sovereignCreatorAvailable ? goToPreviewControls : goToModePicker}
+              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              {selectedStageIndex === 0 ? (sovereignCreatorAvailable ? "Enable Paid Commerce" : "Configure Named Tunnel") : "Become a Sovereign Node"}
             </button>
           ) : null}
         </div>
@@ -1449,12 +1490,17 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={selectedParticipationMode === "sovereign_with_provider"}
-              disabled={!modeInfo || modeBusy || modeLocked}
+              disabled={!modeInfo || modeBusy || modeLocked || !sovereignCreatorAvailable}
               onChange={() => updateNodeMode("advanced")}
             />
             <span>
               <div>Sovereign Creator (with Provider)</div>
               <div style={{ opacity: 0.7, fontSize: 12 }}>Creator-hosted storefront on named tunnel. Optional connected node adds invoicing and commerce services.</div>
+              {!sovereignCreatorAvailable ? (
+                <div style={{ marginTop: 4, fontSize: 12, color: "#fbbf24" }}>
+                  Locked until named tunnel is detected.
+                </div>
+              ) : null}
             </span>
           </label>
           <label htmlFor="cfg-node-mode-lan" style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8 }}>
@@ -1563,6 +1609,11 @@ export default function ConfigPage({
             Hidden by default. Enable Advanced mode to edit host overrides.
           </div>
         ) : null}
+        {!commerceHostControlsEnabled ? (
+          <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
+            Host and commerce overrides unlock after a named tunnel is detected.
+          </div>
+        ) : null}
         {!showAdvanced ? null : (
           <>
         {(partialPrimaryHosts || fallbackWithoutPrimary || fallbackDuplicatesPrimary || invalidOrigins.length > 0) && (
@@ -1584,6 +1635,7 @@ export default function ConfigPage({
               id="public-buy-origin"
               name="publicBuyOrigin"
               value={publicBuyOrigin}
+              disabled={!commerceHostControlsEnabled}
               onChange={(e) => setPublicBuyOrigin(e.target.value)}
               placeholder="https://commerce.yourdomain.com"
               className={inputClass}
@@ -1596,6 +1648,7 @@ export default function ConfigPage({
               id="public-studio-origin"
               name="publicStudioOrigin"
               value={publicStudioOrigin}
+              disabled={!commerceHostControlsEnabled}
               onChange={(e) => setPublicStudioOrigin(e.target.value)}
               placeholder="https://app.yourdomain.com"
               className={inputClass}
@@ -1608,6 +1661,7 @@ export default function ConfigPage({
               id="public-origin"
               name="publicOrigin"
               value={publicOrigin}
+              disabled={!commerceHostControlsEnabled}
               onChange={(e) => setPublicOrigin(e.target.value)}
               placeholder="https://node.yourdomain.com"
               className={inputClass}
@@ -1628,6 +1682,7 @@ export default function ConfigPage({
                 id="public-buy-origin-fallback"
                 name="publicBuyOriginFallback"
                 value={publicBuyOriginFallback}
+                disabled={!commerceHostControlsEnabled}
                 onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
                 placeholder="https://commerce.fallback.com"
                 className={inputClass}
@@ -1640,6 +1695,7 @@ export default function ConfigPage({
                 id="public-studio-origin-fallback"
                 name="publicStudioOriginFallback"
                 value={publicStudioOriginFallback}
+                disabled={!commerceHostControlsEnabled}
                 onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
                 placeholder="https://app.fallback.com"
                 className={inputClass}
@@ -1652,6 +1708,7 @@ export default function ConfigPage({
                 id="public-origin-fallback"
                 name="publicOriginFallback"
                 value={publicOriginFallback}
+                disabled={!commerceHostControlsEnabled}
                 onChange={(e) => setPublicOriginFallback(e.target.value)}
                 placeholder="https://node.fallback.com"
                 className={inputClass}
@@ -1674,12 +1731,14 @@ export default function ConfigPage({
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <button
             onClick={saveNetworking}
+            disabled={!commerceHostControlsEnabled}
             style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
           >
             Save networking
           </button>
           <button
             onClick={clearNetworking}
+            disabled={!commerceHostControlsEnabled}
             style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
           >
             Clear overrides
