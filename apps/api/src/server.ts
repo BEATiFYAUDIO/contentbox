@@ -3178,6 +3178,79 @@ function hasProviderPaymentTarget(cfg: NetworkProviderConfig): boolean {
   return Boolean(cfg.enabled && cfg.providerUrl);
 }
 
+function isNetworkProviderConfigEmpty(cfg: NetworkProviderConfig): boolean {
+  return !cfg.enabled && !cfg.providerNodeId && !cfg.providerProfileId && !cfg.providerUrl && !cfg.providerPubKey;
+}
+
+function safeRemoveFile(filePath: string) {
+  try {
+    fsSync.unlinkSync(filePath);
+  } catch {}
+}
+
+function clearProviderRuntimeStateFiles() {
+  safeRemoveFile(PROVIDER_VERIFICATION_FILE);
+  safeRemoveFile(PROVIDER_ACK_FILE);
+  safeRemoveFile(PROVIDER_OPERATION_FILE);
+  safeRemoveFile(PROFILE_NETWORK_ACTIVATION_FILE);
+}
+
+type ProviderCommerceConnectionState = {
+  providerConfigured: boolean;
+  trustReady: boolean;
+  acknowledgmentReady: boolean;
+  permitReady: boolean;
+  executionReady: boolean;
+  providerConnected: boolean;
+  reason:
+    | "connected"
+    | "not_configured"
+    | "provider_not_trusted"
+    | "provider_acknowledgment_required"
+    | "provider_execution_permit_required";
+  providerCfg: NetworkProviderConfig;
+};
+
+function deriveProviderCommerceConnectionState(providerCfgInput?: NetworkProviderConfig): ProviderCommerceConnectionState {
+  const providerCfg = providerCfgInput || getNetworkProviderConfig();
+  const providerConfigured = isNetworkProviderConfigured(providerCfg);
+  if (!providerConfigured) {
+    return {
+      providerConfigured,
+      trustReady: false,
+      acknowledgmentReady: false,
+      permitReady: false,
+      executionReady: false,
+      providerConnected: false,
+      reason: "not_configured",
+      providerCfg
+    };
+  }
+  const chain = evaluateProviderExecutionChainReadiness();
+  const trustReady = Boolean(chain.trustReadiness.allowed);
+  const acknowledgmentReady = Boolean(chain.ackReadiness.allowed);
+  const permitReady = Boolean(chain.permitReadiness.allowed);
+  const executionReady = Boolean(chain.ready);
+  const providerConnected = executionReady;
+  const reason: ProviderCommerceConnectionState["reason"] = providerConnected
+    ? "connected"
+    : !trustReady
+      ? "provider_not_trusted"
+      : !acknowledgmentReady
+        ? "provider_acknowledgment_required"
+        : "provider_execution_permit_required";
+  return {
+    providerConfigured,
+    trustReady,
+    acknowledgmentReady,
+    permitReady,
+    executionReady,
+    providerConnected,
+    reason,
+    providerCfg
+  };
+}
+
 function getLocalNodePublicPem(): string | null {
   const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
   try {
@@ -3290,16 +3363,23 @@ function setNetworkProviderConfig(input: {
   };
 
   const s = readLocalState();
-  s.networkProvider = {
-    providerNodeId: next.providerNodeId,
-    providerProfileId: next.providerProfileId,
-    providerUrl: next.providerUrl,
-    providerPubKey: next.providerPubKey,
-    enabled: next.enabled,
-    createdAt: next.createdAt,
-    updatedAt: next.updatedAt
-  };
+  if (isNetworkProviderConfigEmpty(next)) {
+    if (s.networkProvider) delete s.networkProvider;
+  } else {
+    s.networkProvider = {
+      providerNodeId: next.providerNodeId,
+      providerProfileId: next.providerProfileId,
+      providerUrl: next.providerUrl,
+      providerPubKey: next.providerPubKey,
+      enabled: next.enabled,
+      createdAt: next.createdAt,
+      updatedAt: next.updatedAt
+    };
+  }
   writeLocalState(s);
+  if (isNetworkProviderConfigEmpty(next)) {
+    clearProviderRuntimeStateFiles();
+  }
   // Invalidate posture when target/config changes; live verification repopulates observed trust state.
   persistProviderVerificationPosture(
     buildProviderVerificationResult(next, "not_configured", "Provider configuration updated. Run a live verification check.")
@@ -9097,33 +9177,55 @@ async function resolveCommerceAuthorityForUser(userId: string): Promise<{
   localAuthority: boolean;
   namedTunnelDetected: boolean;
   providerConnected: boolean;
+  providerConnectionReason: ProviderCommerceConnectionState["reason"];
   sovereignReadiness: LocalSovereignReadiness;
 }> {
+  const providerConnection = deriveProviderCommerceConnectionState();
   const modeStatus = getNodeModeStatus();
   if (modeStatus.nodeMode === "basic") {
     const sovereignReadiness = await getLocalSovereignReadiness();
-    const providerCfg = getNetworkProviderConfig();
     return {
       authority: false,
       providerAuthority: false,
       localAuthority: false,
       namedTunnelDetected: sovereignReadiness.namedTunnelDetected,
-      providerConnected: isNetworkProviderConfigured(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed,
+      providerConnected: providerConnection.providerConnected,
+      providerConnectionReason: providerConnection.reason,
       sovereignReadiness
     };
   }
   const sovereignReadiness = await getLocalSovereignReadiness();
   const namedTunnelDetected = sovereignReadiness.namedTunnelDetected;
-  const providerCfg = getNetworkProviderConfig();
-  const providerConnected = isNetworkProviderConfigured(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed;
+  const providerConnected = providerConnection.providerConnected;
   const providerAuthority = namedTunnelDetected && providerConnected;
   const localAuthority = sovereignReadiness.ready;
+  if (String(process.env.CERTIFYD_DEBUG_COMMERCE_TRUTH || "").trim() === "1") {
+    console.info(
+      "[commerce-authority]",
+      JSON.stringify({
+        userId,
+        selectedMode: modeStatus.nodeMode,
+        namedTunnelDetected,
+        providerConnected,
+        providerConnectionReason: providerConnection.reason,
+        providerConfigured: providerConnection.providerConfigured,
+        providerTrustReady: providerConnection.trustReady,
+        providerAcknowledgmentReady: providerConnection.acknowledgmentReady,
+        providerPermitReady: providerConnection.permitReady,
+        localSovereignReady: localAuthority,
+        localBitcoinReady: sovereignReadiness.localBitcoinReady,
+        localLndReady: sovereignReadiness.localLndReady,
+        localCommerceReady: sovereignReadiness.localCommerceReady
+      })
+    );
+  }
   return {
     authority: providerAuthority || localAuthority,
     providerAuthority,
     localAuthority,
     namedTunnelDetected,
     providerConnected,
+    providerConnectionReason: providerConnection.reason,
     sovereignReadiness
   };
 }
@@ -9159,6 +9261,7 @@ app.get("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: a
     },
     commerceAuthorityAvailable: authority.authority,
     providerCommerceConnected: authority.providerConnected,
+    providerCommerceConnectionReason: authority.providerConnectionReason,
     localSovereignReady: authority.localAuthority
   });
 });
@@ -9210,6 +9313,7 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
     },
     commerceAuthorityAvailable: authority.authority,
     providerCommerceConnected: authority.providerConnected,
+    providerCommerceConnectionReason: authority.providerConnectionReason,
     localSovereignReady: authority.localAuthority
   });
 });
@@ -9546,6 +9650,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const runtime = resolveRuntimeConfig();
   const ctx = getCapabilityContext();
   const providerConfig = getNetworkProviderConfig();
+  const providerConnection = deriveProviderCommerceConnectionState(providerConfig);
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
   const sovereignReadiness = await getLocalSovereignReadiness();
 
@@ -9560,7 +9665,7 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
     providerCfg: providerConfig,
     ctx
   });
-  const delegatedInvoiceSupport = serviceProfile.providerConfigured && serviceProfile.providerTrusted;
+  const delegatedInvoiceSupport = providerConnection.providerConnected;
   const payoutDestination = await resolveEffectivePayoutDestination(userId, {
     localLndReady: localInvoiceMinting,
     paymentsReadiness
@@ -9602,7 +9707,9 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       hasStablePublicRoute: serviceProfile.hasStablePublicRoute,
       hasLocalInvoiceMinting: serviceProfile.hasLocalInvoiceMinting,
       providerConfigured: serviceProfile.providerConfigured,
-      providerTrusted: serviceProfile.providerTrusted
+      providerTrusted: serviceProfile.providerTrusted,
+      providerConnected: providerConnection.providerConnected,
+      providerConnectionReason: providerConnection.reason
     },
     providerServices: {
       invoicing: {
@@ -10492,9 +10599,45 @@ app.get("/api/provider/payment-receipts", { preHandler: requireAuth }, async (_r
 
 app.get("/api/network/provider", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const cfg = getNetworkProviderConfig();
+  const providerConnection = deriveProviderCommerceConnectionState(cfg);
   return reply.send({
     ...cfg,
-    configured: isNetworkProviderConfigured(cfg)
+    configured: isNetworkProviderConfigured(cfg),
+    providerConnected: providerConnection.providerConnected,
+    providerConnectionReason: providerConnection.reason
+  });
+});
+
+app.get("/api/network/provider/diagnostics", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const cfg = getNetworkProviderConfig();
+  const localState = readLocalState();
+  const verification = getProviderVerificationStatus(cfg);
+  const acknowledgment = getProviderAcknowledgmentStatus(cfg);
+  const permit = getProviderOperationIntentStatus(cfg);
+  const trust = getProviderExecutionTrustReadiness(verification);
+  const chain = evaluateProviderExecutionChainReadiness();
+  const localSovereign = await getLocalSovereignReadiness();
+  const authority = await resolveCommerceAuthorityForUser(userId);
+  const providerConnection = deriveProviderCommerceConnectionState(cfg);
+  return reply.send({
+    providerConfig: cfg,
+    localStateNetworkProvider: localState.networkProvider || null,
+    providerConnection,
+    providerVerification: verification,
+    providerAcknowledgment: acknowledgment,
+    providerOperationPermit: permit,
+    trustReadiness: trust,
+    executionChainReadiness: chain,
+    localSovereignReadiness: localSovereign,
+    commerceAuthority: {
+      authority: authority.authority,
+      providerAuthority: authority.providerAuthority,
+      localAuthority: authority.localAuthority,
+      providerConnected: authority.providerConnected,
+      providerConnectionReason: authority.providerConnectionReason,
+      namedTunnelDetected: authority.namedTunnelDetected
+    }
   });
 });
 
@@ -11310,6 +11453,7 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
     providerUrl?: string | null;
     providerPubKey?: string | null;
     enabled?: boolean;
+    clear?: boolean;
   };
 
   if (body.providerUrl !== undefined && body.providerUrl !== null) {
@@ -11328,16 +11472,21 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
     });
   }
 
+  const clearRequested = body.clear === true || (body.enabled === false && !wantsProviderConfig);
+
   const next = setNetworkProviderConfig({
-    providerNodeId: body.providerNodeId,
-    providerProfileId: body.providerProfileId,
-    providerUrl: body.providerUrl,
-    providerPubKey: body.providerPubKey,
+    providerNodeId: clearRequested ? null : body.providerNodeId,
+    providerProfileId: clearRequested ? null : body.providerProfileId,
+    providerUrl: clearRequested ? null : body.providerUrl,
+    providerPubKey: clearRequested ? null : body.providerPubKey,
     enabled: body.enabled
   });
+  const providerConnection = deriveProviderCommerceConnectionState(next);
   return reply.send({
     ...next,
-    configured: isNetworkProviderConfigured(next)
+    configured: isNetworkProviderConfigured(next),
+    providerConnected: providerConnection.providerConnected,
+    providerConnectionReason: providerConnection.reason
   });
 });
 
