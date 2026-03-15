@@ -51,6 +51,12 @@ type WhoamiInfo = {
   } | null;
 };
 
+type NodeModeSnapshot = {
+  commerceAuthorityAvailable?: boolean;
+  providerCommerceConnected?: boolean;
+  localSovereignReady?: boolean;
+};
+
 type PageKey =
   | "library"
   | "store"
@@ -176,6 +182,7 @@ export default function App() {
   const [whoamiStatus, setWhoamiStatus] = useState<"idle" | "disabled" | "ok" | "error">(
     whoamiProbeEnabled ? "idle" : "disabled"
   );
+  const [nodeModeSnapshot, setNodeModeSnapshot] = useState<NodeModeSnapshot | null>(null);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -252,6 +259,14 @@ export default function App() {
     let alive = true;
     const refresh = async () => {
       refreshIdentityDetail();
+      try {
+        const modeSnapshot = await api<NodeModeSnapshot>("/api/node/mode", "GET");
+        if (!alive) return;
+        setNodeModeSnapshot(modeSnapshot || null);
+      } catch {
+        if (!alive) return;
+        setNodeModeSnapshot(null);
+      }
       try {
         const d: any = await api("/api/diagnostics/status", "GET");
         if (!alive) return;
@@ -390,6 +405,18 @@ export default function App() {
   const capabilityReasons = identityDetail?.capabilityReasons || {};
   const advancedInactive = productTier === "advanced" && !sovereignCapabilities.canActAsSovereignCreator;
   const canSeeProviderConsole = Boolean(sovereignCapabilities.canActAsProviderNode && nodeMode === "lan");
+  const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
+  const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
+  const isCommerceLockedPage =
+    !commerceEnabled &&
+    (page === "participations" ||
+      page === "splits" ||
+      page === "split-editor" ||
+      page === "invite" ||
+      page === "finance" ||
+      page === "sales" ||
+      page === "payouts" ||
+      page === "royalties-terms");
 
   // Navigation options for the sidebar
   const accessNav = [
@@ -579,7 +606,7 @@ export default function App() {
               <div className="space-y-1">
               {royaltiesNav.map((item: any) => {
                 const active = item.key === page;
-                const locked = nodeMode === "basic" || (item.requiresSplits && !capabilities.useSplits);
+                const locked = !commerceEnabled || (item.requiresSplits && !capabilities.useSplits);
                 return (
                   <button
                     key={item.key}
@@ -600,15 +627,15 @@ export default function App() {
                     <div className="text-sm font-medium">{item.label}</div>
                     <div className="text-xs text-neutral-400">
                       {locked
-                        ? (nodeMode === "basic" ? "This feature is not available in Basic edition." : (capabilityReasons.splits || lockReasons.advanced_splits))
+                        ? (!commerceEnabled ? commerceLockedReason : (capabilityReasons.splits || lockReasons.advanced_splits))
                         : item.hint}
                     </div>
                   </button>
                 );
               })}
-              {productTier === "basic" ? (
+              {!commerceEnabled ? (
                 <div className="text-[11px] text-neutral-500 px-3 py-1">
-                  Advanced features are locked in Basic mode.
+                  Commerce features are locked until commerce authority is active.
                 </div>
               ) : null}
               </div>
@@ -620,7 +647,7 @@ export default function App() {
                 <div className="space-y-1">
                 {advancedNav.map((item) => {
                   const active = item.key === page;
-                  const locked = item.key === "finance" && nodeMode === "basic";
+                  const locked = item.key === "finance" && !commerceEnabled;
                   return (
                     <button
                       key={item.key}
@@ -640,7 +667,7 @@ export default function App() {
                     >
                       <div className="text-sm font-medium">{item.label}</div>
                       <div className="text-xs text-neutral-400">
-                        {locked ? "This feature is not available in Basic edition." : item.hint}
+                        {locked ? commerceLockedReason : item.hint}
                       </div>
                     </button>
                   );
@@ -840,7 +867,17 @@ export default function App() {
 
               {page === "store" && <StorePage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
 
-              {page === "participations" && (
+              {isCommerceLockedPage ? (
+                <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-6 text-sm text-amber-200">
+                  <div className="text-lg font-semibold mb-2">Commerce features locked</div>
+                  <div className="mb-3">{commerceLockedReason}</div>
+                  <div className="text-xs text-amber-300/90">
+                    Storefront remains active for publishing, preview, and tipping.
+                  </div>
+                </div>
+              ) : null}
+
+              {page === "participations" && !isCommerceLockedPage && (
                 <SplitParticipationsPage
                   identityLevel={identityLevel}
                   features={features}
@@ -850,7 +887,7 @@ export default function App() {
                 />
               )}
 
-              {page === "royalties-terms" && <RoyaltiesTermsPage contentId={selectedContentId} />}
+              {page === "royalties-terms" && !isCommerceLockedPage && <RoyaltiesTermsPage contentId={selectedContentId} />}
 
               {page === "downloads" && <DownloadsPage />}
 
@@ -878,18 +915,18 @@ export default function App() {
               {page === "diagnostics" && <DiagnosticsPage whoamiInfo={whoamiInfo} whoamiStatus={whoamiStatus} />}
               {page === "provider-console" && <ProviderConsolePage />}
 
-              {page === "finance" && (
+              {page === "finance" && !isCommerceLockedPage && (
                 <ErrorBoundary>
                   <FinancePage initialTab={financeTab} nodeMode={nodeMode} />
                 </ErrorBoundary>
               )}
 
-              {page === "sales" && <SalesPage productTier={productTier} disabled={nodeMode === "basic"} />}
+              {page === "sales" && !isCommerceLockedPage && <SalesPage productTier={productTier} disabled={!commerceEnabled} />}
 
               {page === "receipt" && receiptToken && <ReceiptPage token={receiptToken} />}
 
               {/* Render InvitePage if the page is 'invite' */}
-              {page === "invite" && (
+              {page === "invite" && !isCommerceLockedPage && (
                 <InvitePage
                   token={inviteToken ?? undefined}
                   onAccepted={onAccepted}
@@ -902,7 +939,7 @@ export default function App() {
                 />
               )}
 
-              {page === "payouts" && <PayoutRailsPage />}
+              {page === "payouts" && !isCommerceLockedPage && <PayoutRailsPage />}
 
               {page === "content" && (
                 <ContentLibraryPage
@@ -921,7 +958,7 @@ export default function App() {
                 />
               )}
 
-              {page === "splits" && (
+              {page === "splits" && !isCommerceLockedPage && (
                 <SplitsPage
                   identityLevel={identityLevel}
                   features={features}
@@ -937,7 +974,7 @@ export default function App() {
                 />
               )}
 
-              {page === "split-editor" && (
+              {page === "split-editor" && !isCommerceLockedPage && (
                 <SplitEditorPage
                   identityLevel={identityLevel}
                   features={features}
