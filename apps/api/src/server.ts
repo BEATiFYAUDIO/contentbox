@@ -9099,6 +9099,19 @@ async function resolveCommerceAuthorityForUser(userId: string): Promise<{
   providerConnected: boolean;
   sovereignReadiness: LocalSovereignReadiness;
 }> {
+  const modeStatus = getNodeModeStatus();
+  if (modeStatus.nodeMode === "basic") {
+    const sovereignReadiness = await getLocalSovereignReadiness();
+    const providerCfg = getNetworkProviderConfig();
+    return {
+      authority: false,
+      providerAuthority: false,
+      localAuthority: false,
+      namedTunnelDetected: sovereignReadiness.namedTunnelDetected,
+      providerConnected: hasProviderPaymentTarget(providerCfg) && evaluateProviderExecutionTrustReadiness().allowed,
+      sovereignReadiness
+    };
+  }
   const sovereignReadiness = await getLocalSovereignReadiness();
   const namedTunnelDetected = sovereignReadiness.namedTunnelDetected;
   const providerCfg = getNetworkProviderConfig();
@@ -12430,6 +12443,7 @@ function toVersionSummary(content: {
  */
 app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  const commerceAuthority = await resolveCommerceAuthorityForUser(userId);
 
   const q = (req.query || {}) as { trash?: string; tombstones?: string; scope?: string; type?: string };
   const trash = q.trash === "1";
@@ -12587,7 +12601,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 
   return unique.map((i: any) => ({
     ...i,
-    priceSats: i.priceSats != null ? i.priceSats.toString() : null,
+    priceSats:
+      i.ownerUserId === userId && !commerceAuthority.authority
+        ? null
+        : i.priceSats != null
+          ? i.priceSats.toString()
+          : null,
     coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`,
     featureOnProfile: Boolean(i.featureOnProfile),
     tombstoned: isArchivedPublished(i)
@@ -14698,6 +14717,7 @@ async function handlePublicContent(req: any, reply: any) {
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) return notFound(reply, "Manifest not found");
+  const commerceAuthority = await resolveCommerceAuthorityForUser(content.ownerUserId);
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
   const proto = (req.headers["x-forwarded-proto"] as string | undefined) || (req.protocol as string | undefined) || "http";
@@ -14718,7 +14738,7 @@ async function handlePublicContent(req: any, reply: any) {
     tombstoned: gated.tombstoned,
     owned: gated.entitled,
     manifestSha256: manifest.sha256,
-    priceSats: content.priceSats != null ? content.priceSats.toString() : null,
+    priceSats: commerceAuthority.authority && content.priceSats != null ? content.priceSats.toString() : null,
     cover: normalizePreview((manifest.json as any)?.cover || null),
     preview: normalizePreview((manifest.json as any)?.preview || null)
   });
@@ -17347,6 +17367,10 @@ async function handleBuyPage(req: any, reply: any) {
             .then(async (offer)=> {
               currentOffer = offer;
               livePaymentProof = null;
+              if (!Boolean(offer?.commerceAuthorityAvailable)) {
+                renderBasicOffer(offer);
+                return;
+              }
               const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
               const shouldUpgradeOwnedFromPreview = Boolean(
                 alreadyOwned &&
