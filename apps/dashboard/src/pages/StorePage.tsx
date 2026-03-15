@@ -451,6 +451,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [runtimeMsg, setRuntimeMsg] = React.useState<string | null>(null);
   const [runtimeErr, setRuntimeErr] = React.useState<string | null>(null);
   const [showBasicDiagnostics, setShowBasicDiagnostics] = React.useState(false);
+  const [showProviderAdvanced, setShowProviderAdvanced] = React.useState(false);
   const [nodePresence, setNodePresence] = React.useState<NodePresence | null>(null);
   const [userNetworkStatus, setUserNetworkStatus] = React.useState<UserNetworkStatus | null>(null);
   const [guidedSetupPhase, setGuidedSetupPhase] = React.useState<GuidedSetupPhase>("idle");
@@ -1318,6 +1319,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     Boolean(namedTunnelOriginCandidate) &&
     !isTemporaryPublicOrigin(namedTunnelOriginCandidate);
   const providerConfigLocked = !hasDetectedNamedTunnel;
+  const isSovereignCreatorMode = resolvedNodeMode === "advanced";
+  const showAdvancedProviderPanels = !isSovereignCreatorMode || showProviderAdvanced;
   const showNetworkDiagnostics = !isBasicMode || showBasicDiagnostics;
 
   const summaryNodeModeLabel =
@@ -2006,6 +2009,21 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               Named tunnel required before provider configuration. Bring a named tunnel online first.
             </div>
           ) : null}
+          {isSovereignCreatorMode ? (
+            <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
+              <div className="text-xs text-neutral-300">
+                Sovereign Creator only needs provider connection details by default. Protocol verification and post-ready controls are in Advanced.
+              </div>
+              <button
+                onClick={() => setShowProviderAdvanced((v) => !v)}
+                className="mt-2 rounded-lg border border-neutral-800 px-3 py-1.5 text-xs hover:bg-neutral-900"
+              >
+                {showProviderAdvanced ? "Hide advanced provider controls" : "Show advanced provider controls"}
+              </button>
+            </div>
+          ) : null}
+          {showAdvancedProviderPanels ? (
+          <>
           <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Guided setup</div>
             <div className="mt-1 text-xs text-neutral-200">Current step: {guidedSetupPhaseLabel}</div>
@@ -2309,6 +2327,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             ) : null}
             {receiptsErr ? <div className="mt-2 text-xs text-rose-300">{receiptsErr}</div> : null}
           </div>
+          </>
+          ) : null}
           <div className="mt-2 text-xs">
             {networkSummary?.providerBinding?.configured
               ? "Provider configured, but delegated invoice support is not active yet."
