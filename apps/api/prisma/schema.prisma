@@ -711,6 +711,67 @@ model SettlementLine {
   @@index([settlementId])
 }
 
+model ProviderPaymentParticipantAllocation {
+  id                    String   @id @default(cuid())
+  providerPaymentIntentId String
+  paymentIntentId       String
+  contentId             String?
+  creatorNodeId         String
+  participantRef        String
+  participantId         String?
+  splitParticipantId    String?
+  participantUserId     String?
+  participantEmail      String?
+  role                  String?
+  roleKey               String   @default("")
+  bps                   Int
+  amountSats            BigInt
+  allocationSource      String
+  allocationVersion     Int      @default(1)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  payouts ParticipantPayout[]
+
+  @@unique([providerPaymentIntentId, participantRef, roleKey])
+  @@index([providerPaymentIntentId])
+  @@index([paymentIntentId])
+}
+
+model ParticipantPayout {
+  id                    String   @id @default(cuid())
+  allocationId          String   @unique
+  providerPaymentIntentId String
+  paymentIntentId       String
+  amountSats            BigInt
+  status                String
+  payoutRail            String?
+  destinationType       String?
+  destinationSummary    String?
+  readinessReason       String?
+  destinationResolvedAt DateTime?
+  destinationSource     String?
+  destinationFingerprint String?
+  attemptCount          Int      @default(0)
+  attemptId             String?
+  lockedAt              DateTime?
+  lastCheckedAt         DateTime?
+  nextRetryAt           DateTime?
+  lastAttemptAt         DateTime?
+  payoutReference       String?
+  lastError             String?
+  blockedReason         String?
+  remittedAt            DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  allocation ProviderPaymentParticipantAllocation @relation(fields: [allocationId], references: [id], onDelete: Cascade)
+
+  @@index([providerPaymentIntentId])
+  @@index([paymentIntentId])
+  @@index([status])
+}
+
 model WitnessIdentity {
   id          String   @id @default(cuid())
   userId      String   @unique
