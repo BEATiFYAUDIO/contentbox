@@ -16,6 +16,14 @@ type ProviderSummary = {
     creatorNetPendingSats: string;
     creatorNetFailedSats?: string;
   };
+  participantPayouts?: {
+    pending: number;
+    ready: number;
+    forwarding: number;
+    paid: number;
+    failed: number;
+    blocked: number;
+  };
 };
 
 type ProviderCreatorLink = {
@@ -92,6 +100,35 @@ type ProviderPaymentReceipt = {
   updatedAt: string;
 };
 
+type ParticipantPayoutRow = {
+  id: string;
+  allocationId: string;
+  providerPaymentIntentId: string;
+  paymentIntentId: string;
+  amountSats: string;
+  status: "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked";
+  payoutRail: "provider_custody" | "forwarded" | "creator_node" | null;
+  destinationType: string | null;
+  destinationSummary: string | null;
+  readinessReason: string | null;
+  attemptCount: number;
+  attemptId: string | null;
+  payoutReference: string | null;
+  lastError: string | null;
+  blockedReason: string | null;
+  remittedAt: string | null;
+  lastCheckedAt: string | null;
+  updatedAt: string;
+  allocation?: {
+    participantRef: string;
+    participantUserId: string | null;
+    participantEmail: string | null;
+    role: string | null;
+    bps: number;
+    amountSats: string;
+  } | null;
+};
+
 function formatDate(value: string | null | undefined) {
   if (!value) return "—";
   const t = Date.parse(value);
@@ -143,6 +180,7 @@ export default function ProviderConsolePage() {
   const [delegatedPublishes, setDelegatedPublishes] = useState<ProviderDelegatedPublish[]>([]);
   const [paymentIntents, setPaymentIntents] = useState<ProviderPaymentIntent[]>([]);
   const [paymentReceipts, setPaymentReceipts] = useState<ProviderPaymentReceipt[]>([]);
+  const [participantPayouts, setParticipantPayouts] = useState<ParticipantPayoutRow[]>([]);
   const [remitBusyId, setRemitBusyId] = useState<string | null>(null);
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<
     "all" | "created" | "issued" | "paid" | "cancelled" | "expired"
@@ -153,18 +191,20 @@ export default function ProviderConsolePage() {
     setLoading(true);
     setError(null);
     try {
-      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes] = await Promise.all([
+      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes] = await Promise.all([
         api<ProviderSummary>("/api/provider/summary", "GET"),
         api<{ items: ProviderCreatorLink[] }>("/api/provider/creator-links", "GET"),
         api<{ items: ProviderDelegatedPublish[] }>("/api/provider/delegated-publishes", "GET"),
         api<{ items: ProviderPaymentIntent[] }>("/api/provider/payment-intents", "GET"),
-        api<{ items: ProviderPaymentReceipt[] }>("/api/provider/payment-receipts", "GET")
+        api<{ items: ProviderPaymentReceipt[] }>("/api/provider/payment-receipts", "GET"),
+        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET")
       ]);
       setSummary(summaryRes || null);
       setCreatorLinks(Array.isArray(creatorLinksRes?.items) ? creatorLinksRes.items : []);
       setDelegatedPublishes(Array.isArray(delegatedPublishesRes?.items) ? delegatedPublishesRes.items : []);
       setPaymentIntents(Array.isArray(paymentIntentsRes?.items) ? paymentIntentsRes.items : []);
       setPaymentReceipts(Array.isArray(paymentReceiptsRes?.items) ? paymentReceiptsRes.items : []);
+      setParticipantPayouts(Array.isArray(participantPayoutsRes?.items) ? participantPayoutsRes.items : []);
     } catch (e: any) {
       setError(e?.message || "Failed to load provider console.");
     } finally {
@@ -240,6 +280,64 @@ export default function ProviderConsolePage() {
             <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
           </div>
         ))}
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="text-sm font-semibold">Participant Payout Execution</div>
+        <div className="mt-1 text-xs text-neutral-500">Per-participant payout rows are execution truth when participant mode is active.</div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
+          {(["pending", "ready", "forwarding", "paid", "failed", "blocked"] as const).map((k) => (
+            <div key={k} className="rounded border border-neutral-800 px-3 py-2">
+              <div className="text-[11px] uppercase tracking-wide text-neutral-500">{k}</div>
+              <div className="text-lg font-semibold text-neutral-100">
+                {Number(summary?.participantPayouts?.[k] || 0).toLocaleString()}
+              </div>
+            </div>
+          ))}
+        </div>
+        {participantPayouts.length === 0 ? (
+          <div className="mt-3 text-sm text-neutral-400">No participant payout rows yet.</div>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-neutral-400">
+                  <th className="py-2 pr-3 font-medium">Participant</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="py-2 pr-3 font-medium">Amount</th>
+                  <th className="py-2 pr-3 font-medium">Destination</th>
+                  <th className="py-2 pr-3 font-medium">Reason</th>
+                  <th className="py-2 pr-3 font-medium">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {participantPayouts.slice(0, 200).map((row) => (
+                  <tr key={row.id} className="border-t border-neutral-800/80 align-top text-neutral-200">
+                    <td className="py-2 pr-3">
+                      <div>{row.allocation?.participantEmail || row.allocation?.participantUserId || row.allocation?.participantRef || "—"}</div>
+                      <div className="text-xs text-neutral-500">{row.allocation?.role || "—"}</div>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>
+                        {row.status}
+                      </span>
+                    </td>
+                    <td className="py-2 pr-3">{sats(row.amountSats)} sats</td>
+                    <td className="py-2 pr-3">
+                      <div>{row.destinationSummary || row.destinationType || "—"}</div>
+                      <div className="text-xs text-neutral-500">{row.payoutRail || "—"}</div>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{row.readinessReason || row.blockedReason || "—"}</div>
+                      {row.lastError ? <div className="text-xs text-rose-300">{row.lastError}</div> : null}
+                    </td>
+                    <td className="py-2 pr-3">{formatDate(row.updatedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
