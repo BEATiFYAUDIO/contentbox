@@ -7975,6 +7975,38 @@ async function handlePublicUser(req: any, reply: any) {
 
 app.get("/public/users/:id", handlePublicUser);
 
+async function signInviteAcceptancePayload(token: string, userId: string): Promise<{ payload: any; signature: string }> {
+  const payload = { token, remoteUserId: userId, nodeUrl: APP_BASE_URL, ts: new Date().toISOString() };
+  const payloadStr = JSON.stringify(payload);
+  const privPath = path.join(CONTENTBOX_ROOT, ".node", "node_private.pem");
+  const privPem = await fs.readFile(privPath, "utf8");
+  const sigBuf = (crypto.sign as any)(null, Buffer.from(payloadStr), privPem) as Buffer;
+  return { payload, signature: sigBuf.toString("base64") };
+}
+
+app.get("/api/local/signing-capability", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = asString((req.user as JwtUser)?.sub || "").trim();
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+  const keyVerified = await hasVerifiedParticipantKey(userId);
+  let canSign = false;
+  let reason: string | null = null;
+  try {
+    await fs.access(path.join(CONTENTBOX_ROOT, ".node", "node_private.pem"), fsSync.constants.R_OK);
+    canSign = true;
+  } catch {
+    canSign = false;
+    reason = "INVITE_KEY_MISSING";
+  }
+  return reply.send({
+    ok: true,
+    userId,
+    email: user?.email || null,
+    keyVerified,
+    canSign,
+    reason
+  });
+});
+
 // Local node: sign an acceptance payload for a token (used when accepting on a remote owner node)
 app.post("/local/sign-acceptance", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const token = asString((req.body ?? {})?.token || "");
@@ -7982,15 +8014,9 @@ app.post("/local/sign-acceptance", { preHandler: requireAuth }, async (req: any,
 
   const userId = (req.user as JwtUser).sub;
 
-  const payload = { token, remoteUserId: userId, nodeUrl: APP_BASE_URL, ts: new Date().toISOString() };
-  const payloadStr = JSON.stringify(payload);
-
   try {
-    const privPath = path.join(CONTENTBOX_ROOT, ".node", "node_private.pem");
-    const privPem = await fs.readFile(privPath, "utf8");
-    const sigBuf = (crypto.sign as any)(null, Buffer.from(payloadStr), privPem) as Buffer;
-    const signature = sigBuf.toString("base64");
-    return reply.send({ payload, signature });
+    const signed = await signInviteAcceptancePayload(token, userId);
+    return reply.send(signed);
   } catch (e: any) {
     return reply.code(500).send({ error: String((e as any)?.message || String(e)) });
   }
@@ -10891,6 +10917,8 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
   }
   const token = asString((req.params as any).token);
   const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  const localUserId = asString((req.user as JwtUser)?.sub || "").trim();
+  const authHeaderPresent = Boolean(asString(req?.headers?.authorization || "").trim());
   if (!token) return badRequest(reply, "token required");
   if (!origin) return badRequest(reply, "invalid origin");
   if (!(await isOriginReachable(origin))) {
@@ -10898,20 +10926,72 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
   }
 
   try {
+    let signedPayload: { payload: any; signature: string } | null = null;
+    try {
+      signedPayload = await signInviteAcceptancePayload(token, localUserId);
+    } catch (e: any) {
+      app.log.warn(
+        {
+          token,
+          origin,
+          authHeaderPresent,
+          localUserId: localUserId || null,
+          signingError: String(e?.message || e)
+        },
+        "remoteInvite.accept.signingUnavailable"
+      );
+      return reply.code(409).send({
+        error: "This device cannot sign invite acceptance payloads.",
+        code: "INVITE_KEY_MISSING",
+        details: String(e?.message || e)
+      });
+    }
+    const outboundBody = {
+      ...(req.body ?? {}),
+      payload: signedPayload.payload,
+      signature: signedPayload.signature,
+      remoteNodeUrl: signedPayload.payload.nodeUrl,
+      remoteUserId: signedPayload.payload.remoteUserId
+    };
     const res = await fetchWithTimeout(
       `${origin}/invites/${encodeURIComponent(token)}/accept`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" } as any,
-        body: JSON.stringify(req.body ?? {})
+        body: JSON.stringify(outboundBody)
       } as any,
       8000
     );
     const text = await res.text();
-    reply.code(res.status);
-    reply.type("application/json");
-    return reply.send(text);
+    let payload: any = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = { error: text || `HTTP_${res.status}` };
+    }
+    app.log.info(
+      {
+        token,
+        origin,
+        authHeaderPresent,
+        localUserId: localUserId || null,
+        remoteStatus: res.status,
+        remoteCode: asString(payload?.code || payload?.error || "")
+      },
+      "remoteInvite.accept.proxyResult"
+    );
+    return reply.code(res.status).send(payload);
   } catch (e: any) {
+    app.log.warn(
+      {
+        token,
+        origin,
+        authHeaderPresent,
+        localUserId: localUserId || null,
+        error: String(e?.message || e)
+      },
+      "remoteInvite.accept.proxyFailed"
+    );
     return reply.code(502).send({ error: "Remote invite accept failed", details: String(e?.message || e) });
   }
 });
@@ -25708,7 +25788,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
           document.getElementById("status").textContent = "Sign in to accept on this surface, or continue in dashboard.";
         } else if (msg.includes("INVITE_KEY_UNVERIFIED")) {
           document.getElementById("status").textContent = "Verify your key before accepting this invite.";
-        } else if (msg.includes("INVITE_TARGET_MISMATCH") || msg.includes("INVITE_EMAIL_MISMATCH")) {
+        } else if (msg.includes("INVITE_WRONG_RECIPIENT") || msg.includes("INVITE_TARGET_MISMATCH") || msg.includes("INVITE_EMAIL_MISMATCH")) {
           document.getElementById("status").textContent = "Wrong signed-in identity for this invite target.";
         } else {
           document.getElementById("status").textContent = msg;
@@ -25746,21 +25826,84 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     });
   }
 
-  // Require auth to bind invite acceptance to a concrete Certifyd participant identity.
+  // Optional P2P acceptance info supplied by a remote node
+  const remoteNodeUrl = asString((req.body ?? {})?.remoteNodeUrl || "").replace(/\/$/, "");
+  const remoteUserId = asString((req.body ?? {})?.remoteUserId || "").trim();
+  const signature = asString((req.body ?? {})?.signature || "");
+  const payload = (req.body ?? {})?.payload ?? null;
+
+  // Prefer local JWT auth when available. If absent, allow remote signed
+  // acceptance payloads (used by cross-node invite acceptance).
   let userId: string | undefined;
+  let acceptanceAuthMode: "local_auth" | "remote_signature" | "none" = "none";
   try {
     await req.jwtVerify();
     userId = (req.user as JwtUser)?.sub;
+    if (userId) acceptanceAuthMode = "local_auth";
   } catch {
     userId = undefined;
   }
+
+  // If no local auth user, try to validate remote signed acceptance context.
+  let remoteVerified = false;
+  if (!userId && remoteNodeUrl && remoteUserId && signature && payload) {
+    try {
+      const disco = await fetch(`${remoteNodeUrl.replace(/\/$/, "")}/.well-known/contentbox`, {
+        method: "GET",
+        headers: { Accept: "application/json" } as any
+      } as any);
+      let remotePub: string | null = null;
+      if (disco && disco.ok) {
+        try {
+          const j: any = await disco.json();
+          remotePub = j?.publicKeyPem || null;
+        } catch {
+          remotePub = null;
+        }
+      }
+      if (remotePub) {
+        const payloadStr = JSON.stringify(payload);
+        const payloadOk =
+          String(payload?.token || "") === token &&
+          String(payload?.remoteUserId || "") === remoteUserId &&
+          String(payload?.nodeUrl || "").replace(/\/$/, "") === remoteNodeUrl;
+        const ts = Date.parse(String(payload?.ts || ""));
+        const tsOk = Number.isFinite(ts) && Math.abs(Date.now() - ts) < 15 * 60 * 1000;
+        if (payloadOk && tsOk) {
+          const sigBuf = Buffer.from(signature, "base64");
+          try {
+            remoteVerified = Boolean((crypto.verify as any)(null, Buffer.from(payloadStr), remotePub, sigBuf));
+          } catch {
+            remoteVerified = false;
+          }
+        }
+      }
+      if (remoteVerified) {
+        userId = remoteUserId;
+        acceptanceAuthMode = "remote_signature";
+      }
+    } catch {
+      remoteVerified = false;
+    }
+  }
+
   if (!userId) {
+    app.log.info(
+      {
+        token,
+        acceptanceAuthMode,
+        authHeaderPresent: Boolean(asString(req?.headers?.authorization || "").trim()),
+        remoteNodeUrl: remoteNodeUrl || null,
+        remoteUserId: remoteUserId || null
+      },
+      "splitInvite.accept.authRequired"
+    );
     return reply.code(401).send({
       error: "Authentication required to accept invite",
       code: "INVITE_AUTH_REQUIRED"
     });
   }
-  const verifiedKey = await hasVerifiedParticipantKey(userId);
+  const verifiedKey = acceptanceAuthMode === "local_auth" ? await hasVerifiedParticipantKey(userId) : true;
   if (!verifiedKey) {
     return reply.code(409).send({
       error: "Verified key required before accepting split invite",
@@ -25837,24 +25980,25 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   });
   const meEmail = normalizeEmail(me?.email || "");
   if (inviteTargetType === "local_user" && inviteTargetValue !== userId) {
-    return reply.code(403).send({ error: "Invite is bound to a different identity", code: "INVITE_TARGET_MISMATCH" });
+    return reply.code(403).send({
+      error: "Invite is bound to a different identity",
+      code: "INVITE_WRONG_RECIPIENT",
+      reason: "target_mismatch"
+    });
   }
   if (inviteTargetType === "email") {
     if (!meEmail || normalizeEmail(inviteTargetValue) !== meEmail) {
-      return reply.code(403).send({ error: "Invite email does not match your identity", code: "INVITE_EMAIL_MISMATCH" });
+      return reply.code(403).send({
+        error: "Invite email does not match your identity",
+        code: "INVITE_WRONG_RECIPIENT",
+        reason: "email_mismatch"
+      });
     }
   }
 
-  // Optional P2P acceptance info supplied by a remote node
-  const remoteNodeUrl = asString((req.body ?? {})?.remoteNodeUrl || "").replace(/\/$/, "");
-  const remoteUserId = asString((req.body ?? {})?.remoteUserId || "").trim();
-  const signature = asString((req.body ?? {})?.signature || "");
-  const payload = (req.body ?? {})?.payload ?? null;
-
-  // If remote info is provided, try to verify the remote node and user exist.
-  // Prefer verifying a provided signature + payload (stronger). If not provided, fall back to simple public user check.
-  let remoteVerified = false;
-  if (remoteNodeUrl && remoteUserId) {
+  // If local auth accepted the request and remote info is also provided, verify
+  // remote context for audit visibility.
+  if (acceptanceAuthMode === "local_auth" && remoteNodeUrl && remoteUserId) {
     try {
       // Fetch discovery info from remote node
       const disco = await fetch(`${remoteNodeUrl.replace(/\/$/, "")}/.well-known/contentbox`, { method: "GET", headers: { "Accept": "application/json" } as any } as any);

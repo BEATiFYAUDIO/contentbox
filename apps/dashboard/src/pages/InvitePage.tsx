@@ -142,8 +142,10 @@ function isActiveInviteStatus(status: string): boolean {
 function mapAcceptErrorMessage(raw: string): string {
   const text = String(raw || "");
   if (text.includes("INVITE_AUTH_REQUIRED")) return "Sign in to accept this invite.";
+  if (text.includes("INVITE_WRONG_RECIPIENT")) return "Signed in as wrong recipient for this invite.";
   if (text.includes("INVITE_TARGET_MISMATCH")) return "You are signed in as the wrong user for this invite.";
   if (text.includes("INVITE_EMAIL_MISMATCH")) return "Signed-in email does not match this invite target.";
+  if (text.includes("INVITE_KEY_MISSING")) return "This device cannot sign invite acceptance.";
   if (text.includes("INVITE_KEY_UNVERIFIED")) return "Verify your key before accepting this invite.";
   return text;
 }
@@ -213,6 +215,7 @@ export default function InvitePage({
   const [pasteRaw, setPasteRaw] = useState<string>("");
   const [pasteMsg, setPasteMsg] = useState<string | null>(null);
   const [remoteOriginReachable, setRemoteOriginReachable] = useState<boolean | null>(null);
+  const [localSigning, setLocalSigning] = useState<{ userId: string | null; email: string | null; canSign: boolean; keyVerified: boolean; reason: string | null } | null>(null);
 
   useEffect(() => {
     if (isBasic) return;
@@ -421,8 +424,18 @@ export default function InvitePage({
       try {
         const m = await api<any>(`/me`, "GET");
         setMe(m || null);
+        try {
+          const lc = await api<{ userId: string | null; email: string | null; canSign: boolean; keyVerified: boolean; reason: string | null }>(
+            "/api/local/signing-capability",
+            "GET"
+          );
+          setLocalSigning(lc || null);
+        } catch {
+          setLocalSigning(null);
+        }
       } catch {
         setMe(null);
+        setLocalSigning(null);
       }
     })();
   }, [tokenToUse, remoteOriginFromLocation, splitsAllowed, isBasic]);
@@ -695,9 +708,36 @@ export default function InvitePage({
       setMsg("Remote invite is missing token or origin.");
       return;
     }
+    if (!me) {
+      setMsg("Sign in to accept.");
+      return;
+    }
+    if (localSigning?.canSign === false) {
+      setMsg("This device cannot sign invite acceptance.");
+      return;
+    }
+    if (localSigning?.keyVerified === false) {
+      setMsg("Verify your key before accepting this invite.");
+      return;
+    }
     if (!(await checkRemoteOriginReachable(origin))) {
       setMsg("Shared invite host is not reachable. Copy token or configure a working public invite origin.");
       return;
+    }
+    try {
+      const preview = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}`, { method: "GET" });
+      const targetType = String(preview?.targetType || "").trim().toLowerCase();
+      const targetValue = String(preview?.targetValue || "").trim();
+      if (targetType === "local_user" && targetValue && me.id && targetValue !== me.id) {
+        setMsg("Signed in as wrong recipient for this invite.");
+        return;
+      }
+      if (targetType === "email" && targetValue && me.email && normalizeEmail(targetValue) !== normalizeEmail(me.email)) {
+        setMsg("Signed in as wrong recipient for this invite.");
+        return;
+      }
+    } catch {
+      // allow proxy call to return authoritative error
     }
     setRemoteAcceptBusy((m) => ({ ...m, [inv.id]: true }));
     try {
@@ -1043,6 +1083,11 @@ export default function InvitePage({
             <div>
               <div className="text-sm font-medium">Received invites</div>
               <div className="text-xs text-neutral-400">Invites addressed to your account, including remote nodes.</div>
+              <div className="mt-1 text-[11px] text-neutral-500">
+                Local auth: {me ? `${me.id}${me.email ? ` (${me.email})` : ""}` : "not signed in"} • Device can sign:{" "}
+                {localSigning ? (localSigning.canSign ? "yes" : "no") : "unknown"} • Key verified:{" "}
+                {localSigning ? (localSigning.keyVerified ? "yes" : "no") : "unknown"}
+              </div>
               {visibleReceivedInvites.length === 0 && visibleRemoteInvites.length === 0 ? (
                 <div className="mt-2 text-xs text-neutral-500">No received invites yet.</div>
               ) : null}
