@@ -29,6 +29,15 @@ type InviteGetResponse = {
   targetType?: "email" | "local_user" | "identity_ref";
   targetValue?: string;
   inviterUserId?: string | null;
+  authContext?: {
+    authenticated: boolean;
+    authHeaderPresent: boolean;
+    userId: string | null;
+    email: string | null;
+    keyVerified: boolean | null;
+    targetMatch: boolean | null;
+    mismatchCode: "INVITE_TARGET_MISMATCH" | "INVITE_EMAIL_MISMATCH" | null;
+  };
   invitation: {
     id: string;
     expiresAt: string;
@@ -303,20 +312,10 @@ export default function InvitePage({
 
   const expired = new Date(data?.invitation.expiresAt ?? "").getTime() < Date.now();
   const alreadyAccepted = Boolean(data?.invitation?.acceptedAt || data?.splitParticipant?.acceptedAt);
-  const expectedTargetType = String(data?.targetType || "").trim().toLowerCase();
-  const expectedTargetValue = String(data?.targetValue || "").trim();
-  const currentUserId = String(me?.id || "").trim();
-  const currentUserEmail = normalizeEmail(me?.email || "");
-  const inviteAuthRequired = !me;
-  const inviteWrongIdentity =
-    Boolean(me && expectedTargetType === "local_user" && expectedTargetValue && currentUserId && expectedTargetValue !== currentUserId) ||
-    Boolean(
-      me &&
-        expectedTargetType === "email" &&
-        expectedTargetValue &&
-        currentUserEmail &&
-        normalizeEmail(expectedTargetValue) !== currentUserEmail
-    );
+  const authCtx = data?.authContext || null;
+  const inviteAuthRequired = authCtx ? !authCtx.authenticated : !me;
+  const inviteWrongIdentity = Boolean(authCtx ? authCtx.targetMatch === false : false);
+  const backendKeyVerified = authCtx?.keyVerified ?? null;
 
   async function fetchRemoteJson(path: string, opts?: { method?: string; body?: any; headers?: Record<string, string> }) {
     if (!remoteOriginFromLocation) throw new Error("Remote origin missing");
@@ -1253,7 +1252,12 @@ export default function InvitePage({
             </div>
 
             <div className="text-xs text-neutral-500">
-              Current auth user: <span className="text-neutral-300">{me ? `${me.id}${me.email ? ` (${me.email})` : ""}` : "not signed in"}</span>
+              Current auth user (backend):{" "}
+              <span className="text-neutral-300">
+                {authCtx?.authenticated
+                  ? `${authCtx.userId || "—"}${authCtx.email ? ` (${authCtx.email})` : ""}`
+                  : "not signed in"}
+              </span>
             </div>
 
             <div className="text-xs text-neutral-500">
@@ -1262,6 +1266,19 @@ export default function InvitePage({
                 {data.targetType ? `${data.targetType}: ${data.targetValue || "—"}` : "—"}
               </span>
             </div>
+
+            <div className="text-xs text-neutral-500">
+              Backend key verification:{" "}
+              <span className="text-neutral-300">
+                {backendKeyVerified === null ? "unknown (not authenticated)" : backendKeyVerified ? "verified" : "unverified"}
+              </span>
+            </div>
+
+            {me && authCtx?.authenticated && (me.id !== authCtx.userId || normalizeEmail(me.email || "") !== normalizeEmail(authCtx.email || "")) ? (
+              <div className="text-xs text-amber-300">
+                Session mismatch: UI identity and backend auth identity differ. Re-authenticate on this origin before accepting.
+              </div>
+            ) : null}
 
             <div className="text-sm text-neutral-400">
               Role: <span className="text-neutral-200">{data.splitParticipant.role}</span> • Percent: <span className="text-neutral-200">{num(data.splitParticipant.percent)}%</span>
@@ -1288,7 +1305,7 @@ export default function InvitePage({
                 </div>
               ) : (
                 <button
-                  disabled={busy || expired || alreadyAccepted || inviteWrongIdentity}
+                  disabled={busy || expired || alreadyAccepted || inviteWrongIdentity || backendKeyVerified === false}
                   onClick={acceptInvite}
                   className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
                 >
@@ -1299,6 +1316,9 @@ export default function InvitePage({
                 <div className="mt-2 text-xs text-amber-300">
                   Signed in as wrong identity for this invite target. Switch account and retry.
                 </div>
+              ) : null}
+              {!inviteAuthRequired && backendKeyVerified === false ? (
+                <div className="mt-2 text-xs text-amber-300">Backend verification says your key is not verified for invite acceptance.</div>
               ) : null}
             </div>
           </div>

@@ -25413,6 +25413,61 @@ async function handlePublicInviteLookup(req: any, reply: any) {
     return notFound(reply, "Invite not found");
   }
 
+  const inviteTargetType = normalizeInviteTargetType(inv.targetType);
+  const inviteTargetValue = asString(inv.targetValue).trim();
+  let authContext: {
+    authenticated: boolean;
+    authHeaderPresent: boolean;
+    userId: string | null;
+    email: string | null;
+    keyVerified: boolean | null;
+    targetMatch: boolean | null;
+    mismatchCode: "INVITE_TARGET_MISMATCH" | "INVITE_EMAIL_MISMATCH" | null;
+  } = {
+    authenticated: false,
+    authHeaderPresent: Boolean(asString(req?.headers?.authorization || "").trim()),
+    userId: null,
+    email: null,
+    keyVerified: null,
+    targetMatch: null,
+    mismatchCode: null
+  };
+  try {
+    await req.jwtVerify();
+    const authUserId = asString((req.user as JwtUser)?.sub).trim();
+    if (authUserId) {
+      const authUser = await prisma.user.findUnique({
+        where: { id: authUserId },
+        select: { id: true, email: true }
+      });
+      const authEmail = normalizeEmail(authUser?.email || "");
+      const keyVerified = await hasVerifiedParticipantKey(authUserId);
+      let targetMatch: boolean | null = null;
+      let mismatchCode: "INVITE_TARGET_MISMATCH" | "INVITE_EMAIL_MISMATCH" | null = null;
+      if (inviteTargetType === "local_user") {
+        targetMatch = inviteTargetValue === authUserId;
+        if (!targetMatch) mismatchCode = "INVITE_TARGET_MISMATCH";
+      } else if (inviteTargetType === "email") {
+        targetMatch = Boolean(authEmail && normalizeEmail(inviteTargetValue) === authEmail);
+        if (!targetMatch) mismatchCode = "INVITE_EMAIL_MISMATCH";
+      } else if (inviteTargetType === "identity_ref") {
+        targetMatch = inviteTargetValue === authUserId;
+        if (!targetMatch) mismatchCode = "INVITE_TARGET_MISMATCH";
+      }
+      authContext = {
+        authenticated: true,
+        authHeaderPresent: authContext.authHeaderPresent,
+        userId: authUserId,
+        email: authUser?.email || null,
+        keyVerified,
+        targetMatch,
+        mismatchCode
+      };
+    }
+  } catch {
+    // anonymous lookup is allowed for public invite inspection
+  }
+
   const expired = inv.expiresAt.getTime() < Date.now();
   const effectiveStatus =
     normalizeInviteStatus(inv.status) === "pending" && expired
@@ -25521,8 +25576,8 @@ async function handlePublicInviteLookup(req: any, reply: any) {
       token,
       splitVersionId: inv.splitVersionId,
       inviterUserId: inv.inviterUserId,
-      targetType: normalizeInviteTargetType(inv.targetType),
-      targetValue: asString(inv.targetValue),
+      targetType: inviteTargetType,
+      targetValue: inviteTargetValue,
       status: effectiveStatus
     },
     "splitInvite.lookup"
@@ -25532,10 +25587,11 @@ async function handlePublicInviteLookup(req: any, reply: any) {
     ok: true,
     found: true,
     status: effectiveStatus,
-    targetType: normalizeInviteTargetType(inv.targetType),
-    targetValue: asString(inv.targetValue),
+    targetType: inviteTargetType,
+    targetValue: inviteTargetValue,
     splitVersionId: inv.splitVersionId,
     inviterUserId: inv.inviterUserId,
+    authContext,
     invitation,
     splitParticipant,
     splitVersion,
