@@ -1525,6 +1525,7 @@ const PROVIDER_ACK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const PROVIDER_PERMIT_DEFAULT_TTL_MS = 30 * 60 * 1000;
 const PROVIDER_PERMIT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const REMITTANCE_FLIGHTS = new Set<string>();
+const PARTICIPANT_REMITTANCE_FLIGHTS = new Set<string>();
 const REMITTANCE_FORWARDING_STALE_MS = Math.max(
   30_000,
   Number.parseInt(String(process.env.CERTIFYD_REMITTANCE_STALE_MS || "180000"), 10) || 180000
@@ -2865,6 +2866,140 @@ function markRemittanceFailed(intentId: string, attemptId: string, message: stri
     remittanceLockedAt: null,
     remittanceLastCheckedAt: nowIso
   });
+}
+
+function nextParticipantRetryAt(attemptCount: number): Date {
+  const step = Math.max(0, Math.min(6, attemptCount));
+  const delayMs = 30_000 * Math.pow(2, step);
+  return new Date(Date.now() + delayMs);
+}
+
+async function acquireParticipantPayoutLock(id: string): Promise<{
+  ok: boolean;
+  row: any | null;
+  attemptId?: string;
+  reason?: string;
+}> {
+  const row = await prisma.participantPayout.findUnique({ where: { id } });
+  if (!row) return { ok: false, row: null, reason: "MISSING_ROW" };
+  if (row.status === "paid" || row.status === "blocked") return { ok: false, row, reason: "TERMINAL_STATUS" };
+  if (row.status === "forwarding") return { ok: false, row, reason: "ALREADY_FORWARDING" };
+  if (row.status !== "ready" && row.status !== "failed") return { ok: false, row, reason: "NOT_READY" };
+  if (row.nextRetryAt && row.nextRetryAt.getTime() > Date.now()) return { ok: false, row, reason: "RETRY_WINDOW" };
+
+  const attemptId = `prmt_${crypto.randomBytes(8).toString("hex")}`;
+  const now = new Date();
+  const updated = await prisma.participantPayout.updateMany({
+    where: {
+      id,
+      status: { in: ["ready", "failed"] }
+    },
+    data: {
+      status: "forwarding",
+      attemptId,
+      lockedAt: now,
+      lastAttemptAt: now,
+      lastCheckedAt: now,
+      lastError: null,
+      blockedReason: null,
+      nextRetryAt: null,
+      attemptCount: row.attemptCount + 1
+    }
+  });
+  if (!updated.count) {
+    const raced = await prisma.participantPayout.findUnique({ where: { id } });
+    return { ok: false, row: raced, reason: "LOCK_RACE" };
+  }
+  const locked = await prisma.participantPayout.findUnique({ where: { id } });
+  return { ok: true, row: locked, attemptId };
+}
+
+async function markParticipantPayoutPaid(id: string, attemptId: string, payoutReference: string | null) {
+  await prisma.participantPayout.updateMany({
+    where: { id, attemptId },
+    data: {
+      status: "paid",
+      payoutReference: payoutReference || null,
+      remittedAt: new Date(),
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      readinessReason: null,
+      lastError: null,
+      nextRetryAt: null
+    }
+  });
+}
+
+async function markParticipantPayoutFailed(id: string, attemptId: string, message: string) {
+  const current = await prisma.participantPayout.findUnique({ where: { id }, select: { attemptCount: true } });
+  const attempts = Math.max(0, Number(current?.attemptCount) || 0);
+  await prisma.participantPayout.updateMany({
+    where: { id, attemptId },
+    data: {
+      status: "failed",
+      lastError: message,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      nextRetryAt: nextParticipantRetryAt(attempts)
+    }
+  });
+}
+
+async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentIntentRecord, reason: string) {
+  const rows = await prisma.participantPayout.findMany({
+    where: {
+      providerPaymentIntentId: intent.id
+    },
+    orderBy: [{ createdAt: "asc" }]
+  });
+  for (const row of rows) {
+    if (PARTICIPANT_REMITTANCE_FLIGHTS.has(row.id)) continue;
+    PARTICIPANT_REMITTANCE_FLIGHTS.add(row.id);
+    try {
+      const lock = await acquireParticipantPayoutLock(row.id);
+      if (!lock.ok || !lock.row || !lock.attemptId) continue;
+      const payout = lock.row;
+      try {
+        const destinationType = String(payout.destinationType || "").trim().toLowerCase();
+        const destinationSummary = String(payout.destinationSummary || "").trim();
+        if (destinationType !== "lightning_address" || !destinationSummary || !destinationSummary.includes("@")) {
+          throw new Error("UNSUPPORTED_DESTINATION");
+        }
+        const invoice = await requestLightningAddressInvoice(
+          destinationSummary,
+          String(payout.amountSats || "0"),
+          `Certifyd participant remittance ${String(intent.paymentIntentId || "").slice(-8)}`
+        );
+        const send = await payBolt11ViaLnd(invoice);
+        await markParticipantPayoutPaid(payout.id, lock.attemptId, send.paymentHash || null);
+        app.log.info(
+          {
+            route: reason,
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            payoutReference: send.paymentHash || null
+          },
+          "providerParticipantRemittance.send_success"
+        );
+      } catch (e: any) {
+        const message = String(e?.message || "participant_remit_failed");
+        await markParticipantPayoutFailed(payout.id, lock.attemptId, message);
+        app.log.warn(
+          {
+            route: reason,
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            error: message
+          },
+          "providerParticipantRemittance.send_failed"
+        );
+      }
+    } finally {
+      PARTICIPANT_REMITTANCE_FLIGHTS.delete(row.id);
+    }
+  }
 }
 
 async function executeCreatorRemittance(intent: ProviderPaymentIntentRecord, reason: string): Promise<ProviderPaymentIntentRecord> {
