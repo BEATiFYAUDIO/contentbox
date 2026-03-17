@@ -584,6 +584,63 @@ function normalizeOrigin(value: string | null | undefined): string | null {
   return `https://${raw.replace(/\/+$/, "")}`;
 }
 
+function isShareablePublicOrigin(value: string | null | undefined): boolean {
+  const origin = normalizeOrigin(value);
+  if (!origin) return false;
+  try {
+    const url = new URL(origin);
+    const host = String(url.hostname || "").trim().toLowerCase();
+    if (!host) return false;
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return false;
+    if (host.endsWith(".local")) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const originReachabilityCache = new Map<string, { reachable: boolean; checkedAt: number }>();
+
+async function isOriginReachable(origin: string | null | undefined): Promise<boolean> {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return false;
+  const now = Date.now();
+  const cached = originReachabilityCache.get(normalized);
+  if (cached && now - cached.checkedAt < 15000) return cached.reachable;
+
+  const endpoints = [`${normalized}/health`, `${normalized}/public/ping`];
+  let reachable = false;
+  for (const url of endpoints) {
+    try {
+      const res = await fetchWithTimeout(url, { method: "GET" } as any, 2500);
+      if (res.ok) {
+        reachable = true;
+        break;
+      }
+    } catch {}
+  }
+  originReachabilityCache.set(normalized, { reachable, checkedAt: now });
+  return reachable;
+}
+
+async function resolveShareableInviteOrigin(req: any): Promise<string | null> {
+  const configuredShared =
+    normalizeOrigin(process.env.PUBLIC_INVITE_ORIGIN) || normalizeOrigin(process.env.PUBLIC_BASE_ORIGIN);
+  if (isShareablePublicOrigin(configuredShared) && (await isOriginReachable(configuredShared))) return configuredShared!;
+
+  const publicStatus = getPublicStatus();
+  const statusOrigin = normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim());
+  if (isShareablePublicOrigin(statusOrigin) && (await isOriginReachable(statusOrigin))) return statusOrigin!;
+
+  const activeOrigin = normalizeOrigin(getActivePublicOrigin());
+  if (isShareablePublicOrigin(activeOrigin) && (await isOriginReachable(activeOrigin))) return activeOrigin!;
+
+  const requestOrigin = normalizeOrigin(getPublicOrigin(req));
+  if (isShareablePublicOrigin(requestOrigin) && (await isOriginReachable(requestOrigin))) return requestOrigin!;
+
+  return null;
+}
+
 function getPublicOrigin(req: any): string {
   const envOrigin =
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
@@ -775,6 +832,29 @@ function sendFastifyRouteNotFound(req: any, reply: any, pathname: string) {
     error: "Not Found",
     statusCode: 404
   });
+}
+
+function requestWantsHtml(req: any): boolean {
+  const accept = String(req?.headers?.accept || "").toLowerCase();
+  return accept.includes("text/html");
+}
+
+async function maybeHandleSplitEditorDocumentRequest(req: any, reply: any): Promise<boolean> {
+  const method = String(req?.method || "").toUpperCase();
+  if (method !== "GET") return false;
+  if (!requestWantsHtml(req)) return false;
+
+  // Browser navigation to /content/:id/splits should render dashboard UI,
+  // not hit the protected JSON API route.
+  if (isIntegratedDashboardBuilt()) {
+    return await tryServeIntegratedDashboard(req, reply);
+  }
+
+  const rawContentId = asString((req?.params as any)?.id || "");
+  const contentId = encodeURIComponent(rawContentId);
+  const target = `${APP_BASE_URL.replace(/\/$/, "")}/content/${contentId}/splits`;
+  reply.redirect(target);
+  return true;
 }
 
 async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolean> {
@@ -2271,15 +2351,21 @@ async function resolveParticipantIdentityGate(input: {
     where: { id: splitParticipantId },
     select: {
       acceptedAt: true,
+      invitation: { select: { status: true } },
       invitations: {
-        where: { acceptedAt: { not: null } },
-        select: { id: true },
+        where: {
+          OR: [{ status: "accepted" as any }, { acceptedAt: { not: null } }]
+        },
+        select: { id: true, status: true },
         take: 1
       }
     }
   });
   if (!splitParticipant) return { active: false, readinessReason: "INVITE_UNRESOLVED" };
-  const signedAccepted = Boolean(splitParticipant.acceptedAt) || (splitParticipant.invitations?.length || 0) > 0;
+  const signedAccepted =
+    normalizeInviteStatus(splitParticipant.invitation?.status) === "accepted" ||
+    Boolean(splitParticipant.acceptedAt) ||
+    (splitParticipant.invitations?.length || 0) > 0;
   if (!signedAccepted) {
     return { active: false, readinessReason: "INVITE_UNRESOLVED" };
   }
@@ -6166,12 +6252,19 @@ async function runBackup() {
 async function pruneOldInvites() {
   const cutoff = new Date(Date.now() - INVITE_RETENTION_DAYS * 24 * 60 * 60 * 1000);
   try {
-    await prisma.invitation.deleteMany({
+    await prisma.invitation.updateMany({
       where: {
         OR: [
-          { expiresAt: { lt: cutoff }, acceptedAt: null },
+          {
+            expiresAt: { lt: new Date() },
+            status: { in: ["pending"] as any }
+          },
           { splitParticipant: { splitVersion: { content: { deletedAt: { lt: cutoff } } } } }
         ]
+      },
+      data: {
+        status: "tombstoned" as any,
+        tombstonedAt: new Date()
       }
     });
   } catch {}
@@ -7151,11 +7244,20 @@ async function getRateSatsPerUnitForContent(repoPath: string): Promise<number> {
 type ParticipantNormalized = {
   participantEmail: string;
   participantUserId: string | null;
+  targetType: "email" | "local_user" | "identity_ref";
+  targetValue: string;
   role: string;
   percent: number;
   bps: number;
 };
-type ParticipantInput = { participantEmail?: unknown; participantUserId?: unknown; role?: unknown; percent?: unknown };
+type ParticipantInput = {
+  participantEmail?: unknown;
+  participantUserId?: unknown;
+  targetType?: unknown;
+  targetValue?: unknown;
+  role?: unknown;
+  percent?: unknown;
+};
 
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null;
@@ -7167,18 +7269,63 @@ function toParticipantNormalized(p: unknown): ParticipantNormalized | null {
   const pi = p as ParticipantInput;
   const participantEmail = normalizeEmail(pi.participantEmail);
   const participantUserId = asString(pi.participantUserId).trim() || null;
+  const explicitTargetTypeRaw = asString(pi.targetType).trim().toLowerCase();
+  const explicitTargetType =
+    explicitTargetTypeRaw === "local_user" || explicitTargetTypeRaw === "identity_ref" || explicitTargetTypeRaw === "email"
+      ? (explicitTargetTypeRaw as "email" | "local_user" | "identity_ref")
+      : null;
+  const explicitTargetValue = asString(pi.targetValue).trim();
   const role = asString(pi.role).trim();
   const percent = round3(num(pi.percent));
   const bps = Math.round(percent * 100);
 
-  if ((!participantEmail && !participantUserId) || !role) return null;
-  return { participantEmail, participantUserId, role, percent, bps };
+  if ((!participantEmail && !participantUserId && !explicitTargetValue) || !role) return null;
+
+  if (participantUserId) {
+    return {
+      participantEmail,
+      participantUserId,
+      targetType: explicitTargetType || "local_user",
+      targetValue: explicitTargetValue || participantUserId,
+      role,
+      percent,
+      bps
+    };
+  }
+
+  if (explicitTargetType === "local_user" || explicitTargetType === "identity_ref") {
+    if (!explicitTargetValue) return null;
+    return {
+      participantEmail,
+      participantUserId: null,
+      targetType: explicitTargetType,
+      targetValue: explicitTargetValue,
+      role,
+      percent,
+      bps
+    };
+  }
+
+  if (!participantEmail) return null;
+  return {
+    participantEmail,
+    participantUserId: null,
+    targetType: "email",
+    targetValue: explicitTargetValue || participantEmail,
+    role,
+    percent,
+    bps
+  };
 }
 
 function canonicalParticipantsForHash(participants: ParticipantNormalized[]): ParticipantNormalized[] {
   return [...participants].sort((a, b) => {
-    const ak = a.participantUserId ? `u:${a.participantUserId}` : `e:${a.participantEmail}`;
-    const bk = b.participantUserId ? `u:${b.participantUserId}` : `e:${b.participantEmail}`;
+    const ak = a.participantUserId
+      ? `u:${a.participantUserId}`
+      : `${a.targetType}:${String(a.targetValue || a.participantEmail || "").toLowerCase()}`;
+    const bk = b.participantUserId
+      ? `u:${b.participantUserId}`
+      : `${b.targetType}:${String(b.targetValue || b.participantEmail || "").toLowerCase()}`;
     return ak.localeCompare(bk);
   });
 }
@@ -7208,7 +7355,9 @@ function validateAndNormalizeParticipants(body: unknown):
   const deduped = Array.from(
     new Map(
       parsed.map((p) => [
-        p.participantUserId ? `u:${p.participantUserId}` : `e:${p.participantEmail}`,
+        p.participantUserId
+          ? `u:${p.participantUserId}`
+          : `${p.targetType}:${String(p.targetValue || p.participantEmail || "").toLowerCase()}`,
         p
       ])
     ).values()
@@ -7222,6 +7371,54 @@ function validateAndNormalizeParticipants(body: unknown):
 
 function makeInviteToken(): string {
   return crypto.randomBytes(24).toString("base64url");
+}
+
+function normalizeInviteStatus(value: unknown): "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned" {
+  const s = String(value || "").trim().toLowerCase();
+  if (s === "accepted" || s === "declined" || s === "revoked" || s === "expired" || s === "tombstoned") return s;
+  return "pending";
+}
+
+function normalizeInviteTargetType(value: unknown): "email" | "local_user" | "identity_ref" {
+  const t = String(value || "").trim().toLowerCase();
+  if (t === "local_user" || t === "identity_ref") return t;
+  return "email";
+}
+
+function normalizeInviteDeliveryMethod(value: unknown): "none" | "email" | "link" | "internal" {
+  const m = String(value || "").trim().toLowerCase();
+  if (m === "none" || m === "email" || m === "internal") return m;
+  return "link";
+}
+
+function normalizeInviteInviteStatusForList(inv: { status?: unknown; expiresAt?: Date | null }): "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned" {
+  const s = normalizeInviteStatus(inv?.status);
+  if (s === "pending" && inv?.expiresAt && inv.expiresAt.getTime() < Date.now()) return "expired";
+  return s;
+}
+
+function shouldShowInviteInActiveLists(inv: {
+  status?: unknown;
+  expiresAt?: Date | null;
+  revokedAt?: Date | null;
+  tombstonedAt?: Date | null;
+  splitParticipant?: {
+    splitVersion?: {
+      status?: string | null;
+      content?: { status?: string | null; deletedAt?: Date | null } | null;
+    } | null;
+  } | null;
+}): boolean {
+  const status = normalizeInviteInviteStatusForList(inv);
+  if (status === "revoked" || status === "declined" || status === "expired" || status === "tombstoned") return false;
+  if (inv?.revokedAt || inv?.tombstonedAt) return false;
+  if (inv?.splitParticipant?.splitVersion?.content?.deletedAt) return false;
+  if (status === "accepted") {
+    const splitStatus = String(inv?.splitParticipant?.splitVersion?.status || "").trim().toLowerCase();
+    const contentStatus = String(inv?.splitParticipant?.splitVersion?.content?.status || "").trim().toLowerCase();
+    if (splitStatus !== "locked" && contentStatus !== "published") return false;
+  }
+  return status === "pending" || status === "accepted";
 }
 
 function hashInviteToken(token: string): string {
@@ -7253,10 +7450,12 @@ function recipientRefForParticipant(p: {
 
 function isActiveLedgerParticipant(p: {
   participantUserId?: string | null;
+  invitation?: { status?: string | null } | null;
   acceptedAt?: Date | string | null;
   verifiedAt?: Date | string | null;
 }): boolean {
-  return Boolean(p?.participantUserId && p?.acceptedAt && p?.verifiedAt);
+  const status = normalizeInviteStatus(p?.invitation?.status);
+  return Boolean(p?.participantUserId && p?.verifiedAt && (status === "accepted" || p?.acceptedAt));
 }
 
 function recipientDisplayForParticipant(p: { participantEmail?: string | null; participantUserId?: string | null }): string | undefined {
@@ -8875,9 +9074,10 @@ app.post("/auth/signup", async (req, reply) => {
   return reply.send({ token, user, recoveryKey: recoveryKey || undefined });
 });
 
-// List invitations for content owned by the authenticated user (no token values are returned)
+// List invitations for content owned by the authenticated user.
 app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  const includeHistory = parseBooleanFlag((req.query as any)?.includeHistory, false);
   await pruneOldInvites();
 
   const invites = await prisma.invitation.findMany({
@@ -8894,10 +9094,18 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
     orderBy: { createdAt: "desc" }
   });
 
-  const out = invites.map((inv) => ({
+  const visibleInvites = includeHistory ? invites : invites.filter((inv) => shouldShowInviteInActiveLists(inv as any));
+  const out = visibleInvites.map((inv) => ({
+    token: inv.token,
     id: inv.id,
     splitParticipantId: inv.splitParticipantId,
     participantEmail: inv.splitParticipant?.participantEmail || null,
+    participantUserId: inv.splitParticipant?.participantUserId || null,
+    targetType: normalizeInviteTargetType(inv.targetType),
+    targetValue: asString(inv.targetValue),
+    deliveryMethod: normalizeInviteDeliveryMethod(inv.deliveryMethod),
+    status:
+      normalizeInviteInviteStatusForList(inv),
     contentId: inv.splitParticipant?.splitVersion?.contentId || null,
     contentTitle: inv.splitParticipant?.splitVersion?.content?.title || null,
     contentType: inv.splitParticipant?.splitVersion?.content?.type || null,
@@ -8910,6 +9118,9 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
     splitStatus: inv.splitParticipant?.splitVersion?.status || null,
     expiresAt: inv.expiresAt.toISOString(),
     acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
+    acceptedByUserId: inv.acceptedByUserId || null,
+    revokedAt: inv.revokedAt ? inv.revokedAt.toISOString() : null,
+    tombstonedAt: inv.tombstonedAt ? inv.tombstonedAt.toISOString() : null,
     createdAt: inv.createdAt.toISOString()
   }));
 
@@ -8919,6 +9130,7 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
 // List invitations received by the authenticated user (matched by participantUserId or email)
 app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  const includeHistory = parseBooleanFlag((req.query as any)?.includeHistory, false);
   await pruneOldInvites();
 
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
@@ -8927,8 +9139,9 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
   const invites = await prisma.invitation.findMany({
     where: {
       OR: [
-        { splitParticipant: { participantUserId: userId } },
-        { splitParticipant: { participantEmail: emailEquals(me.email) } }
+        { targetType: "local_user" as any, targetValue: userId },
+        { targetType: "identity_ref" as any, targetValue: userId },
+        { targetType: "email" as any, targetValue: emailEquals(me.email) }
       ]
     },
     include: {
@@ -8937,10 +9150,17 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
     orderBy: { createdAt: "desc" }
   });
 
-  const out = invites.map((inv) => ({
+  const visibleInvites = includeHistory ? invites : invites.filter((inv) => shouldShowInviteInActiveLists(inv as any));
+  const out = visibleInvites.map((inv) => ({
+    token: inv.token,
     id: inv.id,
     splitParticipantId: inv.splitParticipantId,
     participantEmail: inv.splitParticipant?.participantEmail || null,
+    participantUserId: inv.splitParticipant?.participantUserId || null,
+    targetType: normalizeInviteTargetType(inv.targetType),
+    targetValue: asString(inv.targetValue),
+    deliveryMethod: normalizeInviteDeliveryMethod(inv.deliveryMethod),
+    status: normalizeInviteInviteStatusForList(inv),
     role: inv.splitParticipant?.role || null,
     percent: percentToPrimitive(inv.splitParticipant?.percent ?? null),
     contentId: inv.splitParticipant?.splitVersion?.contentId || null,
@@ -8958,6 +9178,9 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
     ownerEmail: inv.splitParticipant?.splitVersion?.content?.owner?.email || null,
     expiresAt: inv.expiresAt.toISOString(),
     acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
+    acceptedByUserId: inv.acceptedByUserId || null,
+    revokedAt: inv.revokedAt ? inv.revokedAt.toISOString() : null,
+    tombstonedAt: inv.tombstonedAt ? inv.tombstonedAt.toISOString() : null,
     createdAt: inv.createdAt.toISOString()
   }));
 
@@ -8967,9 +9190,14 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
 // List remote invitations accepted on other nodes (stored locally for payments/visibility)
 app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  const includeHistory = parseBooleanFlag((req.query as any)?.includeHistory, false);
   await pruneOldInvites();
+  const where: any = { userId };
+  if (!includeHistory) {
+    where.contentDeletedAt = null;
+  }
   const list = await prisma.remoteInvite.findMany({
-    where: { userId },
+    where,
     orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
   });
   return reply.send(
@@ -9400,11 +9628,17 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
     const participant = await prisma.splitParticipant.findFirst({
       where: {
         splitVersion: { contentId },
-        OR: [
-          { participantUserId: userId },
-          email ? { participantEmail: emailEquals(email) } : undefined
-        ].filter(Boolean) as any,
-        acceptedAt: { not: null }
+        AND: [
+          {
+            OR: [
+              { participantUserId: userId },
+              email ? { participantEmail: emailEquals(email) } : undefined
+            ].filter(Boolean) as any
+          },
+          {
+            OR: [{ invitation: { status: "accepted" as any } }, { acceptedAt: { not: null } }]
+          }
+        ]
       }
     });
     isParticipant = Boolean(participant);
@@ -9415,7 +9649,12 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
   const locked = await prisma.splitVersion.findFirst({
     where: { contentId, status: "locked" },
     orderBy: { versionNumber: "desc" },
-    include: { participants: { orderBy: { createdAt: "asc" } } }
+    include: {
+      participants: {
+        orderBy: { createdAt: "asc" },
+        include: { invitation: { select: { status: true } } }
+      }
+    }
   });
 
   const latest = locked
@@ -9423,7 +9662,12 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
     : await prisma.splitVersion.findFirst({
         where: { contentId },
         orderBy: { versionNumber: "desc" },
-        include: { participants: { orderBy: { createdAt: "asc" } } }
+        include: {
+          participants: {
+            orderBy: { createdAt: "asc" },
+            include: { invitation: { select: { status: true } } }
+          }
+        }
       });
 
   if (!latest) return notFound(reply, "No split version found");
@@ -9463,9 +9707,15 @@ app.delete("/invites/:id", { preHandler: requireAuth }, async (req: any, reply: 
   });
   if (!inv) return notFound(reply, "Invite not found");
   if (inv.splitParticipant?.splitVersion?.content?.ownerUserId !== userId) return forbidden(reply);
-  if (inv.acceptedAt) return badRequest(reply, "Invite already accepted");
+  if (normalizeInviteStatus(inv.status) === "accepted" || inv.acceptedAt) return badRequest(reply, "Invite already accepted");
 
-  await prisma.invitation.delete({ where: { id: inviteId } });
+  await prisma.invitation.update({
+    where: { id: inviteId },
+    data: {
+      status: "revoked" as any,
+      revokedAt: new Date()
+    }
+  });
 
   try {
     await prisma.auditEvent.create({
@@ -9482,6 +9732,18 @@ app.delete("/invites/:id", { preHandler: requireAuth }, async (req: any, reply: 
       }
     });
   } catch {}
+
+  app.log.info(
+    {
+      token: inv.token,
+      splitVersionId: inv.splitVersionId,
+      inviterUserId: inv.inviterUserId,
+      targetType: normalizeInviteTargetType(inv.targetType),
+      targetValue: asString(inv.targetValue),
+      status: "revoked"
+    },
+    "splitInvite.revoked"
+  );
 
   return reply.send({ ok: true });
 });
@@ -10579,6 +10841,21 @@ app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: a
 });
 
 // Proxy remote invite fetch to avoid browser CORS (auth required)
+app.get("/api/remote/health", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!origin) return badRequest(reply, "invalid origin");
+  const reachable = await isOriginReachable(origin);
+  return reply.send({ ok: true, origin, reachable });
+});
+
+// Proxy remote invite fetch to avoid browser CORS (auth required)
 app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const inviteCtx = getCapabilityContext();
   if (!canUseSplits(inviteCtx)) {
@@ -10591,6 +10868,9 @@ app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: a
   const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
   if (!token) return badRequest(reply, "token required");
   if (!origin) return badRequest(reply, "invalid origin");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote invite host unreachable", origin });
+  }
 
   try {
     const res = await fetchWithTimeout(`${origin}/invites/${encodeURIComponent(token)}`, { method: "GET" } as any, 8000);
@@ -10616,6 +10896,9 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
   const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
   if (!token) return badRequest(reply, "token required");
   if (!origin) return badRequest(reply, "invalid origin");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote invite host unreachable", origin });
+  }
 
   try {
     const res = await fetchWithTimeout(
@@ -20535,10 +20818,19 @@ app.post("/api/participants/resolve", { preHandler: requireAuth }, async (req: a
     });
   }
 
-  if (isValidLightningAddress(candidateEmail || "") || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(candidateEmail || "")) {
+  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(candidateEmail || "")) {
     return reply.send({
       kind: "email_invite",
       email: candidateEmail
+    });
+  }
+
+  // Accept explicit non-email identity refs as claim targets in sovereign flows.
+  // These are persisted as pending identity claims and bound only on invite acceptance.
+  if (/^[A-Za-z0-9:_-]{6,128}$/.test(raw)) {
+    return reply.send({
+      kind: "identity_ref",
+      ref: raw
     });
   }
 
@@ -21004,7 +21296,19 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
 });
 
 // Return the latest split version for a content item (used by ContentLibraryPage)
-app.get("/content/:id/splits", { preHandler: [requireAuth, requireFeature("splits")] }, async (req: any, reply) => {
+app.get(
+  "/content/:id/splits",
+  {
+    preHandler: [
+      async (req: any, reply: any) => {
+        const handled = await maybeHandleSplitEditorDocumentRequest(req, reply);
+        if (handled) return reply;
+      },
+      requireAuth,
+      requireFeature("splits")
+    ]
+  },
+  async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
 
@@ -21797,7 +22101,25 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
   const versions = await prisma.splitVersion.findMany({
     where: { contentId },
     orderBy: { versionNumber: "desc" },
-    include: { participants: { orderBy: { createdAt: "asc" } } }
+    include: {
+      participants: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          invitation: {
+            select: {
+              id: true,
+              status: true,
+              targetType: true,
+              targetValue: true,
+              deliveryMethod: true,
+              acceptedAt: true,
+              revokedAt: true,
+              expiresAt: true
+            }
+          }
+        }
+      }
+    }
   });
 
   return reply.send(
@@ -21812,7 +22134,14 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
       lockedFileSha256: v.lockedFileSha256,
       participants: v.participants.map((p) => ({
         ...p,
-        percent: percentToPrimitive(p.percent)
+        percent: percentToPrimitive(p.percent),
+        invitationStatus: (p as any)?.invitation?.status
+          ? normalizeInviteStatus((p as any)?.invitation?.status)
+          : (p as any)?.acceptedAt
+            ? "accepted"
+            : "pending",
+        invitationTargetType: (p as any)?.invitation?.targetType || null,
+        invitationTargetValue: (p as any)?.invitation?.targetValue || null
       }))
     }))
   );
@@ -21833,97 +22162,139 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
   const latest = await prisma.splitVersion.findFirst({ where: { contentId }, orderBy: { versionNumber: "desc" } });
   if (!latest) return notFound(reply, "No split version found");
   if (latest.status !== "draft") return reply.code(409).send({ error: "Latest split is not editable" });
+  const intendedTotal = round3(validated.participants.reduce((sum, p) => sum + num(p.percent), 0));
+  if (intendedTotal !== 100) {
+    return badRequest(reply, `Intended participant total must be 100. Current total=${intendedTotal}`);
+  }
   const owner = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const ownerEmail = (owner?.email || "").toLowerCase();
+  const normalizedOwnerEmail = normalizeEmail(ownerEmail);
 
-  const beforeForValidation = await prisma.splitParticipant.findMany({
-    where: { splitVersionId: latest.id },
-    select: { participantEmail: true, participantUserId: true, acceptedAt: true, verifiedAt: true }
-  });
-  const beforeActiveByEmail = new Map(
-    beforeForValidation
-      .filter((p) => p.participantEmail && isActiveLedgerParticipant(p))
-      .map((p) => [String(p.participantEmail).toLowerCase(), true])
-  );
-  const activeTotalCandidate = round3(
-    validated.participants
-      .filter((p) => {
-        const email = String(p.participantEmail || "").toLowerCase();
-        if (!email) return false;
-        if (beforeActiveByEmail.has(email)) return true;
-        if (ownerEmail && email === ownerEmail) return true;
-        return false;
-      })
-      .reduce((sum, p) => sum + num(p.percent), 0)
-  );
-  const hasActiveCandidates = validated.participants.some((p) => {
-    const email = String(p.participantEmail || "").toLowerCase();
-    if (!email) return false;
-    return Boolean(beforeActiveByEmail.has(email) || (ownerEmail && email === ownerEmail));
-  });
-  if (hasActiveCandidates && activeTotalCandidate !== 100) {
-    return badRequest(reply, `Active participant total must be 100. Current total=${activeTotalCandidate}`);
-  }
+  const participantKeyOf = (p: {
+    participantUserId?: string | null;
+    targetType?: string | null;
+    targetValue?: string | null;
+    participantEmail?: string | null;
+  }) => {
+    const userRef = asString(p.participantUserId).trim();
+    if (userRef) return `u:${userRef}`;
+    const type = normalizeInviteTargetType(p.targetType);
+    const valueRaw = asString(p.targetValue).trim() || asString(p.participantEmail).trim();
+    const value = type === "email" ? normalizeEmail(valueRaw) : valueRaw;
+    return `${type}:${value}`;
+  };
 
   await prisma.$transaction(async (tx) => {
     const before = await tx.splitParticipant.findMany({
       where: { splitVersionId: latest.id },
       orderBy: { createdAt: "asc" },
-      select: {
-        participantEmail: true,
-        role: true,
-        percent: true,
-        bps: true,
-        participantUserId: true,
-        acceptedAt: true,
-        verifiedAt: true
+      include: {
+        invitation: {
+          select: {
+            id: true,
+            status: true,
+            acceptedAt: true,
+            acceptedByUserId: true,
+            token: true,
+            expiresAt: true,
+            deliveryMethod: true,
+            targetType: true,
+            targetValue: true
+          }
+        }
       }
     });
-    const previousByEmail = new Map(
-      before
-        .filter((p) => p.participantEmail)
-        .map((p) => [String(p.participantEmail).toLowerCase(), p])
-    );
+    const previousByKey = new Map(before.map((p) => [participantKeyOf(p), p]));
 
     // remove existing participants
     await tx.splitParticipant.deleteMany({ where: { splitVersionId: latest.id } });
 
     // create new participants
     for (const p of validated.participants) {
-      const prev = previousByEmail.get(String(p.participantEmail || "").toLowerCase()) || null;
-      await tx.splitParticipant.create({
+      const prev = previousByKey.get(participantKeyOf(p)) || null;
+      const prevActive = prev ? isActiveLedgerParticipant(prev as any) : false;
+      const selfBind =
+        p.participantUserId === userId ||
+        (!p.participantUserId && p.targetType === "email" && normalizedOwnerEmail && p.targetValue === normalizedOwnerEmail);
+      const bindNow = prevActive || selfBind;
+      const acceptedAt = bindNow ? prev?.acceptedAt || new Date() : null;
+      const verifiedAt = bindNow ? prev?.verifiedAt || new Date() : null;
+      const boundUserId = bindNow
+        ? prev?.participantUserId || p.participantUserId || (selfBind ? userId : null)
+        : null;
+      const targetType = normalizeInviteTargetType(p.targetType);
+      const targetValue =
+        asString(p.targetValue).trim() ||
+        (targetType === "email" ? normalizeEmail(p.participantEmail) : asString(p.participantUserId).trim());
+      const participantEmail = normalizeEmail(p.participantEmail) || (targetType === "email" ? normalizeEmail(targetValue) : null);
+      const deliveryMethod: "email" | "internal" = targetType === "email" ? "email" : "internal";
+      const inviteStatus: "pending" | "accepted" = bindNow ? "accepted" : "pending";
+      const inviteToken =
+        !bindNow && prev?.invitation?.status === "pending" && String(prev.invitation.token || "").trim()
+          ? String(prev.invitation.token)
+          : makeInviteToken();
+      const inviteExpiresAt =
+        !bindNow && prev?.invitation?.status === "pending" && prev.invitation.expiresAt && prev.invitation.expiresAt.getTime() > Date.now()
+          ? prev.invitation.expiresAt
+          : new Date(Date.now() + 168 * 60 * 60 * 1000);
+
+      const createdParticipant = await tx.splitParticipant.create({
         data: {
           splitVersionId: latest.id,
-          participantEmail: p.participantEmail,
-          participantUserId: p.participantUserId || prev?.participantUserId || null,
-          acceptedAt: prev?.acceptedAt || null,
-          verifiedAt: prev?.verifiedAt || null,
+          participantEmail,
+          participantUserId: boundUserId,
+          targetType,
+          targetValue,
+          acceptedAt,
+          verifiedAt,
           role: p.role,
           percent: num(p.percent),
           bps: Math.round(num(p.percent) * 100)
         }
       });
-    }
 
-    // bind/accept owner participant if present
-    try {
-      const res = await tx.splitParticipant.updateMany({
-        where: {
+      const createdInvite = await tx.invitation.create({
+        data: {
+          token: inviteToken,
+          tokenHash: hashInviteToken(inviteToken),
+          splitParticipantId: createdParticipant.id,
           splitVersionId: latest.id,
-          OR: [
-            { participantUserId: userId },
-            ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
-          ].filter(Boolean) as any
-        },
-        data: { participantUserId: userId, acceptedAt: new Date(), verifiedAt: new Date() }
+          contentId,
+          inviterUserId: userId,
+          targetType,
+          targetValue,
+          deliveryMethod,
+          status: inviteStatus,
+          expiresAt: inviteExpiresAt,
+          acceptedAt,
+          acceptedByUserId: bindNow ? boundUserId : null,
+          acceptedIdentityRef: bindNow && boundUserId ? `user:${boundUserId}` : null
+        }
       });
-      if (process.env.NODE_ENV !== "production") {
-        app.log.info({ splitVersionId: latest.id, userId, updated: res.count }, "split.owner.ensure");
-      }
-    } catch {}
+
+      await tx.splitParticipant.update({
+        where: { id: createdParticipant.id },
+        data: { invitationId: createdInvite.id }
+      });
+
+      app.log.info(
+        {
+          token: inviteToken,
+          splitVersionId: latest.id,
+          inviterUserId: userId,
+          targetType,
+          targetValue,
+          status: inviteStatus
+        },
+        "splitInvite.created"
+      );
+    }
 
     const after = validated.participants.map((p) => ({
       participantEmail: p.participantEmail,
+      participantUserId: p.participantUserId,
+      targetType: p.targetType,
+      targetValue: p.targetValue,
       role: p.role,
       percent: String(p.percent),
       bps: Math.round(num(p.percent) * 100)
@@ -21940,6 +22311,9 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
           diff: {
             before: before.map((p) => ({
               participantEmail: p.participantEmail,
+              participantUserId: p.participantUserId,
+              targetType: (p as any).targetType || null,
+              targetValue: (p as any).targetValue || null,
               role: p.role,
               percent: String(p.percent),
               bps: p.bps
@@ -21979,40 +22353,54 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
 
     if (latest?.participants?.length) {
       for (const p of latest.participants) {
-        await tx.splitParticipant.create({
+        const targetType = normalizeInviteTargetType((p as any).targetType || (p.participantUserId ? "local_user" : "email"));
+        const targetValue =
+          asString((p as any).targetValue).trim() ||
+          (targetType === "email"
+            ? normalizeEmail(p.participantEmail)
+            : asString(p.participantUserId).trim());
+        const accepted = Boolean(p.participantUserId && p.acceptedAt && p.verifiedAt);
+        const createdParticipant = await tx.splitParticipant.create({
           data: {
             splitVersionId: sv.id,
             participantEmail: p.participantEmail,
-            participantUserId: p.participantUserId || null,
-            acceptedAt: p.acceptedAt || null,
-            verifiedAt: p.verifiedAt || null,
+            participantUserId: accepted ? (p.participantUserId || null) : null,
+            acceptedAt: accepted ? (p.acceptedAt || new Date()) : null,
+            verifiedAt: accepted ? (p.verifiedAt || new Date()) : null,
+            targetType,
+            targetValue,
             role: p.role,
             percent: num(p.percent),
             bps: (p as any).bps ?? Math.round(Number(p.percent || 0) * 100),
             payoutIdentityId: p.payoutIdentityId || null
           }
         });
+
+        const inviteToken = makeInviteToken();
+        const invite = await tx.invitation.create({
+          data: {
+            token: inviteToken,
+            tokenHash: hashInviteToken(inviteToken),
+            splitParticipantId: createdParticipant.id,
+            splitVersionId: sv.id,
+            contentId,
+            inviterUserId: userId,
+            targetType,
+            targetValue,
+            deliveryMethod: targetType === "email" ? "email" : "internal",
+            status: accepted ? "accepted" : "pending",
+            expiresAt: new Date(Date.now() + 168 * 60 * 60 * 1000),
+            acceptedAt: accepted ? (p.acceptedAt || new Date()) : null,
+            acceptedByUserId: accepted ? (p.participantUserId || null) : null,
+            acceptedIdentityRef: accepted && p.participantUserId ? `user:${p.participantUserId}` : null
+          }
+        });
+        await tx.splitParticipant.update({
+          where: { id: createdParticipant.id },
+          data: { invitationId: invite.id }
+        });
       }
     }
-
-    // bind/accept owner participant if present
-    try {
-      const owner = await tx.user.findUnique({ where: { id: userId }, select: { email: true } });
-      const ownerEmail = (owner?.email || "").toLowerCase();
-      const res = await tx.splitParticipant.updateMany({
-        where: {
-          splitVersionId: sv.id,
-          OR: [
-            { participantUserId: userId },
-            ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
-          ].filter(Boolean) as any
-        },
-        data: { participantUserId: userId, acceptedAt: new Date(), verifiedAt: new Date() }
-      });
-      if (process.env.NODE_ENV !== "production") {
-        app.log.info({ splitVersionId: sv.id, userId, updated: res.count }, "split.owner.ensure");
-      }
-    } catch {}
 
     await tx.auditEvent.create({
       data: {
@@ -22688,7 +23076,13 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
 
   const sv = await prisma.splitVersion.findUnique({
     where: { id: splitVersionId },
-    include: { content: true, participants: { orderBy: { createdAt: "asc" } } }
+    include: {
+      content: true,
+      participants: {
+        orderBy: { createdAt: "asc" },
+        include: { invitation: { select: { status: true } } }
+      }
+    }
   });
   if (!sv) return notFound(reply, "Split version not found");
   if (sv.content.ownerUserId !== userId) return forbidden(reply);
@@ -24682,7 +25076,13 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
 
   const sv = await prisma.splitVersion.findFirst({
     where: { contentId, versionNumber },
-    include: { content: true, participants: { orderBy: { createdAt: "asc" } } }
+    include: {
+      content: true,
+      participants: {
+        orderBy: { createdAt: "asc" },
+        include: { invitation: { select: { status: true } } }
+      }
+    }
   });
   if (!sv) return notFound(reply, "Split version not found");
   if (sv.status !== "draft") return badRequest(reply, "Split version already locked");
@@ -24836,36 +25236,75 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
     where: { id: splitVersionId },
     include: {
       content: true,
-      participants: { orderBy: { createdAt: "asc" } }
+      participants: {
+        orderBy: { createdAt: "asc" },
+        include: { invitation: { select: { status: true, targetType: true, targetValue: true } } }
+      }
     }
   });
   if (!split) return notFound(reply, "Split version not found");
   if (split.content.ownerUserId !== userId) return forbidden(reply);
 
-  const pending = split.participants.filter((p) => !p.acceptedAt);
+  const pending = split.participants.filter((p) => !isActiveLedgerParticipant(p as any));
 
   const createdInvites: Array<{
     invitationId: string;
     participantEmail: string;
+    targetType: "email" | "local_user" | "identity_ref";
+    targetValue: string;
     splitParticipantId: string;
     participantState: "invited" | "active";
+    status: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned";
+    deliveryMethod: "none" | "email" | "link" | "internal";
     token: string;
     expiresAt: Date;
-    inviteUrl: string;
+    inviteUrl: string | null;
+    inviteLinkShareable: boolean;
   }> = [];
+  const inviteBase = await resolveShareableInviteOrigin(req);
 
   await prisma.$transaction(async (tx) => {
     for (const p of pending) {
-      const token = makeInviteToken();
-      const tokenHash = hashInviteToken(token);
-
-      const createdInv = await tx.invitation.create({
-        data: {
-          splitParticipantId: p.id,
-          tokenHash,
-          expiresAt
-        }
+      const existing = await tx.invitation.findFirst({
+        where: { splitParticipantId: p.id, status: "pending" as any },
+        orderBy: { createdAt: "desc" }
       });
+      const targetType = normalizeInviteTargetType((p as any).targetType || (p.participantUserId ? "local_user" : "email"));
+      const targetValue =
+        asString((p as any).targetValue).trim() ||
+        (targetType === "email"
+          ? normalizeEmail(p.participantEmail)
+          : asString(p.participantUserId).trim());
+      const deliveryMethod = normalizeInviteDeliveryMethod(
+        existing?.deliveryMethod || (targetType === "email" ? "email" : "internal")
+      );
+
+      const generatedToken = makeInviteToken();
+      const token = String(existing?.token || "").trim() || generatedToken;
+      const createdInv =
+        existing
+          ? String(existing.token || "").trim()
+            ? existing
+            : await tx.invitation.update({
+                where: { id: existing.id },
+                data: { token, tokenHash: hashInviteToken(token) }
+              })
+          :
+        (await tx.invitation.create({
+          data: {
+            token,
+            tokenHash: hashInviteToken(token),
+            splitParticipantId: p.id,
+            splitVersionId: splitVersionId,
+            contentId: split.contentId,
+            inviterUserId: userId,
+            targetType,
+            targetValue,
+            deliveryMethod,
+            status: "pending",
+            expiresAt
+          }
+        }));
 
       await tx.auditEvent.create({
         data: {
@@ -24878,34 +25317,44 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
             participantEmail: p.participantEmail,
             splitVersionId: splitVersionId,
             contentId: split.contentId,
+            targetType,
+            targetValue,
             expiresAt
           } as any
         }
       });
 
-    const inviteBase = (() => {
-      const canonical = getPublicOrigin(req);
-      const overrideRaw = String(process.env.PUBLIC_INVITE_ORIGIN || process.env.PUBLIC_BASE_ORIGIN || "").trim();
-      const override = normalizeOrigin(overrideRaw);
-      if (override) {
-        try {
-          const host = new URL(override).hostname.toLowerCase();
-          if (host === "invites.contentbox.link" && canonical) return canonical;
-        } catch {}
-        return override;
-      }
-      return canonical;
-    })();
-
       createdInvites.push({
         invitationId: createdInv.id,
         participantEmail: String(p.participantEmail || ""),
+        targetType,
+        targetValue,
         splitParticipantId: p.id,
-        participantState: p.participantUserId && p.acceptedAt ? "active" : "invited",
+        participantState: isActiveLedgerParticipant(p as any) ? "active" : "invited",
+        status: normalizeInviteStatus(createdInv.status),
+        deliveryMethod,
         token,
         expiresAt,
-        inviteUrl: `${inviteBase.replace(/\/$/, "")}/invite/${token}`
+        inviteUrl: inviteBase ? `${inviteBase.replace(/\/$/, "")}/invite/${token}` : null,
+        inviteLinkShareable: Boolean(inviteBase)
       });
+
+      await tx.splitParticipant.update({
+        where: { id: p.id },
+        data: { invitationId: createdInv.id, targetType, targetValue }
+      });
+
+      app.log.info(
+        {
+          token,
+          splitVersionId,
+          inviterUserId: userId,
+          targetType,
+          targetValue,
+          status: normalizeInviteStatus(createdInv.status)
+        },
+        "splitInvite.created"
+      );
     }
 
     await tx.auditEvent.create({
@@ -24926,26 +25375,76 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
  * Public invite lookup by token (frontend uses this to show invite details)
  */
 async function handlePublicInviteLookup(req: any, reply: any) {
-  const token = asString((req.params as any).token);
+  const token = asString((req.params as any).token).trim();
   if (!token) return notFound(reply, "Invite not found");
 
   const tokenHash = hashInviteToken(token);
 
   const inv = await prisma.invitation.findFirst({
-    where: { tokenHash },
+    where: {
+      OR: [{ token }, { tokenHash }]
+    },
     include: {
       splitParticipant: {
-        include: { payoutIdentity: true, splitVersion: { include: { content: true, participants: true } } }
+        include: {
+          payoutIdentity: true,
+          splitVersion: {
+            include: {
+              content: true,
+              participants: {
+                include: { invitation: { select: { id: true, status: true, targetType: true, targetValue: true, deliveryMethod: true } } }
+              }
+            }
+          }
+        }
       }
     }
   });
 
-  if (!inv) return notFound(reply, "Invite not found");
+  if (!inv) {
+    app.log.info(
+      {
+        token,
+        splitVersionId: null,
+        inviterUserId: null,
+        targetType: null,
+        targetValue: null,
+        status: "not_found"
+      },
+      "splitInvite.lookup"
+    );
+    return notFound(reply, "Invite not found");
+  }
+
+  const expired = inv.expiresAt.getTime() < Date.now();
+  const effectiveStatus =
+    normalizeInviteStatus(inv.status) === "pending" && expired
+      ? "expired"
+      : normalizeInviteStatus(inv.status);
+  if (effectiveStatus !== normalizeInviteStatus(inv.status)) {
+    try {
+      await prisma.invitation.update({
+        where: { id: inv.id },
+        data: { status: effectiveStatus as any }
+      });
+    } catch {}
+  }
 
   const invitation = {
+    token: inv.token,
+    found: true,
+    status: effectiveStatus,
+    targetType: normalizeInviteTargetType(inv.targetType),
+    targetValue: asString(inv.targetValue),
+    splitVersionId: inv.splitVersionId,
+    inviterUserId: inv.inviterUserId,
     id: inv.id,
     expiresAt: inv.expiresAt.toISOString(),
-    acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null
+    acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
+    acceptedByUserId: inv.acceptedByUserId || null,
+    acceptedIdentityRef: inv.acceptedIdentityRef || null,
+    revokedAt: inv.revokedAt ? inv.revokedAt.toISOString() : null,
+    tombstonedAt: inv.tombstonedAt ? inv.tombstonedAt.toISOString() : null
   } as const;
 
   const sp = inv.splitParticipant;
@@ -24953,6 +25452,10 @@ async function handlePublicInviteLookup(req: any, reply: any) {
   const splitParticipant = {
     id: sp.id,
     participantEmail: sp.participantEmail,
+    participantUserId: sp.participantUserId || null,
+    invitationId: sp.invitationId || null,
+    targetType: (sp as any).targetType || normalizeInviteTargetType(inv.targetType),
+    targetValue: (sp as any).targetValue || asString(inv.targetValue),
     role: sp.role,
     percent: percentToPrimitive(sp.percent),
     payoutIdentityId: sp.payoutIdentityId,
@@ -25002,6 +25505,9 @@ async function handlePublicInviteLookup(req: any, reply: any) {
       });
       relatedInvites = ris.map((r) => ({
         id: r.id,
+        status: normalizeInviteStatus(r.status),
+        targetType: normalizeInviteTargetType(r.targetType),
+        targetValue: asString(r.targetValue),
         splitParticipantId: r.splitParticipantId,
         participantEmail: r.splitParticipant?.participantEmail || null,
         expiresAt: r.expiresAt.toISOString(),
@@ -25013,7 +25519,32 @@ async function handlePublicInviteLookup(req: any, reply: any) {
     relatedInvites = [];
   }
 
-  return reply.send({ ok: true, invitation, splitParticipant, splitVersion, content, invites: relatedInvites });
+  app.log.info(
+    {
+      token,
+      splitVersionId: inv.splitVersionId,
+      inviterUserId: inv.inviterUserId,
+      targetType: normalizeInviteTargetType(inv.targetType),
+      targetValue: asString(inv.targetValue),
+      status: effectiveStatus
+    },
+    "splitInvite.lookup"
+  );
+
+  return reply.send({
+    ok: true,
+    found: true,
+    status: effectiveStatus,
+    targetType: normalizeInviteTargetType(inv.targetType),
+    targetValue: asString(inv.targetValue),
+    splitVersionId: inv.splitVersionId,
+    inviterUserId: inv.inviterUserId,
+    invitation,
+    splitParticipant,
+    splitVersion,
+    content,
+    invites: relatedInvites
+  });
 }
 
 app.get("/invites/:token", handlePublicInviteLookup);
@@ -25114,7 +25645,7 @@ app.get("/invite/:token", handlePublicInvitePage);
  * SplitParticipant.participantUserId with the authenticated user.
  */
 async function handlePublicInviteAccept(req: any, reply: any) {
-  const token = asString((req.params as any).token);
+  const token = asString((req.params as any).token).trim();
   if (!token) return notFound(reply, "Invite not found");
   const inviteCtx = getCapabilityContext();
   if (!canUseSplits(inviteCtx)) {
@@ -25149,14 +25680,17 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   const tokenHash = hashInviteToken(token);
 
   const inv = await prisma.invitation.findFirst({
-    where: { tokenHash },
+    where: { OR: [{ token }, { tokenHash }] },
     include: { splitParticipant: { include: { splitVersion: { include: { content: true } } } } }
   });
 
   if (!inv) return notFound(reply, "Invite not found");
 
   const now = new Date();
-  if (inv.expiresAt.getTime() < Date.now()) {
+  const inviteTargetType = normalizeInviteTargetType(inv.targetType);
+  const inviteTargetValue = asString(inv.targetValue).trim();
+  const currentStatus = normalizeInviteStatus(inv.status);
+  if (inv.expiresAt.getTime() < Date.now() || currentStatus === "expired") {
     try {
       const ownerId = inv.splitParticipant?.splitVersion?.content?.ownerUserId || "";
       if (ownerId) {
@@ -25176,14 +25710,49 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         }
       }
     } catch {}
+    try {
+      await prisma.invitation.update({
+        where: { id: inv.id },
+        data: { status: "expired" as any }
+      });
+    } catch {}
+    app.log.info(
+      {
+        token: inv.token || token,
+        splitVersionId: inv.splitVersionId,
+        inviterUserId: inv.inviterUserId,
+        targetType: inviteTargetType,
+        targetValue: inviteTargetValue,
+        status: "expired"
+      },
+      "splitInvite.accepted"
+    );
     return badRequest(reply, "Invite expired");
   }
 
-  if (inv.acceptedAt) {
-    return reply.send({ ok: true, acceptedAt: inv.acceptedAt.toISOString(), alreadyAccepted: true });
+  if (currentStatus === "revoked" || currentStatus === "tombstoned" || currentStatus === "declined") {
+    return badRequest(reply, `Invite ${currentStatus}`);
+  }
+
+  if (currentStatus === "accepted" || inv.acceptedAt) {
+    return reply.send({ ok: true, acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null, alreadyAccepted: true });
   }
 
   // The invite is bound to participant identity on acceptance.
+
+  const me = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, email: true }
+  });
+  const meEmail = normalizeEmail(me?.email || "");
+  if (inviteTargetType === "local_user" && inviteTargetValue !== userId) {
+    return reply.code(403).send({ error: "Invite is bound to a different identity", code: "INVITE_TARGET_MISMATCH" });
+  }
+  if (inviteTargetType === "email") {
+    if (!meEmail || normalizeEmail(inviteTargetValue) !== meEmail) {
+      return reply.code(403).send({ error: "Invite email does not match your identity", code: "INVITE_EMAIL_MISMATCH" });
+    }
+  }
 
   // Optional P2P acceptance info supplied by a remote node
   const remoteNodeUrl = asString((req.body ?? {})?.remoteNodeUrl || "").replace(/\/$/, "");
@@ -25257,11 +25826,27 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   }
 
   await prisma.$transaction(async (tx) => {
-    await tx.invitation.update({ where: { id: inv.id }, data: { acceptedAt: now } });
+    await tx.invitation.update({
+      where: { id: inv.id },
+      data: {
+        acceptedAt: now,
+        acceptedByUserId: userId,
+        acceptedIdentityRef: `user:${userId}`,
+        status: "accepted" as any
+      }
+    });
 
     const spUpdate: any = { acceptedAt: now, participantUserId: userId, verifiedAt: now };
 
-    await tx.splitParticipant.update({ where: { id: inv.splitParticipantId }, data: spUpdate });
+    await tx.splitParticipant.update({
+      where: { id: inv.splitParticipantId },
+      data: {
+        ...spUpdate,
+        targetType: inviteTargetType,
+        targetValue: inviteTargetValue,
+        invitationId: inv.id
+      }
+    });
 
     // create audit event: include remote node info when provided
     const ownerId = inv.splitParticipant?.splitVersion?.content?.ownerUserId || userId || "";
@@ -25303,16 +25888,17 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     });
   });
 
-  if (process.env.NODE_ENV !== "production") {
-    app.log.info(
-      {
-        splitParticipantId: inv.splitParticipantId,
-        acceptedAt: now.toISOString(),
-        participantUserId: userId
-      },
-      "invite.accept"
-    );
-  }
+  app.log.info(
+    {
+      token: inv.token || token,
+      splitVersionId: inv.splitVersionId,
+      inviterUserId: inv.inviterUserId,
+      targetType: inviteTargetType,
+      targetValue: inviteTargetValue,
+      status: "accepted"
+    },
+    "splitInvite.accepted"
+  );
 
   return reply.send({ ok: true, acceptedAt: now.toISOString() });
 }

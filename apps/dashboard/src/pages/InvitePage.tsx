@@ -61,6 +61,22 @@ type AcceptResponse =
   | { ok: true; acceptedAt: string | null; alreadyAccepted?: boolean }
   | { ok: boolean; [k: string]: any };
 
+type CreatedInviteRow = {
+  invitationId: string;
+  participantEmail: string;
+  targetType?: "email" | "local_user" | "identity_ref";
+  targetValue?: string;
+  status?: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned";
+  deliveryMethod?: "none" | "email" | "link" | "internal";
+  splitParticipantId: string;
+  participantState?: "invited" | "active";
+  token: string;
+  expiresAt: string;
+  inviteUrl: string | null;
+  inviteLinkShareable?: boolean;
+  acceptedAt?: string | null;
+};
+
 function num(x: any) {
   const n = Number(x);
   return Number.isFinite(n) ? n : 0;
@@ -79,6 +95,44 @@ function formatDate(value?: string | null) {
 
 function statusLabel(value?: string | null) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "—";
+}
+
+function inviteTargetLabel(inv: any): string {
+  const targetType = String(inv?.targetType || "").trim().toLowerCase();
+  const targetValue = String(inv?.targetValue || "").trim();
+  const participantUserId = String(inv?.participantUserId || "").trim();
+  const participantEmail = String(inv?.participantEmail || "").trim();
+  if (targetType === "local_user") return targetValue || participantUserId || participantEmail || "(unknown)";
+  if (targetType === "identity_ref") return targetValue ? `pending identity claim: ${targetValue}` : "(unknown)";
+  if (targetType === "email") return targetValue || participantEmail || "(unknown)";
+  return targetValue || participantUserId || participantEmail || "(unknown)";
+}
+
+function isActiveInviteStatus(status: string): boolean {
+  return status === "pending" || status === "accepted";
+}
+
+function buildInviteMailto(inv: CreatedInviteRow) {
+  const to = String(inv.participantEmail || "").trim();
+  const inviteUrl = String(inv.inviteUrl || "").trim();
+  const subject = "You are invited to join a Certifyd split";
+  const body = [
+    "You have been invited to join a Certifyd revenue split.",
+    "",
+    inviteUrl ? `Invite link: ${inviteUrl}` : `Invite token: ${inv.token}`,
+    "",
+    "To accept:",
+    "1) Sign in (or create) your Basic Certifyd Creator account",
+    "2) Ensure your verified key is active",
+    inviteUrl ? "3) Open the invite link and accept" : "3) Open your node invite page and paste the token",
+    "",
+    "This invite link is the source of truth for acceptance."
+  ].join("\n");
+  const q = new URLSearchParams({
+    subject,
+    body
+  });
+  return `mailto:${encodeURIComponent(to)}?${q.toString()}`;
 }
 
 export default function InvitePage({
@@ -112,23 +166,24 @@ export default function InvitePage({
   const [receivedOpen, setReceivedOpen] = useState<Record<string, boolean>>({});
   const [remoteAcceptBusy, setRemoteAcceptBusy] = useState<Record<string, boolean>>({});
   const [remoteSyncBusy, setRemoteSyncBusy] = useState<Record<string, boolean>>({});
-  const [showTombstones, setShowTombstones] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const [contentList, setContentList] = useState<any[]>([]);
   const [selectedContentId, setSelectedContentId] = useState<string>("");
   const [selectedSplitId, setSelectedSplitId] = useState<string | null>(null);
-  const [createdInvites, setCreatedInvites] = useState<any[]>([]);
+  const [createdInvites, setCreatedInvites] = useState<CreatedInviteRow[]>([]);
   const [createMsg, setCreateMsg] = useState<string | null>(null);
   const [historyItems, setHistoryItems] = useState<HistoryEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [pasteRaw, setPasteRaw] = useState<string>("");
   const [pasteMsg, setPasteMsg] = useState<string | null>(null);
+  const [remoteOriginReachable, setRemoteOriginReachable] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (isBasic) return;
-    if (!splitsAllowed && showTombstones) {
-      setShowTombstones(false);
+    if (!splitsAllowed && showHistory) {
+      setShowHistory(false);
     }
-  }, [splitsAllowed, showTombstones, isBasic]);
+  }, [splitsAllowed, showHistory, isBasic]);
 
   function extractInviteTokenFromPaste(raw: string): string | null {
     const v = String(raw || "").trim();
@@ -241,6 +296,20 @@ export default function InvitePage({
     return res;
   }
 
+  async function checkRemoteOriginReachable(origin: string): Promise<boolean> {
+    const clean = String(origin || "").trim();
+    if (!clean) return false;
+    try {
+      const res = await api<{ ok: boolean; reachable: boolean }>(
+        `/api/remote/health?origin=${encodeURIComponent(clean)}`,
+        "GET"
+      );
+      return Boolean(res?.ok && res?.reachable);
+    } catch {
+      return false;
+    }
+  }
+
   async function load() {
     setLoading(true);
     setMsg(null);
@@ -248,6 +317,17 @@ export default function InvitePage({
       if (!tokenToUse) {
         setData(null);
         return;
+      }
+      if (remoteOriginFromLocation) {
+        const reachable = await checkRemoteOriginReachable(remoteOriginFromLocation);
+        setRemoteOriginReachable(reachable);
+        if (!reachable) {
+          setData(null);
+          setMsg("Shared invite host is not reachable. Copy token or configure a working public invite origin.");
+          return;
+        }
+      } else {
+        setRemoteOriginReachable(null);
       }
       const res = remoteOriginFromLocation
         ? await fetchRemoteJson(`/invites/${encodeURIComponent(tokenToUse)}`)
@@ -312,6 +392,7 @@ export default function InvitePage({
     if (isBasic) return;
     if (!splitsAllowed) return;
     if (!me || !remoteOriginFromLocation || !tokenToUse || !data) return;
+    if (remoteOriginReachable === false) return;
     (async () => {
       try {
         await api(`/invites/ingest`, "POST", {
@@ -325,11 +406,11 @@ export default function InvitePage({
           contentDeletedAt: (data as any)?.content?.deletedAt || null,
           remoteNodeUrl: remoteOriginFromLocation
         });
-        const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+        const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
         setRemoteReceivedInvites(listRemote || []);
       } catch {}
     })();
-  }, [me, data, remoteOriginFromLocation, tokenToUse, splitsAllowed, isBasic]);
+  }, [me, data, remoteOriginFromLocation, tokenToUse, splitsAllowed, isBasic, remoteOriginReachable]);
 
   // Load outgoing invites for the signed-in owner (no token values are returned)
   useEffect(() => {
@@ -346,21 +427,21 @@ export default function InvitePage({
     // helper to load both lists so we can refresh after accept/create
     async function loadLists() {
       try {
-        const list = await api<any[]>(`/my/invitations`, "GET");
+        const list = await api<any[]>(`/my/invitations?includeHistory=${showHistory ? "1" : "0"}`, "GET");
         setMyInvites(list || []);
       } catch {
         setMyInvites([]);
       }
 
       try {
-        const listR = await api<any[]>(`/my/invitations/received`, "GET");
+        const listR = await api<any[]>(`/my/invitations/received?includeHistory=${showHistory ? "1" : "0"}`, "GET");
         setReceivedInvites(listR || []);
       } catch {
         setReceivedInvites([]);
       }
 
       try {
-        const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+        const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
         setRemoteReceivedInvites(listRemote || []);
       } catch {
         setRemoteReceivedInvites([]);
@@ -379,7 +460,7 @@ export default function InvitePage({
         setHistoryLoading(false);
       }
     })();
-  }, [me, splitsAllowed, isBasic]);
+  }, [me, splitsAllowed, isBasic, showHistory]);
 
   useEffect(() => {
     if (isBasic) return;
@@ -499,13 +580,13 @@ export default function InvitePage({
       await load();
       // refresh lists so owner sees accepted state and newly created invites show up
       try {
-        const list = await api<any[]>(`/my/invitations`, "GET");
+        const list = await api<any[]>(`/my/invitations?includeHistory=${showHistory ? "1" : "0"}`, "GET");
         setMyInvites(list || []);
       } catch {
         // ignore
       }
       try {
-        const listR = await api<any[]>(`/my/invitations/received`, "GET");
+        const listR = await api<any[]>(`/my/invitations/received?includeHistory=${showHistory ? "1" : "0"}`, "GET");
         setReceivedInvites(listR || []);
       } catch {
         // ignore
@@ -519,6 +600,8 @@ export default function InvitePage({
   }
 
   function inviteStatus(inv: any) {
+    const status = String(inv?.status || "").trim().toLowerCase();
+    if (status) return status;
     const exp = new Date(inv?.expiresAt || "").getTime();
     if (inv?.acceptedAt) return "accepted";
     if (Number.isFinite(exp) && exp < Date.now()) return "expired";
@@ -536,9 +619,17 @@ export default function InvitePage({
     return Object.values(out);
   }
 
-  const visibleSentInvites = (myInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
-  const visibleReceivedInvites = (receivedInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
-  const visibleRemoteInvites = (remoteReceivedInvites || []).filter((inv) => (showTombstones ? true : !inv.contentDeletedAt));
+  const visibleSentInvites = (myInvites || []).filter((inv) => {
+    if (showHistory) return true;
+    const status = inviteStatus(inv);
+    return isActiveInviteStatus(status) && !inv.contentDeletedAt;
+  });
+  const visibleReceivedInvites = (receivedInvites || []).filter((inv) => {
+    if (showHistory) return true;
+    const status = inviteStatus(inv);
+    return isActiveInviteStatus(status) && !inv.contentDeletedAt;
+  });
+  const visibleRemoteInvites = (remoteReceivedInvites || []).filter((inv) => (showHistory ? true : !inv.contentDeletedAt));
   const dedupeKey = (inv: any) => {
     const id = String(inv?.contentId || "").trim();
     if (id) return id;
@@ -564,6 +655,10 @@ export default function InvitePage({
       setMsg("Remote invite is missing token or origin.");
       return;
     }
+    if (!(await checkRemoteOriginReachable(origin))) {
+      setMsg("Shared invite host is not reachable. Copy token or configure a working public invite origin.");
+      return;
+    }
     setRemoteAcceptBusy((m) => ({ ...m, [inv.id]: true }));
     try {
       const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}/accept`, { method: "POST", body: {} });
@@ -578,7 +673,7 @@ export default function InvitePage({
         contentDeletedAt: res?.content?.deletedAt || null,
         remoteNodeUrl: origin
       });
-      const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+      const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
       setRemoteReceivedInvites(listRemote || []);
     } catch (e: any) {
       setMsg(e?.message || "Remote accept failed");
@@ -600,6 +695,10 @@ export default function InvitePage({
       setMsg("Remote invite is missing token or origin.");
       return;
     }
+    if (!(await checkRemoteOriginReachable(origin))) {
+      setMsg("Shared invite host is not reachable. Copy token or configure a working public invite origin.");
+      return;
+    }
     setRemoteSyncBusy((m) => ({ ...m, [inv.id]: true }));
     try {
       const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}`, { method: "GET" });
@@ -614,7 +713,7 @@ export default function InvitePage({
         remoteNodeUrl: origin,
         contentDeletedAt: res?.content?.deletedAt || null
       });
-      const listRemote = await api<any[]>(`/my/invitations/remote`, "GET");
+      const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
       setRemoteReceivedInvites(listRemote || []);
     } catch (e: any) {
       setMsg(e?.message || "Remote sync failed");
@@ -643,7 +742,12 @@ export default function InvitePage({
         {remoteOriginFromLocation ? (
           <div className="text-xs text-neutral-400 mt-1">Remote invite: {remoteOriginFromLocation}</div>
         ) : null}
-        {remoteOriginFromLocation && tokenToUse ? (
+        {remoteOriginFromLocation && remoteOriginReachable === false ? (
+          <div className="mt-2 text-xs text-amber-300">
+            Shared invite host is not reachable. Copy token or configure a working public invite origin.
+          </div>
+        ) : null}
+        {remoteOriginFromLocation && tokenToUse && remoteOriginReachable !== false ? (
           <div className="mt-2">
             <a
               href={`${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`}
@@ -693,9 +797,35 @@ export default function InvitePage({
                   if (!selectedSplitId) return;
                   setCreateMsg(null);
                   try {
-                    const res = await api<{ ok: true; created: number; invites: any[] }>(`/split-versions/${selectedSplitId}/invite`, "POST", {});
-                    setCreatedInvites(res.invites || []);
-                    setCreateMsg(`Created ${res.created} invite(s)`);
+                    const res = await api<{ ok: true; created: number; invites: CreatedInviteRow[] }>(
+                      `/split-versions/${selectedSplitId}/invite`,
+                      "POST",
+                      {}
+                    );
+                    const invites = Array.isArray(res.invites) ? res.invites : [];
+                    setCreatedInvites(invites);
+                    const firstPending = invites.find(
+                      (i) =>
+                        (i.status || "pending") === "pending" &&
+                        (i.targetType || "email") === "email" &&
+                        i.participantEmail &&
+                        i.inviteUrl
+                    );
+                    if (firstPending) {
+                      window.location.href = buildInviteMailto(firstPending);
+                      setCreateMsg(
+                        invites.length > 1
+                          ? `Created ${res.created} invite(s). Opened email draft for ${firstPending.participantEmail}; use copy/resend for others.`
+                          : `Created ${res.created} invite(s). Opened email draft.`
+                      );
+                    } else {
+                      const hasLocalOnly = invites.some((i) => !i.inviteUrl);
+                      setCreateMsg(
+                        hasLocalOnly
+                          ? `Created ${res.created} invite(s). No shareable public invite origin is configured yet; share token(s) only.`
+                          : `Created ${res.created} invite(s)`
+                      );
+                    }
                   } catch (e: any) {
                     setCreateMsg(e?.message || "Create invites failed");
                   }
@@ -716,22 +846,49 @@ export default function InvitePage({
                   <div key={inv.splitParticipantId} className="flex items-center gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="text-[11px] text-neutral-400">
-                        {inv.acceptedAt ? "Accepted" : "Pending"}
+                        {inv.acceptedAt ? "Accepted" : inv.participantState === "active" ? "Active" : "Invited"}
                       </div>
                       {!inv.acceptedAt ? (
-                        <div className="text-xs text-neutral-200 break-all">{inv.inviteUrl}</div>
+                        <div className="text-xs text-neutral-200 break-all">{inv.inviteUrl || `Token: ${inv.token}`}</div>
                       ) : null}
                       <div className="text-[11px] text-neutral-400">
-                        To: {inv.participantEmail || "(unknown)"}
+                        To: {inviteTargetLabel(inv)}
                       </div>
+                      {!inv.acceptedAt && !inv.inviteUrl ? (
+                        <div className="text-[11px] text-amber-300">
+                          No shareable public invite origin is configured on this node. Share token only.
+                        </div>
+                      ) : null}
+                      {!inv.acceptedAt && inv.inviteUrl ? (
+                        <div className="text-[11px] text-neutral-500">Invite URL is shareable across machines.</div>
+                      ) : null}
+                      {!inv.acceptedAt ? (
+                        <div className="text-[11px] text-amber-300">
+                          Pending identity bind. Acceptance requires Basic account + verified key.
+                        </div>
+                      ) : null}
                     </div>
                     {!inv.acceptedAt ? (
-                      <button
-                        onClick={() => navigator.clipboard.writeText(inv.inviteUrl)}
-                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                      >
-                        Copy
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => navigator.clipboard.writeText(String(inv.inviteUrl || inv.token))}
+                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                        >
+                          {inv.inviteUrl ? "Copy link" : "Copy token"}
+                        </button>
+                        {(inv.targetType || "email") === "email" && inv.inviteUrl ? (
+                          <button
+                            onClick={() => {
+                              if (!inv.participantEmail) return;
+                              window.location.href = buildInviteMailto(inv);
+                            }}
+                            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                            title="Open default mail client with invite link"
+                          >
+                            Resend email
+                          </button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </div>
                 ))}
@@ -772,9 +929,9 @@ export default function InvitePage({
               <button
                 type="button"
                 className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                onClick={() => setShowTombstones((s) => !s)}
+                onClick={() => setShowHistory((s) => !s)}
               >
-                {showTombstones ? "Hide tombstones" : "Show tombstones"}
+                {showHistory ? "Show active only" : "Show history"}
               </button>
             </div>
             <div>
@@ -804,7 +961,7 @@ export default function InvitePage({
                               return (
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
-                                    <div className="text-xs text-neutral-400">To: {inv.participantEmail || "(unknown)"}</div>
+                                    <div className="text-xs text-neutral-400">To: {inviteTargetLabel(inv)}</div>
                                     <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
                                     <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
                                     {inv.contentDeletedAt ? (
@@ -870,6 +1027,7 @@ export default function InvitePage({
                               return (
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
+                                    <div className="text-xs text-neutral-400">Target: {inviteTargetLabel(inv)}</div>
                                     <div className="text-xs text-neutral-400">
                                       {titleCase(inv.contentType)} • {statusLabel(inv.contentStatus)} • v{inv.splitVersionNum ?? "—"} • {statusLabel(inv.splitStatus)}
                                     </div>
