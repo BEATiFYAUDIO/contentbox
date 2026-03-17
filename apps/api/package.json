@@ -19,6 +19,7 @@
     "test:delegated-invoice-harness": "npx tsx src/payments/delegated_invoice_harness.ts",
     "test:delegated-invoice-harness:ci": "EXPECT_SETTLED=1 EXPECT_UI_CONSISTENT=1 npx tsx src/payments/delegated_invoice_harness.ts",
     "test:identity-gating": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/identity_gating_test.ts",
+    "test:participant-payout-phase2": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/payments/participant_payout_phase2.test.ts",
     "test:buyer-auth": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/scripts/buyer_auth_test.ts",
     "test:lightning-onboarding": "npx tsx --test src/payments/lightning.onboarding.test.ts"
   },
