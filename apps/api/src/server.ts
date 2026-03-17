@@ -10773,6 +10773,25 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
       creatorNetFailedSats: 0n
     }
   );
+  const participantPayouts = await prisma.participantPayout.groupBy({
+    by: ["status"],
+    _count: { _all: true }
+  }).catch(() => []);
+  const participantPayoutSummary = participantPayouts.reduce(
+    (acc, row) => {
+      const status = parseParticipantPayoutStatus((row as any).status);
+      acc[status] = Number((row as any)?._count?._all || 0);
+      return acc;
+    },
+    {
+      pending: 0,
+      ready: 0,
+      forwarding: 0,
+      paid: 0,
+      failed: 0,
+      blocked: 0
+    } as Record<ParticipantPayoutStatus, number>
+  );
   return reply.send({
     delegatedCreators: links.length,
     publishedItems: publishes.length,
@@ -10787,7 +10806,8 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
       creatorNetPaidSats: totals.creatorNetPaidSats.toString(),
       creatorNetPendingSats: totals.creatorNetPendingSats.toString(),
       creatorNetFailedSats: totals.creatorNetFailedSats.toString()
-    }
+    },
+    participantPayouts: participantPayoutSummary
   });
 });
 
@@ -10804,6 +10824,47 @@ app.get("/api/provider/payment-intents", { preHandler: requireAuth }, async (_re
 });
 app.get("/api/provider/payments/intents", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.send({ items: listProviderPaymentIntents() });
+});
+
+app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const rows = await prisma.participantPayout.findMany({
+    include: {
+      allocation: {
+        select: {
+          participantRef: true,
+          participantUserId: true,
+          participantEmail: true,
+          role: true,
+          bps: true,
+          amountSats: true
+        }
+      }
+    },
+    orderBy: [{ updatedAt: "desc" }]
+  });
+  return reply.send({ items: rows });
+});
+
+app.get("/api/provider/payment-intents/:id/participant-payouts", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id is required");
+  const rows = await prisma.participantPayout.findMany({
+    where: { providerPaymentIntentId: id },
+    include: {
+      allocation: {
+        select: {
+          participantRef: true,
+          participantUserId: true,
+          participantEmail: true,
+          role: true,
+          bps: true,
+          amountSats: true
+        }
+      }
+    },
+    orderBy: [{ createdAt: "asc" }]
+  });
+  return reply.send({ items: rows });
 });
 
 app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (req: any, reply: any) => {
