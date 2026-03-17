@@ -230,6 +230,22 @@ function num(x: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function parseFixedUpstreamBps(input: any): number {
+  const bpsRaw = input?.upstreamBps;
+  if (bpsRaw !== undefined && bpsRaw !== null && String(bpsRaw).trim() !== "") {
+    const parsed = Math.floor(num(bpsRaw));
+    return Math.max(0, Math.min(10000, parsed));
+  }
+  const pctRaw = input?.upstreamRatePercent;
+  if (pctRaw !== undefined && pctRaw !== null && String(pctRaw).trim() !== "") {
+    const pct = num(pctRaw);
+    if (Number.isFinite(pct)) {
+      return Math.max(0, Math.min(10000, Math.round(pct * 100)));
+    }
+  }
+  return 0;
+}
+
 function parseSats(x: unknown): bigint {
   if (typeof x === "bigint") return x;
   if (typeof x === "number") return BigInt(Math.floor(x));
@@ -1553,6 +1569,7 @@ type CreatorPayoutDestinationType = "lightning_address" | "local_lnd" | "onchain
 type ProviderRemitMode = "provider_custody" | "auto_forward" | "manual_payout" | null;
 type ProviderPayoutExecutionMode = "legacy_creator" | "participant";
 type ProviderPayoutSummaryStatus = "pending" | "partial" | "paid" | "failed" | "blocked";
+type ProviderPayoutPolicy = "identity_preferred" | "identity_required";
 type ParticipantPayoutStatus = "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked";
 
 type ProviderCreatorLinkRecord = {
@@ -1606,6 +1623,8 @@ type ProviderPaymentIntentRecord = {
   payoutDestinationSummary: string | null;
   providerRemitMode: ProviderRemitMode;
   payoutExecutionMode: ProviderPayoutExecutionMode;
+  payoutPolicy: ProviderPayoutPolicy;
+  allowProviderFallback: boolean;
   payoutSummaryStatus: ProviderPayoutSummaryStatus;
   payoutReference: string | null;
   remittedAt: string | null;
@@ -1673,6 +1692,314 @@ type ParticipantPayoutReadiness = {
   blockedReason: string | null;
 };
 
+type ParticipantDestinationType = "lightning_address" | "lnurl" | "lnd";
+
+type ParticipantDestinationResolveResult = {
+  destinationType: string | null;
+  destinationSummary: string | null;
+  destinationSource: "identity_registry" | "provider_snapshot" | null;
+  destinationFingerprint: string | null;
+  destinationResolvedAt: Date | null;
+  isVerified: boolean;
+  verificationStatus: string | null;
+  verificationError: string | null;
+};
+
+type ParticipantExecutionResolution = "identity" | "provider_fallback";
+
+type ParticipantIdentityGate = {
+  active: boolean;
+  readinessReason: "INVITE_UNRESOLVED" | "KEY_UNVERIFIED" | null;
+};
+
+function isMissingParticipantPayoutTableError(err: any): boolean {
+  const code = String(err?.code || "").trim().toUpperCase();
+  const message = String(err?.message || "");
+  if (code !== "P2021") return false;
+  return (
+    message.includes("ParticipantPayout") ||
+    message.includes("ProviderPaymentParticipantAllocation") ||
+    message.includes("ParticipantPayoutDestination") ||
+    message.includes("main.ParticipantPayout") ||
+    message.includes("main.ProviderPaymentParticipantAllocation") ||
+    message.includes("main.ParticipantPayoutDestination")
+  );
+}
+
+function parseParticipantDestinationType(value: unknown): ParticipantDestinationType | null {
+  const type = String(value || "").trim().toLowerCase();
+  if (type === "lightning_address" || type === "lnurl" || type === "lnd") return type as ParticipantDestinationType;
+  return null;
+}
+
+function normalizeParticipantDestinationValue(type: ParticipantDestinationType, value: unknown): string {
+  const raw = String(value || "").trim();
+  if (type === "lightning_address") return raw.toLowerCase();
+  return raw;
+}
+
+function summarizeParticipantDestination(type: ParticipantDestinationType, value: string): string {
+  const v = String(value || "").trim();
+  if (!v) return "";
+  if (type === "lightning_address") return v.toLowerCase();
+  if (v.length <= 24) return v;
+  return `${v.slice(0, 14)}…${v.slice(-8)}`;
+}
+
+async function verifyParticipantDestination(
+  type: ParticipantDestinationType,
+  value: string
+): Promise<{
+  isVerified: boolean;
+  verificationStatus: "verified" | "failed";
+  verificationError: string | null;
+  verificationMethod: "lnurlp_probe" | null;
+  checkedAt: Date;
+}> {
+  const checkedAt = new Date();
+  const v = String(value || "").trim();
+  if (!v) {
+    return {
+      isVerified: false,
+      verificationStatus: "failed",
+      verificationError: "DESTINATION_EMPTY",
+      verificationMethod: null,
+      checkedAt
+    };
+  }
+  if (type === "lightning_address") {
+    if (!isValidLightningAddress(v)) {
+      return {
+        isVerified: false,
+        verificationStatus: "failed",
+        verificationError: "LIGHTNING_ADDRESS_INVALID",
+        verificationMethod: "lnurlp_probe",
+        checkedAt
+      };
+    }
+    try {
+      const [name, domain] = v.toLowerCase().split("@");
+      const lnurlpUrl = `https://${domain}/.well-known/lnurlp/${encodeURIComponent(name)}`;
+      const lookup = await fetchJsonWithTimeout(
+        lnurlpUrl,
+        { method: "GET", headers: { Accept: "application/json" } as any },
+        8000
+      );
+      if (!lookup.res.ok) {
+        return {
+          isVerified: false,
+          verificationStatus: "failed",
+          verificationError: `LNURLP_HTTP_${lookup.res.status}`,
+          verificationMethod: "lnurlp_probe",
+          checkedAt
+        };
+      }
+      const callback = String(lookup.json?.callback || "").trim();
+      if (!callback) {
+        return {
+          isVerified: false,
+          verificationStatus: "failed",
+          verificationError: "LNURLP_CALLBACK_MISSING",
+          verificationMethod: "lnurlp_probe",
+          checkedAt
+        };
+      }
+      return {
+        isVerified: true,
+        verificationStatus: "verified",
+        verificationError: null,
+        verificationMethod: "lnurlp_probe",
+        checkedAt
+      };
+    } catch (e: any) {
+      return {
+        isVerified: false,
+        verificationStatus: "failed",
+        verificationError: String(e?.message || "LIGHTNING_ADDRESS_LOOKUP_FAILED"),
+        verificationMethod: "lnurlp_probe",
+        checkedAt
+      };
+    }
+  }
+  return {
+    isVerified: false,
+    verificationStatus: "failed",
+    verificationError: "DESTINATION_TYPE_UNSUPPORTED",
+    verificationMethod: null,
+    checkedAt
+  };
+}
+
+async function setPrimaryParticipantDestinationForUser(userId: string, destinationId: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.participantPayoutDestination.updateMany({
+      where: { userId },
+      data: { isPrimary: false }
+    });
+    await tx.participantPayoutDestination.update({
+      where: { id: destinationId },
+      data: { isPrimary: true, isActive: true }
+    });
+  });
+}
+
+async function resolveParticipantRegistryDestination(userId: string): Promise<ParticipantDestinationResolveResult | null> {
+  if (!userId) return null;
+  try {
+    const rows = await prisma.participantPayoutDestination.findMany({
+      where: { userId, isActive: true },
+      orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }],
+      take: 5
+    });
+    if (!rows.length) return null;
+    const verifiedPrimary =
+      rows.find((r) => r.isPrimary && r.isVerified) ||
+      rows.find((r) => r.isVerified) ||
+      rows.find((r) => r.isPrimary) ||
+      rows[0];
+    const type = parseParticipantDestinationType(verifiedPrimary.destinationType);
+    const summary = String(verifiedPrimary.destinationSummary || "").trim() || null;
+    const resolvedAt = verifiedPrimary.lastVerifiedAt || verifiedPrimary.updatedAt || null;
+    return {
+      destinationType: type,
+      destinationSummary: summary,
+      destinationSource: "identity_registry",
+      destinationFingerprint: computeDestinationFingerprint(type, summary),
+      destinationResolvedAt: resolvedAt,
+      isVerified: Boolean(verifiedPrimary.isVerified),
+      verificationStatus: String(verifiedPrimary.verificationStatus || (verifiedPrimary.isVerified ? "verified" : "pending")),
+      verificationError: verifiedPrimary.verificationError || null
+    };
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) return null;
+    throw err;
+  }
+}
+
+async function resolveParticipantPayoutReadinessForAllocation(
+  intent: ProviderPaymentIntentRecord,
+  participantUserId: string | null
+): Promise<ParticipantPayoutReadiness> {
+  const policy = normalizeProviderFallbackPolicy((intent as any).payoutPolicy, (intent as any).allowProviderFallback);
+  const payoutPolicy = policy.payoutPolicy;
+  const allowProviderFallback = policy.allowProviderFallback;
+  const blockedReason = intent.payoutStatus === "failed" && String(intent.payoutLastError || "").toUpperCase().includes("BLOCK")
+    ? String(intent.payoutLastError || "BLOCKED")
+    : null;
+  if (blockedReason) {
+    const registry = participantUserId ? await resolveParticipantRegistryDestination(participantUserId) : null;
+    return {
+      status: "blocked",
+      readinessReason: "BLOCKED_POLICY",
+      destinationType: registry?.destinationType || null,
+      destinationSummary: registry?.destinationSummary || null,
+      destinationSource: registry?.destinationSource || "provider_snapshot",
+      destinationFingerprint: registry?.destinationFingerprint || null,
+      destinationResolvedAt: registry?.destinationResolvedAt || null,
+      blockedReason
+    };
+  }
+
+  const registry = participantUserId ? await resolveParticipantRegistryDestination(participantUserId) : null;
+  if (registry) {
+    if (!registry.isVerified) {
+      return {
+        status: "pending",
+        readinessReason: registry.verificationError ? "DESTINATION_UNVERIFIED" : "DESTINATION_VERIFICATION_PENDING",
+        destinationType: registry.destinationType,
+        destinationSummary: registry.destinationSummary,
+        destinationSource: registry.destinationSource,
+        destinationFingerprint: registry.destinationFingerprint,
+        destinationResolvedAt: registry.destinationResolvedAt,
+        blockedReason: null
+      };
+    }
+    if (intent.payoutExecutionMode !== "participant") {
+      return {
+        status: "pending",
+        readinessReason: "LEGACY_CREATOR_MODE",
+        destinationType: registry.destinationType,
+        destinationSummary: registry.destinationSummary,
+        destinationSource: registry.destinationSource,
+        destinationFingerprint: registry.destinationFingerprint,
+        destinationResolvedAt: registry.destinationResolvedAt,
+        blockedReason: null
+      };
+    }
+    if (intent.providerRemitMode !== "auto_forward") {
+      return {
+        status: "pending",
+        readinessReason: "MANUAL_REQUIRED",
+        destinationType: registry.destinationType,
+        destinationSummary: registry.destinationSummary,
+        destinationSource: registry.destinationSource,
+        destinationFingerprint: registry.destinationFingerprint,
+        destinationResolvedAt: registry.destinationResolvedAt,
+        blockedReason: null
+      };
+    }
+    if (registry.destinationType !== "lightning_address") {
+      return {
+        status: "pending",
+        readinessReason: "AUTO_FORWARD_UNSUPPORTED_DESTINATION",
+        destinationType: registry.destinationType,
+        destinationSummary: registry.destinationSummary,
+        destinationSource: registry.destinationSource,
+        destinationFingerprint: registry.destinationFingerprint,
+        destinationResolvedAt: registry.destinationResolvedAt,
+        blockedReason: null
+      };
+    }
+    return {
+      status: "ready",
+      readinessReason: null,
+      destinationType: registry.destinationType,
+      destinationSummary: registry.destinationSummary,
+      destinationSource: registry.destinationSource,
+      destinationFingerprint: registry.destinationFingerprint,
+      destinationResolvedAt: registry.destinationResolvedAt,
+      blockedReason: null
+    };
+  }
+
+  if (!allowProviderFallback) {
+    return {
+      status: "pending",
+      readinessReason:
+        payoutPolicy === "identity_required"
+          ? "IDENTITY_REQUIRED_DESTINATION_MISSING"
+          : "IDENTITY_DESTINATION_MISSING_FALLBACK_DISABLED",
+      destinationType: null,
+      destinationSummary: null,
+      destinationSource: null,
+      destinationFingerprint: null,
+      destinationResolvedAt: null,
+      blockedReason: null
+    };
+  }
+
+  const fallback = resolveParticipantPayoutReadiness(intent);
+  if (fallback.destinationType || fallback.destinationSummary) {
+    return {
+      ...fallback,
+      readinessReason:
+        fallback.readinessReason === null
+          ? "IDENTITY_DESTINATION_MISSING_FALLBACK_PROVIDER"
+          : `IDENTITY_DESTINATION_MISSING_FALLBACK_PROVIDER:${fallback.readinessReason}`
+    };
+  }
+  return {
+    status: "pending",
+    readinessReason: "IDENTITY_DESTINATION_MISSING",
+    destinationType: null,
+    destinationSummary: null,
+    destinationSource: null,
+    destinationFingerprint: null,
+    destinationResolvedAt: null,
+    blockedReason: null
+  };
+}
+
 type CreatorPayoutDestinationRecord = {
   userId: string;
   payoutDestinationType: CreatorPayoutDestinationType;
@@ -1700,11 +2027,26 @@ type CreatorPayoutDestinationState = {
 
 const PROVIDER_INVOICING_FEE_PERCENT = 1;
 const PROVIDER_DURABLE_HOSTING_FEE_PERCENT = 1;
+const DEFAULT_PAYOUT_POLICY_RAW = String(process.env.CERTIFYD_PAYOUT_POLICY || "").trim().toLowerCase();
+function parseBooleanFlag(value: unknown, fallback: boolean): boolean {
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  const raw = String(value).trim().toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+const DEFAULT_ALLOW_PROVIDER_FALLBACK = parseBooleanFlag(process.env.CERTIFYD_ALLOW_PROVIDER_FALLBACK, true);
 
 function resolveNewIntentPayoutExecutionMode(): ProviderPayoutExecutionMode {
   if (!PARTICIPANT_PAYOUTS_ENABLED) return "legacy_creator";
   if (!PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY) return "legacy_creator";
   return "participant";
+}
+
+function resolveNewIntentPayoutPolicy(): { payoutPolicy: ProviderPayoutPolicy; allowProviderFallback: boolean } {
+  return normalizeProviderFallbackPolicy(undefined, undefined);
 }
 
 function computePercentFeeComponent(gross: bigint, feePercent: number, remaining: bigint): bigint {
@@ -1793,6 +2135,25 @@ function parseProviderPayoutExecutionMode(value: unknown): ProviderPayoutExecuti
   return "legacy_creator";
 }
 
+function parseProviderPayoutPolicy(value: unknown): ProviderPayoutPolicy {
+  const policy = String(value || "").trim().toLowerCase();
+  if (policy === "identity_required") return "identity_required";
+  if (policy === "identity_preferred") return "identity_preferred";
+  return DEFAULT_PAYOUT_POLICY_RAW === "identity_required" ? "identity_required" : "identity_preferred";
+}
+
+function normalizeProviderFallbackPolicy(
+  policyRaw: unknown,
+  allowFallbackRaw: unknown
+): { payoutPolicy: ProviderPayoutPolicy; allowProviderFallback: boolean } {
+  const payoutPolicy = parseProviderPayoutPolicy(policyRaw);
+  const allowProviderFallback =
+    payoutPolicy === "identity_required"
+      ? false
+      : parseBooleanFlag(allowFallbackRaw, DEFAULT_ALLOW_PROVIDER_FALLBACK);
+  return { payoutPolicy, allowProviderFallback };
+}
+
 function parseProviderPayoutSummaryStatus(value: unknown): ProviderPayoutSummaryStatus {
   const status = String(value || "").trim().toLowerCase();
   if (status === "pending" || status === "partial" || status === "paid" || status === "failed" || status === "blocked") {
@@ -1879,6 +2240,50 @@ function resolveParticipantPayoutReadiness(intent: ProviderPaymentIntentRecord):
     destinationResolvedAt,
     blockedReason: null
   };
+}
+
+async function hasVerifiedParticipantKey(userId: string): Promise<boolean> {
+  if (!userId) return false;
+  const witness = await prisma.witnessIdentity.findUnique({
+    where: { userId },
+    select: { id: true, revokedAt: true }
+  });
+  return Boolean(witness && !witness.revokedAt);
+}
+
+async function resolveParticipantIdentityGate(input: {
+  splitParticipantId: string | null;
+  participantUserId: string | null;
+}): Promise<ParticipantIdentityGate> {
+  const userId = String(input.participantUserId || "").trim();
+  const splitParticipantId = String(input.splitParticipantId || "").trim();
+  if (!userId) {
+    return { active: false, readinessReason: "INVITE_UNRESOLVED" };
+  }
+  const verifiedKey = await hasVerifiedParticipantKey(userId);
+  if (!verifiedKey) {
+    return { active: false, readinessReason: "KEY_UNVERIFIED" };
+  }
+  if (!splitParticipantId) {
+    return { active: false, readinessReason: "INVITE_UNRESOLVED" };
+  }
+  const splitParticipant = await prisma.splitParticipant.findUnique({
+    where: { id: splitParticipantId },
+    select: {
+      acceptedAt: true,
+      invitations: {
+        where: { acceptedAt: { not: null } },
+        select: { id: true },
+        take: 1
+      }
+    }
+  });
+  if (!splitParticipant) return { active: false, readinessReason: "INVITE_UNRESOLVED" };
+  const signedAccepted = Boolean(splitParticipant.acceptedAt) || (splitParticipant.invitations?.length || 0) > 0;
+  if (!signedAccepted) {
+    return { active: false, readinessReason: "INVITE_UNRESOLVED" };
+  }
+  return { active: true, readinessReason: null };
 }
 
 function parsePayoutDestinationType(value: unknown): CreatorPayoutDestinationType {
@@ -2191,6 +2596,7 @@ function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
       providerInvoicing: true,
       durablePublicHosting: false
     });
+    const policy = normalizeProviderFallbackPolicy((row as any).payoutPolicy, (row as any).allowProviderFallback);
     return {
       ...row,
       grossAmountSats: row.grossAmountSats || fee.grossAmountSats,
@@ -2204,6 +2610,8 @@ function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
       payoutDestinationSummary: row.payoutDestinationSummary || null,
       providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
       payoutExecutionMode: parseProviderPayoutExecutionMode((row as any).payoutExecutionMode || null),
+      payoutPolicy: policy.payoutPolicy,
+      allowProviderFallback: policy.allowProviderFallback,
       payoutSummaryStatus: parseProviderPayoutSummaryStatus((row as any).payoutSummaryStatus || null),
       payoutReference: row.payoutReference || null,
       remittedAt: row.remittedAt || null,
@@ -2230,10 +2638,13 @@ function createProviderPaymentIntent(
 ): ProviderPaymentIntentRecord {
   const now = new Date().toISOString();
   const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE);
+  const policy = normalizeProviderFallbackPolicy((input as any).payoutPolicy, (input as any).allowProviderFallback);
   const created: ProviderPaymentIntentRecord = {
     id: buildProviderRecordId("ppi"),
     ...input,
     payoutExecutionMode: parseProviderPayoutExecutionMode((input as any).payoutExecutionMode || null),
+    payoutPolicy: policy.payoutPolicy,
+    allowProviderFallback: policy.allowProviderFallback,
     payoutSummaryStatus: parseProviderPayoutSummaryStatus((input as any).payoutSummaryStatus || null),
     createdAt: now,
     updatedAt: now
@@ -2286,6 +2697,8 @@ function updateProviderPaymentIntent(
       | "payoutDestinationSummary"
       | "providerRemitMode"
       | "payoutExecutionMode"
+      | "payoutPolicy"
+      | "allowProviderFallback"
       | "payoutSummaryStatus"
       | "payoutReference"
       | "remittedAt"
@@ -2301,6 +2714,10 @@ function updateProviderPaymentIntent(
   const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE);
   const idx = rows.findIndex((r) => r.id === id);
   if (idx < 0) return null;
+  const policy = normalizeProviderFallbackPolicy(
+    patch.payoutPolicy !== undefined ? patch.payoutPolicy : rows[idx].payoutPolicy,
+    patch.allowProviderFallback !== undefined ? patch.allowProviderFallback : rows[idx].allowProviderFallback
+  );
   rows[idx] = {
     ...rows[idx],
     status: (patch.status || rows[idx].status) as ProviderPaymentIntentStatus,
@@ -2328,6 +2745,8 @@ function updateProviderPaymentIntent(
       providerRemitMode: patch.providerRemitMode !== undefined ? patch.providerRemitMode : rows[idx].providerRemitMode,
       payoutExecutionMode:
         patch.payoutExecutionMode !== undefined ? patch.payoutExecutionMode : rows[idx].payoutExecutionMode,
+      payoutPolicy: policy.payoutPolicy,
+      allowProviderFallback: policy.allowProviderFallback,
       payoutSummaryStatus:
         patch.payoutSummaryStatus !== undefined ? patch.payoutSummaryStatus : rows[idx].payoutSummaryStatus,
       payoutReference: patch.payoutReference !== undefined ? patch.payoutReference : rows[idx].payoutReference,
@@ -2399,113 +2818,159 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
   if (intent.status !== "paid") return;
   const contentId = String(intent.contentId || "").trim();
   if (!contentId) return;
+  try {
 
-  const existingAllocations = await prisma.providerPaymentParticipantAllocation.findMany({
-    where: { providerPaymentIntentId: intent.id },
-    select: { id: true }
-  });
+    const existingAllocations = await prisma.providerPaymentParticipantAllocation.findMany({
+      where: { providerPaymentIntentId: intent.id },
+      select: { id: true }
+    });
 
   // Financial snapshot freeze: once any allocation exists for this provider payment intent,
   // never recompute or overwrite allocations, even if provider fee/net fields are edited later.
   // This avoids retroactive drift in participant accounting.
-  if (existingAllocations.length === 0) {
-    const netPool = BigInt(String(intent.creatorNetSats || "0"));
-    if (netPool > 0n) {
-      const computed = await computeContentParticipantAllocations({
-        contentId,
-        poolSats: netPool
-      });
-      for (const row of computed.allocations) {
-        await prisma.providerPaymentParticipantAllocation.upsert({
-          where: {
-            providerPaymentIntentId_participantRef_roleKey: {
-              providerPaymentIntentId: intent.id,
-              participantRef: row.participantRef,
-              roleKey: row.roleKey
-            }
-          },
-          update: {},
-          create: {
-            providerPaymentIntentId: intent.id,
-            paymentIntentId: intent.paymentIntentId,
-            contentId: intent.contentId,
-            creatorNodeId: intent.creatorNodeId,
-            participantRef: row.participantRef,
-            participantId: row.participantId,
-            splitParticipantId: row.splitParticipantId,
-            participantUserId: row.participantUserId,
-            participantEmail: row.participantEmail,
-            role: row.role,
-            roleKey: row.roleKey,
-            bps: row.bps,
-            amountSats: row.amountSats,
-            allocationSource: row.allocationSource,
-            allocationVersion: row.allocationVersion
-          }
+    if (existingAllocations.length === 0) {
+      const netPool = BigInt(String(intent.creatorNetSats || "0"));
+      if (netPool > 0n) {
+        const computed = await computeContentParticipantAllocations({
+          contentId,
+          poolSats: netPool
         });
+        for (const row of computed.allocations) {
+          await prisma.providerPaymentParticipantAllocation.upsert({
+            where: {
+              providerPaymentIntentId_participantRef_roleKey: {
+                providerPaymentIntentId: intent.id,
+                participantRef: row.participantRef,
+                roleKey: row.roleKey
+              }
+            },
+            update: {},
+            create: {
+              providerPaymentIntentId: intent.id,
+              paymentIntentId: intent.paymentIntentId,
+              contentId: intent.contentId,
+              creatorNodeId: intent.creatorNodeId,
+              participantRef: row.participantRef,
+              participantId: row.participantId,
+              splitParticipantId: row.splitParticipantId,
+              participantUserId: row.participantUserId,
+              participantEmail: row.participantEmail,
+              role: row.role,
+              roleKey: row.roleKey,
+              bps: row.bps,
+              amountSats: row.amountSats,
+              allocationSource: row.allocationSource,
+              allocationVersion: row.allocationVersion
+            }
+          });
+        }
       }
     }
-  }
 
-  const allocations = await prisma.providerPaymentParticipantAllocation.findMany({
-    where: { providerPaymentIntentId: intent.id },
-    select: { id: true, amountSats: true }
-  });
-  if (!allocations.length) return;
-  const readiness = resolveParticipantPayoutReadiness(intent);
-  const terminalStatus: ParticipantPayoutStatus | null =
-    intent.payoutStatus === "paid" ? "paid" : intent.payoutStatus === "failed" ? (readiness.status === "blocked" ? "blocked" : "failed") : null;
-
-  for (const allocation of allocations) {
-    await prisma.participantPayout.upsert({
-      where: { allocationId: allocation.id },
-      update: {
-        status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
-        payoutRail: intent.payoutRail,
-        lastCheckedAt: new Date(),
-        readinessReason: readiness.readinessReason,
-        destinationResolvedAt: readiness.destinationResolvedAt,
-        destinationSource: readiness.destinationSource,
-        destinationFingerprint: readiness.destinationFingerprint,
-        payoutReference: intent.payoutReference,
-        lastError: intent.payoutLastError,
-        blockedReason: readiness.blockedReason,
-        remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
-      },
-      create: {
-        allocationId: allocation.id,
-        providerPaymentIntentId: intent.id,
-        paymentIntentId: intent.paymentIntentId,
-        amountSats: BigInt(String(allocation.amountSats || "0")),
-        status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
-        payoutRail: intent.payoutRail,
-        destinationType: readiness.destinationType,
-        destinationSummary: readiness.destinationSummary,
-        readinessReason: readiness.readinessReason,
-        destinationResolvedAt: readiness.destinationResolvedAt,
-        destinationSource: readiness.destinationSource,
-        destinationFingerprint: readiness.destinationFingerprint,
-        attemptCount: Math.max(0, Number(intent.remittanceAttempts) || 0),
-        attemptId: intent.remittanceAttemptId,
-        lockedAt: intent.remittanceLockedAt ? new Date(intent.remittanceLockedAt) : null,
-        lastCheckedAt: new Date(),
-        payoutReference: intent.payoutReference,
-        lastError: intent.payoutLastError,
-        blockedReason: readiness.blockedReason,
-        remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
-        // TODO(certifyd-payout-destination-versioning): snapshot destination rebinding/versioning
-        // should support destination updates for future unpaid balances without mutating historical payout rows.
+    const allocations = await prisma.providerPaymentParticipantAllocation.findMany({
+      where: { providerPaymentIntentId: intent.id },
+      select: {
+        id: true,
+        participantRef: true,
+        amountSats: true,
+        splitParticipantId: true,
+        participantUserId: true
       }
     });
+    if (!allocations.length) return;
+    const terminalStatus: ParticipantPayoutStatus | null =
+      intent.payoutStatus === "paid" ? "paid" : intent.payoutStatus === "failed" ? "failed" : null;
+
+    for (const allocation of allocations) {
+      const executionParticipantRef = resolveExecutionParticipantRef({
+        participantRef: allocation.participantRef,
+        participantUserId: allocation.participantUserId,
+        splitParticipantId: allocation.splitParticipantId,
+        allocationId: allocation.id
+      });
+      const identityGate = await resolveParticipantIdentityGate({
+        splitParticipantId: allocation.splitParticipantId || null,
+        participantUserId: allocation.participantUserId || null
+      });
+      const baseReadiness = await resolveParticipantPayoutReadinessForAllocation(
+        intent,
+        allocation.participantUserId || null
+      );
+      const readiness = identityGate.active
+        ? baseReadiness
+        : {
+            ...baseReadiness,
+            status: "pending" as ParticipantPayoutStatus,
+            readinessReason: identityGate.readinessReason
+          };
+      await prisma.participantPayout.upsert({
+        where: { allocationId: allocation.id },
+        update: {
+          payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
+          status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
+          payoutRail: intent.payoutRail,
+          destinationType: readiness.destinationType,
+          destinationSummary: readiness.destinationSummary,
+          lastCheckedAt: new Date(),
+          readinessReason: readiness.readinessReason,
+          destinationResolvedAt: readiness.destinationResolvedAt,
+          destinationSource: readiness.destinationSource,
+          destinationFingerprint: readiness.destinationFingerprint,
+          payoutReference: intent.payoutReference,
+          lastError: intent.payoutLastError,
+          blockedReason: readiness.blockedReason,
+          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+        },
+        create: {
+          allocationId: allocation.id,
+          providerPaymentIntentId: intent.id,
+          paymentIntentId: intent.paymentIntentId,
+          payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
+          amountSats: BigInt(String(allocation.amountSats || "0")),
+          status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
+          payoutRail: intent.payoutRail,
+          destinationType: readiness.destinationType,
+          destinationSummary: readiness.destinationSummary,
+          readinessReason: readiness.readinessReason,
+          destinationResolvedAt: readiness.destinationResolvedAt,
+          destinationSource: readiness.destinationSource,
+          destinationFingerprint: readiness.destinationFingerprint,
+          attemptCount: Math.max(0, Number(intent.remittanceAttempts) || 0),
+          attemptId: intent.remittanceAttemptId,
+          lockedAt: intent.remittanceLockedAt ? new Date(intent.remittanceLockedAt) : null,
+          lastCheckedAt: new Date(),
+          payoutReference: intent.payoutReference,
+          lastError: intent.payoutLastError,
+          blockedReason: readiness.blockedReason,
+          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+          // TODO(certifyd-payout-destination-versioning): snapshot destination rebinding/versioning
+          // should support destination updates for future unpaid balances without mutating historical payout rows.
+        }
+      });
+    }
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      app.log.warn(
+        { providerPaymentIntentId: intent.id, paymentIntentId: intent.paymentIntentId },
+        "participantPayout.tables_missing_skip"
+      );
+      return;
+    }
+    throw err;
   }
 }
 
 async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string): Promise<ProviderPayoutSummaryStatus> {
   if (!PARTICIPANT_PAYOUTS_ENABLED || !PARTICIPANT_PAYOUTS_SUMMARY_ENABLED) return "pending";
-  const rows = await prisma.participantPayout.findMany({
-    where: { providerPaymentIntentId },
-    select: { status: true }
-  });
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: { providerPaymentIntentId },
+      select: { status: true }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
   if (!rows.length) return "pending";
   const statuses = rows.map((r) => parseParticipantPayoutStatus(r.status));
   const allPaid = statuses.every((s) => s === "paid");
@@ -2931,6 +3396,71 @@ function nextParticipantRetryAt(attemptCount: number): Date {
   return new Date(Date.now() + delayMs);
 }
 
+function isEmailDerivedParticipantRef(value: string): boolean {
+  const v = String(value || "").trim().toLowerCase();
+  return v.startsWith("email:") || v.includes("@");
+}
+
+function resolveExecutionParticipantRef(input: {
+  participantRef?: string | null;
+  participantUserId?: string | null;
+  splitParticipantId?: string | null;
+  allocationId?: string | null;
+}): string {
+  const userId = String(input.participantUserId || "").trim();
+  if (userId) return `user:${userId}`;
+  const splitParticipantId = String(input.splitParticipantId || "").trim();
+  if (splitParticipantId) return `split_participant:${splitParticipantId}`;
+  const candidate = String(input.participantRef || "").trim();
+  if (candidate && !isEmailDerivedParticipantRef(candidate)) return candidate;
+  const allocationId = String(input.allocationId || "").trim();
+  if (allocationId) return `allocation:${allocationId}`;
+  return "allocation:unknown";
+}
+
+function buildParticipantPayoutKey(intentId: string, executionParticipantRef: string): string {
+  const ref = String(executionParticipantRef || "").trim();
+  if (!ref || isEmailDerivedParticipantRef(ref)) {
+    throw new Error("INVALID_EXECUTION_PARTICIPANT_REF");
+  }
+  return `${String(intentId || "").trim()}:${ref}`;
+}
+
+function participantExecutionResolutionForRow(row: any): ParticipantExecutionResolution {
+  const source = String(row?.destinationSource || "").trim().toLowerCase();
+  return source === "provider_snapshot" ? "provider_fallback" : "identity";
+}
+
+function participantExecutionRef(row: any): string {
+  return resolveExecutionParticipantRef({
+    participantRef: row?.allocation?.participantRef,
+    participantUserId: row?.allocation?.participantUserId,
+    splitParticipantId: row?.allocation?.splitParticipantId,
+    allocationId: row?.allocationId
+  });
+}
+
+function logParticipantPayoutAttempt(
+  intentId: string,
+  row: any,
+  status: "executed" | "pending" | "blocked",
+  reason: string
+) {
+  app.log.info(
+    {
+      intentId,
+      participantUserId: String(row?.allocation?.participantUserId || "").trim() || null,
+      participantRef: participantExecutionRef(row),
+      resolution: participantExecutionResolutionForRow(row),
+      destinationId: String(row?.destinationFingerprint || "").trim() || null,
+      destinationType: String(row?.destinationType || "").trim() || null,
+      status,
+      reason: String(reason || "UNKNOWN")
+    },
+    "participantPayout.execution"
+  );
+}
+
 async function acquireParticipantPayoutLock(id: string): Promise<{
   ok: boolean;
   row: any | null;
@@ -2939,6 +3469,17 @@ async function acquireParticipantPayoutLock(id: string): Promise<{
 }> {
   const row = await prisma.participantPayout.findUnique({ where: { id } });
   if (!row) return { ok: false, row: null, reason: "MISSING_ROW" };
+  if (row.payoutReference || row.remittedAt) return { ok: false, row, reason: "ALREADY_EXECUTED_EXTERNAL" };
+  if (row.payoutKey) {
+    const paid = await prisma.participantPayout.findFirst({
+      where: {
+        payoutKey: row.payoutKey,
+        OR: [{ status: "paid" }, { payoutReference: { not: null } }, { remittedAt: { not: null } }]
+      },
+      select: { id: true }
+    });
+    if (paid) return { ok: false, row, reason: "ALREADY_EXECUTED" };
+  }
   if (row.status === "paid" || row.status === "blocked") return { ok: false, row, reason: "TERMINAL_STATUS" };
   if (row.status === "forwarding") return { ok: false, row, reason: "ALREADY_FORWARDING" };
   if (row.status !== "ready" && row.status !== "failed") return { ok: false, row, reason: "NOT_READY" };
@@ -2971,8 +3512,8 @@ async function acquireParticipantPayoutLock(id: string): Promise<{
   return { ok: true, row: locked, attemptId };
 }
 
-async function markParticipantPayoutPaid(id: string, attemptId: string, payoutReference: string | null) {
-  await prisma.participantPayout.updateMany({
+async function markParticipantPayoutPaid(id: string, attemptId: string, payoutReference: string | null): Promise<boolean> {
+  const res = await prisma.participantPayout.updateMany({
     where: { id, attemptId },
     data: {
       status: "paid",
@@ -2986,6 +3527,45 @@ async function markParticipantPayoutPaid(id: string, attemptId: string, payoutRe
       nextRetryAt: null
     }
   });
+  return res.count > 0;
+}
+
+async function forceMarkParticipantPayoutPaidAfterExternalSuccess(id: string, payoutReference: string | null): Promise<boolean> {
+  try {
+    await prisma.participantPayout.update({
+      where: { id },
+      data: {
+        status: "paid",
+        payoutReference: payoutReference || null,
+        remittedAt: new Date(),
+        lockedAt: null,
+        attemptId: null,
+        lastCheckedAt: new Date(),
+        readinessReason: null,
+        lastError: null,
+        nextRetryAt: null
+      }
+    });
+    return true;
+  } catch (e: any) {
+    await prisma.participantPayout
+      .update({
+        where: { id },
+        data: {
+          status: "blocked",
+          payoutReference: payoutReference || null,
+          remittedAt: new Date(),
+          lockedAt: null,
+          attemptId: null,
+          lastCheckedAt: new Date(),
+          nextRetryAt: null,
+          blockedReason: "EXTERNAL_SUCCESS_RECONCILE_FAILED",
+          lastError: String(e?.message || "EXTERNAL_SUCCESS_RECONCILE_FAILED")
+        }
+      })
+      .catch(() => null);
+    return false;
+  }
 }
 
 async function markParticipantPayoutFailed(id: string, attemptId: string, message: string) {
@@ -3005,18 +3585,50 @@ async function markParticipantPayoutFailed(id: string, attemptId: string, messag
 }
 
 async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentIntentRecord, reason: string) {
-  const rows = await prisma.participantPayout.findMany({
-    where: {
-      providerPaymentIntentId: intent.id
-    },
-    orderBy: [{ createdAt: "asc" }]
-  });
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: {
+        providerPaymentIntentId: intent.id
+      },
+      include: {
+        allocation: {
+          select: {
+            participantRef: true,
+            participantUserId: true,
+            splitParticipantId: true
+          }
+        }
+      },
+      orderBy: [{ createdAt: "asc" }]
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
   for (const row of rows) {
-    if (PARTICIPANT_REMITTANCE_FLIGHTS.has(row.id)) continue;
+    if (PARTICIPANT_REMITTANCE_FLIGHTS.has(row.id)) {
+      logParticipantPayoutAttempt(intent.id, row, "pending", "IN_FLIGHT");
+      continue;
+    }
+    if (row.status === "blocked") {
+      logParticipantPayoutAttempt(intent.id, row, "blocked", String(row.blockedReason || row.readinessReason || "BLOCKED"));
+      continue;
+    }
+    if (row.status === "paid") {
+      logParticipantPayoutAttempt(intent.id, row, "executed", "ALREADY_EXECUTED");
+      continue;
+    }
+    if (row.status !== "ready" && row.status !== "failed") {
+      logParticipantPayoutAttempt(intent.id, row, "pending", String(row.readinessReason || "NOT_READY"));
+      continue;
+    }
     PARTICIPANT_REMITTANCE_FLIGHTS.add(row.id);
     try {
       const lock = await acquireParticipantPayoutLock(row.id);
-      if (!lock.ok || !lock.row || !lock.attemptId) continue;
+      if (!lock.ok || !lock.row || !lock.attemptId) {
+        logParticipantPayoutAttempt(intent.id, row, lock.reason === "ALREADY_EXECUTED" ? "executed" : "pending", lock.reason || "LOCK_SKIPPED");
+        continue;
+      }
       const payout = lock.row;
       try {
         const destinationType = String(payout.destinationType || "").trim().toLowerCase();
@@ -3030,12 +3642,33 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
           `Certifyd participant remittance ${String(intent.paymentIntentId || "").slice(-8)}`
         );
         const send = await payBolt11ViaLnd(invoice);
-        await markParticipantPayoutPaid(payout.id, lock.attemptId, send.paymentHash || null);
+        const marked = await markParticipantPayoutPaid(payout.id, lock.attemptId, send.paymentHash || null);
+        if (!marked) {
+          const reconciled = await forceMarkParticipantPayoutPaidAfterExternalSuccess(payout.id, send.paymentHash || null);
+          if (!reconciled) {
+            logParticipantPayoutAttempt(intent.id, row, "blocked", "EXTERNAL_SUCCESS_RECONCILE_FAILED");
+            app.log.error(
+              {
+                route: reason,
+                providerPaymentIntentId: intent.id,
+                participantPayoutId: payout.id,
+                participantRef: participantExecutionRef(row),
+                resolution: participantExecutionResolutionForRow(row),
+                payoutReference: send.paymentHash || null
+              },
+              "providerParticipantRemittance.external_success_reconcile_failed"
+            );
+            continue;
+          }
+        }
+        logParticipantPayoutAttempt(intent.id, row, "executed", "EXECUTED");
         app.log.info(
           {
             route: reason,
             providerPaymentIntentId: intent.id,
             participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            resolution: participantExecutionResolutionForRow(row),
             payoutReference: send.paymentHash || null
           },
           "providerParticipantRemittance.send_success"
@@ -3043,11 +3676,14 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
       } catch (e: any) {
         const message = String(e?.message || "participant_remit_failed");
         await markParticipantPayoutFailed(payout.id, lock.attemptId, message);
+        logParticipantPayoutAttempt(intent.id, row, "pending", message);
         app.log.warn(
           {
             route: reason,
             providerPaymentIntentId: intent.id,
             participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            resolution: participantExecutionResolutionForRow(row),
             error: message
           },
           "providerParticipantRemittance.send_failed"
@@ -6512,8 +7148,14 @@ async function getRateSatsPerUnitForContent(repoPath: string): Promise<number> {
 
 /** ---------- splits validation (strict TS safe) ---------- */
 
-type ParticipantNormalized = { participantEmail: string; role: string; percent: number; bps: number };
-type ParticipantInput = { participantEmail?: unknown; role?: unknown; percent?: unknown };
+type ParticipantNormalized = {
+  participantEmail: string;
+  participantUserId: string | null;
+  role: string;
+  percent: number;
+  bps: number;
+};
+type ParticipantInput = { participantEmail?: unknown; participantUserId?: unknown; role?: unknown; percent?: unknown };
 
 function isRecord(x: unknown): x is Record<string, unknown> {
   return typeof x === "object" && x !== null;
@@ -6524,16 +7166,21 @@ function toParticipantNormalized(p: unknown): ParticipantNormalized | null {
 
   const pi = p as ParticipantInput;
   const participantEmail = normalizeEmail(pi.participantEmail);
+  const participantUserId = asString(pi.participantUserId).trim() || null;
   const role = asString(pi.role).trim();
   const percent = round3(num(pi.percent));
   const bps = Math.round(percent * 100);
 
-  if (!participantEmail || !role) return null;
-  return { participantEmail, role, percent, bps };
+  if ((!participantEmail && !participantUserId) || !role) return null;
+  return { participantEmail, participantUserId, role, percent, bps };
 }
 
 function canonicalParticipantsForHash(participants: ParticipantNormalized[]): ParticipantNormalized[] {
-  return [...participants].sort((a, b) => a.participantEmail.localeCompare(b.participantEmail));
+  return [...participants].sort((a, b) => {
+    const ak = a.participantUserId ? `u:${a.participantUserId}` : `e:${a.participantEmail}`;
+    const bk = b.participantUserId ? `u:${b.participantUserId}` : `e:${b.participantEmail}`;
+    return ak.localeCompare(bk);
+  });
 }
 
 function participantsHash(participants: ParticipantNormalized[]): string {
@@ -6557,11 +7204,15 @@ function validateAndNormalizeParticipants(body: unknown):
 
   if (parsed.length === 0) return { ok: false, error: "participants required" };
 
-  // De-dupe by email (keep last)
-  const deduped = Array.from(new Map(parsed.map((p) => [p.participantEmail, p])).values());
-
-  const total = round3(deduped.reduce((s, p) => s + num(p.percent), 0));
-  if (total !== 100) return { ok: false, error: `Split percent must total 100. Current total=${total}` };
+  // De-dupe by bound identity first, then email (keep last)
+  const deduped = Array.from(
+    new Map(
+      parsed.map((p) => [
+        p.participantUserId ? `u:${p.participantUserId}` : `e:${p.participantEmail}`,
+        p
+      ])
+    ).values()
+  );
 
   const participants = canonicalParticipantsForHash(deduped);
   return { ok: true, participants, hash: participantsHash(participants) };
@@ -6600,10 +7251,29 @@ function recipientRefForParticipant(p: {
   return "unknown";
 }
 
+function isActiveLedgerParticipant(p: {
+  participantUserId?: string | null;
+  acceptedAt?: Date | string | null;
+  verifiedAt?: Date | string | null;
+}): boolean {
+  return Boolean(p?.participantUserId && p?.acceptedAt && p?.verifiedAt);
+}
+
 function recipientDisplayForParticipant(p: { participantEmail?: string | null; participantUserId?: string | null }): string | undefined {
   if (p.participantEmail) return String(p.participantEmail).trim();
   if (p.participantUserId) return `user:${p.participantUserId}`;
   return undefined;
+}
+
+function payoutParticipantRefForAllocation(p: {
+  participantUserId?: string | null;
+  splitParticipantId?: string | null;
+  id?: string | null;
+}): string {
+  if (p.participantUserId) return `user:${p.participantUserId}`;
+  if (p.splitParticipantId) return `split_participant:${p.splitParticipantId}`;
+  if (p.id) return `participant:${p.id}`;
+  return "unknown";
 }
 
 function toSatsNumber(value: bigint | number | null | undefined): number {
@@ -6840,6 +7510,7 @@ function registerPublicRoutes(appPublic: any) {
       providerInvoicing: body.needsProviderInvoicing !== false,
       durablePublicHosting: Boolean(body.needsDurablePublicHosting)
     });
+    const payoutPolicy = resolveNewIntentPayoutPolicy();
     const created = createProviderPaymentIntent({
       providerNodeId,
       creatorNodeId,
@@ -6856,6 +7527,8 @@ function registerPublicRoutes(appPublic: any) {
       payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
       providerRemitMode,
       payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
+      payoutPolicy: payoutPolicy.payoutPolicy,
+      allowProviderFallback: payoutPolicy.allowProviderFallback,
       payoutSummaryStatus: "pending",
       payoutReference: null,
       remittedAt: null,
@@ -9128,6 +9801,8 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     payoutDestinationType?: CreatorPayoutDestinationType;
     payoutDestinationSummary?: string | null;
     providerRemitMode?: ProviderRemitMode;
+    payoutPolicy?: ProviderPayoutPolicy;
+    allowProviderFallback?: boolean;
   };
   const creatorNodeId = String(body.creatorNodeId || "").trim();
   const contentId = String(body.contentId || "").trim();
@@ -9183,6 +9858,7 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
   });
   const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
+  const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
     providerNodeId,
     creatorNodeId,
@@ -9199,6 +9875,8 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
     payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
+    payoutPolicy: payoutPolicy.payoutPolicy,
+    allowProviderFallback: payoutPolicy.allowProviderFallback,
     payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
@@ -10288,6 +10966,174 @@ app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (
   });
 });
 
+app.get("/api/participant/payout-destinations", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  try {
+    const rows = await prisma.participantPayoutDestination.findMany({
+      where: { userId },
+      orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }]
+    });
+    return reply.send({ items: rows });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.send({ items: [] });
+    }
+    throw err;
+  }
+});
+
+app.post("/api/participant/payout-destinations", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body ?? {}) as {
+    destinationType?: string;
+    destinationValue?: string;
+    isPrimary?: boolean;
+    isActive?: boolean;
+  };
+  const destinationType = parseParticipantDestinationType(body.destinationType || null);
+  if (!destinationType) return badRequest(reply, "destinationType must be lightning_address, lnurl, or lnd");
+  const destinationValue = normalizeParticipantDestinationValue(destinationType, body.destinationValue || "");
+  if (!destinationValue) return badRequest(reply, "destinationValue required");
+  if (destinationType === "lightning_address" && !isValidLightningAddress(destinationValue)) {
+    return badRequest(reply, "lightning address is invalid");
+  }
+
+  try {
+    const created = await prisma.participantPayoutDestination.create({
+      data: {
+        userId,
+        destinationType,
+        destinationValue,
+        destinationSummary: summarizeParticipantDestination(destinationType, destinationValue),
+        isPrimary: Boolean(body.isPrimary),
+        isActive: body.isActive === undefined ? true : Boolean(body.isActive),
+        isVerified: false,
+        verifiedAt: null,
+        lastCheckedAt: null,
+        verificationMethod: null,
+        verificationStatus: "pending",
+        verificationError: null
+      }
+    });
+    if (created.isPrimary) {
+      await setPrimaryParticipantDestinationForUser(userId, created.id);
+    }
+    const destination = await prisma.participantPayoutDestination.findUnique({ where: { id: created.id } });
+    return reply.send({ ok: true, destination });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
+app.post("/api/participant/payout-destinations/:id/primary", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id required");
+  try {
+    const row = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    if (!row || row.userId !== userId) return notFound(reply, "Destination not found");
+    await setPrimaryParticipantDestinationForUser(userId, id);
+    const updated = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    return reply.send({ ok: true, destination: updated });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
+app.post("/api/participant/payout-destinations/:id/verify", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id required");
+  try {
+    const row = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    if (!row || row.userId !== userId) return notFound(reply, "Destination not found");
+    const type = parseParticipantDestinationType(row.destinationType);
+    if (!type) {
+      const checkedAt = new Date();
+      await prisma.participantPayoutDestination.update({
+        where: { id: row.id },
+        data: {
+          isVerified: false,
+          verifiedAt: null,
+          verificationStatus: "failed",
+          verificationError: "DESTINATION_TYPE_UNSUPPORTED",
+          verificationMethod: null,
+          lastVerifiedAt: checkedAt,
+          lastCheckedAt: checkedAt
+        }
+      });
+      return reply.code(400).send({
+        ok: false,
+        verificationStatus: "failed",
+        verificationError: "DESTINATION_TYPE_UNSUPPORTED"
+      });
+    }
+    const verification = await verifyParticipantDestination(type, row.destinationValue);
+    const checkedAt = verification.checkedAt;
+    const updated = await prisma.participantPayoutDestination.update({
+      where: { id: row.id },
+      data: {
+        isVerified: verification.isVerified,
+        verifiedAt: verification.isVerified ? checkedAt : null,
+        verificationStatus: verification.verificationStatus,
+        verificationError: verification.verificationError,
+        verificationMethod: verification.verificationMethod,
+        lastVerifiedAt: checkedAt,
+        lastCheckedAt: checkedAt
+      }
+    });
+    return reply.send({
+      ok: verification.isVerified,
+      verificationStatus: verification.verificationStatus,
+      verificationError: verification.verificationError,
+      destination: updated
+    });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
+app.post("/api/participant/payout-destinations/:id/deactivate", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id required");
+  try {
+    const row = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    if (!row || row.userId !== userId) return notFound(reply, "Destination not found");
+
+    await prisma.participantPayoutDestination.update({
+      where: { id: row.id },
+      data: { isActive: false, isPrimary: false }
+    });
+
+    if (row.isPrimary) {
+      const fallback = await prisma.participantPayoutDestination.findFirst({
+        where: { userId, isActive: true },
+        orderBy: [{ updatedAt: "desc" }]
+      });
+      if (fallback) {
+        await setPrimaryParticipantDestinationForUser(userId, fallback.id);
+      }
+    }
+
+    return reply.send({ ok: true });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
 app.get("/api/network/user-status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.send(deriveUserNetworkStatus());
 });
@@ -10847,43 +11693,53 @@ app.get("/api/provider/payments/intents", { preHandler: requireAuth }, async (_r
 });
 
 app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const rows = await prisma.participantPayout.findMany({
-    include: {
-      allocation: {
-        select: {
-          participantRef: true,
-          participantUserId: true,
-          participantEmail: true,
-          role: true,
-          bps: true,
-          amountSats: true
+  const rows = await prisma.participantPayout
+    .findMany({
+      include: {
+        allocation: {
+          select: {
+            participantRef: true,
+            participantUserId: true,
+            participantEmail: true,
+            role: true,
+            bps: true,
+            amountSats: true
+          }
         }
-      }
-    },
-    orderBy: [{ updatedAt: "desc" }]
-  });
+      },
+      orderBy: [{ updatedAt: "desc" }]
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
   return reply.send({ items: rows });
 });
 
 app.get("/api/provider/payment-intents/:id/participant-payouts", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const id = String((req.params as any)?.id || "").trim();
   if (!id) return badRequest(reply, "id is required");
-  const rows = await prisma.participantPayout.findMany({
-    where: { providerPaymentIntentId: id },
-    include: {
-      allocation: {
-        select: {
-          participantRef: true,
-          participantUserId: true,
-          participantEmail: true,
-          role: true,
-          bps: true,
-          amountSats: true
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: { providerPaymentIntentId: id },
+      include: {
+        allocation: {
+          select: {
+            participantRef: true,
+            participantUserId: true,
+            participantEmail: true,
+            role: true,
+            bps: true,
+            amountSats: true
+          }
         }
-      }
-    },
-    orderBy: [{ createdAt: "asc" }]
-  });
+      },
+      orderBy: [{ createdAt: "asc" }]
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
   return reply.send({ items: rows });
 });
 
@@ -10897,6 +11753,8 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     payoutDestinationType?: CreatorPayoutDestinationType;
     payoutDestinationSummary?: string | null;
     providerRemitMode?: ProviderRemitMode;
+    payoutPolicy?: ProviderPayoutPolicy;
+    allowProviderFallback?: boolean;
   };
   const provider = await buildLocalNodeIdentityDoc((req.user as JwtUser).sub);
   const creatorNodeId = String(body.creatorNodeId || "").trim();
@@ -10938,6 +11796,7 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
   } catch {}
   const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
+  const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
     providerNodeId: provider.nodeId,
     creatorNodeId,
@@ -10954,6 +11813,8 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
     payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
+    payoutPolicy: payoutPolicy.payoutPolicy,
+    allowProviderFallback: payoutPolicy.allowProviderFallback,
     payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
@@ -10978,6 +11839,8 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     payoutDestinationType?: CreatorPayoutDestinationType;
     payoutDestinationSummary?: string | null;
     providerRemitMode?: ProviderRemitMode;
+    payoutPolicy?: ProviderPayoutPolicy;
+    allowProviderFallback?: boolean;
   };
   const provider = await buildLocalNodeIdentityDoc((req.user as JwtUser).sub);
   const creatorNodeId = String(body.creatorNodeId || "").trim();
@@ -11019,6 +11882,7 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
   } catch {}
   const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
+  const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
     providerNodeId: provider.nodeId,
     creatorNodeId,
@@ -11035,6 +11899,8 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
     payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
+    payoutPolicy: payoutPolicy.payoutPolicy,
+    allowProviderFallback: payoutPolicy.allowProviderFallback,
     payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
@@ -11064,6 +11930,8 @@ app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, asyn
     payoutRail?: ProviderPayoutRail;
     payoutReference?: string | null;
     remittedAt?: string | null;
+    payoutPolicy?: ProviderPayoutPolicy;
+    allowProviderFallback?: boolean;
   };
   const current = listProviderPaymentIntents().find((row) => row.id === id) || null;
   if (!current) return notFound(reply, "Payment intent not found");
@@ -11107,7 +11975,10 @@ app.patch("/api/provider/payment-intents/:id", { preHandler: requireAuth }, asyn
     payoutStatus: body.payoutStatus !== undefined ? body.payoutStatus : undefined,
     payoutRail: body.payoutRail !== undefined ? body.payoutRail : undefined,
     payoutReference: body.payoutReference !== undefined ? String(body.payoutReference || "").trim() || null : undefined,
-    remittedAt: body.remittedAt !== undefined ? String(body.remittedAt || "").trim() || null : undefined
+    remittedAt: body.remittedAt !== undefined ? String(body.remittedAt || "").trim() || null : undefined,
+    payoutPolicy: body.payoutPolicy !== undefined ? body.payoutPolicy : undefined,
+    allowProviderFallback:
+      body.allowProviderFallback !== undefined ? parseBooleanFlag(body.allowProviderFallback, true) : undefined
   });
   if (!updated) return notFound(reply, "Payment intent not found");
   const settled = await ensureProviderPaymentSettlement(updated);
@@ -13490,6 +14361,8 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     description?: string | null;
     splitDraft?: Array<{ participantEmail?: string; userId?: string; role: string; bps: number }>;
     parentOrigin?: string | null;
+    upstreamRatePercent?: number;
+    upstreamBps?: number;
   };
 
   const title = asString(body.title).trim();
@@ -13536,6 +14409,11 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     });
   }
   if (!parent) return notFound(reply, "parent content not found");
+  const parentLockedSplit = await getLockedSplitForContent(parent.id);
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before creating derivative links." });
+  }
+  const fixedUpstreamBps = parseFixedUpstreamBps(body);
 
   let splitDraft = Array.isArray(body.splitDraft) ? body.splitDraft : [];
   if (splitDraft.length === 0) {
@@ -13564,8 +14442,9 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
         data: {
           parentContentId: parentId,
           childContentId: child.id,
+          parentSplitVersionId: parentLockedSplit.id,
           relation: type as any,
-          upstreamBps: 0,
+          upstreamBps: fixedUpstreamBps,
           requiresApproval: true
         }
       });
@@ -14456,6 +15335,8 @@ app.post("/content/:id/parent-link", { preHandler: requireAuth }, async (req: an
   const body = (req.body ?? {}) as {
     parentContentId?: string;
     relation?: string;
+    upstreamRatePercent?: number;
+    upstreamBps?: number;
   };
 
   const derivativeCtx = getCapabilityContext();
@@ -14477,6 +15358,10 @@ app.post("/content/:id/parent-link", { preHandler: requireAuth }, async (req: an
 
   const parent = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
   if (!parent) return notFound(reply, "Parent content not found");
+  const parentLockedSplit = await getLockedSplitForContent(parentContentId);
+  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+    return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before linking derivatives." });
+  }
 
   const existingLinks = await prisma.contentLink.findMany({
     where: { childContentId: contentId }
@@ -14493,13 +15378,14 @@ app.post("/content/:id/parent-link", { preHandler: requireAuth }, async (req: an
     return badRequest(reply, "relation must be derivative|remix|mashup");
   }
 
-  const upstreamBps = 0;
+  const upstreamBps = parseFixedUpstreamBps(body);
   const requiresApproval = ["derivative", "remix", "mashup"].includes(relation);
 
   const created = await prisma.contentLink.create({
     data: {
       parentContentId,
       childContentId: contentId,
+      parentSplitVersionId: parentLockedSplit.id,
       relation: relation as any,
       upstreamBps,
       requiresApproval,
@@ -14513,9 +15399,15 @@ app.post("/content/:id/parent-link", { preHandler: requireAuth }, async (req: an
 
 app.get("/api/content-links/:id/authorization", { preHandler: requireAuth }, async (req: any, reply) => {
   const id = asString((req.params as any).id);
-  const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: id } });
+  const auth = await prisma.derivativeAuthorization.findFirst({
+    where: { derivativeLinkId: id },
+    include: { derivativeLink: { select: { parentSplitVersionId: true } } }
+  });
   if (!auth) return notFound(reply, "Authorization not found");
-  return reply.send(auth);
+  return reply.send({
+    ...auth,
+    parentSplitVersionId: (auth as any)?.derivativeLink?.parentSplitVersionId || null
+  });
 });
 
 app.post("/api/content-links/:id/authorization/request", { preHandler: requireAuth }, async (req: any, reply) => {
@@ -14588,12 +15480,16 @@ app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth },
   if (!auth) return notFound(reply, "Authorization not found");
 
   const upstreamRatePctRaw = Number(body.upstreamRatePercent);
-  if (decision === "APPROVE" && !Number.isFinite(upstreamRatePctRaw)) {
-    return badRequest(reply, "upstreamRatePercent required for approve");
-  }
+  const fixedUpstreamBps = Math.max(0, auth.derivativeLink.upstreamBps || 0);
   const upstreamRateBps = Number.isFinite(upstreamRatePctRaw)
     ? Math.max(0, Math.min(10000, Math.round(upstreamRatePctRaw * 100)))
-    : 0;
+    : fixedUpstreamBps;
+  if (decision === "APPROVE" && upstreamRateBps !== fixedUpstreamBps) {
+    return reply.code(409).send({
+      code: "UPSTREAM_RATE_IMMUTABLE",
+      message: "Upstream rate is fixed at derivative creation time."
+    });
+  }
 
   const participants = await getParentLockedParticipantsForVote(auth.parentContentId);
   const voter = participants.find((p) => p.userId === userId);
@@ -14607,15 +15503,8 @@ app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth },
 
   const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: auth.id } });
   const approveVotes = votes.filter((v) => v.decision === "APPROVE");
-  if (decision === "APPROVE" && approveVotes.length > 1 && auth.derivativeLink.upstreamBps !== upstreamRateBps) {
-    return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must use the same upstream rate." });
-  }
-  if (decision === "APPROVE" && approveVotes.length === 1 && auth.derivativeLink.upstreamBps !== upstreamRateBps) {
-    await prisma.contentLink.update({
-      where: { id: auth.derivativeLink.id },
-      data: { upstreamBps: upstreamRateBps }
-    });
-    auth.derivativeLink.upstreamBps = upstreamRateBps;
+  if (decision === "APPROVE" && approveVotes.length > 0 && auth.derivativeLink.upstreamBps !== upstreamRateBps) {
+    return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must match the fixed upstream rate." });
   }
 
   const approveWeightBps = votes
@@ -14693,6 +15582,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       authorizationId: a.id,
       linkId: a.derivativeLink.id,
       parentContentId: a.parentContentId,
+      parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null,
       parentTitle: a.derivativeLink.parentContent?.title || null,
       childContentId: a.derivativeLink.childContentId,
       childTitle: a.derivativeLink.childContent?.title || null,
@@ -14904,6 +15794,8 @@ app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (
     relation?: string;
     childTitle?: string;
     childType?: string;
+    upstreamRatePercent?: number;
+    upstreamBps?: number;
   };
   const parentContentId = asString(body.parentContentId || "").trim();
   const childContentId = asString(body.childContentId || "").trim();
@@ -14921,6 +15813,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (
   if (!parentSplit || parentSplit.status !== "locked") {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before approval." });
   }
+  const fixedUpstreamBps = parseFixedUpstreamBps(body);
 
   let child = await prisma.contentItem.findUnique({ where: { id: childContentId } });
   if (!child) {
@@ -14957,8 +15850,9 @@ app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (
       data: {
         parentContentId,
         childContentId,
+        parentSplitVersionId: parentSplit.id,
         relation: relation as any,
-        upstreamBps: 0,
+        upstreamBps: fixedUpstreamBps,
         requiresApproval: true
       }
     }));
@@ -15039,6 +15933,7 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
   return reply.send({
     linkId: link.id,
     parentContentId,
+    parentSplitVersionId: link.parentSplitVersionId || null,
     childContentId,
     upstreamBps: link.upstreamBps,
     approvedAt: link.approvedAt || null,
@@ -15127,12 +16022,16 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
     }));
 
   const upstreamRatePctRaw = Number(body.upstreamRatePercent);
-  if (decision === "approve" && !Number.isFinite(upstreamRatePctRaw)) {
-    return badRequest(reply, "upstreamRatePercent required for approve");
-  }
+  const fixedUpstreamBps = Math.max(0, link.upstreamBps || 0);
   const upstreamRateBps = Number.isFinite(upstreamRatePctRaw)
     ? Math.max(0, Math.min(10000, Math.round(upstreamRatePctRaw * 100)))
-    : 0;
+    : fixedUpstreamBps;
+  if (decision === "approve" && upstreamRateBps !== fixedUpstreamBps) {
+    return reply.code(409).send({
+      code: "UPSTREAM_RATE_IMMUTABLE",
+      message: "Upstream rate is fixed at derivative creation time."
+    });
+  }
 
   await prisma.derivativeApprovalVote.upsert({
     where: { authorizationId_approverUserId: { authorizationId: auth.id, approverUserId: userId } },
@@ -15142,15 +16041,8 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
 
   const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: auth.id } });
   const approveVotes = votes.filter((v) => String(v.decision).toLowerCase() === "approve");
-  if (decision === "approve" && approveVotes.length > 1 && link.upstreamBps !== upstreamRateBps) {
-    return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must use the same upstream rate." });
-  }
-  if (decision === "approve" && approveVotes.length === 1 && link.upstreamBps !== upstreamRateBps) {
-    await prisma.contentLink.update({
-      where: { id: link.id },
-      data: { upstreamBps: upstreamRateBps }
-    });
-    link.upstreamBps = upstreamRateBps;
+  if (decision === "approve" && approveVotes.length > 0 && link.upstreamBps !== upstreamRateBps) {
+    return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must match the fixed upstream rate." });
   }
 
   const voteUserIds = votes.map((v) => v.approverUserId);
@@ -15183,8 +16075,8 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   });
 
   if (status === "APPROVED" && !link.approvedAt) {
-    if (link.upstreamBps !== upstreamRateBps && upstreamRateBps !== 0) {
-      return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must use the same upstream rate." });
+    if (link.upstreamBps !== upstreamRateBps) {
+      return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must match the fixed upstream rate." });
     }
     const updated = await prisma.contentLink.update({
       where: { id: link.id },
@@ -15311,6 +16203,7 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
   return reply.send({
     requiresApproval: link.requiresApproval,
     approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null,
+    parentSplitVersionId: link.parentSplitVersionId || null,
     upstreamBps: link.upstreamBps || 0,
     thresholdBps,
     approvers,
@@ -16988,24 +17881,22 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
   if (!link) return notFound(reply, "Not found");
 
   let upstreamRatePercent: number | null = null;
+  const fixedUpstreamRatePercent = Math.max(0, link.upstreamBps || 0) / 100;
   if (decision === "approve") {
-    const raw = Number((body as any)?.upstreamRatePercent);
-    if (!Number.isFinite(raw)) return badRequest(reply, "upstreamRatePercent required");
-    if (raw < 0 || raw > 100) return badRequest(reply, "upstreamRatePercent must be 0-100");
-    upstreamRatePercent = raw;
-  }
-
-  // Enforce single upstream rate across approvals
-  if (decision === "approve") {
-    const prior = await prisma.approvalToken.findMany({
-      where: { contentLinkId: link.id, decision: "approve" }
-    });
-    const existingRate = prior.find((p) => p.upstreamRatePercent !== null)?.upstreamRatePercent;
-    if (existingRate !== null && upstreamRatePercent !== null) {
-      const er = Number(existingRate);
-      if (Math.abs(er - upstreamRatePercent) > 0.0001) {
-        return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Upstream rate must match existing approvals." });
+    const raw = (body as any)?.upstreamRatePercent;
+    if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) return badRequest(reply, "upstreamRatePercent must be numeric");
+      if (parsed < 0 || parsed > 100) return badRequest(reply, "upstreamRatePercent must be 0-100");
+      upstreamRatePercent = parsed;
+      if (Math.abs(upstreamRatePercent - fixedUpstreamRatePercent) > 0.0001) {
+        return reply.code(409).send({
+          code: "UPSTREAM_RATE_IMMUTABLE",
+          message: "Upstream rate is fixed at derivative creation time."
+        });
       }
+    } else {
+      upstreamRatePercent = fixedUpstreamRatePercent;
     }
   }
 
@@ -17041,12 +17932,9 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
   }
 
   if (approvedWeight >= 6667) {
-    const rate = approved.find((a) => a.upstreamRatePercent !== null)?.upstreamRatePercent;
-    const upstreamBps = Math.round(num(rate) * 100);
-
     const updated = await prisma.contentLink.update({
       where: { id: link.id },
-      data: { upstreamBps, approvedAt: new Date() }
+      data: { approvedAt: new Date() }
     });
 
     await prisma.derivativeAuthorization.updateMany({
@@ -19039,6 +19927,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         durablePublicHosting: serviceProfile.needsDurablePublicHosting
       });
       const providerIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
+      const payoutPolicy = normalizeProviderFallbackPolicy(
+        providerIntent?.payoutPolicy,
+        providerIntent?.allowProviderFallback
+      );
       upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
         providerNodeId: delegatedPublish.providerNodeId,
         creatorNodeId: delegatedPublish.creatorNodeId,
@@ -19059,6 +19951,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
         providerRemitMode: payoutDestination.providerRemitMode,
         payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
+        payoutPolicy: payoutPolicy.payoutPolicy,
+        allowProviderFallback: payoutPolicy.allowProviderFallback,
         payoutSummaryStatus: "pending",
         payoutReference: null,
         remittedAt: null,
@@ -19603,6 +20497,54 @@ app.get("/content/:id/files", { preHandler: requireAuth }, async (req: any, repl
   return reply.send(out);
 });
 
+app.post("/api/participants/resolve", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { query?: string };
+  const raw = asString(body.query || "").trim();
+  if (!raw) return badRequest(reply, "query required");
+  const normalized = raw.toLowerCase();
+  const candidateEmail = normalizeEmail(raw);
+
+  const users = await prisma.user.findMany({
+    where: {
+      OR: [
+        { id: raw },
+        candidateEmail ? { email: emailEquals(candidateEmail) } : undefined,
+        { displayName: raw }
+      ].filter(Boolean) as any
+    },
+    select: { id: true, email: true, displayName: true },
+    take: 20
+  });
+
+  const exactById = users.find((u) => u.id === raw);
+  const exactByEmail = users.find((u) => String(u.email || "").toLowerCase() === normalized);
+  const exactByDisplay = users.find((u) => String(u.displayName || "").toLowerCase() === normalized);
+  const matched = exactById || exactByEmail || exactByDisplay || null;
+
+  if (matched) {
+    const witness = await prisma.witnessIdentity.findUnique({
+      where: { userId: matched.id },
+      select: { id: true, revokedAt: true }
+    });
+    return reply.send({
+      kind: "identity",
+      userId: matched.id,
+      display: matched.displayName || matched.email || matched.id,
+      email: matched.email || null,
+      verifiedKey: Boolean(witness && !witness.revokedAt)
+    });
+  }
+
+  if (isValidLightningAddress(candidateEmail || "") || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(candidateEmail || "")) {
+    return reply.send({
+      kind: "email_invite",
+      email: candidateEmail
+    });
+  }
+
+  return reply.send({ kind: "invalid" });
+});
+
 // Upload a file into a content repo and record it in DB
 app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
@@ -20110,6 +21052,7 @@ app.get("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => 
     select: {
       id: true,
       parentContentId: true,
+      parentSplitVersionId: true,
       childContentId: true,
       relation: true,
       requiresApproval: true,
@@ -20140,6 +21083,7 @@ app.get("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => 
       ? {
           linkId: parentLink.id,
           parentContentId: parentLink.parentContentId,
+          parentSplitVersionId: parentLink.parentSplitVersionId || null,
           childContentId: parentLink.childContentId,
           relation: parentLink.relation,
           requiresApproval: parentLink.requiresApproval,
@@ -20889,23 +21833,71 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
   const latest = await prisma.splitVersion.findFirst({ where: { contentId }, orderBy: { versionNumber: "desc" } });
   if (!latest) return notFound(reply, "No split version found");
   if (latest.status !== "draft") return reply.code(409).send({ error: "Latest split is not editable" });
+  const owner = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const ownerEmail = (owner?.email || "").toLowerCase();
+
+  const beforeForValidation = await prisma.splitParticipant.findMany({
+    where: { splitVersionId: latest.id },
+    select: { participantEmail: true, participantUserId: true, acceptedAt: true, verifiedAt: true }
+  });
+  const beforeActiveByEmail = new Map(
+    beforeForValidation
+      .filter((p) => p.participantEmail && isActiveLedgerParticipant(p))
+      .map((p) => [String(p.participantEmail).toLowerCase(), true])
+  );
+  const activeTotalCandidate = round3(
+    validated.participants
+      .filter((p) => {
+        const email = String(p.participantEmail || "").toLowerCase();
+        if (!email) return false;
+        if (beforeActiveByEmail.has(email)) return true;
+        if (ownerEmail && email === ownerEmail) return true;
+        return false;
+      })
+      .reduce((sum, p) => sum + num(p.percent), 0)
+  );
+  const hasActiveCandidates = validated.participants.some((p) => {
+    const email = String(p.participantEmail || "").toLowerCase();
+    if (!email) return false;
+    return Boolean(beforeActiveByEmail.has(email) || (ownerEmail && email === ownerEmail));
+  });
+  if (hasActiveCandidates && activeTotalCandidate !== 100) {
+    return badRequest(reply, `Active participant total must be 100. Current total=${activeTotalCandidate}`);
+  }
 
   await prisma.$transaction(async (tx) => {
     const before = await tx.splitParticipant.findMany({
       where: { splitVersionId: latest.id },
       orderBy: { createdAt: "asc" },
-      select: { participantEmail: true, role: true, percent: true, bps: true }
+      select: {
+        participantEmail: true,
+        role: true,
+        percent: true,
+        bps: true,
+        participantUserId: true,
+        acceptedAt: true,
+        verifiedAt: true
+      }
     });
+    const previousByEmail = new Map(
+      before
+        .filter((p) => p.participantEmail)
+        .map((p) => [String(p.participantEmail).toLowerCase(), p])
+    );
 
     // remove existing participants
     await tx.splitParticipant.deleteMany({ where: { splitVersionId: latest.id } });
 
     // create new participants
     for (const p of validated.participants) {
+      const prev = previousByEmail.get(String(p.participantEmail || "").toLowerCase()) || null;
       await tx.splitParticipant.create({
         data: {
           splitVersionId: latest.id,
           participantEmail: p.participantEmail,
+          participantUserId: p.participantUserId || prev?.participantUserId || null,
+          acceptedAt: prev?.acceptedAt || null,
+          verifiedAt: prev?.verifiedAt || null,
           role: p.role,
           percent: num(p.percent),
           bps: Math.round(num(p.percent) * 100)
@@ -20915,8 +21907,6 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
 
     // bind/accept owner participant if present
     try {
-      const owner = await tx.user.findUnique({ where: { id: userId }, select: { email: true } });
-      const ownerEmail = (owner?.email || "").toLowerCase();
       const res = await tx.splitParticipant.updateMany({
         where: {
           splitVersionId: latest.id,
@@ -20925,7 +21915,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
             ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
           ].filter(Boolean) as any
         },
-        data: { participantUserId: userId, acceptedAt: new Date() }
+        data: { participantUserId: userId, acceptedAt: new Date(), verifiedAt: new Date() }
       });
       if (process.env.NODE_ENV !== "production") {
         app.log.info({ splitVersionId: latest.id, userId, updated: res.count }, "split.owner.ensure");
@@ -20993,6 +21983,9 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
           data: {
             splitVersionId: sv.id,
             participantEmail: p.participantEmail,
+            participantUserId: p.participantUserId || null,
+            acceptedAt: p.acceptedAt || null,
+            verifiedAt: p.verifiedAt || null,
             role: p.role,
             percent: num(p.percent),
             bps: (p as any).bps ?? Math.round(Number(p.percent || 0) * 100),
@@ -21014,7 +22007,7 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
             ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
           ].filter(Boolean) as any
         },
-        data: { participantUserId: userId, acceptedAt: new Date() }
+        data: { participantUserId: userId, acceptedAt: new Date(), verifiedAt: new Date() }
       });
       if (process.env.NODE_ENV !== "production") {
         app.log.info({ splitVersionId: sv.id, userId, updated: res.count }, "split.owner.ensure");
@@ -21203,7 +22196,12 @@ async function getLockedSplitForContent(contentId: string) {
       where: { id: content.currentSplitId },
       include: { participants: true }
     });
-    if (sv && sv.status === "locked") return sv;
+    if (sv && sv.status === "locked") {
+      return {
+        ...sv,
+        participants: (sv.participants || []).filter((p: any) => isActiveLedgerParticipant(p))
+      };
+    }
   }
 
   const sv = await prisma.splitVersion.findFirst({
@@ -21211,7 +22209,23 @@ async function getLockedSplitForContent(contentId: string) {
     orderBy: { versionNumber: "desc" },
     include: { participants: true }
   });
-  return sv;
+  if (!sv) return null;
+  return {
+    ...sv,
+    participants: (sv.participants || []).filter((p: any) => isActiveLedgerParticipant(p))
+  };
+}
+
+async function getLockedSplitVersionById(splitVersionId: string) {
+  const sv = await prisma.splitVersion.findUnique({
+    where: { id: splitVersionId },
+    include: { participants: true }
+  });
+  if (!sv || sv.status !== "locked") return null;
+  return {
+    ...sv,
+    participants: (sv.participants || []).filter((p: any) => isActiveLedgerParticipant(p))
+  };
 }
 
 function toBps(p: any): number {
@@ -21402,24 +22416,39 @@ async function computeContentParticipantAllocations(input: {
   const primaryParent = parents[0] || null;
   const upstreamRaw =
     primaryParent && primaryParent.upstreamBps > 0
-      ? [{ parentContentId: primaryParent.parentContentId, upstreamBps: Math.max(0, primaryParent.upstreamBps) }]
+      ? [
+          {
+            parentContentId: primaryParent.parentContentId,
+            parentSplitVersionId: primaryParent.parentSplitVersionId || null,
+            upstreamBps: Math.max(0, primaryParent.upstreamBps)
+          }
+        ]
       : [];
-  const upstreamAlloc: Array<{ parentContentId: string; amountSats: bigint; upstreamBps: number }> = upstreamRaw.map((p) => ({
-    parentContentId: p.parentContentId,
-    amountSats: (net * BigInt(p.upstreamBps)) / 10000n,
-    upstreamBps: p.upstreamBps
-  }));
+  const upstreamAlloc: Array<{ parentContentId: string; parentSplitVersionId: string | null; amountSats: bigint; upstreamBps: number }> =
+    upstreamRaw.map((p) => ({
+      parentContentId: p.parentContentId,
+      parentSplitVersionId: p.parentSplitVersionId,
+      amountSats: (net * BigInt(p.upstreamBps)) / 10000n,
+      upstreamBps: p.upstreamBps
+    }));
   const childRemainder = net - upstreamAlloc.reduce((sum, a) => sum + a.amountSats, 0n);
 
   const allocations: ContentParticipantAllocation[] = [];
 
   const childItems = childSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+  if (!childItems.length) {
+    throw new Error("LOCKED_SPLIT_HAS_NO_ACTIVE_PARTICIPANTS");
+  }
   const childAlloc = allocateByBps(childRemainder, childItems.map((i) => ({ id: i.id, bps: i.bps })));
   for (const a of childAlloc) {
     const participant = childItems.find((i) => i.id === a.id)?.p;
     const role = upstreamAlloc.length > 0 ? (participant?.role ? `derivative:${participant.role}` : "derivative") : (participant?.role || null);
     allocations.push({
-      participantRef: recipientRefForParticipant(participant || { id: a.id }),
+      participantRef: payoutParticipantRefForAllocation({
+        participantUserId: participant?.participantUserId || null,
+        splitParticipantId: participant?.id || null,
+        id: a.id
+      }),
       participantId: participant?.id || null,
       splitParticipantId: participant?.id || null,
       participantUserId: participant?.participantUserId || null,
@@ -21434,7 +22463,9 @@ async function computeContentParticipantAllocations(input: {
   }
 
   for (const up of upstreamAlloc) {
-    const parentSplit = await getLockedSplitForContent(up.parentContentId);
+    const parentSplit = up.parentSplitVersionId
+      ? await getLockedSplitVersionById(up.parentSplitVersionId)
+      : await getLockedSplitForContent(up.parentContentId);
     if (!parentSplit || parentSplit.status !== "locked") {
       const err: any = new Error("Parent split not locked");
       err.statusCode = 409;
@@ -21442,12 +22473,19 @@ async function computeContentParticipantAllocations(input: {
       throw err;
     }
     const parentItems = parentSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+    if (!parentItems.length) {
+      throw new Error("PARENT_LOCKED_SPLIT_HAS_NO_ACTIVE_PARTICIPANTS");
+    }
     const parentAlloc = allocateByBps(up.amountSats, parentItems.map((i) => ({ id: i.id, bps: i.bps })));
     for (const a of parentAlloc) {
       const participant = parentItems.find((i) => i.id === a.id)?.p;
       const role = "upstream";
       allocations.push({
-        participantRef: recipientRefForParticipant(participant || { id: a.id }),
+        participantRef: payoutParticipantRefForAllocation({
+          participantUserId: participant?.participantUserId || null,
+          splitParticipantId: participant?.id || null,
+          id: a.id
+        }),
         participantId: participant?.id || null,
         splitParticipantId: participant?.id || null,
         participantUserId: participant?.participantUserId || null,
@@ -21703,7 +22741,7 @@ app.post("/split-versions/:id/lock", { preHandler: requireAuth }, async (req: an
           ownerEmail ? { participantEmail: emailEquals(ownerEmail) } : undefined
         ].filter(Boolean) as any
       },
-      data: { participantUserId: userId, acceptedAt: new Date() }
+      data: { participantUserId: userId, acceptedAt: new Date(), verifiedAt: new Date() }
     });
     if (process.env.NODE_ENV !== "production") {
       app.log.info({ splitVersionId, userId, updated: res.count }, "split.owner.ensure");
@@ -23648,7 +24686,16 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
   });
   if (!sv) return notFound(reply, "Split version not found");
   if (sv.status !== "draft") return badRequest(reply, "Split version already locked");
-  if (!sv.participants?.length) return badRequest(reply, "Split version has no participants");
+  const activeLedgerParticipants = (sv.participants || []).filter((p) => isActiveLedgerParticipant(p));
+  if (!activeLedgerParticipants.length) {
+    return badRequest(reply, "Split version has no active ledger participants. Invites must be accepted first.");
+  }
+  const activeTotal = round3(
+    activeLedgerParticipants.reduce((sum, p: any) => sum + num(percentToPrimitive(p.percent ?? 0)), 0)
+  );
+  if (activeTotal !== 100) {
+    return badRequest(reply, `Active participant total must be 100. Current total=${activeTotal}`);
+  }
 
   const now = new Date();
   let proofResult: any;
@@ -23659,7 +24706,7 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
       splitVersionId: sv.id,
       versionNumber: sv.versionNumber,
       lockedAt: now,
-      participants: sv.participants,
+      participants: activeLedgerParticipants,
       creatorId: userId
     });
   } catch (e: any) {
@@ -23798,8 +24845,10 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
   const pending = split.participants.filter((p) => !p.acceptedAt);
 
   const createdInvites: Array<{
+    invitationId: string;
     participantEmail: string;
     splitParticipantId: string;
+    participantState: "invited" | "active";
     token: string;
     expiresAt: Date;
     inviteUrl: string;
@@ -23849,8 +24898,10 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
     })();
 
       createdInvites.push({
+        invitationId: createdInv.id,
         participantEmail: String(p.participantEmail || ""),
         splitParticipantId: p.id,
+        participantState: p.participantUserId && p.acceptedAt ? "active" : "invited",
         token,
         expiresAt,
         inviteUrl: `${inviteBase.replace(/\/$/, "")}/invite/${token}`
@@ -24073,13 +25124,26 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     });
   }
 
-  // Optional auth: bind participation to the local user if Authorization header is present
+  // Require auth to bind invite acceptance to a concrete Certifyd participant identity.
   let userId: string | undefined;
   try {
     await req.jwtVerify();
     userId = (req.user as JwtUser)?.sub;
   } catch {
     userId = undefined;
+  }
+  if (!userId) {
+    return reply.code(401).send({
+      error: "Authentication required to accept invite",
+      code: "INVITE_AUTH_REQUIRED"
+    });
+  }
+  const verifiedKey = await hasVerifiedParticipantKey(userId);
+  if (!verifiedKey) {
+    return reply.code(409).send({
+      error: "Verified key required before accepting split invite",
+      code: "INVITE_KEY_UNVERIFIED"
+    });
   }
 
   const tokenHash = hashInviteToken(token);
@@ -24119,7 +25183,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     return reply.send({ ok: true, acceptedAt: inv.acceptedAt.toISOString(), alreadyAccepted: true });
   }
 
-  // If the requester is authenticated, we'll link the participant to that user
+  // The invite is bound to participant identity on acceptance.
 
   // Optional P2P acceptance info supplied by a remote node
   const remoteNodeUrl = asString((req.body ?? {})?.remoteNodeUrl || "").replace(/\/$/, "");
@@ -24195,8 +25259,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   await prisma.$transaction(async (tx) => {
     await tx.invitation.update({ where: { id: inv.id }, data: { acceptedAt: now } });
 
-    const spUpdate: any = { acceptedAt: now };
-    if (userId) spUpdate.participantUserId = userId;
+    const spUpdate: any = { acceptedAt: now, participantUserId: userId, verifiedAt: now };
 
     await tx.splitParticipant.update({ where: { id: inv.splitParticipantId }, data: spUpdate });
 
@@ -24211,6 +25274,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         payloadJson: {
           invitationId: inv.id,
           splitParticipantId: inv.splitParticipantId,
+          participantUserId: userId,
           remoteNodeUrl: remoteNodeUrl || null,
           remoteUserId: remoteUserId || null,
           remoteVerified,
@@ -24244,7 +25308,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       {
         splitParticipantId: inv.splitParticipantId,
         acceptedAt: now.toISOString(),
-        participantUserId: userId || null
+        participantUserId: userId
       },
       "invite.accept"
     );

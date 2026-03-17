@@ -106,6 +106,7 @@ model User {
   createdAt    DateTime @default(now())
 
   identities           Identity[]
+  participantPayoutDestinations ParticipantPayoutDestination[]
   content              ContentItem[]  @relation("OwnerContent")
   auditEvents          AuditEvent[]
   splitVersionsCreated SplitVersion[] @relation("SplitVersionCreatedBy")
@@ -120,6 +121,31 @@ model User {
   proofRecords         ProofRecord[]
 
   @@index([email])
+}
+
+model ParticipantPayoutDestination {
+  id                 String   @id @default(cuid())
+  userId             String
+  destinationType    String
+  destinationValue   String
+  destinationSummary String
+  isPrimary          Boolean  @default(false)
+  isActive           Boolean  @default(true)
+  isVerified         Boolean  @default(false)
+  lastVerifiedAt     DateTime?
+  verifiedAt         DateTime?
+  lastCheckedAt      DateTime?
+  verificationMethod String?
+  verificationStatus String?  // pending | verified | failed
+  verificationError  String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, isActive, isPrimary])
+  @@index([userId, isActive, isVerified])
 }
 
 model Buyer {
@@ -300,6 +326,7 @@ model ContentLink {
   id               String              @id @default(cuid())
   parentContentId  String
   childContentId   String
+  parentSplitVersionId String?
   relation         ContentLinkRelation
   upstreamBps      Int
   requiresApproval Boolean             @default(false)
@@ -315,6 +342,7 @@ model ContentLink {
 
   @@index([parentContentId])
   @@index([childContentId])
+  @@index([parentSplitVersionId])
 }
 
 model ClearanceRequest {
@@ -743,6 +771,7 @@ model ParticipantPayout {
   allocationId          String   @unique
   providerPaymentIntentId String
   paymentIntentId       String
+  payoutKey             String?
   amountSats            BigInt
   status                String
   payoutRail            String?
@@ -770,6 +799,7 @@ model ParticipantPayout {
   @@index([providerPaymentIntentId])
   @@index([paymentIntentId])
   @@index([status])
+  @@unique([payoutKey])
 }
 
 model WitnessIdentity {
