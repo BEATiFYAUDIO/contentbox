@@ -25608,6 +25608,9 @@ app.get("/invites/:token", handlePublicInviteLookup);
 async function handlePublicInvitePage(req: any, reply: any) {
   const token = asString((req.params as any).token);
   if (!token) return notFound(reply, "Invite not found");
+  const dashboardBase = APP_BASE_URL.replace(/\/+$/, "");
+  const remoteOrigin = getPublicOrigin(req).replace(/\/+$/, "");
+  const handoffUrl = `${dashboardBase}/invite/${encodeURIComponent(token)}?remote=${encodeURIComponent(remoteOrigin)}`;
 
   const html = `<!doctype html>
 <html lang="en">
@@ -25634,39 +25637,65 @@ async function handlePublicInvitePage(req: any, reply: any) {
 <script>
 (function(){
   const token = ${JSON.stringify(token)};
+  const handoffUrl = ${JSON.stringify(handoffUrl)};
   const app = document.getElementById("app");
   const apiBase = location.origin;
+  const TOKEN_KEY = "contentbox.token";
+
+  function readAuthHeader() {
+    try {
+      const t = localStorage.getItem(TOKEN_KEY);
+      return t ? { Authorization: "Bearer " + t } : {};
+    } catch {
+      return {};
+    }
+  }
 
   async function fetchJson(path, opts){
-    const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
+    const headers = Object.assign({ "Content-Type":"application/json" }, opts?.headers || {});
+    const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers, body: opts?.body ? JSON.stringify(opts.body) : undefined });
     const data = await res.json().catch(()=>null);
-    if (!res.ok) throw new Error((data && (data.error || data.message)) || "Request failed");
+    if (!res.ok) throw new Error((data && (data.code || data.error || data.message)) || "Request failed");
     return data;
   }
 
   function render(inv){
     const c = inv?.content || {};
     const sp = inv?.splitParticipant || {};
+    const auth = inv?.authContext || {};
+    const status = String(inv?.status || "pending");
+    const requiresAuth = !auth?.authenticated;
+    const keyUnavailable = auth?.authenticated && auth?.keyVerified === false;
+    const wrongIdentity = auth?.authenticated && auth?.targetMatch === false;
+    const canAccept = status === "pending" && auth?.authenticated && auth?.keyVerified === true && auth?.targetMatch !== false;
+
+    let blockingMessage = "";
+    if (requiresAuth || keyUnavailable) {
+      blockingMessage = "This invite is valid, but signing is not available in this surface.";
+    } else if (wrongIdentity) {
+      blockingMessage = "Signed in as the wrong identity for this invite target.";
+    }
+
     app.innerHTML = \`
       <div style="font-size:22px;font-weight:700;">You’ve been invited to a split</div>
       <div class="muted" style="margin-top:6px;">Content: \${c.title || "Unknown"} (\${c.type || "content"})</div>
       <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} • Share: \${sp.percent || "?"}%</div>
-      <button id="acceptBtn" class="btn" style="margin-top:14px;">Accept invite</button>
+      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "—") + (auth?.email ? (" (" + auth.email + ")") : "")) : "not signed in"}</div>
+      <div class="muted" style="margin-top:4px;">Backend key verification: \${auth?.keyVerified === true ? "verified" : auth?.keyVerified === false ? "unverified" : "unknown"}</div>
+      <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "—"}: \${inv?.targetValue || "—"}</div>
+      \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
+      <button id="acceptBtn" class="btn" style="margin-top:14px;" \${canAccept ? "" : "disabled"}>Accept invite</button>
+      <a href="\${handoffUrl}" class="btn" style="margin-top:10px;display:inline-block;text-decoration:none;">Continue in dashboard</a>
       <div id="status" class="muted" style="margin-top:8px;"></div>
       <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
     document.getElementById("acceptBtn").onclick = async () => {
       document.getElementById("status").textContent = "Accepting…";
       try {
-        let authHeader = {};
-        try {
-          const t = localStorage.getItem("contentbox.token");
-          if (t) authHeader = { Authorization: "Bearer " + t };
-        } catch {}
         const resp = await fetchJson("/invites/" + encodeURIComponent(token) + "/accept", {
           method:"POST",
           body:{},
-          headers: authHeader
+          headers: readAuthHeader()
         });
         if (resp?.alreadyAccepted) {
           document.getElementById("status").textContent = "Already accepted.";
@@ -25674,12 +25703,21 @@ async function handlePublicInvitePage(req: any, reply: any) {
           document.getElementById("status").textContent = "Accepted. You’re in the split.";
         }
       } catch (e) {
-        document.getElementById("status").textContent = e && e.message ? e.message : "Could not accept invite.";
+        const msg = e && e.message ? String(e.message) : "Could not accept invite.";
+        if (msg.includes("INVITE_AUTH_REQUIRED")) {
+          document.getElementById("status").textContent = "Sign in to accept on this surface, or continue in dashboard.";
+        } else if (msg.includes("INVITE_KEY_UNVERIFIED")) {
+          document.getElementById("status").textContent = "Verify your key before accepting this invite.";
+        } else if (msg.includes("INVITE_TARGET_MISMATCH") || msg.includes("INVITE_EMAIL_MISMATCH")) {
+          document.getElementById("status").textContent = "Wrong signed-in identity for this invite target.";
+        } else {
+          document.getElementById("status").textContent = msg;
+        }
       }
     };
   }
 
-  fetchJson("/invites/" + encodeURIComponent(token))
+  fetchJson("/invites/" + encodeURIComponent(token), { headers: readAuthHeader() })
     .then(render)
     .catch(err => { app.textContent = err && err.message ? err.message : "Invite not found."; });
 })();
