@@ -9082,11 +9082,7 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
 
   const invites = await prisma.invitation.findMany({
     where: {
-      splitParticipant: {
-        splitVersion: {
-          content: { ownerUserId: userId }
-        }
-      }
+      inviterUserId: userId
     },
     include: {
       splitParticipant: { include: { splitVersion: { include: { content: true } } } }
@@ -9138,6 +9134,7 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
 
   const invites = await prisma.invitation.findMany({
     where: {
+      NOT: [{ inviterUserId: userId }],
       OR: [
         { targetType: "local_user" as any, targetValue: userId },
         { targetType: "identity_ref" as any, targetValue: userId },

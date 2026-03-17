@@ -24,6 +24,11 @@ type InvitePageProps = {
 
 type InviteGetResponse = {
   ok: true;
+  found?: boolean;
+  status?: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned";
+  targetType?: "email" | "local_user" | "identity_ref";
+  targetValue?: string;
+  inviterUserId?: string | null;
   invitation: {
     id: string;
     expiresAt: string;
@@ -97,6 +102,10 @@ function statusLabel(value?: string | null) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : "—";
 }
 
+function normalizeEmail(value?: string | null): string {
+  return String(value || "").trim().toLowerCase();
+}
+
 function inviteTargetLabel(inv: any): string {
   const targetType = String(inv?.targetType || "").trim().toLowerCase();
   const targetValue = String(inv?.targetValue || "").trim();
@@ -108,8 +117,26 @@ function inviteTargetLabel(inv: any): string {
   return targetValue || participantUserId || participantEmail || "(unknown)";
 }
 
+function inviteAudienceLabel(inv: any): string {
+  const targetType = String(inv?.targetType || "").trim().toLowerCase();
+  if (targetType === "local_user") return "Sent to local user";
+  if (targetType === "identity_ref") return "Pending identity claim";
+  if (targetType === "email") return "Sent to email target";
+  if (inv?.remoteOrigin) return "Received from remote node";
+  return "Invite target";
+}
+
 function isActiveInviteStatus(status: string): boolean {
   return status === "pending" || status === "accepted";
+}
+
+function mapAcceptErrorMessage(raw: string): string {
+  const text = String(raw || "");
+  if (text.includes("INVITE_AUTH_REQUIRED")) return "Sign in to accept this invite.";
+  if (text.includes("INVITE_TARGET_MISMATCH")) return "You are signed in as the wrong user for this invite.";
+  if (text.includes("INVITE_EMAIL_MISMATCH")) return "Signed-in email does not match this invite target.";
+  if (text.includes("INVITE_KEY_UNVERIFIED")) return "Verify your key before accepting this invite.";
+  return text;
 }
 
 function buildInviteMailto(inv: CreatedInviteRow) {
@@ -276,6 +303,20 @@ export default function InvitePage({
 
   const expired = new Date(data?.invitation.expiresAt ?? "").getTime() < Date.now();
   const alreadyAccepted = Boolean(data?.invitation?.acceptedAt || data?.splitParticipant?.acceptedAt);
+  const expectedTargetType = String(data?.targetType || "").trim().toLowerCase();
+  const expectedTargetValue = String(data?.targetValue || "").trim();
+  const currentUserId = String(me?.id || "").trim();
+  const currentUserEmail = normalizeEmail(me?.email || "");
+  const inviteAuthRequired = !me;
+  const inviteWrongIdentity =
+    Boolean(me && expectedTargetType === "local_user" && expectedTargetValue && currentUserId && expectedTargetValue !== currentUserId) ||
+    Boolean(
+      me &&
+        expectedTargetType === "email" &&
+        expectedTargetValue &&
+        currentUserEmail &&
+        normalizeEmail(expectedTargetValue) !== currentUserEmail
+    );
 
   async function fetchRemoteJson(path: string, opts?: { method?: string; body?: any; headers?: Record<string, string> }) {
     if (!remoteOriginFromLocation) throw new Error("Remote origin missing");
@@ -359,7 +400,7 @@ export default function InvitePage({
         const friendly =
           raw === "Failed to fetch"
             ? `Failed to reach remote invite${base}. Make sure the tunnel is running and updated.`
-            : raw;
+            : mapAcceptErrorMessage(raw);
         setMsg(friendly);
       }
     } finally {
@@ -593,7 +634,7 @@ export default function InvitePage({
       }
       onAccepted(data?.content?.id ?? null);
     } catch (e: any) {
-      setMsg(e?.message || "Accept failed");
+      setMsg(mapAcceptErrorMessage(e?.message || "Accept failed"));
     } finally {
       setBusy(false);
     }
@@ -611,8 +652,8 @@ export default function InvitePage({
   function groupByContent(list: any[] | null) {
     const out: Record<string, { key: string; title: string; invites: any[] }> = {};
     for (const inv of list || []) {
-      const title = inv.contentTitle || inv.contentId || "(unknown)";
-      const key = String(inv.contentId || inv.contentTitle || "unknown");
+      const title = inv.contentTitle || inv.contentId || inviteTargetLabel(inv);
+      const key = String(inv.contentId || inv.contentTitle || `${inv.targetType || "target"}:${inv.targetValue || inv.id || "unknown"}`);
       if (!out[key]) out[key] = { key, title, invites: [] };
       out[key].invites.push(inv);
     }
@@ -676,7 +717,7 @@ export default function InvitePage({
       const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
       setRemoteReceivedInvites(listRemote || []);
     } catch (e: any) {
-      setMsg(e?.message || "Remote accept failed");
+      setMsg(mapAcceptErrorMessage(e?.message || "Remote accept failed"));
     } finally {
       setRemoteAcceptBusy((m) => ({ ...m, [inv.id]: false }));
     }
@@ -716,7 +757,7 @@ export default function InvitePage({
       const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
       setRemoteReceivedInvites(listRemote || []);
     } catch (e: any) {
-      setMsg(e?.message || "Remote sync failed");
+      setMsg(mapAcceptErrorMessage(e?.message || "Remote sync failed"));
     } finally {
       setRemoteSyncBusy((m) => ({ ...m, [inv.id]: false }));
     }
@@ -961,6 +1002,7 @@ export default function InvitePage({
                               return (
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
+                                    <div className="text-[11px] text-neutral-500">{inviteAudienceLabel(inv)}</div>
                                     <div className="text-xs text-neutral-400">To: {inviteTargetLabel(inv)}</div>
                                     <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
                                     <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
@@ -1027,6 +1069,7 @@ export default function InvitePage({
                               return (
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
+                                    <div className="text-[11px] text-neutral-500">{inviteAudienceLabel(inv)}</div>
                                     <div className="text-xs text-neutral-400">Target: {inviteTargetLabel(inv)}</div>
                                     <div className="text-xs text-neutral-400">
                                       {titleCase(inv.contentType)} • {statusLabel(inv.contentStatus)} • v{inv.splitVersionNum ?? "—"} • {statusLabel(inv.splitStatus)}
@@ -1073,6 +1116,7 @@ export default function InvitePage({
                               return (
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
+                                    <div className="text-[11px] text-neutral-500">Received from remote node</div>
                                     <div className="text-xs text-neutral-400">
                                       {titleCase(inv.contentType)} • {statusLabel(inv.contentStatus)} • v{inv.splitVersionNum ?? "—"} • {statusLabel(inv.splitStatus)}
                                     </div>
@@ -1208,6 +1252,17 @@ export default function InvitePage({
               You are invited as: <span className="text-neutral-200">{data.splitParticipant.participantEmail}</span>
             </div>
 
+            <div className="text-xs text-neutral-500">
+              Current auth user: <span className="text-neutral-300">{me ? `${me.id}${me.email ? ` (${me.email})` : ""}` : "not signed in"}</span>
+            </div>
+
+            <div className="text-xs text-neutral-500">
+              Expected target:{" "}
+              <span className="text-neutral-300">
+                {data.targetType ? `${data.targetType}: ${data.targetValue || "—"}` : "—"}
+              </span>
+            </div>
+
             <div className="text-sm text-neutral-400">
               Role: <span className="text-neutral-200">{data.splitParticipant.role}</span> • Percent: <span className="text-neutral-200">{num(data.splitParticipant.percent)}%</span>
             </div>
@@ -1219,13 +1274,32 @@ export default function InvitePage({
             </div>
 
             <div className="pt-2">
-              <button
-                disabled={busy || expired || alreadyAccepted}
-                onClick={acceptInvite}
-                className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
-              >
-                Accept invite
-              </button>
+              {inviteAuthRequired ? (
+                <div className="space-y-2">
+                  <div className="text-xs text-amber-300">Sign in to accept this invite.</div>
+                  <button
+                    onClick={() => {
+                      window.location.href = "/";
+                    }}
+                    className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
+                  >
+                    Sign in to accept
+                  </button>
+                </div>
+              ) : (
+                <button
+                  disabled={busy || expired || alreadyAccepted || inviteWrongIdentity}
+                  onClick={acceptInvite}
+                  className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
+                >
+                  Accept invite
+                </button>
+              )}
+              {inviteWrongIdentity ? (
+                <div className="mt-2 text-xs text-amber-300">
+                  Signed in as wrong identity for this invite target. Switch account and retry.
+                </div>
+              ) : null}
             </div>
           </div>
         </>
