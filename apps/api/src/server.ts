@@ -2486,6 +2486,26 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
   }
 }
 
+async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string): Promise<ProviderPayoutSummaryStatus> {
+  const rows = await prisma.participantPayout.findMany({
+    where: { providerPaymentIntentId },
+    select: { status: true }
+  });
+  if (!rows.length) return "pending";
+  const statuses = rows.map((r) => parseParticipantPayoutStatus(r.status));
+  const allPaid = statuses.every((s) => s === "paid");
+  if (allPaid) return "paid";
+  const paidCount = statuses.filter((s) => s === "paid").length;
+  const blockedCount = statuses.filter((s) => s === "blocked").length;
+  const failedCount = statuses.filter((s) => s === "failed").length;
+  const activeCount = statuses.filter((s) => s === "forwarding" || s === "ready" || s === "pending").length;
+
+  if (paidCount > 0) return "partial";
+  if (blockedCount > 0 && activeCount === 0) return "blocked";
+  if (failedCount > 0 && activeCount === 0) return "failed";
+  return "pending";
+}
+
 async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentRecord) {
   if (intent.status !== "paid" || intent.paymentReceiptId) return intent;
   const paidAt = intent.paidAt || new Date().toISOString();
@@ -2611,49 +2631,55 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
       "providerRemittance.participant_snapshot_failed"
     );
   }
+  const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settled.id).catch(() => settled.payoutSummaryStatus || "pending");
+  const withSummary =
+    updateProviderPaymentIntent(settled.id, {
+      payoutSummaryStatus
+    }) || settled;
   app.log.info(
     {
-      paymentIntentId: settled.paymentIntentId,
-      creatorNodeId: settled.creatorNodeId,
-      status: settled.status,
-      payoutStatus: settled.payoutStatus,
-      providerRemitMode: settled.providerRemitMode,
-      payoutDestinationType: settled.payoutDestinationType,
-      payoutDestinationSummary: settled.payoutDestinationSummary,
-      creatorNetSats: settled.creatorNetSats
+      paymentIntentId: withSummary.paymentIntentId,
+      creatorNodeId: withSummary.creatorNodeId,
+      status: withSummary.status,
+      payoutStatus: withSummary.payoutStatus,
+      payoutSummaryStatus: withSummary.payoutSummaryStatus,
+      providerRemitMode: withSummary.providerRemitMode,
+      payoutDestinationType: withSummary.payoutDestinationType,
+      payoutDestinationSummary: withSummary.payoutDestinationSummary,
+      creatorNetSats: withSummary.creatorNetSats
     },
     "providerRemittance.trigger_evaluated"
   );
-  if (settled.status === "paid" && settled.providerRemitMode === "auto_forward") {
-    if (settled.payoutExecutionMode === "participant") {
+  if (withSummary.status === "paid" && withSummary.providerRemitMode === "auto_forward") {
+    if (withSummary.payoutExecutionMode === "participant") {
       app.log.info(
         {
-          paymentIntentId: settled.paymentIntentId,
-          creatorNodeId: settled.creatorNodeId,
+          paymentIntentId: withSummary.paymentIntentId,
+          creatorNodeId: withSummary.creatorNodeId,
           reason: "PARTICIPANT_EXECUTION_MODE"
         },
         "providerRemittance.creator_path_skipped"
       );
-      return settled;
+      return withSummary;
     }
     app.log.info(
-      { paymentIntentId: settled.paymentIntentId, creatorNodeId: settled.creatorNodeId },
+      { paymentIntentId: withSummary.paymentIntentId, creatorNodeId: withSummary.creatorNodeId },
       "providerRemittance.trigger_started"
     );
-    return executeCreatorRemittance(settled, "provider_settlement");
+    return executeCreatorRemittance(withSummary, "provider_settlement");
   }
-  if (settled.status === "paid") {
+  if (withSummary.status === "paid") {
     app.log.info(
       {
-        paymentIntentId: settled.paymentIntentId,
-        creatorNodeId: settled.creatorNodeId,
-        reason: settled.providerRemitMode !== "auto_forward" ? "AUTO_FORWARD_DISABLED" : "NOT_SETTLED",
-        providerRemitMode: settled.providerRemitMode
+        paymentIntentId: withSummary.paymentIntentId,
+        creatorNodeId: withSummary.creatorNodeId,
+        reason: withSummary.providerRemitMode !== "auto_forward" ? "AUTO_FORWARD_DISABLED" : "NOT_SETTLED",
+        providerRemitMode: withSummary.providerRemitMode
       },
       "providerRemittance.trigger_skipped"
     );
   }
-  return settled;
+  return withSummary;
 }
 
 function normalizeLndMacaroonHex(): string | null {
