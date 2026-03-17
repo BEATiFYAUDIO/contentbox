@@ -1545,6 +1545,7 @@ type CreatorPayoutDestinationType = "lightning_address" | "local_lnd" | "onchain
 type ProviderRemitMode = "provider_custody" | "auto_forward" | "manual_payout" | null;
 type ProviderPayoutExecutionMode = "legacy_creator" | "participant";
 type ProviderPayoutSummaryStatus = "pending" | "partial" | "paid" | "failed" | "blocked";
+type ParticipantPayoutStatus = "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked";
 
 type ProviderCreatorLinkRecord = {
   id: string;
@@ -1651,6 +1652,17 @@ type ContentParticipantAllocation = {
   amountSats: bigint;
   allocationSource: "split_locked";
   allocationVersion: number;
+};
+
+type ParticipantPayoutReadiness = {
+  status: ParticipantPayoutStatus;
+  readinessReason: string | null;
+  destinationType: string | null;
+  destinationSummary: string | null;
+  destinationSource: string | null;
+  destinationFingerprint: string | null;
+  destinationResolvedAt: Date | null;
+  blockedReason: string | null;
 };
 
 type CreatorPayoutDestinationRecord = {
@@ -1773,6 +1785,86 @@ function parseProviderPayoutSummaryStatus(value: unknown): ProviderPayoutSummary
     return status;
   }
   return "pending";
+}
+
+function parseParticipantPayoutStatus(value: unknown): ParticipantPayoutStatus {
+  const status = String(value || "").trim().toLowerCase();
+  if (status === "pending" || status === "ready" || status === "forwarding" || status === "paid" || status === "failed" || status === "blocked") {
+    return status;
+  }
+  return "pending";
+}
+
+function computeDestinationFingerprint(destinationType: string | null, destinationSummary: string | null): string | null {
+  const type = String(destinationType || "").trim().toLowerCase();
+  const summary = String(destinationSummary || "").trim().toLowerCase();
+  if (!type || !summary) return null;
+  return crypto.createHash("sha256").update(`${type}:${summary}`).digest("hex");
+}
+
+function resolveParticipantPayoutReadiness(intent: ProviderPaymentIntentRecord): ParticipantPayoutReadiness {
+  const destinationType = intent.payoutDestinationType ? String(intent.payoutDestinationType) : null;
+  const destinationSummary = intent.payoutDestinationSummary ? String(intent.payoutDestinationSummary).trim() : null;
+  const destinationFingerprint = computeDestinationFingerprint(destinationType, destinationSummary);
+  const destinationResolvedAt = destinationSummary ? new Date() : null;
+  const blockedReason = intent.payoutStatus === "failed" && String(intent.payoutLastError || "").toUpperCase().includes("BLOCK")
+    ? String(intent.payoutLastError || "BLOCKED")
+    : null;
+
+  if (blockedReason) {
+    return {
+      status: "blocked",
+      readinessReason: "BLOCKED_POLICY",
+      destinationType,
+      destinationSummary,
+      destinationSource: "provider_snapshot",
+      destinationFingerprint,
+      destinationResolvedAt,
+      blockedReason
+    };
+  }
+
+  if (!destinationType || !destinationSummary) {
+    return {
+      status: "pending",
+      readinessReason: "DESTINATION_MISSING",
+      destinationType,
+      destinationSummary,
+      destinationSource: "provider_snapshot",
+      destinationFingerprint,
+      destinationResolvedAt,
+      blockedReason: null
+    };
+  }
+
+  if (intent.payoutExecutionMode === "participant" && intent.providerRemitMode === "auto_forward" && intent.payoutDestinationType === "lightning_address") {
+    return {
+      status: "ready",
+      readinessReason: null,
+      destinationType,
+      destinationSummary,
+      destinationSource: "provider_snapshot",
+      destinationFingerprint,
+      destinationResolvedAt,
+      blockedReason: null
+    };
+  }
+
+  return {
+    status: "pending",
+    readinessReason:
+      intent.payoutExecutionMode !== "participant"
+        ? "LEGACY_CREATOR_MODE"
+        : intent.providerRemitMode !== "auto_forward"
+          ? "MANUAL_REQUIRED"
+          : "AUTO_FORWARD_UNSUPPORTED_DESTINATION",
+    destinationType,
+    destinationSummary,
+    destinationSource: "provider_snapshot",
+    destinationFingerprint,
+    destinationResolvedAt,
+    blockedReason: null
+  };
 }
 
 function parsePayoutDestinationType(value: unknown): CreatorPayoutDestinationType {
@@ -2345,16 +2437,24 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
     select: { id: true, amountSats: true }
   });
   if (!allocations.length) return;
+  const readiness = resolveParticipantPayoutReadiness(intent);
+  const terminalStatus: ParticipantPayoutStatus | null =
+    intent.payoutStatus === "paid" ? "paid" : intent.payoutStatus === "failed" ? (readiness.status === "blocked" ? "blocked" : "failed") : null;
 
   for (const allocation of allocations) {
     await prisma.participantPayout.upsert({
       where: { allocationId: allocation.id },
       update: {
-        status: intent.payoutStatus,
+        status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
         payoutRail: intent.payoutRail,
         lastCheckedAt: new Date(),
+        readinessReason: readiness.readinessReason,
+        destinationResolvedAt: readiness.destinationResolvedAt,
+        destinationSource: readiness.destinationSource,
+        destinationFingerprint: readiness.destinationFingerprint,
         payoutReference: intent.payoutReference,
         lastError: intent.payoutLastError,
+        blockedReason: readiness.blockedReason,
         remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
       },
       create: {
@@ -2362,16 +2462,21 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
         providerPaymentIntentId: intent.id,
         paymentIntentId: intent.paymentIntentId,
         amountSats: BigInt(String(allocation.amountSats || "0")),
-        status: intent.payoutStatus,
+        status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
         payoutRail: intent.payoutRail,
-        destinationType: intent.payoutDestinationType,
-        destinationSummary: intent.payoutDestinationSummary,
+        destinationType: readiness.destinationType,
+        destinationSummary: readiness.destinationSummary,
+        readinessReason: readiness.readinessReason,
+        destinationResolvedAt: readiness.destinationResolvedAt,
+        destinationSource: readiness.destinationSource,
+        destinationFingerprint: readiness.destinationFingerprint,
         attemptCount: Math.max(0, Number(intent.remittanceAttempts) || 0),
         attemptId: intent.remittanceAttemptId,
         lockedAt: intent.remittanceLockedAt ? new Date(intent.remittanceLockedAt) : null,
         lastCheckedAt: new Date(),
         payoutReference: intent.payoutReference,
         lastError: intent.payoutLastError,
+        blockedReason: readiness.blockedReason,
         remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
         // TODO(certifyd-payout-destination-versioning): snapshot destination rebinding/versioning
         // should support destination updates for future unpaid balances without mutating historical payout rows.
