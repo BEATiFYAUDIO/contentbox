@@ -1530,6 +1530,13 @@ const REMITTANCE_FORWARDING_STALE_MS = Math.max(
   30_000,
   Number.parseInt(String(process.env.CERTIFYD_REMITTANCE_STALE_MS || "180000"), 10) || 180000
 );
+const PARTICIPANT_PAYOUTS_ENABLED = String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_ENABLED || "").trim() === "1";
+const PARTICIPANT_PAYOUTS_EXECUTION_ENABLED =
+  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_EXECUTION_ENABLED || "").trim() === "1";
+const PARTICIPANT_PAYOUTS_SUMMARY_ENABLED =
+  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_SUMMARY_ENABLED || "").trim() === "1";
+const PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY =
+  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY || "").trim() === "1";
 const PROVIDER_CREATOR_LINKS_FILE = path.join(RUNTIME_STATE_DIR, "provider-creator-links.json");
 const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider-delegated-publishes.json");
 const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
@@ -1693,6 +1700,12 @@ type CreatorPayoutDestinationState = {
 
 const PROVIDER_INVOICING_FEE_PERCENT = 1;
 const PROVIDER_DURABLE_HOSTING_FEE_PERCENT = 1;
+
+function resolveNewIntentPayoutExecutionMode(): ProviderPayoutExecutionMode {
+  if (!PARTICIPANT_PAYOUTS_ENABLED) return "legacy_creator";
+  if (!PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY) return "legacy_creator";
+  return "participant";
+}
 
 function computePercentFeeComponent(gross: bigint, feePercent: number, remaining: bigint): bigint {
   if (gross <= 0n || remaining <= 0n || feePercent <= 0) return 0n;
@@ -2382,6 +2395,7 @@ function createProviderPaymentReceipt(
 }
 
 async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaymentIntentRecord): Promise<void> {
+  if (!PARTICIPANT_PAYOUTS_ENABLED) return;
   if (intent.status !== "paid") return;
   const contentId = String(intent.contentId || "").trim();
   if (!contentId) return;
@@ -2487,6 +2501,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
 }
 
 async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string): Promise<ProviderPayoutSummaryStatus> {
+  if (!PARTICIPANT_PAYOUTS_ENABLED || !PARTICIPANT_PAYOUTS_SUMMARY_ENABLED) return "pending";
   const rows = await prisma.participantPayout.findMany({
     where: { providerPaymentIntentId },
     select: { status: true }
@@ -2633,9 +2648,11 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   }
   const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settled.id).catch(() => settled.payoutSummaryStatus || "pending");
   const withSummary =
-    updateProviderPaymentIntent(settled.id, {
-      payoutSummaryStatus
-    }) || settled;
+    PARTICIPANT_PAYOUTS_ENABLED && PARTICIPANT_PAYOUTS_SUMMARY_ENABLED
+      ? updateProviderPaymentIntent(settled.id, {
+          payoutSummaryStatus
+        }) || settled
+      : settled;
   app.log.info(
     {
       paymentIntentId: withSummary.paymentIntentId,
@@ -2652,6 +2669,9 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   );
   if (withSummary.status === "paid" && withSummary.providerRemitMode === "auto_forward") {
     if (withSummary.payoutExecutionMode === "participant") {
+      if (PARTICIPANT_PAYOUTS_ENABLED && PARTICIPANT_PAYOUTS_EXECUTION_ENABLED) {
+        await executeParticipantPayoutRowsForIntent(withSummary, "provider_settlement_participant");
+      }
       app.log.info(
         {
           paymentIntentId: withSummary.paymentIntentId,
@@ -6835,7 +6855,7 @@ function registerPublicRoutes(appPublic: any) {
       payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
       payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
       providerRemitMode,
-      payoutExecutionMode: "legacy_creator",
+      payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
       payoutSummaryStatus: "pending",
       payoutReference: null,
       remittedAt: null,
@@ -9178,7 +9198,7 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
-    payoutExecutionMode: "legacy_creator",
+    payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
     payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
@@ -10933,7 +10953,7 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
-    payoutExecutionMode: "legacy_creator",
+    payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
     payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
@@ -11014,7 +11034,7 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
-    payoutExecutionMode: "legacy_creator",
+    payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
     payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
@@ -19038,7 +19058,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         payoutDestinationType: payoutDestination.effectiveDestinationType,
         payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
         providerRemitMode: payoutDestination.providerRemitMode,
-        payoutExecutionMode: "legacy_creator",
+        payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
         payoutSummaryStatus: "pending",
         payoutReference: null,
         remittedAt: null,
