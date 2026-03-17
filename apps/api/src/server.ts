@@ -1543,6 +1543,8 @@ type ProviderPayoutStatus = "pending" | "forwarding" | "paid" | "failed";
 type ProviderPayoutRail = "provider_custody" | "forwarded" | "creator_node" | null;
 type CreatorPayoutDestinationType = "lightning_address" | "local_lnd" | "onchain_address" | null;
 type ProviderRemitMode = "provider_custody" | "auto_forward" | "manual_payout" | null;
+type ProviderPayoutExecutionMode = "legacy_creator" | "participant";
+type ProviderPayoutSummaryStatus = "pending" | "partial" | "paid" | "failed" | "blocked";
 
 type ProviderCreatorLinkRecord = {
   id: string;
@@ -1594,6 +1596,8 @@ type ProviderPaymentIntentRecord = {
   payoutDestinationType: CreatorPayoutDestinationType;
   payoutDestinationSummary: string | null;
   providerRemitMode: ProviderRemitMode;
+  payoutExecutionMode: ProviderPayoutExecutionMode;
+  payoutSummaryStatus: ProviderPayoutSummaryStatus;
   payoutReference: string | null;
   remittedAt: string | null;
   payoutLastError: string | null;
@@ -1633,6 +1637,20 @@ type ProviderPaymentReceiptRecord = {
   paidAt: string;
   createdAt: string;
   updatedAt: string;
+};
+
+type ContentParticipantAllocation = {
+  participantRef: string;
+  participantId: string | null;
+  splitParticipantId: string | null;
+  participantUserId: string | null;
+  participantEmail: string | null;
+  role: string | null;
+  roleKey: string;
+  bps: number;
+  amountSats: bigint;
+  allocationSource: "split_locked";
+  allocationVersion: number;
 };
 
 type CreatorPayoutDestinationRecord = {
@@ -1741,6 +1759,20 @@ function parseProviderRemitMode(value: unknown): ProviderRemitMode {
   const mode = String(value || "").trim().toLowerCase();
   if (mode === "provider_custody" || mode === "auto_forward" || mode === "manual_payout") return mode;
   return null;
+}
+
+function parseProviderPayoutExecutionMode(value: unknown): ProviderPayoutExecutionMode {
+  const mode = String(value || "").trim().toLowerCase();
+  if (mode === "legacy_creator" || mode === "participant") return mode;
+  return "legacy_creator";
+}
+
+function parseProviderPayoutSummaryStatus(value: unknown): ProviderPayoutSummaryStatus {
+  const status = String(value || "").trim().toLowerCase();
+  if (status === "pending" || status === "partial" || status === "paid" || status === "failed" || status === "blocked") {
+    return status;
+  }
+  return "pending";
 }
 
 function parsePayoutDestinationType(value: unknown): CreatorPayoutDestinationType {
@@ -2065,6 +2097,8 @@ function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
       payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
       payoutDestinationSummary: row.payoutDestinationSummary || null,
       providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
+      payoutExecutionMode: parseProviderPayoutExecutionMode((row as any).payoutExecutionMode || null),
+      payoutSummaryStatus: parseProviderPayoutSummaryStatus((row as any).payoutSummaryStatus || null),
       payoutReference: row.payoutReference || null,
       remittedAt: row.remittedAt || null,
       payoutLastError: row.payoutLastError || null,
@@ -2093,6 +2127,8 @@ function createProviderPaymentIntent(
   const created: ProviderPaymentIntentRecord = {
     id: buildProviderRecordId("ppi"),
     ...input,
+    payoutExecutionMode: parseProviderPayoutExecutionMode((input as any).payoutExecutionMode || null),
+    payoutSummaryStatus: parseProviderPayoutSummaryStatus((input as any).payoutSummaryStatus || null),
     createdAt: now,
     updatedAt: now
   };
@@ -2143,6 +2179,8 @@ function updateProviderPaymentIntent(
       | "payoutDestinationType"
       | "payoutDestinationSummary"
       | "providerRemitMode"
+      | "payoutExecutionMode"
+      | "payoutSummaryStatus"
       | "payoutReference"
       | "remittedAt"
       | "payoutLastError"
@@ -2182,6 +2220,10 @@ function updateProviderPaymentIntent(
       payoutDestinationSummary:
         patch.payoutDestinationSummary !== undefined ? patch.payoutDestinationSummary : rows[idx].payoutDestinationSummary,
       providerRemitMode: patch.providerRemitMode !== undefined ? patch.providerRemitMode : rows[idx].providerRemitMode,
+      payoutExecutionMode:
+        patch.payoutExecutionMode !== undefined ? patch.payoutExecutionMode : rows[idx].payoutExecutionMode,
+      payoutSummaryStatus:
+        patch.payoutSummaryStatus !== undefined ? patch.payoutSummaryStatus : rows[idx].payoutSummaryStatus,
       payoutReference: patch.payoutReference !== undefined ? patch.payoutReference : rows[idx].payoutReference,
       remittedAt: patch.remittedAt !== undefined ? patch.remittedAt : rows[idx].remittedAt,
       payoutLastError: patch.payoutLastError !== undefined ? patch.payoutLastError : rows[idx].payoutLastError,
@@ -2244,6 +2286,98 @@ function createProviderPaymentReceipt(
   rows.unshift(created);
   writeJsonArrayState(PROVIDER_PAYMENT_RECEIPTS_FILE, rows);
   return created;
+}
+
+async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaymentIntentRecord): Promise<void> {
+  if (intent.status !== "paid") return;
+  const contentId = String(intent.contentId || "").trim();
+  if (!contentId) return;
+
+  const existingAllocations = await prisma.providerPaymentParticipantAllocation.findMany({
+    where: { providerPaymentIntentId: intent.id },
+    select: { id: true }
+  });
+
+  // Financial snapshot freeze: once any allocation exists for this provider payment intent,
+  // never recompute or overwrite allocations, even if provider fee/net fields are edited later.
+  // This avoids retroactive drift in participant accounting.
+  if (existingAllocations.length === 0) {
+    const netPool = BigInt(String(intent.creatorNetSats || "0"));
+    if (netPool > 0n) {
+      const computed = await computeContentParticipantAllocations({
+        contentId,
+        poolSats: netPool
+      });
+      for (const row of computed.allocations) {
+        await prisma.providerPaymentParticipantAllocation.upsert({
+          where: {
+            providerPaymentIntentId_participantRef_roleKey: {
+              providerPaymentIntentId: intent.id,
+              participantRef: row.participantRef,
+              roleKey: row.roleKey
+            }
+          },
+          update: {},
+          create: {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            contentId: intent.contentId,
+            creatorNodeId: intent.creatorNodeId,
+            participantRef: row.participantRef,
+            participantId: row.participantId,
+            splitParticipantId: row.splitParticipantId,
+            participantUserId: row.participantUserId,
+            participantEmail: row.participantEmail,
+            role: row.role,
+            roleKey: row.roleKey,
+            bps: row.bps,
+            amountSats: row.amountSats,
+            allocationSource: row.allocationSource,
+            allocationVersion: row.allocationVersion
+          }
+        });
+      }
+    }
+  }
+
+  const allocations = await prisma.providerPaymentParticipantAllocation.findMany({
+    where: { providerPaymentIntentId: intent.id },
+    select: { id: true, amountSats: true }
+  });
+  if (!allocations.length) return;
+
+  for (const allocation of allocations) {
+    await prisma.participantPayout.upsert({
+      where: { allocationId: allocation.id },
+      update: {
+        status: intent.payoutStatus,
+        payoutRail: intent.payoutRail,
+        lastCheckedAt: new Date(),
+        payoutReference: intent.payoutReference,
+        lastError: intent.payoutLastError,
+        remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+      },
+      create: {
+        allocationId: allocation.id,
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        amountSats: BigInt(String(allocation.amountSats || "0")),
+        status: intent.payoutStatus,
+        payoutRail: intent.payoutRail,
+        destinationType: intent.payoutDestinationType,
+        destinationSummary: intent.payoutDestinationSummary,
+        attemptCount: Math.max(0, Number(intent.remittanceAttempts) || 0),
+        attemptId: intent.remittanceAttemptId,
+        lockedAt: intent.remittanceLockedAt ? new Date(intent.remittanceLockedAt) : null,
+        lastCheckedAt: new Date(),
+        payoutReference: intent.payoutReference,
+        lastError: intent.payoutLastError,
+        remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+        // TODO(certifyd-payout-destination-versioning): snapshot destination rebinding/versioning
+        // should support destination updates for future unpaid balances without mutating historical payout rows.
+      }
+    });
+  }
 }
 
 async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentRecord) {
@@ -2359,6 +2493,18 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
     remittanceLastCheckedAt: new Date().toISOString()
   });
   const settled = updated || intent;
+  try {
+    await ensureParticipantPayoutRowsForProviderIntent(settled);
+  } catch (e: any) {
+    app.log.warn(
+      {
+        paymentIntentId: settled.paymentIntentId,
+        providerPaymentIntentId: settled.id,
+        error: String(e?.message || e || "participant_payout_snapshot_failed")
+      },
+      "providerRemittance.participant_snapshot_failed"
+    );
+  }
   app.log.info(
     {
       paymentIntentId: settled.paymentIntentId,
@@ -6412,6 +6558,8 @@ function registerPublicRoutes(appPublic: any) {
       payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
       payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
       providerRemitMode,
+      payoutExecutionMode: "legacy_creator",
+      payoutSummaryStatus: "pending",
       payoutReference: null,
       remittedAt: null,
       payoutLastError: null,
@@ -8753,6 +8901,8 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
+    payoutExecutionMode: "legacy_creator",
+    payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
     payoutLastError: null,
@@ -10445,6 +10595,8 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
+    payoutExecutionMode: "legacy_creator",
+    payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
     payoutLastError: null,
@@ -10524,6 +10676,8 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     payoutDestinationType: parsePayoutDestinationType(body.payoutDestinationType || null),
     payoutDestinationSummary: String(body.payoutDestinationSummary || "").trim() || null,
     providerRemitMode,
+    payoutExecutionMode: "legacy_creator",
+    payoutSummaryStatus: "pending",
     payoutReference: null,
     remittedAt: null,
     payoutLastError: null,
@@ -18539,6 +18693,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         payoutDestinationType: payoutDestination.effectiveDestinationType,
         payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
         providerRemitMode: payoutDestination.providerRemitMode,
+        payoutExecutionMode: "legacy_creator",
+        payoutSummaryStatus: "pending",
         payoutReference: null,
         remittedAt: null,
         payoutLastError: null,
@@ -20856,6 +21012,97 @@ async function getEligibleApproversForParent(parentContentId: string) {
   return { split, approvers, eligible };
 }
 
+async function computeContentParticipantAllocations(input: {
+  contentId: string;
+  poolSats: bigint;
+}): Promise<{
+  splitVersionId: string;
+  allocations: ContentParticipantAllocation[];
+}> {
+  const content = await prisma.contentItem.findUnique({ where: { id: input.contentId } });
+  if (!content) throw new Error("Content not found");
+
+  const childSplit = await getLockedSplitForContent(content.id);
+  if (!childSplit) throw new Error("Locked child split not found");
+
+  const parents = await prisma.contentLink.findMany({
+    where: { childContentId: content.id },
+    orderBy: { id: "asc" }
+  });
+  if (parents.length > 1) {
+    throw new Error("MULTIPLE_PARENTS_NOT_SUPPORTED");
+  }
+
+  const net = input.poolSats;
+  const primaryParent = parents[0] || null;
+  const upstreamRaw =
+    primaryParent && primaryParent.upstreamBps > 0
+      ? [{ parentContentId: primaryParent.parentContentId, upstreamBps: Math.max(0, primaryParent.upstreamBps) }]
+      : [];
+  const upstreamAlloc: Array<{ parentContentId: string; amountSats: bigint; upstreamBps: number }> = upstreamRaw.map((p) => ({
+    parentContentId: p.parentContentId,
+    amountSats: (net * BigInt(p.upstreamBps)) / 10000n,
+    upstreamBps: p.upstreamBps
+  }));
+  const childRemainder = net - upstreamAlloc.reduce((sum, a) => sum + a.amountSats, 0n);
+
+  const allocations: ContentParticipantAllocation[] = [];
+
+  const childItems = childSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+  const childAlloc = allocateByBps(childRemainder, childItems.map((i) => ({ id: i.id, bps: i.bps })));
+  for (const a of childAlloc) {
+    const participant = childItems.find((i) => i.id === a.id)?.p;
+    const role = upstreamAlloc.length > 0 ? (participant?.role ? `derivative:${participant.role}` : "derivative") : (participant?.role || null);
+    allocations.push({
+      participantRef: recipientRefForParticipant(participant || { id: a.id }),
+      participantId: participant?.id || null,
+      splitParticipantId: participant?.id || null,
+      participantUserId: participant?.participantUserId || null,
+      participantEmail: participant?.participantEmail || null,
+      role,
+      roleKey: role || "",
+      bps: Math.max(0, toBps(participant || { percent: 0 })),
+      amountSats: a.amountSats,
+      allocationSource: "split_locked",
+      allocationVersion: 1
+    });
+  }
+
+  for (const up of upstreamAlloc) {
+    const parentSplit = await getLockedSplitForContent(up.parentContentId);
+    if (!parentSplit || parentSplit.status !== "locked") {
+      const err: any = new Error("Parent split not locked");
+      err.statusCode = 409;
+      err.code = "PARENT_SPLIT_NOT_LOCKED";
+      throw err;
+    }
+    const parentItems = parentSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+    const parentAlloc = allocateByBps(up.amountSats, parentItems.map((i) => ({ id: i.id, bps: i.bps })));
+    for (const a of parentAlloc) {
+      const participant = parentItems.find((i) => i.id === a.id)?.p;
+      const role = "upstream";
+      allocations.push({
+        participantRef: recipientRefForParticipant(participant || { id: a.id }),
+        participantId: participant?.id || null,
+        splitParticipantId: participant?.id || null,
+        participantUserId: participant?.participantUserId || null,
+        participantEmail: participant?.participantEmail || null,
+        role,
+        roleKey: role,
+        bps: Math.max(0, toBps(participant || { percent: 0 })),
+        amountSats: a.amountSats,
+        allocationSource: "split_locked",
+        allocationVersion: 1
+      });
+    }
+  }
+
+  return {
+    splitVersionId: childSplit.id,
+    allocations
+  };
+}
+
 async function settlePaymentIntent(paymentIntentId: string) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
   if (!intent) throw new Error("PaymentIntent not found");
@@ -20873,108 +21120,23 @@ async function settlePaymentIntent(paymentIntentId: string) {
     return null;
   }
 
-  const childSplit = await getLockedSplitForContent(content.id);
-  if (!childSplit) throw new Error("Locked child split not found");
-
-  const parents = await prisma.contentLink.findMany({
-    where: { childContentId: content.id },
-    orderBy: { id: "asc" }
-  });
-  if (parents.length > 1) {
-    throw new Error("MULTIPLE_PARENTS_NOT_SUPPORTED");
-  }
   const net = BigInt(intent.amountSats);
-
-  const primaryParent = parents[0] || null;
-  const upstreamRaw =
-    primaryParent && primaryParent.upstreamBps > 0
-      ? [{ parentContentId: primaryParent.parentContentId, upstreamBps: Math.max(0, primaryParent.upstreamBps) }]
-      : [];
-
-  let upstreamTotal = 0n;
-  const upstreamAlloc: Array<{ parentContentId: string; amountSats: bigint; upstreamBps: number }> = upstreamRaw.map((p) => {
-    const amt = (net * BigInt(p.upstreamBps)) / 10000n;
-    upstreamTotal += amt;
-    return { parentContentId: p.parentContentId, amountSats: amt, upstreamBps: p.upstreamBps };
+  const computed = await computeContentParticipantAllocations({
+    contentId: content.id,
+    poolSats: net
   });
-
-  const childRemainder = net - upstreamAlloc.reduce((s, a) => s + a.amountSats, 0n);
-
-  if (upstreamAlloc.length > 0) {
-    if (process.env.NODE_ENV !== "production") {
-      app.log.info(
-        {
-          contentId: content.id,
-          parentContentId: primaryParent?.parentContentId || null,
-          upstreamBps: primaryParent?.upstreamBps ?? null,
-          upstreamAmountSats: upstreamAlloc[0]?.amountSats?.toString?.() ?? String(upstreamAlloc[0]?.amountSats ?? 0),
-          childRemainderSats: childRemainder.toString()
-        },
-        "settlement.upstream"
-      );
-    }
-    try {
-      await prisma.auditEvent.create({
-        data: {
-          userId: content.ownerUserId,
-          action: "settlement.upstream",
-          entityType: "ContentItem",
-          entityId: content.id,
-          payloadJson: {
-            parentContentId: primaryParent?.parentContentId || null,
-            upstreamBps: primaryParent?.upstreamBps ?? null,
-            upstreamAmountSats: upstreamAlloc[0]?.amountSats?.toString?.() ?? String(upstreamAlloc[0]?.amountSats ?? 0),
-            childRemainderSats: childRemainder.toString(),
-            parentCount: parents.length
-          } as any
-        }
-      });
-    } catch {}
-  }
-
-  const lines: Array<{ participantId?: string | null; participantEmail?: string | null; role?: string | null; amountSats: bigint }> = [];
-
-  // Child split allocation
-  const childItems = childSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
-  const childAlloc = allocateByBps(childRemainder, childItems.map((i) => ({ id: i.id, bps: i.bps })));
-  for (const a of childAlloc) {
-    const p = childItems.find((i) => i.id === a.id)?.p;
-    const childRole = upstreamAlloc.length > 0 ? (p?.role ? `derivative:${p.role}` : "derivative") : (p?.role || null);
-    lines.push({
-      participantId: p?.id || null,
-      participantEmail: p?.participantEmail || null,
-      role: childRole,
-      amountSats: a.amountSats
-    });
-  }
-
-  // Parent allocations
-  for (const up of upstreamAlloc) {
-    const parentSplit = await getLockedSplitForContent(up.parentContentId);
-    if (!parentSplit || parentSplit.status !== "locked") {
-      const err: any = new Error("Parent split not locked");
-      err.statusCode = 409;
-      err.code = "PARENT_SPLIT_NOT_LOCKED";
-      throw err;
-    }
-
-    const parentItems = parentSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
-    const parentAlloc = allocateByBps(up.amountSats, parentItems.map((i) => ({ id: i.id, bps: i.bps })));
-    for (const a of parentAlloc) {
-      const p = parentItems.find((i) => i.id === a.id)?.p;
-      lines.push({
-        participantId: p?.id || null,
-        participantEmail: p?.participantEmail || null,
-        role: "upstream",
-        amountSats: a.amountSats
-      });
-    }
-  }
+  const lines: Array<{ participantId?: string | null; participantEmail?: string | null; role?: string | null; amountSats: bigint }> =
+    computed.allocations.map((row) => ({
+      participantId: row.participantId || null,
+      participantEmail: row.participantEmail || null,
+      role: row.role || null,
+      amountSats: row.amountSats
+    }));
 
   const settlement = await prisma.settlement.create({
     data: {
       contentId: content.id,
-      splitVersionId: childSplit.id,
+      splitVersionId: computed.splitVersionId,
       netAmountSats: net,
       paymentIntentId: intent.id,
       lines: {
