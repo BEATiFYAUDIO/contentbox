@@ -2625,6 +2625,17 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
     "providerRemittance.trigger_evaluated"
   );
   if (settled.status === "paid" && settled.providerRemitMode === "auto_forward") {
+    if (settled.payoutExecutionMode === "participant") {
+      app.log.info(
+        {
+          paymentIntentId: settled.paymentIntentId,
+          creatorNodeId: settled.creatorNodeId,
+          reason: "PARTICIPANT_EXECUTION_MODE"
+        },
+        "providerRemittance.creator_path_skipped"
+      );
+      return settled;
+    }
     app.log.info(
       { paymentIntentId: settled.paymentIntentId, creatorNodeId: settled.creatorNodeId },
       "providerRemittance.trigger_started"
@@ -11004,6 +11015,12 @@ app.post("/api/provider/payment-intents/:id/retry-remittance", { preHandler: req
   if (current.status !== "paid") {
     return reply.code(409).send({ error: "PAYMENT_NOT_SETTLED", message: "Remittance can only run after payment settlement." });
   }
+  if (current.payoutExecutionMode === "participant") {
+    return reply.code(409).send({
+      error: "PARTICIPANT_PAYOUT_AUTHORITY",
+      message: "Creator-level remittance is disabled while participant payout authority is active."
+    });
+  }
   const result = await executeCreatorRemittance(current, "provider_retry_remittance");
   return reply.send({ ok: true, item: result });
 });
@@ -11012,6 +11029,7 @@ app.post("/api/provider/remittances/reprocess", { preHandler: requireAuth }, asy
   const candidates = listProviderPaymentIntents().filter((row) => {
     if (row.status !== "paid") return false;
     if (row.payoutStatus === "paid") return false;
+    if (row.payoutExecutionMode === "participant") return false;
     if (row.providerRemitMode !== "auto_forward") return false;
     return row.payoutDestinationType === "lightning_address";
   });
