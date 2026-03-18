@@ -1709,9 +1709,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           type="button"
           aria-label="Upload file"
           disabled={triggerDisabled}
-          onClick={() => {
+          onClick={async () => {
             if (triggerDisabled) return;
             if (inputRef.current) inputRef.current.value = "";
+            try {
+              const picker = (window as any).showOpenFilePicker;
+              if (typeof picker === "function") {
+                const handles = await picker({
+                  multiple: false
+                });
+                const file = handles?.[0] ? await handles[0].getFile() : null;
+                if (file) {
+                  await onFileSelected(file);
+                  return;
+                }
+              }
+            } catch (err: any) {
+              const name = String(err?.name || "");
+              if (name === "AbortError") return;
+            }
             inputRef.current?.click();
           }}
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${
@@ -1786,9 +1802,35 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           type="button"
           aria-label="Upload content cover"
           disabled={triggerDisabled}
-          onClick={() => {
+          onClick={async () => {
             if (triggerDisabled) return;
             if (inputRef.current) inputRef.current.value = "";
+            try {
+              const picker = (window as any).showOpenFilePicker;
+              if (typeof picker === "function") {
+                const handles = await picker({
+                  multiple: false,
+                  types: [
+                    {
+                      description: "Image files",
+                      accept: {
+                        "image/jpeg": [".jpg", ".jpeg"],
+                        "image/png": [".png"],
+                        "image/webp": [".webp"]
+                      }
+                    }
+                  ]
+                });
+                const file = handles?.[0] ? await handles[0].getFile() : null;
+                if (file) {
+                  await onCoverSelected(file);
+                  return;
+                }
+              }
+            } catch (err: any) {
+              const name = String(err?.name || "");
+              if (name === "AbortError") return;
+            }
             inputRef.current?.click();
           }}
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${

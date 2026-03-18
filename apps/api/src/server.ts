@@ -21305,7 +21305,25 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
     }
     const fileStream = mp.file as NodeJS.ReadableStream;
     const originalName = mp.filename || "upload";
-    const mime = mp.mimetype || "application/octet-stream";
+    const rawMime = asString(mp.mimetype || "").trim().toLowerCase();
+    const fileExt = path.extname(originalName || "").toLowerCase();
+    const extMimeMap: Record<string, string> = {
+      ".mp3": "audio/mpeg",
+      ".m4a": "audio/mp4",
+      ".wav": "audio/wav",
+      ".flac": "audio/flac",
+      ".ogg": "audio/ogg",
+      ".mp4": "video/mp4",
+      ".mov": "video/quicktime",
+      ".mkv": "video/x-matroska",
+      ".webm": "video/webm"
+    };
+    const mime =
+      rawMime === "audio/mp3"
+        ? "audio/mpeg"
+        : rawMime && rawMime !== "application/octet-stream"
+          ? rawMime
+          : extMimeMap[fileExt] || "application/octet-stream";
     if (!mime || !String(mime).trim()) {
       const err: any = new Error("invalid file type");
       err.statusCode = 415;
