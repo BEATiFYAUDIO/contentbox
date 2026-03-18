@@ -21,8 +21,15 @@ type SplitParticipant = {
   percent: any; // Decimal may serialize as string
   createdAt: string;
   participantUserId?: string | null;
+  invitationId?: string | null;
+  invitationStatus?: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned" | null;
+  invitationTargetType?: "email" | "local_user" | "identity_ref" | null;
+  invitationTargetValue?: string | null;
+  targetType?: "email" | "local_user" | "identity_ref" | null;
+  targetValue?: string | null;
   payoutIdentityId?: string | null;
   acceptedAt?: string | null;
+  verifiedAt?: string | null;
 };
 
 type SplitVersion = {
@@ -42,7 +49,69 @@ type SplitVersion = {
   lockedFileOriginalName?: string | null;
 };
 
-type Row = { id?: string | null; participantEmail: string; role: string; percent: string };
+type Row = {
+  id?: string | null;
+  participantEmail: string;
+  role: string;
+  percent: string;
+  participantUserId?: string | null;
+  invitationId?: string | null;
+  invitationStatus?: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned" | null;
+  targetType?: "email" | "local_user" | "identity_ref" | null;
+  targetValue?: string | null;
+  acceptedAt?: string | null;
+  verifiedAt?: string | null;
+  resolutionKind?: "identity" | "email_invite" | "invalid" | null;
+  resolvedUserId?: string | null;
+  resolvedDisplay?: string | null;
+  normalizedEmail?: string | null;
+  resolvedVerifiedKey?: boolean | null;
+};
+
+function mapParticipantToRow(p: SplitParticipant): Row {
+  const invitationStatus = p.invitationStatus || (p.participantUserId && p.acceptedAt ? "accepted" : null);
+  const canonicalTargetType =
+    p.targetType || p.invitationTargetType || (p.participantUserId ? "local_user" : (p.participantEmail ? "email" : null));
+  const canonicalTargetValue =
+    p.targetValue || p.invitationTargetValue || p.participantUserId || p.participantEmail || null;
+  const hasIdentityClaim =
+    (canonicalTargetType === "local_user" || canonicalTargetType === "identity_ref") &&
+    Boolean(String(canonicalTargetValue || "").trim());
+  const hasEmailClaim =
+    canonicalTargetType === "email" &&
+    Boolean(normEmail(canonicalTargetValue || p.participantEmail || ""));
+  const resolutionKind: Row["resolutionKind"] = hasIdentityClaim
+    ? "identity"
+    : hasEmailClaim
+      ? "email_invite"
+      : "invalid";
+
+  return {
+    id: p.id,
+    participantEmail: p.participantEmail,
+    role: p.role,
+    percent: percentToString(p.percent),
+    participantUserId: p.participantUserId || null,
+    invitationId: p.invitationId || null,
+    invitationStatus,
+    targetType: canonicalTargetType,
+    targetValue: canonicalTargetValue,
+    acceptedAt: p.acceptedAt || null,
+    verifiedAt: p.verifiedAt || null,
+    resolutionKind,
+    resolvedUserId: p.participantUserId || (hasIdentityClaim ? String(canonicalTargetValue) : null),
+    resolvedDisplay: canonicalTargetValue || p.participantUserId || p.participantEmail || null,
+    normalizedEmail: p.participantEmail || null,
+    resolvedVerifiedKey: p.verifiedAt ? true : null
+  };
+}
+
+type ParticipantResolveResponse =
+  | { kind: "identity"; userId: string; display?: string | null; email?: string | null; verifiedKey?: boolean }
+  | { kind: "email_invite"; email: string }
+  | { kind: "identity_ref"; ref: string }
+  | { kind: "invalid" };
+
 
 type ProofData = {
   proofHash: string;
@@ -186,13 +255,53 @@ export default function SplitEditorPage(props: {
   const [purchase, setPurchase] = React.useState<{ id: string; bolt11: string; status: "unpaid" | "paid" | "expired"; receiptId?: string | null } | null>(null);
   const [payMsg, setPayMsg] = React.useState<string | null>(null);
   const [paymentsReadiness, setPaymentsReadiness] = React.useState<{ lightning: { ready: boolean; reason?: string | null } } | null>(null);
+  const [meEmail, setMeEmail] = React.useState<string>("");
+  const [meUserId, setMeUserId] = React.useState<string>("");
+  const [resolvingByRowKey, setResolvingByRowKey] = React.useState<Record<string, boolean>>({});
 
-  const total = round3(rows.reduce((s, r) => s + num(r.percent), 0));
+  const hasValidIdentityTarget = (r: Row) =>
+    (r.targetType === "local_user" || r.targetType === "identity_ref") && Boolean(String(r.targetValue || "").trim());
+  const hasValidEmailTarget = (r: Row) =>
+    r.targetType === "email" && Boolean(normEmail(String(r.targetValue || r.normalizedEmail || r.participantEmail || "")));
+  const hasValidTarget = (r: Row) => hasValidIdentityTarget(r) || hasValidEmailTarget(r);
+
+  const activeRows = rows.filter(
+    (r) =>
+      Boolean(
+        r.participantUserId &&
+          r.verifiedAt &&
+          (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))
+      )
+  );
+  const total = round3(activeRows.reduce((s, r) => s + num(r.percent), 0));
+  const intendedRows = rows.filter((r) => hasValidTarget(r));
+  const intendedTotal = round3(intendedRows.reduce((s, r) => s + num(r.percent), 0));
+  const pendingCount = rows.filter((r) => hasValidTarget(r) && !activeRows.includes(r)).length;
+  const candidateTotal = round3(
+    rows.reduce((s, r) => {
+      const email = normEmail(r.participantEmail || "");
+      const isBoundActive = Boolean(
+        r.participantUserId &&
+          r.verifiedAt &&
+          (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))
+      );
+      const isOwnerCandidate = Boolean(
+        !isBoundActive &&
+          ((meUserId && r.targetType === "local_user" && r.targetValue === meUserId) || (meEmail && email === meEmail))
+      );
+      return s + (isBoundActive || isOwnerCandidate ? num(r.percent) : 0);
+    }, 0)
+  );
   const totalOk = total === 100;
+  const intendedTotalOk = intendedTotal === 100;
   const readinessLoaded = paymentsReadiness !== null;
   const lightningReady = paymentsReadiness?.lightning?.ready ?? true;
   const lightningReason = paymentsReadiness?.lightning?.reason ?? "UNKNOWN";
   const lightningBlocked = readinessLoaded && !lightningReady;
+
+  function rowKey(r: Row, idx: number) {
+    return r.id ? `id:${r.id}` : `idx:${idx}`;
+  }
 
   function isNotFoundError(err: any) {
     const msg = String(err?.message || err || "");
@@ -213,7 +322,7 @@ export default function SplitEditorPage(props: {
       setContent(null);
       setVersions([]);
       setSelectedVersionId(null);
-      setRows([{ participantEmail: "", role: "writer", percent: "100" }]);
+      setRows([]);
       setMsg(e?.message || "Failed to load splits");
       if (isNotFoundError(e)) {
         onNotFound?.();
@@ -232,13 +341,8 @@ export default function SplitEditorPage(props: {
 
     setRows(
       participants.length
-        ? participants.map((p) => ({
-            id: p.id,
-            participantEmail: p.participantEmail,
-            role: p.role,
-            percent: percentToString(p.percent)
-          }))
-        : [{ participantEmail: "", role: "writer", percent: "100" }]
+        ? participants.map(mapParticipantToRow)
+        : [{ participantEmail: "", role: "writer", percent: "100", participantUserId: null, invitationId: null, invitationStatus: null, targetType: null, targetValue: null, acceptedAt: null, verifiedAt: null, resolutionKind: null, resolvedUserId: null, resolvedDisplay: null, normalizedEmail: null, resolvedVerifiedKey: null }]
     );
 
     try {
@@ -283,6 +387,19 @@ export default function SplitEditorPage(props: {
   }, [splitsAllowed]);
 
   React.useEffect(() => {
+    if (!splitsAllowed) return;
+    api<{ id?: string; email?: string }>("/me", "GET")
+      .then((m) => {
+        setMeEmail(normEmail(m?.email || ""));
+        setMeUserId(String(m?.id || "").trim());
+      })
+      .catch(() => {
+        setMeEmail("");
+        setMeUserId("");
+      });
+  }, [splitsAllowed]);
+
+  React.useEffect(() => {
     if (!splitsAllowed) {
       setContent(null);
       setVersions([]);
@@ -303,6 +420,7 @@ export default function SplitEditorPage(props: {
       setPurchase(null);
       setPayMsg(null);
       setUpstreamInfo(null);
+      setMsg("Split editor requires a contentId route: /content/:contentId/splits");
       return;
     }
 
@@ -401,16 +519,129 @@ export default function SplitEditorPage(props: {
     const participants = selectedVersion.participants || [];
     setRows(
       participants.length
-        ? participants.map((p) => ({
-            participantEmail: p.participantEmail,
-            role: p.role,
-            percent: percentToString(p.percent)
-          }))
-        : [{ participantEmail: "", role: "writer", percent: "100" }]
+        ? participants.map(mapParticipantToRow)
+        : [{ participantEmail: "", role: "writer", percent: "100", participantUserId: null, invitationId: null, invitationStatus: null, targetType: null, targetValue: null, acceptedAt: null, verifiedAt: null, resolutionKind: null, resolvedUserId: null, resolvedDisplay: null, normalizedEmail: null, resolvedVerifiedKey: null }]
     );
     setPurchase(null);
     setPayMsg(null);
   }, [selectedVersionId]);
+
+  async function resolveParticipantAt(idx: number) {
+    const current = rows[idx];
+    if (!current) return;
+    const query = String(current.participantEmail || "").trim();
+    if (!query) {
+      const next = [...rows];
+      next[idx] = {
+        ...next[idx],
+        resolutionKind: null,
+        targetType: null,
+        targetValue: null,
+        invitationStatus: null,
+        resolvedUserId: null,
+        resolvedDisplay: null,
+        normalizedEmail: null,
+        resolvedVerifiedKey: null,
+        participantUserId: null,
+        acceptedAt: null,
+        verifiedAt: null
+      };
+      setRows(next);
+      return;
+    }
+    const key = rowKey(current, idx);
+    setResolvingByRowKey((m) => ({ ...m, [key]: true }));
+    try {
+      const resolved = await api<ParticipantResolveResponse>("/api/participants/resolve", "POST", { query });
+      const next = [...rows];
+      if (!next[idx]) return;
+      if (resolved.kind === "identity") {
+        const resolvedEmail = normEmail(resolved.email || "");
+        const isSelf = Boolean(
+          (meUserId && resolved.userId === meUserId) ||
+          (meEmail && resolvedEmail && resolvedEmail === meEmail)
+        );
+        next[idx] = {
+          ...next[idx],
+          participantUserId: resolved.userId,
+          targetType: "local_user",
+          targetValue: resolved.userId,
+          invitationStatus: isSelf ? "accepted" : null,
+          resolutionKind: "identity",
+          resolvedUserId: resolved.userId,
+          resolvedDisplay: resolved.display || resolved.email || resolved.userId,
+          normalizedEmail: resolved.email ? normEmail(resolved.email) : normEmail(query),
+          resolvedVerifiedKey: Boolean(resolved.verifiedKey),
+          acceptedAt: isSelf ? new Date().toISOString() : null,
+          verifiedAt: isSelf ? new Date().toISOString() : null
+        };
+      } else if (resolved.kind === "identity_ref") {
+        next[idx] = {
+          ...next[idx],
+          participantUserId: null,
+          targetType: "identity_ref",
+          targetValue: String(resolved.ref || query).trim(),
+          invitationStatus: null,
+          resolutionKind: "identity",
+          resolvedUserId: null,
+          resolvedDisplay: String(resolved.ref || query).trim(),
+          normalizedEmail: null,
+          resolvedVerifiedKey: null,
+          acceptedAt: null,
+          verifiedAt: null
+        };
+      } else if (resolved.kind === "email_invite") {
+        next[idx] = {
+          ...next[idx],
+          participantUserId: null,
+          targetType: "email",
+          targetValue: normEmail(resolved.email),
+          invitationStatus: "pending",
+          resolutionKind: "email_invite",
+          resolvedUserId: null,
+          resolvedDisplay: resolved.email,
+          normalizedEmail: normEmail(resolved.email),
+          resolvedVerifiedKey: null
+        };
+      } else {
+        next[idx] = {
+          ...next[idx],
+          participantUserId: null,
+          targetType: null,
+          targetValue: null,
+          invitationStatus: null,
+          resolutionKind: "invalid",
+          resolvedUserId: null,
+          resolvedDisplay: null,
+          normalizedEmail: null,
+          resolvedVerifiedKey: null,
+          acceptedAt: null,
+          verifiedAt: null
+        };
+      }
+      setRows(next);
+    } catch {
+      const next = [...rows];
+      if (!next[idx]) return;
+      next[idx] = {
+        ...next[idx],
+        participantUserId: null,
+        targetType: null,
+        targetValue: null,
+        invitationStatus: null,
+        resolutionKind: "invalid",
+        resolvedUserId: null,
+        resolvedDisplay: null,
+        normalizedEmail: null,
+        resolvedVerifiedKey: null,
+        acceptedAt: null,
+        verifiedAt: null
+      };
+      setRows(next);
+    } finally {
+      setResolvingByRowKey((m) => ({ ...m, [key]: false }));
+    }
+  }
 
   async function saveLatest() {
     if (!contentId) return;
@@ -419,26 +650,120 @@ export default function SplitEditorPage(props: {
       return;
     }
 
+    const invalidRows: number[] = [];
+    type SaveParticipant = {
+      participantEmail: string;
+      participantUserId: string | null;
+      targetType: "email" | "local_user" | "identity_ref";
+      targetValue: string;
+      role: string;
+      percent: number;
+    };
     const raw = rows
-      .map((r) => ({
-        participantEmail: normEmail(r.participantEmail),
-        role: (r.role || "").trim(),
-        percent: Number(String(r.percent ?? "").trim())
-      }))
-      .filter((p) => p.participantEmail && p.role);
+      .map((r, idx): SaveParticipant | null => {
+        const role = (r.role || "").trim();
+        const percent = Number(String(r.percent ?? "").trim());
+        const hasInput = String(r.participantEmail || "").trim().length > 0;
+        const explicitType = (String(r.targetType || "").trim().toLowerCase() || null) as
+          | "email"
+          | "local_user"
+          | "identity_ref"
+          | null;
+        const explicitValue = String(r.targetValue || "").trim();
+        const resolvedUserId = String(r.resolvedUserId || "").trim();
+        const participantUserId = String(r.participantUserId || "").trim();
+        const email = normEmail(r.normalizedEmail || r.participantEmail || "");
+
+        if (!hasInput && !explicitType && !explicitValue && !resolvedUserId && !participantUserId) return null;
+        if (!role || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+          invalidRows.push(idx + 1);
+          return null;
+        }
+
+        const boundUser = participantUserId || resolvedUserId || null;
+        if (boundUser) {
+          return {
+            participantEmail: email.includes("@") ? email : "",
+            participantUserId: boundUser,
+            targetType: "local_user" as const,
+            targetValue: explicitValue || boundUser,
+            role,
+            percent
+          };
+        }
+
+        if ((explicitType === "local_user" || explicitType === "identity_ref") && explicitValue) {
+          return {
+            participantEmail: email.includes("@") ? email : "",
+            participantUserId: null,
+            targetType: explicitType,
+            targetValue: explicitValue,
+            role,
+            percent
+          };
+        }
+
+        if ((explicitType === "email" && explicitValue) || (!explicitType && email.includes("@"))) {
+          const targetEmail = normEmail(explicitValue || email);
+          if (!targetEmail.includes("@")) {
+            invalidRows.push(idx + 1);
+            return null;
+          }
+          return {
+            participantEmail: targetEmail,
+            participantUserId: null,
+            targetType: "email" as const,
+            targetValue: targetEmail,
+            role,
+            percent
+          };
+        }
+
+        invalidRows.push(idx + 1);
+        return null;
+      })
+      .filter((p): p is SaveParticipant => Boolean(p));
+
+    if (invalidRows.length > 0) {
+      setMsg(`Some rows are invalid or unresolved: ${invalidRows.join(", ")}`);
+      return;
+    }
 
     if (raw.length === 0) {
       setMsg("Add at least one participant.");
       return;
     }
 
-    const deduped = Array.from(new Map(raw.map((p) => [p.participantEmail, p])).values());
-
-    const t = round3(deduped.reduce((s, p) => s + num(p.percent), 0));
-    if (t !== 100) {
-      setMsg(`Total must be 100. Current total=${t}`);
+    const keyOf = (p: SaveParticipant) =>
+      p.participantUserId ? `u:${p.participantUserId}` : `${p.targetType}:${String(p.targetValue || p.participantEmail).toLowerCase()}`;
+    const keyCounts = new Map<string, number>();
+    for (const p of raw) {
+      const key = keyOf(p);
+      keyCounts.set(key, (keyCounts.get(key) || 0) + 1);
+    }
+    const hasDuplicates = Array.from(keyCounts.values()).some((n) => n > 1);
+    if (hasDuplicates) {
+      setMsg("Duplicate participants are not allowed.");
       return;
     }
+
+    const deduped = Array.from(
+      new Map(
+        raw.map((p) => [
+          keyOf(p),
+          p
+        ])
+      ).values()
+    );
+
+    const intendedTotalForSave = round3(deduped.reduce((sum, p) => sum + num(p.percent), 0));
+    if (intendedTotalForSave !== 100) {
+      setMsg(`Intended participant total must be 100. Current total=${intendedTotalForSave}`);
+      return;
+    }
+
+    // Save draft is based on intended split validity only.
+    // Active-total enforcement is lock-readiness only.
 
     setBusy(true);
     setMsg(null);
@@ -456,6 +781,12 @@ export default function SplitEditorPage(props: {
   async function lockLatest() {
     if (!contentId) return;
     if (!latest) return;
+    if (total !== 100) {
+      setMsg(
+        `Cannot lock yet. Accepted participants total ${total}%. Pending invites must be accepted before locking.`
+      );
+      return;
+    }
 
     setBusy(true);
     setMsg(null);
@@ -488,8 +819,7 @@ export default function SplitEditorPage(props: {
 
   const canEdit = content?.canEdit !== false;
   const viewOnly = !canEdit || !latestIsEditable || (selectedVersionId && selectedVersionId !== latest?.id);
-  const emailOnlyParticipants =
-    selectedVersion?.participants?.filter((p) => !p.participantUserId && p.participantEmail) || [];
+  const invitedParticipants = rows.filter((p) => p.invitationStatus === "pending");
 
   if (!splitsAllowed) {
     return (
@@ -507,9 +837,11 @@ export default function SplitEditorPage(props: {
 
   if (!contentId) {
     return (
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-        <div className="text-lg font-semibold">Splits editor</div>
-        <div className="text-sm text-neutral-400 mt-1">Select a content item from the Splits list to edit.</div>
+      <div className="rounded-xl border border-rose-900/60 bg-rose-950/30 p-6">
+        <div className="text-lg font-semibold text-rose-100">Split editor route error</div>
+        <div className="text-sm text-rose-200 mt-1">
+          Missing <code>contentId</code>. Use <code>/content/:contentId/splits</code>.
+        </div>
       </div>
     );
   }
@@ -571,10 +903,16 @@ export default function SplitEditorPage(props: {
             </button>
 
             <button
-              disabled={busy || viewOnly || !latest || latest.status !== "draft" || !lockAllowed}
+              disabled={busy || viewOnly || !latest || latest.status !== "draft" || !lockAllowed || total !== 100}
               onClick={lockLatest}
               className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
-              title={!lockAllowed ? lockReason : "Lock split"}
+              title={
+                !lockAllowed
+                  ? lockReason
+                  : total !== 100
+                    ? `Cannot lock yet. Accepted participants total ${total}%. Pending invites must be accepted before locking.`
+                    : "Lock split"
+              }
             >
               Lock
             </button>
@@ -597,7 +935,7 @@ export default function SplitEditorPage(props: {
               <div className="mt-2 text-xs text-neutral-400 space-y-1">
                 <div>
                   Original:{" "}
-                  <a href={`/splits/${upstreamInfo.parent?.id}`} className="text-neutral-200 underline">
+                  <a href={`/content/${upstreamInfo.parent?.id}/splits`} className="text-neutral-200 underline">
                     {upstreamInfo.parent?.title || "Original work"}
                   </a>
                 </div>
@@ -997,18 +1335,18 @@ export default function SplitEditorPage(props: {
         </div>
 
         <div className="mt-4 overflow-x-auto">
-          {emailOnlyParticipants.length > 0 ? (
+          {invitedParticipants.length > 0 ? (
             <div className="mb-2 rounded-md border border-amber-900/60 bg-amber-950/40 px-3 py-2 text-[11px] text-amber-200">
-              Email-only participant: approvals/royalties will not appear on this node unless the user has a local account
-              or uses a shared approval link.
+              Invites are managed in the Split Invites tab. Invited participants do not count toward active payout splits until accepted.
             </div>
           ) : null}
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-neutral-400">
-                <th className="py-2 pr-2">Email</th>
+                <th className="py-2 pr-2">Participant</th>
                 <th className="py-2 pr-2">Role</th>
                 <th className="py-2 pr-2">Percent</th>
+                <th className="py-2 pr-2">Status</th>
                 <th className="py-2 pr-2"></th>
               </tr>
             </thead>
@@ -1017,7 +1355,7 @@ export default function SplitEditorPage(props: {
                 <tr key={idx} className="border-t border-neutral-800">
                   <td className="py-2 pr-2">
                     <label className="sr-only" htmlFor={`split-email-${idx}`}>
-                      Participant email
+                      Participant
                     </label>
                     <input
                       id={`split-email-${idx}`}
@@ -1026,16 +1364,57 @@ export default function SplitEditorPage(props: {
                       value={r.participantEmail}
                       onChange={(e) => {
                         const next = [...rows];
-                        next[idx] = { ...next[idx], participantEmail: e.target.value };
+                        next[idx] = {
+                          ...next[idx],
+                          participantEmail: e.target.value,
+                          participantUserId: null,
+                          targetType: null,
+                          targetValue: null,
+                          invitationStatus: null,
+                          resolutionKind: null,
+                          resolvedUserId: null,
+                          resolvedDisplay: null,
+                          normalizedEmail: null,
+                          resolvedVerifiedKey: null,
+                          acceptedAt: null,
+                          verifiedAt: null
+                        };
                         setRows(next);
                       }}
+                      onBlur={() => {
+                        if (viewOnly || busy) return;
+                        resolveParticipantAt(idx);
+                      }}
                       className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
-                      placeholder="artist@example.com"
+                      placeholder="Enter creator ID or invite by email"
                       autoCapitalize="none"
                       autoCorrect="off"
                       spellCheck={false}
                       autoComplete="email"
                     />
+                    {String(r.participantEmail || "").trim() ? (
+                      <div className="mt-1 text-[11px]">
+                        {resolvingByRowKey[rowKey(r, idx)] ? (
+                          <span className="text-neutral-400">Resolving…</span>
+                        ) : (r.participantUserId && r.verifiedAt && (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))) ? (
+                          <span className="text-emerald-300">Accepted</span>
+                        ) : ((r.targetType === "local_user" || r.targetType === "identity_ref") && Boolean(r.targetValue)) ? (
+                          <span className="text-amber-300">Pending invite: {r.targetValue}</span>
+                        ) : (r.targetType === "email" && Boolean(normEmail(r.targetValue || r.normalizedEmail || r.participantEmail))) ? (
+                          <span className="text-amber-300">Pending invite: {normEmail(r.targetValue || r.normalizedEmail || r.participantEmail)}</span>
+                        ) : r.resolutionKind === "identity" ? (
+                          <span className="text-emerald-300">
+                            Resolved identity: {r.resolvedDisplay || r.resolvedUserId || "user"}
+                          </span>
+                        ) : r.resolutionKind === "email_invite" ? (
+                          <span className="text-amber-300">Pending invite: {r.normalizedEmail || r.participantEmail}</span>
+                        ) : r.resolutionKind === "invalid" ? (
+                          <span className="text-rose-300">Needs resolution</span>
+                        ) : (
+                          <span className="text-neutral-400">Needs resolution</span>
+                        )}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="py-2 pr-2">
                     <label className="sr-only" htmlFor={`split-role-${idx}`}>
@@ -1084,6 +1463,27 @@ export default function SplitEditorPage(props: {
                     })()}
                   </td>
                   <td className="py-2 pr-2">
+                    <div className="text-xs text-neutral-300">
+                      {(() => {
+                        const isBoundActive = Boolean(
+                          r.participantUserId &&
+                            r.verifiedAt &&
+                            (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))
+                        );
+                        if (isBoundActive) return "Accepted";
+                        if (r.invitationStatus === "pending") return "Pending invite";
+                        if (r.invitationStatus === "revoked") return "Revoked";
+                        if (r.invitationStatus === "expired") return "Expired";
+                        if (r.invitationStatus === "tombstoned") return "Tombstoned";
+                        if (hasValidTarget(r)) return "Pending invite";
+                        if (r.resolutionKind === "identity") return "Resolved identity";
+                        if (r.resolutionKind === "email_invite") return "Pending invite";
+                        if (r.resolutionKind === "invalid") return "Needs resolution";
+                        return "Needs resolution";
+                      })()}
+                    </div>
+                  </td>
+                  <td className="py-2 pr-2">
                     <button
                       disabled={viewOnly || busy || rows.length <= 1}
                       onClick={() => setRows(rows.filter((_, i) => i !== idx))}
@@ -1107,7 +1507,12 @@ export default function SplitEditorPage(props: {
           {!viewOnly && (
             <button
               disabled={busy}
-              onClick={() => setRows([...rows, { participantEmail: "", role: "writer", percent: "0" }])}
+              onClick={() =>
+                setRows([
+                  ...rows,
+                  { participantEmail: "", role: "writer", percent: "0", participantUserId: null, invitationId: null, invitationStatus: null, targetType: null, targetValue: null, acceptedAt: null, verifiedAt: null, resolutionKind: null, resolvedUserId: null, resolvedDisplay: null, normalizedEmail: null, resolvedVerifiedKey: null }
+                ])
+              }
               className="mt-3 text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
             >
               Add participant
@@ -1117,9 +1522,18 @@ export default function SplitEditorPage(props: {
 
         <div className="mt-4 flex items-center justify-between gap-4">
           <div className="text-sm text-neutral-400">
-            Total: <span className={totalOk ? "text-neutral-200" : "text-red-300"}>{total}%</span>
+            Intended total: <span className={intendedTotalOk ? "text-neutral-200" : "text-red-300"}>{intendedTotal}%</span>
+            <span className="ml-3">Active total: <span className={totalOk ? "text-neutral-200" : "text-amber-300"}>{total}%</span></span>
+            <span className="ml-3">Pending invites: <span className="text-neutral-200">{pendingCount}</span></span>
+            {!viewOnly && candidateTotal !== total ? (
+              <span className="ml-2 text-neutral-500">Candidate total: {candidateTotal}%</span>
+            ) : null}
             {viewOnly ? <span className="ml-2">View-only</span> : null}
-            {!viewOnly && !totalOk ? <span className="ml-2">Must equal 100</span> : null}
+            {!viewOnly && !totalOk ? (
+              <span className="ml-2 text-amber-300">
+                Cannot lock yet. Accepted participants total {total}%. Pending invites must be accepted before locking.
+              </span>
+            ) : null}
           </div>
 
           {msg && <div className="text-sm text-neutral-300">{msg}</div>}

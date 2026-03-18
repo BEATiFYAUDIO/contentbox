@@ -1,74 +1,58 @@
-# ContentBox QA Smoke Checklist
+# QA Smoke Checklist
 
-This checklist validates the current content lifecycle behavior without schema changes.
+Focused regression checks for content, buy page, and mode posture.
 
 ## Preconditions
+
 - API running on `http://127.0.0.1:4000`
 - Dashboard running
-- Signed in as creator/admin
-- Optional second browser/profile for buyer checks
+- Signed in as creator
 
-## 1) Create Draft
-1. Go to Content Manager → `Content` tab.
-2. Create a new content item with a non-empty title and type `song`.
-3. Expected:
-  - One `POST /content` request returns `200`.
-  - New item appears immediately in `Content` tab.
-  - No page refresh required.
+## Content lifecycle
 
-## 2) Upload + Publish
-1. Upload a master file for the new draft.
-2. Publish the item.
-3. Expected:
-  - Upload succeeds with `200` and file appears in the expanded card.
-  - Publish succeeds and item status becomes `PUBLISHED`.
+1. Create draft content.
+2. Upload primary file.
+3. Publish content.
 
-## 3) Buy Link Loads
-1. Open the generated `/buy/<contentId>` link.
-2. Expected:
-  - Offer endpoint returns `200`.
-  - Page is buyable (not removed/not found).
+Expected:
 
-## 4) Complete a Purchase
-1. Complete payment using current configured flow.
-2. Expected:
-  - Receipt eventually settles.
-  - Buyer sees unlocked access.
+- draft appears immediately
+- upload succeeds
+- publish succeeds
 
-## 5) Archive Published Item
-1. Back in Content Manager, click `Archive` on the published item.
-2. Expected:
-  - Item leaves `Content` tab.
-  - Item appears in `Archived` tab.
-  - Label shows archived state.
+## Public open/buy flow
 
-## 6) Public Gating After Archive
-1. Open `/buy/<contentId>` as non-entitled user/session.
-2. Expected:
-  - `410` removed behavior.
-  - New purchase intents return `409 NOT_FOR_SALE`.
+1. Use Share/Open from UI (do not hand-craft URL).
+2. Open public page and buy page.
 
-## 7) Buyer Access After Archive
-1. Open buyer Library / owned view for the account that purchased earlier.
-2. Expected:
-  - Item remains accessible for entitled buyer.
+Expected:
 
-## 8) Trash Draft Behavior
-1. Create another draft item.
-2. Click `Trash`.
-3. Expected:
-  - Item disappears from `Content` tab.
-  - Item appears in `Trash` tab only.
+- page loads
+- metadata/cover/preview render
+- no internal provider diagnostics on buyer-facing page
 
-## 9) Restore Draft
-1. In `Trash` tab click `Restore`.
-2. Expected:
-  - Item returns to `Content` tab.
-  - It no longer appears in `Trash`.
+## Monetization posture by mode
 
-## 10) Delete Forever Guard
-1. In `Trash` tab, click `Delete forever` for a draft item.
-2. Expected:
-  - Action succeeds for draft trash items.
-  - Published items are blocked from permanent delete.
+### Basic
 
+- tips posture only
+- no paid unlock copy
+
+### Sovereign Creator without provider
+
+- still basic monetization posture
+- no paid unlock copy
+
+### Sovereign Creator with provider
+
+- provider-backed paid posture available
+
+### Sovereign Node
+
+- local paid posture available
+
+## Archive behavior
+
+1. Archive published item.
+2. Verify public purchase blocked for new buyers.
+3. Verify existing entitled buyers retain access.

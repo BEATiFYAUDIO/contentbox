@@ -1,98 +1,37 @@
-# Edge Delivery (Optional Scale Layer)
+# Edge Delivery (Optional)
 
-ContentBox can optionally deliver paid content bytes through a Cloudflare Worker edge proxy.
+Optional Cloudflare Worker path for byte-range delivery.
 
-This is a ticketed proxy for range streaming on top of the existing origin route:
+- Origin route remains authoritative.
+- Edge route is an optional proxy layer.
+- Payment/entitlement authority remains in Certifyd API.
 
-- Origin route (unchanged): `/content/:manifestHash/:fileId`
-- Edge route (optional): `/edge/content/:manifestHash/:fileId?t=<ticket>`
+## Flags
 
-By default this is OFF and existing behavior is unchanged.
-
-## Why this exists
-
-- Keep entitlement/payment logic in ContentBox origin.
-- Offload byte delivery to edge POPs for better stream responsiveness.
-- Preserve origin `Range` semantics (`200/206/416`) via pass-through proxying.
-
-## Feature flag behavior
-
-API flags:
-
-- `EDGE_DELIVERY_ENABLED=false` (default)
-- `EDGE_TICKET_SECRET=<random strong secret>` (required when enabled)
-- `EDGE_BASE_URL=https://contentbox.darrylhillock.com` (used for minted edge URLs)
-- `EDGE_TICKET_TTL_SECONDS=60` (default)
+```env
+EDGE_DELIVERY_ENABLED=false
+EDGE_TICKET_SECRET=<strong-secret>
+EDGE_BASE_URL=https://certifyd.example.com
+EDGE_TICKET_TTL_SECONDS=60
+```
 
 When disabled:
 
-- `/api/public/edge-ticket` returns `404`
-- Buy page continues using origin `/content/...` URLs only.
+- edge ticket endpoints are not active
+- existing origin behavior remains unchanged
 
-## Worker config
+## Guardrails
 
-Worker runtime values:
+- route worker only for `/edge/content/*`
+- fetch origin `/content/*`
+- avoid looped routing
 
-- Worker secret: `EDGE_TICKET_SECRET`
-- Worker var: `ORIGIN_BASE_URL` (your ContentBox origin, no trailing slash)
+## Quick smoke
 
-Example `ORIGIN_BASE_URL`:
-
-- `https://contentbox.darrylhillock.com`
-
-## Deploy options
-
-### 1) Quick workers.dev test
-
-From `infra/cloudflare/edge-content-worker`:
+Bad token should fail:
 
 ```bash
-npx wrangler login
-cp wrangler.toml.example wrangler.toml
-npx wrangler secret put EDGE_TICKET_SECRET
-npx wrangler deploy
+curl -i "https://<edge-host>/edge/content/<manifestHash>/<fileId>?t=bad"
 ```
 
-### 2) Custom route (recommended)
-
-Use a zone route so only edge path is intercepted:
-
-- Route pattern example: `contentbox.darrylhillock.com/edge/content/*`
-
-Cloudflare route patterns must include the zone/domain portion (for example `example.com/path/*`).
-
-## Pitfalls
-
-- Avoid infinite loops:
-  - Worker should only match `/edge/content/*`
-  - Worker origin fetch should target `/content/*`
-- Do not commit `wrangler.toml` (local account/route config). Keep only `wrangler.toml.example`.
-- Keep `EDGE_DELIVERY_ENABLED=false` until Worker route + secret are configured.
-
-## Smoke checks
-
-### Bad token => 404
-
-```bash
-curl -i "https://contentbox.darrylhillock.com/edge/content/<manifestHash>/<fileId>?t=badtoken"
-```
-
-Expected: `404`.
-
-### Valid token + range => 206
-
-1. Mint ticket:
-
-```bash
-curl -sS -X POST "https://contentbox.darrylhillock.com/api/public/edge-ticket" \
-  -H "Content-Type: application/json" \
-  -d '{"manifestHash":"<manifestHash>","fileId":"<fileId>","receiptToken":"<receiptToken>"}'
-```
-
-2. Request byte range:
-
-```bash
-curl -i "<edge_url_from_step_1>" -H "Range: bytes=0-1023"
-```
-
-Expected: `206` with `Content-Range` header present.
+Valid token + range should return `206` with `Content-Range`.

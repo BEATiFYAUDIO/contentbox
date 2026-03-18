@@ -1,17 +1,8 @@
-# Mode Gating Smoke Tests
+# Mode and Routing Smoke Tests
 
-Use these smoke tests to verify Basic vs Advanced tier API enforcement.
+Use these checks after mode/routing/commerce changes.
 
-## Recommended code state
-
-Run on the branch/commit that includes:
-- strict `FEATURE_LOCKED` guards for lightning/revenue/finance endpoints
-- settlement writes skipped in Basic tier
-- fixed capability reason mapping
-
-## Commands
-
-From repo root:
+## 1) API tier smoke
 
 ```bash
 cd apps/api
@@ -19,24 +10,33 @@ npm run smoke:basic
 npm run smoke:advanced
 ```
 
-## What each test verifies
+## 2) Storefront gating smoke
 
-`smoke:basic`
-- boots API in Basic tier on SQLite
-- verifies `/api/identity` reports `productTier=basic`
-- verifies these endpoints return `403` + `FEATURE_LOCKED`:
-  - `/api/admin/lightning/readiness`
-  - `/api/revenue/sales`
-  - `/finance/overview`
+```bash
+cd apps/api
+npm run test:storefront-gating
+```
 
-`smoke:advanced`
-- boots API in Advanced tier on SQLite (no LND configured)
-- verifies `/api/identity` reports `productTier=advanced`
-- verifies the same endpoints are **not** feature-locked
-  - lightning endpoint may return not-configured/not-ready payloads
-  - revenue/finance endpoints may return empty data
+## 3) Dashboard compile smoke
 
-## Notes
+```bash
+cd apps/dashboard
+npm run build
+```
 
-- Tests are self-contained and create temporary SQLite data roots.
-- They require `npx`, `tsx`, and a reachable DB configured in `apps/api/.env` or shell env.
+## 4) Manual posture verification
+
+Check these endpoints for coherent state:
+
+- `GET /api/node/mode`
+- `GET /api/network/summary`
+
+Expected pattern:
+
+- Named tunnel only, no provider, no local sovereign readiness:
+  - participation: Sovereign Creator
+  - commerce authority: Basic tips posture
+- Named tunnel + provider connected:
+  - participation: Sovereign Creator (Provider Commerce)
+- Named tunnel + local BTC/LND/invoice ready:
+  - participation: Sovereign Node

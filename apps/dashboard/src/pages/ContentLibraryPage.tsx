@@ -246,24 +246,6 @@ function uploadIdempotencyKey(contentId: string, file: File) {
   return `upl-${contentId.slice(0, 8)}-${file.size}-${suffix}`;
 }
 
-function openNativeFilePicker(input: HTMLInputElement | null) {
-  if (!input) return;
-  try {
-    const picker = (input as HTMLInputElement & { showPicker?: () => void }).showPicker;
-    if (typeof picker === "function") {
-      picker.call(input);
-      return;
-    }
-  } catch {
-    // fallback to click below
-  }
-  try {
-    input.click();
-  } catch {
-    // no-op
-  }
-}
-
 async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
@@ -1661,83 +1643,84 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     disabled?: boolean;
     label?: string;
   }) {
-    const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const err = upload.status === "error" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
     const triggerDisabled = Boolean(disabled || busy || !authReady);
 
+    const onFileSelected = React.useCallback(
+      async (file?: File) => {
+        if (!file) return;
+
+        setError(null);
+        setUpload({ status: "preparing", contentId, filename: file.name });
+        const idempotencyKey = uploadIdempotencyKey(contentId, file);
+        if (import.meta.env.DEV) {
+          console.log("[upload] click", {
+            hasFile: true,
+            fileName: file.name,
+            size: file.size,
+            isUploading: busy,
+            authReady,
+            idempotencyKey
+          });
+        }
+
+        try {
+          setUpload({ status: "uploading", contentId, filename: file.name });
+          await uploadToRepo(contentId, file, idempotencyKey);
+          setUpload({ status: "done", contentId, filename: file.name });
+
+          await load();
+
+          // Auto-open the card and refresh files/split so the file ID shows immediately.
+          setExpanded((m) => ({ ...m, [contentId]: true }));
+          await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId)]);
+        } catch (err: any) {
+          const raw = String(err?.message || "Upload failed");
+          const message = raw.includes("PUBLISHED_IMMUTABLE")
+            ? "This published release is immutable. Create a new version to upload updated media."
+            : raw;
+          setUpload({ status: "error", contentId, message });
+        }
+      },
+      [authReady, busy, contentId]
+    );
+
     return (
-      <>
-        <input
-          name={`uploadFile-${contentId}`}
-          ref={inputRef}
-          type="file"
-          className="absolute -left-[9999px] h-0 w-0 opacity-0"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            e.target.value = "";
-            if (!file) {
-              setUpload({ status: "error", contentId, message: "No file selected" });
-              return;
-            }
-
-            setError(null);
-            setUpload({ status: "preparing", contentId, filename: file.name });
-            const idempotencyKey = uploadIdempotencyKey(contentId, file);
-            if (import.meta.env.DEV) {
-              console.log("[upload] click", {
-                hasFile: true,
-                fileName: file.name,
-                size: file.size,
-                isUploading: busy,
-                authReady,
-                idempotencyKey
-              });
-            }
-
-            try {
-              setUpload({ status: "uploading", contentId, filename: file.name });
-              await uploadToRepo(contentId, file, idempotencyKey);
-              setUpload({ status: "done", contentId, filename: file.name });
-
-              await load();
-
-              // Auto-open the card and refresh files/split so the file ID shows immediately.
-              setExpanded((m) => ({ ...m, [contentId]: true }));
-              await Promise.allSettled([loadFiles(contentId), loadLatestSplit(contentId)]);
-            } catch (err: any) {
-              const raw = String(err?.message || "Upload failed");
-              const message = raw.includes("PUBLISHED_IMMUTABLE")
-                ? "This published release is immutable. Create a new version to upload updated media."
-                : raw;
-              setUpload({ status: "error", contentId, message });
-            }
-          }}
-        />
-
-        <button
-          type="button"
-          aria-label="Upload file"
-          disabled={triggerDisabled}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={() => {
-            if (triggerDisabled) return;
-            openNativeFilePicker(inputRef.current);
-          }}
-          className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
+      <div className="inline-flex items-center gap-2">
+        {(() => {
+          const buttonLabel =
+            upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : label;
+          return (
+        <div
+          className={`relative inline-flex items-center text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
           }`}
-          title="Upload into this content repo and commit"
+          title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
         >
-          {upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : label}
-        </button>
+          <span className="pointer-events-none">{buttonLabel}</span>
+          <input
+            type="file"
+            disabled={triggerDisabled}
+            aria-label={label}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            onClick={(e) => {
+              // Reset before opening dialog so selecting same file still triggers change.
+              (e.currentTarget as HTMLInputElement).value = "";
+            }}
+            onChange={async (e) => {
+              const file = e.currentTarget.files?.[0];
+              e.currentTarget.value = "";
+              await onFileSelected(file);
+            }}
+          />
+        </div>
+          );
+        })()}
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
-      </>
+      </div>
     );
   }
 
@@ -1750,60 +1733,59 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     disabled?: boolean;
     label?: string;
   }) {
-    const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const authReady = Boolean(getToken());
     const triggerDisabled = Boolean(disabled || busy || !authReady);
 
+    const onCoverSelected = React.useCallback(
+      async (file?: File) => {
+        if (!file) return;
+
+        setError(null);
+        setUpload({ status: "preparing", contentId, filename: file.name });
+        try {
+          setUpload({ status: "uploading", contentId, filename: file.name });
+          await uploadSongCover(contentId, file);
+          setUpload({ status: "done", contentId, filename: file.name });
+          await load();
+        } catch (err: any) {
+          setUpload({ status: "error", contentId, message: err?.message || "Cover upload failed" });
+        }
+      },
+      [contentId]
+    );
+
     return (
-      <>
-        <input
-          name={`uploadCover-${contentId}`}
-          ref={inputRef}
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          className="absolute -left-[9999px] h-0 w-0 opacity-0"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            e.target.value = "";
-            if (!file) {
-              setUpload({ status: "error", contentId, message: "No cover selected" });
-              return;
-            }
-
-            setError(null);
-            setUpload({ status: "preparing", contentId, filename: file.name });
-            try {
-              setUpload({ status: "uploading", contentId, filename: file.name });
-              await uploadSongCover(contentId, file);
-              setUpload({ status: "done", contentId, filename: file.name });
-              await load();
-            } catch (err: any) {
-              setUpload({ status: "error", contentId, message: err?.message || "Cover upload failed" });
-            }
-          }}
-        />
-
-        <button
-          type="button"
-          aria-label="Upload content cover"
-          disabled={triggerDisabled}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={() => {
-            if (triggerDisabled) return;
-            openNativeFilePicker(inputRef.current);
-          }}
-          className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
+      <div className="inline-flex items-center gap-2">
+        {(() => {
+          const buttonLabel = busy ? "Uploading…" : label;
+          return (
+        <div
+          className={`relative inline-flex items-center text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
           }`}
-          title="Upload album cover (jpg, png, webp)"
+          title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
         >
-          {busy ? "Uploading…" : label}
-        </button>
-      </>
+          <span className="pointer-events-none">{buttonLabel}</span>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            disabled={triggerDisabled}
+            aria-label={label}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            onClick={(e) => {
+              (e.currentTarget as HTMLInputElement).value = "";
+            }}
+            onChange={async (e) => {
+              const file = e.currentTarget.files?.[0];
+              e.currentTarget.value = "";
+              await onCoverSelected(file);
+            }}
+          />
+        </div>
+          );
+        })()}
+      </div>
     );
   }
 

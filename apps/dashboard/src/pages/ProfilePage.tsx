@@ -15,6 +15,23 @@ type Me = {
   createdAt: string;
 };
 
+type CreatorSignalBreakdown = {
+  score: number;
+  totalScore: number;
+  identityScore: number;
+  presenceBonus: number;
+  nodeScore: number;
+  tier: "Emerging" | "Verified" | "Strong" | "High Assurance" | "Sovereign Node";
+  percent: number;
+  verifiedPlatforms: number;
+  nodeDetails: {
+    hasPublicTunnel: boolean;
+    hasLightningConfigured: boolean;
+    canReceivePayments: boolean;
+    channelCount: number;
+  };
+};
+
 type ProfilePageProps = {
   me: Me | null;
   setMe: (next: Me | null) => void;
@@ -28,6 +45,8 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   const [payoutLoading, setPayoutLoading] = useState(false);
   const [avatarUploadMsg, setAvatarUploadMsg] = useState<string | null>(null);
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [creatorSignal, setCreatorSignal] = useState<CreatorSignalBreakdown | null>(null);
+  const [creatorSignalError, setCreatorSignalError] = useState<string | null>(null);
 
   const loadPayoutSettings = async () => {
     try {
@@ -44,6 +63,25 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
   useEffect(() => {
     loadPayoutSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await api<{ ok?: boolean; creatorSignal?: CreatorSignalBreakdown }>("/api/me/creator-signal", "GET");
+        if (!mounted) return;
+        setCreatorSignal(res?.creatorSignal || null);
+        setCreatorSignalError(null);
+      } catch (e: any) {
+        if (!mounted) return;
+        setCreatorSignal(null);
+        setCreatorSignalError(String(e?.message || "Creator signal unavailable"));
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const nodeMode = identityDetail?.nodeMode || "basic";
@@ -260,6 +298,68 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
               {avatarUploadMsg ? <div className="mt-1 text-xs text-amber-300">{avatarUploadMsg}</div> : null}
             </div>
           </div>
+        </div>
+
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium">Creator Signal</div>
+              <div className="text-xs text-neutral-500">Trust = identity assurance + operational capability.</div>
+            </div>
+            {creatorSignal ? (
+              <div
+                className={`text-xs rounded-full border px-2 py-1 ${
+                  creatorSignal.tier === "Sovereign Node"
+                    ? "border-emerald-700 bg-emerald-950/30 text-emerald-200"
+                    : "border-neutral-700 text-neutral-300"
+                }`}
+              >
+                {creatorSignal.tier}
+              </div>
+            ) : null}
+          </div>
+          {creatorSignal ? (
+            <div className="mt-3 space-y-2">
+              <div className="text-sm text-neutral-100">
+                Score {creatorSignal.totalScore} • {creatorSignal.percent}% meter
+              </div>
+              <div className="h-2 w-full rounded-full border border-neutral-800 bg-neutral-900 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-emerald-500 via-cyan-400 to-blue-400"
+                  style={{ width: `${Math.max(0, Math.min(100, creatorSignal.percent))}%` }}
+                />
+              </div>
+              <div className="grid gap-2 text-xs text-neutral-300 md:grid-cols-3">
+                <div className="rounded border border-neutral-800 bg-neutral-900/40 px-2 py-2">
+                  <div className="text-neutral-400">Identity Proofs</div>
+                  <div className="text-neutral-100">+{creatorSignal.identityScore}</div>
+                </div>
+                <div className="rounded border border-neutral-800 bg-neutral-900/40 px-2 py-2">
+                  <div className="text-neutral-400">Presence Bonus</div>
+                  <div className="text-neutral-100">+{creatorSignal.presenceBonus}</div>
+                </div>
+                <div className="rounded border border-neutral-800 bg-neutral-900/40 px-2 py-2">
+                  <div className="text-neutral-400">Node Operator Bonus</div>
+                  <div className="text-neutral-100">+{creatorSignal.nodeScore}</div>
+                </div>
+              </div>
+              <div className="rounded border border-neutral-800 bg-neutral-900/30 p-2 text-xs text-neutral-300 space-y-1">
+                <div className="text-neutral-400">Node Trust</div>
+                <div>Public tunnel: {creatorSignal.nodeDetails.hasPublicTunnel ? "yes (+3)" : "no (+0)"}</div>
+                <div>Lightning configured: {creatorSignal.nodeDetails.hasLightningConfigured ? "yes (+4)" : "no (+0)"}</div>
+                <div>Can receive payments: {creatorSignal.nodeDetails.canReceivePayments ? "yes (+6)" : "no (+0)"}</div>
+                <div>
+                  Active channels: {creatorSignal.nodeDetails.channelCount} (
+                  {creatorSignal.nodeDetails.channelCount > 0
+                    ? `+${2 + Math.min(Math.max(creatorSignal.nodeDetails.channelCount, 0), 3)}`
+                    : "+0"}
+                  )
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-2 text-xs text-neutral-500">{creatorSignalError || "Creator signal unavailable."}</div>
+          )}
         </div>
 
         <VerificationPanel />

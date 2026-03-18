@@ -1,34 +1,42 @@
 # Dev Environment Alignment
 
-## Local Mode
-- Dashboard points to local API: `http://127.0.0.1:4000`
-- Local Postgres only
+Keep API target, mode posture, and public origin aligned.
 
-## LAN Mode
-- Dashboard points to LAN API (e.g. `http://192.168.100.109:4000`)
-- Postgres on that LAN machine only
+## Local Studio
 
-## Tunnel Mode (Cloudflare)
-- Dashboard still points to local API (e.g. `http://127.0.0.1:4000`)
-- Public links should use the tunnel hostname via `PUBLIC_ORIGIN`
-```
-PUBLIC_ORIGIN=https://buy.example.com
+- Dashboard API: `http://127.0.0.1:4000`
+- `apps/dashboard/.env.local`:
+
+```env
+VITE_API_BASE_URL=http://127.0.0.1:4000
 ```
 
-## Set Dashboard API URL
-Create or edit `apps/dashboard/.env.local`:
-```
-VITE_API_URL=http://127.0.0.1:4000
+(`VITE_API_URL` is also accepted.)
+
+## Public routing
+
+Set canonical public origin on API:
+
+```env
+CONTENTBOX_PUBLIC_ORIGIN=https://certifyd.example.com
 ```
 
-## Enable Whoami Safely
-In `apps/api/.env` (or `.env.local`):
-```
-WHOAMI_ENABLED=1
-WHOAMI_ALLOW_REMOTE=1
-```
-Set `WHOAMI_ALLOW_REMOTE=1` only when you need LAN access to `__whoami`.
-In production (`NODE_ENV=production`), `__whoami` is always disabled.
+Fallbacks still accepted:
 
-## Public Buy Links
-No changes to any public buy link behavior or routes.
+- `PUBLIC_ORIGIN`
+- `APP_PUBLIC_ORIGIN`
+
+## Mode/commerce alignment
+
+- Basic: temporary tunnel + tips posture
+- Sovereign Creator: named tunnel + optional provider commerce
+- Sovereign Node: named tunnel + verified local commerce stack
+
+Do not infer commerce enabled from named tunnel alone.
+Do not infer storefront authority from provider connection.
+
+## Quick validation
+
+- `GET /api/node/mode`
+- `GET /api/network/summary`
+- `GET /api/diagnostics/status`

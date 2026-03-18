@@ -1,129 +1,90 @@
 # Certifyd Creator Quickstart
 
-This is the authoritative first-run guide.
-Quickstart uses a SQLite-first runtime and schema sync via `prisma db push`; legacy PostgreSQL migration history is not used for local quickstart installs.
+Authoritative first-run setup.
 
-## Install
+## Prerequisites
 
-### Prerequisites
-- Git
-- Node.js 20+ and npm
+- Node.js 20+
+- npm
 - `curl`
 
-Optional for Sovereign Node mode:
-- Existing LND node with REST enabled
-- `tls.cert`
-- `admin.macaroon`
+Optional for Sovereign Node:
 
-### Download and install
+- local bitcoind
+- local LND REST (`tls.cert`, `admin.macaroon`)
 
-Use a pinned release tag/commit, not `main`.
+## Install and run
 
-macOS/Linux:
-
-```bash
-git clone https://github.com/<org-or-user>/contentbox.git
-cd contentbox
-git checkout <PINNED_TAG_OR_COMMIT>
-./install.sh
-```
-
-Windows PowerShell:
-
-```powershell
-git clone https://github.com/<org-or-user>/contentbox.git
-cd contentbox
-git checkout <PINNED_TAG_OR_COMMIT>
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-Windows users: run `install.ps1` (not `install.sh`).
-
-## First Run (Basic)
-
-Start API:
+API:
 
 ```bash
 cd apps/api
+npm install
+npm run prisma:generate
+npx prisma db push --schema prisma/schema.prisma
 npm run dev
 ```
 
-Start dashboard:
+Dashboard:
 
 ```bash
 cd apps/dashboard
+npm install
 npm run dev
 ```
 
 Open:
+
 - API health: `http://127.0.0.1:4000/health`
 - Dashboard: `http://127.0.0.1:5173`
 
-Basic mode is the default and works without PostgreSQL or LND.
-Installers always bootstrap SQLite for first run.
+## Three-mode progression
 
-## Upgrade to Advanced (Sovereign Node) (Optional)
+1. Basic Creator
+2. Sovereign Creator
+3. Sovereign Node
 
-Advanced mode upgrades services/readiness (LND, Public Link), not the core database provider.
+### Basic Creator
 
-1. Sign in.
-2. Open **Profile**.
-3. Switch **Node Mode** to **Advanced (Sovereign Node)**.
-4. Check the **Advanced setup readiness** panel in Profile:
-   - cloudflared: optional unless you need Public Link
-   - LND: should become ready after config
-5. Open Finance/Lightning setup and enter:
-   - REST URL (usually `https://127.0.0.1:8080`)
-   - `tls.cert`
-   - `admin.macaroon`
-6. Test and save.
+- temporary tunnel is valid
+- publish, preview, tips
+- no durable paid-commerce posture
 
-Optional (power users, Windows):
+### Sovereign Creator
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\apps\api\upgrade-advanced.ps1
-```
+- named/stable tunnel required
+- storefront remains creator-hosted
+- provider connection is optional and adds commerce services only
 
-Optional (power users, from `apps/api`):
+### Sovereign Node
 
-```bash
-npm run upgrade:advanced
-```
+- named/stable tunnel required
+- local BTC + local LND + local invoice readiness required
 
-Important:
-- Avoid setting `PRODUCT_TIER` or `NODE_MODE` in env unless you intentionally want to lock the Node Mode toggle.
+## Product rules to keep in mind
+
+- Creators host storefronts.
+- Nodes provide commerce services.
+- Provider connection does not make the provider the storefront host.
 
 ## Troubleshooting
 
-- If API does not start, verify:
-  - `node -v`
-  - `npm -v`
-  - `apps/api/.env` exists
-- If dashboard cannot connect, verify:
-  - API is up on `127.0.0.1:4000`
-  - `apps/dashboard/.env` has `VITE_API_BASE_URL=http://127.0.0.1:4000`
-- If Advanced toggle is disabled, check lock reason shown in Profile (env lock).
-- If Lightning setup fails, verify LND REST endpoint, cert, and macaroon files.
-- If you see a Prisma datasource mismatch:
-  - `cd apps/api`
-  - `npx prisma generate --schema prisma/schema.prisma`
-  - `npx prisma db push --schema prisma/schema.prisma`
+If dashboard cannot reach API:
 
-## Diagnostics
+- set `VITE_API_BASE_URL=http://127.0.0.1:4000` in `apps/dashboard/.env.local`
 
-Collect these when reporting setup/runtime issues:
-
-```bash
-git rev-parse --short HEAD
-node -v
-curl -s http://127.0.0.1:4000/health
-curl -s http://127.0.0.1:4000/api/public/diagnostics | jq
-```
-
-Optional verification:
+If Prisma client/schema drift appears:
 
 ```bash
 cd apps/api
-npm run smoke:basic
-npm run smoke:advanced
+npx prisma generate --schema prisma/schema.prisma
+npx prisma db push --schema prisma/schema.prisma
 ```
+
+If mode/commerce posture looks inconsistent:
+
+1. restart API
+2. hard refresh dashboard
+3. verify:
+   - `/api/node/mode`
+   - `/api/network/summary`

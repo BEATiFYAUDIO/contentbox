@@ -1,19 +1,30 @@
-# PUBLIC_ORIGIN (Canonical Buy Link Origin)
+# Public Origin and Buy-Link Authority
 
-Use this when the public entry point is a Cloudflare tunnel or any external hostname.
+`CONTENTBOX_PUBLIC_ORIGIN` defines canonical public origin for generated public links.
 
-## Example (Cloudflare named tunnel)
+Accepted fallback vars:
+
+- `PUBLIC_ORIGIN`
+- `APP_PUBLIC_ORIGIN`
+
+## Example
+
+```env
+CONTENTBOX_PUBLIC_ORIGIN=https://certifyd.example.com
 ```
-PUBLIC_ORIGIN=https://buy.example.com
-```
 
-Notes:
-- `PUBLIC_ORIGIN` is preferred; `APP_PUBLIC_ORIGIN` is accepted as a fallback.
-- When set, buy links and snippets will use this origin.
-- Public buy links remain public; this only changes which base URL is generated.
+## Rules
 
-## Debug Headers
-Public surfaces include two safe, informational headers:
-- `X-ContentBox-Origin`: resolved canonical origin for the request.
-- `X-ContentBox-Node`: node identifier (`NODE_ID` or hostname).
-These are safe for public exposure and help debug Cloudflare tunnel + multi-machine setups.
+- Use stable public origin for canonical links.
+- Temporary tunnels are valid for preview/storefront transport in Basic mode.
+- Temporary tunnels must not be treated as durable commerce authority.
+- Storefront authority and commerce authority are separate concepts.
+
+## Debug headers
+
+Public surfaces include:
+
+- `X-ContentBox-Origin` – resolved canonical origin
+- `X-ContentBox-Node` – node identifier
+
+These are informational and safe for routing diagnostics.

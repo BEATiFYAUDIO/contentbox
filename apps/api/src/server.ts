@@ -10615,6 +10615,27 @@ app.get("/me", { preHandler: requireAuth }, async (req: any) => {
   return { ...user, publicOrigin: publicOrigin || null };
 });
 
+app.get("/api/me/creator-signal", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  try {
+    const userId = asString((req.user as JwtUser)?.sub || "").trim();
+    if (!userId) return unauthorized(reply);
+    const verifiedProofs = await prisma.proofRecord.findMany({
+      where: {
+        userId,
+        status: "verified",
+        revokedAt: null
+      },
+      orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+      select: { proofType: true, subject: true, claimJson: true }
+    });
+    const nodeDetails = await getCreatorSignalNodeDetails();
+    const creatorSignal = computeCreatorSignal(verifiedProofs as any, nodeDetails);
+    return reply.send({ ok: true, creatorSignal });
+  } catch (e: any) {
+    return reply.code(500).send({ ok: false, error: String(e?.message || e || "Failed to compute creator signal") });
+  }
+});
+
 registerWitnessRoutes(app, { prisma, requireAuth });
 
 // Public exposure control
@@ -17087,7 +17108,13 @@ function toPublicCreator(u: { displayName?: string | null } | null | undefined) 
 }
 
 type SocialProofTier = "strong" | "standard" | "weak";
-type CreatorSignalTierLabel = "Emerging" | "Verified" | "Strong" | "High Assurance";
+type CreatorSignalTierLabel = "Emerging" | "Verified" | "Strong" | "High Assurance" | "Sovereign Node";
+type CreatorSignalNodeDetails = {
+  hasPublicTunnel: boolean;
+  hasLightningConfigured: boolean;
+  canReceivePayments: boolean;
+  channelCount: number;
+};
 const PROOF_WEIGHTS: Record<SocialProofTier, number> = {
   strong: 5,
   standard: 3,
@@ -17113,18 +17140,67 @@ function getProofTier(proofType: string, provider?: string): SocialProofTier | n
 function creatorSignalTierLabel(score: number): CreatorSignalTierLabel {
   if (score <= 5) return "Emerging";
   if (score <= 12) return "Verified";
-  if (score <= 20) return "Strong";
-  return "High Assurance";
+  if (score <= 22) return "Strong";
+  if (score <= 34) return "High Assurance";
+  return "Sovereign Node";
+}
+
+function computeNodeScore(input: CreatorSignalNodeDetails): number {
+  let score = 0;
+  if (input.hasPublicTunnel) score += 3;
+  if (input.hasLightningConfigured) score += 4;
+  if (input.canReceivePayments) score += 6;
+  if (input.channelCount > 0) score += 2;
+  score += Math.min(Math.max(input.channelCount, 0), 3);
+  return score;
+}
+
+async function getCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDetails> {
+  const status = getPublicStatus();
+  const hasPublicTunnel = Boolean(status?.transport?.named?.online && status?.namedConfigured);
+  let hasLightningConfigured = false;
+  let canReceivePayments = false;
+  let channelCount = 0;
+
+  try {
+    const lnd = await getLightningNodeConfigStatus(prisma as any);
+    hasLightningConfigured = Boolean(lnd.configured && lnd.endpoint && lnd.hasMacaroon && lnd.decryptOk);
+  } catch {
+    hasLightningConfigured = false;
+  }
+
+  if (hasLightningConfigured) {
+    try {
+      const readiness = await getLightningReadiness(prisma as any);
+      canReceivePayments = Boolean(readiness.receiveReady);
+      channelCount = Number(readiness.channels?.count || 0);
+    } catch {
+      canReceivePayments = false;
+      channelCount = 0;
+    }
+  }
+
+  return {
+    hasPublicTunnel,
+    hasLightningConfigured,
+    canReceivePayments,
+    channelCount: Math.max(0, channelCount)
+  };
 }
 
 function computeCreatorSignal(
-  proofs: Array<{ proofType?: string | null; subject?: string | null; claimJson?: unknown }>
+  proofs: Array<{ proofType?: string | null; subject?: string | null; claimJson?: unknown }>,
+  nodeDetails?: CreatorSignalNodeDetails | null
 ): {
   score: number;
+  totalScore: number;
   identityScore: number;
   presenceBonus: number;
+  nodeScore: number;
   tier: CreatorSignalTierLabel;
+  percent: number;
   verifiedPlatforms: number;
+  nodeDetails: CreatorSignalNodeDetails;
 } {
   let identityScore = 0;
   const platforms = new Set<string>();
@@ -17153,13 +17229,25 @@ function computeCreatorSignal(
 
   const verifiedPlatforms = platforms.size;
   const presenceBonus = Math.min(Math.max(verifiedPlatforms - 1, 0), 5);
-  const score = identityScore + presenceBonus;
+  const normalizedNodeDetails: CreatorSignalNodeDetails = {
+    hasPublicTunnel: Boolean(nodeDetails?.hasPublicTunnel),
+    hasLightningConfigured: Boolean(nodeDetails?.hasLightningConfigured),
+    canReceivePayments: Boolean(nodeDetails?.canReceivePayments),
+    channelCount: Math.max(0, Number(nodeDetails?.channelCount || 0))
+  };
+  const nodeScore = computeNodeScore(normalizedNodeDetails);
+  const score = identityScore + presenceBonus + nodeScore;
+  const percent = Math.max(0, Math.min(100, Math.round((score / 40) * 100)));
   return {
     score,
+    totalScore: score,
     identityScore,
     presenceBonus,
+    nodeScore,
     tier: creatorSignalTierLabel(score),
-    verifiedPlatforms
+    percent,
+    verifiedPlatforms,
+    nodeDetails: normalizedNodeDetails
   };
 }
 
@@ -17636,12 +17724,64 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     if (subjectRaw.startsWith("nostr:")) return false;
     return true;
   });
-  const creatorSignal = computeCreatorSignal(verifiedProofs as any);
-  const creatorSignalPercent = Math.max(0, Math.min(100, Math.round((creatorSignal.score / 25) * 100)));
+  const creatorSignalNodeDetails = await getCreatorSignalNodeDetails();
+  const creatorSignal = computeCreatorSignal(verifiedProofs as any, creatorSignalNodeDetails);
+  const creatorSignalPercent = creatorSignal.percent;
   const trustTierBadgeHtml = (tier: SocialProofTier | null): string => {
     if (!tier) return "";
     const label = tier === "strong" ? "Strong" : tier === "standard" ? "Standard" : "Best-effort";
     return ` <span class="muted">[${label}]</span>`;
+  };
+  const socialProviderBadgeHtml = (providerRaw: string): string => {
+    const provider = asString(providerRaw || "").trim().toLowerCase();
+    const map: Record<string, { cls: string; label: string; svg: string }> = {
+      github: {
+        cls: "github",
+        label: "GitHub",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .5a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2.3c-3.3.7-4-1.4-4-1.4-.5-1.3-1.2-1.7-1.2-1.7-1-.7.1-.7.1-.7 1.1.1 1.8 1.2 1.8 1.2 1 .1.7 2.7 2.7 2.9.3-.8.7-1.3 1.2-1.6-2.7-.3-5.5-1.4-5.5-6a4.8 4.8 0 0 1 1.2-3.3c-.1-.3-.5-1.5.1-3.2 0 0 1-.3 3.4 1.2a11.8 11.8 0 0 1 6.2 0c2.4-1.5 3.4-1.2 3.4-1.2.6 1.7.2 2.9.1 3.2.8.9 1.2 2 1.2 3.3 0 4.7-2.8 5.7-5.5 6 .7.6 1.3 1.7 1.3 3.4v2.5c0 .3.2.7.8.6A12 12 0 0 0 12 .5Z"/></svg>`
+      },
+      youtube: {
+        cls: "youtube",
+        label: "YouTube",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M23 7.2a3 3 0 0 0-2.1-2.1C19 4.5 12 4.5 12 4.5s-7 0-8.9.6A3 3 0 0 0 1 7.2a31 31 0 0 0 0 9.6 3 3 0 0 0 2.1 2.1c1.9.6 8.9.6 8.9.6s7 0 8.9-.6a3 3 0 0 0 2.1-2.1 31 31 0 0 0 0-9.6ZM10 15.3V8.7l6 3.3-6 3.3Z"/></svg>`
+      },
+      tiktok: {
+        cls: "tiktok",
+        label: "TikTok",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 3h2.6a4.8 4.8 0 0 0 3.4 3.4v2.7a7.3 7.3 0 0 1-3.3-.8v6.1a5.8 5.8 0 1 1-5.1-5.8v2.8a3 3 0 1 0 2.4 3V3Z"/></svg>`
+      },
+      reddit: {
+        cls: "reddit",
+        label: "Reddit",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 11.2c0-.8-.6-1.4-1.4-1.4-.4 0-.8.2-1 .4a7.6 7.6 0 0 0-4.5-1.5l1-3.2 2.2.5a1.6 1.6 0 1 0 .3-1.1l-2.8-.6c-.3-.1-.6.1-.7.4l-1.2 3.9a7.6 7.6 0 0 0-4.9 1.5c-.2-.3-.6-.4-1-.4-.8 0-1.4.6-1.4 1.4 0 .5.3 1 .7 1.2a3.5 3.5 0 0 0-.1.8c0 2.6 2.9 4.7 6.5 4.7 3.6 0 6.5-2.1 6.5-4.7 0-.3 0-.5-.1-.8.5-.2.9-.7.9-1.2ZM9.3 13.5a1.1 1.1 0 1 1 0-2.3 1.1 1.1 0 0 1 0 2.3Zm5.4 2.6c-.6.6-1.6.9-2.7.9s-2.1-.3-2.7-.9a.6.6 0 1 1 .9-.9c.4.4 1.1.6 1.8.6.8 0 1.4-.2 1.8-.6a.6.6 0 1 1 .9.9Zm0-2.6a1.1 1.1 0 1 1 0-2.3 1.1 1.1 0 0 1 0 2.3Z"/></svg>`
+      },
+      rumble: {
+        cls: "rumble",
+        label: "Rumble",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h8.5a4.5 4.5 0 0 1 0 9H9l6.5 7H12l-6-6.5V20H4V4Zm2 2v5h6.5a2.5 2.5 0 0 0 0-5H6Z"/></svg>`
+      },
+      substack: {
+        cls: "substack",
+        label: "Substack",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v3H3V4Zm0 5h18v2H3V9Zm2 4h14v7H5v-7Z"/></svg>`
+      },
+      x: {
+        cls: "x",
+        label: "X",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 3H22l-7.9 9L23 21h-6.9l-5.4-6.8L4.7 21H1l8.4-9.7L1 3h7l4.9 6.2L18.4 3Zm-1.2 16h1.9L6.9 5H4.8L17.2 19Z"/></svg>`
+      },
+      instagram: {
+        cls: "instagram",
+        label: "Instagram",
+        svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 2h9A5.5 5.5 0 0 1 22 7.5v9A5.5 5.5 0 0 1 16.5 22h-9A5.5 5.5 0 0 1 2 16.5v-9A5.5 5.5 0 0 1 7.5 2Zm0 2A3.5 3.5 0 0 0 4 7.5v9A3.5 3.5 0 0 0 7.5 20h9a3.5 3.5 0 0 0 3.5-3.5v-9A3.5 3.5 0 0 0 16.5 4h-9Zm9.8 1.5a1.2 1.2 0 1 1 0 2.4 1.2 1.2 0 0 1 0-2.4ZM12 7a5 5 0 1 1 0 10 5 5 0 0 1 0-10Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z"/></svg>`
+      }
+    };
+    const picked = map[provider] || {
+      cls: "default",
+      label: "Identity proof",
+      svg: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm0 3.1 5.5 2v3.9c0 3.9-2.4 7.6-5.5 8.8-3.1-1.2-5.5-4.9-5.5-8.8V7.1L12 5.1Z"/></svg>`
+    };
+    return `<span class="proof-badge proof-badge--${picked.cls}" aria-label="${escHtml(picked.label)}">${picked.svg}</span>`;
   };
   const deriveExternalVideoThumbnail = (rawUrl: unknown): string => {
     const src = asString(rawUrl || "").trim();
@@ -17740,13 +17880,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               fallbackHref
             );
             const tierBadge = trustTierBadgeHtml(getSocialProofTier(provider));
+            const providerBadgeHtml = socialProviderBadgeHtml(provider);
             const displayAccount = (provider === "instagram" || provider === "tiktok") && account && !account.startsWith("@") ? `@${account}` : account;
             const safeAccount = escHtml(displayAccount || "unknown");
             const safeProvider = escHtml(providerLabel);
             if (href) {
-              return `<div class="line muted">✓ ${safeProvider} — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">↗</span>${tierBadge}</div>`;
+              return `<div class="line muted">${providerBadgeHtml} ${safeProvider} — <a href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" class="mono">${safeAccount}</a> <span aria-hidden="true">↗</span>${tierBadge}</div>`;
             }
-            return `<div class="line muted">✓ ${safeProvider} — <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
+            return `<div class="line muted">${providerBadgeHtml} ${safeProvider} — <span class="mono">${safeAccount}</span>${tierBadge}</div>`;
           })
           .join("")
       : `<div class="line muted">none</div>`;
@@ -17799,7 +17940,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
       </div>
       <div class="muted">Signal meter: ${escHtml(String(creatorSignalPercent))}%</div>
-      <div class="line muted">${escHtml(String(creatorSignal.identityScore))} Identity Strength • ${escHtml(String(creatorSignal.verifiedPlatforms))} Verified Platforms • +${escHtml(String(creatorSignal.presenceBonus))} Presence</div>`;
+      <div class="line muted">Identity Proofs +${escHtml(String(creatorSignal.identityScore))} • Presence +${escHtml(String(creatorSignal.presenceBonus))} • Node Operator +${escHtml(String(creatorSignal.nodeScore))}</div>
+      <div class="line muted">Public Tunnel ${creatorSignal.nodeDetails.hasPublicTunnel ? "✓" : "—"} • Lightning ${creatorSignal.nodeDetails.hasLightningConfigured ? "✓" : "—"} • Receive ${creatorSignal.nodeDetails.canReceivePayments ? "✓" : "—"} • Channels ${escHtml(String(creatorSignal.nodeDetails.channelCount))}</div>`;
+  const sovereignNodeBadgeHtml =
+    creatorSignal.tier === "Sovereign Node"
+      ? `<div class="line"><span class="featured-verified">Sovereign Node</span></div>`
+      : "";
   const featuredContentHtml =
     featuredContent.length > 0
       ? featuredContent
@@ -17929,6 +18075,35 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .meta-label { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
     .proof-group { margin-top:12px; }
     .proof-group-title { color:#a5adb8; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; }
+    .proof-badge {
+      display:inline-flex;
+      width:20px;
+      height:20px;
+      align-items:center;
+      justify-content:center;
+      border-radius:999px;
+      margin-right:6px;
+      border:1px solid #2b3240;
+      background:#111827;
+      color:#e5e7eb;
+      vertical-align:middle;
+      overflow:hidden;
+      flex:none;
+    }
+    .proof-badge svg {
+      width:12px;
+      height:12px;
+      display:block;
+      fill:currentColor;
+    }
+    .proof-badge--github { background:#0f172a; border-color:#334155; color:#cbd5e1; }
+    .proof-badge--youtube { background:#2a0b0b; border-color:#7f1d1d; color:#fecaca; }
+    .proof-badge--tiktok { background:#0b1220; border-color:#1d4ed8; color:#bfdbfe; }
+    .proof-badge--reddit { background:#28160b; border-color:#9a3412; color:#fed7aa; }
+    .proof-badge--rumble { background:#111f10; border-color:#3f6212; color:#d9f99d; }
+    .proof-badge--substack { background:#29160f; border-color:#9a3412; color:#fdba74; }
+    .proof-badge--x { background:#0a0a0a; border-color:#374151; color:#f3f4f6; }
+    .proof-badge--instagram { background:#2b1022; border-color:#831843; color:#fbcfe8; }
     .featured-grid { display:grid; grid-template-columns:1fr; gap:10px; }
     .featured-item { border:1px solid #252525; border-radius:12px; padding:10px; background:#111215; display:grid; grid-template-columns:1fr; gap:10px; }
     .featured-media { border:1px solid #222; border-radius:10px; background:#161616; overflow:hidden; aspect-ratio:16 / 9; width:100%; min-height:0; display:flex; align-items:center; justify-content:center; }
@@ -17978,6 +18153,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="hero-meta">
         <div class="hero-name">${safeDisplayName}</div>
         <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
+        ${sovereignNodeBadgeHtml}
         ${safeBio ? `<div class="line">${safeBio}</div>` : ""}
       </div>
     </section>
@@ -18083,7 +18259,7 @@ async function handlePublicProofBundle(req: any, reply: any) {
     orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
     select: { proofType: true, subject: true, claimJson: true, location: true, verifiedAt: true }
   });
-  const creatorSignal = computeCreatorSignal(verifiedProofs as any);
+  const creatorSignal = computeCreatorSignal(verifiedProofs as any, await getCreatorSignalNodeDetails());
 
   const domains = verifiedProofs
     .filter((p) => asString((p as any).proofType || "").trim().toLowerCase() === "domain")
@@ -18484,6 +18660,7 @@ async function handleBuyPage(req: any, reply: any) {
     .cb-heart--grey { color:#cbd5e1; }
     .cb-heart--gold { color:#fbbf24; }
     .purchase-card { margin-top:14px; padding:14px; border:1px solid #2a2a2a; border-radius:14px; background:linear-gradient(180deg, #111316 0%, #0f1012 100%); }
+    .purchase-card--unlocked { border-color:#14532d; background:linear-gradient(180deg, #0f1d14 0%, #0b150f 100%); }
     .purchase-kicker { font-size:12px; text-transform:uppercase; letter-spacing:0.08em; color:#a1a1aa; }
     .purchase-price { margin-top:6px; font-size:30px; font-weight:800; letter-spacing:-0.02em; line-height:1.1; }
     .purchase-sub { margin-top:4px; color:#a1a1aa; font-size:13px; }
@@ -19055,9 +19232,9 @@ async function handleBuyPage(req: any, reply: any) {
         \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         \${entitlement?.status === "paid" || entitlement?.status === "bypassed" ? \`<div id="unlockBanner" class="step" style="border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\` : \`<div id="unlockBanner" class="step" style="display:none;border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\`}
         \${isPaid ? \`
-          <div class="purchase-card">
-            <div class="purchase-kicker">Unlock this release</div>
-            <div class="purchase-price">Unlock for \${offer.priceSats || 0} sats</div>
+          <div class="purchase-card\${hidePay ? " purchase-card--unlocked" : ""}">
+            <div class="purchase-kicker">\${hidePay ? "Release unlocked" : "Unlock this release"}</div>
+            <div class="purchase-price">\${hidePay ? "Release unlocked" : "Unlock for " + (offer.priceSats || 0) + " sats"}</div>
             <div class="purchase-sub">\${hidePay ? "Access is already available for this release." : "Pay with Lightning to unlock full access."}</div>
         \` : \`<div style="margin-top:8px;font-size:18px;">\${price}</div>\`}
         \${(isPaid && !hidePay) ? \`
