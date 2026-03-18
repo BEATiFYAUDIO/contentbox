@@ -6212,13 +6212,32 @@ async function listBackupFiles() {
   return out.sort((a, b) => (a.modifiedAt < b.modifiedAt ? 1 : -1));
 }
 
+function backupMode(): "postgres" | "sqlite" | "unsupported" {
+  const raw = String(process.env.DATABASE_URL || "").trim();
+  if (/^postgres(ql)?:\/\//i.test(raw) && RUNTIME_CONFIG.storage === "postgres") return "postgres";
+  if (/^file:/i.test(raw)) return "sqlite";
+  return "unsupported";
+}
+
+function resolveSqliteBackupSourcePath(): string {
+  const raw = String(process.env.DATABASE_URL || "").trim();
+  if (!/^file:/i.test(raw)) throw new Error("DATABASE_URL is not SQLite (file:...).");
+  const relOrAbs = raw
+    .replace(/^file:/i, "")
+    .split("?")[0]
+    .split("#")[0]
+    .trim();
+  if (!relOrAbs) throw new Error("SQLite DATABASE_URL is missing a file path.");
+  return path.isAbsolute(relOrAbs) ? relOrAbs : path.resolve(process.cwd(), relOrAbs);
+}
+
 async function pruneBackups() {
   const cutoff = Date.now() - BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000;
   await fs.mkdir(BACKUP_DIR, { recursive: true });
   const entries = await fs.readdir(BACKUP_DIR, { withFileTypes: true });
   for (const e of entries) {
     if (!e.isFile()) continue;
-    if (!e.name.endsWith(".dump")) continue;
+    if (!/^contentbox-.*\.(dump|sqlite)$/i.test(e.name)) continue;
     const full = path.join(BACKUP_DIR, e.name);
     try {
       const st = await fs.stat(full);
@@ -6230,20 +6249,27 @@ async function pruneBackups() {
 }
 
 async function runBackup() {
-  if (!isAdvancedDb()) {
-    throw new Error("Backups require STORAGE=postgres with a Postgres DATABASE_URL.");
-  }
+  const mode = backupMode();
+  if (mode === "unsupported") throw new Error("Unsupported DATABASE_URL for backup.");
   await fs.mkdir(BACKUP_DIR, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `contentbox-${stamp}.dump`;
+  const filename = `contentbox-${stamp}.${mode === "postgres" ? "dump" : "sqlite"}`;
   const fullPath = path.join(BACKUP_DIR, filename);
-  const args = ["--format=custom", "--file", fullPath, String(process.env.DATABASE_URL)];
-  await new Promise<void>((resolve, reject) => {
-    execFile("pg_dump", args, { env: process.env }, (err) => {
-      if (err) return reject(err);
-      resolve();
+  if (mode === "postgres") {
+    const args = ["--format=custom", "--file", fullPath, String(process.env.DATABASE_URL)];
+    await new Promise<void>((resolve, reject) => {
+      execFile("pg_dump", args, { env: process.env }, (err) => {
+        if (err) return reject(err);
+        resolve();
+      });
     });
-  });
+  } else {
+    const source = resolveSqliteBackupSourcePath();
+    if (!fsSync.existsSync(source)) {
+      throw new Error(`SQLite database file not found: ${source}`);
+    }
+    await fs.copyFile(source, fullPath);
+  }
   const st = await fs.stat(fullPath);
   await pruneBackups();
   return { name: filename, size: st.size, modifiedAt: st.mtime.toISOString() };
@@ -7924,6 +7950,64 @@ app.get("/api/public/diagnostics", async (_req: any, reply: any) => {
     },
     paymentsMode
   });
+});
+
+// Authenticated health probe proxy used by Diagnostics UI to avoid browser CORS/DNS noise.
+app.get("/public/diag/probe-health", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const raw = asString((req.query as any)?.url || "").trim();
+  if (!raw) return badRequest(reply, "url query parameter required");
+  let target: URL;
+  try {
+    target = new URL(raw);
+  } catch {
+    return reply.code(400).send({ ok: false, errorType: "INVALID_URL", message: "Invalid URL" });
+  }
+  const protocol = target.protocol.toLowerCase();
+  if (protocol !== "http:" && protocol !== "https:") {
+    return reply.code(400).send({ ok: false, errorType: "INVALID_URL", message: "Only http/https URLs are supported." });
+  }
+  const pathName = String(target.pathname || "");
+  const allowedPaths = new Set(["/health", "/api/health", "/public/health", "/public/ping"]);
+  if (!allowedPaths.has(pathName)) {
+    return reply
+      .code(400)
+      .send({ ok: false, errorType: "INVALID_URL", message: "Path not allowed. Use /health, /api/health, /public/health, or /public/ping." });
+  }
+
+  const startedAt = Date.now();
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 4500);
+  try {
+    const res = await fetch(target.toString(), { method: "GET", redirect: "follow", signal: ctl.signal } as any);
+    const latencyMs = Date.now() - startedAt;
+    const text = await res.text().catch(() => "");
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    return reply.send({
+      ok: Boolean(res.ok && (json?.ok !== false)),
+      status: res.status,
+      latencyMs,
+      ts: asString(json?.ts || "") || null,
+      errorType: res.ok ? null : "BAD_STATUS",
+      message: res.ok ? null : `HTTP ${res.status}`
+    });
+  } catch (e: any) {
+    const msg = asString(e?.message || String(e));
+    const timedOut = msg.toLowerCase().includes("abort");
+    return reply.send({
+      ok: false,
+      status: null,
+      latencyMs: Date.now() - startedAt,
+      errorType: timedOut ? "TIMEOUT" : "FETCH_FAILED",
+      message: msg
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 });
 
 // Public PublishGate evaluator (no auth, no side effects)
@@ -11212,16 +11296,15 @@ app.get("/api/public/tunnels", { preHandler: requireAuth }, async (_req: any, re
 });
 
 app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  if (!isAdvancedDb()) {
-    return reply.code(400).send({ error: "Backups require STORAGE=postgres with Postgres." });
-  }
   try {
     if (getBackupsEnabled()) {
       await pruneBackups();
     }
     const items = await listBackupFiles();
+    const mode = backupMode();
     return reply.send({
       ok: true,
+      mode,
       dir: BACKUP_DIR,
       items,
       enabled: getBackupsEnabled(),
@@ -13395,15 +13478,12 @@ app.get("/api/public/origin", async (req: any, reply: any) => {
 });
 
 app.post("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  if (!isAdvancedDb()) {
-    return reply.code(400).send({ error: "Backups require STORAGE=postgres with Postgres." });
-  }
   if (!getBackupsEnabled()) {
     return reply.code(409).send({ error: "Backups are disabled for this device." });
   }
   try {
     const item = await runBackup();
-    return reply.send({ ok: true, dir: BACKUP_DIR, item });
+    return reply.send({ ok: true, mode: backupMode(), dir: BACKUP_DIR, item });
   } catch (e: any) {
     return reply.code(500).send({ error: "Backup failed", details: e?.message || String(e) });
   }

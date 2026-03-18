@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 ENV_FILE="$ROOT_DIR/apps/api/.env"
 
 if [[ -f "$ENV_FILE" ]]; then
@@ -26,26 +26,40 @@ if [[ -z "$STORAGE_MODE" ]]; then
   fi
 fi
 
-if [[ "$STORAGE_MODE" != "postgres" ]]; then
-  echo "Backups require STORAGE=postgres." >&2
-  exit 1
-fi
-
-if [[ "$DB_URL" != postgres* ]]; then
-  echo "DATABASE_URL is not Postgres. Backups require STORAGE=postgres." >&2
-  exit 1
-fi
-
 DATA_ROOT="${CONTENTBOX_ROOT:-$ROOT_DIR}"
 BACKUP_DIR="${CONTENTBOX_BACKUP_DIR:-$DATA_ROOT/backups}"
 RETENTION_DAYS="${CONTENTBOX_BACKUP_RETENTION_DAYS:-30}"
 mkdir -p "$BACKUP_DIR"
 
 STAMP="$(date -u +"%Y-%m-%dT%H-%M-%SZ")"
-OUT="$BACKUP_DIR/contentbox-$STAMP.dump"
-
-pg_dump --format=custom --file "$OUT" "$DB_URL"
-echo "Backup created: $OUT"
+if [[ "$DB_URL" == postgres* ]]; then
+  OUT="$BACKUP_DIR/contentbox-$STAMP.dump"
+  pg_dump --format=custom --file "$OUT" "$DB_URL"
+  echo "Postgres backup created: $OUT"
+elif [[ "$DB_URL" == file:* ]]; then
+  REL_PATH="${DB_URL#file:}"
+  REL_PATH="${REL_PATH%%\?*}"
+  REL_PATH="${REL_PATH%%\#*}"
+  if [[ -z "$REL_PATH" ]]; then
+    echo "Invalid SQLite DATABASE_URL path." >&2
+    exit 1
+  fi
+  if [[ "$REL_PATH" = /* ]]; then
+    SRC="$REL_PATH"
+  else
+    SRC="$(cd "$ROOT_DIR/apps/api" && realpath "$REL_PATH")"
+  fi
+  if [[ ! -f "$SRC" ]]; then
+    echo "SQLite database file not found: $SRC" >&2
+    exit 1
+  fi
+  OUT="$BACKUP_DIR/contentbox-$STAMP.sqlite"
+  cp "$SRC" "$OUT"
+  echo "SQLite backup created: $OUT"
+else
+  echo "Unsupported DATABASE_URL for backup: $DB_URL" >&2
+  exit 1
+fi
 
 # Retention: delete old backups
-find "$BACKUP_DIR" -type f -name "contentbox-*.dump" -mtime +"$RETENTION_DAYS" -print -delete
+find "$BACKUP_DIR" -type f \( -name "contentbox-*.dump" -o -name "contentbox-*.sqlite" \) -mtime +"$RETENTION_DAYS" -print -delete

@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { getToken } from "../lib/auth";
 import { getApiBase } from "../lib/api";
 
-type HealthPath = "/health" | "/api/health" | "/public/health";
+type HealthPath = "/health" | "/api/health" | "/public/health" | "/public/ping";
 const DEFAULT_HEALTH_PATH: HealthPath = "/health";
 
 type ProbeErrorType =
@@ -92,6 +92,15 @@ type ProbeRow = {
   errorType?: string;
   errorMessage?: string;
   label: string;
+};
+
+type ProxyProbeResponse = {
+  ok?: boolean;
+  status?: number | null;
+  latencyMs?: number;
+  ts?: string | null;
+  errorType?: string | null;
+  message?: string | null;
 };
 
 type PublicStatus = {
@@ -206,7 +215,28 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
   const token = getToken();
 
   const healthPath = DEFAULT_HEALTH_PATH;
-  const useProxy = shouldProxyHealthProbe() || isLocalApiBase(apiBase);
+  const useProxy = Boolean(token) && (shouldProxyHealthProbe() || isLocalApiBase(apiBase));
+
+  async function probeViaProxy(url: string): Promise<ProbeResult> {
+    if (!token) {
+      return { ok: false, url, errorType: "FETCH_FAILED", errorMessage: "AUTH_REQUIRED" };
+    }
+    const t0 = Date.now();
+    const res = await fetch(`${apiBase}/public/diag/probe-health?url=${encodeURIComponent(url)}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const json = (await res.json().catch(() => ({}))) as ProxyProbeResponse;
+    const latencyMs = typeof json?.latencyMs === "number" ? json.latencyMs : Date.now() - t0;
+    return {
+      ok: Boolean(json?.ok),
+      url,
+      status: typeof json?.status === "number" ? json.status : undefined,
+      latencyMs,
+      errorType: (json?.errorType as ProbeErrorType) || undefined,
+      errorMessage: json?.message || undefined
+    };
+  }
 
   async function runTests() {
     const hosts = hostsText
@@ -227,11 +257,7 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
       const origin = host.startsWith("http") ? host : `https://${host}`;
       try {
         if (useProxy) {
-          const url = `${apiBase}/public/diag/probe-health?url=${encodeURIComponent(
-            `${origin.replace(/\/$/, "")}${healthPath}`
-          )}`;
-          const res = await fetch(url, { method: "GET" });
-          const json = await res.json();
+          const json = await probeViaProxy(`${origin.replace(/\/$/, "")}${healthPath}`);
           results.push({
             label: origin,
             ok: Boolean(json?.ok),
@@ -239,7 +265,7 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
             status: typeof json?.status === "number" ? json.status : undefined,
             latencyMs: typeof json?.latencyMs === "number" ? json.latencyMs : undefined,
             errorType: json?.errorType,
-            errorMessage: json?.message
+            errorMessage: json?.errorMessage
           });
         } else {
           const result = await probeHealth({ origin, path: healthPath, timeoutMs: 3500 });
@@ -436,12 +462,29 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
     setTunnelHealthBusy(true);
     setTunnelHealthErr(null);
     try {
-      const res = await fetch(url, { method: "GET" });
-      const json = await res.json().catch(() => ({}));
-      setTunnelHealth({ ok: Boolean(json?.ok), ts: json?.ts, status: res.status });
-      if (!res.ok) {
-        setTunnelHealthErr(`HTTP ${res.status}`);
+      const attempts = useProxy ? 3 : 2;
+      let final: ProbeResult | null = null;
+      for (let i = 0; i < attempts; i += 1) {
+        const out = useProxy
+          ? await probeViaProxy(url)
+          : await probeHealth({ origin, path: "/public/ping", timeoutMs: 4500 });
+        final = out;
+        if (out.ok) break;
+        if (i < attempts - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
       }
+      if (!final) {
+        setTunnelHealth(null);
+        setTunnelHealthErr("No probe result");
+        return;
+      }
+      setTunnelHealth({
+        ok: Boolean(final.ok),
+        ts: new Date().toISOString(),
+        status: final.status
+      });
+      if (!final.ok) setTunnelHealthErr(final.errorMessage || final.errorType || "Probe failed");
     } catch (e: any) {
       setTunnelHealth(null);
       setTunnelHealthErr(e?.message || String(e));
@@ -512,7 +555,7 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
             </div>
             <div>
               <b>Public ping</b>:{" "}
-              {tunnelHealth ? (tunnelHealth.ok ? "ok" : "failed") : "—"}
+              {tunnelHealth ? (tunnelHealth.ok ? "ok" : "degraded") : "—"}
               {tunnelHealth?.status ? ` (HTTP ${tunnelHealth.status})` : ""}
               {tunnelHealth?.ts ? ` • ${tunnelHealth.ts}` : ""}
               {tunnelHealthErr ? ` • ${tunnelHealthErr}` : ""}
