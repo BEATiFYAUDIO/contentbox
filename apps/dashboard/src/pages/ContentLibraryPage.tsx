@@ -1643,8 +1643,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     disabled?: boolean;
     label?: string;
   }) {
-    const inputId = React.useId();
-    const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const err = upload.status === "error" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
@@ -1691,41 +1689,27 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
     return (
       <div className="inline-flex items-center gap-2">
-        {(() => {
-          const buttonLabel =
-            upload.status === "preparing" && upload.contentId === contentId ? "Preparing upload…" : busy ? "Uploading…" : label;
-          return (
-            <>
-          <input
-            id={inputId}
-            ref={inputRef}
-            type="file"
-            disabled={triggerDisabled}
-            aria-label={label}
-            className="hidden"
-            onChange={async (e) => {
-              const file = e.currentTarget.files?.[0];
-              e.currentTarget.value = "";
-              await onFileSelected(file);
-            }}
-          />
-        <button
-          type="button"
-          className={`relative inline-flex items-center text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
-            triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
-          }`}
+        <input
+          type="file"
           disabled={triggerDisabled}
-          onClick={() => {
-            if (inputRef.current) inputRef.current.value = "";
-            inputRef.current?.click();
-          }}
+          aria-label={label}
           title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
-        >
-          <span className="pointer-events-none">{buttonLabel}</span>
-        </button>
-            </>
-          );
-        })()}
+          className={`max-w-[220px] text-sm text-neutral-300 file:mr-2 file:rounded-lg file:border file:border-neutral-800 file:bg-transparent file:px-3 file:py-1 file:text-sm file:text-neutral-200 ${
+            triggerDisabled ? "opacity-60 cursor-not-allowed file:cursor-not-allowed" : "hover:file:bg-neutral-900 cursor-pointer"
+          }`}
+          onClick={(e) => {
+            e.currentTarget.value = "";
+          }}
+          onChange={async (e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = "";
+            await onFileSelected(file);
+          }}
+        />
+        {upload.status === "preparing" && upload.contentId === contentId ? (
+          <span className="text-xs text-neutral-400">Preparing upload…</span>
+        ) : null}
+        {busy ? <span className="text-xs text-neutral-400">Uploading…</span> : null}
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
       </div>
@@ -1741,8 +1725,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     disabled?: boolean;
     label?: string;
   }) {
-    const inputId = React.useId();
-    const inputRef = React.useRef<HTMLInputElement | null>(null);
     const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
     const authReady = Boolean(getToken());
     const triggerDisabled = Boolean(disabled || busy || !authReady);
@@ -1767,41 +1749,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
     return (
       <div className="inline-flex items-center gap-2">
-        {(() => {
-          const buttonLabel = busy ? "Uploading…" : label;
-          return (
-            <>
-          <input
-            id={inputId}
-            ref={inputRef}
-            type="file"
-            accept="image/jpeg,image/png,image/webp"
-            disabled={triggerDisabled}
-            aria-label={label}
-            className="hidden"
-            onChange={async (e) => {
-              const file = e.currentTarget.files?.[0];
-              e.currentTarget.value = "";
-              await onCoverSelected(file);
-            }}
-          />
-        <button
-          type="button"
-          className={`relative inline-flex items-center text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
-            triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
-          }`}
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
           disabled={triggerDisabled}
-          onClick={() => {
-            if (inputRef.current) inputRef.current.value = "";
-            inputRef.current?.click();
-          }}
+          aria-label={label}
           title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
-        >
-          <span className="pointer-events-none">{buttonLabel}</span>
-        </button>
-            </>
-          );
-        })()}
+          className={`max-w-[220px] text-sm text-neutral-300 file:mr-2 file:rounded-lg file:border file:border-neutral-800 file:bg-transparent file:px-3 file:py-1 file:text-sm file:text-neutral-200 ${
+            triggerDisabled ? "opacity-60 cursor-not-allowed file:cursor-not-allowed" : "hover:file:bg-neutral-900 cursor-pointer"
+          }`}
+          onClick={(e) => {
+            e.currentTarget.value = "";
+          }}
+          onChange={async (e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = "";
+            await onCoverSelected(file);
+          }}
+        />
+        {busy ? <span className="text-xs text-neutral-400">Uploading…</span> : null}
       </div>
     );
   }
