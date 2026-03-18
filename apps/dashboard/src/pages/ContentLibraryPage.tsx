@@ -1717,6 +1717,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
           }`}
+          style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
           title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
         >
           {upload.status === "preparing" && upload.kind === "content" && upload.contentId === contentId
@@ -1793,6 +1794,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
           }`}
+          style={{ cursor: triggerDisabled ? "not-allowed" : "pointer" }}
           title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
         >
           {busy ? "Uploading…" : label}
