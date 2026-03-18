@@ -1696,7 +1696,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           <button
             type="button"
             className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${
-              triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900"
+              triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
             }`}
             title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
             disabled={triggerDisabled}
@@ -1771,7 +1771,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           <button
             type="button"
             className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${
-              triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900"
+              triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
             }`}
             title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
             disabled={triggerDisabled}
