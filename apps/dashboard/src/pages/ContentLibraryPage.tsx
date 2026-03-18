@@ -227,10 +227,10 @@ type ParentLinkInfo = {
 
 type UploadState =
   | { status: "idle" }
-  | { status: "preparing"; contentId: string; filename: string }
-  | { status: "uploading"; contentId: string; filename: string }
-  | { status: "done"; contentId: string; filename: string }
-  | { status: "error"; contentId: string; message: string };
+  | { status: "preparing"; kind: "content" | "cover"; contentId: string; filename: string }
+  | { status: "uploading"; kind: "content" | "cover"; contentId: string; filename: string }
+  | { status: "done"; kind: "content" | "cover"; contentId: string; filename: string }
+  | { status: "error"; kind: "content" | "cover"; contentId: string; message: string };
 
 function visibilityLabel(status: "DISABLED" | "UNLISTED" | "LISTED"): string {
   if (status === "LISTED") return "Discoverable";
@@ -1643,8 +1643,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     disabled?: boolean;
     label?: string;
   }) {
-    const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
-    const err = upload.status === "error" && upload.contentId === contentId;
+    const busy =
+      (upload.status === "preparing" || upload.status === "uploading") &&
+      upload.kind === "content" &&
+      upload.contentId === contentId;
+    const err = upload.status === "error" && upload.kind === "content" && upload.contentId === contentId;
     const authReady = Boolean(getToken());
     const triggerDisabled = Boolean(disabled || busy || !authReady);
 
@@ -1653,7 +1656,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         if (!file) return;
 
         setError(null);
-        setUpload({ status: "preparing", contentId, filename: file.name });
+        setUpload({ status: "preparing", kind: "content", contentId, filename: file.name });
         const idempotencyKey = uploadIdempotencyKey(contentId, file);
         if (import.meta.env.DEV) {
           console.log("[upload] click", {
@@ -1667,9 +1670,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         }
 
         try {
-          setUpload({ status: "uploading", contentId, filename: file.name });
+          setUpload({ status: "uploading", kind: "content", contentId, filename: file.name });
           await uploadToRepo(contentId, file, idempotencyKey);
-          setUpload({ status: "done", contentId, filename: file.name });
+          setUpload({ status: "done", kind: "content", contentId, filename: file.name });
 
           await load();
 
@@ -1681,7 +1684,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           const message = raw.includes("PUBLISHED_IMMUTABLE")
             ? "This published release is immutable. Create a new version to upload updated media."
             : raw;
-          setUpload({ status: "error", contentId, message });
+          setUpload({ status: "error", kind: "content", contentId, message });
         }
       },
       [authReady, busy, contentId]
@@ -1689,27 +1692,39 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
     return (
       <div className="inline-flex items-center gap-2">
-        <input
-          type="file"
-          disabled={triggerDisabled}
-          aria-label={label}
-          title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
-          className={`max-w-[220px] text-sm text-neutral-300 file:mr-2 file:rounded-lg file:border file:border-neutral-800 file:bg-transparent file:px-3 file:py-1 file:text-sm file:text-neutral-200 ${
-            triggerDisabled ? "opacity-60 cursor-not-allowed file:cursor-not-allowed" : "hover:file:bg-neutral-900 cursor-pointer"
-          }`}
-          onClick={(e) => {
-            e.currentTarget.value = "";
-          }}
-          onChange={async (e) => {
-            const file = e.currentTarget.files?.[0];
-            e.currentTarget.value = "";
-            await onFileSelected(file);
-          }}
-        />
-        {upload.status === "preparing" && upload.contentId === contentId ? (
-          <span className="text-xs text-neutral-400">Preparing upload…</span>
-        ) : null}
-        {busy ? <span className="text-xs text-neutral-400">Uploading…</span> : null}
+        <div className="relative inline-flex">
+          <button
+            type="button"
+            className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${
+              triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900"
+            }`}
+            title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
+            disabled={triggerDisabled}
+          >
+            {upload.status === "preparing" && upload.kind === "content" && upload.contentId === contentId
+              ? "Preparing upload…"
+              : busy
+                ? "Uploading…"
+                : label}
+          </button>
+          <input
+            type="file"
+            disabled={triggerDisabled}
+            aria-label={label}
+            title={triggerDisabled ? "Upload unavailable" : "Upload into this content repo and commit"}
+            className={`absolute inset-0 h-full w-full opacity-0 ${
+              triggerDisabled ? "pointer-events-none" : "cursor-pointer"
+            }`}
+            onClick={(e) => {
+              e.currentTarget.value = "";
+            }}
+            onChange={async (e) => {
+              const file = e.currentTarget.files?.[0];
+              e.currentTarget.value = "";
+              await onFileSelected(file);
+            }}
+          />
+        </div>
         {!authReady ? <span className="text-xs text-amber-300 ml-2">Sign in to upload</span> : null}
         {err ? <span className="text-xs text-red-300 ml-2">Upload failed</span> : null}
       </div>
@@ -1725,7 +1740,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     disabled?: boolean;
     label?: string;
   }) {
-    const busy = (upload.status === "preparing" || upload.status === "uploading") && upload.contentId === contentId;
+    const busy =
+      (upload.status === "preparing" || upload.status === "uploading") &&
+      upload.kind === "cover" &&
+      upload.contentId === contentId;
     const authReady = Boolean(getToken());
     const triggerDisabled = Boolean(disabled || busy || !authReady);
 
@@ -1734,14 +1752,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         if (!file) return;
 
         setError(null);
-        setUpload({ status: "preparing", contentId, filename: file.name });
+        setUpload({ status: "preparing", kind: "cover", contentId, filename: file.name });
         try {
-          setUpload({ status: "uploading", contentId, filename: file.name });
+          setUpload({ status: "uploading", kind: "cover", contentId, filename: file.name });
           await uploadSongCover(contentId, file);
-          setUpload({ status: "done", contentId, filename: file.name });
+          setUpload({ status: "done", kind: "cover", contentId, filename: file.name });
           await load();
         } catch (err: any) {
-          setUpload({ status: "error", contentId, message: err?.message || "Cover upload failed" });
+          setUpload({ status: "error", kind: "cover", contentId, message: err?.message || "Cover upload failed" });
         }
       },
       [contentId]
@@ -1749,25 +1767,36 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
     return (
       <div className="inline-flex items-center gap-2">
-        <input
-          type="file"
-          accept="image/jpeg,image/png,image/webp"
-          disabled={triggerDisabled}
-          aria-label={label}
-          title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
-          className={`max-w-[220px] text-sm text-neutral-300 file:mr-2 file:rounded-lg file:border file:border-neutral-800 file:bg-transparent file:px-3 file:py-1 file:text-sm file:text-neutral-200 ${
-            triggerDisabled ? "opacity-60 cursor-not-allowed file:cursor-not-allowed" : "hover:file:bg-neutral-900 cursor-pointer"
-          }`}
-          onClick={(e) => {
-            e.currentTarget.value = "";
-          }}
-          onChange={async (e) => {
-            const file = e.currentTarget.files?.[0];
-            e.currentTarget.value = "";
-            await onCoverSelected(file);
-          }}
-        />
-        {busy ? <span className="text-xs text-neutral-400">Uploading…</span> : null}
+        <div className="relative inline-flex">
+          <button
+            type="button"
+            className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 whitespace-nowrap ${
+              triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900"
+            }`}
+            title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
+            disabled={triggerDisabled}
+          >
+            {busy ? "Uploading…" : label}
+          </button>
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            disabled={triggerDisabled}
+            aria-label={label}
+            title={triggerDisabled ? "Cover upload unavailable" : "Upload album cover (jpg, png, webp)"}
+            className={`absolute inset-0 h-full w-full opacity-0 ${
+              triggerDisabled ? "pointer-events-none" : "cursor-pointer"
+            }`}
+            onClick={(e) => {
+              e.currentTarget.value = "";
+            }}
+            onChange={async (e) => {
+              const file = e.currentTarget.files?.[0];
+              e.currentTarget.value = "";
+              await onCoverSelected(file);
+            }}
+          />
+        </div>
       </div>
     );
   }
