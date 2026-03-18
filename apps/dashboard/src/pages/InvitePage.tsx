@@ -2,14 +2,8 @@ import { useEffect, useState } from "react";
 import { api, getApiBase } from "../lib/api";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
-import { getToken } from "../lib/auth";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
 import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
-
-function getNodePublicOrigin(): string {
-  const v = String((import.meta as any).env?.VITE_NODE_PUBLIC_ORIGIN || "").trim();
-  return v ? v.replace(/\/+$/, "") : window.location.origin;
-}
 
 type InvitePageProps = {
   token?: string;
@@ -353,6 +347,79 @@ export default function InvitePage({
     }
   }
 
+  function isNotFoundInviteError(err: unknown): boolean {
+    const msg = String((err as any)?.message || err || "").toLowerCase();
+    return msg.includes("404") || msg.includes("invite not found") || msg.includes("not found");
+  }
+
+  async function ingestRemoteSnapshot(params: {
+    origin: string;
+    token: string;
+    inviteUrl?: string | null;
+    snapshot?: any | null;
+    acceptedAtOverride?: string | null;
+    forceStatus?: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned" | null;
+  }) {
+    const { origin, token, inviteUrl, snapshot, acceptedAtOverride, forceStatus } = params;
+    const invitation = snapshot?.invitation || null;
+    const content = snapshot?.content || null;
+    const splitParticipant = snapshot?.splitParticipant || null;
+    const splitVersion = snapshot?.splitVersion || null;
+    const acceptedAt = acceptedAtOverride || invitation?.acceptedAt || null;
+    const status = forceStatus || invitation?.status || (acceptedAt ? "accepted" : "pending");
+    await api(`/invites/ingest`, "POST", {
+      remoteOrigin: origin,
+      token,
+      inviteUrl: inviteUrl || `${origin.replace(/\/+$/, "")}/invite/${encodeURIComponent(token)}`,
+      invitation,
+      status,
+      expiresAt: invitation?.expiresAt || null,
+      revokedAt: invitation?.revokedAt || null,
+      tombstonedAt: invitation?.tombstonedAt || null,
+      content,
+      splitParticipant,
+      splitVersion,
+      acceptedAt,
+      contentDeletedAt: content?.deletedAt || null,
+      remoteNodeUrl: origin
+    });
+  }
+
+  async function refreshRemoteReceivedList() {
+    const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
+    setRemoteReceivedInvites(listRemote || []);
+  }
+
+  async function acceptRemoteInviteCanonical(params: {
+    origin: string;
+    token: string;
+    inviteUrl?: string | null;
+    seedSnapshot?: any | null;
+  }) {
+    const { origin, token, inviteUrl, seedSnapshot } = params;
+    const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}/accept`, {
+      method: "POST",
+      body: {}
+    });
+
+    let snapshot = seedSnapshot || null;
+    try {
+      snapshot = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}`, { method: "GET" });
+    } catch {
+      // keep seed snapshot fallback
+    }
+
+    await ingestRemoteSnapshot({
+      origin,
+      token,
+      inviteUrl,
+      snapshot,
+      acceptedAtOverride: res?.acceptedAt || null
+    });
+    await refreshRemoteReceivedList();
+    return { res, snapshot };
+  }
+
   async function load() {
     setLoading(true);
     setMsg(null);
@@ -448,19 +515,12 @@ export default function InvitePage({
     if (remoteOriginReachable === false) return;
     (async () => {
       try {
-        await api(`/invites/ingest`, "POST", {
-          remoteOrigin: remoteOriginFromLocation,
+        await ingestRemoteSnapshot({
+          origin: remoteOriginFromLocation,
           token: tokenToUse,
-          inviteUrl: `${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`,
-          content: data?.content || null,
-          splitParticipant: data?.splitParticipant || null,
-          splitVersion: data?.splitVersion || null,
-          acceptedAt: data?.invitation?.acceptedAt || null,
-          contentDeletedAt: (data as any)?.content?.deletedAt || null,
-          remoteNodeUrl: remoteOriginFromLocation
+          snapshot: data
         });
-        const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
-        setRemoteReceivedInvites(listRemote || []);
+        await refreshRemoteReceivedList();
       } catch {}
     })();
   }, [me, data, remoteOriginFromLocation, tokenToUse, splitsAllowed, isBasic, remoteOriginReachable]);
@@ -558,77 +618,19 @@ export default function InvitePage({
       if (!tokenToUse) throw new Error("Invite token missing");
 
       if (remoteOriginFromLocation) {
-        let acceptBody: any = {};
-        if (me?.id) {
-          try {
-            const tokenLocal = getToken();
-            const resSign = await fetch(`${getNodePublicOrigin()}/local/sign-acceptance`, {
-              method: "POST",
-              headers: { Authorization: `Bearer ${tokenLocal}`, "Content-Type": "application/json" },
-              body: JSON.stringify({ token: tokenToUse })
-            });
-            if (resSign.ok) {
-              const js = await resSign.json();
-              acceptBody.payload = js.payload;
-              acceptBody.signature = js.signature;
-              acceptBody.remoteNodeUrl = js.payload.nodeUrl;
-              acceptBody.remoteUserId = js.payload.remoteUserId;
-            }
-          } catch {
-            // ignore signed acceptance
-          }
-        }
-
-        const res = await fetchRemoteJson(`/invites/${encodeURIComponent(tokenToUse)}/accept`, {
-          method: "POST",
-          body: acceptBody
+        const { res } = await acceptRemoteInviteCanonical({
+          origin: remoteOriginFromLocation,
+          token: tokenToUse,
+          inviteUrl: `${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`,
+          seedSnapshot: data
         });
         setMsg(res?.alreadyAccepted ? "Already accepted on remote node." : "Accepted on remote node.");
-        try {
-          await api(`/invites/ingest`, "POST", {
-            remoteOrigin: remoteOriginFromLocation,
-            token: tokenToUse,
-            inviteUrl: `${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`,
-            content: data?.content || null,
-            splitParticipant: data?.splitParticipant || null,
-            splitVersion: data?.splitVersion || null,
-            acceptedAt: res?.acceptedAt || null,
-            remoteNodeUrl: remoteOriginFromLocation
-          });
-        } catch {}
         await load();
         onAccepted(data?.content?.id ?? null);
         return;
       }
 
-      // Attempt to sign locally (strong verification). If that fails, fall back to sending nodeUrl + userId.
-      let acceptBody: any = {};
-      if (me?.id) {
-        try {
-          const tokenLocal = getToken();
-          const resSign = await fetch(`${getNodePublicOrigin()}/local/sign-acceptance`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${tokenLocal}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ token: tokenToUse })
-          });
-          if (resSign.ok) {
-            const js = await resSign.json();
-            acceptBody.payload = js.payload;
-            acceptBody.signature = js.signature;
-            acceptBody.remoteNodeUrl = js.payload.nodeUrl;
-            acceptBody.remoteUserId = js.payload.remoteUserId;
-          } else {
-            // fallback
-            acceptBody.remoteNodeUrl = getNodePublicOrigin();
-            acceptBody.remoteUserId = me.id;
-          }
-        } catch {
-          acceptBody.remoteNodeUrl = getNodePublicOrigin();
-          acceptBody.remoteUserId = me.id;
-        }
-      }
-
-      const res = await api<AcceptResponse>(`/invites/${encodeURIComponent(tokenToUse)}/accept`, "POST", acceptBody);
+      const res = await api<AcceptResponse>(`/invites/${encodeURIComponent(tokenToUse)}/accept`, "POST", {});
       setMsg(res?.alreadyAccepted ? "Already accepted." : "Accepted.");
       await load();
       // refresh lists so owner sees accepted state and newly created invites show up
@@ -682,7 +684,11 @@ export default function InvitePage({
     const status = inviteStatus(inv);
     return isActiveInviteStatus(status) && !inv.contentDeletedAt;
   });
-  const visibleRemoteInvites = (remoteReceivedInvites || []).filter((inv) => (showHistory ? true : !inv.contentDeletedAt));
+  const visibleRemoteInvites = (remoteReceivedInvites || []).filter((inv) => {
+    if (showHistory) return true;
+    const status = inviteStatus(inv);
+    return isActiveInviteStatus(status) && !inv.contentDeletedAt;
+  });
   const dedupeKey = (inv: any) => {
     const id = String(inv?.contentId || "").trim();
     if (id) return id;
@@ -741,20 +747,11 @@ export default function InvitePage({
     }
     setRemoteAcceptBusy((m) => ({ ...m, [inv.id]: true }));
     try {
-      const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}/accept`, { method: "POST", body: {} });
-      await api(`/invites/ingest`, "POST", {
-        remoteOrigin: origin,
+      await acceptRemoteInviteCanonical({
+        origin,
         token,
-        inviteUrl,
-        content: res?.content || null,
-        splitParticipant: res?.splitParticipant || null,
-        splitVersion: res?.splitVersion || null,
-        acceptedAt: res?.invitation?.acceptedAt || null,
-        contentDeletedAt: res?.content?.deletedAt || null,
-        remoteNodeUrl: origin
+        inviteUrl
       });
-      const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
-      setRemoteReceivedInvites(listRemote || []);
     } catch (e: any) {
       setMsg(mapAcceptErrorMessage(e?.message || "Remote accept failed"));
     } finally {
@@ -782,20 +779,29 @@ export default function InvitePage({
     setRemoteSyncBusy((m) => ({ ...m, [inv.id]: true }));
     try {
       const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}`, { method: "GET" });
-      await api(`/invites/ingest`, "POST", {
-        remoteOrigin: origin,
+      await ingestRemoteSnapshot({
+        origin,
         token,
         inviteUrl,
-        content: res?.content || null,
-        splitParticipant: res?.splitParticipant || null,
-        splitVersion: res?.splitVersion || null,
-        acceptedAt: res?.invitation?.acceptedAt || null,
-        remoteNodeUrl: origin,
-        contentDeletedAt: res?.content?.deletedAt || null
+        snapshot: res
       });
-      const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
-      setRemoteReceivedInvites(listRemote || []);
+      await refreshRemoteReceivedList();
     } catch (e: any) {
+      if (isNotFoundInviteError(e)) {
+        try {
+          await ingestRemoteSnapshot({
+            origin,
+            token,
+            inviteUrl,
+            forceStatus: "tombstoned"
+          });
+          await refreshRemoteReceivedList();
+          setMsg("Invite no longer exists on remote node. Marked as tombstoned locally.");
+          return;
+        } catch {
+          // continue to standard error handling
+        }
+      }
       setMsg(mapAcceptErrorMessage(e?.message || "Remote sync failed"));
     } finally {
       setRemoteSyncBusy((m) => ({ ...m, [inv.id]: false }));

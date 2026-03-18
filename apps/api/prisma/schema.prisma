@@ -34,6 +34,28 @@ enum SplitStatus {
   locked
 }
 
+enum InvitationTargetType {
+  email
+  local_user
+  identity_ref
+}
+
+enum InvitationDeliveryMethod {
+  none
+  email
+  link
+  internal
+}
+
+enum InvitationStatus {
+  pending
+  accepted
+  declined
+  revoked
+  expired
+  tombstoned
+}
+
 enum ContentLinkRelation {
   remix
   mashup
@@ -110,6 +132,8 @@ model User {
   content              ContentItem[]  @relation("OwnerContent")
   auditEvents          AuditEvent[]
   splitVersionsCreated SplitVersion[] @relation("SplitVersionCreatedBy")
+  invitationsSent      Invitation[]   @relation("InvitationInviter")
+  invitationsAccepted  Invitation[]   @relation("InvitationAcceptedBy")
   creditPurchases      CreditPurchase[]
   approvedContentLinks ContentLink[] @relation("ContentLinkApprovedBy")
   paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
@@ -243,6 +267,7 @@ model ContentItem {
   files         ContentFile[]
   credits       ContentCredit[]
   splitVersions SplitVersion[]
+  invitations  Invitation[]
   manifest      Manifest?    @relation("ContentItemManifest", fields: [manifestId], references: [id])
   currentSplit  SplitVersion? @relation("CurrentSplit", fields: [currentSplitId], references: [id])
   parentLinks   ContentLink[] @relation("ParentContent")
@@ -435,6 +460,7 @@ model SplitVersion {
   content      ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
   createdBy    User        @relation("SplitVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
   participants SplitParticipant[]
+  invitations  Invitation[]
   currentFor   ContentItem[] @relation("CurrentSplit")
   settlements  Settlement[] @relation("SettlementSplit")
 
@@ -449,6 +475,9 @@ model SplitParticipant {
   splitVersionId    String
   participantEmail  String?
   participantUserId String?
+  invitationId      String?
+  targetType        InvitationTargetType @default(email)
+  targetValue       String?
   role              String
   roleCode          SplitRole @default(writer)
   percent           Decimal
@@ -462,25 +491,51 @@ model SplitParticipant {
   createdAt  DateTime @default(now())
 
   splitVersion  SplitVersion  @relation(fields: [splitVersionId], references: [id], onDelete: Cascade)
-  invitations   Invitation[]
+  invitations   Invitation[] @relation("InvitationParticipant")
+  invitation    Invitation?  @relation("ParticipantActiveInvitation", fields: [invitationId], references: [id], onDelete: SetNull)
 
   @@index([splitVersionId])
   @@index([participantEmail])
+  @@index([invitationId])
+  @@index([targetType])
   @@index([payoutIdentityId])
   @@unique([splitVersionId, participantEmail])
 }
 
 model Invitation {
   id                 String   @id @default(cuid())
-  splitParticipantId String
+  token              String   @unique
   tokenHash          String
+  splitParticipantId String
+  splitVersionId     String
+  contentId          String
+  inviterUserId      String
+  targetType         InvitationTargetType
+  targetValue        String
+  deliveryMethod     InvitationDeliveryMethod @default(link)
+  status             InvitationStatus @default(pending)
   expiresAt          DateTime
   acceptedAt         DateTime?
+  acceptedByUserId   String?
+  acceptedIdentityRef String?
+  revokedAt          DateTime?
+  tombstonedAt       DateTime?
   createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
-  splitParticipant SplitParticipant @relation(fields: [splitParticipantId], references: [id], onDelete: Cascade)
+  splitParticipant SplitParticipant @relation("InvitationParticipant", fields: [splitParticipantId], references: [id], onDelete: Cascade)
+  splitVersion SplitVersion @relation(fields: [splitVersionId], references: [id], onDelete: Cascade)
+  content ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  inviter User @relation("InvitationInviter", fields: [inviterUserId], references: [id], onDelete: Cascade)
+  acceptedBy User? @relation("InvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  activeForParticipants SplitParticipant[] @relation("ParticipantActiveInvitation")
 
   @@index([splitParticipantId])
+  @@index([splitVersionId])
+  @@index([contentId])
+  @@index([inviterUserId])
+  @@index([acceptedByUserId])
+  @@index([status])
   @@index([tokenHash])
 }
 
@@ -526,12 +581,18 @@ model RemoteInvite {
   contentId       String?
   contentTitle    String?
   contentType     String?
+  contentStatus   String?
   contentDeletedAt DateTime?
   splitVersionNum Int?
+  splitStatus     String?
   role            String?
   percent         Decimal?
   participantEmail String?
+  status          String   @default("pending")
+  expiresAt       DateTime?
   acceptedAt      DateTime?
+  revokedAt       DateTime?
+  tombstonedAt    DateTime?
   remoteUserId    String?
   remoteNodeUrl   String?
   remoteVerified  Boolean  @default(false)

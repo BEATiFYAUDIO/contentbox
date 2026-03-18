@@ -7421,6 +7421,35 @@ function shouldShowInviteInActiveLists(inv: {
   return status === "pending" || status === "accepted";
 }
 
+function normalizeRemoteInviteStatusForList(inv: {
+  status?: unknown;
+  acceptedAt?: Date | null;
+  expiresAt?: Date | null;
+  revokedAt?: Date | null;
+  tombstonedAt?: Date | null;
+}): "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned" {
+  let s = normalizeInviteStatus(inv?.status);
+  if (inv?.revokedAt) s = "revoked";
+  if (inv?.tombstonedAt) s = "tombstoned";
+  if (s === "pending" && inv?.acceptedAt) s = "accepted";
+  if (s === "pending" && inv?.expiresAt && inv.expiresAt.getTime() < Date.now()) s = "expired";
+  return s;
+}
+
+function shouldShowRemoteInviteInActiveLists(inv: {
+  status?: unknown;
+  acceptedAt?: Date | null;
+  expiresAt?: Date | null;
+  revokedAt?: Date | null;
+  tombstonedAt?: Date | null;
+  contentDeletedAt?: Date | null;
+}): boolean {
+  const status = normalizeRemoteInviteStatusForList(inv);
+  if (status === "revoked" || status === "declined" || status === "expired" || status === "tombstoned") return false;
+  if (inv?.contentDeletedAt) return false;
+  return status === "pending" || status === "accepted";
+}
+
 function hashInviteToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -7975,8 +8004,19 @@ async function handlePublicUser(req: any, reply: any) {
 
 app.get("/public/users/:id", handlePublicUser);
 
-async function signInviteAcceptancePayload(token: string, userId: string): Promise<{ payload: any; signature: string }> {
-  const payload = { token, remoteUserId: userId, nodeUrl: APP_BASE_URL, ts: new Date().toISOString() };
+async function signInviteAcceptancePayload(
+  token: string,
+  userId: string,
+  opts?: { audienceOrigin?: string | null }
+): Promise<{ payload: any; signature: string }> {
+  const payload = {
+    token,
+    remoteUserId: userId,
+    nodeUrl: APP_BASE_URL,
+    ts: new Date().toISOString(),
+    nonce: crypto.randomUUID(),
+    aud: normalizeOrigin(opts?.audienceOrigin || "") || null
+  };
   const payloadStr = JSON.stringify(payload);
   const privPath = path.join(CONTENTBOX_ROOT, ".node", "node_private.pem");
   const privPem = await fs.readFile(privPath, "utf8");
@@ -8010,12 +8050,13 @@ app.get("/api/local/signing-capability", { preHandler: requireAuth }, async (req
 // Local node: sign an acceptance payload for a token (used when accepting on a remote owner node)
 app.post("/local/sign-acceptance", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const token = asString((req.body ?? {})?.token || "");
+  const audienceOrigin = asString((req.body ?? {})?.audienceOrigin || "");
   if (!token) return badRequest(reply, "token required");
 
   const userId = (req.user as JwtUser).sub;
 
   try {
-    const signed = await signInviteAcceptancePayload(token, userId);
+    const signed = await signInviteAcceptancePayload(token, userId, { audienceOrigin });
     return reply.send(signed);
   } catch (e: any) {
     return reply.code(500).send({ error: String((e as any)?.message || String(e)) });
@@ -9215,34 +9256,42 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
   const userId = (req.user as JwtUser).sub;
   const includeHistory = parseBooleanFlag((req.query as any)?.includeHistory, false);
   await pruneOldInvites();
-  const where: any = { userId };
-  if (!includeHistory) {
-    where.contentDeletedAt = null;
+  try {
+    const list = await prisma.remoteInvite.findMany({
+      where: { userId },
+      orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+    });
+    const visible = includeHistory ? list : list.filter((inv) => shouldShowRemoteInviteInActiveLists(inv as any));
+    return reply.send(
+      visible.map((inv) => ({
+        id: inv.id,
+        remoteOrigin: inv.remoteOrigin,
+        inviteUrl: inv.inviteUrl || null,
+        contentId: inv.contentId || null,
+        contentTitle: inv.contentTitle || null,
+        contentType: inv.contentType || null,
+        contentStatus: (inv as any).contentStatus || null,
+        contentDeletedAt: inv.contentDeletedAt ? inv.contentDeletedAt.toISOString() : null,
+        splitVersionNum: inv.splitVersionNum ?? null,
+        splitStatus: (inv as any).splitStatus || null,
+        role: inv.role || null,
+        percent: percentToPrimitive(inv.percent ?? null),
+        participantEmail: inv.participantEmail || null,
+        status: normalizeRemoteInviteStatusForList(inv as any),
+        expiresAt: (inv as any).expiresAt ? (inv as any).expiresAt.toISOString() : null,
+        acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
+        revokedAt: (inv as any).revokedAt ? (inv as any).revokedAt.toISOString() : null,
+        tombstonedAt: (inv as any).tombstonedAt ? (inv as any).tombstonedAt.toISOString() : null,
+        remoteUserId: inv.remoteUserId || null,
+        remoteNodeUrl: inv.remoteNodeUrl || null,
+        remoteVerified: Boolean(inv.remoteVerified),
+        createdAt: inv.createdAt.toISOString()
+      }))
+    );
+  } catch (e: any) {
+    app.log.warn({ err: String(e?.message || e), userId }, "remoteInvites.listFailed");
+    return reply.send([]);
   }
-  const list = await prisma.remoteInvite.findMany({
-    where,
-    orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
-  });
-  return reply.send(
-    list.map((inv) => ({
-      id: inv.id,
-      remoteOrigin: inv.remoteOrigin,
-      inviteUrl: inv.inviteUrl || null,
-      contentId: inv.contentId || null,
-      contentTitle: inv.contentTitle || null,
-      contentType: inv.contentType || null,
-      contentDeletedAt: inv.contentDeletedAt ? inv.contentDeletedAt.toISOString() : null,
-      splitVersionNum: inv.splitVersionNum ?? null,
-      role: inv.role || null,
-      percent: percentToPrimitive(inv.percent ?? null),
-      participantEmail: inv.participantEmail || null,
-      acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
-      remoteUserId: inv.remoteUserId || null,
-      remoteNodeUrl: inv.remoteNodeUrl || null,
-      remoteVerified: Boolean(inv.remoteVerified),
-      createdAt: inv.createdAt.toISOString()
-    }))
-  );
 });
 
 // Remote royalties summary (for invited remote splits)
@@ -9293,31 +9342,59 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
   if (!token) return badRequest(reply, "token required");
 
   const tokenHash = hashInviteToken(token);
+  const existing = await prisma.remoteInvite.findUnique({
+    where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } }
+  });
 
   const content = body.content || {};
   const splitParticipant = body.splitParticipant || {};
   const splitVersion = body.splitVersion || {};
+  const invitation = body.invitation || {};
 
   const percent = round3(num(splitParticipant.percent));
-  const acceptedAt = body.acceptedAt ? new Date(body.acceptedAt) : null;
+  const acceptedAt = body.acceptedAt || invitation.acceptedAt ? new Date(body.acceptedAt || invitation.acceptedAt) : null;
+  const expiresAt = body.expiresAt || invitation.expiresAt ? new Date(body.expiresAt || invitation.expiresAt) : null;
+  const revokedAt = body.revokedAt || invitation.revokedAt ? new Date(body.revokedAt || invitation.revokedAt) : null;
+  const tombstonedAt = body.tombstonedAt || invitation.tombstonedAt ? new Date(body.tombstonedAt || invitation.tombstonedAt) : null;
+  const incomingStatus = normalizeInviteStatus(body.status || invitation.status || (acceptedAt ? "accepted" : "pending"));
+  const status =
+    tombstonedAt ? "tombstoned" : revokedAt ? "revoked" : incomingStatus === "pending" && acceptedAt ? "accepted" : incomingStatus;
   const contentDeletedAt = body.contentDeletedAt || content.deletedAt || null;
 
   const data = {
     userId,
     remoteOrigin,
     tokenHash,
-    inviteUrl: inviteUrl || null,
-    contentId: asString(content.id || "") || null,
-    contentTitle: asString(content.title || "") || null,
-    contentType: asString(content.type || "") || null,
-    contentDeletedAt: contentDeletedAt ? new Date(contentDeletedAt) : null,
-    splitVersionNum: Number.isFinite(Number(splitVersion.versionNumber)) ? Number(splitVersion.versionNumber) : null,
-    role: asString(splitParticipant.role || "") || null,
-    percent: Number.isFinite(percent) && percent > 0 ? percent : null,
-    participantEmail: asString(splitParticipant.participantEmail || "") || null,
-    acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
-    remoteUserId: asString(body.remoteUserId || "") || null,
-    remoteNodeUrl: asString(body.remoteNodeUrl || "").replace(/\/+$/, "") || null,
+    inviteUrl: inviteUrl || existing?.inviteUrl || null,
+    contentId: asString(content.id || "") || existing?.contentId || null,
+    contentTitle: asString(content.title || "") || existing?.contentTitle || null,
+    contentType: asString(content.type || "") || existing?.contentType || null,
+    contentStatus: asString(content.status || "") || (existing as any)?.contentStatus || null,
+    contentDeletedAt: contentDeletedAt ? new Date(contentDeletedAt) : existing?.contentDeletedAt || null,
+    splitVersionNum:
+      Number.isFinite(Number(splitVersion.versionNumber))
+        ? Number(splitVersion.versionNumber)
+        : existing?.splitVersionNum ?? null,
+    splitStatus: asString(splitVersion.status || "") || (existing as any)?.splitStatus || null,
+    role: asString(splitParticipant.role || "") || existing?.role || null,
+    percent: Number.isFinite(percent) && percent > 0 ? percent : existing?.percent ?? null,
+    participantEmail: asString(splitParticipant.participantEmail || "") || existing?.participantEmail || null,
+    status,
+    expiresAt:
+      expiresAt && !Number.isNaN(expiresAt.getTime())
+        ? expiresAt
+        : (existing as any)?.expiresAt || null,
+    acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : existing?.acceptedAt || null,
+    revokedAt:
+      revokedAt && !Number.isNaN(revokedAt.getTime())
+        ? revokedAt
+        : (existing as any)?.revokedAt || null,
+    tombstonedAt:
+      tombstonedAt && !Number.isNaN(tombstonedAt.getTime())
+        ? tombstonedAt
+        : (existing as any)?.tombstonedAt || null,
+    remoteUserId: asString(body.remoteUserId || "") || existing?.remoteUserId || null,
+    remoteNodeUrl: asString(body.remoteNodeUrl || "").replace(/\/+$/, "") || existing?.remoteNodeUrl || null,
     remoteVerified: Boolean(body.remoteVerified)
   };
 
@@ -9339,7 +9416,10 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
           inviteUrl: inviteUrl || null,
           contentId: data.contentId,
           contentTitle: data.contentTitle,
+          status: data.status,
+          expiresAt: data.expiresAt ? data.expiresAt.toISOString?.() || data.expiresAt : null,
           splitVersionNum: data.splitVersionNum,
+          splitStatus: data.splitStatus,
           role: data.role,
           percent: data.percent,
           participantEmail: data.participantEmail,
@@ -10928,7 +11008,7 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
   try {
     let signedPayload: { payload: any; signature: string } | null = null;
     try {
-      signedPayload = await signInviteAcceptancePayload(token, localUserId);
+      signedPayload = await signInviteAcceptancePayload(token, localUserId, { audienceOrigin: origin });
     } catch (e: any) {
       app.log.warn(
         {
@@ -22247,18 +22327,28 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
   const ownerEmail = (owner?.email || "").toLowerCase();
   const normalizedOwnerEmail = normalizeEmail(ownerEmail);
 
-  const participantKeyOf = (p: {
+  const participantKeysOf = (p: {
     participantUserId?: string | null;
     targetType?: string | null;
     targetValue?: string | null;
     participantEmail?: string | null;
   }) => {
+    const out = new Set<string>();
     const userRef = asString(p.participantUserId).trim();
-    if (userRef) return `u:${userRef}`;
+    if (userRef) {
+      out.add(`u:${userRef}`);
+      out.add(`local_user:${userRef}`);
+      out.add(`identity_ref:${userRef}`);
+    }
     const type = normalizeInviteTargetType(p.targetType);
     const valueRaw = asString(p.targetValue).trim() || asString(p.participantEmail).trim();
-    const value = type === "email" ? normalizeEmail(valueRaw) : valueRaw;
-    return `${type}:${value}`;
+    if (valueRaw) {
+      const value = type === "email" ? normalizeEmail(valueRaw) : valueRaw;
+      if (value) out.add(`${type}:${value}`);
+    }
+    const email = normalizeEmail(asString(p.participantEmail).trim());
+    if (email) out.add(`email:${email}`);
+    return Array.from(out);
   };
 
   await prisma.$transaction(async (tx) => {
@@ -22281,14 +22371,19 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
         }
       }
     });
-    const previousByKey = new Map(before.map((p) => [participantKeyOf(p), p]));
+    const previousByKey = new Map<string, typeof before[number]>();
+    for (const p of before) {
+      for (const key of participantKeysOf(p)) {
+        if (!previousByKey.has(key)) previousByKey.set(key, p);
+      }
+    }
 
     // remove existing participants
     await tx.splitParticipant.deleteMany({ where: { splitVersionId: latest.id } });
 
     // create new participants
     for (const p of validated.participants) {
-      const prev = previousByKey.get(participantKeyOf(p)) || null;
+      const prev = participantKeysOf(p).map((k) => previousByKey.get(k)).find(Boolean) || null;
       const prevActive = prev ? isActiveLedgerParticipant(prev as any) : false;
       const selfBind =
         p.participantUserId === userId ||
@@ -25863,10 +25958,15 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       }
       if (remotePub) {
         const payloadStr = JSON.stringify(payload);
+        const expectedAudience = normalizeOrigin(getPublicOrigin(req));
+        const payloadAudience = normalizeOrigin(String(payload?.aud || ""));
+        const payloadNonce = asString(payload?.nonce || "").trim();
         const payloadOk =
           String(payload?.token || "") === token &&
           String(payload?.remoteUserId || "") === remoteUserId &&
-          String(payload?.nodeUrl || "").replace(/\/$/, "") === remoteNodeUrl;
+          String(payload?.nodeUrl || "").replace(/\/$/, "") === remoteNodeUrl &&
+          Boolean(payloadNonce) &&
+          Boolean(expectedAudience && payloadAudience && expectedAudience === payloadAudience);
         const ts = Date.parse(String(payload?.ts || ""));
         const tsOk = Number.isFinite(ts) && Math.abs(Date.now() - ts) < 15 * 60 * 1000;
         if (payloadOk && tsOk) {
