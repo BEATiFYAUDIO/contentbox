@@ -246,6 +246,24 @@ function uploadIdempotencyKey(contentId: string, file: File) {
   return `upl-${contentId.slice(0, 8)}-${file.size}-${suffix}`;
 }
 
+function openNativeFilePicker(input: HTMLInputElement | null) {
+  if (!input) return;
+  try {
+    const picker = (input as HTMLInputElement & { showPicker?: () => void }).showPicker;
+    if (typeof picker === "function") {
+      picker.call(input);
+      return;
+    }
+  } catch {
+    // fallback to click below
+  }
+  try {
+    input.click();
+  } catch {
+    // no-op
+  }
+}
+
 async function uploadToRepo(contentId: string, file: File, idempotencyKey: string) {
   const token = getToken();
   if (!token) throw new Error("Not signed in");
@@ -1655,7 +1673,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           name={`uploadFile-${contentId}`}
           ref={inputRef}
           type="file"
-          className="sr-only"
+          className="absolute -left-[9999px] h-0 w-0 opacity-0"
           onChange={async (e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
@@ -1702,9 +1720,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           type="button"
           aria-label="Upload file"
           disabled={triggerDisabled}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
           onClick={() => {
             if (triggerDisabled) return;
-            inputRef.current?.click();
+            openNativeFilePicker(inputRef.current);
           }}
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
@@ -1740,7 +1762,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           ref={inputRef}
           type="file"
           accept="image/jpeg,image/png,image/webp"
-          className="sr-only"
+          className="absolute -left-[9999px] h-0 w-0 opacity-0"
           onChange={async (e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
@@ -1766,9 +1788,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           type="button"
           aria-label="Upload content cover"
           disabled={triggerDisabled}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
           onClick={() => {
             if (triggerDisabled) return;
-            inputRef.current?.click();
+            openNativeFilePicker(inputRef.current);
           }}
           className={`text-sm rounded-lg border border-neutral-800 px-3 py-1 ${
             triggerDisabled ? "opacity-60 cursor-not-allowed" : "hover:bg-neutral-900 cursor-pointer"
@@ -2261,7 +2287,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-sm font-medium">{childTitle}</div>
                         <div className="text-xs text-neutral-400">
                           {relation} of{" "}
-                          <a className="underline text-neutral-200" href={`/splits/${a.parentContentId}`}>
+                          <a className="underline text-neutral-200" href={`/content/${a.parentContentId}/splits`}>
                             {parentTitle}
                           </a>
                         </div>
@@ -3021,7 +3047,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   </span>
                                   {" "}•{" "}
                                   {splitsAllowed ? (
-                                    <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
+                                    <a href={`/content/${it.id}/splits`} className="text-neutral-200 underline">
                                       View routing
                                     </a>
                                   ) : (
@@ -3237,7 +3263,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div className="mt-2 text-xs text-neutral-400">
                                 Original:{" "}
                                 {splitsAllowed ? (
-                                  <a href={`/splits/${parentLink.parent?.id}`} className="text-neutral-200 underline">
+                                  <a href={`/content/${parentLink.parent?.id}/splits`} className="text-neutral-200 underline">
                                     {parentLink.parent?.title || "Original work"}
                                   </a>
                                 ) : (
@@ -3247,7 +3273,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 {parentLink.requiresApproval ? (parentLink.approvedAt ? "Cleared" : "Pending clearance") : "Not required"}
                                 {" "}•{" "}
                                 {splitsAllowed ? (
-                                  <a href={`/splits/${it.id}`} className="text-neutral-200 underline">
+                                  <a href={`/content/${it.id}/splits`} className="text-neutral-200 underline">
                                     View routing
                                   </a>
                                 ) : (
@@ -3260,7 +3286,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 {splitsAllowed ? (
                                   <>
                                     {" "}
-                                    <a href={`/splits/${it.id}`} className="underline">
+                                    <a href={`/content/${it.id}/splits`} className="underline">
                                       Link original in Splits
                                     </a>.
                                   </>

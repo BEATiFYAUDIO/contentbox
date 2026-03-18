@@ -20,8 +20,9 @@ type ProfilePageProps = {
   setMe: (next: Me | null) => void;
   identityDetail: IdentityDetail | null;
   onOpenParticipations: () => void;
+  onOpenNodeLightning?: () => void;
 };
-export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipations }: ProfilePageProps) {
+export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipations, onOpenNodeLightning }: ProfilePageProps) {
   const [payoutSettings, setPayoutSettings] = useState<{ lightningAddress: string; lnurl: string; btcAddress: string } | null>(null);
   const [payoutMsg, setPayoutMsg] = useState<string | null>(null);
   const [payoutLoading, setPayoutLoading] = useState(false);
@@ -148,6 +149,12 @@ export default function ProfilePage({ me, setMe, identityDetail, onOpenParticipa
                 className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
               >
                 Splits I’m in
+              </button>
+              <button
+                onClick={onOpenNodeLightning}
+                className="ml-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              >
+                Configure Lightning
               </button>
             </div>
           </div>

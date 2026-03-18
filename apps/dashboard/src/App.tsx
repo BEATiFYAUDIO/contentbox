@@ -19,6 +19,7 @@ import DiagnosticsPage from "./pages/DiagnosticsPage";
 import ProviderConsolePage from "./pages/ProviderConsolePage";
 import FinancePage, { type FinanceTab } from "./pages/FinancePage";
 import ProfilePage from "./pages/ProfilePage";
+import NodeLightningPage from "./pages/NodeLightningPage";
 import { api, getApiBase } from "./lib/api";
 import { clearToken, getToken } from "./lib/auth";
 import { fetchIdentityDetail, type IdentityDetail } from "./lib/identity";
@@ -57,6 +58,10 @@ type NodeModeSnapshot = {
   localSovereignReady?: boolean;
 };
 
+type LightningAdminSnapshot = {
+  configured: boolean;
+};
+
 type PageKey =
   | "library"
   | "store"
@@ -76,7 +81,9 @@ type PageKey =
   | "receipt"
   | "invite"
   | "profile"
-  | "royalties-terms";
+  | "royalties-terms"
+  | "node-lightning"
+  | "revenue-lightning";
 
 /* =======================
    Helpers
@@ -141,6 +148,21 @@ function getReceiptTokenFromLocation(): string | null {
   return null;
 }
 
+function getSplitEditorContentIdFromLocation(): string | null {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  // canonical route: /content/:contentId/splits
+  if (parts[0] === "content" && parts[2] === "splits" && typeof parts[1] === "string") {
+    const contentId = decodeURIComponent(parts[1]).trim();
+    return contentId || null;
+  }
+  // legacy compatibility: /splits/:contentId
+  if (parts[0] === "splits" && typeof parts[1] === "string") {
+    const contentId = decodeURIComponent(parts[1]).trim();
+    return contentId || null;
+  }
+  return null;
+}
+
 function normalizePublicProfileHandle(value: unknown): string | null {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return null;
@@ -183,6 +205,7 @@ export default function App() {
     whoamiProbeEnabled ? "idle" : "disabled"
   );
   const [nodeModeSnapshot, setNodeModeSnapshot] = useState<NodeModeSnapshot | null>(null);
+  const [lightningAdminSnapshot, setLightningAdminSnapshot] = useState<LightningAdminSnapshot | null>(null);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -254,6 +277,7 @@ export default function App() {
     if (!token) {
       setIdentityDetail(null);
       setPublicStatus(null);
+      setLightningAdminSnapshot(null);
       return;
     }
     let alive = true;
@@ -289,6 +313,14 @@ export default function App() {
         setDiagnosticsStatus(null);
         setPublicStatus(null);
       }
+      try {
+        const ln = await api<LightningAdminSnapshot>("/api/admin/lightning", "GET");
+        if (!alive) return;
+        setLightningAdminSnapshot(ln || null);
+      } catch {
+        if (!alive) return;
+        setLightningAdminSnapshot(null);
+      }
     };
     refresh();
     const onFocus = () => {
@@ -314,6 +346,7 @@ export default function App() {
   // Extract the invite token from the URL when the component mounts
   useEffect(() => {
     const tokenFromUrl = getInviteTokenFromLocation();
+    const splitEditorContentId = getSplitEditorContentIdFromLocation();
     if (tokenFromUrl) {
       setInviteToken(tokenFromUrl);  // Set token when found
       setPage("invite");  // Show InvitePage directly
@@ -325,14 +358,21 @@ export default function App() {
     }
     const parts = window.location.pathname.split("/").filter(Boolean);
     if (!tokenFromUrl && !receiptFromUrl) {
-      if (parts[0] === "config") setPage("config");
-      else if (parts[0] === "diagnostics") setPage("diagnostics");
-      else if (parts[0] === "provider-console") setPage("provider-console");
-      else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
-      else {
-        // Always land on Content after refresh (ignore prior path)
-        window.history.replaceState({}, "", "/");
-        setPage("content");
+      if (splitEditorContentId) {
+        setSelectedContentId(splitEditorContentId);
+        setPage("split-editor");
+      } else {
+        if (parts[0] === "config") setPage("config");
+        else if (parts[0] === "diagnostics") setPage("diagnostics");
+        else if (parts[0] === "provider-console") setPage("provider-console");
+        else if (parts[0] === "node" && parts[1] === "lightning") setPage("node-lightning");
+        else if (parts[0] === "revenue" && parts[1] === "lightning") setPage("revenue-lightning");
+        else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
+        else {
+          // Always land on Content after refresh (ignore prior path)
+          window.history.replaceState({}, "", "/");
+          setPage("content");
+        }
       }
     }
     loadMe();  // Load user data
@@ -454,10 +494,16 @@ export default function App() {
     return true;
   });
 
+  const nodeSettingsNav = [
+    { key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }
+  ];
+
   const pageTitle =
     page === "config" ? "Configuration" :
     page === "diagnostics" ? "Diagnostics" :
     page === "provider-console" ? "Provider Console" :
+    page === "node-lightning" ? "Node Settings · Lightning" :
+    page === "revenue-lightning" ? "Revenue · Lightning (Legacy Route)" :
     page === "library" ? "Library" :
     page === "store" ? "Network" :
     page === "participations" ? "Royalties" :
@@ -478,6 +524,14 @@ export default function App() {
   const showAdvancedLocked =
     advancedInactive && (page === "splits" || page === "invite" || page === "split-editor");
   const isOperatorPage = page === "config" || page === "diagnostics" || page === "provider-console";
+  const tunnelActive = publicStatus?.status === "online";
+  const identityVerified = identityDetail?.level === "PERSISTENT";
+  const lightningConfigured = lightningAdminSnapshot?.configured ?? null;
+
+  function goToNodeLightning() {
+    window.history.pushState({}, "", "/node/lightning");
+    setPage("node-lightning");
+  }
 
   useEffect(() => {
     if (page === "provider-console" && !canSeeProviderConsole) {
@@ -586,6 +640,30 @@ export default function App() {
                     onClick={() => {
                       setPage(item.key);
                     }}
+                    className={[
+                      "w-full text-left rounded-lg px-3 py-2 transition border",
+                      active
+                        ? "border-white/30 bg-white/5"
+                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                    ].join(" ")}
+                  >
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-neutral-900 pt-4">
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Node Settings</div>
+              <div className="space-y-1">
+              {nodeSettingsNav.map((item) => {
+                const active = item.key === page;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={goToNodeLightning}
                     className={[
                       "w-full text-left rounded-lg px-3 py-2 transition border",
                       active
@@ -801,6 +879,12 @@ export default function App() {
                     </button>
                   </>
                 ) : null}
+                <button
+                  onClick={goToNodeLightning}
+                  className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                >
+                  Configure Lightning
+                </button>
                 {!publicStatusOnline && publicStatus?.url ? (
                   <div className="text-xs rounded-full border border-amber-900/70 bg-amber-950/30 px-3 py-1 text-amber-200">
                     Public profile link is offline. Bring tunnel online first.
@@ -874,6 +958,12 @@ export default function App() {
                   <div className="text-xs text-amber-300/90">
                     Storefront remains active for publishing, preview, and tipping.
                   </div>
+                  <button
+                    onClick={goToNodeLightning}
+                    className="mt-3 text-xs rounded-lg border border-amber-800 px-3 py-1 hover:bg-amber-900/30"
+                  >
+                    Configure Lightning
+                  </button>
                 </div>
               ) : null}
 
@@ -921,6 +1011,25 @@ export default function App() {
                 </ErrorBoundary>
               )}
 
+              {page === "node-lightning" && (
+                <NodeLightningPage
+                  tunnelActive={publicStatus ? tunnelActive : null}
+                  identityVerified={identityDetail ? identityVerified : null}
+                  lightningConfigured={lightningConfigured}
+                  onOpenPrimaryRoute={goToNodeLightning}
+                />
+              )}
+
+              {page === "revenue-lightning" && (
+                <NodeLightningPage
+                  legacyRoute
+                  tunnelActive={publicStatus ? tunnelActive : null}
+                  identityVerified={identityDetail ? identityVerified : null}
+                  lightningConfigured={lightningConfigured}
+                  onOpenPrimaryRoute={goToNodeLightning}
+                />
+              )}
+
               {page === "sales" && !isCommerceLockedPage && <SalesPage productTier={productTier} disabled={!commerceEnabled} />}
 
               {page === "receipt" && receiptToken && <ReceiptPage token={receiptToken} />}
@@ -951,7 +1060,7 @@ export default function App() {
                   productTier={productTier}
                   currentUserEmail={me?.email || null}
                   onOpenSplits={(contentId) => {
-                    window.history.pushState({}, "", `/splits/${contentId}`);
+                    window.history.pushState({}, "", `/content/${encodeURIComponent(contentId)}/splits`);
                     setSelectedContentId(contentId);
                     setPage("split-editor");
                   }}
@@ -967,7 +1076,7 @@ export default function App() {
                   capabilityReasons={capabilityReasons}
                   nodeMode={nodeMode}
                   onEditContent={(id) => {
-                    window.history.pushState({}, "", `/splits/${id}`);
+                    window.history.pushState({}, "", `/content/${encodeURIComponent(id)}/splits`);
                     setSelectedContentId(id);
                     setPage("split-editor");
                   }}
@@ -983,11 +1092,6 @@ export default function App() {
                   capabilityReasons={capabilityReasons}
                   contentId={selectedContentId}
                   onGoToPayouts={() => setPage("payouts")}
-                  onNotFound={() => {
-                    window.history.pushState({}, "", "/content");
-                    setSelectedContentId(null);
-                    setPage("content");
-                  }}
                 />
               )}
 
@@ -1000,6 +1104,7 @@ export default function App() {
                     window.history.pushState({}, "", "/participations");
                     setPage("participations");
                   }}
+                  onOpenNodeLightning={goToNodeLightning}
                 />
               )}
             </>
