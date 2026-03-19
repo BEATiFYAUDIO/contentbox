@@ -26118,7 +26118,8 @@ async function handlePublicInvitePage(req: any, reply: any) {
   const routeOrigin = ${JSON.stringify(remoteOrigin)};
   const app = document.getElementById("app");
   const apiBase = location.origin;
-  const TOKEN_KEY = "contentbox.token";
+  const TOKEN_KEY = "contentbox_token";
+  const TOKEN_KEY_LEGACY = "contentbox.token";
 
   function normalizeOrigin(raw) {
     let value = String(raw || "").trim();
@@ -26144,7 +26145,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
 
   function readAuthHeader() {
     try {
-      const t = localStorage.getItem(TOKEN_KEY);
+      const t = localStorage.getItem(TOKEN_KEY) || localStorage.getItem(TOKEN_KEY_LEGACY);
       return t ? { Authorization: "Bearer " + t } : {};
     } catch {
       return {};
@@ -26253,8 +26254,12 @@ async function handlePublicInvitePage(req: any, reply: any) {
     const canAccept = status === "pending" && auth?.authenticated && auth?.keyVerified === true && auth?.targetMatch !== false;
 
     let blockingMessage = "";
-    if (requiresAuth || keyUnavailable) {
-      blockingMessage = "This invite is valid, but signing is not available in this surface.";
+    if (requiresAuth) {
+      blockingMessage = auth?.authHeaderPresent
+        ? "A local auth token is present but not valid for this origin/session. Sign in again on this origin."
+        : "You are not signed in on this origin. Sign in to continue.";
+    } else if (keyUnavailable) {
+      blockingMessage = "Signed in, but backend key verification is not ready on this surface.";
     } else if (wrongIdentity) {
       blockingMessage = "Signed in as the wrong identity for this invite target.";
     }
@@ -26263,7 +26268,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
       <div style="font-size:22px;font-weight:700;">You’ve been invited to a split</div>
       <div class="muted" style="margin-top:6px;">Content: \${c.title || "Unknown"} (\${c.type || "content"})</div>
       <div class="muted" style="margin-top:4px;">Role: \${sp.role || "participant"} • Share: \${sp.percent || "?"}%</div>
-      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "—") + (auth?.email ? (" (" + auth.email + ")") : "")) : "not signed in"}</div>
+      <div class="muted" style="margin-top:8px;">Auth user: \${auth?.authenticated ? ((auth?.userId || "—") + (auth?.email ? (" (" + auth.email + ")") : "")) : (auth?.authHeaderPresent ? "token present but not authenticated" : "not signed in")}</div>
       <div class="muted" style="margin-top:4px;">Backend key verification: \${auth?.keyVerified === true ? "verified" : auth?.keyVerified === false ? "unverified" : "unknown"}</div>
       <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "—"}: \${inv?.targetValue || "—"}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
