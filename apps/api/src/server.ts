@@ -26262,7 +26262,12 @@ async function handlePublicInvitePage(req: any, reply: any) {
     const headers = Object.assign({ "Content-Type":"application/json" }, opts?.headers || {});
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", headers, body: opts?.body ? JSON.stringify(opts.body) : undefined });
     const data = await res.json().catch(()=>null);
-    if (!res.ok) throw new Error((data && (data.code || data.error || data.message)) || "Request failed");
+    if (!res.ok) {
+      const code = data && data.code ? String(data.code) : "";
+      const reason = data && data.reason ? String(data.reason) : "";
+      const message = data && (data.error || data.message) ? String(data.error || data.message) : "";
+      throw new Error([code, reason, message].filter(Boolean).join(" :: ") || "Request failed");
+    }
     return data;
   }
 
@@ -26533,6 +26538,22 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       if (remotePub) {
         const payloadStr = JSON.stringify(payload);
         const expectedAudience = normalizeOrigin(getPublicOrigin(req));
+        const hostHeader = asString(req?.headers?.host || "").trim();
+        const xfProtoRaw = asString(req?.headers?.["x-forwarded-proto"] || "");
+        const xfProto = xfProtoRaw.split(",")[0].trim().toLowerCase();
+        const inferredProto =
+          (xfProto === "http" || xfProto === "https" ? xfProto : "") ||
+          (req as any)?.protocol ||
+          (req?.raw?.socket?.encrypted ? "https" : "http");
+        const hostAudience = hostHeader ? normalizeOrigin(`${inferredProto}://${hostHeader}`) : "";
+        const activePublicAudience = normalizeOrigin(getActivePublicOrigin() || "");
+        const envAudience =
+          normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || "") ||
+          normalizeOrigin(process.env.PUBLIC_ORIGIN || "") ||
+          normalizeOrigin(process.env.APP_PUBLIC_ORIGIN || "");
+        const acceptedAudiences = new Set<string>(
+          [expectedAudience, hostAudience, activePublicAudience, envAudience].filter(Boolean) as string[]
+        );
         const payloadAudience = normalizeOrigin(String(payload?.aud || ""));
         const payloadNonce = asString(payload?.nonce || "").trim();
         const payloadOk =
@@ -26540,7 +26561,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
           String(payload?.remoteUserId || "") === remoteUserId &&
           String(payload?.nodeUrl || "").replace(/\/$/, "") === remoteNodeUrl &&
           Boolean(payloadNonce) &&
-          Boolean(expectedAudience && payloadAudience && expectedAudience === payloadAudience);
+          Boolean(payloadAudience && acceptedAudiences.has(payloadAudience));
         const ts = Date.parse(String(payload?.ts || ""));
         const tsOk = Number.isFinite(ts) && Math.abs(Date.now() - ts) < 15 * 60 * 1000;
         if (!payloadOk) {
