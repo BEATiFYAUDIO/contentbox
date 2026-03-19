@@ -88,7 +88,9 @@ function mapParticipantToRow(p: SplitParticipant): Row {
 
   return {
     id: p.id,
-    participantEmail: p.participantEmail,
+    participantEmail:
+      p.participantEmail ||
+      (hasIdentityClaim ? String(canonicalTargetValue || "").trim() : hasEmailClaim ? normEmail(canonicalTargetValue || p.participantEmail || "") : ""),
     role: p.role,
     percent: percentToString(p.percent),
     participantUserId: p.participantUserId || null,
@@ -104,6 +106,16 @@ function mapParticipantToRow(p: SplitParticipant): Row {
     normalizedEmail: p.participantEmail || null,
     resolvedVerifiedKey: p.verifiedAt ? true : null
   };
+}
+
+function participantInputValue(r: Row): string {
+  const direct = String(r.participantEmail || "").trim();
+  if (direct) return r.participantEmail;
+  const targetType = String(r.targetType || "").trim().toLowerCase();
+  const targetValue = String(r.targetValue || "").trim();
+  if ((targetType === "local_user" || targetType === "identity_ref") && targetValue) return targetValue;
+  if (targetType === "email" && targetValue) return targetValue;
+  return "";
 }
 
 type ParticipantResolveResponse =
@@ -1354,6 +1366,10 @@ export default function SplitEditorPage(props: {
               {rows.map((r, idx) => (
                 <tr key={idx} className="border-t border-neutral-800">
                   <td className="py-2 pr-2">
+                    {(() => {
+                      const participantValue = participantInputValue(r);
+                      return (
+                        <>
                     <label className="sr-only" htmlFor={`split-email-${idx}`}>
                       Participant
                     </label>
@@ -1361,7 +1377,7 @@ export default function SplitEditorPage(props: {
                       id={`split-email-${idx}`}
                       name={`splitEmail-${idx}`}
                       disabled={viewOnly || busy}
-                      value={r.participantEmail}
+                      value={participantValue}
                       onChange={(e) => {
                         const next = [...rows];
                         next[idx] = {
@@ -1392,7 +1408,7 @@ export default function SplitEditorPage(props: {
                       spellCheck={false}
                       autoComplete="email"
                     />
-                    {String(r.participantEmail || "").trim() ? (
+                    {participantValue.trim() ? (
                       <div className="mt-1 text-[11px]">
                         {resolvingByRowKey[rowKey(r, idx)] ? (
                           <span className="text-neutral-400">Resolving…</span>
@@ -1415,6 +1431,9 @@ export default function SplitEditorPage(props: {
                         )}
                       </div>
                     ) : null}
+                        </>
+                      );
+                    })()}
                   </td>
                   <td className="py-2 pr-2">
                     <label className="sr-only" htmlFor={`split-role-${idx}`}>
