@@ -438,10 +438,7 @@ export default function App() {
   const advancedInactive = productTier === "advanced" && !sovereignCapabilities.canActAsSovereignCreator;
   const canSeeProviderConsole = Boolean(sovereignCapabilities.canActAsProviderNode && nodeMode === "lan");
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
-  const providerCommerceConnected = Boolean(nodeModeSnapshot?.providerCommerceConnected);
-  const localSovereignReady = Boolean(nodeModeSnapshot?.localSovereignReady);
-  const sovereignCreatorWithProvider = nodeMode === "advanced" && providerCommerceConnected && !localSovereignReady;
-  const requireLocalLightning = nodeMode === "lan" || !sovereignCreatorWithProvider;
+  const requireLocalLightning = nodeMode === "lan";
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
     !commerceEnabled &&
