@@ -438,6 +438,10 @@ export default function App() {
   const advancedInactive = productTier === "advanced" && !sovereignCapabilities.canActAsSovereignCreator;
   const canSeeProviderConsole = Boolean(sovereignCapabilities.canActAsProviderNode && nodeMode === "lan");
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
+  const providerCommerceConnected = Boolean(nodeModeSnapshot?.providerCommerceConnected);
+  const localSovereignReady = Boolean(nodeModeSnapshot?.localSovereignReady);
+  const sovereignCreatorWithProvider = nodeMode === "advanced" && providerCommerceConnected && !localSovereignReady;
+  const requireLocalLightning = nodeMode === "lan" || !sovereignCreatorWithProvider;
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
     !commerceEnabled &&
@@ -871,12 +875,21 @@ export default function App() {
                     </button>
                   </>
                 ) : null}
-                <button
-                  onClick={goToNodeLightning}
-                  className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
-                >
-                  Configure Lightning
-                </button>
+                {requireLocalLightning ? (
+                  <button
+                    onClick={goToNodeLightning}
+                    className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                  >
+                    Configure Lightning
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => setPage("store")}
+                    className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
+                  >
+                    Provider commerce ready
+                  </button>
+                )}
                 {!publicStatusOnline && publicStatus?.url ? (
                   <div className="text-xs rounded-full border border-amber-900/70 bg-amber-950/30 px-3 py-1 text-amber-200">
                     Public profile link is offline. Bring tunnel online first.
@@ -950,12 +963,21 @@ export default function App() {
                   <div className="text-xs text-amber-300/90">
                     Storefront remains active for publishing, preview, and tipping.
                   </div>
-                  <button
-                    onClick={goToNodeLightning}
-                    className="mt-3 text-xs rounded-lg border border-amber-800 px-3 py-1 hover:bg-amber-900/30"
-                  >
-                    Configure Lightning
-                  </button>
+                  {requireLocalLightning ? (
+                    <button
+                      onClick={goToNodeLightning}
+                      className="mt-3 text-xs rounded-lg border border-amber-800 px-3 py-1 hover:bg-amber-900/30"
+                    >
+                      Configure Lightning
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setPage("store")}
+                      className="mt-3 text-xs rounded-lg border border-amber-800 px-3 py-1 hover:bg-amber-900/30"
+                    >
+                      Open provider commerce status
+                    </button>
+                  )}
                 </div>
               ) : null}
 
@@ -1092,6 +1114,7 @@ export default function App() {
                   me={me}
                   setMe={setMe}
                   identityDetail={identityDetail}
+                  requireLocalLightning={requireLocalLightning}
                   onOpenParticipations={() => {
                     window.history.pushState({}, "", "/participations");
                     setPage("participations");
