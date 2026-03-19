@@ -9242,6 +9242,7 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
   });
 
   const visibleInvites = includeHistory ? invites : invites.filter((inv) => shouldShowInviteInActiveLists(inv as any));
+  const inviteBase = await resolveShareableInviteOrigin(req);
   const out = visibleInvites.map((inv) => ({
     token: inv.token,
     id: inv.id,
@@ -9251,8 +9252,11 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
     targetType: normalizeInviteTargetType(inv.targetType),
     targetValue: asString(inv.targetValue),
     deliveryMethod: normalizeInviteDeliveryMethod(inv.deliveryMethod),
+    role: inv.splitParticipant?.role || null,
+    percent: percentToPrimitive(inv.splitParticipant?.percent ?? null),
     status:
       normalizeInviteInviteStatusForList(inv),
+    inviteUrl: inviteBase ? `${inviteBase.replace(/\/+$/, "")}/invite/${inv.token}` : null,
     contentId: inv.splitParticipant?.splitVersion?.contentId || null,
     contentTitle: inv.splitParticipant?.splitVersion?.content?.title || null,
     contentType: inv.splitParticipant?.splitVersion?.content?.type || null,

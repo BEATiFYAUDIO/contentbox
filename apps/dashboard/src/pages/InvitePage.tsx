@@ -799,6 +799,27 @@ export default function InvitePage({
   const localInviteKeys = new Set(visibleReceivedInvites.map(dedupeKey));
   const dedupedRemoteInvites = visibleRemoteInvites.filter((inv) => !localInviteKeys.has(dedupeKey(inv)));
 
+  const dedupeSentByClaim = (list: any[]) => {
+    const byKey = new Map<string, any>();
+    for (const inv of list || []) {
+      const key = [
+        String(inv?.contentId || "").trim(),
+        String(inv?.targetType || "").trim().toLowerCase(),
+        String(inv?.targetValue || inv?.participantUserId || inv?.participantEmail || "").trim().toLowerCase(),
+        String(inv?.role || "").trim().toLowerCase()
+      ].join("|");
+      const prev = byKey.get(key);
+      const prevTs = new Date(prev?.createdAt || 0).getTime();
+      const curTs = new Date(inv?.createdAt || 0).getTime();
+      if (!prev || curTs >= prevTs) byKey.set(key, inv);
+    }
+    return Array.from(byKey.values()).sort(
+      (a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime()
+    );
+  };
+
+  const dedupedSentInvites = dedupeSentByClaim(visibleSentInvites);
+
   async function acceptRemoteInvite(inv: any) {
     const inviteUrl = String(inv?.inviteUrl || "").trim();
     const token = extractInviteTokenFromPaste(inviteUrl || inv?.token || "");
@@ -1119,12 +1140,14 @@ export default function InvitePage({
               </button>
             </div>
             <div>
-              <div className="text-sm font-medium">Sent invites</div>
-              <div className="text-xs text-neutral-400">Tokens are only shown at creation; this list shows sent invites with status.</div>
-              {visibleSentInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No sent invites yet.</div>}
-              {visibleSentInvites.length > 0 && (
+              <div className="text-sm font-medium">Collaborators & invites</div>
+              <div className="text-xs text-neutral-400">
+                One row per identity-targeted participant. Pending rows include the shareable invite artifact when available.
+              </div>
+              {dedupedSentInvites.length === 0 && <div className="mt-2 text-xs text-neutral-500">No collaborator invites yet.</div>}
+              {dedupedSentInvites.length > 0 && (
                 <div className="mt-2 space-y-2 text-sm text-neutral-200">
-                  {groupByContent(visibleSentInvites).map((group) => {
+                  {groupByContent(dedupedSentInvites).map((group) => {
                     const open = sentOpen[group.key] ?? true;
                     return (
                       <div key={group.key} className="rounded-md border border-neutral-800 bg-neutral-950/40 p-2">
@@ -1147,8 +1170,14 @@ export default function InvitePage({
                                   <div className="break-all">
                                     <div className="text-[11px] text-neutral-500">{inviteAudienceLabel(inv)}</div>
                                     <div className="text-xs text-neutral-400">To: {inviteTargetLabel(inv)}</div>
+                                    <div className="text-xs text-neutral-400">Role/share: {inv?.role || "participant"} • {num(inv?.percent ?? 0)}%</div>
                                     <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
                                     <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
+                                    {pending ? (
+                                      <div className="text-[11px] text-amber-300">
+                                        Pending claim {inv?.inviteUrl ? "• invite link ready" : "• token ready"}
+                                      </div>
+                                    ) : null}
                                     {inv.contentDeletedAt ? (
                                       <div className="text-[11px] text-amber-300">Tombstoned</div>
                                     ) : null}
@@ -1157,19 +1186,27 @@ export default function InvitePage({
                                   <div className="flex items-center gap-2">
                                     <div className="text-xs uppercase tracking-wide text-neutral-400">{status}</div>
                                     {pending ? (
-                                      <button
-                                        onClick={async () => {
-                                          try {
-                                            await api(`/invites/${encodeURIComponent(inv.id)}`, "DELETE");
-                                            setMyInvites((list) => (list || []).filter((x) => x.id !== inv.id));
-                                          } catch (e: any) {
-                                            setMsg(e?.message || "Delete failed");
-                                          }
-                                        }}
-                                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                      >
-                                        Delete
-                                      </button>
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          onClick={() => navigator.clipboard.writeText(String(inv.inviteUrl || inv.token || ""))}
+                                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        >
+                                          {inv?.inviteUrl ? "Copy link" : "Copy token"}
+                                        </button>
+                                        <button
+                                          onClick={async () => {
+                                            try {
+                                              await api(`/invites/${encodeURIComponent(inv.id)}`, "DELETE");
+                                              setMyInvites((list) => (list || []).filter((x) => x.id !== inv.id));
+                                            } catch (e: any) {
+                                              setMsg(e?.message || "Delete failed");
+                                            }
+                                          }}
+                                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
                                     ) : null}
                                   </div>
                                 </div>
