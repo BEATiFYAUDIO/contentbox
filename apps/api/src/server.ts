@@ -26133,11 +26133,61 @@ async function handlePublicInvitePage(req: any, reply: any) {
     return data;
   }
 
-  function buildDashboardHandoffUrl() {
-    // Use runtime origin instead of server APP_BASE_URL (which may be localhost
-    // and unreachable from the recipient machine in cross-node invite flows).
-    const rawBase = String(location.origin || "");
-    const base = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
+  function normalizeOrigin(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    try {
+      return new URL(value).origin;
+    } catch {
+      return "";
+    }
+  }
+
+  async function canReachOrigin(origin) {
+    const base = normalizeOrigin(origin);
+    if (!base) return false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 1200);
+    try {
+      await fetch(base + "/healthz", { method: "GET", mode: "no-cors", cache: "no-store", signal: controller.signal });
+      return true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  async function resolveDashboardBase() {
+    const params = new URLSearchParams(location.search || "");
+    const explicitDashboard = normalizeOrigin(params.get("dashboard"));
+    if (explicitDashboard) {
+      return explicitDashboard;
+    }
+
+    const host = String(location.hostname || "").toLowerCase();
+    const isLoopback = host === "localhost" || host === "127.0.0.1";
+    const candidates = [
+      isLoopback ? normalizeOrigin(location.origin) : "",
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+      "http://localhost:4000",
+      "http://127.0.0.1:4000"
+    ].filter(Boolean);
+    const seen = new Set();
+    for (const candidate of candidates) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (await canReachOrigin(candidate)) {
+        return candidate;
+      }
+    }
+    return "";
+  }
+
+  async function buildDashboardHandoffUrl() {
+    const base = await resolveDashboardBase();
+    if (!base) return "";
     return base + "/invite/" + encodeURIComponent(token) + "?remote=" + encodeURIComponent(remoteOrigin);
   }
 
@@ -26167,7 +26217,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
       <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "—"}: \${inv?.targetValue || "—"}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
       <button id="acceptBtn" class="btn" style="margin-top:14px;" \${canAccept ? "" : "disabled"}>Accept invite</button>
-      <a href="\${buildDashboardHandoffUrl()}" class="btn" style="margin-top:10px;display:inline-block;text-decoration:none;">Continue in dashboard</a>
+      <button id="continueBtn" class="btn" style="margin-top:10px;">Continue in dashboard</button>
       <div id="status" class="muted" style="margin-top:8px;"></div>
       <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
@@ -26195,6 +26245,20 @@ async function handlePublicInvitePage(req: any, reply: any) {
         } else {
           document.getElementById("status").textContent = msg;
         }
+      }
+    };
+    document.getElementById("continueBtn").onclick = async () => {
+      const statusEl = document.getElementById("status");
+      statusEl.textContent = "Locating dashboard…";
+      const handoff = await buildDashboardHandoffUrl();
+      if (!handoff) {
+        statusEl.textContent = "No reachable local dashboard origin found. Open your local Certifyd dashboard and paste this invite link there.";
+        return;
+      }
+      try {
+        location.href = handoff;
+      } catch {
+        statusEl.textContent = "Could not open dashboard handoff URL.";
       }
     };
   }

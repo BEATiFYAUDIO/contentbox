@@ -230,8 +230,17 @@ export default function InvitePage({
   }
 
   function normalizeOrigin(raw: string | null | undefined): string | null {
-    const value = String(raw || "").trim();
+    let value = String(raw || "").trim();
     if (!value) return null;
+    for (let i = 0; i < 2; i++) {
+      try {
+        if (/%[0-9A-Fa-f]{2}/.test(value)) {
+          value = decodeURIComponent(value);
+        }
+      } catch {
+        break;
+      }
+    }
     try {
       return new URL(value).origin.replace(/\/+$/, "");
     } catch {
@@ -246,15 +255,33 @@ export default function InvitePage({
     if (/^https?:\/\//i.test(value)) {
       try {
         const u = new URL(value);
+        const pathParts = u.pathname.split("/").filter(Boolean);
+        const inviteIdx = pathParts.findIndex((p) => p === "invite" || p === "invites");
+        const tokenFromPath =
+          inviteIdx >= 0 && typeof pathParts[inviteIdx + 1] === "string"
+            ? decodeURIComponent(pathParts[inviteIdx + 1])
+            : null;
+        const tokenFromQuery = (() => {
+          const qp = u.searchParams.get("token");
+          return qp ? decodeURIComponent(qp) : null;
+        })();
         const token =
-          extractInviteTokenFromPaste(value) ||
-          (() => {
-            const qp = u.searchParams.get("token");
-            return qp ? decodeURIComponent(qp) : null;
-          })();
+          tokenFromPath ||
+          tokenFromQuery ||
+          extractInviteTokenFromPaste(value);
         if (!token) return null;
-        const remoteFromQuery = normalizeOrigin(u.searchParams.get("remote"));
-        return { token, remoteOrigin: remoteFromQuery || u.origin.replace(/\/+$/, "") };
+        const remoteFromQuery =
+          normalizeOrigin(u.searchParams.get("remote")) ||
+          normalizeOrigin(u.searchParams.get("origin"));
+        const remoteFromHash = (() => {
+          const hash = String(u.hash || "");
+          const m = hash.match(/(?:^|[?&])remote=([^&]+)/i);
+          if (!m?.[1]) return null;
+          return normalizeOrigin(decodeURIComponent(m[1]));
+        })();
+        const inviteOrigin = normalizeOrigin(u.origin);
+        const remoteOrigin = remoteFromQuery || remoteFromHash || inviteOrigin;
+        return { token, remoteOrigin };
       } catch {
         return null;
       }
@@ -268,14 +295,19 @@ export default function InvitePage({
   function getRemoteOriginFromLocation(): string | null {
     try {
       const qs = new URLSearchParams(window.location.search);
-      const remote = qs.get("remote");
-      if (remote) return String(remote).replace(/\/+$/, "");
+      const remote =
+        normalizeOrigin(qs.get("remote")) ||
+        normalizeOrigin(qs.get("origin"));
+      if (remote) return remote;
 
       const h = window.location.hash || "";
       if (h.startsWith("#")) {
         const hash = h.slice(1);
         const m = hash.match(/remote=([^&]+)/);
-        if (m && m[1]) return decodeURIComponent(m[1]).replace(/\/+$/, "");
+        if (m && m[1]) {
+          const fromHash = normalizeOrigin(decodeURIComponent(m[1]));
+          if (fromHash) return fromHash;
+        }
       }
     } catch {}
     return null;
@@ -310,6 +342,7 @@ export default function InvitePage({
       : `/invite/${encodeURIComponent(parsed.token)}`;
     if (import.meta.env.DEV) {
       console.debug("[invite.openPastedInvite]", {
+        raw,
         token: parsed.token,
         remoteOrigin: remote,
         next
@@ -465,6 +498,13 @@ export default function InvitePage({
         return;
       }
       if (remoteOriginFromLocation) {
+        if (import.meta.env.DEV) {
+          console.debug("[invite.load]", {
+            token: tokenToUse,
+            mode: "remote",
+            remoteOrigin: remoteOriginFromLocation
+          });
+        }
         const reachable = await checkRemoteOriginReachable(remoteOriginFromLocation);
         setRemoteOriginReachable(reachable);
         if (!reachable) {
@@ -473,6 +513,13 @@ export default function InvitePage({
           return;
         }
       } else {
+        if (import.meta.env.DEV) {
+          console.debug("[invite.load]", {
+            token: tokenToUse,
+            mode: "local",
+            apiBase: getApiBase()
+          });
+        }
         setRemoteOriginReachable(null);
       }
       const res = remoteOriginFromLocation
