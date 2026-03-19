@@ -11087,9 +11087,58 @@ app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: a
   try {
     const res = await fetchWithTimeout(`${origin}/invites/${encodeURIComponent(token)}`, { method: "GET" } as any, 8000);
     const text = await res.text();
+    if (!res.ok) {
+      reply.code(res.status);
+      reply.type("application/json");
+      return reply.send(text);
+    }
+
+    let payload: any = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    if (!payload || typeof payload !== "object") {
+      reply.code(res.status);
+      reply.type("application/json");
+      return reply.send(text);
+    }
+
+    const localUserId = asString((req.user as JwtUser)?.sub || "").trim();
+    const localUser = localUserId
+      ? await prisma.user.findUnique({
+          where: { id: localUserId },
+          select: { id: true, email: true }
+        })
+      : null;
+    const localEmail = normalizeEmail(localUser?.email || "");
+    const keyVerified = localUserId ? await hasVerifiedParticipantKey(localUserId) : null;
+    const targetType = normalizeInviteTargetType(payload?.targetType);
+    const targetValue = asString(payload?.targetValue || "").trim();
+    let targetMatch: boolean | null = null;
+    let mismatchCode: "INVITE_TARGET_MISMATCH" | "INVITE_EMAIL_MISMATCH" | null = null;
+    if (targetType === "local_user" || targetType === "identity_ref") {
+      targetMatch = Boolean(localUserId && targetValue === localUserId);
+      if (!targetMatch) mismatchCode = "INVITE_TARGET_MISMATCH";
+    } else if (targetType === "email") {
+      targetMatch = Boolean(localEmail && normalizeEmail(targetValue) === localEmail);
+      if (!targetMatch) mismatchCode = "INVITE_EMAIL_MISMATCH";
+    }
+
+    payload.authContext = {
+      authenticated: Boolean(localUserId),
+      authHeaderPresent: Boolean(asString(req?.headers?.authorization || "").trim()),
+      userId: localUserId || null,
+      email: localUser?.email || null,
+      keyVerified: keyVerified === null ? null : Boolean(keyVerified),
+      targetMatch,
+      mismatchCode
+    };
+
     reply.code(res.status);
     reply.type("application/json");
-    return reply.send(text);
+    return reply.send(payload);
   } catch (e: any) {
     return reply.code(502).send({ error: "Remote invite fetch failed", details: String(e?.message || e) });
   }
