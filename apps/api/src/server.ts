@@ -26111,10 +26111,32 @@ async function handlePublicInvitePage(req: any, reply: any) {
 <script>
 (function(){
   const token = ${JSON.stringify(token)};
-  const remoteOrigin = ${JSON.stringify(remoteOrigin)};
+  const routeOrigin = ${JSON.stringify(remoteOrigin)};
   const app = document.getElementById("app");
   const apiBase = location.origin;
   const TOKEN_KEY = "contentbox.token";
+
+  function normalizeOrigin(raw) {
+    let value = String(raw || "").trim();
+    if (!value) return "";
+    for (let i = 0; i < 2; i++) {
+      try {
+        if (/%[0-9A-Fa-f]{2}/.test(value)) value = decodeURIComponent(value);
+      } catch {
+        break;
+      }
+    }
+    try {
+      return new URL(value).origin;
+    } catch {
+      return "";
+    }
+  }
+
+  const params = new URLSearchParams(location.search || "");
+  const remoteFromQuery = normalizeOrigin(params.get("remote")) || normalizeOrigin(params.get("origin"));
+  const effectiveRemoteOrigin = remoteFromQuery || routeOrigin;
+  const isRemoteInvite = Boolean(remoteFromQuery);
 
   function readAuthHeader() {
     try {
@@ -26133,14 +26155,8 @@ async function handlePublicInvitePage(req: any, reply: any) {
     return data;
   }
 
-  function normalizeOrigin(raw) {
-    const value = String(raw || "").trim();
-    if (!value) return "";
-    try {
-      return new URL(value).origin;
-    } catch {
-      return "";
-    }
+  function remoteProxyPath(path) {
+    return "/api/remote" + path + "?origin=" + encodeURIComponent(effectiveRemoteOrigin);
   }
 
   async function canReachOrigin(origin) {
@@ -26170,7 +26186,6 @@ async function handlePublicInvitePage(req: any, reply: any) {
   }
 
   async function resolveDashboardBase() {
-    const params = new URLSearchParams(location.search || "");
     const explicitDashboard = normalizeOrigin(params.get("dashboard"));
     if (explicitDashboard) {
       return { base: explicitDashboard, acceptCapable: isAcceptingSurface(explicitDashboard) };
@@ -26217,7 +26232,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
       "/invite/" +
       encodeURIComponent(token) +
       "?remote=" +
-      encodeURIComponent(remoteOrigin) +
+      encodeURIComponent(effectiveRemoteOrigin) +
       "&surface=" +
       encodeURIComponent(surface)
     );
@@ -26256,7 +26271,10 @@ async function handlePublicInvitePage(req: any, reply: any) {
     document.getElementById("acceptBtn").onclick = async () => {
       document.getElementById("status").textContent = "Accepting…";
       try {
-        const resp = await fetchJson("/invites/" + encodeURIComponent(token) + "/accept", {
+        const acceptPath = isRemoteInvite
+          ? remoteProxyPath("/invites/" + encodeURIComponent(token) + "/accept")
+          : "/invites/" + encodeURIComponent(token) + "/accept";
+        const resp = await fetchJson(acceptPath, {
           method:"POST",
           body:{},
           headers: readAuthHeader()
@@ -26299,7 +26317,19 @@ async function handlePublicInvitePage(req: any, reply: any) {
     };
   }
 
-  fetchJson("/invites/" + encodeURIComponent(token), { headers: readAuthHeader() })
+  const inviteLookupPath = isRemoteInvite
+    ? remoteProxyPath("/invites/" + encodeURIComponent(token))
+    : "/invites/" + encodeURIComponent(token);
+  if (location.search && (location.search.includes("remote=") || location.search.includes("origin="))) {
+    console.debug("[public-invite.load]", {
+      token,
+      mode: isRemoteInvite ? "remote" : "local",
+      remoteOrigin: isRemoteInvite ? effectiveRemoteOrigin : null,
+      inviteLookupPath
+    });
+  }
+
+  fetchJson(inviteLookupPath, { headers: readAuthHeader() })
     .then(render)
     .catch(err => { app.textContent = err && err.message ? err.message : "Invite not found."; });
 })();
