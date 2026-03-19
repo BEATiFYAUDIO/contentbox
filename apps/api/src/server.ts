@@ -26158,37 +26158,69 @@ async function handlePublicInvitePage(req: any, reply: any) {
     }
   }
 
+  function isAcceptingSurface(origin) {
+    const base = normalizeOrigin(origin);
+    if (!base) return false;
+    try {
+      const u = new URL(base);
+      return String(u.port || "") === "4000";
+    } catch {
+      return false;
+    }
+  }
+
   async function resolveDashboardBase() {
     const params = new URLSearchParams(location.search || "");
     const explicitDashboard = normalizeOrigin(params.get("dashboard"));
     if (explicitDashboard) {
-      return explicitDashboard;
+      return { base: explicitDashboard, acceptCapable: isAcceptingSurface(explicitDashboard) };
     }
 
     const host = String(location.hostname || "").toLowerCase();
     const isLoopback = host === "localhost" || host === "127.0.0.1";
-    const candidates = [
-      isLoopback ? normalizeOrigin(location.origin) : "",
-      "http://localhost:5173",
-      "http://127.0.0.1:5173",
+    const currentOrigin = isLoopback ? normalizeOrigin(location.origin) : "";
+    const acceptingCandidates = [
+      currentOrigin && isAcceptingSurface(currentOrigin) ? currentOrigin : "",
       "http://localhost:4000",
       "http://127.0.0.1:4000"
     ].filter(Boolean);
+    const viewCandidates = [
+      currentOrigin && !isAcceptingSurface(currentOrigin) ? currentOrigin : "",
+      "http://localhost:5173",
+      "http://127.0.0.1:5173",
+    ].filter(Boolean);
+
     const seen = new Set();
-    for (const candidate of candidates) {
+    for (const candidate of acceptingCandidates) {
       if (seen.has(candidate)) continue;
       seen.add(candidate);
       if (await canReachOrigin(candidate)) {
-        return candidate;
+        return { base: candidate, acceptCapable: true };
       }
     }
-    return "";
+    for (const candidate of viewCandidates) {
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      if (await canReachOrigin(candidate)) {
+        return { base: candidate, acceptCapable: false };
+      }
+    }
+    return { base: "", acceptCapable: false };
   }
 
   async function buildDashboardHandoffUrl() {
-    const base = await resolveDashboardBase();
-    if (!base) return "";
-    return base + "/invite/" + encodeURIComponent(token) + "?remote=" + encodeURIComponent(remoteOrigin);
+    const resolved = await resolveDashboardBase();
+    if (!resolved.base) return "";
+    const surface = resolved.acceptCapable ? "accept" : "view";
+    return (
+      resolved.base +
+      "/invite/" +
+      encodeURIComponent(token) +
+      "?remote=" +
+      encodeURIComponent(remoteOrigin) +
+      "&surface=" +
+      encodeURIComponent(surface)
+    );
   }
 
   function render(inv){
@@ -26250,6 +26282,10 @@ async function handlePublicInvitePage(req: any, reply: any) {
     document.getElementById("continueBtn").onclick = async () => {
       const statusEl = document.getElementById("status");
       statusEl.textContent = "Locating dashboard…";
+      const resolved = await resolveDashboardBase();
+      if (resolved.base && !resolved.acceptCapable) {
+        statusEl.textContent = "Acceptance-capable creator surface not reachable. Opening view-only dashboard.";
+      }
       const handoff = await buildDashboardHandoffUrl();
       if (!handoff) {
         statusEl.textContent = "No reachable local dashboard origin found. Open your local Certifyd dashboard and paste this invite link there.";

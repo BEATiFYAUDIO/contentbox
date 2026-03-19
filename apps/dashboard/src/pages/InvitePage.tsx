@@ -313,7 +313,17 @@ export default function InvitePage({
     return null;
   }
 
+  function getSurfaceModeFromLocation(): "accept" | "view" | null {
+    try {
+      const qs = new URLSearchParams(window.location.search);
+      const mode = String(qs.get("surface") || "").trim().toLowerCase();
+      if (mode === "accept" || mode === "view") return mode;
+    } catch {}
+    return null;
+  }
+
   const remoteOriginFromLocation = getRemoteOriginFromLocation();
+  const surfaceModeFromLocation = getSurfaceModeFromLocation();
 
   function openPastedInvite() {
     setPasteMsg(null);
@@ -382,6 +392,7 @@ export default function InvitePage({
   const inviteAuthRequired = authCtx ? !authCtx.authenticated : !me;
   const inviteWrongIdentity = Boolean(authCtx ? authCtx.targetMatch === false : false);
   const backendKeyVerified = authCtx?.keyVerified ?? null;
+  const inviteAcceptSurfaceBlocked = surfaceModeFromLocation === "view";
 
   async function fetchRemoteJson(path: string, opts?: { method?: string; body?: any; headers?: Record<string, string> }) {
     if (!remoteOriginFromLocation) throw new Error("Remote origin missing");
@@ -695,6 +706,10 @@ export default function InvitePage({
   // manual token loader removed — invite tab (owner view) now shows only invites lists; use direct invite URL for detail view.
 
   async function acceptInvite() {
+    if (inviteAcceptSurfaceBlocked) {
+      setMsg("This is a view-only dashboard surface. Open your signed-in creator node (port 4000) to accept.");
+      return;
+    }
     setBusy(true);
     setMsg(null);
     try {
@@ -1438,13 +1453,27 @@ export default function InvitePage({
                   </button>
                 </div>
               ) : (
-                <button
-                  disabled={busy || expired || alreadyAccepted || inviteWrongIdentity || backendKeyVerified === false}
-                  onClick={acceptInvite}
-                  className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
-                >
-                  Accept invite
-                </button>
+                <div className="space-y-2">
+                  <button
+                    disabled={
+                      busy ||
+                      expired ||
+                      alreadyAccepted ||
+                      inviteWrongIdentity ||
+                      backendKeyVerified === false ||
+                      inviteAcceptSurfaceBlocked
+                    }
+                    onClick={acceptInvite}
+                    className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-50"
+                  >
+                    Accept invite
+                  </button>
+                  {inviteAcceptSurfaceBlocked ? (
+                    <div className="text-xs text-amber-300">
+                      View-only surface detected. Acceptance is available on the signed-in creator surface (port 4000).
+                    </div>
+                  ) : null}
+                </div>
               )}
               {inviteWrongIdentity ? (
                 <div className="mt-2 text-xs text-amber-300">
