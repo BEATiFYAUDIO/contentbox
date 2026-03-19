@@ -21626,12 +21626,35 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
   if (content.ownerUserId !== userId) return forbidden(reply);
 
   const deletedAt = new Date();
+  // Purge split draft working state when content is moved to trash.
+  // Keep locked split history intact for receipts/settlement/audit continuity.
+  const purgeSplitDraftState = async () => {
+    const draftSplitIds = (
+      await prisma.splitVersion.findMany({
+        where: { contentId, status: "draft" as any },
+        select: { id: true }
+      })
+    ).map((s) => s.id);
+    if (draftSplitIds.length === 0) return 0;
+    await prisma.$transaction([
+      prisma.contentItem.updateMany({
+        where: { id: contentId, currentSplitId: { in: draftSplitIds } as any },
+        data: { currentSplitId: null }
+      }),
+      prisma.invitation.deleteMany({ where: { splitVersionId: { in: draftSplitIds } } }),
+      prisma.splitParticipant.deleteMany({ where: { splitVersionId: { in: draftSplitIds } } }),
+      prisma.splitVersion.deleteMany({ where: { id: { in: draftSplitIds } } })
+    ]);
+    return draftSplitIds.length;
+  };
+
   if (isPublished(content)) {
     const [entitlementsCount, paidCount] = await prisma.$transaction([
       prisma.entitlement.count({ where: { contentId } }),
       prisma.paymentIntent.count({ where: { contentId, status: "paid" as any } })
     ]);
     const tombstone = shouldTombstoneOnDelete(content, entitlementsCount, paidCount);
+    const purgedDraftSplits = await purgeSplitDraftState();
     await prisma.contentItem.update({
       where: { id: contentId },
       data: { deletedAt, deletedReason: tombstone ? "tombstone" : "soft" }
@@ -21647,14 +21670,16 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
             deletedAt: deletedAt.toISOString(),
             deletedReason: tombstone ? "tombstone" : "soft",
             entitlementsCount,
-            paidCount
+            paidCount,
+            purgedDraftSplits
           } as any
         }
       });
     } catch {}
-    return reply.send({ ok: true, tombstoned: tombstone });
+    return reply.send({ ok: true, tombstoned: tombstone, purgedDraftSplits });
   }
 
+  const purgedDraftSplits = await purgeSplitDraftState();
   await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt, deletedReason: "soft" } });
   try {
     await prisma.auditEvent.create({
@@ -21665,12 +21690,13 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
         entityId: contentId,
         payloadJson: {
           deletedAt: deletedAt.toISOString(),
-          deletedReason: "soft"
+          deletedReason: "soft",
+          purgedDraftSplits
         } as any
       }
     });
   } catch {}
-  return reply.send({ ok: true });
+  return reply.send({ ok: true, purgedDraftSplits });
 });
 
 // Restore from trash

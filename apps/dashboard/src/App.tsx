@@ -356,23 +356,15 @@ export default function App() {
       setReceiptToken(receiptFromUrl);
       setPage("receipt");
     }
-    const parts = window.location.pathname.split("/").filter(Boolean);
     if (!tokenFromUrl && !receiptFromUrl) {
       if (splitEditorContentId) {
         setSelectedContentId(splitEditorContentId);
         setPage("split-editor");
       } else {
-        if (parts[0] === "config") setPage("config");
-        else if (parts[0] === "diagnostics") setPage("diagnostics");
-        else if (parts[0] === "provider-console") setPage("provider-console");
-        else if (parts[0] === "node" && parts[1] === "lightning") setPage("node-lightning");
-        else if (parts[0] === "revenue" && parts[1] === "lightning") setPage("revenue-lightning");
-        else if (parts[0] === "finance" || parts[0] === "revenue") setPage("finance");
-        else {
-          // Always land on Content after refresh (ignore prior path)
-          window.history.replaceState({}, "", "/");
-          setPage("content");
-        }
+        // Canonical refresh route: always land on Content unless this is an
+        // explicit deep-link surface (invite/receipt/split editor).
+        window.history.replaceState({}, "", "/");
+        setPage("content");
       }
     }
     loadMe();  // Load user data
