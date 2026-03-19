@@ -179,6 +179,17 @@ function buildInviteMailto(inv: CreatedInviteRow) {
   return `mailto:${encodeURIComponent(to)}?${q.toString()}`;
 }
 
+function openExternalInNewWindow(url: string) {
+  const target = String(url || "").trim();
+  if (!target) return;
+  try {
+    const popup = window.open(target, "_blank", "noopener,noreferrer");
+    if (!popup) window.location.href = target;
+  } catch {
+    window.location.href = target;
+  }
+}
+
 export default function InvitePage({
   token,
   onAccepted,
@@ -969,7 +980,7 @@ export default function InvitePage({
             <a
               href={`${remoteOriginFromLocation.replace(/\/+$/, "")}/invite/${encodeURIComponent(tokenToUse)}`}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="text-xs text-neutral-400 underline"
             >
               Open remote invite page
@@ -1029,7 +1040,7 @@ export default function InvitePage({
                         i.inviteUrl
                     );
                     if (firstPending) {
-                      window.location.href = buildInviteMailto(firstPending);
+                      openExternalInNewWindow(buildInviteMailto(firstPending));
                       setCreateMsg(
                         invites.length > 1
                           ? `Created ${res.created} invite(s). Opened email draft for ${firstPending.participantEmail}; use copy/resend for others.`
@@ -1097,7 +1108,7 @@ export default function InvitePage({
                           <button
                             onClick={() => {
                               if (!inv.participantEmail) return;
-                              window.location.href = buildInviteMailto(inv);
+                              openExternalInNewWindow(buildInviteMailto(inv));
                             }}
                             className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                             title="Open default mail client with invite link"
