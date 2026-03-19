@@ -35,7 +35,7 @@ function extractInviteToken(raw: string): string | null {
   if (!v) return null;
   const m1 = v.match(/\btoken=([^\s]+)/i);
   if (m1 && m1[1]) return m1[1];
-  const m2 = v.match(/\/invite\/([^?#\s]+)/i);
+  const m2 = v.match(/\/invites?\/([^?#\s]+)/i);
   if (m2 && m2[1]) return m2[1];
   if (/^[A-Za-z0-9_-]{10,}$/.test(v)) return v;
   return null;

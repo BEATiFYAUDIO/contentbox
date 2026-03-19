@@ -223,10 +223,46 @@ export default function InvitePage({
     if (!v) return null;
     const m1 = v.match(/\btoken=([^\s]+)/i);
     if (m1 && m1[1]) return m1[1];
-    const m2 = v.match(/\/invite\/([^?#\s]+)/i);
+    const m2 = v.match(/\/invites?\/([^?#\s]+)/i);
     if (m2 && m2[1]) return m2[1];
     if (/^[A-Za-z0-9_-]{10,}$/.test(v)) return v;
     return null;
+  }
+
+  function normalizeOrigin(raw: string | null | undefined): string | null {
+    const value = String(raw || "").trim();
+    if (!value) return null;
+    try {
+      return new URL(value).origin.replace(/\/+$/, "");
+    } catch {
+      return null;
+    }
+  }
+
+  function parseInviteInput(raw: string): { token: string; remoteOrigin: string | null } | null {
+    const value = String(raw || "").trim();
+    if (!value) return null;
+
+    if (/^https?:\/\//i.test(value)) {
+      try {
+        const u = new URL(value);
+        const token =
+          extractInviteTokenFromPaste(value) ||
+          (() => {
+            const qp = u.searchParams.get("token");
+            return qp ? decodeURIComponent(qp) : null;
+          })();
+        if (!token) return null;
+        const remoteFromQuery = normalizeOrigin(u.searchParams.get("remote"));
+        return { token, remoteOrigin: remoteFromQuery || u.origin.replace(/\/+$/, "") };
+      } catch {
+        return null;
+      }
+    }
+
+    const token = extractInviteTokenFromPaste(value);
+    if (!token) return null;
+    return { token, remoteOrigin: null };
   }
 
   function getRemoteOriginFromLocation(): string | null {
@@ -254,39 +290,39 @@ export default function InvitePage({
       setPasteMsg("Paste a token or an /invite/<token> link.");
       return;
     }
-    if (/^https?:\/\//i.test(raw)) {
-      try {
-        const u = new URL(raw);
-        const token = extractInviteTokenFromPaste(raw);
-        if (!token) {
-          setPasteMsg("Paste a valid /invite/<token> link.");
-          return;
-        }
-        window.location.href = `/invite/${encodeURIComponent(token)}?remote=${encodeURIComponent(u.origin)}`;
-        return;
-      } catch {
-        setPasteMsg("Paste a valid invite link.");
-        return;
-      }
-    }
-    const t = extractInviteTokenFromPaste(raw);
-    if (!t) {
+    const parsed = parseInviteInput(raw);
+    if (!parsed?.token) {
       setPasteMsg("Paste a token or an /invite/<token> link.");
       return;
     }
+    const localOrigin = normalizeOrigin(window.location.origin);
+    const remote =
+      parsed.remoteOrigin && parsed.remoteOrigin !== localOrigin
+        ? parsed.remoteOrigin
+        : null;
     const base = getApiBase();
-    if (base.includes("127.0.0.1") || base.includes("localhost")) {
+    if (!remote && (base.includes("127.0.0.1") || base.includes("localhost")) && !/^https?:\/\//i.test(raw)) {
       setPasteMsg("For remote invites, paste the full invite link.");
       return;
     }
-    window.location.href = `/invite/${encodeURIComponent(t)}?remote=${encodeURIComponent(base)}`;
+    const next = remote
+      ? `/invite/${encodeURIComponent(parsed.token)}?remote=${encodeURIComponent(remote)}`
+      : `/invite/${encodeURIComponent(parsed.token)}`;
+    if (import.meta.env.DEV) {
+      console.debug("[invite.openPastedInvite]", {
+        token: parsed.token,
+        remoteOrigin: remote,
+        next
+      });
+    }
+    window.location.href = next;
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
   const tokenFromLocation = (() => {
     try {
       const parts = window.location.pathname.split("/").filter(Boolean);
-      if (parts[0] === "invite" && typeof parts[1] === "string") return decodeURIComponent(parts[1]);
+      if ((parts[0] === "invite" || parts[0] === "invites") && typeof parts[1] === "string") return decodeURIComponent(parts[1]);
       const qp = new URLSearchParams(window.location.search).get("token");
       if (qp) return decodeURIComponent(qp);
 

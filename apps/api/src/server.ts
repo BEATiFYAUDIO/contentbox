@@ -26058,9 +26058,7 @@ app.get("/invites/:token", handlePublicInviteLookup);
 async function handlePublicInvitePage(req: any, reply: any) {
   const token = asString((req.params as any).token);
   if (!token) return notFound(reply, "Invite not found");
-  const dashboardBase = APP_BASE_URL.replace(/\/+$/, "");
   const remoteOrigin = getPublicOrigin(req).replace(/\/+$/, "");
-  const handoffUrl = `${dashboardBase}/invite/${encodeURIComponent(token)}?remote=${encodeURIComponent(remoteOrigin)}`;
 
   const html = `<!doctype html>
 <html lang="en">
@@ -26087,7 +26085,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
 <script>
 (function(){
   const token = ${JSON.stringify(token)};
-  const handoffUrl = ${JSON.stringify(handoffUrl)};
+  const remoteOrigin = ${JSON.stringify(remoteOrigin)};
   const app = document.getElementById("app");
   const apiBase = location.origin;
   const TOKEN_KEY = "contentbox.token";
@@ -26107,6 +26105,13 @@ async function handlePublicInvitePage(req: any, reply: any) {
     const data = await res.json().catch(()=>null);
     if (!res.ok) throw new Error((data && (data.code || data.error || data.message)) || "Request failed");
     return data;
+  }
+
+  function buildDashboardHandoffUrl() {
+    // Use runtime origin instead of server APP_BASE_URL (which may be localhost
+    // and unreachable from the recipient machine in cross-node invite flows).
+    const base = String(location.origin || "").replace(/\/+$/, "");
+    return base + "/invite/" + encodeURIComponent(token) + "?remote=" + encodeURIComponent(remoteOrigin);
   }
 
   function render(inv){
@@ -26135,7 +26140,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
       <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "—"}: \${inv?.targetValue || "—"}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
       <button id="acceptBtn" class="btn" style="margin-top:14px;" \${canAccept ? "" : "disabled"}>Accept invite</button>
-      <a href="\${handoffUrl}" class="btn" style="margin-top:10px;display:inline-block;text-decoration:none;">Continue in dashboard</a>
+      <a href="\${buildDashboardHandoffUrl()}" class="btn" style="margin-top:10px;display:inline-block;text-decoration:none;">Continue in dashboard</a>
       <div id="status" class="muted" style="margin-top:8px;"></div>
       <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
