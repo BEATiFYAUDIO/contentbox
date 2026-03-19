@@ -26136,7 +26136,8 @@ async function handlePublicInvitePage(req: any, reply: any) {
   function buildDashboardHandoffUrl() {
     // Use runtime origin instead of server APP_BASE_URL (which may be localhost
     // and unreachable from the recipient machine in cross-node invite flows).
-    const base = String(location.origin || "").replace(/\/+$/, "");
+    const rawBase = String(location.origin || "");
+    const base = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
     return base + "/invite/" + encodeURIComponent(token) + "?remote=" + encodeURIComponent(remoteOrigin);
   }
 
