@@ -139,6 +139,8 @@ function mapAcceptErrorMessage(raw: string): string {
   if (text.includes("INVITE_WRONG_RECIPIENT")) return "Signed in as wrong recipient for this invite.";
   if (text.includes("INVITE_TARGET_MISMATCH")) return "You are signed in as the wrong user for this invite.";
   if (text.includes("INVITE_EMAIL_MISMATCH")) return "Signed-in email does not match this invite target.";
+  if (text.includes("INVITE_SIGNATURE_REQUIRED")) return "Forwarded acceptance proof is missing. Retry from your signed-in creator node.";
+  if (text.includes("INVITE_FORWARDED_IDENTITY_UNTRUSTED")) return "Forwarded identity proof was rejected by the remote node.";
   if (text.includes("INVITE_KEY_MISSING")) return "This device cannot sign invite acceptance.";
   if (text.includes("INVITE_KEY_UNVERIFIED")) return "Verify your key before accepting this invite.";
   if (text.includes("INVITE_NODE_URL_NOT_SHAREABLE")) return "Your creator node is not advertising a shareable public origin.";

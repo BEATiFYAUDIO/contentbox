@@ -26403,6 +26403,10 @@ async function handlePublicInvitePage(req: any, reply: any) {
         const msg = e && e.message ? String(e.message) : "Could not accept invite.";
         if (msg.includes("INVITE_AUTH_REQUIRED")) {
           document.getElementById("status").textContent = "Sign in to accept on this surface, or continue in dashboard.";
+        } else if (msg.includes("INVITE_SIGNATURE_REQUIRED")) {
+          document.getElementById("status").textContent = "Forwarded acceptance proof is missing. Open this invite in your signed-in creator node and retry.";
+        } else if (msg.includes("INVITE_FORWARDED_IDENTITY_UNTRUSTED")) {
+          document.getElementById("status").textContent = "Forwarded identity proof was rejected by the remote node. Check node discovery origin and signature context.";
         } else if (msg.includes("INVITE_NODE_URL_NOT_SHAREABLE")) {
           document.getElementById("status").textContent = "This node is not advertising a shareable public origin. Set a public origin/tunnel on your creator node and try again.";
         } else if (msg.includes("INVITE_NODE_URL_UNREACHABLE")) {
@@ -26497,7 +26501,17 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 
   // If no local auth user, try to validate remote signed acceptance context.
   let remoteVerified = false;
-  if (!userId && remoteNodeUrl && remoteUserId && signature && payload) {
+  let remoteAuthFailure:
+    | "DISCOVERY_UNREACHABLE_OR_INVALID"
+    | "DISCOVERY_KEY_MISSING"
+    | "FORWARDED_PAYLOAD_MISMATCH"
+    | "FORWARDED_PAYLOAD_TS_INVALID"
+    | "FORWARDED_SIGNATURE_INVALID"
+    | "FORWARDED_VERIFICATION_FAILED"
+    | null = null;
+  const hasForwardedIdentityContext = Boolean(remoteNodeUrl || remoteUserId || signature || payload);
+  const hasCompleteForwardedProof = Boolean(remoteNodeUrl && remoteUserId && signature && payload);
+  if (!userId && hasCompleteForwardedProof) {
     try {
       const disco = await fetch(`${remoteNodeUrl.replace(/\/$/, "")}/.well-known/contentbox`, {
         method: "GET",
@@ -26511,6 +26525,8 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         } catch {
           remotePub = null;
         }
+      } else {
+        remoteAuthFailure = "DISCOVERY_UNREACHABLE_OR_INVALID";
       }
       if (remotePub) {
         const payloadStr = JSON.stringify(payload);
@@ -26525,14 +26541,22 @@ async function handlePublicInviteAccept(req: any, reply: any) {
           Boolean(expectedAudience && payloadAudience && expectedAudience === payloadAudience);
         const ts = Date.parse(String(payload?.ts || ""));
         const tsOk = Number.isFinite(ts) && Math.abs(Date.now() - ts) < 15 * 60 * 1000;
-        if (payloadOk && tsOk) {
+        if (!payloadOk) {
+          remoteAuthFailure = "FORWARDED_PAYLOAD_MISMATCH";
+        } else if (!tsOk) {
+          remoteAuthFailure = "FORWARDED_PAYLOAD_TS_INVALID";
+        } else {
           const sigBuf = Buffer.from(signature, "base64");
           try {
             remoteVerified = Boolean((crypto.verify as any)(null, Buffer.from(payloadStr), remotePub, sigBuf));
+            if (!remoteVerified) remoteAuthFailure = "FORWARDED_SIGNATURE_INVALID";
           } catch {
             remoteVerified = false;
+            remoteAuthFailure = "FORWARDED_SIGNATURE_INVALID";
           }
         }
+      } else if (!remoteAuthFailure) {
+        remoteAuthFailure = "DISCOVERY_KEY_MISSING";
       }
       if (remoteVerified) {
         userId = remoteUserId;
@@ -26540,6 +26564,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       }
     } catch {
       remoteVerified = false;
+      remoteAuthFailure = "FORWARDED_VERIFICATION_FAILED";
     }
   }
 
@@ -26550,10 +26575,26 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         acceptanceAuthMode,
         authHeaderPresent: Boolean(asString(req?.headers?.authorization || "").trim()),
         remoteNodeUrl: remoteNodeUrl || null,
-        remoteUserId: remoteUserId || null
+        remoteUserId: remoteUserId || null,
+        hasForwardedIdentityContext,
+        hasCompleteForwardedProof,
+        remoteAuthFailure
       },
       "splitInvite.accept.authRequired"
     );
+    if (hasForwardedIdentityContext && !hasCompleteForwardedProof) {
+      return reply.code(401).send({
+        error: "Forwarded acceptance proof is required",
+        code: "INVITE_SIGNATURE_REQUIRED"
+      });
+    }
+    if (hasCompleteForwardedProof) {
+      return reply.code(403).send({
+        error: "Forwarded identity proof is present but not trusted",
+        code: "INVITE_FORWARDED_IDENTITY_UNTRUSTED",
+        reason: remoteAuthFailure || "FORWARDED_VERIFICATION_FAILED"
+      });
+    }
     return reply.code(401).send({
       error: "Authentication required to accept invite",
       code: "INVITE_AUTH_REQUIRED"
