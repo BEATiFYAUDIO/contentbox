@@ -11151,6 +11151,13 @@ app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: a
 });
 
 // Proxy remote invite accept to avoid browser CORS (auth required)
+app.get("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  return reply.code(405).send({
+    error: "Use POST to accept invites",
+    code: "INVITE_ACCEPT_METHOD_NOT_ALLOWED"
+  });
+});
+
 app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const inviteCtx = getCapabilityContext();
   if (!canUseSplits(inviteCtx)) {
@@ -11205,6 +11212,13 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
       return reply.code(409).send({
         error: "This node is not advertising a valid public origin for invite acceptance.",
         code: "INVITE_NODE_URL_NOT_SHAREABLE",
+        nodeUrl: advertisedNodeUrl || null
+      });
+    }
+    if (!(await isOriginReachable(advertisedNodeUrl))) {
+      return reply.code(409).send({
+        error: "This node public origin is not reachable for remote invite signature verification.",
+        code: "INVITE_NODE_URL_UNREACHABLE",
         nodeUrl: advertisedNodeUrl || null
       });
     }
@@ -26372,6 +26386,8 @@ async function handlePublicInvitePage(req: any, reply: any) {
           document.getElementById("status").textContent = "Sign in to accept on this surface, or continue in dashboard.";
         } else if (msg.includes("INVITE_NODE_URL_NOT_SHAREABLE")) {
           document.getElementById("status").textContent = "This node is not advertising a shareable public origin. Set a public origin/tunnel on your creator node and try again.";
+        } else if (msg.includes("INVITE_NODE_URL_UNREACHABLE")) {
+          document.getElementById("status").textContent = "This node public origin is not reachable for invite signature verification. Check tunnel/public reachability and retry.";
         } else if (msg.includes("INVITE_KEY_UNVERIFIED")) {
           document.getElementById("status").textContent = "Verify your key before accepting this invite.";
         } else if (msg.includes("INVITE_WRONG_RECIPIENT") || msg.includes("INVITE_TARGET_MISMATCH") || msg.includes("INVITE_EMAIL_MISMATCH")) {
