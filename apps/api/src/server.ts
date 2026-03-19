@@ -26407,6 +26407,8 @@ async function handlePublicInvitePage(req: any, reply: any) {
           document.getElementById("status").textContent = "Forwarded acceptance proof is missing. Open this invite in your signed-in creator node and retry.";
         } else if (msg.includes("INVITE_FORWARDED_IDENTITY_UNTRUSTED")) {
           document.getElementById("status").textContent = "Forwarded identity proof was rejected by the remote node. Check node discovery origin and signature context.";
+        } else if (msg.includes("INVITE_IDENTITY_BIND_FAILED")) {
+          document.getElementById("status").textContent = "Invite acceptance failed while binding identity on the owner node.";
         } else if (msg.includes("INVITE_NODE_URL_NOT_SHAREABLE")) {
           document.getElementById("status").textContent = "This node is not advertising a shareable public origin. Set a public origin/tunnel on your creator node and try again.";
         } else if (msg.includes("INVITE_NODE_URL_UNREACHABLE")) {
@@ -26757,68 +26759,83 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     }
   }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.invitation.update({
-      where: { id: inv.id },
-      data: {
-        acceptedAt: now,
-        acceptedByUserId: userId,
-        acceptedIdentityRef: `user:${userId}`,
-        status: "accepted" as any
-      }
-    });
-
-    const spUpdate: any = { acceptedAt: now, participantUserId: userId, verifiedAt: now };
-
-    await tx.splitParticipant.update({
-      where: { id: inv.splitParticipantId },
-      data: {
-        ...spUpdate,
-        targetType: inviteTargetType,
-        targetValue: inviteTargetValue,
-        invitationId: inv.id
-      }
-    });
-
-    // create audit event: include remote node info when provided
-    const ownerId = inv.splitParticipant?.splitVersion?.content?.ownerUserId || userId || "";
-    await tx.auditEvent.create({
-      data: {
-        userId: ownerId,
-        action: "invite.accept",
-        entityType: "SplitVersion",
-        entityId: inv.splitParticipant.splitVersionId,
-        payloadJson: {
-          invitationId: inv.id,
-          splitParticipantId: inv.splitParticipantId,
-          participantUserId: userId,
-          remoteNodeUrl: remoteNodeUrl || null,
-          remoteUserId: remoteUserId || null,
-          remoteVerified,
-          signature: signature || null,
-          signedPayload: payload || null
-        } as any
-      }
-    });
-
-    await tx.auditEvent.create({
-      data: {
-        userId: ownerId,
-        action: "invite.accept",
-        entityType: "Invitation",
-        entityId: inv.id,
-        payloadJson: {
-          splitParticipantId: inv.splitParticipantId,
-          participantEmail: inv.splitParticipant?.participantEmail || null,
-          contentId: inv.splitParticipant?.splitVersion?.contentId || null,
+  try {
+    await prisma.$transaction(async (tx) => {
+      const acceptedByUserId = acceptanceAuthMode === "local_auth" ? userId : null;
+      const acceptedIdentityRef =
+        acceptanceAuthMode === "remote_signature"
+          ? `remote:${remoteNodeUrl || "unknown"}#user:${userId}`
+          : `user:${userId}`;
+      await tx.invitation.update({
+        where: { id: inv.id },
+        data: {
           acceptedAt: now,
-          remoteNodeUrl: remoteNodeUrl || null,
-          remoteUserId: remoteUserId || null,
-          remoteVerified
-        } as any
-      }
+          acceptedByUserId,
+          acceptedIdentityRef,
+          status: "accepted" as any
+        }
+      });
+
+      const spUpdate: any = { acceptedAt: now, participantUserId: userId, verifiedAt: now };
+
+      await tx.splitParticipant.update({
+        where: { id: inv.splitParticipantId },
+        data: {
+          ...spUpdate,
+          targetType: inviteTargetType,
+          targetValue: inviteTargetValue,
+          invitationId: inv.id
+        }
+      });
+
+      // create audit event: include remote node info when provided
+      const ownerId = inv.splitParticipant?.splitVersion?.content?.ownerUserId || userId || "";
+      await tx.auditEvent.create({
+        data: {
+          userId: ownerId,
+          action: "invite.accept",
+          entityType: "SplitVersion",
+          entityId: inv.splitParticipant.splitVersionId,
+          payloadJson: {
+            invitationId: inv.id,
+            splitParticipantId: inv.splitParticipantId,
+            participantUserId: userId,
+            remoteNodeUrl: remoteNodeUrl || null,
+            remoteUserId: remoteUserId || null,
+            remoteVerified,
+            signature: signature || null,
+            signedPayload: payload || null
+          } as any
+        }
+      });
+
+      await tx.auditEvent.create({
+        data: {
+          userId: ownerId,
+          action: "invite.accept",
+          entityType: "Invitation",
+          entityId: inv.id,
+          payloadJson: {
+            splitParticipantId: inv.splitParticipantId,
+            participantEmail: inv.splitParticipant?.participantEmail || null,
+            contentId: inv.splitParticipant?.splitVersion?.contentId || null,
+            acceptedAt: now,
+            remoteNodeUrl: remoteNodeUrl || null,
+            remoteUserId: remoteUserId || null,
+            remoteVerified
+          } as any
+        }
+      });
     });
-  });
+  } catch (e: any) {
+    if (String((e as any)?.code || "") === "P2003") {
+      return reply.code(409).send({
+        error: "Invite acceptance identity binding failed",
+        code: "INVITE_IDENTITY_BIND_FAILED"
+      });
+    }
+    throw e;
+  }
 
   app.log.info(
     {
