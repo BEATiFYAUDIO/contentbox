@@ -8093,10 +8093,16 @@ async function signInviteAcceptancePayload(
   userId: string,
   opts?: { audienceOrigin?: string | null }
 ): Promise<{ payload: any; signature: string }> {
+  const signingNodeUrl =
+    normalizeOrigin(getActivePublicOrigin()) ||
+    normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN) ||
+    `http://127.0.0.1:${NODE_HTTP_PORT}`;
   const payload = {
     token,
     remoteUserId: userId,
-    nodeUrl: APP_BASE_URL,
+    nodeUrl: signingNodeUrl,
     ts: new Date().toISOString(),
     nonce: crypto.randomUUID(),
     aud: normalizeOrigin(opts?.audienceOrigin || "") || null
@@ -11182,6 +11188,24 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         error: "This device cannot sign invite acceptance payloads.",
         code: "INVITE_KEY_MISSING",
         details: String(e?.message || e)
+      });
+    }
+    const advertisedNodeUrl = normalizeOrigin(String(signedPayload?.payload?.nodeUrl || ""));
+    try {
+      const host = advertisedNodeUrl ? new URL(advertisedNodeUrl).hostname.toLowerCase() : "";
+      const loopbackHost = host === "localhost" || host === "127.0.0.1" || host === "::1";
+      if (!advertisedNodeUrl || loopbackHost) {
+        return reply.code(409).send({
+          error: "This node is not advertising a shareable public origin for invite acceptance.",
+          code: "INVITE_NODE_URL_NOT_SHAREABLE",
+          nodeUrl: advertisedNodeUrl || null
+        });
+      }
+    } catch {
+      return reply.code(409).send({
+        error: "This node is not advertising a valid public origin for invite acceptance.",
+        code: "INVITE_NODE_URL_NOT_SHAREABLE",
+        nodeUrl: advertisedNodeUrl || null
       });
     }
     const outboundBody = {
@@ -26346,6 +26370,8 @@ async function handlePublicInvitePage(req: any, reply: any) {
         const msg = e && e.message ? String(e.message) : "Could not accept invite.";
         if (msg.includes("INVITE_AUTH_REQUIRED")) {
           document.getElementById("status").textContent = "Sign in to accept on this surface, or continue in dashboard.";
+        } else if (msg.includes("INVITE_NODE_URL_NOT_SHAREABLE")) {
+          document.getElementById("status").textContent = "This node is not advertising a shareable public origin. Set a public origin/tunnel on your creator node and try again.";
         } else if (msg.includes("INVITE_KEY_UNVERIFIED")) {
           document.getElementById("status").textContent = "Verify your key before accepting this invite.";
         } else if (msg.includes("INVITE_WRONG_RECIPIENT") || msg.includes("INVITE_TARGET_MISMATCH") || msg.includes("INVITE_EMAIL_MISMATCH")) {
