@@ -11177,14 +11177,31 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
   }
 
   try {
+    let audienceOrigin = origin;
+    try {
+      const discoveryRes = await fetchWithTimeout(
+        `${origin}/.well-known/contentbox`,
+        { method: "GET", headers: { Accept: "application/json" } as any } as any,
+        4000
+      );
+      if (discoveryRes.ok) {
+        const discoveryPayload: any = await discoveryRes.json().catch(() => null);
+        const discoveredNodeUrl = normalizeOrigin(asString(discoveryPayload?.nodeUrl || "").trim());
+        if (discoveredNodeUrl) audienceOrigin = discoveredNodeUrl;
+      }
+    } catch {
+      audienceOrigin = origin;
+    }
+
     let signedPayload: { payload: any; signature: string } | null = null;
     try {
-      signedPayload = await signInviteAcceptancePayload(token, localUserId, { audienceOrigin: origin });
+      signedPayload = await signInviteAcceptancePayload(token, localUserId, { audienceOrigin });
     } catch (e: any) {
       app.log.warn(
         {
           token,
           origin,
+          audienceOrigin,
           authHeaderPresent,
           localUserId: localUserId || null,
           signingError: String(e?.message || e)
@@ -11249,6 +11266,7 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
       {
         token,
         origin,
+        audienceOrigin,
         authHeaderPresent,
         localUserId: localUserId || null,
         remoteStatus: res.status,
@@ -11262,6 +11280,7 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
       {
         token,
         origin,
+        audienceOrigin: null,
         authHeaderPresent,
         localUserId: localUserId || null,
         error: String(e?.message || e)
