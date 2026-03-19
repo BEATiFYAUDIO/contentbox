@@ -5633,8 +5633,18 @@ function evaluateProviderExecutionChainReadiness(): ProviderExecutionChainReadin
   return { ready, trustReadiness, ackReadiness, permitReadiness, message };
 }
 
-function deriveUserNetworkStatus(): UserNetworkStatus {
+async function deriveUserNetworkStatus(): Promise<UserNetworkStatus> {
   const runtime = getRuntimeHealthStatus();
+  const ctx = getCapabilityContext();
+  const modeStatus = getNodeModeStatus();
+  const providerConnection = deriveProviderCommerceConnectionState();
+  const sovereignReadiness = await getLocalSovereignReadiness();
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: sovereignReadiness.localCommerceReady,
+    localSovereignReady: sovereignReadiness.ready,
+    providerConnected: providerConnection.providerConnected,
+    ctx
+  });
   const chain = evaluateProviderExecutionChainReadiness();
   const trust = chain.trustReadiness.readiness;
   const ack = chain.ackReadiness.readiness;
@@ -5647,6 +5657,50 @@ function deriveUserNetworkStatus(): UserNetworkStatus {
       title: "Offline",
       message: "Node runtime is not ready.",
       actionLabel: "Restart node"
+    };
+  }
+  if (serviceProfile.participationMode === "sovereign_node" || (modeStatus.nodeMode === "lan" && sovereignReadiness.ready)) {
+    return {
+      status: "ready",
+      title: "Ready",
+      message: "Local Sovereign Node posture is active and ready.",
+      actionLabel: null
+    };
+  }
+  if (modeStatus.nodeMode === "lan" && !sovereignReadiness.ready) {
+    if (!sovereignReadiness.namedTunnelDetected) {
+      return {
+        status: "action_required",
+        title: "Action Required",
+        message: "Sovereign Node requires a named tunnel / stable public host.",
+        actionLabel: "Configure named tunnel"
+      };
+    }
+    const blockers: string[] = [];
+    if (!sovereignReadiness.localBitcoinReady) blockers.push("local Bitcoin");
+    if (!sovereignReadiness.localLndReady) blockers.push("local LND");
+    if (!sovereignReadiness.localCommerceReady) blockers.push("local commerce service");
+    return {
+      status: "action_required",
+      title: "Action Required",
+      message: `Sovereign Node is missing readiness: ${blockers.join(", ")}.`,
+      actionLabel: "Fix local node stack"
+    };
+  }
+  if (serviceProfile.participationMode === "sovereign_creator") {
+    return {
+      status: "ready",
+      title: "Ready",
+      message: "Sovereign Creator storefront is active. Provider commerce is optional.",
+      actionLabel: providerConnection.providerConnected ? null : "Connect provider (optional)"
+    };
+  }
+  if (serviceProfile.participationMode === "basic_creator") {
+    return {
+      status: "ready",
+      title: "Ready",
+      message: "Basic creator posture is active for publishing and tipping.",
+      actionLabel: "Add named tunnel to upgrade"
     };
   }
   if (trust === "unreachable") {
@@ -5697,13 +5751,32 @@ function deriveUserNetworkStatus(): UserNetworkStatus {
   };
 }
 
-function evaluatePublishReadiness(): PublishReadiness {
-  const userStatus = deriveUserNetworkStatus();
+async function evaluatePublishReadiness(): Promise<PublishReadiness> {
+  const userStatus = await deriveUserNetworkStatus();
   if (userStatus.status !== "ready") {
     return {
       readiness: "network_not_ready",
       allowed: false,
-      message: "Finish provider setup before publishing."
+      message: userStatus.message || "Network prerequisites are not ready for publishing."
+    };
+  }
+  const ctx = getCapabilityContext();
+  const providerConnection = deriveProviderCommerceConnectionState();
+  const sovereignReadiness = await getLocalSovereignReadiness();
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: sovereignReadiness.localCommerceReady,
+    localSovereignReady: sovereignReadiness.ready,
+    providerConnected: providerConnection.providerConnected,
+    ctx
+  });
+  // Profile activation is provider-relationship state. In local sovereign-node
+  // posture (or non-provider creator posture), publishing readiness should not be
+  // blocked on provider activation.
+  if (serviceProfile.participationMode === "sovereign_node" || serviceProfile.participationMode === "sovereign_creator" || serviceProfile.participationMode === "basic_creator") {
+    return {
+      readiness: "ready",
+      allowed: true,
+      message: "Publishing prerequisites are satisfied."
     };
   }
   const cfg = getNetworkProviderConfig();
@@ -11789,11 +11862,11 @@ app.post("/api/participant/payout-destinations/:id/deactivate", { preHandler: re
 });
 
 app.get("/api/network/user-status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send(deriveUserNetworkStatus());
+  return reply.send(await deriveUserNetworkStatus());
 });
 
 app.get("/api/publish/readiness", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send(evaluatePublishReadiness());
+  return reply.send(await evaluatePublishReadiness());
 });
 
 app.get("/api/publish/log", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -11830,9 +11903,9 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
   const verification = getProviderVerificationStatus(providerTarget);
   const acknowledgment = getProviderAcknowledgmentStatus(providerTarget);
   const permit = getProviderOperationIntentStatus(providerTarget);
-  const userStatus = deriveUserNetworkStatus();
+  const userStatus = await deriveUserNetworkStatus();
   const activation = getProfileNetworkActivationStatus(providerTarget);
-  const publishReadiness = evaluatePublishReadiness();
+  const publishReadiness = await evaluatePublishReadiness();
   const ctx = getCapabilityContext();
   const userId = (req.user as JwtUser).sub;
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
@@ -11869,7 +11942,7 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
 });
 
 app.post("/api/publish/profile", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  const readiness = evaluatePublishReadiness();
+  const readiness = await evaluatePublishReadiness();
   if (!readiness.allowed) {
     const status = readiness.readiness === "activation_required" ? "activation_required" : "not_ready";
     return reply.send({
@@ -11959,12 +12032,12 @@ app.get("/api/network/activate-profile/status", { preHandler: requireAuth }, asy
 app.post("/api/network/activate-profile", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const cfg = getNetworkProviderConfig();
   const checkedAt = new Date().toISOString();
-  const userStatus = deriveUserNetworkStatus();
+  const userStatus = await deriveUserNetworkStatus();
   if (userStatus.status !== "ready") {
     const state = persistProfileNetworkActivationState(
       buildProfileNetworkActivationState(cfg, {
         status: "not_ready",
-        message: "Finish provider setup before activating this feature.",
+        message: userStatus.message || "Network prerequisites are not ready.",
         checkedAt,
         activatedAt: null
       })

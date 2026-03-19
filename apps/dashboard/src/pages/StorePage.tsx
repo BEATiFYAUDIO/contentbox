@@ -1324,6 +1324,10 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     participationModeFromSummary !== undefined
       ? participationModeFromSummary === "sovereign_creator" || participationModeFromSummary === "sovereign_creator_with_provider"
       : resolvedNodeMode === "advanced";
+  const isSovereignNodeMode =
+    participationModeFromSummary !== undefined
+      ? participationModeFromSummary === "sovereign_node"
+      : resolvedNodeMode === "lan";
   const showAdvancedProviderPanels = !isSovereignCreatorMode || showProviderAdvanced;
   const showNetworkDiagnostics = !isBasicParticipation || showBasicDiagnostics;
 
@@ -1576,7 +1580,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         ? "warn"
         : "ready";
   const commerceGuardMessage =
-    !providerCommerceActive
+    participationModeFromSummary === "sovereign_node" || networkSummary?.modeProfile?.localSovereignReady
+      ? "Local sovereign commerce is active for this mode."
+    : !providerCommerceActive
       ? "Basic monetization posture is active for this mode. Connect provider commerce or run local sovereign node to enable paid commerce."
     : commerceGuardLevel === "block"
       ? "Configure a valid creator payout destination before provider-backed commerce can run safely."
@@ -1956,6 +1962,18 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="mt-1 text-xs text-neutral-400">
               Basic mode keeps provider configuration hidden. Add a named tunnel and switch out of Basic to enable provider commerce services.
             </div>
+          </div>
+        ) : isSovereignNodeMode ? (
+          <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Configuration</div>
+            <div className="mt-1 text-xs text-neutral-300">
+              Sovereign Node posture is active. Local node services are authoritative; provider setup is optional and not required for readiness.
+            </div>
+            {networkSummary?.providerBinding?.configured ? (
+              <div className="mt-2 text-xs text-neutral-400">
+                Provider is configured for optional interoperability only.
+              </div>
+            ) : null}
           </div>
         ) : (
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
