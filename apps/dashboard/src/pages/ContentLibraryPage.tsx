@@ -590,21 +590,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     setError(null);
     try {
       const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
-      const authoredScope: "mine" = "mine";
+      const effectiveScope: "library" | "mine" | "local" =
+        contentScope === "library" || contentScope === "local" ? contentScope : "mine";
       const url = tombstoneMode
-        ? `/content?tombstones=1&scope=${authoredScope}${typeQuery}`
+        ? `/content?tombstones=1&scope=${effectiveScope}${typeQuery}`
         : trashMode
-          ? `/content?trash=1&scope=${authoredScope}${typeQuery}`
-          : `/content?scope=${authoredScope}${typeQuery}`;
+          ? `/content?trash=1&scope=${effectiveScope}${typeQuery}`
+          : `/content?scope=${effectiveScope}${typeQuery}`;
       const data = await api<ContentItem[] | any>(url);
       const baseList = Array.isArray(data) ? data : [];
       setParticipationByContentId({});
-      const scopedOwned = baseList.filter((it) => {
-        const access = String((it as any)?.libraryAccess || "").trim().toLowerCase();
-        if (!access) return true;
-        return access === "owned";
-      });
-      const list = scopedOwned.filter((it: any) => {
+      const scopedList =
+        effectiveScope === "mine"
+          ? baseList.filter((it) => {
+              const access = String((it as any)?.libraryAccess || "").trim().toLowerCase();
+              if (!access) return true;
+              return access === "owned";
+            })
+          : baseList;
+      const list = scopedList.filter((it: any) => {
         const deleted = Boolean(it?.deletedAt);
         const status = String(it?.status || "").toLowerCase();
         if (tombstoneMode) return deleted && status === "published";
