@@ -154,17 +154,6 @@ type LibraryParticipation = {
   creatorEmail: string | null;
 };
 
-type RemoteRoyaltyParticipation = {
-  id: string;
-  remoteOrigin: string | null;
-  contentId: string | null;
-  contentTitle: string | null;
-  contentType: string | null;
-  contentStatus: string | null;
-  status: string | null;
-  highlightedOnProfile?: boolean;
-};
-
 type ContentLibraryPageProps = {
   identityLevel?: IdentityLevel;
   features?: FeatureMatrix;
@@ -601,90 +590,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     setError(null);
     try {
       const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
+      const authoredScope: "mine" = "mine";
       const url = tombstoneMode
-        ? `/content?tombstones=1&scope=${contentScope}${typeQuery}`
+        ? `/content?tombstones=1&scope=${authoredScope}${typeQuery}`
         : trashMode
-          ? `/content?trash=1&scope=${contentScope}${typeQuery}`
-          : `/content?scope=${contentScope}${typeQuery}`;
-      const [data, participationsRes, remoteParticipationsRes] = await Promise.all([
-        api<ContentItem[] | any>(url),
-        trashMode || tombstoneMode
-          ? Promise.resolve({ items: [] as LibraryParticipation[] })
-          : api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
-        trashMode || tombstoneMode
-          ? Promise.resolve([] as RemoteRoyaltyParticipation[])
-          : api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[])
-      ]);
+          ? `/content?trash=1&scope=${authoredScope}${typeQuery}`
+          : `/content?scope=${authoredScope}${typeQuery}`;
+      const data = await api<ContentItem[] | any>(url);
       const baseList = Array.isArray(data) ? data : [];
-      const localParticipationsRaw = Array.isArray(participationsRes?.items) ? participationsRes.items : [];
-      const localParticipations: LibraryParticipation[] = localParticipationsRaw.map((row: any) => ({
-        kind: "local",
-        contentId: String(row?.contentId || "").trim(),
-        contentTitle: row?.contentTitle || null,
-        contentType: row?.contentType || null,
-        contentStatus: row?.contentStatus || null,
-        contentDeletedAt: row?.contentDeletedAt || null,
-        splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
-        remoteInviteId: null,
-        remoteOrigin: null,
-        status: null,
-        highlightedOnProfile: Boolean(row?.highlightedOnProfile),
-        creatorUserId: row?.creatorUserId || null,
-        creatorDisplayName: row?.creatorDisplayName || null,
-        creatorEmail: row?.creatorEmail || null
-      }));
-      const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
-      const remoteParticipations: LibraryParticipation[] = remoteParticipationsRaw
-        .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
-        .filter((row) => Boolean(String(row?.contentId || "").trim()))
-        .map((row) => ({
-          kind: "remote",
-          contentId: String(row.contentId || "").trim(),
-          contentTitle: row.contentTitle || null,
-          contentType: row.contentType || null,
-          contentStatus: row.contentStatus || "published",
-          contentDeletedAt: null,
-          splitParticipantId: null,
-          remoteInviteId: String(row.id || "").trim() || null,
-          remoteOrigin: String(row.remoteOrigin || "").replace(/\/+$/, "") || null,
-          status: row.status || null,
-          highlightedOnProfile: Boolean(row.highlightedOnProfile),
-          creatorUserId: null,
-          creatorDisplayName: null,
-          creatorEmail: null
-        }));
-      const participations: LibraryParticipation[] = [...localParticipations, ...remoteParticipations];
-      const participationMap: Record<string, LibraryParticipation> = {};
-      for (const row of participations) {
-        if (!row?.contentId) continue;
-        const existing = participationMap[row.contentId];
-        if (!existing || row.highlightedOnProfile || (row.kind === "local" && existing.kind === "remote")) {
-          participationMap[row.contentId] = row;
-        }
-      }
-      setParticipationByContentId(participationMap);
-      const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
-      const participationOnlyItems: ContentItem[] =
-        contentScope === "library"
-          ? participations
-              .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
-              .map((p) => ({
-                id: p.contentId,
-                title: p.contentTitle || "Untitled",
-                type: ((p.contentType || "file") as ContentType),
-                status: String(p.contentStatus || "").trim().toLowerCase() === "published" ? "published" : "draft",
-                createdAt: "",
-                deletedAt: p.contentDeletedAt || null,
-                ownerUserId: p.creatorUserId || null,
-                owner: {
-                  displayName: p.creatorDisplayName || null,
-                  email: p.creatorEmail || null
-                },
-                libraryAccess: "participant",
-                childOrigin: p.remoteOrigin || null
-              }))
-          : [];
-      const list = [...baseList, ...participationOnlyItems];
+      setParticipationByContentId({});
+      const list = baseList;
       if (!Array.isArray(data)) {
         setError("Failed to load content (unexpected response)");
       }
@@ -2298,6 +2213,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     : "text-neutral-300 hover:bg-neutral-900"
                 }`}
                 onClick={async () => {
+                  setContentScope("mine");
                   setShowClearance(false);
                   setShowTrash(false);
                   setShowTombstones(false);
@@ -2314,6 +2230,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     : "text-neutral-300 hover:bg-neutral-900"
                 }`}
                 onClick={async () => {
+                  setContentScope("mine");
                   setShowClearance(false);
                   setShowTrash(true);
                   setShowTombstones(false);
@@ -2330,6 +2247,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     : "text-neutral-300 hover:bg-neutral-900"
                 }`}
                 onClick={async () => {
+                  setContentScope("mine");
                   setShowClearance(false);
                   setShowTrash(false);
                   setShowTombstones(true);

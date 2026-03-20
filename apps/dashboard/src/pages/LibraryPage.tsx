@@ -12,10 +12,37 @@ type LibraryItem = {
   updatedAt?: string | null;
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
-  libraryAccess?: "owned" | "purchased" | "preview" | "local";
+  libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
   coverUrl?: string | null;
   manifest?: { sha256?: string | null } | null;
   _count?: { files: number };
+};
+type LibraryParticipation = {
+  kind: "local" | "remote";
+  contentId: string;
+  contentTitle: string | null;
+  contentType: string | null;
+  contentStatus: string | null;
+  contentDeletedAt: string | null;
+  splitParticipantId: string | null;
+  remoteInviteId: string | null;
+  remoteOrigin: string | null;
+  status: string | null;
+  highlightedOnProfile: boolean;
+  creatorUserId: string | null;
+  creatorDisplayName: string | null;
+  creatorEmail: string | null;
+};
+
+type RemoteRoyaltyParticipation = {
+  id: string;
+  remoteOrigin: string | null;
+  contentId: string | null;
+  contentTitle: string | null;
+  contentType: string | null;
+  contentStatus: string | null;
+  status: string | null;
+  highlightedOnProfile?: boolean;
 };
 
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
@@ -32,7 +59,8 @@ const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: s
   owned: { label: "Owned", cls: "border-emerald-600/40 bg-emerald-500/10 text-emerald-300" },
   purchased: { label: "Purchased", cls: "border-sky-600/40 bg-sky-500/10 text-sky-300" },
   preview: { label: "Preview only", cls: "border-amber-600/40 bg-amber-500/10 text-amber-300" },
-  local: { label: "Local", cls: "border-neutral-700 bg-neutral-700/20 text-neutral-300" }
+  local: { label: "Local", cls: "border-neutral-700 bg-neutral-700/20 text-neutral-300" },
+  participant: { label: "Shared", cls: "border-fuchsia-600/40 bg-fuchsia-500/10 text-fuchsia-300" }
 };
 
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
@@ -79,14 +107,73 @@ export default function LibraryPage() {
             libraryAccess: i.libraryAccess || (i.ownerUserId ? "owned" : "preview")
           }));
         const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
+        const [lib, mine, localParticipationsRes, remoteParticipationsRes] = await Promise.all([
+          api<LibraryItem[]>(`/content?scope=library${typeQuery}`, "GET").catch(() => []),
+          api<LibraryItem[]>(`/content?scope=mine${typeQuery}`, "GET").catch(() => []),
+          api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
+          api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[])
+        ]);
 
-        const lib = await api<LibraryItem[]>(`/content?scope=library${typeQuery}`, "GET");
-        if (Array.isArray(lib) && lib.length > 0) {
-          setItems(normalize(lib));
-          return;
-        }
-        const mine = await api<LibraryItem[]>(`/content?scope=mine${typeQuery}`, "GET");
-        setItems(normalize(mine || []));
+        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
+        const baseList = normalize(baseListRaw || []);
+        const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
+
+        const localParticipationsRaw = Array.isArray(localParticipationsRes?.items) ? localParticipationsRes.items : [];
+        const localParticipations: LibraryParticipation[] = localParticipationsRaw.map((row: any) => ({
+          kind: "local",
+          contentId: String(row?.contentId || "").trim(),
+          contentTitle: row?.contentTitle || null,
+          contentType: row?.contentType || null,
+          contentStatus: row?.contentStatus || null,
+          contentDeletedAt: row?.contentDeletedAt || null,
+          splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
+          remoteInviteId: null,
+          remoteOrigin: null,
+          status: null,
+          highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+          creatorUserId: row?.creatorUserId || null,
+          creatorDisplayName: row?.creatorDisplayName || null,
+          creatorEmail: row?.creatorEmail || null
+        }));
+        const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
+        const remoteParticipations: LibraryParticipation[] = remoteParticipationsRaw
+          .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
+          .filter((row) => Boolean(String(row?.contentId || "").trim()))
+          .map((row) => ({
+            kind: "remote",
+            contentId: String(row.contentId || "").trim(),
+            contentTitle: row.contentTitle || null,
+            contentType: row.contentType || null,
+            contentStatus: row.contentStatus || "published",
+            contentDeletedAt: null,
+            splitParticipantId: null,
+            remoteInviteId: String(row.id || "").trim() || null,
+            remoteOrigin: String(row.remoteOrigin || "").replace(/\/+$/, "") || null,
+            status: row.status || null,
+            highlightedOnProfile: Boolean(row.highlightedOnProfile),
+            creatorUserId: null,
+            creatorDisplayName: null,
+            creatorEmail: null
+          }));
+
+        const participationOnlyItems: LibraryItem[] = [...localParticipations, ...remoteParticipations]
+          .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
+          .filter((p) => String(p.contentStatus || "").trim().toLowerCase() === "published")
+          .map((p) => ({
+            id: p.contentId,
+            title: p.contentTitle || "Untitled",
+            type: p.contentType || "file",
+            status: "published",
+            createdAt: "",
+            ownerUserId: p.creatorUserId || null,
+            owner: {
+              displayName: p.creatorDisplayName || null,
+              email: p.creatorEmail || null
+            },
+            libraryAccess: "participant"
+          }));
+
+        setItems([...baseList, ...participationOnlyItems]);
       } catch (e: any) {
         const err = String(e?.message || "Failed to load library");
         setMsg(err.includes("INVALID_TYPE") ? "Invalid type filter." : err);
@@ -116,7 +203,8 @@ export default function LibraryPage() {
   const groups = {
     owned: items.filter((i) => i.libraryAccess === "owned"),
     purchased: items.filter((i) => i.libraryAccess === "purchased"),
-    preview: items.filter((i) => i.libraryAccess === "preview")
+    preview: items.filter((i) => i.libraryAccess === "preview"),
+    participant: items.filter((i) => i.libraryAccess === "participant")
   };
 
   async function loadPreview(contentId: string) {
@@ -204,10 +292,11 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
         <div className="text-sm text-neutral-400">No items yet.</div>
       ) : (
         <div className="space-y-6">
-          {(["owned", "purchased", "preview"] as const).map((key) => {
+          {(["owned", "purchased", "preview", "participant"] as const).map((key) => {
             const list = groups[key];
             if (!list.length) return null;
-            const label = key === "owned" ? "Owned" : key === "purchased" ? "Purchased" : "Preview";
+            const label =
+              key === "owned" ? "Owned" : key === "purchased" ? "Purchased" : key === "preview" ? "Preview" : "Shared splits";
             return (
               <div key={key} className="space-y-2">
                 <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>

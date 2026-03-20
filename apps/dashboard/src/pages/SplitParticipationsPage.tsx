@@ -345,51 +345,51 @@ export default function SplitParticipationsPage(props: {
             </div>
           )}
 
-          <div className="text-sm text-neutral-300 mt-6">Remote royalties</div>
-          {remoteRoyalties.length === 0 ? (
-            <div className="text-sm text-neutral-500">No remote invites yet.</div>
-          ) : (
-            <div className="space-y-3">
-              {remoteRoyalties.map((r) => (
-                <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
-                      <div className="text-xs text-neutral-400 mt-1">
-                        {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • remote
-                      </div>
-                      <div className="text-xs text-neutral-400 mt-1">
-                        Role: <span className="text-neutral-200">{r.role || "participant"}</span>
-                        {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
-                      </div>
-                      <div className="text-xs text-neutral-400 mt-1">
-                        Earned: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
-                        {" "}• Payout state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
-                        {" "}• Destination: <span className="text-neutral-200">{r.destinationState || "unknown"}</span>
-                      </div>
-                      <div className="text-xs text-neutral-500 mt-1">
-                        Remote: {r.remoteOrigin}
-                      </div>
-                      {r.acceptedAt ? (
-                        <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
-                      ) : null}
-                    </div>
-                    {r.inviteUrl ? (
-                      <button
-                        onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
-                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                      >
-                        Open
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              ))}
-            </div>
-      )}
-
         </>
       ) : null}
+
+      <div className="text-sm text-neutral-300 mt-6">Remote royalties</div>
+      {remoteRoyalties.length === 0 ? (
+        <div className="text-sm text-neutral-500">No remote invites yet.</div>
+      ) : (
+        <div className="space-y-3">
+          {remoteRoyalties.map((r) => (
+            <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • remote
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    Role: <span className="text-neutral-200">{r.role || "participant"}</span>
+                    {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    Earned: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
+                    {" "}• Payout state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
+                    {" "}• Destination: <span className="text-neutral-200">{r.destinationState || "unknown"}</span>
+                  </div>
+                  <div className="text-xs text-neutral-500 mt-1">
+                    Remote: {r.remoteOrigin}
+                  </div>
+                  {r.acceptedAt ? (
+                    <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
+                  ) : null}
+                </div>
+                {r.inviteUrl ? (
+                  <button
+                    onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
+                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  >
+                    Open
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <HistoryFeed
         title="Royalties history"
