@@ -4,7 +4,7 @@ import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
 import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
-import { resolveParticipantDisplayLabel } from "../lib/participantDisplay";
+import { looksLikeInternalUserId, resolveParticipantDisplayLabel } from "../lib/participantDisplay";
 
 type InvitePageProps = {
   token?: string;
@@ -437,6 +437,26 @@ export default function InvitePage({
   const inviteWrongIdentity = Boolean(authCtx ? authCtx.targetMatch === false : false);
   const backendKeyVerified = authCtx?.keyVerified ?? null;
   const inviteAcceptSurfaceBlocked = surfaceModeFromLocation === "view";
+  const inviteTargetType = String(data?.targetType || data?.splitParticipant?.targetType || "").trim().toLowerCase();
+  const inviteTargetValue = String(data?.targetValue || data?.splitParticipant?.targetValue || "").trim();
+  const baseInviteTargetLabel = data
+    ? inviteTargetLabelPublic({
+        ...data,
+        targetDisplayName: data.invitation?.targetDisplayName || data.splitParticipant?.participantDisplayName || null,
+        participantUserId: data.splitParticipant?.participantUserId || null,
+        participantEmail: data.splitParticipant?.participantEmail || null,
+        targetType: data.targetType || data.splitParticipant?.targetType || null,
+        targetValue: data.targetValue || data.splitParticipant?.targetValue || null
+      })
+    : "Contributor";
+  const resolvedInviteTargetLabel =
+    inviteTargetType === "identity_ref" && authCtx?.targetMatch === true
+      ? (String(me?.displayName || "").trim() ||
+          String(authCtx?.email || "").trim() ||
+          String(me?.email || "").trim() ||
+          (inviteTargetValue && !looksLikeInternalUserId(inviteTargetValue) ? inviteTargetValue : "") ||
+          baseInviteTargetLabel)
+      : baseInviteTargetLabel;
 
   async function fetchRemoteJson(path: string, opts?: { method?: string; body?: any; headers?: Record<string, string> }) {
     if (!remoteOriginFromLocation) throw new Error("Remote origin missing");
@@ -1479,16 +1499,7 @@ export default function InvitePage({
 
             <div className="text-sm text-neutral-400">
               You are invited as:{" "}
-              <span className="text-neutral-200">
-                {inviteTargetLabelPublic({
-                  ...data,
-                  targetDisplayName: data.invitation?.targetDisplayName || data.splitParticipant?.participantDisplayName || null,
-                  participantUserId: data.splitParticipant?.participantUserId || null,
-                  participantEmail: data.splitParticipant?.participantEmail || null,
-                  targetType: data.targetType || data.splitParticipant?.targetType || null,
-                  targetValue: data.targetValue || data.splitParticipant?.targetValue || null
-                })}
-              </span>
+              <span className="text-neutral-200">{resolvedInviteTargetLabel}</span>
             </div>
 
             <div className="text-xs text-neutral-500">
@@ -1502,16 +1513,7 @@ export default function InvitePage({
 
             <div className="text-xs text-neutral-500">
               Expected target:{" "}
-              <span className="text-neutral-300">
-                {inviteTargetLabelPublic({
-                  ...data,
-                  targetDisplayName: data.invitation?.targetDisplayName || data.splitParticipant?.participantDisplayName || null,
-                  participantUserId: data.splitParticipant?.participantUserId || null,
-                  participantEmail: data.splitParticipant?.participantEmail || null,
-                  targetType: data.targetType || data.splitParticipant?.targetType || null,
-                  targetValue: data.targetValue || data.splitParticipant?.targetValue || null
-                })}
-              </span>
+              <span className="text-neutral-300">{resolvedInviteTargetLabel}</span>
             </div>
 
             <div className="text-xs text-neutral-500">
