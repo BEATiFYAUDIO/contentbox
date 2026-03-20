@@ -705,41 +705,43 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                         ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
                         : rawCoverUrl;
                     const isOpen = previewOpenById[it.id] ?? true;
+                    const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);
+                    const hasMediaCard = Boolean(coverUrl || hasInlineImagePreview || participantVideoPreviewFallback);
                     const access = ACCESS_BADGE[(it.libraryAccess || "preview") as NonNullable<LibraryItem["libraryAccess"]>] || ACCESS_BADGE.preview;
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
-                        <div className="w-full aspect-video rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
-                          {coverUrl ? (
-                            <img
-                              className="w-full h-full object-cover"
-                              src={coverUrl}
-                              alt={`${it.title || "Content"} cover`}
-                              loading="lazy"
-                              onError={(e) => {
-                                setCoverLoadErrorById((m) => ({ ...m, [it.id]: true }));
-                                const el = e.currentTarget;
-                                const parent = el.parentElement;
-                                if (!parent) return;
-                                parent.innerHTML = '<div class="w-full h-full flex items-center justify-center text-xs text-neutral-500">No media</div>';
-                              }}
-                              onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
-                            />
-                          ) : preview && isOpen && previewUrl && isImage ? (
-                            <img className="w-full h-full object-cover" src={previewUrl} alt={it.title || "Preview"} />
-                          ) : participantVideoPreviewFallback ? (
-                            <video
-                              className="w-full h-full object-cover"
-                              autoPlay
-                              muted
-                              loop
-                              playsInline
-                              preload="metadata"
-                              src={participantVideoPreviewFallback}
-                            />
-                          ) : (
-                            <div className="text-xs text-neutral-500">No media</div>
-                          )}
-                        </div>
+                        {hasMediaCard ? (
+                          <div className="w-full aspect-video rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
+                            {coverUrl ? (
+                              <img
+                                className="w-full h-full object-cover"
+                                src={coverUrl}
+                                alt={`${it.title || "Content"} cover`}
+                                loading="lazy"
+                                onError={(e) => {
+                                  setCoverLoadErrorById((m) => ({ ...m, [it.id]: true }));
+                                  const el = e.currentTarget;
+                                  const parent = el.parentElement;
+                                  if (!parent) return;
+                                  parent.style.display = "none";
+                                }}
+                                onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
+                              />
+                            ) : hasInlineImagePreview ? (
+                              <img className="w-full h-full object-cover" src={previewUrl as string} alt={it.title || "Preview"} />
+                            ) : participantVideoPreviewFallback ? (
+                              <video
+                                className="w-full h-full object-cover"
+                                autoPlay
+                                muted
+                                loop
+                                playsInline
+                                preload="metadata"
+                                src={participantVideoPreviewFallback}
+                              />
+                            ) : null}
+                          </div>
+                        ) : null}
                         <div>
                           <div className="text-sm font-medium">{it.title || "Content"}</div>
                           <div className="mt-1 text-xs text-neutral-500">
