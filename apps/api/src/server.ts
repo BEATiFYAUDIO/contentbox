@@ -24990,6 +24990,27 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
       }
     }
 
+    const localUserIds = new Set<string>(
+      (
+        await tx.user.findMany({
+          where: {
+            id: {
+              in: Array.from(
+                new Set(
+                  [
+                    userId,
+                    ...before.map((p) => asString(p.participantUserId).trim()),
+                    ...validated.participants.map((p) => asString(p.participantUserId).trim())
+                  ].filter(Boolean)
+                )
+              )
+            }
+          },
+          select: { id: true }
+        })
+      ).map((u) => u.id)
+    );
+
     // remove existing participants
     await tx.splitParticipant.deleteMany({ where: { splitVersionId: latest.id } });
 
@@ -25038,6 +25059,8 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
       });
 
       const createdInvite = await tx.invitation.create({
+        // Keep cross-node acceptance identity via acceptedIdentityRef.
+        // acceptedByUserId must reference a local User row (FK-safe).
         data: {
           token: inviteToken,
           tokenHash: hashInviteToken(inviteToken),
@@ -25051,7 +25074,10 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
           status: inviteStatus,
           expiresAt: inviteExpiresAt,
           acceptedAt,
-          acceptedByUserId: bindNow ? boundUserId : null,
+          acceptedByUserId:
+            bindNow && boundUserId && localUserIds.has(boundUserId)
+              ? boundUserId
+              : null,
           acceptedIdentityRef: bindNow && boundUserId ? `user:${boundUserId}` : null
         }
       });
