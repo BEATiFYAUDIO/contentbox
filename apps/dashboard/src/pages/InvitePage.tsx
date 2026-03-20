@@ -307,6 +307,7 @@ export default function InvitePage({
   const [historyLoading, setHistoryLoading] = useState(false);
   const [pasteRaw, setPasteRaw] = useState<string>("");
   const [pasteMsg, setPasteMsg] = useState<string | null>(null);
+  const [manualToken, setManualToken] = useState<string>("");
   const [remoteOriginReachable, setRemoteOriginReachable] = useState<boolean | null>(null);
   const [localSigning, setLocalSigning] = useState<{ userId: string | null; email: string | null; canSign: boolean; keyVerified: boolean; reason: string | null } | null>(null);
 
@@ -469,24 +470,8 @@ export default function InvitePage({
       }
     }
 
-    const next = remote
-      ? `/invite/${encodeURIComponent(parsed.token)}?remote=${encodeURIComponent(remote)}`
-      : `/invite/${encodeURIComponent(parsed.token)}`;
-    if (import.meta.env.DEV) {
-      console.debug("[invite.openPastedInvite]", {
-        raw,
-        token: parsed.token,
-        remoteOrigin: remote,
-        next
-      });
-    }
-    try {
-      // Keep navigation in-app for local invite lookups.
-      window.history.pushState({}, "", next);
-      window.dispatchEvent(new PopStateEvent("popstate"));
-    } catch {
-      setPasteMsg("Could not route invite in-app. Use Received invites Sync/Accept.");
-    }
+    setManualToken(parsed.token);
+    setPasteMsg("Invite loaded in-app.");
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
@@ -512,7 +497,7 @@ export default function InvitePage({
     return null;
   })();
 
-  const tokenToUse = token || tokenFromLocation || "";
+  const tokenToUse = token || manualToken || tokenFromLocation || "";
 
   const expired = new Date(data?.invitation.expiresAt ?? "").getTime() < Date.now();
   const alreadyAccepted = Boolean(data?.invitation?.acceptedAt || data?.splitParticipant?.acceptedAt);

@@ -56,6 +56,9 @@ type RemoteRoyaltyParticipation = {
   contentType: string | null;
   contentStatus: string | null;
   status: string | null;
+  acceptedAt?: string | null;
+  revokedAt?: string | null;
+  tombstonedAt?: string | null;
   highlightedOnProfile?: boolean;
 };
 
