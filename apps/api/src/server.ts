@@ -1654,6 +1654,7 @@ const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-pay
 const PROVIDER_PAYMENT_RECEIPTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-receipts.json");
 const CREATOR_PAYOUT_DESTINATIONS_FILE = path.join(RUNTIME_STATE_DIR, "creator-payout-destinations.json");
 const PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "participation-profile-highlights.json");
+const REMOTE_PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "remote-participation-profile-highlights.json");
 const LOCKED_PARTICIPANT_SNAPSHOTS_FILE = path.join(RUNTIME_STATE_DIR, "locked-participant-snapshots.json");
 
 type ProviderTrustStatus = "unknown" | "verified" | "blocked";
@@ -1687,6 +1688,15 @@ type ParticipationProfileHighlightRecord = {
   id: string;
   userId: string;
   splitParticipantId: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type RemoteParticipationProfileHighlightRecord = {
+  id: string;
+  userId: string;
+  remoteInviteId: string;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -10368,6 +10378,52 @@ function listProfileHighlightedParticipationsForUser(userId: string): Participat
   return listParticipationProfileHighlightRows().filter((row) => row.userId === normalizedUserId && row.enabled);
 }
 
+function listRemoteParticipationProfileHighlightRows(): RemoteParticipationProfileHighlightRecord[] {
+  return readJsonArrayState<RemoteParticipationProfileHighlightRecord>(REMOTE_PARTICIPATION_PROFILE_HIGHLIGHTS_FILE)
+    .filter((row) => row && row.userId && row.remoteInviteId);
+}
+
+function writeRemoteParticipationProfileHighlightRows(rows: RemoteParticipationProfileHighlightRecord[]) {
+  writeJsonArrayState(REMOTE_PARTICIPATION_PROFILE_HIGHLIGHTS_FILE, rows);
+}
+
+function setRemoteParticipationProfileHighlight(input: {
+  userId: string;
+  remoteInviteId: string;
+  enabled: boolean;
+}): RemoteParticipationProfileHighlightRecord {
+  const userId = asString(input.userId || "").trim();
+  const remoteInviteId = asString(input.remoteInviteId || "").trim();
+  const enabled = Boolean(input.enabled);
+  if (!userId || !remoteInviteId) {
+    throw new Error("INVALID_REMOTE_PARTICIPATION_HIGHLIGHT_INPUT");
+  }
+  const rows = listRemoteParticipationProfileHighlightRows();
+  const now = new Date().toISOString();
+  const idx = rows.findIndex((row) => row.userId === userId && row.remoteInviteId === remoteInviteId);
+  if (idx >= 0) {
+    rows[idx] = { ...rows[idx], enabled, updatedAt: now };
+    writeRemoteParticipationProfileHighlightRows(rows);
+    return rows[idx];
+  }
+  const created: RemoteParticipationProfileHighlightRecord = {
+    id: `remote_part_highlight_${crypto.randomUUID()}`,
+    userId,
+    remoteInviteId,
+    enabled,
+    createdAt: now,
+    updatedAt: now
+  };
+  rows.push(created);
+  writeRemoteParticipationProfileHighlightRows(rows);
+  return created;
+}
+
+function listProfileHighlightedRemoteParticipationsForUser(userId: string): RemoteParticipationProfileHighlightRecord[] {
+  const normalizedUserId = asString(userId || "").trim();
+  return listRemoteParticipationProfileHighlightRows().filter((row) => row.userId === normalizedUserId && row.enabled);
+}
+
 function buildParticipationProjection(input: {
   splitVersion: any;
   splitParticipant: any;
@@ -10529,6 +10585,9 @@ async function listLockedParticipationsForUser(userId: string): Promise<Particip
 // Remote royalties summary (for invited remote splits)
 app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  const remoteHighlights = new Set(
+    listProfileHighlightedRemoteParticipationsForUser(userId).map((row) => row.remoteInviteId)
+  );
   const list = await prisma.remoteInvite.findMany({
     where: { userId },
     orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
@@ -10566,6 +10625,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       splitVersionNum: inv.splitVersionNum ?? null,
       role: inv.role || null,
       percent: percentToPrimitive(inv.percent ?? null),
+      status: inviteStatus,
       participantEmail: inv.participantEmail || null,
       acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
       remoteUserId: inv.remoteUserId || null,
@@ -10577,6 +10637,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       payoutSummary: accounting?.payoutSummary || {},
       payoutState: accounting?.payoutState || "none",
       destinationState: accounting?.destinationState || "unknown",
+      highlightedOnProfile: remoteHighlights.has(inv.id),
       createdAt: inv.createdAt.toISOString()
       };
     })
@@ -10618,6 +10679,37 @@ app.patch("/my/participations/:splitParticipantId/highlight", { preHandler: requ
     "participationProjection.highlight_set"
   );
   return reply.send({ ok: true, splitParticipantId, highlightedOnProfile: Boolean(updated.enabled) });
+});
+
+app.patch("/my/royalties/remote/:inviteId/highlight", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const inviteId = asString((req.params as any)?.inviteId || "").trim();
+  if (!inviteId) return badRequest(reply, "inviteId required");
+  const raw = (req.body ?? {}) as { enabled?: unknown };
+  if (typeof raw.enabled !== "boolean") return badRequest(reply, "enabled must be boolean");
+  const invite = await prisma.remoteInvite.findUnique({
+    where: { id: inviteId },
+    select: { id: true, userId: true, status: true, acceptedAt: true, contentId: true }
+  });
+  if (!invite || invite.userId !== userId) return notFound(reply, "Remote participation not found");
+  const normalizedStatus = normalizeRemoteInviteStatusForList(invite as any);
+  if (normalizedStatus !== "accepted" || !invite.acceptedAt || !invite.contentId) {
+    return reply.code(409).send({ error: "Only accepted remote participations can be featured." });
+  }
+  const updated = setRemoteParticipationProfileHighlight({
+    userId,
+    remoteInviteId: inviteId,
+    enabled: raw.enabled
+  });
+  app.log.info(
+    {
+      userId,
+      remoteInviteId: inviteId,
+      enabled: Boolean(updated.enabled)
+    },
+    "participationProjection.remote_highlight_set"
+  );
+  return reply.send({ ok: true, remoteInviteId: inviteId, highlightedOnProfile: Boolean(updated.enabled) });
 });
 
 // Ingest a remote invite acceptance into local storage (for payments & visibility)
@@ -19729,17 +19821,32 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const highlightedParticipations = (await listLockedParticipationsForUser(user.id))
     .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
     .slice(0, 12);
+  const highlightedRemoteParticipationIds = new Set(
+    listProfileHighlightedRemoteParticipationsForUser(user.id).map((row) => row.remoteInviteId)
+  );
+  const highlightedRemoteParticipations = highlightedRemoteParticipationIds.size
+    ? (await prisma.remoteInvite.findMany({
+        where: {
+          userId: user.id,
+          id: { in: Array.from(highlightedRemoteParticipationIds) }
+        },
+        orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+      }))
+        .filter((row) => normalizeRemoteInviteStatusForList(row as any) === "accepted")
+        .filter((row) => row.contentStatus === "published" && !row.contentDeletedAt && row.contentId)
+        .slice(0, 12)
+    : [];
   app.log.info(
     {
       userId: user.id,
-      highlightedCount: highlightedParticipations.length
+      highlightedCount: highlightedParticipations.length + highlightedRemoteParticipations.length
     },
     "participationProjection.profile_list"
   );
   const highlightedParticipationsHtml =
-    highlightedParticipations.length > 0
-      ? highlightedParticipations
-          .map((item) => {
+    highlightedParticipations.length > 0 || highlightedRemoteParticipations.length > 0
+      ? [
+          ...highlightedParticipations.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.participantRole || "participant"));
             const shareLabel =
@@ -19766,8 +19873,36 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 }
               </div>
             </article>`;
+          }),
+          ...highlightedRemoteParticipations.map((item) => {
+            const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
+            const safeRole = escHtml(asString(item.role || "participant"));
+            const shareLabel = Number.isFinite(Number(percentToPrimitive(item.percent ?? null)))
+              ? `${Number(percentToPrimitive(item.percent ?? null)).toFixed(2)}%`
+              : "—";
+            const safeShare = escHtml(shareLabel);
+            const base = normalizeOrigin(item.remoteOrigin || "") || "";
+            const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
+            const attributionUrl = item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/attribution` : "";
+            const linkHref = buyUrl || attributionUrl;
+            const cta = buyUrl ? "Open buy page" : attributionUrl ? "Open attribution" : null;
+            return `<article class="featured-item">
+              <div class="featured-meta" style="min-width:0;">
+                <div class="featured-topline">
+                  <span class="featured-type-badge">Participation</span>
+                  <span class="featured-verified">Certifyd</span>
+                </div>
+                <div class="featured-title">${safeTitle}</div>
+                <div class="line muted">Role: ${safeRole} • Share: ${safeShare}</div>
+                ${
+                  linkHref && cta
+                    ? `<div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
+                    : ""
+                }
+              </div>
+            </article>`;
           })
-          .join("")
+        ].join("")
       : "";
 
   const html = `<!doctype html>

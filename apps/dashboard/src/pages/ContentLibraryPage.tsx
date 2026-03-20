@@ -138,16 +138,31 @@ type ContentCredit = {
 };
 
 type LibraryParticipation = {
+  kind: "local" | "remote";
   contentId: string;
   contentTitle: string | null;
   contentType: string | null;
   contentStatus: string | null;
   contentDeletedAt: string | null;
-  splitParticipantId: string;
+  splitParticipantId: string | null;
+  remoteInviteId: string | null;
+  remoteOrigin: string | null;
+  status: string | null;
   highlightedOnProfile: boolean;
   creatorUserId: string | null;
   creatorDisplayName: string | null;
   creatorEmail: string | null;
+};
+
+type RemoteRoyaltyParticipation = {
+  id: string;
+  remoteOrigin: string | null;
+  contentId: string | null;
+  contentTitle: string | null;
+  contentType: string | null;
+  contentStatus: string | null;
+  status: string | null;
+  highlightedOnProfile?: boolean;
 };
 
 type ContentLibraryPageProps = {
@@ -591,19 +606,61 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         : trashMode
           ? `/content?trash=1&scope=${contentScope}${typeQuery}`
           : `/content?scope=${contentScope}${typeQuery}`;
-      const [data, participationsRes] = await Promise.all([
+      const [data, participationsRes, remoteParticipationsRes] = await Promise.all([
         api<ContentItem[] | any>(url),
         trashMode || tombstoneMode
           ? Promise.resolve({ items: [] as LibraryParticipation[] })
-          : api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] }))
+          : api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
+        trashMode || tombstoneMode
+          ? Promise.resolve([] as RemoteRoyaltyParticipation[])
+          : api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[])
       ]);
       const baseList = Array.isArray(data) ? data : [];
-      const participations = Array.isArray(participationsRes?.items) ? participationsRes.items : [];
+      const localParticipationsRaw = Array.isArray(participationsRes?.items) ? participationsRes.items : [];
+      const localParticipations: LibraryParticipation[] = localParticipationsRaw.map((row: any) => ({
+        kind: "local",
+        contentId: String(row?.contentId || "").trim(),
+        contentTitle: row?.contentTitle || null,
+        contentType: row?.contentType || null,
+        contentStatus: row?.contentStatus || null,
+        contentDeletedAt: row?.contentDeletedAt || null,
+        splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
+        remoteInviteId: null,
+        remoteOrigin: null,
+        status: null,
+        highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+        creatorUserId: row?.creatorUserId || null,
+        creatorDisplayName: row?.creatorDisplayName || null,
+        creatorEmail: row?.creatorEmail || null
+      }));
+      const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
+      const remoteParticipations: LibraryParticipation[] = remoteParticipationsRaw
+        .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
+        .filter((row) => Boolean(String(row?.contentId || "").trim()))
+        .map((row) => ({
+          kind: "remote",
+          contentId: String(row.contentId || "").trim(),
+          contentTitle: row.contentTitle || null,
+          contentType: row.contentType || null,
+          contentStatus: row.contentStatus || "published",
+          contentDeletedAt: null,
+          splitParticipantId: null,
+          remoteInviteId: String(row.id || "").trim() || null,
+          remoteOrigin: String(row.remoteOrigin || "").replace(/\/+$/, "") || null,
+          status: row.status || null,
+          highlightedOnProfile: Boolean(row.highlightedOnProfile),
+          creatorUserId: null,
+          creatorDisplayName: null,
+          creatorEmail: null
+        }));
+      const participations: LibraryParticipation[] = [...localParticipations, ...remoteParticipations];
       const participationMap: Record<string, LibraryParticipation> = {};
       for (const row of participations) {
         if (!row?.contentId) continue;
         const existing = participationMap[row.contentId];
-        if (!existing || row.highlightedOnProfile) participationMap[row.contentId] = row;
+        if (!existing || row.highlightedOnProfile || (row.kind === "local" && existing.kind === "remote")) {
+          participationMap[row.contentId] = row;
+        }
       }
       setParticipationByContentId(participationMap);
       const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
@@ -621,7 +678,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             displayName: p.creatorDisplayName || null,
             email: p.creatorEmail || null
           },
-          libraryAccess: "participant"
+          libraryAccess: "participant",
+          childOrigin: p.remoteOrigin || null
         }));
       const list = [...baseList, ...participationOnlyItems];
       if (!Array.isArray(data)) {
@@ -1458,18 +1516,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
   async function setParticipationFeatureOnProfile(contentId: string, featureOnProfile: boolean) {
     const participation = participationByContentId[contentId];
-    if (!participation?.splitParticipantId) {
+    if (!participation) {
       setError("Participation record not found for this content.");
       return;
     }
     setBusyAction((m) => ({ ...m, [contentId]: true }));
     setError(null);
     try {
-      const res = await api<{ highlightedOnProfile: boolean }>(
-        `/my/participations/${encodeURIComponent(participation.splitParticipantId)}/highlight`,
-        "PATCH",
-        { enabled: featureOnProfile }
-      );
+      const res =
+        participation.kind === "remote"
+          ? await api<{ highlightedOnProfile: boolean }>(
+              `/my/royalties/remote/${encodeURIComponent(String(participation.remoteInviteId || ""))}/highlight`,
+              "PATCH",
+              { enabled: featureOnProfile }
+            )
+          : await api<{ highlightedOnProfile: boolean }>(
+              `/my/participations/${encodeURIComponent(String(participation.splitParticipantId || ""))}/highlight`,
+              "PATCH",
+              { enabled: featureOnProfile }
+            );
       setParticipationByContentId((prev) => ({
         ...prev,
         [contentId]: {
@@ -2616,6 +2681,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 type="button"
                                 className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 whitespace-nowrap"
                                 onClick={async () => {
+                                  if (!isOwner && participationInfo?.kind === "remote") {
+                                    const origin = String(participationInfo.remoteOrigin || "").replace(/\/+$/, "");
+                                    if (origin) {
+                                      const target = `${origin}/buy/${encodeURIComponent(it.id)}`;
+                                      window.open(target, "_blank", "noopener,noreferrer");
+                                      return;
+                                    }
+                                  }
                                   const next = !isOpen;
                                   setExpanded((m) => ({ ...m, [it.id]: next }));
                                   if (next) {
@@ -2645,7 +2718,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   }
                                 }}
                               >
-                                {isOpen ? "Hide details" : isOwner ? "Show files" : "Details"}
+                                {isOpen
+                                  ? "Hide details"
+                                  : !isOwner && participationInfo?.kind === "remote"
+                                    ? "Open release"
+                                    : isOwner
+                                      ? "Show files"
+                                      : "Details"}
                               </button>
 
                               {isOwner && allowUpload ? (
