@@ -2,6 +2,7 @@ import React from "react";
 import { api, getApiBase } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 import {
+  canFeatureOnProfile,
   classifyLibraryEligibility,
   getAvailabilityState,
   isActiveLibraryVisible,
@@ -29,6 +30,7 @@ type LibraryItem = {
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
   coverUrl?: string | null;
   manifest?: { sha256?: string | null } | null;
+  featureOnProfile?: boolean;
   _count?: { files: number };
 };
 type LibraryParticipation = {
@@ -96,6 +98,7 @@ type NormalizedLibraryItem = {
   availabilityState: ReturnType<typeof getAvailabilityState>;
   relation: LibraryRelation;
   publicPageUrl: string | null;
+  participation: LibraryParticipation | null;
 };
 
 const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: string; cls: string }> = {
@@ -190,6 +193,9 @@ function applyLibraryFilters(
 export default function LibraryPage() {
   const apiBase = getApiBase();
   const [items, setItems] = React.useState<NormalizedLibraryItem[]>([]);
+  const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
+  const [featureBusyById, setFeatureBusyById] = React.useState<Record<string, boolean>>({});
+  const [featureMsgById, setFeatureMsgById] = React.useState<Record<string, string>>({});
   const [msg, setMsg] = React.useState<string | null>(null);
   const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
   const [libraryRelationshipFilter, setLibraryRelationshipFilter] = React.useState<LibraryRelationshipFilter>(() => readLibraryRelationshipFromUrl());
@@ -280,6 +286,10 @@ export default function LibraryPage() {
           if (!contentId) continue;
           const existing = participationByContentId.get(contentId);
           if (!existing || p.kind === "local") participationByContentId.set(contentId, p);
+        }
+        const nextParticipationByContentId: Record<string, LibraryParticipation> = {};
+        for (const [contentId, participation] of participationByContentId.entries()) {
+          nextParticipationByContentId[contentId] = participation;
         }
 
         const participationOnlyItems: LibraryItem[] = [...localParticipations, ...remoteParticipations]
@@ -393,9 +403,11 @@ export default function LibraryPage() {
             relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
             availabilityState: getAvailabilityState(normalizedItem),
             relation,
-            publicPageUrl: buildPublicPageUrl(contentId, participation?.remoteOrigin || null)
+            publicPageUrl: buildPublicPageUrl(contentId, participation?.remoteOrigin || null),
+            participation
           });
         }
+        setParticipationByContentId(nextParticipationByContentId);
         setItems(applyLibraryFilters(normalized, libraryTypeFilter, libraryRelationshipFilter));
       } catch (e: any) {
         const err = String(e?.message || "Failed to load library");
@@ -456,6 +468,71 @@ export default function LibraryPage() {
       return;
     }
     void loadPreview(entry.item.id);
+  }
+
+  async function setFeatureOnProfile(entry: NormalizedLibraryItem, next: boolean) {
+    const contentId = entry.item.id;
+    setFeatureBusyById((m) => ({ ...m, [contentId]: true }));
+    setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
+    try {
+      if (entry.relation === "owner") {
+        const res = await api<{ featureOnProfile: boolean }>(
+          `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
+          "PATCH",
+          { featureOnProfile: next }
+        );
+        setItems((prev) =>
+          prev.map((row) =>
+            row.item.id === contentId
+              ? { ...row, item: { ...row.item, featureOnProfile: Boolean(res?.featureOnProfile) } }
+              : row
+          )
+        );
+        return;
+      }
+      if (entry.relation === "participant") {
+        const participation = entry.participation || participationByContentId[contentId] || null;
+        if (!participation) throw new Error("Participation info not found.");
+        const res =
+          participation.kind === "remote" && participation.remoteInviteId
+            ? await api<{ highlightedOnProfile: boolean }>(
+                `/my/royalties/remote/${encodeURIComponent(String(participation.remoteInviteId))}/highlight`,
+                "PATCH",
+                { enabled: next }
+              )
+            : await api<{ highlightedOnProfile: boolean }>(
+                `/my/participations/${encodeURIComponent(String(participation.splitParticipantId || ""))}/highlight`,
+                "PATCH",
+                { enabled: next }
+              );
+        const highlightedOnProfile = Boolean(res?.highlightedOnProfile);
+        setParticipationByContentId((prev) => ({
+          ...prev,
+          [contentId]: {
+            ...(prev[contentId] || participation),
+            highlightedOnProfile
+          }
+        }));
+        setItems((prev) =>
+          prev.map((row) =>
+            row.item.id === contentId
+              ? {
+                  ...row,
+                  participation: row.participation
+                    ? { ...row.participation, highlightedOnProfile }
+                    : row.participation
+                }
+              : row
+          )
+        );
+        return;
+      }
+      throw new Error("Feature on profile is only available for owned or split-participation content.");
+    } catch (e: any) {
+      setFeatureMsgById((m) => ({ ...m, [contentId]: e?.message || "Failed to update profile feature status." }));
+    } finally {
+      setFeatureBusyById((m) => ({ ...m, [contentId]: false }));
+    }
   }
 
   function previewFileFor(previewUrl: string | null | undefined, files: any[] | null | undefined) {
@@ -572,6 +649,14 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   {list.map((entry) => {
                     const it = entry.item;
+                    const participationInfo = entry.participation || participationByContentId[it.id] || null;
+                    const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
+                    const ownerFeatured = Boolean(it.featureOnProfile);
+                    const featureAllowed = canFeatureOnProfile({
+                      item: { ...it, libraryAccess: entry.relation === "owner" ? "owned" : entry.relation === "participant" ? "participant" : it.libraryAccess },
+                      participation: participationInfo
+                    }).allowed;
+                    const currentlyFeatured = entry.relation === "owner" ? ownerFeatured : participationFeatured;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
                     const pf = previewFileFor(previewUrl, preview?.files || []);
@@ -637,6 +722,9 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                           <div className="mt-1 text-[11px] text-neutral-500">
                             Relationship: {LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType]}
                           </div>
+                          {currentlyFeatured ? (
+                            <div className="mt-1 text-[11px] text-sky-300">FEATURED ON PROFILE</div>
+                          ) : null}
                         </div>
 
                         {isAudio && coverLoadErrorById[it.id] ? (
@@ -645,7 +733,9 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
 
                         <div className="rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
                           <div className="flex items-center justify-between">
-                            <div className="text-sm font-semibold text-neutral-100">Player</div>
+                            <div className="text-sm font-semibold text-neutral-100">
+                              {entry.relation === "participant" ? "Actions" : "Player"}
+                            </div>
                             <button
                               type="button"
                               className="text-[11px] rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -662,7 +752,27 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                             >
                               {entry.relation === "participant" ? "Open public page" : previewLoading[it.id] ? "Loading…" : "Load preview"}
                             </button>
+                            <button
+                              type="button"
+                              disabled={featureBusyById[it.id] || !featureAllowed}
+                              className={`text-xs rounded border px-2 py-1 ${
+                                featureAllowed
+                                  ? "border-neutral-800 hover:bg-neutral-900"
+                                  : "border-neutral-900 text-neutral-600 cursor-not-allowed"
+                              }`}
+                              onClick={() => setFeatureOnProfile(entry, !currentlyFeatured)}
+                              title={featureAllowed ? "" : "Only owned or accepted split participation content can be featured."}
+                            >
+                              {featureBusyById[it.id]
+                                ? "Updating…"
+                                : currentlyFeatured
+                                  ? "Unfeature on profile"
+                                  : "Feature on profile"}
+                            </button>
                           </div>
+                          {featureMsgById[it.id] ? (
+                            <div className="mt-2 text-xs text-amber-300">{featureMsgById[it.id]}</div>
+                          ) : null}
                           {previewError[it.id] ? (
                             <div className="mt-2 text-xs text-amber-300 space-y-2">
                               <div>{previewError[it.id]}</div>
@@ -678,7 +788,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                               ) : null}
                             </div>
                           ) : null}
-                          {preview && isOpen ? (
+                          {entry.relation !== "participant" && preview && isOpen ? (
                             <div className="mt-2">
                               {previewUrl && isVideo ? (
                                 <video className="w-full rounded-md" controls src={previewUrl} />
