@@ -224,26 +224,7 @@ function openExternalInNewWindow(url: string): boolean {
   const target = String(url || "").trim();
   if (!target) return false;
   try {
-    const currentOrigin = (() => {
-      try {
-        return new URL(window.location.href).origin;
-      } catch {
-        return "";
-      }
-    })();
-    const targetOrigin = (() => {
-      try {
-        return new URL(target, window.location.origin).origin;
-      } catch {
-        return "";
-      }
-    })();
-    if (currentOrigin && targetOrigin && currentOrigin === targetOrigin) {
-      window.location.assign(target);
-      return true;
-    }
-    // Use anchor-click to avoid dual-navigation race conditions where both tabs
-    // can navigate when popup detection is inconsistent across browsers.
+    // Keep localhost dashboard stable: never redirect current tab here.
     const a = document.createElement("a");
     a.href = target;
     a.target = "_blank";
@@ -466,9 +447,9 @@ export default function InvitePage({
       return;
     }
 
-    // On local dashboard surfaces, prefer direct ingest so users can work from rows
-    // without opening another invite page/tab.
-    if (remote && me) {
+    // On dashboard surfaces, always prefer direct remote ingest so users can
+    // work from Received invites rows (Sync/Accept) without opening a new tab.
+    if (remote) {
       try {
         const snapshot = await fetchRemoteJsonFromOrigin(remote, `/invites/${encodeURIComponent(parsed.token)}`, {
           method: "GET"
@@ -499,8 +480,13 @@ export default function InvitePage({
         next
       });
     }
-    const opened = openExternalInNewWindow(next);
-    if (!opened) setPasteMsg("Could not open invite.");
+    try {
+      // Keep navigation in-app for local invite lookups.
+      window.history.pushState({}, "", next);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } catch {
+      setPasteMsg("Could not route invite in-app. Use Received invites Sync/Accept.");
+    }
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
