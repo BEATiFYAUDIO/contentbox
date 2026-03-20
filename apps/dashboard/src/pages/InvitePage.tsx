@@ -1475,13 +1475,15 @@ export default function InvitePage({
                                     {accepted ? <div className="text-xs text-emerald-300">Redeemed: {formatDate(inv.acceptedAt)}</div> : null}
                                   </div>
                                   <div className="flex items-center gap-2">
-                                    <button
-                                      onClick={() => syncRemoteInvite(inv)}
-                                      className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
-                                      disabled={remoteSyncBusy[inv.id]}
-                                    >
-                                      {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
-                                    </button>
+                                    {!accepted ? (
+                                      <button
+                                        onClick={() => syncRemoteInvite(inv)}
+                                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
+                                        disabled={remoteSyncBusy[inv.id]}
+                                      >
+                                        {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
+                                      </button>
+                                    ) : null}
                                     {!accepted ? (
                                       <button
                                         onClick={() => acceptRemoteInvite(inv)}
@@ -1490,6 +1492,11 @@ export default function InvitePage({
                                       >
                                         {remoteAcceptBusy[inv.id] ? "Accepting…" : "Accept"}
                                       </button>
+                                    ) : null}
+                                    {accepted ? (
+                                      <div className="text-xs rounded-md border border-emerald-700/60 bg-emerald-900/20 px-2 py-1 text-emerald-300">
+                                        Synced
+                                      </div>
                                     ) : null}
                                     <div className="text-xs uppercase tracking-wide text-neutral-400">
                                       {accepted ? "accepted" : "pending"}

@@ -8198,11 +8198,6 @@ function shouldShowInviteInActiveLists(inv: {
   if (status === "revoked" || status === "declined" || status === "expired" || status === "tombstoned") return false;
   if (inv?.revokedAt || inv?.tombstonedAt) return false;
   if (inv?.splitParticipant?.splitVersion?.content?.deletedAt) return false;
-  if (status === "accepted") {
-    const splitStatus = String(inv?.splitParticipant?.splitVersion?.status || "").trim().toLowerCase();
-    const contentStatus = String(inv?.splitParticipant?.splitVersion?.content?.status || "").trim().toLowerCase();
-    if (splitStatus !== "locked" && contentStatus !== "published") return false;
-  }
   return status === "pending" || status === "accepted";
 }
 

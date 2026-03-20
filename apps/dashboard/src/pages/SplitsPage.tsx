@@ -30,27 +30,6 @@ function titleCase(s?: string | null) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-function extractInviteToken(raw: string): string | null {
-  const v = String(raw || "").trim();
-  if (!v) return null;
-  const m1 = v.match(/\btoken=([^\s]+)/i);
-  if (m1 && m1[1]) return m1[1];
-  const m2 = v.match(/\/invites?\/([^?#\s]+)/i);
-  if (m2 && m2[1]) return m2[1];
-  if (/^[A-Za-z0-9_-]{10,}$/.test(v)) return v;
-  return null;
-}
-
-async function fetchRemoteJsonFromOrigin(
-  origin: string,
-  path: string,
-  opts?: { method?: string; body?: any }
-) {
-  const encoded = encodeURIComponent(origin);
-  const url = `/api/remote${path}?origin=${encoded}`;
-  return api<any>(url, opts?.method || "GET", opts?.body || undefined);
-}
-
 function formatDateLabel(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
@@ -76,9 +55,7 @@ export default function SplitsPage(props: {
   const [contentList, setContentList] = React.useState<ContentItem[]>([]);
   const [splitSummaryByContent, setSplitSummaryByContent] = React.useState<Record<string, SplitVersion | null>>({});
   const [showTombstones, setShowTombstones] = React.useState(false);
-  const [remoteInvites, setRemoteInvites] = React.useState<any[]>([]);
-  const [remoteSyncBusy, setRemoteSyncBusy] = React.useState<Record<string, boolean>>({});
-  const [msg, setMsg] = React.useState<string | null>(null);
+  const [remoteParticipations, setRemoteParticipations] = React.useState<any[]>([]);
 
   async function loadContentList(includeTombstones: boolean) {
     if (!splitsAllowed) {
@@ -111,67 +88,21 @@ export default function SplitsPage(props: {
     setContentList(merged);
   }
 
-  async function loadRemoteInvites() {
+  async function loadRemoteParticipations() {
     if (!splitsAllowed) {
-      setRemoteInvites([]);
+      setRemoteParticipations([]);
       return;
     }
     try {
-      const list = await api<any[]>(`/my/invitations/remote`, "GET");
-      setRemoteInvites(Array.isArray(list) ? list : []);
-    } catch {
-      setRemoteInvites([]);
-    }
-  }
-
-  async function syncRemoteInvite(inv: any) {
-    const inviteUrl = String(inv?.inviteUrl || "").trim();
-    const token = extractInviteToken(inviteUrl || inv?.token || "");
-    let origin = String(inv?.remoteOrigin || "").trim();
-    if (!origin && inviteUrl) {
-      try {
-        origin = new URL(inviteUrl).origin;
-      } catch {}
-    }
-    if (!token || !origin) {
-      setMsg("Remote invite is missing token or origin.");
-      return;
-    }
-    setRemoteSyncBusy((m) => ({ ...m, [inv.id]: true }));
-    try {
-      const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}`, { method: "GET" });
-      await api(`/invites/ingest`, "POST", {
-        remoteOrigin: origin,
-        token,
-        inviteUrl,
-        content: res?.content || null,
-        splitParticipant: res?.splitParticipant || null,
-        splitVersion: res?.splitVersion || null,
-        acceptedAt: res?.invitation?.acceptedAt || null,
-        contentDeletedAt: res?.content?.deletedAt || null,
-        remoteNodeUrl: origin
+      const list = await api<any[]>(`/my/royalties/remote`, "GET");
+      const rows = Array.isArray(list) ? list : [];
+      const acceptedRows = rows.filter((row) => {
+        const status = String(row?.status || "").trim().toLowerCase();
+        return status === "accepted" || Boolean(row?.acceptedAt);
       });
-      await loadRemoteInvites();
-    } catch (e: any) {
-      const msgText = String(e?.message || "");
-      if (msgText.includes("404") && msgText.toLowerCase().includes("invite not found")) {
-        try {
-          await api(`/invites/ingest`, "POST", {
-            remoteOrigin: origin,
-            token,
-            inviteUrl,
-            contentDeletedAt: new Date().toISOString(),
-            acceptedAt: inv?.acceptedAt || null,
-            remoteNodeUrl: origin
-          });
-          await loadRemoteInvites();
-        } catch {}
-        setMsg("Remote invite not found (likely deleted or expired).");
-      } else {
-        setMsg(e?.message || "Remote sync failed");
-      }
-    } finally {
-      setRemoteSyncBusy((m) => ({ ...m, [inv.id]: false }));
+      setRemoteParticipations(acceptedRows);
+    } catch {
+      setRemoteParticipations([]);
     }
   }
 
@@ -189,11 +120,11 @@ export default function SplitsPage(props: {
     if (!splitsAllowed) {
       setContentList([]);
       setSplitSummaryByContent({});
-      setRemoteInvites([]);
+      setRemoteParticipations([]);
       return;
     }
     loadContentList(showTombstones).catch(() => {});
-    loadRemoteInvites().catch(() => {});
+    loadRemoteParticipations().catch(() => {});
   }, [splitsAllowed, isBasic]);
 
   React.useEffect(() => {
@@ -288,22 +219,21 @@ export default function SplitsPage(props: {
         </div>
       </div>
 
-      {remoteInvites.length > 0 ? (
+      {remoteParticipations.length > 0 ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-lg font-semibold">Remote splits</div>
-              <div className="text-sm text-neutral-400 mt-1">Accepted invites from other nodes (read-only).</div>
+              <div className="text-sm text-neutral-400 mt-1">Accepted split participations from other nodes (read-only).</div>
             </div>
           </div>
 
-          {msg ? <div className="mt-2 text-xs text-amber-300">{msg}</div> : null}
           <div className="mt-4 space-y-2">
-            {remoteInvites
+            {remoteParticipations
               .filter((inv) => (showTombstones ? true : !inv.contentDeletedAt))
               .map((inv) => {
                 const status = String(inv?.status || "pending").trim().toLowerCase();
-                const statusLabel = status === "accepted" || inv?.acceptedAt ? "Accepted" : titleCase(status || "pending");
+                const participationStatusLabel = status === "accepted" || inv?.acceptedAt ? "Accepted" : titleCase(status || "pending");
                 return (
                 <div key={inv.id} className="rounded-lg border border-neutral-800 px-3 py-2">
                   <div className="flex items-center justify-between gap-3">
@@ -313,29 +243,18 @@ export default function SplitsPage(props: {
                         {titleCase(inv.contentType)} • {inv.role ? `${inv.role}` : "role —"} • {inv.percent != null ? `${inv.percent}%` : "percent —"}
                         {inv.contentDeletedAt ? " • tombstoned" : ""}
                       </div>
-                      <div className="text-[11px] text-neutral-500">Status: {statusLabel}</div>
+                      <div className="text-[11px] text-neutral-500">
+                        Split: v{inv.splitVersionNum ?? "—"} • {titleCase(String(inv.splitStatus || "—"))}
+                      </div>
+                      <div className="text-[11px] text-neutral-500">Participation: {participationStatusLabel}</div>
                       {inv.remoteOrigin ? (
                         <div className="text-[11px] text-neutral-500 break-all">Remote: {inv.remoteOrigin}</div>
                       ) : null}
+                      {inv.acceptedAt ? (
+                        <div className="text-[11px] text-emerald-300">Accepted: {formatDateLabel(inv.acceptedAt)}</div>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-2">
-                      {!inv.contentDeletedAt ? (
-                        <button
-                          onClick={() => syncRemoteInvite(inv)}
-                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
-                          disabled={remoteSyncBusy[inv.id]}
-                        >
-                          {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
-                        </button>
-                      ) : null}
-                      {inv.inviteUrl ? (
-                        <button
-                          onClick={() => window.open(inv.inviteUrl, "_blank", "noopener,noreferrer")}
-                          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                        >
-                          View invite
-                        </button>
-                      ) : null}
                       <div className="text-[11px] text-neutral-500 uppercase tracking-wide">read-only</div>
                     </div>
                   </div>
