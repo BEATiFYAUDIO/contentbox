@@ -10492,7 +10492,6 @@ async function mirrorRemoteInviteAcceptance(input: {
       role: asString(splitParticipant?.role || "").trim() || null,
       percent: Number.isFinite(percent) && percent > 0 ? percent : null,
       participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
-      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
       acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
       status,
       remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
@@ -10514,7 +10513,6 @@ async function mirrorRemoteInviteAcceptance(input: {
       role: asString(splitParticipant?.role || "").trim() || null,
       percent: Number.isFinite(percent) && percent > 0 ? percent : null,
       participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
-      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
       acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
       status,
       remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
@@ -10577,7 +10575,6 @@ async function upsertRemoteInviteMirrorFromPayload(input: {
       role: asString(splitParticipant?.role || "").trim() || null,
       percent: Number.isFinite(percent) && percent > 0 ? percent : null,
       participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
-      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
       status,
       expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
       acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
@@ -10602,7 +10599,6 @@ async function upsertRemoteInviteMirrorFromPayload(input: {
       role: asString(splitParticipant?.role || "").trim() || null,
       percent: Number.isFinite(percent) && percent > 0 ? percent : null,
       participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
-      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
       status,
       expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
       acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
@@ -12940,6 +12936,15 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
       remoteNodeUrl: signedPayload.payload.nodeUrl,
       remoteUserId: signedPayload.payload.remoteUserId
     };
+    app.log.info(
+      {
+        tokenId: safeInviteTokenId(token),
+        origin,
+        localUserId: localUserId || null,
+        state: "accept_submitted"
+      },
+      "invite.remote_accept_submitted"
+    );
     const res = await fetchWithTimeout(
       `${origin}/invites/${encodeURIComponent(token)}/accept`,
       {
@@ -12964,7 +12969,21 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         ...(payload && typeof payload === "object" ? payload : {}),
         code: mapRemoteInviteAcceptErrorCode(res.status, asString(payload?.code || ""))
       };
+      app.log.info(
+        {
+          tokenId: safeInviteTokenId(token),
+          origin,
+          localUserId: localUserId || null,
+          state: "rejected_authoritative",
+          code: asString(payload?.code || payload?.error || ""),
+          reason: asString(payload?.reason || "")
+        },
+        "invite.remote_accept_denied"
+      );
     }
+    let mirrorSeedOk: boolean | null = null;
+    let mirrorRefreshOk: boolean | null = null;
+    let projectedVisible = false;
     if (res.ok) {
       try {
         await upsertRemoteInviteMirrorFromPayload({
@@ -12974,7 +12993,9 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
           payload,
           forceAccepted: true
         });
+        mirrorSeedOk = true;
       } catch (mirrorErr: any) {
+        mirrorSeedOk = false;
         app.log.warn(
           {
             tokenId: safeInviteTokenId(token),
@@ -12994,7 +13015,9 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
             asString(payload?.acceptedAt || payload?.invitation?.acceptedAt || "").trim() ||
             new Date().toISOString()
         });
+        mirrorRefreshOk = true;
       } catch (mirrorErr: any) {
+        mirrorRefreshOk = false;
         app.log.warn(
           {
             tokenId: safeInviteTokenId(token),
@@ -13005,6 +13028,58 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
           "invite.remote_accept_mirror_failed"
         );
       }
+      try {
+        const tokenHash = hashInviteToken(token);
+        const mirrored = await prisma.remoteInvite.findUnique({
+          where: { remoteOrigin_tokenHash: { remoteOrigin: origin, tokenHash } },
+          select: { id: true, status: true, acceptedAt: true, contentId: true, revokedAt: true, tombstonedAt: true }
+        });
+        projectedVisible = Boolean(
+          mirrored &&
+            !mirrored.revokedAt &&
+            !mirrored.tombstonedAt &&
+            Boolean(mirrored.contentId) &&
+            (normalizeInviteStatus(mirrored.status) === "accepted" || Boolean(mirrored.acceptedAt))
+        );
+      } catch {
+        projectedVisible = false;
+      }
+      app.log.info(
+        {
+          tokenId: safeInviteTokenId(token),
+          origin,
+          localUserId: localUserId || null,
+          authoritativeAcceptSuccess: true,
+          mirrorWriteSuccess: mirrorSeedOk === true && mirrorRefreshOk !== false,
+          mirrorSeedSuccess: mirrorSeedOk,
+          mirrorRefreshSuccess: mirrorRefreshOk,
+          projectedVisible,
+          bindingSource: asString(payload?.bindingSource || payload?.acceptanceAuthMode || "").trim() || null,
+          state: "accepted_authoritative"
+        },
+        "invite.remote_accept_authoritative"
+      );
+      app.log.info(
+        {
+          tokenId: safeInviteTokenId(token),
+          origin,
+          localUserId: localUserId || null,
+          state: mirrorSeedOk === true && mirrorRefreshOk !== false ? "mirrored_local" : "mirror_failed"
+        },
+        mirrorSeedOk === true && mirrorRefreshOk !== false
+          ? "invite.remote_accept_mirrored"
+          : "invite.remote_accept_mirror_failed"
+      );
+      app.log.info(
+        {
+          tokenId: safeInviteTokenId(token),
+          origin,
+          localUserId: localUserId || null,
+          state: projectedVisible ? "projected_visible" : "projection_failed",
+          projectedVisible
+        },
+        projectedVisible ? "invite.remote_accept_projected" : "invite.remote_accept_projection_failed"
+      );
     }
     app.log.info(
       {
@@ -29424,6 +29499,46 @@ async function handlePublicInvitePage(req: any, reply: any) {
 
 app.get("/invite/:token", handlePublicInvitePage);
 
+type CanonicalInviteAcceptResult = {
+  ok: true;
+  inviteId: string;
+  contentId: string | null;
+  splitId: string | null;
+  splitHash: string | null;
+  participantId: string | null;
+  boundIdentityRef: string | null;
+  acceptanceState: "accepted_authoritative";
+  acceptedAt: string | null;
+  bindingSource: "local_auth" | "remote_signature";
+  alreadyAccepted?: boolean;
+  code?: string;
+  reason?: string;
+};
+
+function buildCanonicalInviteAcceptResult(input: {
+  invitation: any;
+  acceptedAt: Date | null;
+  boundIdentityRef: string | null;
+  bindingSource: "local_auth" | "remote_signature";
+  alreadyAccepted?: boolean;
+}): CanonicalInviteAcceptResult {
+  const inv = input.invitation;
+  const splitVersion = inv?.splitParticipant?.splitVersion || null;
+  return {
+    ok: true,
+    inviteId: asString(inv?.id || "").trim(),
+    contentId: asString(splitVersion?.contentId || inv?.splitVersion?.contentId || "").trim() || null,
+    splitId: asString(inv?.splitVersionId || splitVersion?.id || "").trim() || null,
+    splitHash: asString(splitVersion?.splitsHash || "").trim() || null,
+    participantId: asString(inv?.splitParticipantId || inv?.splitParticipant?.id || "").trim() || null,
+    boundIdentityRef: asString(input.boundIdentityRef || "").trim() || null,
+    acceptanceState: "accepted_authoritative",
+    acceptedAt: input.acceptedAt ? input.acceptedAt.toISOString() : null,
+    bindingSource: input.bindingSource,
+    alreadyAccepted: Boolean(input.alreadyAccepted)
+  };
+}
+
 /**
  * Accept an invite token. If the requester is authenticated, associate the
  * SplitParticipant.participantUserId with the authenticated user.
@@ -29618,6 +29733,17 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   const inviteTargetType = normalizeInviteTargetType(inv.targetType);
   const inviteTargetValue = asString(inv.targetValue).trim();
   const currentStatus = normalizeInviteStatus(inv.status);
+  app.log.info(
+    {
+      tokenId,
+      invitationId: inv.id,
+      splitParticipantId: inv.splitParticipantId,
+      targetType: inviteTargetType,
+      targetValue: inviteTargetValue,
+      state: "accept_submitted"
+    },
+    "invite.accept_received"
+  );
   const currentSplitParticipantInvitationId = asString(inv.splitParticipant?.invitationId || "").trim();
   if (currentSplitParticipantInvitationId && currentSplitParticipantInvitationId !== inv.id) {
     app.log.info(
@@ -29747,10 +29873,18 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       },
       "invite.remote_accept_idempotent"
     );
+    const boundIdentityRef =
+      asString(inv.acceptedIdentityRef || "").trim() ||
+      (sameLocalUser ? `user:${userId}` : remoteNodeUrl ? `remote:${remoteNodeUrl}#user:${userId}` : null);
+    const canonical = buildCanonicalInviteAcceptResult({
+      invitation: inv,
+      acceptedAt: inv.acceptedAt || null,
+      boundIdentityRef,
+      bindingSource: acceptanceAuthMode === "remote_signature" ? "remote_signature" : "local_auth",
+      alreadyAccepted: true
+    });
     return reply.send({
-      ok: true,
-      acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
-      alreadyAccepted: true,
+      ...canonical,
       code: "INVITE_ALREADY_ACCEPTED",
       reason: "IDEMPOTENT"
     });
@@ -29784,6 +29918,24 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       error: "Invite is bound to a different identity",
       code: "INVITE_WRONG_RECIPIENT",
       reason: "target_mismatch"
+    });
+  }
+  if (inviteTargetType === "identity_ref" && inviteTargetValue && inviteTargetValue !== userId) {
+    app.log.info(
+      {
+        tokenId,
+        invitationId: inv.id,
+        splitParticipantId: inv.splitParticipantId,
+        targetType: inviteTargetType,
+        targetValue: inviteTargetValue,
+        attemptedUserId: userId
+      },
+      "invite.remote_accept_participant_mismatch"
+    );
+    return reply.code(403).send({
+      error: "Invite is bound to a different identity",
+      code: "INVITE_WRONG_RECIPIENT",
+      reason: "identity_ref_mismatch"
     });
   }
   if (inviteTargetType === "email") {
@@ -29981,8 +30133,39 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     },
     "invite.remote_accept_result"
   );
-
-  return reply.send({ ok: true, acceptedAt: now.toISOString() });
+  app.log.info(
+    {
+      tokenId,
+      invitationId: inv.id,
+      splitParticipantId: inv.splitParticipantId,
+      authoritativeAcceptSuccess: true,
+      mirrorWriteSuccess: null,
+      bindingSource: acceptanceAuthMode
+    },
+    "invite.accept_authoritative"
+  );
+  const boundIdentityRef =
+    acceptanceAuthMode === "remote_signature"
+      ? `remote:${remoteNodeUrl || "unknown"}#user:${userId}`
+      : `user:${userId}`;
+  app.log.info(
+    {
+      tokenId,
+      invitationId: inv.id,
+      splitParticipantId: inv.splitParticipantId,
+      participantUserId: userId || null,
+      boundIdentityRef,
+      state: "accepted_authoritative"
+    },
+    "invite.participant_bound"
+  );
+  const canonical = buildCanonicalInviteAcceptResult({
+    invitation: inv,
+    acceptedAt: now,
+    boundIdentityRef,
+    bindingSource: acceptanceAuthMode
+  });
+  return reply.send(canonical);
 }
 
 app.post("/invites/:token/accept", handlePublicInviteAccept);
