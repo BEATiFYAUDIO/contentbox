@@ -2104,7 +2104,43 @@ async function fetchRemotePublicUserDisplayName(
     const ctl = new AbortController();
     const timeout = setTimeout(() => ctl.abort(), 3500);
     try {
-      const url = `${remoteOrigin.replace(/\/$/, "")}/public/users/${encodeURIComponent(remoteUserId)}`;
+      const probePaths = [
+        `/public/users/${encodeURIComponent(remoteUserId)}`,
+        `/api/public/users/${encodeURIComponent(remoteUserId)}`
+      ];
+      for (const probePath of probePaths) {
+        const url = `${remoteOrigin.replace(/\/$/, "")}${probePath}`;
+        const res = await fetch(url, {
+          method: "GET",
+          headers: { Accept: "application/json" } as any,
+          signal: ctl.signal
+        } as any);
+        if (!res.ok) continue;
+        const json: any = await res.json().catch(() => null);
+        const displayName = asString(json?.displayName || "").trim();
+        if (displayName && !looksLikeInternalUserId(displayName)) return displayName;
+      }
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRemoteInviteParticipantDisplayName(
+  origin: string | null | undefined,
+  inviteToken: string | null | undefined
+): Promise<string | null> {
+  const remoteOrigin = normalizeRemoteOrigin(origin || "");
+  const token = asString(inviteToken || "").trim();
+  if (!remoteOrigin || !token) return null;
+  try {
+    const ctl = new AbortController();
+    const timeout = setTimeout(() => ctl.abort(), 3500);
+    try {
+      const url = `${remoteOrigin.replace(/\/$/, "")}/invites/${encodeURIComponent(token)}`;
       const res = await fetch(url, {
         method: "GET",
         headers: { Accept: "application/json" } as any,
@@ -2112,9 +2148,11 @@ async function fetchRemotePublicUserDisplayName(
       } as any);
       if (!res.ok) return null;
       const json: any = await res.json().catch(() => null);
-      const displayName = asString(json?.displayName || "").trim();
-      if (displayName && !looksLikeInternalUserId(displayName)) return displayName;
-      return null;
+      const preferred = [
+        asString(json?.splitParticipant?.participantDisplayName || "").trim(),
+        asString(json?.invitation?.targetDisplayName || "").trim()
+      ].find((candidate) => candidate && !looksLikeInternalUserId(candidate));
+      return preferred || null;
     } finally {
       clearTimeout(timeout);
     }
@@ -8357,6 +8395,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
+  appPublic.get("/public/users/:id", handlePublicUser);
   appPublic.get("/public/users/:userId/payout-destination", async (req: any, reply: any) => {
     const userId = asString((req.params as any)?.userId || "").trim();
     if (!userId) return badRequest(reply, "userId is required");
@@ -24952,6 +24991,13 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
     const identityRef = inferLockedParticipantIdentityRef(participant);
     const parsedRemoteIdentity = parseRemoteIdentityRef(identityRef || null);
     const remoteDisplayName = await fetchRemotePublicUserDisplayName(parsedRemoteIdentity.origin, parsedRemoteIdentity.userId);
+    const remoteInviteDisplayName =
+      remoteDisplayName || !parsedRemoteIdentity.origin
+        ? null
+        : await fetchRemoteInviteParticipantDisplayName(
+            parsedRemoteIdentity.origin,
+            asString(participant?.invitation?.token || "").trim()
+          );
     const displayNameSnapshot =
       resolveBestHumanDisplayLabel({
         userDisplayName: asString(user?.displayName || "").trim() || null,
@@ -24959,6 +25005,7 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
         participantEmail: targetType === "email" ? normalizeEmail(targetValue || participantEmail || "") : participantEmail
       }) ||
       remoteDisplayName ||
+      remoteInviteDisplayName ||
       null;
     const normalizedHandle = normalizePublicProfileHandle(displayNameSnapshot || "");
     const handleSnapshot = normalizedHandle ? `@${normalizedHandle}` : null;
@@ -25018,6 +25065,34 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
   if (!normalized) return [];
   const existing = listLockedParticipantSnapshotRows().filter((row) => row.splitVersionId === normalized);
   if (existing.length) {
+    const splitParticipantIds: string[] = Array.from(
+      new Set(
+        existing
+          .map((row) => asString(row.splitParticipantId || "").trim())
+          .filter((id) => Boolean(id))
+      )
+    );
+    const liveParticipants = splitParticipantIds.length
+      ? await prisma.splitParticipant.findMany({
+          where: { id: { in: splitParticipantIds } },
+          select: {
+            id: true,
+            participantUserId: true,
+            participantEmail: true,
+            targetType: true,
+            targetValue: true,
+            invitation: {
+              select: {
+                token: true,
+                acceptedIdentityRef: true,
+                targetType: true,
+                targetValue: true
+              }
+            }
+          }
+        })
+      : [];
+    const liveBySplitParticipantId = new Map(liveParticipants.map((p) => [p.id, p]));
     const participantUserIds: string[] = Array.from(
       new Set(
         existing
@@ -25034,16 +25109,36 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
     const userById = new Map(users.map((user) => [user.id, user]));
     let changed = false;
     const refreshed = await Promise.all(existing.map(async (row) => {
-      const user = row.participantUserId ? userById.get(asString(row.participantUserId || "").trim()) || null : null;
-      const parsedRemoteIdentity = parseRemoteIdentityRef(row.identityRef || null);
+      const live = liveBySplitParticipantId.get(asString(row.splitParticipantId || "").trim()) || null;
+      const mergedIdentityRef =
+        asString(live?.invitation?.acceptedIdentityRef || "").trim() ||
+        asString(row.identityRef || "").trim() ||
+        inferLockedParticipantIdentityRef({
+          participantUserId: live?.participantUserId || row.participantUserId || null,
+          participantEmail: live?.participantEmail || row.participantEmail || null,
+          targetType: live?.targetType || row.participantTopologyMode || null,
+          targetValue: live?.targetValue || null,
+          invitation: live?.invitation || null
+        });
+      const effectiveParticipantUserId = asString(live?.participantUserId || row.participantUserId || "").trim() || null;
+      const user = effectiveParticipantUserId ? userById.get(effectiveParticipantUserId) || null : null;
+      const parsedRemoteIdentity = parseRemoteIdentityRef(mergedIdentityRef || null);
       const remoteDisplayName = await fetchRemotePublicUserDisplayName(parsedRemoteIdentity.origin, parsedRemoteIdentity.userId);
+      const remoteInviteDisplayName =
+        remoteDisplayName || !parsedRemoteIdentity.origin
+          ? null
+          : await fetchRemoteInviteParticipantDisplayName(
+              parsedRemoteIdentity.origin,
+              asString(live?.invitation?.token || "").trim()
+            );
       const nextDisplayName =
         resolveBestHumanDisplayLabel({
           userDisplayName: asString(user?.displayName || "").trim() || null,
           userEmail: asString(user?.email || "").trim() || null,
-          participantEmail: normalizeEmail(row.participantEmail || "")
+          participantEmail: normalizeEmail(live?.participantEmail || row.participantEmail || "")
         }) ||
         remoteDisplayName ||
+        remoteInviteDisplayName ||
         null;
       const nextHandleRaw = nextDisplayName ? normalizePublicProfileHandle(nextDisplayName) : null;
       const nextHandle =
@@ -25054,12 +25149,14 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
             ? `${parsedRemoteIdentity.origin.replace(/\/$/, "")}/u/${encodeURIComponent(nextHandleRaw)}`
             : `/u/${encodeURIComponent(nextHandleRaw)}`
           : null;
+      const currentIdentityRef = asString(row.identityRef || "").trim() || null;
       const currentDisplayName = asString(row.displayNameSnapshot || "").trim() || null;
       const currentHandle = asString(row.handleSnapshot || "").trim() || null;
       const currentProfilePath = asString(row.profilePathSnapshot || "").trim() || null;
       const currentParticipantOrigin = asString(row.participantOrigin || "").trim() || null;
       const nextParticipantOrigin = parsedRemoteIdentity.origin || null;
       if (
+        currentIdentityRef !== (mergedIdentityRef || null) ||
         currentDisplayName !== nextDisplayName ||
         currentHandle !== nextHandle ||
         currentProfilePath !== nextProfilePath ||
@@ -25068,6 +25165,9 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
         changed = true;
         return {
           ...row,
+          participantUserId: effectiveParticipantUserId,
+          participantEmail: normalizeEmail(live?.participantEmail || row.participantEmail || "") || null,
+          identityRef: mergedIdentityRef || null,
           displayNameSnapshot: nextDisplayName,
           handleSnapshot: nextHandle,
           profilePathSnapshot: nextProfilePath,
@@ -25096,6 +25196,7 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
         include: {
           invitation: {
             select: {
+              token: true,
               status: true,
               targetType: true,
               targetValue: true,
@@ -27674,6 +27775,7 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
         include: {
           invitation: {
             select: {
+              token: true,
               status: true,
               targetType: true,
               targetValue: true,
