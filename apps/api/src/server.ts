@@ -29216,7 +29216,9 @@ async function handlePublicInvitePage(req: any, reply: any) {
     const requiresAuth = !auth?.authenticated;
     const keyUnavailable = auth?.authenticated && auth?.keyVerified === false;
     const wrongIdentity = auth?.authenticated && auth?.targetMatch === false;
-    const canAccept = status === "pending" && auth?.authenticated && auth?.keyVerified === true && auth?.targetMatch !== false;
+    // Keep accept available on this surface whenever auth + recipient match exist.
+    // Backend remains authoritative for key/trust validation at submit time.
+    const canAccept = status === "pending" && auth?.authenticated && auth?.targetMatch !== false;
 
     let blockingMessage = "";
     if (requiresAuth) {
