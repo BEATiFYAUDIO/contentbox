@@ -599,10 +599,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       const data = await api<ContentItem[] | any>(url);
       const baseList = Array.isArray(data) ? data : [];
       setParticipationByContentId({});
-      const list = baseList.filter((it) => {
+      const scopedOwned = baseList.filter((it) => {
         const access = String((it as any)?.libraryAccess || "").trim().toLowerCase();
         if (!access) return true;
         return access === "owned";
+      });
+      const list = scopedOwned.filter((it: any) => {
+        const deleted = Boolean(it?.deletedAt);
+        const status = String(it?.status || "").toLowerCase();
+        if (tombstoneMode) return deleted && status === "published";
+        if (trashMode) return deleted && status !== "published";
+        return !deleted;
       });
       if (!Array.isArray(data)) {
         setError("Failed to load content (unexpected response)");
@@ -1528,7 +1535,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       const strictOwned = Array.isArray(refreshed)
         ? refreshed.filter((it: any) => String(it?.libraryAccess || "owned").toLowerCase() === "owned")
         : [];
-      setItems(strictOwned);
+      setItems(strictOwned.filter((it: any) => !it?.deletedAt));
 
       setPendingOpenContentId(created.id);
     } catch (e: any) {
@@ -2224,7 +2231,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   setShowClearance(false);
                   setShowTrash(false);
                   setShowTombstones(false);
-                  await load(false);
+                  await load(false, false);
                 }}
               >
                 Content
@@ -2241,7 +2248,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   setShowClearance(false);
                   setShowTrash(true);
                   setShowTombstones(false);
-                  await load(true);
+                  await load(true, false);
                 }}
               >
                 Trash
