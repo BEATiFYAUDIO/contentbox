@@ -8878,12 +8878,57 @@ async function signInviteAcceptancePayload(
     where: { id: userId },
     select: { email: true }
   });
-  const signingNodeUrl =
-    normalizeOrigin(getActivePublicOrigin()) ||
-    normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
-    normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
-    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN) ||
-    `http://127.0.0.1:${NODE_HTTP_PORT}`;
+  const hasDiscoveryKey = async (originRaw: string | null | undefined): Promise<boolean> => {
+    const origin = normalizeOrigin(originRaw || "");
+    if (!origin) return false;
+    try {
+      const host = new URL(origin).hostname.toLowerCase();
+      if (host === "localhost" || host === "127.0.0.1" || host === "::1") return false;
+    } catch {
+      return false;
+    }
+    try {
+      const discoveryRes = await fetchWithTimeout(
+        `${origin}/.well-known/contentbox`,
+        { method: "GET", headers: { Accept: "application/json" } as any } as any,
+        4000
+      );
+      if (!discoveryRes.ok) return false;
+      const discoveryPayload: any = await discoveryRes.json().catch(() => null);
+      const discoveredNodeUrl = normalizeOrigin(asString(discoveryPayload?.nodeUrl || "").trim());
+      const discoveredPub = asString(discoveryPayload?.publicKeyPem || "").trim();
+      return Boolean(discoveredNodeUrl && discoveredPub);
+    } catch {
+      return false;
+    }
+  };
+  const originCandidates = Array.from(
+    new Set(
+      [
+        normalizeOrigin(getActivePublicOrigin() || ""),
+        normalizeOrigin(String(getPublicStatus()?.canonicalOrigin || "").trim()),
+        normalizeOrigin(String(getPublicStatus()?.publicOrigin || "").trim()),
+        normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || ""),
+        normalizeOrigin(process.env.PUBLIC_ORIGIN || ""),
+        normalizeOrigin(process.env.APP_PUBLIC_ORIGIN || "")
+      ].filter(Boolean) as string[]
+    )
+  );
+  let signingNodeUrl: string | null = null;
+  for (const candidate of originCandidates) {
+    if (await hasDiscoveryKey(candidate)) {
+      signingNodeUrl = candidate;
+      break;
+    }
+  }
+  if (!signingNodeUrl) {
+    signingNodeUrl =
+      normalizeOrigin(getActivePublicOrigin()) ||
+      normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
+      normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
+      normalizeOrigin(process.env.APP_PUBLIC_ORIGIN) ||
+      `http://127.0.0.1:${NODE_HTTP_PORT}`;
+  }
   const payload = {
     token,
     remoteUserId: userId,
@@ -12657,11 +12702,32 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         nodeUrl: advertisedNodeUrl || null
       });
     }
-    if (!(await isOriginReachable(advertisedNodeUrl))) {
+    let discoveryValid = false;
+    let discoveryStatus = 0;
+    try {
+      const discoveryRes = await fetchWithTimeout(
+        `${advertisedNodeUrl}/.well-known/contentbox`,
+        { method: "GET", headers: { Accept: "application/json" } as any } as any,
+        4000
+      );
+      discoveryStatus = discoveryRes.status;
+      if (discoveryRes.ok) {
+        const discoveryPayload: any = await discoveryRes.json().catch(() => null);
+        const discoveredNodeUrl = normalizeOrigin(asString(discoveryPayload?.nodeUrl || "").trim());
+        const discoveredPub = asString(discoveryPayload?.publicKeyPem || "").trim();
+        discoveryValid = Boolean(discoveredNodeUrl && discoveredPub);
+      }
+    } catch {
+      discoveryValid = false;
+    }
+    if (!discoveryValid) {
       return reply.code(409).send({
-        error: "This node public origin is not reachable for remote invite signature verification.",
+        error: "This node public origin discovery is unreachable or invalid for remote invite signature verification.",
         code: "INVITE_NODE_URL_UNREACHABLE",
-        nodeUrl: advertisedNodeUrl || null
+        nodeUrl: advertisedNodeUrl || null,
+        details: {
+          discoveryStatus: discoveryStatus || null
+        }
       });
     }
     const outboundBody = {
