@@ -29255,16 +29255,11 @@ async function handlePublicInvitePage(req: any, reply: any) {
       try {
         const popup = window.open(handoff, "_blank", "noopener,noreferrer");
         if (!popup) {
-          window.location.assign(handoff);
+          statusEl.textContent = "Popup blocked. Allow popups for this site, or open the invite from your dashboard directly.";
           return;
         }
       } catch {
-        try {
-          window.location.assign(handoff);
-          return;
-        } catch {
-          statusEl.textContent = "Could not open dashboard handoff URL.";
-        }
+        statusEl.textContent = "Could not open dashboard handoff URL.";
       }
     }
     document.getElementById("primaryBtn").onclick = async () => {

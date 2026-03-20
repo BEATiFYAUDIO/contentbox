@@ -224,17 +224,19 @@ function openExternalInNewWindow(url: string): boolean {
   const target = String(url || "").trim();
   if (!target) return false;
   try {
-    const popup = window.open(target, "_blank", "noopener,noreferrer");
-    if (popup) return true;
-    window.location.assign(target);
+    // Use anchor-click to avoid dual-navigation race conditions where both tabs
+    // can navigate when popup detection is inconsistent across browsers.
+    const a = document.createElement("a");
+    a.href = target;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
     return true;
   } catch {
-    try {
-      window.location.assign(target);
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
