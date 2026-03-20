@@ -476,6 +476,11 @@ function normalizeAssetUrl(apiBase: string, raw: string | null | undefined): str
   }
 }
 
+function isForbiddenPreviewError(message?: string | null): boolean {
+  const text = String(message || "").toLowerCase();
+  return text.includes("403") || text.includes("forbidden");
+}
+
 function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | null): string | null {
   const preferred = normalizeAssetUrl(apiBase, String(itemCoverUrl || "").trim());
   if (preferred) return preferred;
@@ -641,7 +646,19 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                             </button>
                           </div>
                           {previewError[it.id] ? (
-                            <div className="mt-2 text-xs text-amber-300">{previewError[it.id]}</div>
+                            <div className="mt-2 text-xs text-amber-300 space-y-2">
+                              <div>{previewError[it.id]}</div>
+                              {isForbiddenPreviewError(previewError[it.id]) ? (
+                                <a
+                                  className="inline-flex rounded border border-neutral-800 px-2 py-1 text-xs text-emerald-300 hover:bg-neutral-900"
+                                  href={`/buy/${encodeURIComponent(it.id)}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                >
+                                  Open buy page
+                                </a>
+                              ) : null}
+                            </div>
                           ) : null}
                           {preview && isOpen ? (
                             <div className="mt-2">
