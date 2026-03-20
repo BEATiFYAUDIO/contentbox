@@ -19494,8 +19494,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const creatorSignalNodeDetails = await getCreatorSignalNodeDetails();
   const creatorSignal = computeCreatorSignal(verifiedProofs as any, creatorSignalNodeDetails);
   const creatorSignalPercent = creatorSignal.percent;
+  const profileCapabilityCtx = getCapabilityContext();
+  const profileProviderConnection = deriveProviderCommerceConnectionState();
+  const profileSovereignReadiness = await getLocalSovereignReadiness();
   const profileServiceMode = resolveProviderServiceProfile({
-    hasLocalInvoiceMinting: lightningConfigured
+    hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
+    localSovereignReady: profileSovereignReadiness.ready,
+    providerConnected: profileProviderConnection.providerConnected,
+    ctx: profileCapabilityCtx
   }).participationMode;
   const profilePostureBadgeLabel =
     profileServiceMode === "sovereign_node"
@@ -19503,6 +19509,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       : profileServiceMode === "sovereign_creator" || profileServiceMode === "sovereign_creator_with_provider"
         ? "Sovereign Creator"
         : "Basic Creator";
+  const profilePostureBadgeClass =
+    profileServiceMode === "sovereign_node"
+      ? "posture-pill posture-pill--node"
+      : profileServiceMode === "sovereign_creator" || profileServiceMode === "sovereign_creator_with_provider"
+        ? "posture-pill posture-pill--creator"
+        : "posture-pill posture-pill--basic";
   const trustTierBadgeHtml = (tier: SocialProofTier | null): string => {
     if (!tier) return "";
     const label = tier === "strong" ? "Strong" : tier === "standard" ? "Standard" : "Best-effort";
@@ -19718,7 +19730,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="muted">Signal meter: ${escHtml(String(creatorSignalPercent))}%</div>
       <div class="line muted">Identity Proofs +${escHtml(String(creatorSignal.identityScore))} • Presence +${escHtml(String(creatorSignal.presenceBonus))} • Node Operator +${escHtml(String(creatorSignal.nodeScore))}</div>
       <div class="line muted">Public Tunnel ${creatorSignal.nodeDetails.hasPublicTunnel ? "✓" : "—"} • Lightning ${creatorSignal.nodeDetails.hasLightningConfigured ? "✓" : "—"} • Receive ${creatorSignal.nodeDetails.canReceivePayments ? "✓" : "—"} • Channels ${escHtml(String(creatorSignal.nodeDetails.channelCount))}</div>`;
-  const profilePostureBadgeHtml = `<div class="line"><span class="featured-verified">${escHtml(profilePostureBadgeLabel)}</span></div>`;
+  const profilePostureBadgeHtml = `<div class="line"><span class="${escHtml(profilePostureBadgeClass)}">${escHtml(profilePostureBadgeLabel)}</span></div>`;
   const featuredContentHtml =
     featuredContent.length > 0
       ? featuredContent
@@ -19983,6 +19995,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-topline { display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap; }
     .featured-type-badge { font-size:11px; letter-spacing:0.02em; color:#b9c2cf; background:#1a2028; border:1px solid #303948; border-radius:999px; padding:3px 8px; }
     .featured-verified { font-size:11px; color:#7dd3fc; background:#10212e; border:1px solid #284557; border-radius:999px; padding:3px 8px; }
+    .posture-pill { font-size:11px; border-radius:999px; padding:3px 10px; border:1px solid transparent; letter-spacing:0.01em; }
+    .posture-pill--basic { color:#fcd7b5; background:#2a1a0f; border-color:#6f4a2a; }
+    .posture-pill--creator { color:#e5e7eb; background:#2a2f39; border-color:#7a818f; }
+    .posture-pill--node { color:#fef3c7; background:#2c230d; border-color:#b18a2e; }
     .featured-cta { display:inline-flex; align-items:center; font-weight:600; }
     .featured-title { font-weight:700; font-size:19px; line-height:1.25; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
