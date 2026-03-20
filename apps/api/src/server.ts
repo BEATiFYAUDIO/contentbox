@@ -29205,52 +29205,11 @@ async function handlePublicInvitePage(req: any, reply: any) {
       <div class="muted" style="margin-top:4px;">Backend key verification: \${auth?.keyVerified === true ? "verified" : auth?.keyVerified === false ? "unverified" : "unknown"}</div>
       <div class="muted" style="margin-top:4px;">Expected target: \${inv?.targetType || "—"}: \${inv?.targetValue || "—"}</div>
       \${blockingMessage ? '<div class="muted" style="margin-top:8px;color:#f59e0b;">' + blockingMessage + "</div>" : ""}
-      <button id="acceptBtn" class="btn" style="margin-top:14px;" \${canAccept ? "" : "disabled"}>Accept invite</button>
-      <button id="continueBtn" class="btn" style="margin-top:10px;">Continue in dashboard</button>
+      <button id="primaryBtn" class="btn" style="margin-top:14px;">\${canAccept ? "Accept invite" : "Open in creator dashboard"}</button>
       <div id="status" class="muted" style="margin-top:8px;"></div>
       <div class="muted" style="margin-top:10px;">Tip: If you want this invite tied to your account, sign in on your own Certifyd Creator node first and open this link in the same browser.</div>
     \`;
-    document.getElementById("acceptBtn").onclick = async () => {
-      document.getElementById("status").textContent = "Accepting…";
-      try {
-        const acceptPath = isRemoteInvite
-          ? remoteProxyPath("/invites/" + encodeURIComponent(token) + "/accept")
-          : "/invites/" + encodeURIComponent(token) + "/accept";
-        const resp = await fetchJson(acceptPath, {
-          method:"POST",
-          body:{},
-          headers: readAuthHeader()
-        });
-        if (resp?.alreadyAccepted) {
-          document.getElementById("status").textContent = "Already accepted.";
-        } else {
-          document.getElementById("status").textContent = "Accepted. You’re in the split.";
-        }
-      } catch (e) {
-        const msg = e && e.message ? String(e.message) : "Could not accept invite.";
-        if (msg.includes("INVITE_AUTH_REQUIRED")) {
-          document.getElementById("status").textContent = "Sign in to accept on this surface, or continue in dashboard.";
-        } else if (msg.includes("INVITE_SIGNATURE_REQUIRED")) {
-          document.getElementById("status").textContent = "Forwarded acceptance proof is missing. Open this invite in your signed-in creator node and retry.";
-        } else if (msg.includes("INVITE_FORWARDED_IDENTITY_UNTRUSTED")) {
-          document.getElementById("status").textContent = "Forwarded identity proof was rejected by the remote node. Check node discovery origin and signature context.";
-        } else if (msg.includes("INVITE_IDENTITY_BIND_FAILED")) {
-          document.getElementById("status").textContent = "Invite acceptance failed while binding identity on the owner node.";
-        } else if (msg.includes("INVITE_NODE_URL_NOT_SHAREABLE")) {
-          document.getElementById("status").textContent = "This node is not advertising a shareable public origin. Set a public origin/tunnel on your creator node and try again.";
-        } else if (msg.includes("INVITE_NODE_URL_UNREACHABLE")) {
-          document.getElementById("status").textContent = "This node public origin is not reachable for invite signature verification. Check tunnel/public reachability and retry.";
-        } else if (msg.includes("INVITE_KEY_UNVERIFIED")) {
-          document.getElementById("status").textContent = "Verify your key before accepting this invite.";
-        } else if (msg.includes("INVITE_WRONG_RECIPIENT") || msg.includes("INVITE_TARGET_MISMATCH") || msg.includes("INVITE_EMAIL_MISMATCH")) {
-          document.getElementById("status").textContent = "Wrong signed-in identity for this invite target.";
-        } else {
-          document.getElementById("status").textContent = msg;
-        }
-      }
-    };
-    document.getElementById("continueBtn").onclick = async () => {
-      const statusEl = document.getElementById("status");
+    async function openDashboardHandoff(statusEl) {
       statusEl.textContent = "Locating dashboard…";
       const resolved = await resolveDashboardBase();
       if (resolved.base && !resolved.acceptCapable) {
@@ -29273,6 +29232,50 @@ async function handlePublicInvitePage(req: any, reply: any) {
           return;
         } catch {
           statusEl.textContent = "Could not open dashboard handoff URL.";
+        }
+      }
+    }
+    document.getElementById("primaryBtn").onclick = async () => {
+      const statusEl = document.getElementById("status");
+      if (!canAccept) {
+        await openDashboardHandoff(statusEl);
+        return;
+      }
+      document.getElementById("status").textContent = "Accepting…";
+      try {
+        const acceptPath = isRemoteInvite
+          ? remoteProxyPath("/invites/" + encodeURIComponent(token) + "/accept")
+          : "/invites/" + encodeURIComponent(token) + "/accept";
+        const resp = await fetchJson(acceptPath, {
+          method:"POST",
+          body:{},
+          headers: readAuthHeader()
+        });
+        if (resp?.alreadyAccepted) {
+          document.getElementById("status").textContent = "Already accepted.";
+        } else {
+          document.getElementById("status").textContent = "Accepted. You’re in the split.";
+        }
+      } catch (e) {
+        const msg = e && e.message ? String(e.message) : "Could not accept invite.";
+        if (msg.includes("INVITE_AUTH_REQUIRED")) {
+          document.getElementById("status").textContent = "Sign in to accept on this surface, or open in creator dashboard.";
+        } else if (msg.includes("INVITE_SIGNATURE_REQUIRED")) {
+          document.getElementById("status").textContent = "Forwarded acceptance proof is missing. Open this invite in your signed-in creator node and retry.";
+        } else if (msg.includes("INVITE_FORWARDED_IDENTITY_UNTRUSTED")) {
+          document.getElementById("status").textContent = "Forwarded identity proof was rejected by the remote node. Check node discovery origin and signature context.";
+        } else if (msg.includes("INVITE_IDENTITY_BIND_FAILED")) {
+          document.getElementById("status").textContent = "Invite acceptance failed while binding identity on the owner node.";
+        } else if (msg.includes("INVITE_NODE_URL_NOT_SHAREABLE")) {
+          document.getElementById("status").textContent = "This node is not advertising a shareable public origin. Set a public origin/tunnel on your creator node and try again.";
+        } else if (msg.includes("INVITE_NODE_URL_UNREACHABLE")) {
+          document.getElementById("status").textContent = "This node public origin is not reachable for invite signature verification. Check tunnel/public reachability and retry.";
+        } else if (msg.includes("INVITE_KEY_UNVERIFIED")) {
+          document.getElementById("status").textContent = "Verify your key before accepting this invite.";
+        } else if (msg.includes("INVITE_WRONG_RECIPIENT") || msg.includes("INVITE_TARGET_MISMATCH") || msg.includes("INVITE_EMAIL_MISMATCH")) {
+          document.getElementById("status").textContent = "Wrong signed-in identity for this invite target.";
+        } else {
+          document.getElementById("status").textContent = msg;
         }
       }
     };
