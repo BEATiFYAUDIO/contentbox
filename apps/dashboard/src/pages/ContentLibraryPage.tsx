@@ -137,6 +137,19 @@ type ContentCredit = {
   createdAt?: string;
 };
 
+type LibraryParticipation = {
+  contentId: string;
+  contentTitle: string | null;
+  contentType: string | null;
+  contentStatus: string | null;
+  contentDeletedAt: string | null;
+  splitParticipantId: string;
+  highlightedOnProfile: boolean;
+  creatorUserId: string | null;
+  creatorDisplayName: string | null;
+  creatorEmail: string | null;
+};
+
 type ContentLibraryPageProps = {
   identityLevel?: IdentityLevel;
   features?: FeatureMatrix;
@@ -559,6 +572,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [clearanceByLink, setClearanceByLink] = React.useState<Record<string, any | null>>({});
   const [clearanceLoadingByLink, setClearanceLoadingByLink] = React.useState<Record<string, boolean>>({});
   const [nodeModeSnapshot, setNodeModeSnapshot] = React.useState<NodeModeSnapshot | null>(null);
+  const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
 
   const [testPurchaseFor, setTestPurchaseFor] = React.useState<{
     contentId: string;
@@ -577,8 +591,39 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         : trashMode
           ? `/content?trash=1&scope=${contentScope}${typeQuery}`
           : `/content?scope=${contentScope}${typeQuery}`;
-      const data = await api<ContentItem[] | any>(url);
-      const list = Array.isArray(data) ? data : [];
+      const [data, participationsRes] = await Promise.all([
+        api<ContentItem[] | any>(url),
+        trashMode || tombstoneMode
+          ? Promise.resolve({ items: [] as LibraryParticipation[] })
+          : api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] }))
+      ]);
+      const baseList = Array.isArray(data) ? data : [];
+      const participations = Array.isArray(participationsRes?.items) ? participationsRes.items : [];
+      const participationMap: Record<string, LibraryParticipation> = {};
+      for (const row of participations) {
+        if (!row?.contentId) continue;
+        const existing = participationMap[row.contentId];
+        if (!existing || row.highlightedOnProfile) participationMap[row.contentId] = row;
+      }
+      setParticipationByContentId(participationMap);
+      const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
+      const participationOnlyItems: ContentItem[] = participations
+        .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
+        .map((p) => ({
+          id: p.contentId,
+          title: p.contentTitle || "Untitled",
+          type: ((p.contentType || "file") as ContentType),
+          status: p.contentStatus === "published" ? "published" : "draft",
+          createdAt: "",
+          deletedAt: p.contentDeletedAt || null,
+          ownerUserId: p.creatorUserId || null,
+          owner: {
+            displayName: p.creatorDisplayName || null,
+            email: p.creatorEmail || null
+          },
+          libraryAccess: "participant"
+        }));
+      const list = [...baseList, ...participationOnlyItems];
       if (!Array.isArray(data)) {
         setError("Failed to load content (unexpected response)");
       }
@@ -1406,6 +1451,34 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       );
     } catch (e: any) {
       setError(e?.message || "Failed to update profile feature status");
+    } finally {
+      setBusyAction((m) => ({ ...m, [contentId]: false }));
+    }
+  }
+
+  async function setParticipationFeatureOnProfile(contentId: string, featureOnProfile: boolean) {
+    const participation = participationByContentId[contentId];
+    if (!participation?.splitParticipantId) {
+      setError("Participation record not found for this content.");
+      return;
+    }
+    setBusyAction((m) => ({ ...m, [contentId]: true }));
+    setError(null);
+    try {
+      const res = await api<{ highlightedOnProfile: boolean }>(
+        `/my/participations/${encodeURIComponent(participation.splitParticipantId)}/highlight`,
+        "PATCH",
+        { enabled: featureOnProfile }
+      );
+      setParticipationByContentId((prev) => ({
+        ...prev,
+        [contentId]: {
+          ...participation,
+          highlightedOnProfile: Boolean(res?.highlightedOnProfile)
+        }
+      }));
+    } catch (e: any) {
+      setError(e?.message || "Failed to update participation profile feature status");
     } finally {
       setBusyAction((m) => ({ ...m, [contentId]: false }));
     }
@@ -2440,6 +2513,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const files = filesByContent[it.id] || [];
               const busy = !!busyAction[it.id];
               const accessTag = it.libraryAccess || (it.ownerUserId === meId ? "owned" : "preview");
+              const participationInfo = participationByContentId[it.id];
+              const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
               const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(it.type || ""));
 
               const split = splitByContent[it.id] ?? null;
@@ -2515,6 +2590,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       {Boolean(it.featureOnProfile) && uiState === "published" ? (
                         <div className="mt-1 inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
                           Featured on profile
+                        </div>
+                      ) : null}
+                      {!Boolean(it.featureOnProfile) && participationFeatured && uiState === "published" ? (
+                        <div className="mt-1 inline-flex rounded-full border border-sky-900 bg-sky-950/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-200">
+                          Featured participation
                         </div>
                       ) : null}
                       {uiState === "published" && networkPublishByContent[it.id]?.hasReceipt ? (
@@ -2602,6 +2682,21 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   }
                                 >
                                   {it.featureOnProfile ? "Unfeature" : "Feature on profile"}
+                                </button>
+                              ) : null}
+                              {!isOwner && participationInfo && uiState === "published" ? (
+                                <button
+                                  type="button"
+                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
+                                  onClick={() => setParticipationFeatureOnProfile(it.id, !participationFeatured)}
+                                  disabled={busy}
+                                  title={
+                                    participationFeatured
+                                      ? "Remove this participation from your public profile showcase"
+                                      : "Feature this participation on your public profile showcase"
+                                  }
+                                >
+                                  {participationFeatured ? "Unfeature" : "Feature on profile"}
                                 </button>
                               ) : null}
 
