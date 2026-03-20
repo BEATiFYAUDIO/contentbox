@@ -8942,19 +8942,21 @@ async function signInviteAcceptancePayload(
     )
   );
   let signingNodeUrl: string | null = null;
+  const discoveryChecks: Array<{ origin: string; ok: boolean }> = [];
   for (const candidate of originCandidates) {
-    if (await hasDiscoveryKey(candidate)) {
+    const ok = await hasDiscoveryKey(candidate);
+    discoveryChecks.push({ origin: candidate, ok });
+    if (ok) {
       signingNodeUrl = candidate;
       break;
     }
   }
   if (!signingNodeUrl) {
-    signingNodeUrl =
-      normalizeOrigin(getActivePublicOrigin()) ||
-      normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
-      normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
-      normalizeOrigin(process.env.APP_PUBLIC_ORIGIN) ||
-      `http://127.0.0.1:${NODE_HTTP_PORT}`;
+    const err: any = new Error("INVITE_NODE_URL_UNREACHABLE");
+    err.code = "INVITE_NODE_URL_UNREACHABLE";
+    err.discoveryChecks = discoveryChecks;
+    err.originCandidates = originCandidates;
+    throw err;
   }
   const payload = {
     token,
@@ -12894,6 +12896,7 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
     try {
       signedPayload = await signInviteAcceptancePayload(token, localUserId, { audienceOrigin });
     } catch (e: any) {
+      const errCode = asString(e?.code || "").trim();
       const signingError = String(e?.message || e || "");
       app.log.warn(
         {
@@ -12902,10 +12905,19 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
           audienceOrigin,
           authHeaderPresent,
           localUserId: localUserId || null,
-          signingError
+          signingError,
+          errCode: errCode || null,
+          originCandidates: Array.isArray(e?.originCandidates) ? e.originCandidates : null,
+          discoveryChecks: Array.isArray(e?.discoveryChecks) ? e.discoveryChecks : null
         },
         "remoteInvite.accept.signingUnavailable"
       );
+      if (errCode === "INVITE_NODE_URL_UNREACHABLE") {
+        return reply.code(409).send({
+          error: "This node public origin discovery is unreachable or invalid for remote invite signature verification.",
+          code: "INVITE_NODE_URL_UNREACHABLE"
+        });
+      }
       return reply.code(409).send({
         error: "This device cannot sign invite acceptance payloads.",
         code: "INVITE_KEY_MISSING",
