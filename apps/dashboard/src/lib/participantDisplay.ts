@@ -26,7 +26,7 @@ export function resolveParticipantDisplayLabel(input: ResolveDisplayInput): stri
   const participantUserId = String(input.participantUserId || "").trim();
   const participantEmail = String(input.participantEmail || "").trim().toLowerCase();
 
-  if (targetType === "identity_ref") return "Pending identity claim";
+  if (targetType === "identity_ref" && targetValue && !looksLikeInternalUserId(targetValue)) return targetValue;
   if (input.allowEmail && participantEmail) return participantEmail;
   if (targetType === "email" && input.allowEmail && targetValue) return targetValue.toLowerCase();
 
