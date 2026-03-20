@@ -109,6 +109,7 @@ import {
   resolveLockedSnapshotAccountingState,
   resolveLockedSnapshotAttributionLabel
 } from "./lib/lockedParticipantSnapshot.js";
+import { mapRemoteInviteAcceptErrorCode, mapTerminalInviteStatusToCode } from "./lib/inviteAcceptResolution.js";
 import {
   buildContentPublishReceiptPayload,
   computeCanonicalManifestHash,
@@ -8077,6 +8078,13 @@ function normalizeInviteStatus(value: unknown): "pending" | "accepted" | "declin
   return "pending";
 }
 
+function safeInviteTokenId(token: string): string {
+  const t = asString(token || "").trim();
+  if (!t) return "unknown";
+  const digest = crypto.createHash("sha256").update(t).digest("hex");
+  return digest.slice(0, 12);
+}
+
 function normalizeInviteTargetType(value: unknown): "email" | "local_user" | "identity_ref" {
   const t = String(value || "").trim().toLowerCase();
   if (t === "local_user" || t === "identity_ref") return t;
@@ -10471,7 +10479,8 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
   const inviteCtx = getCapabilityContext();
   if (!canUseSplits(inviteCtx)) {
     return reply.code(403).send({
-      code: "invite_not_allowed",
+      error: "Remote invite lookup is not allowed in this mode",
+      code: "INVITE_CAPABILITY_DENIED",
       reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
     });
   }
@@ -12081,7 +12090,8 @@ app.get("/api/remote/health", { preHandler: requireAuth }, async (req: any, repl
   const inviteCtx = getCapabilityContext();
   if (!canUseSplits(inviteCtx)) {
     return reply.code(403).send({
-      code: "invite_not_allowed",
+      error: "Remote invite lookup is not allowed in this mode",
+      code: "INVITE_CAPABILITY_DENIED",
       reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
     });
   }
@@ -12096,7 +12106,8 @@ app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: a
   const inviteCtx = getCapabilityContext();
   if (!canUseSplits(inviteCtx)) {
     return reply.code(403).send({
-      code: "invite_not_allowed",
+      error: "Remote invite acceptance is not allowed in this mode",
+      code: "INVITE_CAPABILITY_DENIED",
       reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
     });
   }
@@ -12232,6 +12243,14 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
   }
 
   try {
+    app.log.info(
+      {
+        tokenId: safeInviteTokenId(token),
+        origin,
+        localUserId: localUserId || null
+      },
+      "invite.remote_accept_attempt"
+    );
     let audienceOrigin = origin;
     try {
       const discoveryRes = await fetchWithTimeout(
@@ -12317,23 +12336,44 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
     } catch {
       payload = { error: text || `HTTP_${res.status}` };
     }
+    if (!res.ok && (!payload || typeof payload !== "object")) {
+      payload = { error: text || `HTTP_${res.status}` };
+    }
+    if (!res.ok) {
+      payload = {
+        ...(payload && typeof payload === "object" ? payload : {}),
+        code: mapRemoteInviteAcceptErrorCode(res.status, asString(payload?.code || ""))
+      };
+    }
     app.log.info(
       {
-        token,
+        tokenId: safeInviteTokenId(token),
         origin,
         audienceOrigin,
         authHeaderPresent,
         localUserId: localUserId || null,
         remoteStatus: res.status,
-        remoteCode: asString(payload?.code || payload?.error || "")
+        remoteCode: asString(payload?.code || payload?.error || ""),
+        remoteReason: asString(payload?.reason || "")
       },
       "remoteInvite.accept.proxyResult"
+    );
+    app.log.info(
+      {
+        tokenId: safeInviteTokenId(token),
+        origin,
+        localUserId: localUserId || null,
+        status: res.status,
+        code: asString(payload?.code || payload?.error || ""),
+        reason: asString(payload?.reason || "")
+      },
+      res.ok ? "invite.remote_accept_result" : "invite.remote_accept_denied"
     );
     return reply.code(res.status).send(payload);
   } catch (e: any) {
     app.log.warn(
       {
-        token,
+        tokenId: safeInviteTokenId(token),
         origin,
         audienceOrigin: null,
         authHeaderPresent,
@@ -12342,7 +12382,12 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
       },
       "remoteInvite.accept.proxyFailed"
     );
-    return reply.code(502).send({ error: "Remote invite accept failed", details: String(e?.message || e) });
+    return reply.code(502).send({
+      error: "Remote invite accept failed",
+      code: "INVITE_REMOTE_ACCEPT_PROXY_FAILED",
+      reason: "UPSTREAM_REQUEST_FAILED",
+      details: String(e?.message || e)
+    });
   }
 });
 
@@ -28180,11 +28225,13 @@ app.get("/invite/:token", handlePublicInvitePage);
  */
 async function handlePublicInviteAccept(req: any, reply: any) {
   const token = asString((req.params as any).token).trim();
-  if (!token) return notFound(reply, "Invite not found");
+  if (!token) return reply.code(404).send({ error: "Invite not found", code: "INVITE_NOT_FOUND", reason: "TOKEN_MISSING" });
+  const tokenId = safeInviteTokenId(token);
   const inviteCtx = getCapabilityContext();
   if (!canUseSplits(inviteCtx)) {
     return reply.code(403).send({
-      code: "invite_not_allowed",
+      error: "Invite acceptance is not allowed in this mode",
+      code: "INVITE_CAPABILITY_DENIED",
       reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
     });
   }
@@ -28295,7 +28342,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   if (!userId) {
     app.log.info(
       {
-        token,
+        tokenId,
         acceptanceAuthMode,
         authHeaderPresent: Boolean(asString(req?.headers?.authorization || "").trim()),
         remoteNodeUrl: remoteNodeUrl || null,
@@ -28309,10 +28356,20 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     if (hasForwardedIdentityContext && !hasCompleteForwardedProof) {
       return reply.code(401).send({
         error: "Forwarded acceptance proof is required",
-        code: "INVITE_SIGNATURE_REQUIRED"
+        code: "INVITE_SIGNATURE_REQUIRED",
+        reason: "FORWARDED_PROOF_INCOMPLETE"
       });
     }
     if (hasCompleteForwardedProof) {
+      app.log.info(
+        {
+          tokenId,
+          remoteNodeUrl: remoteNodeUrl || null,
+          remoteUserId: remoteUserId || null,
+          reason: remoteAuthFailure || "FORWARDED_VERIFICATION_FAILED"
+        },
+        "invite.remote_accept_trust_failure"
+      );
       return reply.code(403).send({
         error: "Forwarded identity proof is present but not trusted",
         code: "INVITE_FORWARDED_IDENTITY_UNTRUSTED",
@@ -28321,7 +28378,8 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     }
     return reply.code(401).send({
       error: "Authentication required to accept invite",
-      code: "INVITE_AUTH_REQUIRED"
+      code: "INVITE_AUTH_REQUIRED",
+      reason: "LOCAL_OR_FORWARDED_AUTH_REQUIRED"
     });
   }
   const verifiedKey = acceptanceAuthMode === "local_auth" ? await hasVerifiedParticipantKey(userId) : true;
@@ -28339,12 +28397,36 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     include: { splitParticipant: { include: { splitVersion: { include: { content: true } } } } }
   });
 
-  if (!inv) return notFound(reply, "Invite not found");
+  if (!inv) {
+    return reply.code(404).send({ error: "Invite not found", code: "INVITE_NOT_FOUND", reason: "TOKEN_NOT_FOUND" });
+  }
 
   const now = new Date();
   const inviteTargetType = normalizeInviteTargetType(inv.targetType);
   const inviteTargetValue = asString(inv.targetValue).trim();
   const currentStatus = normalizeInviteStatus(inv.status);
+  const currentSplitParticipantInvitationId = asString(inv.splitParticipant?.invitationId || "").trim();
+  if (currentSplitParticipantInvitationId && currentSplitParticipantInvitationId !== inv.id) {
+    app.log.info(
+      {
+        tokenId,
+        invitationId: inv.id,
+        splitParticipantId: inv.splitParticipantId,
+        currentSplitParticipantInvitationId
+      },
+      "invite.remote_accept_denied"
+    );
+    return reply.code(409).send({
+      error: "Invite is stale and has been superseded by a newer invite",
+      code: "INVITE_SUPERSEDED",
+      reason: "SPLIT_PARTICIPANT_INVITATION_MISMATCH",
+      details: {
+        invitationId: inv.id,
+        splitParticipantId: inv.splitParticipantId,
+        currentInvitationId: currentSplitParticipantInvitationId
+      }
+    });
+  }
   if (inv.expiresAt.getTime() < Date.now() || currentStatus === "expired") {
     try {
       const ownerId = inv.splitParticipant?.splitVersion?.content?.ownerUserId || "";
@@ -28382,15 +28464,83 @@ async function handlePublicInviteAccept(req: any, reply: any) {
       },
       "splitInvite.accepted"
     );
-    return badRequest(reply, "Invite expired");
+    app.log.info(
+      {
+        tokenId,
+        invitationId: inv.id,
+        splitParticipantId: inv.splitParticipantId,
+        status: "expired"
+      },
+      "invite.remote_accept_denied"
+    );
+    return reply.code(409).send({
+      error: "Invite expired",
+      code: "INVITE_EXPIRED",
+      reason: "EXPIRED"
+    });
   }
 
   if (currentStatus === "revoked" || currentStatus === "tombstoned" || currentStatus === "declined") {
-    return badRequest(reply, `Invite ${currentStatus}`);
+    app.log.info(
+      {
+        tokenId,
+        invitationId: inv.id,
+        splitParticipantId: inv.splitParticipantId,
+        status: currentStatus
+      },
+      "invite.remote_accept_denied"
+    );
+    return reply.code(409).send({
+      error: `Invite ${currentStatus}`,
+      code: mapTerminalInviteStatusToCode(currentStatus),
+      reason: currentStatus.toUpperCase()
+    });
   }
 
   if (currentStatus === "accepted" || inv.acceptedAt) {
-    return reply.send({ ok: true, acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null, alreadyAccepted: true });
+    const acceptedBy = asString(inv.acceptedByUserId || "").trim();
+    const acceptedIdentityRef = asString(inv.acceptedIdentityRef || "").trim();
+    const sameLocalUser = Boolean(acceptedBy && acceptedBy === userId);
+    const sameRemoteIdentity = Boolean(
+      acceptanceAuthMode === "remote_signature" &&
+      remoteNodeUrl &&
+      acceptedIdentityRef === `remote:${remoteNodeUrl || "unknown"}#user:${userId}`
+    );
+    const sameIdentity = sameLocalUser || sameRemoteIdentity || (!acceptedBy && !acceptedIdentityRef);
+    if (!sameIdentity) {
+      app.log.info(
+        {
+          tokenId,
+          invitationId: inv.id,
+          splitParticipantId: inv.splitParticipantId,
+          acceptedByUserId: acceptedBy || null,
+          acceptedIdentityRef: acceptedIdentityRef || null,
+          attemptedUserId: userId || null
+        },
+        "invite.remote_accept_participant_mismatch"
+      );
+      return reply.code(403).send({
+        error: "Invite already accepted by a different identity",
+        code: "INVITE_ALREADY_ACCEPTED_DIFFERENT_RECIPIENT",
+        reason: "ACCEPTED_BY_OTHER_IDENTITY"
+      });
+    }
+    app.log.info(
+      {
+        tokenId,
+        invitationId: inv.id,
+        splitParticipantId: inv.splitParticipantId,
+        userId: userId || null
+      },
+      "invite.remote_accept_idempotent"
+    );
+    return reply.send({
+      ok: true,
+      acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
+      alreadyAccepted: true,
+      code: "INVITE_ALREADY_ACCEPTED",
+      reason: "IDEMPOTENT"
+    });
   }
 
   // The invite is bound to participant identity on acceptance.
@@ -28401,6 +28551,17 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   });
   const meEmail = normalizeEmail(me?.email || "");
   if (inviteTargetType === "local_user" && inviteTargetValue !== userId) {
+    app.log.info(
+      {
+        tokenId,
+        invitationId: inv.id,
+        splitParticipantId: inv.splitParticipantId,
+        targetType: inviteTargetType,
+        targetValue: inviteTargetValue,
+        attemptedUserId: userId
+      },
+      "invite.remote_accept_participant_mismatch"
+    );
     return reply.code(403).send({
       error: "Invite is bound to a different identity",
       code: "INVITE_WRONG_RECIPIENT",
@@ -28409,6 +28570,17 @@ async function handlePublicInviteAccept(req: any, reply: any) {
   }
   if (inviteTargetType === "email") {
     if (!meEmail || normalizeEmail(inviteTargetValue) !== meEmail) {
+      app.log.info(
+        {
+          tokenId,
+          invitationId: inv.id,
+          splitParticipantId: inv.splitParticipantId,
+          targetType: inviteTargetType,
+          targetValue: inviteTargetValue,
+          attemptedEmail: meEmail || null
+        },
+        "invite.remote_accept_participant_mismatch"
+      );
       return reply.code(403).send({
         error: "Invite email does not match your identity",
         code: "INVITE_WRONG_RECIPIENT",
@@ -28475,7 +28647,13 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     try {
       const prior = await prisma.auditEvent.findMany({ where: { entityType: "SplitVersion", entityId: inv.splitParticipant.splitVersionId } });
       const already = prior.some((e) => { const p: any = e.payloadJson as any; return p && (p.signature === signature || (p.signedPayload && p.signedPayload.signature === signature)); });
-      if (already) return reply.code(400).send({ error: "Signature has already been used" });
+      if (already) {
+        return reply.code(409).send({
+          error: "Signature has already been used",
+          code: "INVITE_SIGNATURE_REPLAY",
+          reason: "SIGNATURE_ALREADY_USED"
+        });
+      }
     } catch {
       // ignore errors and proceed
     }
@@ -28561,14 +28739,28 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 
   app.log.info(
     {
+      tokenId,
       token: inv.token || token,
       splitVersionId: inv.splitVersionId,
       inviterUserId: inv.inviterUserId,
       targetType: inviteTargetType,
       targetValue: inviteTargetValue,
-      status: "accepted"
+      status: "accepted",
+      acceptedByUserId: userId || null,
+      splitParticipantId: inv.splitParticipantId,
+      authMode: acceptanceAuthMode
     },
     "splitInvite.accepted"
+  );
+  app.log.info(
+    {
+      tokenId,
+      invitationId: inv.id,
+      splitParticipantId: inv.splitParticipantId,
+      userId: userId || null,
+      status: "accepted"
+    },
+    "invite.remote_accept_result"
   );
 
   return reply.send({ ok: true, acceptedAt: now.toISOString() });
