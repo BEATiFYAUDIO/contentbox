@@ -19402,6 +19402,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const creatorSignalNodeDetails = await getCreatorSignalNodeDetails();
   const creatorSignal = computeCreatorSignal(verifiedProofs as any, creatorSignalNodeDetails);
   const creatorSignalPercent = creatorSignal.percent;
+  const profileServiceMode = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: lightningConfigured
+  }).participationMode;
+  const profilePostureBadgeLabel =
+    profileServiceMode === "sovereign_node"
+      ? "Sovereign Node"
+      : profileServiceMode === "sovereign_creator" || profileServiceMode === "sovereign_creator_with_provider"
+        ? "Sovereign Creator"
+        : "Basic Creator";
   const trustTierBadgeHtml = (tier: SocialProofTier | null): string => {
     if (!tier) return "";
     const label = tier === "strong" ? "Strong" : tier === "standard" ? "Standard" : "Best-effort";
@@ -19617,10 +19626,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="muted">Signal meter: ${escHtml(String(creatorSignalPercent))}%</div>
       <div class="line muted">Identity Proofs +${escHtml(String(creatorSignal.identityScore))} • Presence +${escHtml(String(creatorSignal.presenceBonus))} • Node Operator +${escHtml(String(creatorSignal.nodeScore))}</div>
       <div class="line muted">Public Tunnel ${creatorSignal.nodeDetails.hasPublicTunnel ? "✓" : "—"} • Lightning ${creatorSignal.nodeDetails.hasLightningConfigured ? "✓" : "—"} • Receive ${creatorSignal.nodeDetails.canReceivePayments ? "✓" : "—"} • Channels ${escHtml(String(creatorSignal.nodeDetails.channelCount))}</div>`;
-  const sovereignNodeBadgeHtml =
-    creatorSignal.tier === "Sovereign Node"
-      ? `<div class="line"><span class="featured-verified">Sovereign Node</span></div>`
-      : "";
+  const profilePostureBadgeHtml = `<div class="line"><span class="featured-verified">${escHtml(profilePostureBadgeLabel)}</span></div>`;
   const featuredContentHtml =
     featuredContent.length > 0
       ? featuredContent
@@ -19871,7 +19877,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="hero-meta">
         <div class="hero-name">${safeDisplayName}</div>
         <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
-        ${sovereignNodeBadgeHtml}
+        ${profilePostureBadgeHtml}
         ${safeBio ? `<div class="line">${safeBio}</div>` : ""}
       </div>
     </section>
