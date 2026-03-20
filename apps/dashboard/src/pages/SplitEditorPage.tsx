@@ -89,15 +89,17 @@ function mapParticipantToRow(p: SplitParticipant): Row {
       ? "email_invite"
       : "invalid";
 
+  const normalizedEmailFromTarget =
+    canonicalTargetType === "email" ? normEmail(canonicalTargetValue || p.participantEmail || "") : "";
+  const participantInputValue =
+    p.participantEmail ||
+    (canonicalTargetType === "local_user" || canonicalTargetType === "identity_ref"
+      ? String(canonicalTargetValue || "").trim()
+      : normalizedEmailFromTarget || "");
+
   return {
     id: p.id,
-    participantEmail:
-      p.participantEmail ||
-      (hasIdentityClaim
-        ? (p.participantDisplayName || "")
-        : hasEmailClaim
-          ? normEmail(canonicalTargetValue || p.participantEmail || "")
-          : ""),
+    participantEmail: participantInputValue,
     role: p.role,
     percent: percentToString(p.percent),
     participantUserId: p.participantUserId || null,
@@ -121,7 +123,7 @@ function mapParticipantToRow(p: SplitParticipant): Row {
         allowEmail: true,
         fallbackLabel: "Invited collaborator"
       }),
-    normalizedEmail: p.participantEmail || null,
+    normalizedEmail: normalizedEmailFromTarget || p.participantEmail || null,
     resolvedVerifiedKey: p.verifiedAt ? true : null
   };
 }
