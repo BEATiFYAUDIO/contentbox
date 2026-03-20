@@ -25757,7 +25757,23 @@ async function isAcceptedParticipant(userId: string, contentId: string) {
       ].filter(Boolean) as any
     }
   });
-  return Boolean(participant);
+  if (participant) return true;
+
+  // Remote participant mirror fallback:
+  // Machine-local participant rows may not exist for cross-node accepted invites,
+  // but preview/read-only access should still work for accepted mirrored invites.
+  const mirrored = await prisma.remoteInvite.findFirst({
+    where: {
+      userId,
+      contentId,
+      contentDeletedAt: null,
+      revokedAt: null,
+      tombstonedAt: null,
+      OR: [{ acceptedAt: { not: null } }, { status: "accepted" }]
+    },
+    select: { id: true }
+  });
+  return Boolean(mirrored);
 }
 
 async function getParentLockedParticipantsForVote(parentContentId: string) {
