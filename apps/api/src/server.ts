@@ -18907,14 +18907,20 @@ async function handlePublicAttribution(req: any, reply: any) {
     const snapshots = await getLockedParticipantSnapshotsForSplitVersion(lockedSplit.id);
     contributors = snapshots
       .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
-      .map((snapshot) => ({
-        displayName: resolveLockedSnapshotAttributionLabel(snapshot),
-        handle: snapshot.handleSnapshot || null,
-        profilePath: snapshot.profilePathSnapshot || null,
-        role: snapshot.role || null,
-        bps: Math.max(0, Math.round(Number(snapshot.bps || 0))),
-        verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
-      }))
+      .map((snapshot) => {
+        const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
+        const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
+        const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
+        const safeProfilePath = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `/u/${encodeURIComponent(normalizedHandle)}` : null;
+        return {
+          displayName,
+          handle: safeHandle,
+          profilePath: safeProfilePath,
+          role: snapshot.role || null,
+          bps: Math.max(0, Math.round(Number(snapshot.bps || 0))),
+          verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
+        };
+      })
       .filter((c) => c.bps > 0);
     app.log.info(
       {
@@ -19138,6 +19144,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const userSelect = {
     id: true,
     displayName: true,
+    email: true,
     bio: true,
     avatarUrl: true,
     witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
@@ -19156,10 +19163,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 
   if (!user) {
     const candidates = await prisma.user.findMany({
-      where: { displayName: { not: null } },
       select: userSelect
     });
-    user = candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) || null;
+    user =
+      candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) ||
+      candidates.find((candidate) => normalizedEmailLocalPart(candidate.email || "") === requested) ||
+      null;
   }
   if (!user) return notFound(reply, "Not found");
 
@@ -20340,6 +20349,32 @@ async function handleBuyPage(req: any, reply: any) {
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
   function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function looksInternalId(v){
+    const raw = String(v == null ? "" : v).trim();
+    return /^c[a-z0-9]{20,}$/i.test(raw);
+  }
+  function normalizeHandleText(v){
+    return String(v == null ? "" : v).trim().replace(/^@+/, "");
+  }
+  function resolvePublicPersonLabel(candidateName, candidateHandle, fallbackLabel){
+    const cleanName = String(candidateName == null ? "" : candidateName).trim();
+    if (cleanName && !looksInternalId(cleanName)) return cleanName;
+    const cleanHandle = normalizeHandleText(candidateHandle);
+    if (cleanHandle && !looksInternalId(cleanHandle)) return "@" + cleanHandle;
+    return fallbackLabel || "Contributor";
+  }
+  function resolveSafeProfilePath(profilePathRaw){
+    const raw = String(profilePathRaw == null ? "" : profilePathRaw).trim();
+    if (!raw) return "";
+    try {
+      const trimmed = raw.startsWith("/") ? raw : ("/" + raw);
+      const m = trimmed.match(/^\\/u\\/([^/?#]+)/i);
+      if (!m || !m[1]) return "";
+      const handle = normalizeHandleText(decodeURIComponent(m[1]));
+      if (!handle || looksInternalId(handle)) return "";
+      return "/u/" + encodeURIComponent(handle);
+    } catch { return ""; }
+  }
   function heartFor(c){
     if (c?.verification?.badge !== "beatify_heart") return "";
     const tier = (c?.verification?.tier === "gold") ? "gold" : "grey";
@@ -20361,13 +20396,20 @@ async function handleBuyPage(req: any, reply: any) {
     const data = attributionData;
     const primary = data && data.primaryCreator ? data.primaryCreator : null;
     if (!primary) return;
-    const name = esc(primary.displayName || primary.name || primary.handle || "Creator");
+    const creatorLabel = resolvePublicPersonLabel(primary.displayName || primary.name || "", primary.handle || "", "Creator");
+    const name = esc(creatorLabel);
     const handleRaw = String(primary.handle || "").trim();
-    const profilePath = handleRaw ? ("/u/" + encodeURIComponent(handleRaw.replace(/^@/, ""))) : "";
+    const profilePath = resolveSafeProfilePath(handleRaw ? ("/u/" + encodeURIComponent(handleRaw.replace(/^@/, ""))) : "");
     const nameHtml = profilePath
       ? ("<a href=\\"" + profilePath + "\\" style=\\"text-decoration:underline;\\">" + name + "</a>")
       : name;
-    const contentboxHandle = handleRaw ? (" @" + esc(handleRaw.replace(/^@/, ""))) : "";
+    const contentboxHandleNormalized = normalizeHandleText(handleRaw);
+    const contentboxHandle =
+      contentboxHandleNormalized &&
+      !looksInternalId(contentboxHandleNormalized) &&
+      creatorLabel.toLowerCase() !== ("@" + contentboxHandleNormalized).toLowerCase()
+        ? (" @" + esc(contentboxHandleNormalized))
+        : "";
     const beatifyHandleRaw = String(primary.beatifyHandle || "").trim();
     const beatifyHandle = beatifyHandleRaw ? (" @" + esc(beatifyHandleRaw)) : "";
     const badge = heartFor(primary);
@@ -20381,12 +20423,19 @@ async function handleBuyPage(req: any, reply: any) {
     if (split?.state === "active" && contributors.length > 0) {
       splitHtml = "<div class=\\"muted\\" style=\\"margin-top:8px;font-weight:600;color:#d4d4d8;\\">Contributors and splits</div><ul class=\\"muted\\" style=\\"margin:6px 0 0 16px;padding:0;\\">" +
         contributors.map((c) => {
-          const cn = esc(c?.displayName || c?.name || c?.handle || "Contributor");
+          const contributorLabel = resolvePublicPersonLabel(c?.displayName || c?.name || "", c?.handle || "", "Contributor");
+          const cn = esc(contributorLabel);
           const chRaw = String(c?.handle || "").trim();
-          const ch = chRaw ? (" @" + esc(chRaw.replace(/^@/, ""))) : "";
+          const normalizedContributorHandle = normalizeHandleText(chRaw);
+          const ch =
+            normalizedContributorHandle &&
+            !looksInternalId(normalizedContributorHandle) &&
+            contributorLabel.toLowerCase() !== ("@" + normalizedContributorHandle).toLowerCase()
+              ? (" @" + esc(normalizedContributorHandle))
+              : "";
           const roleRaw = String(c?.role || "").trim();
           const role = roleRaw ? (" • " + esc(roleRaw)) : "";
-          const profilePathRaw = String(c?.profilePath || "").trim();
+          const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
           const profileLink = profilePathRaw
             ? (" <a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;\\">profile</a>")
             : "";
@@ -24741,6 +24790,30 @@ function looksLikeInternalUserId(value: string | null | undefined): boolean {
   return /^c[a-z0-9]{20,}$/i.test(raw);
 }
 
+function normalizedEmailLocalPart(value: string | null | undefined): string | null {
+  const email = normalizeEmail(value || "");
+  if (!email || !email.includes("@")) return null;
+  const localPart = email.split("@")[0]?.trim() || "";
+  if (!localPart) return null;
+  const normalized = normalizePublicProfileHandle(localPart);
+  if (!normalized || looksLikeInternalUserId(normalized)) return null;
+  return normalized;
+}
+
+function resolveBestHumanDisplayLabel(input: {
+  userDisplayName?: string | null;
+  userEmail?: string | null;
+  participantEmail?: string | null;
+}): string | null {
+  const displayName = asString(input.userDisplayName || "").trim();
+  if (displayName && !looksLikeInternalUserId(displayName)) return displayName;
+  const userEmailHandle = normalizedEmailLocalPart(input.userEmail || "");
+  if (userEmailHandle) return userEmailHandle;
+  const participantEmailHandle = normalizedEmailLocalPart(input.participantEmail || "");
+  if (participantEmailHandle) return participantEmailHandle;
+  return null;
+}
+
 async function buildUserDisplayMap(userIds: string[]): Promise<Map<string, { displayName: string | null; email: string | null }>> {
   const ids = Array.from(new Set((userIds || []).map((id) => asString(id || "").trim()).filter(Boolean)));
   if (!ids.length) return new Map();
@@ -24759,7 +24832,7 @@ function resolvePrivateParticipantDisplayLabel(input: {
   userDisplayName?: string | null;
 }): string | null {
   const displayName = asString(input.userDisplayName || "").trim();
-  if (displayName) return displayName;
+  if (displayName && !looksLikeInternalUserId(displayName)) return displayName;
   const participantEmail = normalizeEmail(input.participantEmail || "");
   if (participantEmail) return participantEmail;
   const targetType = normalizeInviteTargetType(input.targetType || null);
@@ -24783,17 +24856,17 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
   const participants = Array.isArray(input.splitVersion?.participants) ? input.splitVersion.participants : [];
   if (!participants.length) return [];
 
-  const participantUserIds = Array.from(
+  const participantUserIds: string[] = Array.from(
     new Set(
       participants
         .map((participant: any) => asString(participant?.participantUserId || "").trim())
-        .filter(Boolean)
+        .filter((id) => Boolean(id))
     )
   );
   const users = participantUserIds.length
     ? await prisma.user.findMany({
         where: { id: { in: participantUserIds } },
-        select: { id: true, displayName: true }
+        select: { id: true, displayName: true, email: true }
       })
     : [];
   const userById = new Map(users.map((user) => [user.id, user]));
@@ -24809,10 +24882,11 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
     const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
     const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
     const displayNameSnapshot =
-      asString(user?.displayName || "").trim() ||
-      (targetType === "email" ? normalizeEmail(targetValue || participantEmail || "").split("@")[0] || "" : "") ||
-      participantEmail ||
-      null;
+      resolveBestHumanDisplayLabel({
+        userDisplayName: asString(user?.displayName || "").trim() || null,
+        userEmail: asString(user?.email || "").trim() || null,
+        participantEmail: targetType === "email" ? normalizeEmail(targetValue || participantEmail || "") : participantEmail
+      }) || null;
     const normalizedHandle = normalizePublicProfileHandle(displayNameSnapshot || "");
     const handleSnapshot = normalizedHandle ? `@${normalizedHandle}` : null;
     const profilePathSnapshot = normalizedHandle ? `/u/${encodeURIComponent(normalizedHandle)}` : null;
@@ -24866,7 +24940,64 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
   const normalized = asString(splitVersionId || "").trim();
   if (!normalized) return [];
   const existing = listLockedParticipantSnapshotRows().filter((row) => row.splitVersionId === normalized);
-  if (existing.length) return existing;
+  if (existing.length) {
+    const participantUserIds: string[] = Array.from(
+      new Set(
+        existing
+          .map((row) => asString(row.participantUserId || "").trim())
+          .filter((id) => Boolean(id))
+      )
+    );
+    const users = participantUserIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: participantUserIds } },
+          select: { id: true, displayName: true, email: true }
+        })
+      : [];
+    const userById = new Map(users.map((user) => [user.id, user]));
+    let changed = false;
+    const refreshed = existing.map((row) => {
+      const user = row.participantUserId ? userById.get(asString(row.participantUserId || "").trim()) || null : null;
+      const nextDisplayName =
+        resolveBestHumanDisplayLabel({
+          userDisplayName: asString(user?.displayName || "").trim() || null,
+          userEmail: asString(user?.email || "").trim() || null,
+          participantEmail: normalizeEmail(row.participantEmail || "")
+        }) || null;
+      const nextHandleRaw = nextDisplayName ? normalizePublicProfileHandle(nextDisplayName) : null;
+      const nextHandle =
+        nextHandleRaw && !looksLikeInternalUserId(nextHandleRaw) ? `@${nextHandleRaw}` : null;
+      const nextProfilePath = nextHandleRaw && !looksLikeInternalUserId(nextHandleRaw) ? `/u/${encodeURIComponent(nextHandleRaw)}` : null;
+      const currentDisplayName = asString(row.displayNameSnapshot || "").trim() || null;
+      const currentHandle = asString(row.handleSnapshot || "").trim() || null;
+      const currentProfilePath = asString(row.profilePathSnapshot || "").trim() || null;
+      if (
+        currentDisplayName !== nextDisplayName ||
+        currentHandle !== nextHandle ||
+        currentProfilePath !== nextProfilePath
+      ) {
+        changed = true;
+        return {
+          ...row,
+          displayNameSnapshot: nextDisplayName,
+          handleSnapshot: nextHandle,
+          profilePathSnapshot: nextProfilePath,
+          updatedAt: new Date().toISOString()
+        };
+      }
+      return row;
+    });
+    if (changed) {
+      const allRows = listLockedParticipantSnapshotRows();
+      const nextRows = [
+        ...allRows.filter((row) => row.splitVersionId !== normalized),
+        ...refreshed
+      ];
+      writeLockedParticipantSnapshotRows(nextRows);
+      return refreshed;
+    }
+    return existing;
+  }
 
   const split = await prisma.splitVersion.findUnique({
     where: { id: normalized },

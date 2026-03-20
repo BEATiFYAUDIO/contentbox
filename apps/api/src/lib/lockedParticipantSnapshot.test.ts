@@ -57,6 +57,16 @@ test("attribution prefers snapshot identity labels over generic fallback", () =>
   );
 });
 
+test("attribution never uses internal user id labels", () => {
+  assert.equal(
+    resolveLockedSnapshotAttributionLabel({
+      displayNameSnapshot: "cmmvmg5xh0006uvh4wvhbhbsg",
+      handleSnapshot: "@cmmvmg5xh0006uvh4wvhbhbsg"
+    }),
+    "Contributor"
+  );
+});
+
 test("accounting state marks unresolved routing as blocked but not omitted", () => {
   assert.deepEqual(
     resolveLockedSnapshotAccountingState({
