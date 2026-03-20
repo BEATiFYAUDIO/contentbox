@@ -96,6 +96,20 @@ import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
 import {
+  filterCommerceEligibleParticipants,
+  isCommerceEligibleLockedParticipant,
+  pickLatestDraftSplitVersion,
+  pickLockedSplitVersionForCommerce,
+  requireDerivativeParentSplitSnapshotId
+} from "./lib/splitAuthority.js";
+import { evaluateParticipantIdentityGate } from "./lib/participantIdentityGate.js";
+import { canHighlightParticipation, isLockedParticipationProjectionEligible } from "./lib/participationProjection.js";
+import {
+  isTopologyNeutralLockedSnapshotEligible,
+  resolveLockedSnapshotAccountingState,
+  resolveLockedSnapshotAttributionLabel
+} from "./lib/lockedParticipantSnapshot.js";
+import {
   buildContentPublishReceiptPayload,
   computeCanonicalManifestHash,
   normalizeManifestForPublish
@@ -1638,6 +1652,8 @@ const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider
 const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
 const PROVIDER_PAYMENT_RECEIPTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-receipts.json");
 const CREATOR_PAYOUT_DESTINATIONS_FILE = path.join(RUNTIME_STATE_DIR, "creator-payout-destinations.json");
+const PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "participation-profile-highlights.json");
+const LOCKED_PARTICIPANT_SNAPSHOTS_FILE = path.join(RUNTIME_STATE_DIR, "locked-participant-snapshots.json");
 
 type ProviderTrustStatus = "unknown" | "verified" | "blocked";
 type ProviderHandshakeStatus = "none" | "accepted" | "failed";
@@ -1662,6 +1678,39 @@ type ProviderCreatorLinkRecord = {
   handshakeStatus: ProviderHandshakeStatus;
   executionAllowed: boolean;
   lastSeenAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ParticipationProfileHighlightRecord = {
+  id: string;
+  userId: string;
+  splitParticipantId: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type LockedParticipantSnapshotRecord = {
+  id: string;
+  contentId: string;
+  splitVersionId: string;
+  splitParticipantId: string;
+  participantUserId: string | null;
+  participantEmail: string | null;
+  identityRef: string | null;
+  role: string | null;
+  bps: number;
+  percent: number;
+  acceptedAt: string | null;
+  verifiedAt: string | null;
+  displayNameSnapshot: string | null;
+  handleSnapshot: string | null;
+  profilePathSnapshot: string | null;
+  participantOrigin: string | null;
+  participantTopologyMode: "local_user" | "remote_identity" | "identity_ref" | "email_claim" | "unknown";
+  payoutAuthorityRef: string | null;
+  lockedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -1777,12 +1826,13 @@ type ParticipantDestinationType = "lightning_address" | "lnurl" | "lnd";
 type ParticipantDestinationResolveResult = {
   destinationType: string | null;
   destinationSummary: string | null;
-  destinationSource: "identity_registry" | "provider_snapshot" | null;
+  destinationSource: "identity_registry" | "identity_registry_remote" | "provider_snapshot" | null;
   destinationFingerprint: string | null;
   destinationResolvedAt: Date | null;
   isVerified: boolean;
   verificationStatus: string | null;
   verificationError: string | null;
+  destinationValue: string | null;
 };
 
 type ParticipantExecutionResolution = "identity" | "provider_fallback";
@@ -1948,7 +1998,8 @@ async function resolveParticipantRegistryDestination(userId: string): Promise<Pa
       destinationResolvedAt: resolvedAt,
       isVerified: Boolean(verifiedPrimary.isVerified),
       verificationStatus: String(verifiedPrimary.verificationStatus || (verifiedPrimary.isVerified ? "verified" : "pending")),
-      verificationError: verifiedPrimary.verificationError || null
+      verificationError: verifiedPrimary.verificationError || null,
+      destinationValue: String(verifiedPrimary.destinationValue || "").trim() || null
     };
   } catch (err: any) {
     if (isMissingParticipantPayoutTableError(err)) return null;
@@ -1956,9 +2007,168 @@ async function resolveParticipantRegistryDestination(userId: string): Promise<Pa
   }
 }
 
+async function resolvePublicParticipantPayoutDestination(userId: string): Promise<ParticipantDestinationResolveResult | null> {
+  if (!userId) return null;
+  try {
+    const rows = await prisma.participantPayoutDestination.findMany({
+      where: { userId, isActive: true, isVerified: true },
+      orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }],
+      take: 5
+    });
+    if (!rows.length) return null;
+    const selected = rows.find((r) => r.isPrimary) || rows[0];
+    const type = parseParticipantDestinationType(selected.destinationType);
+    const value = String(selected.destinationValue || "").trim() || null;
+    const summary =
+      String(selected.destinationSummary || "").trim() ||
+      (type && value ? summarizeParticipantDestination(type, value) : null);
+    const resolvedAt = selected.lastVerifiedAt || selected.updatedAt || null;
+    return {
+      destinationType: type,
+      destinationSummary: summary,
+      destinationSource: "identity_registry",
+      destinationFingerprint: computeDestinationFingerprint(type, summary),
+      destinationResolvedAt: resolvedAt,
+      isVerified: Boolean(selected.isVerified),
+      verificationStatus: String(selected.verificationStatus || "verified"),
+      verificationError: selected.verificationError || null,
+      destinationValue: value
+    };
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) return null;
+    throw err;
+  }
+}
+
+function parseRemoteIdentityRef(identityRef: string | null | undefined): { origin: string | null; userId: string | null } {
+  const raw = String(identityRef || "").trim();
+  if (!raw.startsWith("remote:")) return { origin: null, userId: null };
+  const rest = raw.slice("remote:".length);
+  const marker = "#user:";
+  const idx = rest.indexOf(marker);
+  if (idx <= 0) return { origin: null, userId: null };
+  const origin = normalizeOrigin(rest.slice(0, idx));
+  const userId = asString(rest.slice(idx + marker.length)).trim() || null;
+  return { origin: origin || null, userId };
+}
+
+function getLockedSnapshotBySplitParticipantId(splitParticipantId: string | null | undefined): LockedParticipantSnapshotRecord | null {
+  const id = asString(splitParticipantId || "").trim();
+  if (!id) return null;
+  const rows = listLockedParticipantSnapshotRows();
+  const matched = rows.filter((row) => row.splitParticipantId === id);
+  if (!matched.length) return null;
+  return matched.sort((a, b) => Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || ""))[0] || null;
+}
+
+async function fetchRemoteParticipantPayoutDestination(
+  origin: string,
+  userId: string
+): Promise<ParticipantDestinationResolveResult | null> {
+  const normalizedOrigin = normalizeRemoteOrigin(origin);
+  const normalizedUserId = asString(userId || "").trim();
+  if (!normalizedOrigin || !normalizedUserId) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${normalizedOrigin}/public/users/${encodeURIComponent(normalizedUserId)}/payout-destination`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      8000
+    );
+    if (!res.ok) return null;
+    const payload: any = await res.json().catch(() => null);
+    if (!payload || !payload.ok || !payload.destination) return null;
+    const destinationType = parseParticipantDestinationType(payload.destination.destinationType);
+    const destinationValue = asString(payload.destination.destinationValue || "").trim() || null;
+    const destinationSummary =
+      asString(payload.destination.destinationSummary || "").trim() ||
+      (destinationType && destinationValue ? summarizeParticipantDestination(destinationType, destinationValue) : null);
+    const verifiedAtRaw = asString(payload.destination.verifiedAt || payload.destination.lastVerifiedAt || "").trim();
+    const verifiedAt = verifiedAtRaw ? new Date(verifiedAtRaw) : null;
+    return {
+      destinationType,
+      destinationSummary,
+      destinationSource: "identity_registry_remote",
+      destinationFingerprint: computeDestinationFingerprint(destinationType, destinationSummary),
+      destinationResolvedAt: verifiedAt && !Number.isNaN(verifiedAt.getTime()) ? verifiedAt : null,
+      isVerified: Boolean(payload.destination.isVerified),
+      verificationStatus: asString(payload.destination.verificationStatus || "").trim() || null,
+      verificationError: asString(payload.destination.verificationError || "").trim() || null,
+      destinationValue
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveParticipantDestinationHandshake(input: {
+  participantUserId: string | null;
+  splitParticipantId?: string | null;
+  participantRef?: string | null;
+}): Promise<ParticipantDestinationResolveResult | null> {
+  const participantUserId = asString(input.participantUserId || "").trim();
+  const splitParticipantId = asString(input.splitParticipantId || "").trim();
+  const participantRef = asString(input.participantRef || "").trim();
+
+  if (participantUserId) {
+    const local = await resolveParticipantRegistryDestination(participantUserId);
+    if (local) {
+      app.log.info(
+        {
+          participantUserId,
+          splitParticipantId: splitParticipantId || null,
+          participantRef: participantRef || null,
+          destinationType: local.destinationType || null,
+          destinationSource: local.destinationSource,
+          resolved: true
+        },
+        "payoutDestination.resolve"
+      );
+      return local;
+    }
+  }
+
+  const snapshot = getLockedSnapshotBySplitParticipantId(splitParticipantId);
+  const parsedIdentity = parseRemoteIdentityRef(snapshot?.identityRef || null);
+  const origin = snapshot?.participantOrigin || parsedIdentity.origin || null;
+  const remoteUserId = participantUserId || parsedIdentity.userId || null;
+  if (origin && remoteUserId) {
+    const remote = await fetchRemoteParticipantPayoutDestination(origin, remoteUserId);
+    app.log.info(
+      {
+        participantUserId: remoteUserId,
+        splitParticipantId: splitParticipantId || null,
+        participantRef: participantRef || null,
+        destinationType: remote?.destinationType || null,
+        destinationSource: remote?.destinationSource || null,
+        participantOrigin: origin,
+        resolved: Boolean(remote)
+      },
+      "payoutDestination.resolve"
+    );
+    if (remote) return remote;
+  }
+
+  app.log.info(
+    {
+      participantUserId: participantUserId || null,
+      splitParticipantId: splitParticipantId || null,
+      participantRef: participantRef || null,
+      destinationType: null,
+      destinationSource: null,
+      resolved: false
+    },
+    "payoutDestination.resolve"
+  );
+  return null;
+}
+
 async function resolveParticipantPayoutReadinessForAllocation(
   intent: ProviderPaymentIntentRecord,
-  participantUserId: string | null
+  participantUserId: string | null,
+  allocationCtx?: {
+    splitParticipantId?: string | null;
+    participantRef?: string | null;
+  }
 ): Promise<ParticipantPayoutReadiness> {
   const policy = normalizeProviderFallbackPolicy((intent as any).payoutPolicy, (intent as any).allowProviderFallback);
   const payoutPolicy = policy.payoutPolicy;
@@ -1967,7 +2177,11 @@ async function resolveParticipantPayoutReadinessForAllocation(
     ? String(intent.payoutLastError || "BLOCKED")
     : null;
   if (blockedReason) {
-    const registry = participantUserId ? await resolveParticipantRegistryDestination(participantUserId) : null;
+    const registry = await resolveParticipantDestinationHandshake({
+      participantUserId,
+      splitParticipantId: allocationCtx?.splitParticipantId || null,
+      participantRef: allocationCtx?.participantRef || null
+    });
     return {
       status: "blocked",
       readinessReason: "BLOCKED_POLICY",
@@ -1980,14 +2194,23 @@ async function resolveParticipantPayoutReadinessForAllocation(
     };
   }
 
-  const registry = participantUserId ? await resolveParticipantRegistryDestination(participantUserId) : null;
+  const registry = await resolveParticipantDestinationHandshake({
+    participantUserId,
+    splitParticipantId: allocationCtx?.splitParticipantId || null,
+    participantRef: allocationCtx?.participantRef || null
+  });
   if (registry) {
+    const destinationSummary =
+      registry.destinationSummary ||
+      (registry.destinationType && registry.destinationValue
+        ? summarizeParticipantDestination(registry.destinationType as ParticipantDestinationType, registry.destinationValue)
+        : null);
     if (!registry.isVerified) {
       return {
         status: "pending",
         readinessReason: registry.verificationError ? "DESTINATION_UNVERIFIED" : "DESTINATION_VERIFICATION_PENDING",
         destinationType: registry.destinationType,
-        destinationSummary: registry.destinationSummary,
+        destinationSummary,
         destinationSource: registry.destinationSource,
         destinationFingerprint: registry.destinationFingerprint,
         destinationResolvedAt: registry.destinationResolvedAt,
@@ -1999,7 +2222,7 @@ async function resolveParticipantPayoutReadinessForAllocation(
         status: "pending",
         readinessReason: "LEGACY_CREATOR_MODE",
         destinationType: registry.destinationType,
-        destinationSummary: registry.destinationSummary,
+        destinationSummary,
         destinationSource: registry.destinationSource,
         destinationFingerprint: registry.destinationFingerprint,
         destinationResolvedAt: registry.destinationResolvedAt,
@@ -2011,7 +2234,7 @@ async function resolveParticipantPayoutReadinessForAllocation(
         status: "pending",
         readinessReason: "MANUAL_REQUIRED",
         destinationType: registry.destinationType,
-        destinationSummary: registry.destinationSummary,
+        destinationSummary,
         destinationSource: registry.destinationSource,
         destinationFingerprint: registry.destinationFingerprint,
         destinationResolvedAt: registry.destinationResolvedAt,
@@ -2023,7 +2246,7 @@ async function resolveParticipantPayoutReadinessForAllocation(
         status: "pending",
         readinessReason: "AUTO_FORWARD_UNSUPPORTED_DESTINATION",
         destinationType: registry.destinationType,
-        destinationSummary: registry.destinationSummary,
+        destinationSummary,
         destinationSource: registry.destinationSource,
         destinationFingerprint: registry.destinationFingerprint,
         destinationResolvedAt: registry.destinationResolvedAt,
@@ -2034,7 +2257,7 @@ async function resolveParticipantPayoutReadinessForAllocation(
       status: "ready",
       readinessReason: null,
       destinationType: registry.destinationType,
-      destinationSummary: registry.destinationSummary,
+      destinationSummary,
       destinationSource: registry.destinationSource,
       destinationFingerprint: registry.destinationFingerprint,
       destinationResolvedAt: registry.destinationResolvedAt,
@@ -2203,6 +2426,16 @@ function writeJsonArrayState<T>(filePath: string, rows: T[]) {
   } catch {}
 }
 
+function listLockedParticipantSnapshotRows(): LockedParticipantSnapshotRecord[] {
+  return readJsonArrayState<LockedParticipantSnapshotRecord>(LOCKED_PARTICIPANT_SNAPSHOTS_FILE).filter(
+    (row) => row && row.splitVersionId && row.splitParticipantId
+  );
+}
+
+function writeLockedParticipantSnapshotRows(rows: LockedParticipantSnapshotRecord[]) {
+  writeJsonArrayState(LOCKED_PARTICIPANT_SNAPSHOTS_FILE, rows);
+}
+
 function parseProviderRemitMode(value: unknown): ProviderRemitMode {
   const mode = String(value || "").trim().toLowerCase();
   if (mode === "provider_custody" || mode === "auto_forward" || mode === "manual_payout") return mode;
@@ -2337,39 +2570,41 @@ async function resolveParticipantIdentityGate(input: {
 }): Promise<ParticipantIdentityGate> {
   const userId = String(input.participantUserId || "").trim();
   const splitParticipantId = String(input.splitParticipantId || "").trim();
-  if (!userId) {
-    return { active: false, readinessReason: "INVITE_UNRESOLVED" };
-  }
-  const verifiedKey = await hasVerifiedParticipantKey(userId);
-  if (!verifiedKey) {
-    return { active: false, readinessReason: "KEY_UNVERIFIED" };
-  }
-  if (!splitParticipantId) {
-    return { active: false, readinessReason: "INVITE_UNRESOLVED" };
-  }
-  const splitParticipant = await prisma.splitParticipant.findUnique({
-    where: { id: splitParticipantId },
-    select: {
-      acceptedAt: true,
-      invitation: { select: { status: true } },
-      invitations: {
-        where: {
-          OR: [{ status: "accepted" as any }, { acceptedAt: { not: null } }]
-        },
-        select: { id: true, status: true },
-        take: 1
-      }
-    }
-  });
-  if (!splitParticipant) return { active: false, readinessReason: "INVITE_UNRESOLVED" };
+  const splitParticipant = splitParticipantId
+    ? await prisma.splitParticipant.findUnique({
+        where: { id: splitParticipantId },
+        select: {
+          participantUserId: true,
+          acceptedAt: true,
+          verifiedAt: true,
+          invitation: { select: { status: true } },
+          invitations: {
+            where: {
+              OR: [{ status: "accepted" as any }, { acceptedAt: { not: null } }]
+            },
+            select: { id: true, status: true },
+            take: 1
+          }
+        }
+      })
+    : null;
   const signedAccepted =
-    normalizeInviteStatus(splitParticipant.invitation?.status) === "accepted" ||
-    Boolean(splitParticipant.acceptedAt) ||
-    (splitParticipant.invitations?.length || 0) > 0;
-  if (!signedAccepted) {
-    return { active: false, readinessReason: "INVITE_UNRESOLVED" };
-  }
-  return { active: true, readinessReason: null };
+    splitParticipant
+      ? normalizeInviteStatus(splitParticipant.invitation?.status) === "accepted" ||
+        Boolean(splitParticipant.acceptedAt) ||
+        (splitParticipant.invitations?.length || 0) > 0
+      : true;
+  const effectiveUserId = String(splitParticipant?.participantUserId || userId || "").trim();
+  const localWitnessVerified = effectiveUserId ? await hasVerifiedParticipantKey(effectiveUserId) : false;
+  return evaluateParticipantIdentityGate({
+    userId,
+    splitParticipantId,
+    splitParticipantExists: Boolean(splitParticipant) || !splitParticipantId,
+    splitParticipantUserId: String(splitParticipant?.participantUserId || "").trim(),
+    signedAccepted,
+    splitSnapshotVerified: Boolean(splitParticipant?.verifiedAt),
+    localWitnessVerified
+  });
 }
 
 function parsePayoutDestinationType(value: unknown): CreatorPayoutDestinationType {
@@ -2905,6 +3140,22 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
   const contentId = String(intent.contentId || "").trim();
   if (!contentId) return;
   try {
+    const grossSats = BigInt(String(intent.grossAmountSats || intent.amountSats || "0"));
+    const providerFeeSats = BigInt(String(intent.providerFeeSats || "0"));
+    const distributableSats = BigInt(String(intent.creatorNetSats || "0"));
+    app.log.info(
+      {
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        contentId,
+        grossSats: grossSats.toString(),
+        operatorFeeSats: providerFeeSats.toString(),
+        distributableSats: distributableSats.toString(),
+        providerInvoicingFeeSats: String(intent.providerInvoicingFeeSats || "0"),
+        providerDurableHostingFeeSats: String(intent.providerDurableHostingFeeSats || "0")
+      },
+      "splitAccounting.payment_base"
+    );
 
     const existingAllocations = await prisma.providerPaymentParticipantAllocation.findMany({
       where: { providerPaymentIntentId: intent.id },
@@ -2915,12 +3166,35 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
   // never recompute or overwrite allocations, even if provider fee/net fields are edited later.
   // This avoids retroactive drift in participant accounting.
     if (existingAllocations.length === 0) {
-      const netPool = BigInt(String(intent.creatorNetSats || "0"));
+      const netPool = distributableSats;
       if (netPool > 0n) {
         const computed = await computeContentParticipantAllocations({
           contentId,
           poolSats: netPool
         });
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            contentId,
+            splitVersionId: computed.splitVersionId,
+            participantCount: computed.allocations.length
+          },
+          "splitAuthority.provider_participant_snapshot"
+        );
+        const allocatedTotal = computed.allocations.reduce((acc, row) => acc + row.amountSats, 0n);
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            contentId,
+            splitVersionId: computed.splitVersionId,
+            participantCount: computed.allocations.length,
+            allocatedTotalSats: allocatedTotal.toString(),
+            distributableSats: netPool.toString()
+          },
+          "splitAccounting.allocations"
+        );
         for (const row of computed.allocations) {
           await prisma.providerPaymentParticipantAllocation.upsert({
             where: {
@@ -2950,6 +3224,16 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
             }
           });
         }
+      } else {
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            contentId,
+            distributableSats: netPool.toString()
+          },
+          "splitAccounting.allocations"
+        );
       }
     }
 
@@ -2980,7 +3264,11 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
       });
       const baseReadiness = await resolveParticipantPayoutReadinessForAllocation(
         intent,
-        allocation.participantUserId || null
+        allocation.participantUserId || null,
+        {
+          splitParticipantId: allocation.splitParticipantId || null,
+          participantRef: executionParticipantRef
+        }
       );
       const readiness = identityGate.active
         ? baseReadiness
@@ -3033,6 +3321,35 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           // should support destination updates for future unpaid balances without mutating historical payout rows.
         }
       });
+      if (readiness.status === "ready" || readiness.status === "forwarding") {
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantRef: executionParticipantRef,
+            participantUserId: allocation.participantUserId || null,
+            splitParticipantId: allocation.splitParticipantId || null,
+            amountSats: String(allocation.amountSats || "0"),
+            destinationType: readiness.destinationType,
+            destinationSummary: readiness.destinationSummary
+          },
+          "splitAccounting.payout_row_created"
+        );
+      } else {
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantRef: executionParticipantRef,
+            participantUserId: allocation.participantUserId || null,
+            splitParticipantId: allocation.splitParticipantId || null,
+            amountSats: String(allocation.amountSats || "0"),
+            reason: readiness.readinessReason || "NOT_READY",
+            status: readiness.status
+          },
+          "splitAccounting.payout_row_skipped"
+        );
+      }
     }
   } catch (err: any) {
     if (isMissingParticipantPayoutTableError(err)) {
@@ -3694,10 +4011,39 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
   for (const row of rows) {
     if (PARTICIPANT_REMITTANCE_FLIGHTS.has(row.id)) {
       logParticipantPayoutAttempt(intent.id, row, "pending", "IN_FLIGHT");
+      app.log.info(
+        {
+          providerPaymentIntentId: intent.id,
+          participantPayoutId: row.id,
+          participantRef: participantExecutionRef(row),
+          reason: "IN_FLIGHT"
+        },
+        "splitAccounting.payout_row_skipped"
+      );
       continue;
     }
     if (row.status === "blocked") {
       logParticipantPayoutAttempt(intent.id, row, "blocked", String(row.blockedReason || row.readinessReason || "BLOCKED"));
+      app.log.info(
+        {
+          providerPaymentIntentId: intent.id,
+          participantPayoutId: row.id,
+          participantRef: participantExecutionRef(row),
+          destinationType: String(row.destinationType || "").trim().toLowerCase() || null,
+          amountSats: String(row.amountSats || "0"),
+          reason: String(row.blockedReason || row.readinessReason || "BLOCKED")
+        },
+        "payoutExecution.auto_remit_blocked"
+      );
+      app.log.info(
+        {
+          providerPaymentIntentId: intent.id,
+          participantPayoutId: row.id,
+          participantRef: participantExecutionRef(row),
+          reason: String(row.blockedReason || row.readinessReason || "BLOCKED")
+        },
+        "splitAccounting.payout_row_skipped"
+      );
       continue;
     }
     if (row.status === "paid") {
@@ -3706,6 +4052,26 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
     }
     if (row.status !== "ready" && row.status !== "failed") {
       logParticipantPayoutAttempt(intent.id, row, "pending", String(row.readinessReason || "NOT_READY"));
+      app.log.info(
+        {
+          providerPaymentIntentId: intent.id,
+          participantPayoutId: row.id,
+          participantRef: participantExecutionRef(row),
+          destinationType: String(row.destinationType || "").trim().toLowerCase() || null,
+          amountSats: String(row.amountSats || "0"),
+          reason: String(row.readinessReason || "NOT_READY")
+        },
+        "payoutExecution.auto_remit_blocked"
+      );
+      app.log.info(
+        {
+          providerPaymentIntentId: intent.id,
+          participantPayoutId: row.id,
+          participantRef: participantExecutionRef(row),
+          reason: String(row.readinessReason || "NOT_READY")
+        },
+        "splitAccounting.payout_row_skipped"
+      );
       continue;
     }
     PARTICIPANT_REMITTANCE_FLIGHTS.add(row.id);
@@ -3720,12 +4086,57 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         const destinationType = String(payout.destinationType || "").trim().toLowerCase();
         const destinationSummary = String(payout.destinationSummary || "").trim();
         if (destinationType !== "lightning_address" || !destinationSummary || !destinationSummary.includes("@")) {
+          app.log.info(
+            {
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              participantRef: participantExecutionRef(row),
+              destinationType: destinationType || null,
+              destinationSummary: destinationSummary || null,
+              amountSats: String(payout.amountSats || "0"),
+              reason: "UNSUPPORTED_DESTINATION"
+            },
+            "payoutExecution.auto_remit_blocked"
+          );
           throw new Error("UNSUPPORTED_DESTINATION");
         }
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            destinationType,
+            destinationSummary,
+            amountSats: String(payout.amountSats || "0")
+          },
+          "payoutExecution.auto_remit_started"
+        );
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            destinationType,
+            destinationSummary,
+            amountSats: String(payout.amountSats || "0")
+          },
+          "payoutDestination.invoice_request"
+        );
         const invoice = await requestLightningAddressInvoice(
           destinationSummary,
           String(payout.amountSats || "0"),
           `Certifyd participant remittance ${String(intent.paymentIntentId || "").slice(-8)}`
+        );
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            destinationType,
+            amountSats: String(payout.amountSats || "0"),
+            invoicePresent: Boolean(invoice)
+          },
+          "payoutDestination.invoice_received"
         );
         const send = await payBolt11ViaLnd(invoice);
         const marked = await markParticipantPayoutPaid(payout.id, lock.attemptId, send.paymentHash || null);
@@ -3750,6 +4161,26 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         logParticipantPayoutAttempt(intent.id, row, "executed", "EXECUTED");
         app.log.info(
           {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            payoutReference: send.paymentHash || null
+          },
+          "splitAccounting.payout_row_created"
+        );
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            destinationType,
+            amountSats: String(payout.amountSats || "0"),
+            payoutReference: send.paymentHash || null
+          },
+          "payoutExecution.auto_remit_paid"
+        );
+        app.log.info(
+          {
             route: reason,
             providerPaymentIntentId: intent.id,
             participantPayoutId: payout.id,
@@ -3763,6 +4194,17 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         const message = String(e?.message || "participant_remit_failed");
         await markParticipantPayoutFailed(payout.id, lock.attemptId, message);
         logParticipantPayoutAttempt(intent.id, row, "pending", message);
+        app.log.warn(
+          {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            destinationType: String(payout.destinationType || "").trim().toLowerCase() || null,
+            amountSats: String(payout.amountSats || "0"),
+            reason: message
+          },
+          "payoutExecution.auto_remit_failed"
+        );
         app.log.warn(
           {
             route: reason,
@@ -7582,8 +8024,7 @@ function isActiveLedgerParticipant(p: {
   acceptedAt?: Date | string | null;
   verifiedAt?: Date | string | null;
 }): boolean {
-  const status = normalizeInviteStatus(p?.invitation?.status);
-  return Boolean(p?.participantUserId && p?.verifiedAt && (status === "accepted" || p?.acceptedAt));
+  return isCommerceEligibleLockedParticipant(p);
 }
 
 function recipientDisplayForParticipant(p: { participantEmail?: string | null; participantUserId?: string | null }): string | undefined {
@@ -7720,6 +8161,27 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
+  appPublic.get("/public/users/:userId/payout-destination", async (req: any, reply: any) => {
+    const userId = asString((req.params as any)?.userId || "").trim();
+    if (!userId) return badRequest(reply, "userId is required");
+    const destination = await resolvePublicParticipantPayoutDestination(userId).catch(() => null);
+    if (!destination || !destination.destinationType || !destination.destinationValue) {
+      return reply.send({ ok: true, destination: null });
+    }
+    return reply.send({
+      ok: true,
+      destination: {
+        destinationType: destination.destinationType,
+        destinationValue: destination.destinationValue,
+        destinationSummary: destination.destinationSummary,
+        isVerified: destination.isVerified,
+        verifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
+        lastVerifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
+        verificationStatus: destination.verificationStatus,
+        verificationError: destination.verificationError
+      }
+    });
+  });
   // Buyer session + entitlement routes used by public buy pages.
   appPublic.post("/api/buyer/bootstrap", async (req: any, reply: any) => {
     const session = await getOrCreateBuyerSession(req, reply);
@@ -9461,6 +9923,295 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
   }
 });
 
+function extractInviteTokenFromUrl(raw: string | null | undefined): string | null {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  try {
+    const u = new URL(value);
+    const parts = u.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2 && (parts[0] === "invite" || parts[0] === "invites")) {
+      const token = String(parts[1] || "").trim();
+      return token || null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string): Promise<{
+  earnedSatsToDate: string;
+  settlementLineCount: number;
+  payoutRows: number;
+  payoutSummary: Record<string, number>;
+  payoutState: "none" | "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked" | "mixed";
+  destinationState: "unknown" | "resolved" | "unresolved";
+} | null> {
+  const origin = normalizeRemoteOrigin(remoteOrigin);
+  if (!origin || !token) return null;
+  if (!(await isOriginReachable(origin))) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}/accounting`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      8000
+    );
+    if (!res.ok) return null;
+    const payload: any = await res.json().catch(() => null);
+    if (!payload || payload.ok !== true) return null;
+    return {
+      earnedSatsToDate: String(payload?.totals?.earnedSats || "0"),
+      settlementLineCount: Number(payload?.totals?.settlementLineCount || 0),
+      payoutRows: Number(payload?.totals?.payoutRows || 0),
+      payoutSummary: (payload?.totals?.payoutSummary || {}) as Record<string, number>,
+      payoutState: (payload?.totals?.payoutState || "none") as any,
+      destinationState: (payload?.totals?.destinationState || "unknown") as any
+    };
+  } catch {
+    return null;
+  }
+}
+
+type ParticipationProjection = {
+  contentId: string;
+  contentTitle: string | null;
+  contentType: string | null;
+  contentStatus: string | null;
+  contentDeletedAt: string | null;
+  creatorUserId: string | null;
+  creatorDisplayName: string | null;
+  creatorEmail: string | null;
+  splitVersionId: string;
+  splitVersionNumber: number | null;
+  splitParticipantId: string;
+  participantRole: string | null;
+  participantBps: number | null;
+  participantPercent: number | null;
+  participantUserId: string | null;
+  participantEmail: string | null;
+  acceptedAt: string | null;
+  attributionUrl: string | null;
+  buyUrl: string | null;
+  derivativeContext: {
+    parentContentId: string | null;
+    parentSplitVersionId: string | null;
+    upstreamBps: number | null;
+  } | null;
+  payoutSummary: {
+    earnedSatsToDate: string;
+    settlementLineCount: number;
+  } | null;
+  highlightedOnProfile: boolean;
+};
+
+function listParticipationProfileHighlightRows(): ParticipationProfileHighlightRecord[] {
+  return readJsonArrayState<ParticipationProfileHighlightRecord>(PARTICIPATION_PROFILE_HIGHLIGHTS_FILE)
+    .filter((row) => row && row.userId && row.splitParticipantId);
+}
+
+function writeParticipationProfileHighlightRows(rows: ParticipationProfileHighlightRecord[]) {
+  writeJsonArrayState(PARTICIPATION_PROFILE_HIGHLIGHTS_FILE, rows);
+}
+
+function setParticipationProfileHighlight(input: {
+  userId: string;
+  splitParticipantId: string;
+  enabled: boolean;
+}): ParticipationProfileHighlightRecord {
+  const userId = asString(input.userId || "").trim();
+  const splitParticipantId = asString(input.splitParticipantId || "").trim();
+  const enabled = Boolean(input.enabled);
+  if (!userId || !splitParticipantId) {
+    throw new Error("INVALID_PARTICIPATION_HIGHLIGHT_INPUT");
+  }
+  const rows = listParticipationProfileHighlightRows();
+  const now = new Date().toISOString();
+  const idx = rows.findIndex((row) => row.userId === userId && row.splitParticipantId === splitParticipantId);
+  if (idx >= 0) {
+    rows[idx] = {
+      ...rows[idx],
+      enabled,
+      updatedAt: now
+    };
+    writeParticipationProfileHighlightRows(rows);
+    return rows[idx];
+  }
+  const created: ParticipationProfileHighlightRecord = {
+    id: `part_highlight_${crypto.randomUUID()}`,
+    userId,
+    splitParticipantId,
+    enabled,
+    createdAt: now,
+    updatedAt: now
+  };
+  rows.push(created);
+  writeParticipationProfileHighlightRows(rows);
+  return created;
+}
+
+function listProfileHighlightedParticipationsForUser(userId: string): ParticipationProfileHighlightRecord[] {
+  const normalizedUserId = asString(userId || "").trim();
+  return listParticipationProfileHighlightRows().filter((row) => row.userId === normalizedUserId && row.enabled);
+}
+
+function buildParticipationProjection(input: {
+  splitVersion: any;
+  splitParticipant: any;
+  content: any;
+  derivativeContext: {
+    parentContentId: string | null;
+    parentSplitVersionId: string | null;
+    upstreamBps: number | null;
+  } | null;
+  payoutSummary: {
+    earnedSatsToDate: string;
+    settlementLineCount: number;
+  } | null;
+  highlighted: boolean;
+}): ParticipationProjection {
+  const participantBps = toBps(input.splitParticipant);
+  const participantPercent =
+    typeof input.splitParticipant?.percent === "number"
+      ? Number(input.splitParticipant.percent)
+      : participantBps / 100;
+  return {
+    contentId: String(input.content?.id || ""),
+    contentTitle: input.content?.title || null,
+    contentType: input.content?.type || null,
+    contentStatus: input.content?.status || null,
+    contentDeletedAt: input.content?.deletedAt ? new Date(input.content.deletedAt).toISOString() : null,
+    creatorUserId: input.content?.ownerUserId || null,
+    creatorDisplayName: input.content?.owner?.displayName || null,
+    creatorEmail: input.content?.owner?.email || null,
+    splitVersionId: String(input.splitVersion?.id || ""),
+    splitVersionNumber: Number.isFinite(Number(input.splitVersion?.versionNumber))
+      ? Number(input.splitVersion.versionNumber)
+      : null,
+    splitParticipantId: String(input.splitParticipant?.id || ""),
+    participantRole: input.splitParticipant?.role || null,
+    participantBps: Number.isFinite(participantBps) ? participantBps : null,
+    participantPercent: Number.isFinite(participantPercent) ? participantPercent : null,
+    participantUserId: input.splitParticipant?.participantUserId || null,
+    participantEmail: input.splitParticipant?.participantEmail || null,
+    acceptedAt: input.splitParticipant?.acceptedAt ? new Date(input.splitParticipant.acceptedAt).toISOString() : null,
+    attributionUrl: input.content?.id ? `${APP_BASE_URL}/public/content/${encodeURIComponent(input.content.id)}/attribution` : null,
+    buyUrl: input.content?.id ? `${APP_BASE_URL}/buy/${encodeURIComponent(input.content.id)}` : null,
+    derivativeContext: input.derivativeContext,
+    payoutSummary: input.payoutSummary,
+    highlightedOnProfile: Boolean(input.highlighted)
+  };
+}
+
+async function listLockedParticipationsForUser(userId: string): Promise<ParticipationProjection[]> {
+  const normalizedUserId = asString(userId || "").trim();
+  if (!normalizedUserId) return [];
+
+  const rows = await prisma.splitParticipant.findMany({
+    where: {
+      participantUserId: normalizedUserId,
+      splitVersion: { status: "locked" }
+    },
+    include: {
+      splitVersion: {
+        include: {
+          content: {
+            include: { owner: true }
+          }
+        }
+      }
+    },
+    orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+  });
+
+  const highlights = new Set(
+    listProfileHighlightedParticipationsForUser(normalizedUserId).map((row) => row.splitParticipantId)
+  );
+
+  const participantIds = Array.from(new Set(rows.map((row) => row.id)));
+  const settlementLines = participantIds.length
+    ? await prisma.settlementLine.findMany({
+        where: { participantId: { in: participantIds } },
+        select: { participantId: true, amountSats: true }
+      })
+    : [];
+  const payoutByParticipant = new Map<string, { earnedSatsToDate: bigint; settlementLineCount: number }>();
+  for (const line of settlementLines) {
+    const key = String(line.participantId || "").trim();
+    if (!key) continue;
+    const prev = payoutByParticipant.get(key) || { earnedSatsToDate: 0n, settlementLineCount: 0 };
+    payoutByParticipant.set(key, {
+      earnedSatsToDate: prev.earnedSatsToDate + BigInt(line.amountSats || 0),
+      settlementLineCount: prev.settlementLineCount + 1
+    });
+  }
+
+  const contentIds = Array.from(new Set(rows.map((row) => row.splitVersion?.contentId).filter(Boolean) as string[]));
+  const links = contentIds.length
+    ? await prisma.contentLink.findMany({
+        where: { childContentId: { in: contentIds } },
+        select: { childContentId: true, parentContentId: true, parentSplitVersionId: true, upstreamBps: true }
+      })
+    : [];
+  const derivativeByContentId = new Map<string, { parentContentId: string | null; parentSplitVersionId: string | null; upstreamBps: number | null }>();
+  for (const link of links) {
+    const childContentId = String(link.childContentId || "").trim();
+    if (!childContentId || derivativeByContentId.has(childContentId)) continue;
+    derivativeByContentId.set(childContentId, {
+      parentContentId: link.parentContentId || null,
+      parentSplitVersionId: link.parentSplitVersionId || null,
+      upstreamBps: Number.isFinite(Number(link.upstreamBps)) ? Number(link.upstreamBps) : null
+    });
+  }
+
+  const projections: ParticipationProjection[] = [];
+  for (const row of rows) {
+    const splitVersion = row.splitVersion;
+    const content = splitVersion?.content;
+    if (!splitVersion || !content) continue;
+    const lockedSplit = await getLockedSplitVersionById(splitVersion.id);
+    if (!lockedSplit) continue;
+    const lockedParticipant = (lockedSplit.participants || []).find((participant: any) => participant.id === row.id);
+    if (!lockedParticipant) continue;
+    if (
+      !isLockedParticipationProjectionEligible({
+        splitStatus: lockedSplit.status,
+        participantUserId: lockedParticipant.participantUserId || null,
+        acceptedAt: lockedParticipant.acceptedAt || null,
+        verifiedAt: lockedParticipant.verifiedAt || null,
+        invitationStatus: lockedParticipant.invitation?.status || null
+      })
+    ) {
+      continue;
+    }
+    const payout = payoutByParticipant.get(row.id);
+    projections.push(
+      buildParticipationProjection({
+        splitVersion,
+        splitParticipant: lockedParticipant,
+        content,
+        derivativeContext: derivativeByContentId.get(content.id) || null,
+        payoutSummary: payout
+          ? {
+              earnedSatsToDate: payout.earnedSatsToDate.toString(),
+              settlementLineCount: payout.settlementLineCount
+            }
+          : null,
+        highlighted: highlights.has(row.id)
+      })
+    );
+  }
+
+  app.log.info(
+    {
+      userId: normalizedUserId,
+      participationCount: projections.length
+    },
+    "participationProjection.list"
+  );
+
+  return projections;
+}
+
 // Remote royalties summary (for invited remote splits)
 app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
@@ -9468,8 +10219,30 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
     where: { userId },
     orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
   });
-  return reply.send(
-    list.map((inv) => ({
+  const rows = await Promise.all(
+    list.map(async (inv) => {
+      const inviteToken = extractInviteTokenFromUrl(inv.inviteUrl || null);
+      const inviteStatus = normalizeRemoteInviteStatusForList(inv as any);
+      const accounting =
+        inviteToken && inviteStatus === "accepted"
+          ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken)
+          : null;
+      app.log.info(
+        {
+          userId,
+          inviteId: inv.id,
+          remoteOrigin: inv.remoteOrigin,
+          contentId: inv.contentId || null,
+          inviteStatus,
+          inviteTokenPresent: Boolean(inviteToken),
+          accountingVisible: Boolean(accounting),
+          earnedSatsToDate: accounting?.earnedSatsToDate || "0",
+          payoutRows: accounting?.payoutRows || 0,
+          payoutState: accounting?.payoutState || "none"
+        },
+        "splitAccounting.ledger_visibility"
+      );
+      return {
       id: inv.id,
       remoteOrigin: inv.remoteOrigin,
       inviteUrl: inv.inviteUrl || null,
@@ -9484,9 +10257,53 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       remoteUserId: inv.remoteUserId || null,
       remoteNodeUrl: inv.remoteNodeUrl || null,
       remoteVerified: Boolean(inv.remoteVerified),
+      earnedSatsToDate: accounting?.earnedSatsToDate || "0",
+      settlementLineCount: accounting?.settlementLineCount || 0,
+      payoutRows: accounting?.payoutRows || 0,
+      payoutSummary: accounting?.payoutSummary || {},
+      payoutState: accounting?.payoutState || "none",
+      destinationState: accounting?.destinationState || "unknown",
       createdAt: inv.createdAt.toISOString()
-    }))
+      };
+    })
   );
+  return reply.send(rows);
+});
+
+app.get("/my/participations", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const items = await listLockedParticipationsForUser(userId);
+  return reply.send({ items });
+});
+
+app.patch("/my/participations/:splitParticipantId/highlight", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const splitParticipantId = asString((req.params as any)?.splitParticipantId || "").trim();
+  if (!splitParticipantId) return badRequest(reply, "splitParticipantId required");
+  const raw = (req.body ?? {}) as { enabled?: unknown };
+  if (typeof raw.enabled !== "boolean") return badRequest(reply, "enabled must be boolean");
+
+  const participations = await listLockedParticipationsForUser(userId);
+  const mine = participations.find((row) => row.splitParticipantId === splitParticipantId);
+  if (!mine) return notFound(reply, "Participation not found");
+  if (!canHighlightParticipation({ requesterUserId: userId, participantUserId: mine.participantUserId })) {
+    return reply.code(403).send({ error: "Not allowed to highlight this participation." });
+  }
+
+  const updated = setParticipationProfileHighlight({
+    userId,
+    splitParticipantId,
+    enabled: raw.enabled
+  });
+  app.log.info(
+    {
+      userId,
+      splitParticipantId,
+      enabled: Boolean(updated.enabled)
+    },
+    "participationProjection.highlight_set"
+  );
+  return reply.send({ ok: true, splitParticipantId, highlightedOnProfile: Boolean(updated.enabled) });
 });
 
 // Ingest a remote invite acceptance into local storage (for payments & visibility)
@@ -9603,55 +10420,25 @@ app.post("/invites/ingest", { preHandler: requireAuth }, async (req: any, reply:
 // List accepted split participations for the authenticated user
 app.get("/my/split-participations", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  const email = (me?.email || "").toLowerCase();
-
-  const parts = await prisma.splitParticipant.findMany({
-    where: {
-      AND: [
-        {
-          OR: [
-            { participantUserId: userId },
-            email ? { participantEmail: emailEquals(email) } : undefined
-          ].filter(Boolean) as any
-        },
-        {
-          OR: [
-            { acceptedAt: { not: null } },
-            { invitations: { some: { acceptedAt: { not: null } } } },
-            { splitVersion: { content: { ownerUserId: userId } } }
-          ]
-        }
-      ]
-    },
-    include: {
-      splitVersion: { include: { content: { include: { owner: true } } } }
-    },
-    orderBy: { acceptedAt: "desc" }
-  });
-
-  if (process.env.NODE_ENV !== "production") {
-    app.log.info({ userId, email, count: parts.length }, "split-participations");
-  }
-
+  const rows = await listLockedParticipationsForUser(userId);
   return reply.send(
-    parts.map((p) => ({
-      splitParticipantId: p.id,
-      role: p.role,
-      percent: percentToPrimitive(p.percent ?? null),
-      bps: p.bps ?? null,
-      acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null,
-      createdAt: p.createdAt.toISOString(),
-      splitVersionId: p.splitVersionId,
-      splitVersionNumber: p.splitVersion?.versionNumber ?? null,
-      splitStatus: p.splitVersion?.status ?? null,
-      contentId: p.splitVersion?.contentId ?? null,
-      contentTitle: p.splitVersion?.content?.title ?? null,
-      contentType: p.splitVersion?.content?.type ?? null,
-      contentStatus: p.splitVersion?.content?.status ?? null,
-      ownerUserId: p.splitVersion?.content?.ownerUserId ?? null,
-      ownerDisplayName: p.splitVersion?.content?.owner?.displayName ?? null,
-      ownerEmail: p.splitVersion?.content?.owner?.email ?? null
+    rows.map((row) => ({
+      splitParticipantId: row.splitParticipantId,
+      role: row.participantRole,
+      percent: row.participantPercent,
+      bps: row.participantBps,
+      acceptedAt: row.acceptedAt,
+      splitVersionId: row.splitVersionId,
+      splitVersionNumber: row.splitVersionNumber,
+      splitStatus: "locked",
+      contentId: row.contentId,
+      contentTitle: row.contentTitle,
+      contentType: row.contentType,
+      contentStatus: row.contentStatus,
+      ownerUserId: row.creatorUserId,
+      ownerDisplayName: row.creatorDisplayName,
+      ownerEmail: row.creatorEmail,
+      highlightedOnProfile: row.highlightedOnProfile
     }))
   );
 });
@@ -11223,6 +12010,43 @@ app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: a
   }
 });
 
+app.get("/api/remote/invites/:token/accounting", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
+  const token = asString((req.params as any).token);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!origin) return badRequest(reply, "invalid origin");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote invite host unreachable", origin });
+  }
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}/accounting`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      8000
+    );
+    const text = await res.text();
+    let payload: any = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    if (!res.ok) {
+      return reply.code(res.status).send(payload || { error: text || `HTTP_${res.status}` });
+    }
+    return reply.send(payload || { ok: false, error: "Invalid remote accounting response" });
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote invite accounting fetch failed", details: String(e?.message || e) });
+  }
+});
+
 // Proxy remote invite accept to avoid browser CORS (auth required)
 app.get("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.code(405).send({
@@ -11709,6 +12533,22 @@ app.get("/api/participant/payout-destinations", { preHandler: requireAuth }, asy
   }
 });
 
+app.get("/my/payout-destinations", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  try {
+    const rows = await prisma.participantPayoutDestination.findMany({
+      where: { userId },
+      orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }]
+    });
+    return reply.send({ items: rows });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.send({ items: [] });
+    }
+    throw err;
+  }
+});
+
 app.post("/api/participant/payout-destinations", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const body = (req.body ?? {}) as {
@@ -11755,6 +12595,63 @@ app.post("/api/participant/payout-destinations", { preHandler: requireAuth }, as
   }
 });
 
+app.put("/my/payout-destinations/lightning", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const body = (req.body ?? {}) as {
+    destinationValue?: string;
+    isPrimary?: boolean;
+    isActive?: boolean;
+  };
+  const destinationType: ParticipantDestinationType = "lightning_address";
+  const destinationValue = normalizeParticipantDestinationValue(destinationType, body.destinationValue || "");
+  if (!destinationValue) return badRequest(reply, "destinationValue required");
+  if (!isValidLightningAddress(destinationValue)) return badRequest(reply, "lightning address is invalid");
+
+  try {
+    const existing = await prisma.participantPayoutDestination.findFirst({
+      where: { userId, destinationType, destinationValue },
+      orderBy: [{ updatedAt: "desc" }]
+    });
+    const destination = existing
+      ? await prisma.participantPayoutDestination.update({
+          where: { id: existing.id },
+          data: {
+            isActive: body.isActive === undefined ? true : Boolean(body.isActive),
+            destinationSummary: summarizeParticipantDestination(destinationType, destinationValue),
+            verificationStatus: existing.isVerified ? existing.verificationStatus : "pending",
+            verificationError: existing.isVerified ? existing.verificationError : null
+          }
+        })
+      : await prisma.participantPayoutDestination.create({
+          data: {
+            userId,
+            destinationType,
+            destinationValue,
+            destinationSummary: summarizeParticipantDestination(destinationType, destinationValue),
+            isPrimary: false,
+            isActive: body.isActive === undefined ? true : Boolean(body.isActive),
+            isVerified: false,
+            verifiedAt: null,
+            lastCheckedAt: null,
+            verificationMethod: null,
+            verificationStatus: "pending",
+            verificationError: null
+          }
+        });
+
+    if (body.isPrimary === undefined || Boolean(body.isPrimary)) {
+      await setPrimaryParticipantDestinationForUser(userId, destination.id);
+    }
+    const updated = await prisma.participantPayoutDestination.findUnique({ where: { id: destination.id } });
+    return reply.send({ ok: true, destination: updated });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
 app.post("/api/participant/payout-destinations/:id/primary", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const id = String((req.params as any)?.id || "").trim();
@@ -11773,7 +12670,81 @@ app.post("/api/participant/payout-destinations/:id/primary", { preHandler: requi
   }
 });
 
+app.post("/my/payout-destinations/:id/primary", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id required");
+  try {
+    const row = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    if (!row || row.userId !== userId) return notFound(reply, "Destination not found");
+    await setPrimaryParticipantDestinationForUser(userId, id);
+    const updated = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    return reply.send({ ok: true, destination: updated });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
 app.post("/api/participant/payout-destinations/:id/verify", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id required");
+  try {
+    const row = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    if (!row || row.userId !== userId) return notFound(reply, "Destination not found");
+    const type = parseParticipantDestinationType(row.destinationType);
+    if (!type) {
+      const checkedAt = new Date();
+      await prisma.participantPayoutDestination.update({
+        where: { id: row.id },
+        data: {
+          isVerified: false,
+          verifiedAt: null,
+          verificationStatus: "failed",
+          verificationError: "DESTINATION_TYPE_UNSUPPORTED",
+          verificationMethod: null,
+          lastVerifiedAt: checkedAt,
+          lastCheckedAt: checkedAt
+        }
+      });
+      return reply.code(400).send({
+        ok: false,
+        verificationStatus: "failed",
+        verificationError: "DESTINATION_TYPE_UNSUPPORTED"
+      });
+    }
+    const verification = await verifyParticipantDestination(type, row.destinationValue);
+    const checkedAt = verification.checkedAt;
+    const updated = await prisma.participantPayoutDestination.update({
+      where: { id: row.id },
+      data: {
+        isVerified: verification.isVerified,
+        verifiedAt: verification.isVerified ? checkedAt : null,
+        verificationStatus: verification.verificationStatus,
+        verificationError: verification.verificationError,
+        verificationMethod: verification.verificationMethod,
+        lastVerifiedAt: checkedAt,
+        lastCheckedAt: checkedAt
+      }
+    });
+    return reply.send({
+      ok: verification.isVerified,
+      verificationStatus: verification.verificationStatus,
+      verificationError: verification.verificationError,
+      destination: updated
+    });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
+app.post("/my/payout-destinations/:id/verify", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const id = String((req.params as any)?.id || "").trim();
   if (!id) return badRequest(reply, "id required");
@@ -11852,6 +12823,33 @@ app.post("/api/participant/payout-destinations/:id/deactivate", { preHandler: re
       }
     }
 
+    return reply.send({ ok: true });
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) {
+      return reply.code(409).send({ error: "PAYOUT_DESTINATION_REGISTRY_UNAVAILABLE" });
+    }
+    throw err;
+  }
+});
+
+app.post("/my/payout-destinations/:id/deactivate", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const id = String((req.params as any)?.id || "").trim();
+  if (!id) return badRequest(reply, "id required");
+  try {
+    const row = await prisma.participantPayoutDestination.findUnique({ where: { id } });
+    if (!row || row.userId !== userId) return notFound(reply, "Destination not found");
+    await prisma.participantPayoutDestination.update({
+      where: { id: row.id },
+      data: { isActive: false, isPrimary: false }
+    });
+    if (row.isPrimary) {
+      const fallback = await prisma.participantPayoutDestination.findFirst({
+        where: { userId, isActive: true },
+        orderBy: [{ updatedAt: "desc" }]
+      });
+      if (fallback) await setPrimaryParticipantDestinationForUser(userId, fallback.id);
+    }
     return reply.send({ ok: true });
   } catch (err: any) {
     if (isMissingParticipantPayoutTableError(err)) {
@@ -17590,36 +18588,35 @@ async function handlePublicAttribution(req: any, reply: any) {
         ? "active"
         : "none";
 
-  let contributors: Array<{ displayName: string; handle: string | null; bps: number; verification: { badge: string | null } }> = [];
+  let contributors: Array<{
+    displayName: string;
+    handle: string | null;
+    profilePath: string | null;
+    role: string | null;
+    bps: number;
+    verification: { badge: string | null };
+  }> = [];
   if (splitState === "active" && lockedSplit?.participants?.length) {
-    const byUserId = new Map<string, { displayName?: string | null }>();
-    const ids = Array.from(new Set(lockedSplit.participants.map((p: any) => asString(p.participantUserId || "").trim()).filter(Boolean)));
-    if (ids.length) {
-      const users = await prisma.user.findMany({
-        where: { id: { in: ids } },
-        select: { id: true, displayName: true }
-      });
-      for (const u of users) byUserId.set(u.id, u);
-    }
-
-    contributors = lockedSplit.participants
-      .map((p: any) => {
-        const u = p.participantUserId ? byUserId.get(String(p.participantUserId)) : null;
-        const displayName =
-          asString(u?.displayName || "").trim() ||
-          asString((p as any)?.participantDisplayName || "").trim() ||
-          "Contributor";
-        const bps = Number.isFinite(Number((p as any)?.bps))
-          ? Math.max(0, Math.round(Number((p as any).bps)))
-          : Math.max(0, Math.round(num((p as any)?.percent) * 100));
-        return {
-          displayName,
-          handle: null,
-          bps,
-          verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
-        };
-      })
+    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(lockedSplit.id);
+    contributors = snapshots
+      .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
+      .map((snapshot) => ({
+        displayName: resolveLockedSnapshotAttributionLabel(snapshot),
+        handle: snapshot.handleSnapshot || null,
+        profilePath: snapshot.profilePathSnapshot || null,
+        role: snapshot.role || null,
+        bps: Math.max(0, Math.round(Number(snapshot.bps || 0))),
+        verification: { badge: null as string | null, tier: null as ("grey" | "gold" | null) }
+      }))
       .filter((c) => c.bps > 0);
+    app.log.info(
+      {
+        contentId,
+        splitVersionId: lockedSplit.id,
+        participantCount: contributors.length
+      },
+      "attribution.participant_resolution"
+    );
   }
 
   let upstream: {
@@ -18308,6 +19305,49 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
           .join("")
       : "";
+  const highlightedParticipations = (await listLockedParticipationsForUser(user.id))
+    .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
+    .slice(0, 12);
+  app.log.info(
+    {
+      userId: user.id,
+      highlightedCount: highlightedParticipations.length
+    },
+    "participationProjection.profile_list"
+  );
+  const highlightedParticipationsHtml =
+    highlightedParticipations.length > 0
+      ? highlightedParticipations
+          .map((item) => {
+            const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
+            const safeRole = escHtml(asString(item.participantRole || "participant"));
+            const shareLabel =
+              Number.isFinite(Number(item.participantBps)) && Number(item.participantBps) > 0
+                ? `${(Number(item.participantBps) / 100).toFixed(2)}%`
+                : "—";
+            const safeShare = escHtml(shareLabel);
+            const buyUrl = asString(item.buyUrl || "").trim();
+            const attributionUrl = asString(item.attributionUrl || "").trim();
+            const linkHref = buyUrl || attributionUrl;
+            const cta = buyUrl ? "Open buy page" : attributionUrl ? "Open attribution" : null;
+            return `<article class="featured-item">
+              <div class="featured-meta" style="min-width:0;">
+                <div class="featured-topline">
+                  <span class="featured-type-badge">Participation</span>
+                  <span class="featured-verified">Certifyd</span>
+                </div>
+                <div class="featured-title">${safeTitle}</div>
+                <div class="line muted">Role: ${safeRole} • Share: ${safeShare}</div>
+                ${
+                  linkHref && cta
+                    ? `<div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
+                    : ""
+                }
+              </div>
+            </article>`;
+          })
+          .join("")
+      : "";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -18464,6 +19504,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     <h3>Certifyd Works</h3>
     <div class="line muted">Verified works published or claimed by this creator.</div>
     <div class="line featured-grid">${featuredContentHtml}</div>
+  </section>`
+        : ""
+    }
+    ${
+      highlightedParticipationsHtml
+        ? `<section class="section">
+    <h3>Collaborations</h3>
+    <div class="line muted">Profile-highlighted participation credits from locked split snapshots.</div>
+    <div class="line featured-grid">${highlightedParticipationsHtml}</div>
   </section>`
         : ""
     }
@@ -19028,9 +20077,15 @@ async function handleBuyPage(req: any, reply: any) {
           const cn = esc(c?.displayName || c?.name || c?.handle || "Contributor");
           const chRaw = String(c?.handle || "").trim();
           const ch = chRaw ? (" @" + esc(chRaw.replace(/^@/, ""))) : "";
+          const roleRaw = String(c?.role || "").trim();
+          const role = roleRaw ? (" • " + esc(roleRaw)) : "";
+          const profilePathRaw = String(c?.profilePath || "").trim();
+          const profileLink = profilePathRaw
+            ? (" <a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;\\">profile</a>")
+            : "";
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
-          return "<li>" + cn + ch + (pct ? (" — " + pct) : "") + "</li>";
+          return "<li>" + cn + ch + role + (pct ? (" — " + pct) : "") + profileLink + "</li>";
         }).join("") +
       "</ul>";
     } else if (split?.state === "draft") {
@@ -22800,9 +23855,8 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
   const validated = validateAndNormalizeParticipants(req.body);
   if (!validated.ok) return badRequest(reply, validated.error);
 
-  const latest = await prisma.splitVersion.findFirst({ where: { contentId }, orderBy: { versionNumber: "desc" } });
+  const latest = await getLatestDraftSplitVersion(contentId);
   if (!latest) return notFound(reply, "No split version found");
-  if (latest.status !== "draft") return reply.code(409).send({ error: "Latest split is not editable" });
   const intendedTotal = round3(validated.participants.reduce((sum, p) => sum + num(p.percent), 0));
   if (intendedTotal !== 100) {
     return badRequest(reply, `Intended participant total must be 100. Current total=${intendedTotal}`);
@@ -22993,7 +24047,11 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
 
-  const latest = await prisma.splitVersion.findFirst({ where: { contentId }, orderBy: { versionNumber: "desc" }, include: { participants: true } });
+  const latest = await prisma.splitVersion.findFirst({
+    where: { contentId },
+    orderBy: { versionNumber: "desc" },
+    include: { participants: true }
+  });
 
   const nextVersionNumber = latest ? latest.versionNumber + 1 : 1;
 
@@ -23231,45 +24289,231 @@ async function issueReceiptIfNeeded(purchase: any, proof: any, repoPath: string,
   }
 }
 
-async function getLockedSplitForContent(contentId: string) {
-  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
-  if (!content) return null;
+/**
+ * Commerce split authority boundary:
+ * - Draft split versions are editable proposals only.
+ * - Invitation acceptance only binds eligibility for future locks.
+ * - Locked split snapshots are the only authority for commerce math.
+ */
+async function getLatestDraftSplitVersion(contentId: string) {
+  const drafts = await prisma.splitVersion.findMany({
+    where: { contentId, status: "draft" as any },
+    orderBy: { versionNumber: "desc" }
+  });
+  return pickLatestDraftSplitVersion(drafts as Array<{ id: string; versionNumber: number; status: string }>);
+}
 
-  if (content.currentSplitId) {
-    const sv = await prisma.splitVersion.findUnique({
-      where: { id: content.currentSplitId },
+async function getLockedSplitVersion(input: { contentId?: string | null; splitVersionId?: string | null }) {
+  const splitVersionId = asString(input.splitVersionId || "").trim();
+  if (splitVersionId) {
+    const byId = await prisma.splitVersion.findUnique({
+      where: { id: splitVersionId },
       include: { participants: true }
     });
-    if (sv && sv.status === "locked") {
-      return {
-        ...sv,
-        participants: (sv.participants || []).filter((p: any) => isActiveLedgerParticipant(p))
-      };
-    }
+    if (!byId || byId.status !== "locked") return null;
+    return {
+      ...byId,
+      participants: filterCommerceEligibleParticipants(byId.participants || [])
+    };
   }
 
-  const sv = await prisma.splitVersion.findFirst({
-    where: { contentId, status: "locked" },
+  const contentId = asString(input.contentId || "").trim();
+  if (!contentId) return null;
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  if (!content) return null;
+  const versions = await prisma.splitVersion.findMany({
+    where: { contentId },
     orderBy: { versionNumber: "desc" },
     include: { participants: true }
   });
+  const selected = pickLockedSplitVersionForCommerce(
+    versions as Array<{ id: string; versionNumber: number; status: string; participants: any[] }>,
+    content.currentSplitId || null
+  );
+  if (!selected) return null;
+  const sv = versions.find((row) => row.id === selected.id) || null;
   if (!sv) return null;
   return {
     ...sv,
-    participants: (sv.participants || []).filter((p: any) => isActiveLedgerParticipant(p))
+    participants: filterCommerceEligibleParticipants(sv.participants || [])
   };
 }
 
+async function getLockedSplitForContent(contentId: string) {
+  return getLockedSplitVersion({ contentId });
+}
+
 async function getLockedSplitVersionById(splitVersionId: string) {
-  const sv = await prisma.splitVersion.findUnique({
-    where: { id: splitVersionId },
-    include: { participants: true }
+  return getLockedSplitVersion({ splitVersionId });
+}
+
+async function getLockedSplitParticipants(splitVersionId: string) {
+  const split = await getLockedSplitVersionById(splitVersionId);
+  return split?.participants || [];
+}
+
+async function getCommerceEligibleParticipantsFromLockedSplit(splitVersionId: string) {
+  return getLockedSplitParticipants(splitVersionId);
+}
+
+async function getParentLockedSplitSnapshotForDerivative(link: {
+  id?: string | null;
+  parentContentId: string;
+  parentSplitVersionId?: string | null;
+}) {
+  const parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  const parentSplit = await getLockedSplitVersionById(parentSplitVersionId);
+  if (!parentSplit) {
+    const err: any = new Error("PARENT_SPLIT_NOT_LOCKED");
+    err.code = "PARENT_SPLIT_NOT_LOCKED";
+    err.statusCode = 409;
+    throw err;
+  }
+  return parentSplit;
+}
+
+function inferLockedParticipantIdentityRef(participant: any): string | null {
+  const participantUserId = asString(participant?.participantUserId || "").trim();
+  if (participantUserId) return `user:${participantUserId}`;
+  const acceptedIdentityRef = asString(participant?.invitation?.acceptedIdentityRef || "").trim();
+  if (acceptedIdentityRef) return acceptedIdentityRef;
+  const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
+  const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
+  if (targetType && targetValue) return `${targetType}:${targetValue}`;
+  const participantEmail = normalizeEmail(participant?.participantEmail || "");
+  if (participantEmail) return `email:${participantEmail}`;
+  return null;
+}
+
+function inferLockedParticipantTopologyMode(participant: any, localUserExists: boolean): LockedParticipantSnapshotRecord["participantTopologyMode"] {
+  const participantUserId = asString(participant?.participantUserId || "").trim();
+  const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
+  if (targetType === "identity_ref") return "identity_ref";
+  if (targetType === "email") return "email_claim";
+  if (participantUserId) return localUserExists ? "local_user" : "remote_identity";
+  if (targetType === "local_user") return "remote_identity";
+  return "unknown";
+}
+
+async function buildLockedParticipantSnapshotsForSplitVersion(input: {
+  splitVersion: any;
+  lockTime: Date | null;
+  persist: boolean;
+}): Promise<LockedParticipantSnapshotRecord[]> {
+  const splitVersionId = String(input.splitVersion?.id || "").trim();
+  const contentId = String(input.splitVersion?.contentId || "").trim();
+  if (!splitVersionId || !contentId) return [];
+  const participants = Array.isArray(input.splitVersion?.participants) ? input.splitVersion.participants : [];
+  if (!participants.length) return [];
+
+  const participantUserIds = Array.from(
+    new Set(
+      participants
+        .map((participant: any) => asString(participant?.participantUserId || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const users = participantUserIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: participantUserIds } },
+        select: { id: true, displayName: true }
+      })
+    : [];
+  const userById = new Map(users.map((user) => [user.id, user]));
+  const nowIso = new Date().toISOString();
+  const lockedAtIso = input.lockTime ? input.lockTime.toISOString() : null;
+
+  const snapshots: LockedParticipantSnapshotRecord[] = participants.map((participant: any) => {
+    const participantUserId = asString(participant?.participantUserId || "").trim() || null;
+    const participantEmail = normalizeEmail(participant?.participantEmail || "") || null;
+    const acceptedAt = participant?.acceptedAt ? new Date(participant.acceptedAt).toISOString() : null;
+    const verifiedAt = participant?.verifiedAt ? new Date(participant.verifiedAt).toISOString() : null;
+    const user = participantUserId ? userById.get(participantUserId) || null : null;
+    const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
+    const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
+    const displayNameSnapshot =
+      asString(user?.displayName || "").trim() ||
+      (targetType !== "email" ? targetValue : "") ||
+      participantEmail ||
+      null;
+    const normalizedHandle = normalizePublicProfileHandle(displayNameSnapshot || "");
+    const handleSnapshot = normalizedHandle ? `@${normalizedHandle}` : null;
+    const profilePathSnapshot = normalizedHandle ? `/u/${encodeURIComponent(normalizedHandle)}` : null;
+    const identityRef = inferLockedParticipantIdentityRef(participant);
+    const localUserExists = Boolean(user);
+    return {
+      id: `locked_participant_snapshot:${splitVersionId}:${participant.id}`,
+      contentId,
+      splitVersionId,
+      splitParticipantId: String(participant.id),
+      participantUserId,
+      participantEmail,
+      identityRef,
+      role: asString(participant?.role || "").trim() || null,
+      bps: Math.max(0, toBps(participant || { percent: 0 })),
+      percent: Number.isFinite(Number(percentToPrimitive(participant?.percent ?? null)))
+        ? Number(percentToPrimitive(participant.percent))
+        : Math.max(0, toBps(participant || { percent: 0 })) / 100,
+      acceptedAt,
+      verifiedAt,
+      displayNameSnapshot,
+      handleSnapshot,
+      profilePathSnapshot,
+      participantOrigin: null,
+      participantTopologyMode: inferLockedParticipantTopologyMode(participant, localUserExists),
+      payoutAuthorityRef: asString(participant?.payoutIdentityId || "").trim() || null,
+      lockedAt: lockedAtIso,
+      createdAt: nowIso,
+      updatedAt: nowIso
+    };
   });
-  if (!sv || sv.status !== "locked") return null;
-  return {
-    ...sv,
-    participants: (sv.participants || []).filter((p: any) => isActiveLedgerParticipant(p))
-  };
+
+  if (input.persist) {
+    const existing = listLockedParticipantSnapshotRows();
+    const keep = existing.filter((row) => row.splitVersionId !== splitVersionId);
+    writeLockedParticipantSnapshotRows([...keep, ...snapshots]);
+    app.log.info(
+      {
+        contentId,
+        splitVersionId,
+        participantCount: snapshots.length
+      },
+      "lockedParticipantSnapshot.created"
+    );
+  }
+
+  return snapshots;
+}
+
+async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: string): Promise<LockedParticipantSnapshotRecord[]> {
+  const normalized = asString(splitVersionId || "").trim();
+  if (!normalized) return [];
+  const existing = listLockedParticipantSnapshotRows().filter((row) => row.splitVersionId === normalized);
+  if (existing.length) return existing;
+
+  const split = await prisma.splitVersion.findUnique({
+    where: { id: normalized },
+    include: {
+      participants: {
+        include: {
+          invitation: {
+            select: {
+              status: true,
+              targetType: true,
+              targetValue: true,
+              acceptedIdentityRef: true
+            }
+          }
+        }
+      }
+    }
+  });
+  if (!split || split.status !== "locked") return [];
+  return buildLockedParticipantSnapshotsForSplitVersion({
+    splitVersion: split,
+    lockTime: split.lockedAt || null,
+    persist: true
+  });
 }
 
 function toBps(p: any): number {
@@ -23447,6 +24691,9 @@ async function computeContentParticipantAllocations(input: {
 
   const childSplit = await getLockedSplitForContent(content.id);
   if (!childSplit) throw new Error("Locked child split not found");
+  const childSnapshots = (await getLockedParticipantSnapshotsForSplitVersion(childSplit.id)).filter((snapshot) =>
+    isTopologyNeutralLockedSnapshotEligible(snapshot)
+  );
 
   const parents = await prisma.contentLink.findMany({
     where: { childContentId: content.id },
@@ -23462,14 +24709,22 @@ async function computeContentParticipantAllocations(input: {
     primaryParent && primaryParent.upstreamBps > 0
       ? [
           {
+            id: primaryParent.id,
             parentContentId: primaryParent.parentContentId,
             parentSplitVersionId: primaryParent.parentSplitVersionId || null,
             upstreamBps: Math.max(0, primaryParent.upstreamBps)
           }
         ]
       : [];
-  const upstreamAlloc: Array<{ parentContentId: string; parentSplitVersionId: string | null; amountSats: bigint; upstreamBps: number }> =
+  const upstreamAlloc: Array<{
+    id?: string;
+    parentContentId: string;
+    parentSplitVersionId: string | null;
+    amountSats: bigint;
+    upstreamBps: number;
+  }> =
     upstreamRaw.map((p) => ({
+      id: p.id,
       parentContentId: p.parentContentId,
       parentSplitVersionId: p.parentSplitVersionId,
       amountSats: (net * BigInt(p.upstreamBps)) / 10000n,
@@ -23479,70 +24734,132 @@ async function computeContentParticipantAllocations(input: {
 
   const allocations: ContentParticipantAllocation[] = [];
 
-  const childItems = childSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+  const childItems = childSnapshots.map((snapshot) => ({
+    id: snapshot.splitParticipantId,
+    bps: Math.max(0, Math.round(Number(snapshot.bps || 0))),
+    snapshot
+  }));
   if (!childItems.length) {
     throw new Error("LOCKED_SPLIT_HAS_NO_ACTIVE_PARTICIPANTS");
   }
   const childAlloc = allocateByBps(childRemainder, childItems.map((i) => ({ id: i.id, bps: i.bps })));
   for (const a of childAlloc) {
-    const participant = childItems.find((i) => i.id === a.id)?.p;
-    const role = upstreamAlloc.length > 0 ? (participant?.role ? `derivative:${participant.role}` : "derivative") : (participant?.role || null);
+    const snapshot = childItems.find((i) => i.id === a.id)?.snapshot;
+    const role = upstreamAlloc.length > 0 ? (snapshot?.role ? `derivative:${snapshot.role}` : "derivative") : (snapshot?.role || null);
     allocations.push({
       participantRef: payoutParticipantRefForAllocation({
-        participantUserId: participant?.participantUserId || null,
-        splitParticipantId: participant?.id || null,
+        participantUserId: snapshot?.participantUserId || null,
+        splitParticipantId: snapshot?.splitParticipantId || null,
         id: a.id
       }),
-      participantId: participant?.id || null,
-      splitParticipantId: participant?.id || null,
-      participantUserId: participant?.participantUserId || null,
-      participantEmail: participant?.participantEmail || null,
+      participantId: snapshot?.splitParticipantId || null,
+      splitParticipantId: snapshot?.splitParticipantId || null,
+      participantUserId: snapshot?.participantUserId || null,
+      participantEmail: snapshot?.participantEmail || null,
       role,
       roleKey: role || "",
-      bps: Math.max(0, toBps(participant || { percent: 0 })),
+      bps: Math.max(0, Math.round(Number(snapshot?.bps || 0))),
       amountSats: a.amountSats,
       allocationSource: "split_locked",
       allocationVersion: 1
     });
+    const accountingState = resolveLockedSnapshotAccountingState(snapshot || {});
+    app.log.info(
+      {
+        contentId: content.id,
+        splitVersionId: childSplit.id,
+        splitParticipantId: snapshot?.splitParticipantId || null,
+        participantUserId: snapshot?.participantUserId || null,
+        participantEmail: snapshot?.participantEmail || null,
+        participantTopologyMode: snapshot?.participantTopologyMode || null,
+        amountSats: a.amountSats.toString(),
+        accountingState: accountingState.state,
+        blockedReason: accountingState.blockedReason
+      },
+      accountingState.state === "ready"
+        ? "settlement.participant_accounting_created"
+        : "settlement.participant_accounting_blocked"
+    );
   }
 
   for (const up of upstreamAlloc) {
-    const parentSplit = up.parentSplitVersionId
-      ? await getLockedSplitVersionById(up.parentSplitVersionId)
-      : await getLockedSplitForContent(up.parentContentId);
-    if (!parentSplit || parentSplit.status !== "locked") {
-      const err: any = new Error("Parent split not locked");
-      err.statusCode = 409;
-      err.code = "PARENT_SPLIT_NOT_LOCKED";
-      throw err;
-    }
-    const parentItems = parentSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
+    const parentSplit = await getParentLockedSplitSnapshotForDerivative({
+      id: up.id || null,
+      parentContentId: up.parentContentId,
+      parentSplitVersionId: up.parentSplitVersionId
+    });
+    const parentSnapshots = (await getLockedParticipantSnapshotsForSplitVersion(parentSplit.id)).filter((snapshot) =>
+      isTopologyNeutralLockedSnapshotEligible(snapshot)
+    );
+    const parentItems = parentSnapshots.map((snapshot) => ({
+      id: snapshot.splitParticipantId,
+      bps: Math.max(0, Math.round(Number(snapshot.bps || 0))),
+      snapshot
+    }));
     if (!parentItems.length) {
       throw new Error("PARENT_LOCKED_SPLIT_HAS_NO_ACTIVE_PARTICIPANTS");
     }
     const parentAlloc = allocateByBps(up.amountSats, parentItems.map((i) => ({ id: i.id, bps: i.bps })));
     for (const a of parentAlloc) {
-      const participant = parentItems.find((i) => i.id === a.id)?.p;
+      const snapshot = parentItems.find((i) => i.id === a.id)?.snapshot;
       const role = "upstream";
       allocations.push({
         participantRef: payoutParticipantRefForAllocation({
-          participantUserId: participant?.participantUserId || null,
-          splitParticipantId: participant?.id || null,
+          participantUserId: snapshot?.participantUserId || null,
+          splitParticipantId: snapshot?.splitParticipantId || null,
           id: a.id
         }),
-        participantId: participant?.id || null,
-        splitParticipantId: participant?.id || null,
-        participantUserId: participant?.participantUserId || null,
-        participantEmail: participant?.participantEmail || null,
+        participantId: snapshot?.splitParticipantId || null,
+        splitParticipantId: snapshot?.splitParticipantId || null,
+        participantUserId: snapshot?.participantUserId || null,
+        participantEmail: snapshot?.participantEmail || null,
         role,
         roleKey: role,
-        bps: Math.max(0, toBps(participant || { percent: 0 })),
+        bps: Math.max(0, Math.round(Number(snapshot?.bps || 0))),
         amountSats: a.amountSats,
         allocationSource: "split_locked",
         allocationVersion: 1
       });
+      const accountingState = resolveLockedSnapshotAccountingState(snapshot || {});
+      app.log.info(
+        {
+          contentId: content.id,
+          splitVersionId: parentSplit.id,
+          splitParticipantId: snapshot?.splitParticipantId || null,
+          participantUserId: snapshot?.participantUserId || null,
+          participantEmail: snapshot?.participantEmail || null,
+          participantTopologyMode: snapshot?.participantTopologyMode || null,
+          amountSats: a.amountSats.toString(),
+          accountingState: accountingState.state,
+          blockedReason: accountingState.blockedReason
+        },
+        accountingState.state === "ready"
+          ? "settlement.participant_accounting_created"
+          : "settlement.participant_accounting_blocked"
+      );
     }
   }
+
+  app.log.info(
+    {
+      contentId: content.id,
+      splitVersionId: childSplit.id,
+      parentSplitVersionIds: upstreamAlloc.map((row) => row.parentSplitVersionId).filter(Boolean),
+      participantCount: allocations.length
+    },
+    "splitAuthority.compute_allocations"
+  );
+  const allocatedTotal = allocations.reduce((acc, row) => acc + row.amountSats, 0n);
+  app.log.info(
+    {
+      contentId: content.id,
+      splitVersionId: childSplit.id,
+      distributableSats: input.poolSats.toString(),
+      participantCount: allocations.length,
+      allocatedTotalSats: allocatedTotal.toString()
+    },
+    "splitAccounting.allocations"
+  );
 
   return {
     splitVersionId: childSplit.id,
@@ -23568,6 +24885,16 @@ async function settlePaymentIntent(paymentIntentId: string) {
   }
 
   const net = BigInt(intent.amountSats);
+  app.log.info(
+    {
+      paymentIntentId: intent.id,
+      contentId: intent.contentId,
+      grossSats: net.toString(),
+      operatorFeeSats: "0",
+      distributableSats: net.toString()
+    },
+    "splitAccounting.payment_base"
+  );
   const computed = await computeContentParticipantAllocations({
     contentId: content.id,
     poolSats: net
@@ -23579,6 +24906,16 @@ async function settlePaymentIntent(paymentIntentId: string) {
       role: row.role || null,
       amountSats: row.amountSats
     }));
+
+  app.log.info(
+    {
+      paymentIntentId: intent.id,
+      contentId: content.id,
+      splitVersionId: computed.splitVersionId,
+      participantCount: lines.length
+    },
+    "splitAuthority.settlement_snapshot"
+  );
 
   const settlement = await prisma.settlement.create({
     data: {
@@ -25736,7 +27073,16 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
       content: true,
       participants: {
         orderBy: { createdAt: "asc" },
-        include: { invitation: { select: { status: true } } }
+        include: {
+          invitation: {
+            select: {
+              status: true,
+              targetType: true,
+              targetValue: true,
+              acceptedIdentityRef: true
+            }
+          }
+        }
       }
     }
   });
@@ -25812,6 +27158,15 @@ app.post("/content/:id/splits/:version/lock", { preHandler: requireAuth }, async
       }
     });
   } catch {}
+
+  await buildLockedParticipantSnapshotsForSplitVersion({
+    splitVersion: {
+      ...sv,
+      participants: activeLedgerParticipants
+    },
+    lockTime: now,
+    persist: true
+  });
 
   return reply.send({
     ok: true,
@@ -26260,6 +27615,95 @@ async function handlePublicInviteLookup(req: any, reply: any) {
 }
 
 app.get("/invites/:token", handlePublicInviteLookup);
+
+app.get("/invites/:token/accounting", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token).trim();
+  if (!token) return notFound(reply, "Invite not found");
+  const tokenHash = hashInviteToken(token);
+  const inv = await prisma.invitation.findFirst({
+    where: { OR: [{ token }, { tokenHash }] },
+    include: { splitParticipant: true }
+  });
+  if (!inv || !inv.splitParticipantId) return notFound(reply, "Invite not found");
+  const splitParticipantId = String(inv.splitParticipantId || "").trim();
+  const participantEmail = normalizeEmail(inv.splitParticipant?.participantEmail || "");
+  const settlementLines = await prisma.settlementLine.findMany({
+    where: {
+      OR: [
+        splitParticipantId ? { participantId: splitParticipantId } : undefined,
+        participantEmail ? { participantEmail: emailEquals(participantEmail) } : undefined
+      ].filter(Boolean) as any
+    },
+    select: { amountSats: true }
+  });
+  const earnedSats = settlementLines.reduce((acc, row) => acc + BigInt(String(row.amountSats || "0")), 0n);
+
+  const payoutRows = await prisma.participantPayout
+    .findMany({
+      where: {
+        OR: [
+          { allocation: { splitParticipantId } },
+          participantEmail ? { allocation: { participantEmail: emailEquals(participantEmail) } } : undefined
+        ].filter(Boolean) as any
+      },
+      select: {
+        status: true,
+        amountSats: true,
+        readinessReason: true,
+        destinationType: true,
+        destinationSummary: true,
+        remittedAt: true,
+        updatedAt: true
+      },
+      orderBy: [{ updatedAt: "desc" }]
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+
+  const payoutSummary = payoutRows.reduce((acc, row) => {
+    const key = parseParticipantPayoutStatus(row.status);
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const payoutStates = Object.keys(payoutSummary).filter((k) => payoutSummary[k] > 0);
+  const payoutState =
+    payoutStates.length === 0
+      ? "none"
+      : payoutStates.length === 1
+        ? payoutStates[0]
+        : "mixed";
+  const destinationState =
+    payoutRows.length === 0
+      ? "unknown"
+      : payoutRows.some((row) => Boolean(row.destinationType || row.destinationSummary))
+        ? "resolved"
+        : "unresolved";
+
+  return reply.send({
+    ok: true,
+    invitationId: inv.id,
+    splitParticipantId,
+    totals: {
+      earnedSats: earnedSats.toString(),
+      settlementLineCount: settlementLines.length,
+      payoutRows: payoutRows.length,
+      payoutSummary,
+      payoutState,
+      destinationState
+    },
+    payouts: payoutRows.map((row) => ({
+      status: parseParticipantPayoutStatus(row.status),
+      amountSats: String(row.amountSats || "0"),
+      readinessReason: row.readinessReason || null,
+      destinationType: row.destinationType || null,
+      destinationSummary: row.destinationSummary || null,
+      remittedAt: row.remittedAt ? row.remittedAt.toISOString() : null,
+      updatedAt: row.updatedAt.toISOString()
+    }))
+  });
+});
 
 /**
  * Public invite page (simple HTML) so remote users can accept.
