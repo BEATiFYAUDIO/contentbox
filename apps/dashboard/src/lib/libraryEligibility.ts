@@ -1,4 +1,5 @@
 export type LibraryAccess = "owned" | "purchased" | "preview" | "local" | "participant";
+export type LibraryRelation = "owner" | "participant" | "buyer" | "preview" | "unknown";
 
 export type LibrarySection = "owned" | "purchased" | "preview" | "participant" | "excluded";
 
@@ -40,6 +41,8 @@ export type LibraryEligibilityDecision = {
   reason?: LibraryExclusionReason;
 };
 
+export type AvailabilityState = "active" | "archived" | "trashed" | "deleted" | "inactive" | "orphaned";
+
 function hasValue(value: unknown): boolean {
   return Boolean(String(value || "").trim());
 }
@@ -67,6 +70,54 @@ export function getContentExclusionReason(content: ContentLike | null | undefine
   if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
   if (!isPublished(content.status)) return "inactive";
   return null;
+}
+
+export function getAvailabilityState(content: ContentLike | null | undefined): AvailabilityState {
+  if (!content) return "orphaned";
+  if (hasValue(content.archivedAt)) return "archived";
+  if (hasValue(content.trashedAt)) return "trashed";
+  if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
+  if (!isPublished(content.status)) return "inactive";
+  return "active";
+}
+
+export function isPubliclyVisible(content: ContentLike | null | undefined): boolean {
+  return getAvailabilityState(content) === "active";
+}
+
+export function isActiveLibraryVisible(
+  content: ContentLike | null | undefined,
+  relation: LibraryRelation,
+  participation?: ParticipationLike | null
+): { visible: boolean; reason?: LibraryExclusionReason } {
+  const availability = getAvailabilityState(content);
+  if (availability !== "active") return { visible: false, reason: availability === "orphaned" ? "orphaned" : (availability as LibraryExclusionReason) };
+  if (relation === "participant") {
+    const participationCheck = isEligibleSplitParticipation(participation);
+    return { visible: participationCheck.eligible, reason: participationCheck.reason };
+  }
+  if (relation === "owner" || relation === "buyer" || relation === "preview") return { visible: true };
+  return { visible: false, reason: "relation_invalid" };
+}
+
+export function isEntitlementHistoryVisible(
+  content: ContentLike | null | undefined,
+  relation: LibraryRelation,
+  participation?: ParticipationLike | null
+): { visible: boolean; reason?: LibraryExclusionReason } {
+  const availability = getAvailabilityState(content);
+  if (availability === "orphaned") return { visible: false, reason: "orphaned" };
+  if (relation === "participant") {
+    const participationCheck = isEligibleSplitParticipation(participation);
+    if (!participationCheck.eligible && participationCheck.reason !== "deleted" && participationCheck.reason !== "inactive") {
+      return { visible: false, reason: participationCheck.reason };
+    }
+    return { visible: true, reason: availability === "active" ? undefined : "inactive" };
+  }
+  if (relation === "buyer" || relation === "owner") {
+    return { visible: true, reason: availability === "active" ? undefined : "inactive" };
+  }
+  return { visible: false, reason: "relation_invalid" };
 }
 
 export function isEligibleSplitParticipation(participation: ParticipationLike | null | undefined): {
@@ -99,7 +150,7 @@ export function classifyLibraryEligibility(input: {
   const purchasedEligible = access === "purchased";
   const previewEligible = access === "preview";
   const participantCheck = isEligibleSplitParticipation(input.participation);
-  const participantEligible = access === "participant" ? participantCheck.eligible : participantCheck.eligible;
+  const participantEligible = participantCheck.eligible;
 
   if (ownerEligible) return { section: "owned", included: true };
   if (purchasedEligible) return { section: "purchased", included: true };
@@ -140,3 +191,31 @@ export function logLibraryEligibilityDecision(input: {
   console.debug(`libraryEligibility.${input.scope}`, payload);
 }
 
+export function logVisibilityDecision(input: {
+  surface: string;
+  sourceModelQuery: string;
+  relation: LibraryRelation;
+  content: ContentLike | null | undefined;
+  included: boolean;
+  reason: string;
+  extra?: Record<string, unknown>;
+}) {
+  if (!import.meta.env.DEV) return;
+  const content = input.content;
+  // eslint-disable-next-line no-console
+  console.debug("visibility.trace", {
+    surface: input.surface,
+    sourceModelQuery: input.sourceModelQuery,
+    relation: input.relation,
+    contentId: content?.id || null,
+    status: content?.status || null,
+    archivedAt: content?.archivedAt || null,
+    trashedAt: content?.trashedAt || null,
+    deletedAt: content?.deletedAt || null,
+    tombstonedAt: content?.tombstonedAt || null,
+    availability: getAvailabilityState(content),
+    included: input.included,
+    reason: input.reason,
+    ...(input.extra || {})
+  });
+}

@@ -3,8 +3,12 @@ import { api, getApiBase } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 import {
   classifyLibraryEligibility,
-  isEligibleSplitParticipation,
+  getAvailabilityState,
+  isActiveLibraryVisible,
+  isEntitlementHistoryVisible,
   logLibraryEligibilityDecision,
+  logVisibilityDecision,
+  type LibraryRelation,
   type LibrarySection
 } from "../lib/libraryEligibility";
 
@@ -55,6 +59,7 @@ type RemoteRoyaltyParticipation = {
   contentTitle: string | null;
   contentType: string | null;
   contentStatus: string | null;
+  contentDeletedAt?: string | null;
   status: string | null;
   acceptedAt?: string | null;
   revokedAt?: string | null;
@@ -167,7 +172,7 @@ export default function LibraryPage() {
             contentTitle: row.contentTitle || null,
             contentType: row.contentType || null,
             contentStatus: row.contentStatus || "published",
-            contentDeletedAt: null,
+            contentDeletedAt: row.contentDeletedAt || null,
             splitParticipantId: null,
             remoteInviteId: String(row.id || "").trim() || null,
             remoteOrigin: String(row.remoteOrigin || "").replace(/\/+$/, "") || null,
@@ -191,7 +196,30 @@ export default function LibraryPage() {
 
         const participationOnlyItems: LibraryItem[] = [...localParticipations, ...remoteParticipations]
           .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
-          .filter((p) => isEligibleSplitParticipation(p).eligible)
+          .filter((p) => {
+            const active = isActiveLibraryVisible(
+              {
+                id: p.contentId,
+                status: p.contentStatus || "published",
+                deletedAt: p.contentDeletedAt || null
+              },
+              "participant",
+              p
+            );
+            logVisibilityDecision({
+              surface: "library.participation_only",
+              sourceModelQuery: p.kind === "remote" ? "GET /my/royalties/remote" : "GET /my/participations",
+              relation: "participant",
+              content: {
+                id: p.contentId,
+                status: p.contentStatus || "published",
+                deletedAt: p.contentDeletedAt || null
+              },
+              included: active.visible,
+              reason: active.visible ? "active_library_visible" : active.reason || "excluded"
+            });
+            return active.visible;
+          })
           .map((p) => ({
             id: p.contentId,
             title: p.contentTitle || "Untitled",
@@ -211,6 +239,18 @@ export default function LibraryPage() {
         for (const item of combined) {
           const contentId = String(item.id || "").trim();
           const participation = participationByContentId.get(contentId) || null;
+          const relation: LibraryRelation =
+            item.libraryAccess === "owned"
+              ? "owner"
+              : item.libraryAccess === "purchased"
+                ? "buyer"
+                : item.libraryAccess === "participant"
+                  ? "participant"
+                  : item.libraryAccess === "preview"
+                    ? "preview"
+                    : "unknown";
+          const activeVisibility = isActiveLibraryVisible(item, relation, participation);
+          const entitlementVisibility = isEntitlementHistoryVisible(item, relation, participation);
           const decision = classifyLibraryEligibility({
             item,
             participation
@@ -221,6 +261,21 @@ export default function LibraryPage() {
             decision,
             extra: {
               access: item.libraryAccess || null
+            }
+          });
+          logVisibilityDecision({
+            surface: "library.active",
+            sourceModelQuery: "GET /content?scope=library + projections",
+            relation,
+            content: item,
+            included: decision.included,
+            reason: decision.included ? "classify_included" : decision.reason || "excluded",
+            extra: {
+              activeVisible: activeVisibility.visible,
+              activeReason: activeVisibility.reason || null,
+              entitlementHistoryVisible: entitlementVisibility.visible,
+              entitlementHistoryReason: entitlementVisibility.reason || null,
+              availabilityState: getAvailabilityState(item)
             }
           });
           if (!decision.included) continue;

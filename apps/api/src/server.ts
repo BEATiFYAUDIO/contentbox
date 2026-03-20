@@ -10909,6 +10909,8 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       let contentId = inv.contentId || null;
       let contentTitle = inv.contentTitle || null;
       let contentType = inv.contentType || null;
+      let contentStatus = inv.contentStatus || null;
+      let contentDeletedAt = inv.contentDeletedAt ? inv.contentDeletedAt.toISOString() : null;
       let splitVersionNum = inv.splitVersionNum ?? null;
       let role = inv.role || null;
       let percent = percentToPrimitive(inv.percent ?? null);
@@ -10939,6 +10941,8 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
           contentId = asString(remoteContent?.id || "").trim() || contentId;
           contentTitle = asString(remoteContent?.title || "").trim() || contentTitle;
           contentType = asString(remoteContent?.type || "").trim() || contentType;
+          contentStatus = asString(remoteContent?.status || "").trim() || contentStatus;
+          contentDeletedAt = asString(remoteContent?.deletedAt || "").trim() || contentDeletedAt;
           splitVersionNum = Number.isFinite(Number(remoteSplitVersion?.versionNumber))
             ? Number(remoteSplitVersion.versionNumber)
             : splitVersionNum;
@@ -10975,12 +10979,16 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       contentId,
       contentTitle,
       contentType,
+      contentStatus,
+      contentDeletedAt,
       splitVersionNum,
       role,
       percent,
       status: inviteStatus,
       participantEmail,
       acceptedAt,
+      revokedAt: inv.revokedAt ? inv.revokedAt.toISOString() : null,
+      tombstonedAt: inv.tombstonedAt ? inv.tombstonedAt.toISOString() : null,
       remoteUserId,
       remoteNodeUrl: inv.remoteNodeUrl || null,
       remoteVerified: Boolean(inv.remoteVerified),

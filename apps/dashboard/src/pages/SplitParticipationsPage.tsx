@@ -5,6 +5,12 @@ import AuditPanel from "../components/AuditPanel";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
 import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
 import { resolveParticipantDisplayLabel } from "../lib/participantDisplay";
+import {
+  isActiveLibraryVisible,
+  isEntitlementHistoryVisible,
+  logVisibilityDecision,
+  type LibraryRelation
+} from "../lib/libraryEligibility";
 
 type WorkRoyaltyRow = {
   contentId: string;
@@ -113,6 +119,83 @@ export default function SplitParticipationsPage(props: {
   const [showInactive, setShowInactive] = useState(false);
   const [showInactiveWorks, setShowInactiveWorks] = useState(false);
   const [showAllUpstream, setShowAllUpstream] = useState(false);
+
+  const activeWorks = works.filter((p) => {
+    const relation: LibraryRelation = p.myRole === "owner" ? "owner" : "participant";
+    const decision = isActiveLibraryVisible(
+      {
+        id: p.contentId,
+        status: p.contentStatus || "published",
+        deletedAt: p.contentDeletedAt || null
+      },
+      relation,
+      p.myRole === "participant"
+        ? {
+            contentId: p.contentId,
+            status: "accepted",
+            acceptedAt: "1",
+            contentStatus: p.contentStatus || "published",
+            contentDeletedAt: p.contentDeletedAt || null
+          }
+        : undefined
+    );
+    logVisibilityDecision({
+      surface: "royalties.works.active",
+      sourceModelQuery: "GET /my/royalties",
+      relation,
+      content: {
+        id: p.contentId,
+        status: p.contentStatus || "published",
+        deletedAt: p.contentDeletedAt || null
+      },
+      included: decision.visible,
+      reason: decision.visible ? "active_library_visible" : decision.reason || "excluded"
+    });
+    return decision.visible;
+  });
+
+  const inactiveWorks = works.filter((p) => {
+    const relation: LibraryRelation = p.myRole === "owner" ? "owner" : "participant";
+    const history = isEntitlementHistoryVisible(
+      {
+        id: p.contentId,
+        status: p.contentStatus || "published",
+        deletedAt: p.contentDeletedAt || null
+      },
+      relation,
+      p.myRole === "participant"
+        ? {
+            contentId: p.contentId,
+            status: "accepted",
+            acceptedAt: "1",
+            contentStatus: p.contentStatus || "published",
+            contentDeletedAt: p.contentDeletedAt || null
+          }
+        : undefined
+    );
+    const active = isActiveLibraryVisible(
+      {
+        id: p.contentId,
+        status: p.contentStatus || "published",
+        deletedAt: p.contentDeletedAt || null
+      },
+      relation
+    );
+    const include = history.visible && !active.visible;
+    logVisibilityDecision({
+      surface: "royalties.works.history",
+      sourceModelQuery: "GET /my/royalties",
+      relation,
+      content: {
+        id: p.contentId,
+        status: p.contentStatus || "published",
+        deletedAt: p.contentDeletedAt || null
+      },
+      included: include,
+      reason: include ? history.reason || "history_visible" : active.visible ? "active_section" : history.reason || "excluded"
+    });
+    return include;
+  });
 
   useEffect(() => {
     if (isBasic) return;
@@ -230,8 +313,7 @@ export default function SplitParticipationsPage(props: {
         </button>
       </div>
       <div className="space-y-3">
-        {works
-          .filter((p) => showInactiveWorks || !p.contentDeletedAt)
+        {(showInactiveWorks ? [...activeWorks, ...inactiveWorks] : activeWorks)
           .map((p) => (
           <div key={p.contentId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="flex items-start justify-between gap-3">

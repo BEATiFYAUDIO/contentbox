@@ -9,8 +9,10 @@ import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../l
 import {
   canFeatureOnProfile,
   classifyLibraryEligibility,
-  isEligibleSplitParticipation,
+  isActiveLibraryVisible,
+  logVisibilityDecision,
   logLibraryEligibilityDecision,
+  type LibraryRelation,
   type LibrarySection
 } from "../lib/libraryEligibility";
 
@@ -666,7 +668,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             contentTitle: row?.contentTitle || null,
             contentType: row?.contentType || null,
             contentStatus: row?.contentStatus || "published",
-            contentDeletedAt: null,
+            contentDeletedAt: row?.contentDeletedAt || null,
             splitParticipantId: null,
             remoteInviteId: String(row?.id || "").trim() || null,
             remoteOrigin: String(row?.remoteOrigin || "").replace(/\/+$/, "") || null,
@@ -678,7 +680,30 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           }))
         ]
           .filter((p) => p.contentId)
-          .filter((p) => isEligibleSplitParticipation(p).eligible);
+          .filter((p) => {
+            const active = isActiveLibraryVisible(
+              {
+                id: p.contentId,
+                status: p.contentStatus || "published",
+                deletedAt: p.contentDeletedAt || null
+              },
+              "participant",
+              p
+            );
+            logVisibilityDecision({
+              surface: "content_library.participation_only",
+              sourceModelQuery: p.kind === "remote" ? "GET /my/royalties/remote" : "GET /my/participations",
+              relation: "participant",
+              content: {
+                id: p.contentId,
+                status: p.contentStatus || "published",
+                deletedAt: p.contentDeletedAt || null
+              },
+              included: active.visible,
+              reason: active.visible ? "active_library_visible" : active.reason || "excluded"
+            });
+            return active.visible;
+          });
 
         for (const p of participationRows) {
           const contentId = String(p.contentId || "").trim();
@@ -728,6 +753,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         for (const item of mergedList) {
           const contentId = String(item.id || "").trim();
           const participation = nextParticipationByContentId[contentId] || null;
+          const relation: LibraryRelation =
+            item.libraryAccess === "owned"
+              ? "owner"
+              : item.libraryAccess === "purchased"
+                ? "buyer"
+                : item.libraryAccess === "participant"
+                  ? "participant"
+                  : item.libraryAccess === "preview"
+                    ? "preview"
+                    : "unknown";
           const decision = classifyLibraryEligibility({
             item,
             meUserId: meId || null,
@@ -737,6 +772,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             scope: "content_library_page",
             contentId,
             decision,
+            extra: {
+              contentScope: effectiveScope,
+              access: item.libraryAccess || null
+            }
+          });
+          logVisibilityDecision({
+            surface: "content_library.active",
+            sourceModelQuery: `GET /content?scope=${effectiveScope}`,
+            relation,
+            content: item,
+            included: decision.included,
+            reason: decision.included ? "classify_included" : decision.reason || "excluded",
             extra: {
               contentScope: effectiveScope,
               access: item.libraryAccess || null
