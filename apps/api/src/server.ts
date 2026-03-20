@@ -29253,6 +29253,12 @@ async function handlePublicInvitePage(req: any, reply: any) {
         return;
       }
       try {
+        const currentOrigin = normalizeOrigin(window.location.origin || "");
+        const targetOrigin = normalizeOrigin(handoff || "");
+        if (currentOrigin && targetOrigin && currentOrigin === targetOrigin) {
+          window.location.assign(handoff);
+          return;
+        }
         const popup = window.open(handoff, "_blank", "noopener,noreferrer");
         if (!popup) {
           statusEl.textContent = "Popup blocked. Allow popups for this site, or open the invite from your dashboard directly.";

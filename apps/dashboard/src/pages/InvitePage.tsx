@@ -224,6 +224,24 @@ function openExternalInNewWindow(url: string): boolean {
   const target = String(url || "").trim();
   if (!target) return false;
   try {
+    const currentOrigin = (() => {
+      try {
+        return new URL(window.location.href).origin;
+      } catch {
+        return "";
+      }
+    })();
+    const targetOrigin = (() => {
+      try {
+        return new URL(target, window.location.origin).origin;
+      } catch {
+        return "";
+      }
+    })();
+    if (currentOrigin && targetOrigin && currentOrigin === targetOrigin) {
+      window.location.assign(target);
+      return true;
+    }
     // Use anchor-click to avoid dual-navigation race conditions where both tabs
     // can navigate when popup detection is inconsistent across browsers.
     const a = document.createElement("a");
