@@ -8869,6 +8869,38 @@ async function handlePublicUser(req: any, reply: any) {
 
 app.get("/public/users/:id", handlePublicUser);
 
+type RemoteDiscoveryCacheEntry = {
+  origin: string;
+  publicKeyPem: string;
+  fetchedAt: number;
+};
+
+const remoteDiscoveryKeyCache = new Map<string, RemoteDiscoveryCacheEntry>();
+const REMOTE_DISCOVERY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+function getCachedRemoteDiscoveryKey(origin: string): string | null {
+  const key = normalizeOrigin(origin || "");
+  if (!key) return null;
+  const entry = remoteDiscoveryKeyCache.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.fetchedAt > REMOTE_DISCOVERY_CACHE_TTL_MS) {
+    remoteDiscoveryKeyCache.delete(key);
+    return null;
+  }
+  return entry.publicKeyPem || null;
+}
+
+function setCachedRemoteDiscoveryKey(origin: string, publicKeyPem: string) {
+  const key = normalizeOrigin(origin || "");
+  const pem = asString(publicKeyPem || "").trim();
+  if (!key || !pem) return;
+  remoteDiscoveryKeyCache.set(key, {
+    origin: key,
+    publicKeyPem: pem,
+    fetchedAt: Date.now()
+  });
+}
+
 async function signInviteAcceptancePayload(
   token: string,
   userId: string,
@@ -29365,11 +29397,19 @@ async function handlePublicInviteAccept(req: any, reply: any) {
         try {
           const j: any = await disco.json();
           remotePub = j?.publicKeyPem || null;
+          if (remotePub) setCachedRemoteDiscoveryKey(remoteNodeUrl, remotePub);
         } catch {
           remotePub = null;
         }
       } else {
         remoteAuthFailure = "DISCOVERY_UNREACHABLE_OR_INVALID";
+      }
+      if (!remotePub && remoteAuthFailure === "DISCOVERY_UNREACHABLE_OR_INVALID") {
+        const cachedPub = getCachedRemoteDiscoveryKey(remoteNodeUrl);
+        if (cachedPub) {
+          remotePub = cachedPub;
+          remoteAuthFailure = null;
+        }
       }
       if (remotePub) {
         const payloadStr = JSON.stringify(payload);
