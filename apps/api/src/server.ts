@@ -2092,6 +2092,37 @@ function parseRemoteIdentityRef(identityRef: string | null | undefined): { origi
   return { origin: origin || null, userId };
 }
 
+async function fetchRemotePublicUserDisplayName(
+  origin: string | null | undefined,
+  userId: string | null | undefined
+): Promise<string | null> {
+  const remoteOrigin = normalizeRemoteOrigin(origin || "");
+  const remoteUserId = asString(userId || "").trim();
+  if (!remoteOrigin || !remoteUserId) return null;
+  if (looksLikeInternalUserId(remoteUserId) === false) return remoteUserId;
+  try {
+    const ctl = new AbortController();
+    const timeout = setTimeout(() => ctl.abort(), 3500);
+    try {
+      const url = `${remoteOrigin.replace(/\/$/, "")}/public/users/${encodeURIComponent(remoteUserId)}`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { Accept: "application/json" } as any,
+        signal: ctl.signal
+      } as any);
+      if (!res.ok) return null;
+      const json: any = await res.json().catch(() => null);
+      const displayName = asString(json?.displayName || "").trim();
+      if (displayName && !looksLikeInternalUserId(displayName)) return displayName;
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    return null;
+  }
+}
+
 function getLockedSnapshotBySplitParticipantId(splitParticipantId: string | null | undefined): LockedParticipantSnapshotRecord | null {
   const id = asString(splitParticipantId || "").trim();
   if (!id) return null;
@@ -18457,6 +18488,29 @@ function normalizePublicProfileHandle(v: unknown): string | null {
   return clean || null;
 }
 
+function normalizePublicProfileHref(rawValue: unknown): string | null {
+  const raw = asString(rawValue || "").trim();
+  if (!raw) return null;
+  try {
+    if (raw.startsWith("http://") || raw.startsWith("https://")) {
+      const parsed = new URL(raw);
+      const m = String(parsed.pathname || "").match(/^\/u\/([^/?#]+)/i);
+      if (!m || !m[1]) return null;
+      const handle = normalizePublicProfileHandle(decodeURIComponent(m[1]));
+      if (!handle || looksLikeInternalUserId(handle)) return null;
+      return `${parsed.origin}/u/${encodeURIComponent(handle)}`;
+    }
+    const localPath = raw.startsWith("/") ? raw : `/${raw}`;
+    const m = localPath.match(/^\/u\/([^/?#]+)/i);
+    if (!m || !m[1]) return null;
+    const handle = normalizePublicProfileHandle(decodeURIComponent(m[1]));
+    if (!handle || looksLikeInternalUserId(handle)) return null;
+    return `/u/${encodeURIComponent(handle)}`;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeBeatifyProofUrl(raw: string): string | null {
   try {
     const u = new URL(asString(raw || "").trim());
@@ -18911,7 +18965,13 @@ async function handlePublicAttribution(req: any, reply: any) {
         const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
         const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
         const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
-        const safeProfilePath = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `/u/${encodeURIComponent(normalizedHandle)}` : null;
+        const safeProfilePath =
+          normalizePublicProfileHref(snapshot.profilePathSnapshot || "") ||
+          (normalizedHandle && !looksLikeInternalUserId(normalizedHandle)
+            ? (snapshot.participantOrigin
+                ? `${snapshot.participantOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
+                : `/u/${encodeURIComponent(normalizedHandle)}`)
+            : null);
         return {
           displayName,
           handle: safeHandle,
@@ -20367,10 +20427,18 @@ async function handleBuyPage(req: any, reply: any) {
     const raw = String(profilePathRaw == null ? "" : profilePathRaw).trim();
     if (!raw) return "";
     try {
+      if (/^https?:\\/\\//i.test(raw)) {
+        const parsed = new URL(raw);
+        const mRemote = String(parsed.pathname || "").match(/^\\/u\\/([^/?#]+)/i);
+        if (!mRemote || !mRemote[1]) return "";
+        const remoteHandle = normalizeHandleText(decodeURIComponent(mRemote[1]));
+        if (!remoteHandle || looksInternalId(remoteHandle)) return "";
+        return parsed.origin + "/u/" + encodeURIComponent(remoteHandle);
+      }
       const trimmed = raw.startsWith("/") ? raw : ("/" + raw);
-      const m = trimmed.match(/^\\/u\\/([^/?#]+)/i);
-      if (!m || !m[1]) return "";
-      const handle = normalizeHandleText(decodeURIComponent(m[1]));
+      const mLocal = trimmed.match(/^\\/u\\/([^/?#]+)/i);
+      if (!mLocal || !mLocal[1]) return "";
+      const handle = normalizeHandleText(decodeURIComponent(mLocal[1]));
       if (!handle || looksInternalId(handle)) return "";
       return "/u/" + encodeURIComponent(handle);
     } catch { return ""; }
@@ -20437,7 +20505,7 @@ async function handleBuyPage(req: any, reply: any) {
           const role = roleRaw ? (" • " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
           const profileLink = profilePathRaw
-            ? (" <a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;\\">profile</a>")
+            ? (" <a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(profilePathRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">profile</a>")
             : "";
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
@@ -24761,10 +24829,10 @@ async function getParentLockedSplitSnapshotForDerivative(link: {
 }
 
 function inferLockedParticipantIdentityRef(participant: any): string | null {
-  const participantUserId = asString(participant?.participantUserId || "").trim();
-  if (participantUserId) return `user:${participantUserId}`;
   const acceptedIdentityRef = asString(participant?.invitation?.acceptedIdentityRef || "").trim();
   if (acceptedIdentityRef) return acceptedIdentityRef;
+  const participantUserId = asString(participant?.participantUserId || "").trim();
+  if (participantUserId) return `user:${participantUserId}`;
   const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
   const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
   if (targetType && targetValue) return `${targetType}:${targetValue}`;
@@ -24873,7 +24941,7 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
   const nowIso = new Date().toISOString();
   const lockedAtIso = input.lockTime ? input.lockTime.toISOString() : null;
 
-  const snapshots: LockedParticipantSnapshotRecord[] = participants.map((participant: any) => {
+  const snapshots: LockedParticipantSnapshotRecord[] = await Promise.all(participants.map(async (participant: any) => {
     const participantUserId = asString(participant?.participantUserId || "").trim() || null;
     const participantEmail = normalizeEmail(participant?.participantEmail || "") || null;
     const acceptedAt = participant?.acceptedAt ? new Date(participant.acceptedAt).toISOString() : null;
@@ -24881,16 +24949,25 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
     const user = participantUserId ? userById.get(participantUserId) || null : null;
     const targetType = normalizeInviteTargetType(participant?.invitation?.targetType || participant?.targetType || null);
     const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
+    const identityRef = inferLockedParticipantIdentityRef(participant);
+    const parsedRemoteIdentity = parseRemoteIdentityRef(identityRef || null);
+    const remoteDisplayName = await fetchRemotePublicUserDisplayName(parsedRemoteIdentity.origin, parsedRemoteIdentity.userId);
     const displayNameSnapshot =
       resolveBestHumanDisplayLabel({
         userDisplayName: asString(user?.displayName || "").trim() || null,
         userEmail: asString(user?.email || "").trim() || null,
         participantEmail: targetType === "email" ? normalizeEmail(targetValue || participantEmail || "") : participantEmail
-      }) || null;
+      }) ||
+      remoteDisplayName ||
+      null;
     const normalizedHandle = normalizePublicProfileHandle(displayNameSnapshot || "");
     const handleSnapshot = normalizedHandle ? `@${normalizedHandle}` : null;
-    const profilePathSnapshot = normalizedHandle ? `/u/${encodeURIComponent(normalizedHandle)}` : null;
-    const identityRef = inferLockedParticipantIdentityRef(participant);
+    const profilePathSnapshot =
+      normalizedHandle
+        ? parsedRemoteIdentity.origin
+          ? `${parsedRemoteIdentity.origin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
+          : `/u/${encodeURIComponent(normalizedHandle)}`
+        : null;
     const localUserExists = Boolean(user);
     return {
       id: `locked_participant_snapshot:${splitVersionId}:${participant.id}`,
@@ -24910,14 +24987,14 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
       displayNameSnapshot,
       handleSnapshot,
       profilePathSnapshot,
-      participantOrigin: null,
+      participantOrigin: parsedRemoteIdentity.origin || null,
       participantTopologyMode: inferLockedParticipantTopologyMode(participant, localUserExists),
       payoutAuthorityRef: asString(participant?.payoutIdentityId || "").trim() || null,
       lockedAt: lockedAtIso,
       createdAt: nowIso,
       updatedAt: nowIso
     };
-  });
+  }));
 
   if (input.persist) {
     const existing = listLockedParticipantSnapshotRows();
@@ -24956,25 +25033,37 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
       : [];
     const userById = new Map(users.map((user) => [user.id, user]));
     let changed = false;
-    const refreshed = existing.map((row) => {
+    const refreshed = await Promise.all(existing.map(async (row) => {
       const user = row.participantUserId ? userById.get(asString(row.participantUserId || "").trim()) || null : null;
+      const parsedRemoteIdentity = parseRemoteIdentityRef(row.identityRef || null);
+      const remoteDisplayName = await fetchRemotePublicUserDisplayName(parsedRemoteIdentity.origin, parsedRemoteIdentity.userId);
       const nextDisplayName =
         resolveBestHumanDisplayLabel({
           userDisplayName: asString(user?.displayName || "").trim() || null,
           userEmail: asString(user?.email || "").trim() || null,
           participantEmail: normalizeEmail(row.participantEmail || "")
-        }) || null;
+        }) ||
+        remoteDisplayName ||
+        null;
       const nextHandleRaw = nextDisplayName ? normalizePublicProfileHandle(nextDisplayName) : null;
       const nextHandle =
         nextHandleRaw && !looksLikeInternalUserId(nextHandleRaw) ? `@${nextHandleRaw}` : null;
-      const nextProfilePath = nextHandleRaw && !looksLikeInternalUserId(nextHandleRaw) ? `/u/${encodeURIComponent(nextHandleRaw)}` : null;
+      const nextProfilePath =
+        nextHandleRaw && !looksLikeInternalUserId(nextHandleRaw)
+          ? parsedRemoteIdentity.origin
+            ? `${parsedRemoteIdentity.origin.replace(/\/$/, "")}/u/${encodeURIComponent(nextHandleRaw)}`
+            : `/u/${encodeURIComponent(nextHandleRaw)}`
+          : null;
       const currentDisplayName = asString(row.displayNameSnapshot || "").trim() || null;
       const currentHandle = asString(row.handleSnapshot || "").trim() || null;
       const currentProfilePath = asString(row.profilePathSnapshot || "").trim() || null;
+      const currentParticipantOrigin = asString(row.participantOrigin || "").trim() || null;
+      const nextParticipantOrigin = parsedRemoteIdentity.origin || null;
       if (
         currentDisplayName !== nextDisplayName ||
         currentHandle !== nextHandle ||
-        currentProfilePath !== nextProfilePath
+        currentProfilePath !== nextProfilePath ||
+        currentParticipantOrigin !== nextParticipantOrigin
       ) {
         changed = true;
         return {
@@ -24982,11 +25071,12 @@ async function getLockedParticipantSnapshotsForSplitVersion(splitVersionId: stri
           displayNameSnapshot: nextDisplayName,
           handleSnapshot: nextHandle,
           profilePathSnapshot: nextProfilePath,
+          participantOrigin: nextParticipantOrigin,
           updatedAt: new Date().toISOString()
         };
       }
       return row;
-    });
+    }));
     if (changed) {
       const allRows = listLockedParticipantSnapshotRows();
       const nextRows = [
