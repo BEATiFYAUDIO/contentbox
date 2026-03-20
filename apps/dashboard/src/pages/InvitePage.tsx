@@ -174,6 +174,20 @@ function isActiveInviteStatus(status: string): boolean {
   return status === "pending" || status === "accepted";
 }
 
+function inviteSortTs(inv: any): number {
+  const acceptedTs = new Date(inv?.acceptedAt || "").getTime();
+  if (Number.isFinite(acceptedTs) && acceptedTs > 0) return acceptedTs;
+  const createdTs = new Date(inv?.createdAt || "").getTime();
+  if (Number.isFinite(createdTs) && createdTs > 0) return createdTs;
+  const expiresTs = new Date(inv?.expiresAt || "").getTime();
+  if (Number.isFinite(expiresTs) && expiresTs > 0) return expiresTs;
+  return 0;
+}
+
+function sortInvitesNewestFirst<T extends any>(list: T[] | null | undefined): T[] {
+  return (Array.isArray(list) ? [...list] : []).sort((a, b) => inviteSortTs(b) - inviteSortTs(a));
+}
+
 function mapAcceptErrorMessage(raw: string): string {
   const text = String(raw || "");
   if (text.includes("INVITE_AUTH_REQUIRED")) return "Sign in to accept this invite.";
@@ -613,11 +627,11 @@ export default function InvitePage({
         merged.set(id, inv);
         continue;
       }
-      const prevTs = new Date(prev?.createdAt || 0).getTime();
-      const curTs = new Date(inv?.createdAt || 0).getTime();
+      const prevTs = inviteSortTs(prev);
+      const curTs = inviteSortTs(inv);
       if (curTs >= prevTs) merged.set(id, { ...prev, ...inv });
     }
-    setRemoteReceivedInvites(Array.from(merged.values()));
+    setRemoteReceivedInvites(sortInvitesNewestFirst(Array.from(merged.values())));
   }
 
   async function acceptRemoteInviteCanonical(params: {
@@ -792,7 +806,7 @@ export default function InvitePage({
 
       try {
         const listR = await api<any[]>(`/my/invitations/received?includeHistory=${showHistory ? "1" : "0"}`, "GET");
-        setReceivedInvites(listR || []);
+        setReceivedInvites(sortInvitesNewestFirst(listR || []));
       } catch {
         setReceivedInvites([]);
       }
@@ -889,7 +903,7 @@ export default function InvitePage({
       }
       try {
         const listR = await api<any[]>(`/my/invitations/received?includeHistory=${showHistory ? "1" : "0"}`, "GET");
-        setReceivedInvites(listR || []);
+        setReceivedInvites(sortInvitesNewestFirst(listR || []));
       } catch {
         // ignore
       }
@@ -911,31 +925,34 @@ export default function InvitePage({
   }
 
   function groupByContent(list: any[] | null) {
-    const out: Record<string, { key: string; title: string; invites: any[] }> = {};
-    for (const inv of list || []) {
+    const out: Record<string, { key: string; title: string; invites: any[]; latestTs: number }> = {};
+    for (const inv of sortInvitesNewestFirst(list || [])) {
       const title = inv.contentTitle || inv.contentId || inviteTargetLabel(inv);
       const key = String(inv.contentId || inv.contentTitle || `${inv.targetType || "target"}:${inv.targetValue || inv.id || "unknown"}`);
-      if (!out[key]) out[key] = { key, title, invites: [] };
+      if (!out[key]) out[key] = { key, title, invites: [], latestTs: 0 };
       out[key].invites.push(inv);
+      out[key].latestTs = Math.max(out[key].latestTs, inviteSortTs(inv));
     }
-    return Object.values(out);
+    return Object.values(out)
+      .sort((a, b) => b.latestTs - a.latestTs)
+      .map((group) => ({ key: group.key, title: group.title, invites: sortInvitesNewestFirst(group.invites) }));
   }
 
-  const visibleSentInvites = (myInvites || []).filter((inv) => {
+  const visibleSentInvites = sortInvitesNewestFirst((myInvites || []).filter((inv) => {
     if (showHistory) return true;
     const status = inviteStatus(inv);
     return isActiveInviteStatus(status) && !inv.contentDeletedAt;
-  });
-  const visibleReceivedInvites = (receivedInvites || []).filter((inv) => {
+  }));
+  const visibleReceivedInvites = sortInvitesNewestFirst((receivedInvites || []).filter((inv) => {
     if (showHistory) return true;
     const status = inviteStatus(inv);
     return isActiveInviteStatus(status) && !inv.contentDeletedAt;
-  });
-  const visibleRemoteInvites = (remoteReceivedInvites || []).filter((inv) => {
+  }));
+  const visibleRemoteInvites = sortInvitesNewestFirst((remoteReceivedInvites || []).filter((inv) => {
     if (showHistory) return true;
     const status = inviteStatus(inv);
     return isActiveInviteStatus(status) && !inv.contentDeletedAt;
-  });
+  }));
   const dedupeKey = (inv: any) => {
     const inviteId = String(inv?.id || "").trim();
     if (inviteId) return `id:${inviteId}`;
@@ -952,14 +969,14 @@ export default function InvitePage({
   const localInviteKeys = new Set(visibleReceivedInvites.map(dedupeKey));
   const dedupedRemoteInvites = visibleRemoteInvites.filter((inv) => !localInviteKeys.has(dedupeKey(inv)));
 
-  const dedupedSentInvites = Array.from(
+  const dedupedSentInvites = sortInvitesNewestFirst(Array.from(
     new Map(
       (visibleSentInvites || []).map((inv) => [
         String(inv?.id || `${inv?.contentId || ""}|${inv?.targetType || ""}|${inv?.targetValue || inv?.participantEmail || ""}|${inv?.createdAt || ""}`),
         inv
       ])
     ).values()
-  ).sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
+  ));
 
   async function acceptRemoteInvite(inv: any) {
     const inviteUrl = String(inv?.inviteUrl || "").trim();
