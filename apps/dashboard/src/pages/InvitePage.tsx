@@ -443,7 +443,7 @@ export default function InvitePage({
   const remoteOriginFromLocation = getRemoteOriginFromLocation();
   const surfaceModeFromLocation = getSurfaceModeFromLocation();
 
-  function openPastedInvite() {
+  async function openPastedInvite() {
     setPasteMsg(null);
     const raw = String(pasteRaw || "").trim();
     if (!raw) {
@@ -465,6 +465,29 @@ export default function InvitePage({
       setPasteMsg("For remote invites, paste the full invite link.");
       return;
     }
+
+    // On local dashboard surfaces, prefer direct ingest so users can work from rows
+    // without opening another invite page/tab.
+    if (remote && me) {
+      try {
+        const snapshot = await fetchRemoteJsonFromOrigin(remote, `/invites/${encodeURIComponent(parsed.token)}`, {
+          method: "GET"
+        });
+        await ingestRemoteSnapshot({
+          origin: remote,
+          token: parsed.token,
+          inviteUrl: `${remote.replace(/\/+$/, "")}/invite/${encodeURIComponent(parsed.token)}`,
+          snapshot
+        });
+        await refreshRemoteReceivedList();
+        setPasteMsg("Invite imported into Received invites. Use Sync/Accept from the row.");
+        return;
+      } catch (e: any) {
+        setPasteMsg(mapAcceptErrorMessage(e?.message || "Failed to import invite directly."));
+        return;
+      }
+    }
+
     const next = remote
       ? `/invite/${encodeURIComponent(parsed.token)}?remote=${encodeURIComponent(remote)}`
       : `/invite/${encodeURIComponent(parsed.token)}`;
