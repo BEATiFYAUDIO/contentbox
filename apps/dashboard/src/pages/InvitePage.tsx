@@ -220,14 +220,14 @@ function buildInviteMailto(inv: CreatedInviteRow) {
   return `mailto:${encodeURIComponent(to)}?${q.toString()}`;
 }
 
-function openExternalInNewWindow(url: string) {
+function openExternalInNewWindow(url: string): boolean {
   const target = String(url || "").trim();
-  if (!target) return;
+  if (!target) return false;
   try {
     const popup = window.open(target, "_blank", "noopener,noreferrer");
-    if (!popup) window.location.href = target;
+    return Boolean(popup);
   } catch {
-    window.location.href = target;
+    return false;
   }
 }
 
@@ -449,7 +449,10 @@ export default function InvitePage({
         next
       });
     }
-    openExternalInNewWindow(next);
+    const opened = openExternalInNewWindow(next);
+    if (!opened) {
+      setPasteMsg("Popup blocked by browser. Allow popups for this site and try again.");
+    }
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
