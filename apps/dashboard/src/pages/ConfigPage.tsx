@@ -157,15 +157,57 @@ export default function ConfigPage({
   const canForceLocal = Boolean(uiHost && (uiHost === "localhost" || uiHost === "127.0.0.1"));
 
   useEffect(() => {
-    const customized = readStoredValue(STORAGE_NETWORKING_CUSTOMIZED) === "1";
-    if (!customized) return;
-    setPublicOrigin(readStoredValue(STORAGE_PUBLIC_ORIGIN));
-    setPublicBuyOrigin(readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
-    setPublicStudioOrigin(readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
-    setPublicOriginFallback(readStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK));
-    setPublicBuyOriginFallback(readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK));
-    setPublicStudioOriginFallback(readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK));
-  }, []);
+    let cancelled = false;
+    (async () => {
+      const customized = readStoredValue(STORAGE_NETWORKING_CUSTOMIZED) === "1";
+      const fallback = {
+        publicOrigin: readStoredValue(STORAGE_PUBLIC_ORIGIN),
+        publicBuyOrigin: readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN),
+        publicStudioOrigin: readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN),
+        publicOriginFallback: readStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK),
+        publicBuyOriginFallback: readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK),
+        publicStudioOriginFallback: readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK)
+      };
+      if (!token) {
+        if (!customized || cancelled) return;
+        setPublicOrigin(fallback.publicOrigin);
+        setPublicBuyOrigin(fallback.publicBuyOrigin);
+        setPublicStudioOrigin(fallback.publicStudioOrigin);
+        setPublicOriginFallback(fallback.publicOriginFallback);
+        setPublicBuyOriginFallback(fallback.publicBuyOriginFallback);
+        setPublicStudioOriginFallback(fallback.publicStudioOriginFallback);
+        return;
+      }
+      try {
+        const res = await fetch(`${apiBase}/api/public/config`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json().catch(() => null);
+        if (!cancelled && res.ok && json) {
+          setPublicOrigin(String(json.publicOrigin || ""));
+          setPublicBuyOrigin(String(json.publicBuyOrigin || ""));
+          setPublicStudioOrigin(String(json.publicStudioOrigin || ""));
+          setPublicOriginFallback(String(json.publicOriginFallback || ""));
+          setPublicBuyOriginFallback(String(json.publicBuyOriginFallback || ""));
+          setPublicStudioOriginFallback(String(json.publicStudioOriginFallback || ""));
+          return;
+        }
+      } catch {
+        // fall through to local fallback
+      }
+      if (!customized || cancelled) return;
+      setPublicOrigin(fallback.publicOrigin);
+      setPublicBuyOrigin(fallback.publicBuyOrigin);
+      setPublicStudioOrigin(fallback.publicStudioOrigin);
+      setPublicOriginFallback(fallback.publicOriginFallback);
+      setPublicBuyOriginFallback(fallback.publicBuyOriginFallback);
+      setPublicStudioOriginFallback(fallback.publicStudioOriginFallback);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token]);
 
   useEffect(() => {
     let cancelled = false;
@@ -496,7 +538,7 @@ export default function ConfigPage({
     (import.meta as any).env?.VITE_APP_VERSION || "dev"
   }`;
 
-  const saveNetworking = () => {
+  const saveNetworking = async () => {
     writeStoredValue(STORAGE_NETWORKING_CUSTOMIZED, "1");
     writeStoredValue(STORAGE_PUBLIC_ORIGIN, normalizeOrigin(publicOrigin));
     writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN, normalizeOrigin(publicBuyOrigin));
@@ -504,9 +546,29 @@ export default function ConfigPage({
     writeStoredValue(STORAGE_PUBLIC_ORIGIN_FALLBACK, normalizeOrigin(publicOriginFallback));
     writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, normalizeOrigin(publicBuyOriginFallback));
     writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, normalizeOrigin(publicStudioOriginFallback));
+    if (!token) return;
+    try {
+      const res = await fetch(`${apiBase}/api/public/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          publicOrigin: normalizeOrigin(publicOrigin),
+          publicBuyOrigin: normalizeOrigin(publicBuyOrigin),
+          publicStudioOrigin: normalizeOrigin(publicStudioOrigin),
+          publicOriginFallback: normalizeOrigin(publicOriginFallback),
+          publicBuyOriginFallback: normalizeOrigin(publicBuyOriginFallback),
+          publicStudioOriginFallback: normalizeOrigin(publicStudioOriginFallback)
+        })
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.error || "Failed to save networking config");
+      setPublicMsg("Networking config saved.");
+    } catch (e: any) {
+      setPublicMsg(e?.message || "Failed to save networking config.");
+    }
   };
 
-  const clearNetworking = () => {
+  const clearNetworking = async () => {
     setPublicOrigin("");
     setPublicBuyOrigin("");
     setPublicStudioOrigin("");
@@ -520,6 +582,26 @@ export default function ConfigPage({
     writeStoredValue(STORAGE_PUBLIC_BUY_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN_FALLBACK, "");
     writeStoredValue(STORAGE_NETWORKING_CUSTOMIZED, "");
+    if (!token) return;
+    try {
+      const res = await fetch(`${apiBase}/api/public/config`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          publicOrigin: "",
+          publicBuyOrigin: "",
+          publicStudioOrigin: "",
+          publicOriginFallback: "",
+          publicBuyOriginFallback: "",
+          publicStudioOriginFallback: ""
+        })
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.error || "Failed to clear networking config");
+      setPublicMsg("Networking config cleared.");
+    } catch (e: any) {
+      setPublicMsg(e?.message || "Failed to clear networking config.");
+    }
   };
 
   const saveApiBaseOverride = () => {

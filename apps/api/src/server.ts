@@ -13137,21 +13137,62 @@ app.get("/api/public/config", { preHandler: requireAuth }, async (_req: any, rep
     provider: config.provider || null,
     domain: config.domain || null,
     tunnelName: config.tunnelName || null,
+    publicOrigin: config.publicOrigin || null,
+    publicBuyOrigin: config.publicBuyOrigin || null,
+    publicStudioOrigin: config.publicStudioOrigin || null,
+    publicOriginFallback: config.publicOriginFallback || null,
+    publicBuyOriginFallback: config.publicBuyOriginFallback || null,
+    publicStudioOriginFallback: config.publicStudioOriginFallback || null,
     updatedAt: config.updatedAt || null
   });
 });
 
 app.post("/api/public/config", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  const body = (req.body ?? {}) as { provider?: string; domain?: string; tunnelName?: string };
+  const body = (req.body ?? {}) as {
+    provider?: string;
+    domain?: string;
+    tunnelName?: string;
+    publicOrigin?: string;
+    publicBuyOrigin?: string;
+    publicStudioOrigin?: string;
+    publicOriginFallback?: string;
+    publicBuyOriginFallback?: string;
+    publicStudioOriginFallback?: string;
+  };
   const provider = String(body.provider || "").trim();
   const domain = String(body.domain || "").trim();
   const tunnelName = String(body.tunnelName || "").trim();
+  const publicOrigin = normalizeOrigin(String(body.publicOrigin || "").trim());
+  const publicBuyOrigin = normalizeOrigin(String(body.publicBuyOrigin || "").trim());
+  const publicStudioOrigin = normalizeOrigin(String(body.publicStudioOrigin || "").trim());
+  const publicOriginFallback = normalizeOrigin(String(body.publicOriginFallback || "").trim());
+  const publicBuyOriginFallback = normalizeOrigin(String(body.publicBuyOriginFallback || "").trim());
+  const publicStudioOriginFallback = normalizeOrigin(String(body.publicStudioOriginFallback || "").trim());
   setPublicOriginConfig({
-    provider: provider || null,
-    domain: domain || null,
-    tunnelName: tunnelName || null
+    provider: body.provider !== undefined ? provider || null : undefined,
+    domain: body.domain !== undefined ? domain || null : undefined,
+    tunnelName: body.tunnelName !== undefined ? tunnelName || null : undefined,
+    publicOrigin: body.publicOrigin !== undefined ? publicOrigin || null : undefined,
+    publicBuyOrigin: body.publicBuyOrigin !== undefined ? publicBuyOrigin || null : undefined,
+    publicStudioOrigin: body.publicStudioOrigin !== undefined ? publicStudioOrigin || null : undefined,
+    publicOriginFallback: body.publicOriginFallback !== undefined ? publicOriginFallback || null : undefined,
+    publicBuyOriginFallback: body.publicBuyOriginFallback !== undefined ? publicBuyOriginFallback || null : undefined,
+    publicStudioOriginFallback: body.publicStudioOriginFallback !== undefined ? publicStudioOriginFallback || null : undefined
   });
-  return reply.send({ ok: true, provider: provider || null, domain: domain || null, tunnelName: tunnelName || null });
+  const config = getPublicOriginConfig();
+  return reply.send({
+    ok: true,
+    provider: config.provider || null,
+    domain: config.domain || null,
+    tunnelName: config.tunnelName || null,
+    publicOrigin: config.publicOrigin || null,
+    publicBuyOrigin: config.publicBuyOrigin || null,
+    publicStudioOrigin: config.publicStudioOrigin || null,
+    publicOriginFallback: config.publicOriginFallback || null,
+    publicBuyOriginFallback: config.publicBuyOriginFallback || null,
+    publicStudioOriginFallback: config.publicStudioOriginFallback || null,
+    updatedAt: config.updatedAt || null
+  });
 });
 
 async function detectConfiguredNamedTunnel() {

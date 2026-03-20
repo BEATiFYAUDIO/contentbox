@@ -563,9 +563,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [publicConsentOpen, setPublicConsentOpen] = React.useState(false);
   const [publicConsentDontAskAgain, setPublicConsentDontAskAgain] = React.useState(false);
   const [publicConsentBusy, setPublicConsentBusy] = React.useState(false);
-  const [publicOrigin, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
+  const [, setPublicOrigin] = React.useState<string>(() => envPublicOrigin || readStoredValue(STORAGE_PUBLIC_ORIGIN));
   const [publicBuyOrigin, setPublicBuyOrigin] = React.useState<string>(() => envPublicBuyOrigin || readStoredValue(STORAGE_PUBLIC_BUY_ORIGIN));
-  const [publicStudioOrigin, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
+  const [, setPublicStudioOrigin] = React.useState<string>(() => envPublicStudioOrigin || readStoredValue(STORAGE_PUBLIC_STUDIO_ORIGIN));
   const [publicOriginFromApi, setPublicOriginFromApi] = React.useState<string>("");
   const [salesByContent, setSalesByContent] = React.useState<Record<string, { totalSats: string; recent: any[] } | null>>({});
   const [derivativesByContent, setDerivativesByContent] = React.useState<Record<string, any[] | null>>({});
@@ -1031,25 +1031,24 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   }
 
   React.useEffect(() => {
-    if (!publicOrigin) return;
-    try {
-      window.localStorage.setItem(STORAGE_PUBLIC_ORIGIN, publicOrigin);
-    } catch {}
-  }, [publicOrigin]);
-
-  React.useEffect(() => {
-    if (!publicBuyOrigin) return;
-    try {
-      window.localStorage.setItem(STORAGE_PUBLIC_BUY_ORIGIN, publicBuyOrigin);
-    } catch {}
-  }, [publicBuyOrigin]);
-
-  React.useEffect(() => {
-    if (!publicStudioOrigin) return;
-    try {
-      window.localStorage.setItem(STORAGE_PUBLIC_STUDIO_ORIGIN, publicStudioOrigin);
-    } catch {}
-  }, [publicStudioOrigin]);
+    const token = getToken();
+    if (!token) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await api<any>("/api/public/config", "GET");
+        if (cancelled || !cfg) return;
+        setPublicOrigin((prev) => String(cfg?.publicOrigin || "").trim() || prev);
+        setPublicBuyOrigin((prev) => String(cfg?.publicBuyOrigin || "").trim() || prev);
+        setPublicStudioOrigin((prev) => String(cfg?.publicStudioOrigin || "").trim() || prev);
+      } catch {
+        // keep existing fallbacks
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   React.useEffect(() => {
     const expandedIds = Object.keys(expanded).filter((id) => expanded[id]);

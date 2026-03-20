@@ -56,6 +56,12 @@ export type PublicOriginConfig = {
   provider?: string | null;
   domain?: string | null;
   tunnelName?: string | null;
+  publicOrigin?: string | null;
+  publicBuyOrigin?: string | null;
+  publicStudioOrigin?: string | null;
+  publicOriginFallback?: string | null;
+  publicBuyOriginFallback?: string | null;
+  publicStudioOriginFallback?: string | null;
   updatedAt?: string | null;
 };
 
@@ -80,10 +86,44 @@ export function getPublicOriginConfig(): PublicOriginConfig {
 }
 
 export function setPublicOriginConfig(config: PublicOriginConfig) {
+  const current = readConfig();
   writeConfig({
-    provider: config.provider || null,
-    domain: config.domain || null,
-    tunnelName: config.tunnelName || null,
+    provider:
+      config.provider !== undefined
+        ? config.provider || null
+        : current.provider || null,
+    domain:
+      config.domain !== undefined
+        ? config.domain || null
+        : current.domain || null,
+    tunnelName:
+      config.tunnelName !== undefined
+        ? config.tunnelName || null
+        : current.tunnelName || null,
+    publicOrigin:
+      config.publicOrigin !== undefined
+        ? config.publicOrigin || null
+        : current.publicOrigin || null,
+    publicBuyOrigin:
+      config.publicBuyOrigin !== undefined
+        ? config.publicBuyOrigin || null
+        : current.publicBuyOrigin || null,
+    publicStudioOrigin:
+      config.publicStudioOrigin !== undefined
+        ? config.publicStudioOrigin || null
+        : current.publicStudioOrigin || null,
+    publicOriginFallback:
+      config.publicOriginFallback !== undefined
+        ? config.publicOriginFallback || null
+        : current.publicOriginFallback || null,
+    publicBuyOriginFallback:
+      config.publicBuyOriginFallback !== undefined
+        ? config.publicBuyOriginFallback || null
+        : current.publicBuyOriginFallback || null,
+    publicStudioOriginFallback:
+      config.publicStudioOriginFallback !== undefined
+        ? config.publicStudioOriginFallback || null
+        : current.publicStudioOriginFallback || null,
     updatedAt: new Date().toISOString()
   });
 }
