@@ -20395,12 +20395,52 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     },
     "participationProjection.profile_list"
   );
+  const participationCtaLabel = (typeRaw: unknown): string => {
+    const t = asString(typeRaw || "").trim().toLowerCase();
+    if (t === "video") return "Watch";
+    if (t === "song") return "Listen";
+    if (t === "book") return "Read";
+    return "Open";
+  };
+  const participationMediaHtml = (params: {
+    contentId: string;
+    contentType: string | null;
+    originBase: string;
+    title: string;
+  }): string => {
+    const type = asString(params.contentType || "").trim().toLowerCase();
+    const safeTitle = escHtml(params.title || "Content");
+    const base = normalizePublicOriginBase(params.originBase || "") || "";
+    if (!base || !params.contentId) {
+      return `<div class="featured-image-fallback"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
+    }
+    const previewUrl = buildPublicUrlFromOrigin(
+      base,
+      `/public/content/${encodeURIComponent(params.contentId)}/preview-file`
+    );
+    const coverUrl = buildPublicUrlFromOrigin(
+      base,
+      `/public/content/${encodeURIComponent(params.contentId)}/cover`
+    );
+    if (type === "video") {
+      return `<div class="featured-video-thumb-wrap">
+        <video class="featured-video-preview" preload="metadata" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+          <source src="${escHtml(previewUrl)}" />
+        </video>
+        <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
+        <span class="featured-video-play" aria-hidden="true">▶</span>
+      </div>`;
+    }
+    return `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+      <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
+  };
   const highlightedParticipationsHtml =
     highlightedParticipations.length > 0 || highlightedRemoteParticipations.length > 0
       ? [
           ...highlightedParticipations.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.participantRole || "participant"));
+            const safeType = escHtml(asString(item.contentType || "Participation"));
             const shareLabel =
               Number.isFinite(Number(item.participantBps)) && Number(item.participantBps) > 0
                 ? `${(Number(item.participantBps) / 100).toFixed(2)}%`
@@ -20409,11 +20449,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const buyUrl = asString(item.buyUrl || "").trim();
             const attributionUrl = asString(item.attributionUrl || "").trim();
             const linkHref = buyUrl || attributionUrl;
-            const cta = buyUrl ? "Open buy page" : attributionUrl ? "Open attribution" : null;
+            const cta = buyUrl
+              ? participationCtaLabel(item.contentType)
+              : attributionUrl
+                ? "Attribution"
+                : null;
+            const mediaHtml = participationMediaHtml({
+              contentId: asString(item.contentId || "").trim(),
+              contentType: item.contentType || null,
+              originBase: canonicalCommerceOrigin || currentPublicOrigin,
+              title: asString(item.contentTitle || "").trim() || "Content"
+            });
             return `<article class="featured-item">
+              <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta" style="min-width:0;">
                 <div class="featured-topline">
-                  <span class="featured-type-badge">Participation</span>
+                  <span class="featured-type-badge">${safeType || "Participation"}</span>
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
@@ -20429,6 +20480,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           ...highlightedRemoteParticipations.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.role || "participant"));
+            const safeType = escHtml(asString(item.contentType || "Participation"));
             const shareLabel = Number.isFinite(Number(percentToPrimitive(item.percent ?? null)))
               ? `${Number(percentToPrimitive(item.percent ?? null)).toFixed(2)}%`
               : "—";
@@ -20437,11 +20489,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
             const attributionUrl = item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/attribution` : "";
             const linkHref = buyUrl || attributionUrl;
-            const cta = buyUrl ? "Open buy page" : attributionUrl ? "Open attribution" : null;
+            const cta = buyUrl
+              ? participationCtaLabel(item.contentType)
+              : attributionUrl
+                ? "Attribution"
+                : null;
+            const mediaHtml = participationMediaHtml({
+              contentId: asString(item.contentId || "").trim(),
+              contentType: item.contentType || null,
+              originBase: base,
+              title: asString(item.contentTitle || "").trim() || "Content"
+            });
             return `<article class="featured-item">
+              <div class="featured-media">${mediaHtml}</div>
               <div class="featured-meta" style="min-width:0;">
                 <div class="featured-topline">
-                  <span class="featured-type-badge">Participation</span>
+                  <span class="featured-type-badge">${safeType || "Participation"}</span>
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
