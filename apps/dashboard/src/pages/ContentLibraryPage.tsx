@@ -7,7 +7,6 @@ import AuditPanel from "../components/AuditPanel";
 import { canArchive, canPublish, canRestore, canTrash, canUpload, computeContentUiState } from "../lib/contentState";
 import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
 import {
-  canFeatureOnProfile,
   classifyLibraryEligibility,
   isActiveLibraryVisible,
   logVisibilityDecision,
@@ -1609,60 +1608,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
-  async function setFeatureOnProfile(contentId: string, featureOnProfile: boolean) {
-    setBusyAction((m) => ({ ...m, [contentId]: true }));
-    setError(null);
-    try {
-      const res = await api<{ featureOnProfile: boolean }>(`/content/${contentId}/feature-on-profile`, "PATCH", {
-        featureOnProfile
-      });
-      setItems((prev) =>
-        prev.map((it) =>
-          it.id === contentId ? { ...it, featureOnProfile: Boolean(res?.featureOnProfile) } : it
-        )
-      );
-    } catch (e: any) {
-      setError(e?.message || "Failed to update profile feature status");
-    } finally {
-      setBusyAction((m) => ({ ...m, [contentId]: false }));
-    }
-  }
-
-  async function setParticipationFeatureOnProfile(contentId: string, featureOnProfile: boolean) {
-    const participation = participationByContentId[contentId];
-    if (!participation) {
-      setError("Participation record not found for this content.");
-      return;
-    }
-    setBusyAction((m) => ({ ...m, [contentId]: true }));
-    setError(null);
-    try {
-      const res =
-        participation.kind === "remote"
-          ? await api<{ highlightedOnProfile: boolean }>(
-              `/my/royalties/remote/${encodeURIComponent(String(participation.remoteInviteId || ""))}/highlight`,
-              "PATCH",
-              { enabled: featureOnProfile }
-            )
-          : await api<{ highlightedOnProfile: boolean }>(
-              `/my/participations/${encodeURIComponent(String(participation.splitParticipantId || ""))}/highlight`,
-              "PATCH",
-              { enabled: featureOnProfile }
-            );
-      setParticipationByContentId((prev) => ({
-        ...prev,
-        [contentId]: {
-          ...participation,
-          highlightedOnProfile: Boolean(res?.highlightedOnProfile)
-        }
-      }));
-    } catch (e: any) {
-      setError(e?.message || "Failed to update participation profile feature status");
-    } finally {
-      setBusyAction((m) => ({ ...m, [contentId]: false }));
-    }
-  }
-
   async function requestClearanceForContent(contentId: string, linkId: string) {
     setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: null }));
     setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "idle" } }));
@@ -2700,15 +2645,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const accessTag = it.libraryAccess || (it.ownerUserId === meId ? "owned" : "preview");
               const participationInfo = participationByContentId[it.id];
               const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
-              const ownerFeatureAllowed = canFeatureOnProfile({
-                item: { ...it, libraryAccess: "owned" },
-                meUserId: meId || null
-              }).allowed;
-              const participationFeatureAllowed = canFeatureOnProfile({
-                item: { ...it, libraryAccess: "participant" },
-                meUserId: meId || null,
-                participation: participationInfo || null
-              }).allowed;
               const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(it.type || ""));
 
               const split = splitByContent[it.id] ?? null;
@@ -2859,7 +2795,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               {isOwner && allowUpload ? (
                                 <UploadButton contentId={it.id} disabled={busy} label="Upload" />
                               ) : null}
-                              {isOwner && ownerFeatureAllowed ? (
+                              {isOwner ? (
                                 <button
                                   type="button"
                                   className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
@@ -2877,37 +2813,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   label={uiState === "published" ? "Update cover" : "Upload cover"}
                                 />
                               ) : null}
-                              {isOwner && uiState === "published" ? (
-                                <button
-                                  type="button"
-                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
-                                  onClick={() => setFeatureOnProfile(it.id, !Boolean(it.featureOnProfile))}
-                                  disabled={busy}
-                                  title={
-                                    it.featureOnProfile
-                                      ? "Remove this item from your public profile showcase"
-                                      : "Feature this item on your public profile showcase"
-                                  }
-                                >
-                                  {it.featureOnProfile ? "Unfeature" : "Feature on profile"}
-                                </button>
-                              ) : null}
-                              {!isOwner && participationInfo && participationFeatureAllowed ? (
-                                <button
-                                  type="button"
-                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
-                                  onClick={() => setParticipationFeatureOnProfile(it.id, !participationFeatured)}
-                                  disabled={busy}
-                                  title={
-                                    participationFeatured
-                                      ? "Remove this participation from your public profile showcase"
-                                      : "Feature this participation on your public profile showcase"
-                                  }
-                                >
-                                  {participationFeatured ? "Unfeature" : "Feature on profile"}
-                                </button>
-                              ) : null}
-
                               {splitsAllowed && isOwner ? (
                                 <button
                                   type="button"
