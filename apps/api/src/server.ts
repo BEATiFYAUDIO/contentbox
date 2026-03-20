@@ -12692,6 +12692,7 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
     try {
       signedPayload = await signInviteAcceptancePayload(token, localUserId, { audienceOrigin });
     } catch (e: any) {
+      const signingError = String(e?.message || e || "");
       app.log.warn(
         {
           token,
@@ -12699,14 +12700,14 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
           audienceOrigin,
           authHeaderPresent,
           localUserId: localUserId || null,
-          signingError: String(e?.message || e)
+          signingError
         },
         "remoteInvite.accept.signingUnavailable"
       );
       return reply.code(409).send({
         error: "This device cannot sign invite acceptance payloads.",
         code: "INVITE_KEY_MISSING",
-        details: String(e?.message || e)
+        details: signingError
       });
     }
     const advertisedNodeUrl = normalizeOrigin(String(signedPayload?.payload?.nodeUrl || ""));
@@ -12727,34 +12728,8 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         nodeUrl: advertisedNodeUrl || null
       });
     }
-    let discoveryValid = false;
-    let discoveryStatus = 0;
-    try {
-      const discoveryRes = await fetchWithTimeout(
-        `${advertisedNodeUrl}/.well-known/contentbox`,
-        { method: "GET", headers: { Accept: "application/json" } as any } as any,
-        4000
-      );
-      discoveryStatus = discoveryRes.status;
-      if (discoveryRes.ok) {
-        const discoveryPayload: any = await discoveryRes.json().catch(() => null);
-        const discoveredNodeUrl = normalizeOrigin(asString(discoveryPayload?.nodeUrl || "").trim());
-        const discoveredPub = asString(discoveryPayload?.publicKeyPem || "").trim();
-        discoveryValid = Boolean(discoveredNodeUrl && discoveredPub);
-      }
-    } catch {
-      discoveryValid = false;
-    }
-    if (!discoveryValid) {
-      return reply.code(409).send({
-        error: "This node public origin discovery is unreachable or invalid for remote invite signature verification.",
-        code: "INVITE_NODE_URL_UNREACHABLE",
-        nodeUrl: advertisedNodeUrl || null,
-        details: {
-          discoveryStatus: discoveryStatus || null
-        }
-      });
-    }
+    // Do not hard-block on local preflight discovery checks here.
+    // The remote owner node is the final authority for forwarded identity trust validation.
     const outboundBody = {
       ...(req.body ?? {}),
       payload: signedPayload.payload,
@@ -29135,10 +29110,16 @@ async function handlePublicInvitePage(req: any, reply: any) {
       try {
         const popup = window.open(handoff, "_blank", "noopener,noreferrer");
         if (!popup) {
-          statusEl.textContent = "Popup blocked. Allow popups for this site and try again.";
+          window.location.assign(handoff);
+          return;
         }
       } catch {
-        statusEl.textContent = "Could not open dashboard handoff URL.";
+        try {
+          window.location.assign(handoff);
+          return;
+        } catch {
+          statusEl.textContent = "Could not open dashboard handoff URL.";
+        }
       }
     };
   }

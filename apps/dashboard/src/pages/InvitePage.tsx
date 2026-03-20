@@ -225,9 +225,16 @@ function openExternalInNewWindow(url: string): boolean {
   if (!target) return false;
   try {
     const popup = window.open(target, "_blank", "noopener,noreferrer");
-    return Boolean(popup);
+    if (popup) return true;
+    window.location.assign(target);
+    return true;
   } catch {
-    return false;
+    try {
+      window.location.assign(target);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -450,9 +457,7 @@ export default function InvitePage({
       });
     }
     const opened = openExternalInNewWindow(next);
-    if (!opened) {
-      setPasteMsg("Popup blocked by browser. Allow popups for this site and try again.");
-    }
+    if (!opened) setPasteMsg("Could not open invite.");
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
