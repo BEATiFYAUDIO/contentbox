@@ -4,6 +4,7 @@ import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
 import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
+import { resolveParticipantDisplayLabel } from "../lib/participantDisplay";
 
 type WorkRoyaltyRow = {
   contentId: string;
@@ -63,6 +64,30 @@ type RemoteRoyaltyRow = {
   participantEmail?: string | null;
   acceptedAt?: string | null;
   remoteNodeUrl?: string | null;
+  earnedSatsToDate?: string;
+  settlementLineCount?: number;
+  payoutRows?: number;
+  payoutSummary?: Record<string, number>;
+  payoutState?: string;
+  destinationState?: string;
+};
+
+type ParticipationRow = {
+  contentId: string;
+  contentTitle: string | null;
+  contentType: string | null;
+  contentStatus: string | null;
+  contentDeletedAt: string | null;
+  splitVersionId: string;
+  splitVersionNumber: number | null;
+  splitParticipantId: string;
+  participantRole: string | null;
+  participantBps: number | null;
+  participantPercent: number | null;
+  acceptedAt: string | null;
+  attributionUrl: string | null;
+  buyUrl: string | null;
+  highlightedOnProfile: boolean;
 };
 
 export default function SplitParticipationsPage(props: {
@@ -78,6 +103,7 @@ export default function SplitParticipationsPage(props: {
   const isBasic = props.nodeMode === "basic";
 
   const [works, setWorks] = useState<WorkRoyaltyRow[]>([]);
+  const [participations, setParticipations] = useState<ParticipationRow[]>([]);
   const [upstream, setUpstream] = useState<UpstreamIncomeRow[]>([]);
   const [remoteRoyalties, setRemoteRoyalties] = useState<RemoteRoyaltyRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -93,6 +119,8 @@ export default function SplitParticipationsPage(props: {
     (async () => {
       try {
         setLoading(true);
+        const participationRes = await api<{ items: ParticipationRow[] }>("/my/participations", "GET");
+        setParticipations(participationRes?.items || []);
         const res = await api<RoyaltiesResponse>("/my/royalties", "GET");
         setWorks(res?.works || []);
         setUpstream(res?.upstreamIncome || []);
@@ -133,6 +161,64 @@ export default function SplitParticipationsPage(props: {
         <div className="text-sm text-neutral-500">No works yet.</div>
       ) : null}
 
+      <div className="text-sm text-neutral-300">Participations (locked splits)</div>
+      <div className="text-xs text-neutral-500">Authoritative collaboration credits from locked split snapshots.</div>
+      {participations.length === 0 ? (
+        <div className="text-sm text-neutral-500 mt-2">No locked participations yet.</div>
+      ) : (
+        <div className="space-y-3 mt-2">
+          {participations.map((p) => (
+            <div key={p.splitParticipantId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-neutral-100">{p.contentTitle || "Untitled"}</div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    {(p.contentType || "content").toUpperCase()} • {p.contentStatus || "unknown"}
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    Role: <span className="text-neutral-200">{p.participantRole || "participant"}</span>
+                    {" "}• Share: <span className="text-neutral-200">{p.participantBps != null ? `${(p.participantBps / 100).toFixed(2)}%` : (p.participantPercent != null ? `${Number(p.participantPercent).toFixed(2)}%` : "—")}</span>
+                    {" "}• Split v{p.splitVersionNumber ?? "?"}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={async () => {
+                      try {
+                        const next = !p.highlightedOnProfile;
+                        await api(`/my/participations/${encodeURIComponent(p.splitParticipantId)}/highlight`, "PATCH", {
+                          enabled: next
+                        });
+                        setParticipations((rows) =>
+                          rows.map((row) =>
+                            row.splitParticipantId === p.splitParticipantId
+                              ? { ...row, highlightedOnProfile: next }
+                              : row
+                          )
+                        );
+                      } catch (e: any) {
+                        setError(e?.message || "Failed to update profile highlight.");
+                      }
+                    }}
+                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  >
+                    {p.highlightedOnProfile ? "Unfeature" : "Feature on profile"}
+                  </button>
+                  {p.buyUrl ? (
+                    <button
+                      onClick={() => window.open(p.buyUrl as string, "_blank", "noopener,noreferrer")}
+                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                    >
+                      Open
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="text-sm text-neutral-300">Works I have a share in</div>
       <div className="mt-2 flex items-center justify-between">
         <div className="text-xs text-neutral-500">Inactive works are tombstoned or trashed items.</div>
@@ -172,7 +258,13 @@ export default function SplitParticipationsPage(props: {
                       {p.splitSummary.map((s, idx) => (
                         <div key={`${p.contentId}-${idx}`} className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
-                            {s.displayName || s.participantEmail || s.participantUserId || "participant"} — {s.role || "role"}
+                            {resolveParticipantDisplayLabel({
+                              displayName: s.displayName || null,
+                              participantUserId: s.participantUserId || null,
+                              participantEmail: s.participantEmail || null,
+                              allowEmail: true,
+                              fallbackLabel: "Participant"
+                            })} — {s.role || "role"}
                           </div>
                           <div>{typeof s.bps === "number" ? `${(s.bps / 100).toFixed(2)}%` : s.percent || "—"}</div>
                         </div>
@@ -269,6 +361,11 @@ export default function SplitParticipationsPage(props: {
                       <div className="text-xs text-neutral-400 mt-1">
                         Role: <span className="text-neutral-200">{r.role || "participant"}</span>
                         {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
+                      </div>
+                      <div className="text-xs text-neutral-400 mt-1">
+                        Earned: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
+                        {" "}• Payout state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
+                        {" "}• Destination: <span className="text-neutral-200">{r.destinationState || "unknown"}</span>
                       </div>
                       <div className="text-xs text-neutral-500 mt-1">
                         Remote: {r.remoteOrigin}

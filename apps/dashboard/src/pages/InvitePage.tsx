@@ -4,6 +4,7 @@ import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
 import type { FeatureMatrix, CapabilitySet, NodeMode } from "../lib/identity";
+import { resolveParticipantDisplayLabel } from "../lib/participantDisplay";
 
 type InvitePageProps = {
   token?: string;
@@ -36,10 +37,15 @@ type InviteGetResponse = {
     id: string;
     expiresAt: string;
     acceptedAt: string | null;
+    targetDisplayName?: string | null;
   };
   splitParticipant: {
     id: string;
     participantEmail: string;
+    participantUserId?: string | null;
+    targetType?: "email" | "local_user" | "identity_ref" | null;
+    targetValue?: string | null;
+    participantDisplayName?: string | null;
     role: string;
     percent: any; // Decimal may serialize as string
     payoutIdentityId: string | null;
@@ -78,6 +84,8 @@ type CreatedInviteRow = {
   deliveryMethod?: "none" | "email" | "link" | "internal";
   splitParticipantId: string;
   participantState?: "invited" | "active";
+  participantDisplayName?: string | null;
+  targetDisplayName?: string | null;
   token: string;
   expiresAt: string;
   inviteUrl: string | null;
@@ -110,14 +118,27 @@ function normalizeEmail(value?: string | null): string {
 }
 
 function inviteTargetLabel(inv: any): string {
-  const targetType = String(inv?.targetType || "").trim().toLowerCase();
-  const targetValue = String(inv?.targetValue || "").trim();
-  const participantUserId = String(inv?.participantUserId || "").trim();
-  const participantEmail = String(inv?.participantEmail || "").trim();
-  if (targetType === "local_user") return targetValue || participantUserId || participantEmail || "(unknown)";
-  if (targetType === "identity_ref") return targetValue ? `pending identity claim: ${targetValue}` : "(unknown)";
-  if (targetType === "email") return targetValue || participantEmail || "(unknown)";
-  return targetValue || participantUserId || participantEmail || "(unknown)";
+  return resolveParticipantDisplayLabel({
+    displayName: inv?.targetDisplayName || inv?.participantDisplayName || null,
+    targetType: inv?.targetType || null,
+    targetValue: inv?.targetValue || null,
+    participantUserId: inv?.participantUserId || null,
+    participantEmail: inv?.participantEmail || null,
+    allowEmail: true,
+    fallbackLabel: "Invited collaborator"
+  });
+}
+
+function inviteTargetLabelPublic(inv: any): string {
+  return resolveParticipantDisplayLabel({
+    displayName: inv?.targetDisplayName || inv?.participantDisplayName || null,
+    targetType: inv?.targetType || null,
+    targetValue: inv?.targetValue || null,
+    participantUserId: inv?.participantUserId || null,
+    participantEmail: inv?.participantEmail || null,
+    allowEmail: false,
+    fallbackLabel: "Contributor"
+  });
 }
 
 function inviteAudienceLabel(inv: any): string {
@@ -211,7 +232,7 @@ export default function InvitePage({
   const [busy, setBusy] = useState(false);
   const [data, setData] = useState<InviteGetResponse | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
-  const [me, setMe] = useState<{ id: string; email?: string | null } | null>(null);
+  const [me, setMe] = useState<{ id: string; email?: string | null; displayName?: string | null } | null>(null);
   const [inviteAuditEventsList, setInviteAuditEventsList] = useState<any[]>([]);
   const [showInviteAuditEvents, setShowInviteAuditEvents] = useState(false);
   const [myInvites, setMyInvites] = useState<any[] | null>(null);
@@ -1248,7 +1269,7 @@ export default function InvitePage({
               <div className="text-sm font-medium">Received invites</div>
               <div className="text-xs text-neutral-400">Invites addressed to your account, including remote nodes.</div>
               <div className="mt-1 text-[11px] text-neutral-500">
-                Local auth: {me ? `${me.id}${me.email ? ` (${me.email})` : ""}` : "not signed in"} • Device can sign:{" "}
+                Local auth: {me ? `${me.displayName || me.email || "signed in"}${me.email ? ` (${me.email})` : ""}` : "not signed in"} • Device can sign:{" "}
                 {localSigning ? (localSigning.canSign ? "yes" : "no") : "unknown"} • Key verified:{" "}
                 {localSigning ? (localSigning.keyVerified ? "yes" : "no") : "unknown"}
               </div>
@@ -1457,14 +1478,24 @@ export default function InvitePage({
             </div>
 
             <div className="text-sm text-neutral-400">
-              You are invited as: <span className="text-neutral-200">{data.splitParticipant.participantEmail}</span>
+              You are invited as:{" "}
+              <span className="text-neutral-200">
+                {inviteTargetLabelPublic({
+                  ...data,
+                  targetDisplayName: data.invitation?.targetDisplayName || data.splitParticipant?.participantDisplayName || null,
+                  participantUserId: data.splitParticipant?.participantUserId || null,
+                  participantEmail: data.splitParticipant?.participantEmail || null,
+                  targetType: data.targetType || data.splitParticipant?.targetType || null,
+                  targetValue: data.targetValue || data.splitParticipant?.targetValue || null
+                })}
+              </span>
             </div>
 
             <div className="text-xs text-neutral-500">
               Current auth user (backend):{" "}
               <span className="text-neutral-300">
                 {authCtx?.authenticated
-                  ? `${authCtx.userId || "—"}${authCtx.email ? ` (${authCtx.email})` : ""}`
+                  ? `${authCtx.email || "signed in"}`
                   : "not signed in"}
               </span>
             </div>
@@ -1472,7 +1503,14 @@ export default function InvitePage({
             <div className="text-xs text-neutral-500">
               Expected target:{" "}
               <span className="text-neutral-300">
-                {data.targetType ? `${data.targetType}: ${data.targetValue || "—"}` : "—"}
+                {inviteTargetLabelPublic({
+                  ...data,
+                  targetDisplayName: data.invitation?.targetDisplayName || data.splitParticipant?.participantDisplayName || null,
+                  participantUserId: data.splitParticipant?.participantUserId || null,
+                  participantEmail: data.splitParticipant?.participantEmail || null,
+                  targetType: data.targetType || data.splitParticipant?.targetType || null,
+                  targetValue: data.targetValue || data.splitParticipant?.targetValue || null
+                })}
               </span>
             </div>
 

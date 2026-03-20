@@ -46,6 +46,15 @@ test("attribution prefers snapshot identity labels over generic fallback", () =>
     }),
     "@dhillock"
   );
+  assert.equal(
+    resolveLockedSnapshotAttributionLabel({
+      displayNameSnapshot: null,
+      handleSnapshot: null,
+      participantEmail: "test@example.com",
+      identityRef: "user:cmmabc123"
+    }),
+    "Contributor"
+  );
 });
 
 test("accounting state marks unresolved routing as blocked but not omitted", () => {
@@ -63,4 +72,3 @@ test("accounting state marks unresolved routing as blocked but not omitted", () 
     { state: "ready", blockedReason: null }
   );
 });
-

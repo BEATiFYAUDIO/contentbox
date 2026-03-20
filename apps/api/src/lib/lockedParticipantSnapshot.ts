@@ -21,10 +21,7 @@ export function resolveLockedSnapshotAttributionLabel(snapshot: LockedParticipan
   if (displayName) return displayName;
   const handle = String(snapshot?.handleSnapshot || "").trim();
   if (handle) return handle.startsWith("@") ? handle : `@${handle}`;
-  const email = String(snapshot?.participantEmail || "").trim();
-  if (email) return email;
-  const identityRef = String(snapshot?.identityRef || "").trim();
-  if (identityRef) return identityRef;
+  // Public attribution must avoid leaking raw identity refs/emails.
   return "Contributor";
 }
 
@@ -40,4 +37,3 @@ export function resolveLockedSnapshotAccountingState(snapshot: LockedParticipant
     blockedReason: "IDENTITY_UNBOUND_LOCAL_USER"
   };
 }
-

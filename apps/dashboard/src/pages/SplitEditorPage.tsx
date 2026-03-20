@@ -3,6 +3,7 @@ import { api } from "../lib/api";
 import type { FeatureMatrix, CapabilitySet } from "../lib/identity";
 import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
+import { resolveParticipantDisplayLabel } from "../lib/participantDisplay";
 
 type ContentItem = {
   id: string;
@@ -21,6 +22,8 @@ type SplitParticipant = {
   percent: any; // Decimal may serialize as string
   createdAt: string;
   participantUserId?: string | null;
+  participantDisplayName?: string | null;
+  participantHandle?: string | null;
   invitationId?: string | null;
   invitationStatus?: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned" | null;
   invitationTargetType?: "email" | "local_user" | "identity_ref" | null;
@@ -90,7 +93,11 @@ function mapParticipantToRow(p: SplitParticipant): Row {
     id: p.id,
     participantEmail:
       p.participantEmail ||
-      (hasIdentityClaim ? String(canonicalTargetValue || "").trim() : hasEmailClaim ? normEmail(canonicalTargetValue || p.participantEmail || "") : ""),
+      (hasIdentityClaim
+        ? (p.participantDisplayName || "")
+        : hasEmailClaim
+          ? normEmail(canonicalTargetValue || p.participantEmail || "")
+          : ""),
     role: p.role,
     percent: percentToString(p.percent),
     participantUserId: p.participantUserId || null,
@@ -102,7 +109,18 @@ function mapParticipantToRow(p: SplitParticipant): Row {
     verifiedAt: p.verifiedAt || null,
     resolutionKind,
     resolvedUserId: p.participantUserId || (hasIdentityClaim ? String(canonicalTargetValue) : null),
-    resolvedDisplay: canonicalTargetValue || p.participantUserId || p.participantEmail || null,
+    resolvedDisplay:
+      p.participantDisplayName ||
+      resolveParticipantDisplayLabel({
+        displayName: p.participantDisplayName || null,
+        handle: p.participantHandle || null,
+        targetType: canonicalTargetType,
+        targetValue: canonicalTargetValue,
+        participantUserId: p.participantUserId || null,
+        participantEmail: p.participantEmail || null,
+        allowEmail: true,
+        fallbackLabel: "Invited collaborator"
+      }),
     normalizedEmail: p.participantEmail || null,
     resolvedVerifiedKey: p.verifiedAt ? true : null
   };
@@ -1415,7 +1433,17 @@ export default function SplitEditorPage(props: {
                         ) : (r.participantUserId && r.verifiedAt && (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))) ? (
                           <span className="text-emerald-300">Accepted</span>
                         ) : ((r.targetType === "local_user" || r.targetType === "identity_ref") && Boolean(r.targetValue)) ? (
-                          <span className="text-amber-300">Pending invite: {r.targetValue}</span>
+                          <span className="text-amber-300">
+                            Pending invite: {resolveParticipantDisplayLabel({
+                              displayName: r.resolvedDisplay || null,
+                              targetType: r.targetType || null,
+                              targetValue: r.targetValue || null,
+                              participantUserId: r.participantUserId || null,
+                              participantEmail: r.participantEmail || null,
+                              allowEmail: true,
+                              fallbackLabel: "Invited collaborator"
+                            })}
+                          </span>
                         ) : (r.targetType === "email" && Boolean(normEmail(r.targetValue || r.normalizedEmail || r.participantEmail))) ? (
                           <span className="text-amber-300">Pending invite: {normEmail(r.targetValue || r.normalizedEmail || r.participantEmail)}</span>
                         ) : r.resolutionKind === "identity" ? (

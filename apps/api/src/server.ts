@@ -9949,8 +9949,47 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
   });
 
   const visibleInvites = includeHistory ? invites : invites.filter((inv) => shouldShowInviteInActiveLists(inv as any));
+  const displayIds = Array.from(
+    new Set(
+      visibleInvites.flatMap((inv) => {
+        const ids: string[] = [];
+        const participantUserId = asString(inv.splitParticipant?.participantUserId || "").trim();
+        if (participantUserId) ids.push(participantUserId);
+        const targetType = normalizeInviteTargetType(inv.targetType);
+        const targetValue = asString(inv.targetValue).trim();
+        if (targetType === "local_user" && targetValue) ids.push(targetValue);
+        return ids;
+      })
+    )
+  );
+  const displayByUserId = await buildUserDisplayMap(displayIds);
   const inviteBase = await resolveShareableInviteOrigin(req);
   const out = visibleInvites.map((inv) => ({
+    ...(() => {
+      const participantUserId = asString(inv.splitParticipant?.participantUserId || "").trim();
+      const targetType = normalizeInviteTargetType(inv.targetType);
+      const targetValue = asString(inv.targetValue).trim();
+      const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+      const display = preferredUserId ? displayByUserId.get(preferredUserId) : null;
+      const participantDisplayName = resolvePrivateParticipantDisplayLabel({
+        participantUserId: participantUserId || null,
+        targetType,
+        targetValue,
+        participantEmail: inv.splitParticipant?.participantEmail || null,
+        userDisplayName: display?.displayName || null
+      });
+      const targetDisplayName = resolvePrivateParticipantDisplayLabel({
+        participantUserId: participantUserId || null,
+        targetType,
+        targetValue,
+        participantEmail: inv.splitParticipant?.participantEmail || null,
+        userDisplayName:
+          targetType === "local_user"
+            ? displayByUserId.get(targetValue)?.displayName || null
+            : display?.displayName || null
+      });
+      return { participantDisplayName, targetDisplayName };
+    })(),
     token: inv.token,
     id: inv.id,
     splitParticipantId: inv.splitParticipantId,
@@ -10010,7 +10049,46 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
   });
 
   const visibleInvites = includeHistory ? invites : invites.filter((inv) => shouldShowInviteInActiveLists(inv as any));
+  const displayIds = Array.from(
+    new Set(
+      visibleInvites.flatMap((inv) => {
+        const ids: string[] = [];
+        const participantUserId = asString(inv.splitParticipant?.participantUserId || "").trim();
+        if (participantUserId) ids.push(participantUserId);
+        const targetType = normalizeInviteTargetType(inv.targetType);
+        const targetValue = asString(inv.targetValue).trim();
+        if (targetType === "local_user" && targetValue) ids.push(targetValue);
+        return ids;
+      })
+    )
+  );
+  const displayByUserId = await buildUserDisplayMap(displayIds);
   const out = visibleInvites.map((inv) => ({
+    ...(() => {
+      const participantUserId = asString(inv.splitParticipant?.participantUserId || "").trim();
+      const targetType = normalizeInviteTargetType(inv.targetType);
+      const targetValue = asString(inv.targetValue).trim();
+      const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+      const display = preferredUserId ? displayByUserId.get(preferredUserId) : null;
+      const participantDisplayName = resolvePrivateParticipantDisplayLabel({
+        participantUserId: participantUserId || null,
+        targetType,
+        targetValue,
+        participantEmail: inv.splitParticipant?.participantEmail || null,
+        userDisplayName: display?.displayName || null
+      });
+      const targetDisplayName = resolvePrivateParticipantDisplayLabel({
+        participantUserId: participantUserId || null,
+        targetType,
+        targetValue,
+        participantEmail: inv.splitParticipant?.participantEmail || null,
+        userDisplayName:
+          targetType === "local_user"
+            ? displayByUserId.get(targetValue)?.displayName || null
+            : display?.displayName || null
+      });
+      return { participantDisplayName, targetDisplayName };
+    })(),
     token: inv.token,
     id: inv.id,
     splitParticipantId: inv.splitParticipantId,
@@ -24047,6 +24125,18 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
     }
   });
 
+  const displayCandidateIds = new Set<string>();
+  for (const version of versions) {
+    for (const participant of version.participants || []) {
+      const participantUserId = asString(participant?.participantUserId || "").trim();
+      if (participantUserId) displayCandidateIds.add(participantUserId);
+      const targetType = normalizeInviteTargetType((participant as any)?.targetType || (participant as any)?.invitation?.targetType || null);
+      const targetValue = asString((participant as any)?.targetValue || (participant as any)?.invitation?.targetValue || "").trim();
+      if (targetType === "local_user" && targetValue) displayCandidateIds.add(targetValue);
+    }
+  }
+  const displayByUserId = await buildUserDisplayMap(Array.from(displayCandidateIds));
+
   return reply.send(
     versions.map((v) => ({
       id: v.id,
@@ -24058,6 +24148,26 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
       lockedFileObjectKey: v.lockedFileObjectKey,
       lockedFileSha256: v.lockedFileSha256,
       participants: v.participants.map((p) => ({
+        ...(() => {
+          const participantUserId = asString((p as any)?.participantUserId || "").trim();
+          const targetType = normalizeInviteTargetType((p as any)?.targetType || (p as any)?.invitation?.targetType || null);
+          const targetValue = asString((p as any)?.targetValue || (p as any)?.invitation?.targetValue || "").trim();
+          const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+          const display = preferredUserId ? displayByUserId.get(preferredUserId) : null;
+          const participantDisplayName = resolvePrivateParticipantDisplayLabel({
+            participantUserId,
+            targetType,
+            targetValue,
+            participantEmail: (p as any)?.participantEmail || null,
+            userDisplayName: display?.displayName || null
+          });
+          return {
+            participantDisplayName,
+            participantHandle: participantDisplayName && !participantDisplayName.includes("@")
+              ? normalizePublicProfileHandle(participantDisplayName)
+              : null
+          };
+        })(),
         ...p,
         percent: percentToPrimitive(p.percent),
         invitationStatus: (p as any)?.invitation?.status
@@ -24624,6 +24734,44 @@ function inferLockedParticipantTopologyMode(participant: any, localUserExists: b
   return "unknown";
 }
 
+function looksLikeInternalUserId(value: string | null | undefined): boolean {
+  const raw = asString(value || "").trim();
+  if (!raw) return false;
+  // CUID-like ids used internally; keep out of primary UI labels.
+  return /^c[a-z0-9]{20,}$/i.test(raw);
+}
+
+async function buildUserDisplayMap(userIds: string[]): Promise<Map<string, { displayName: string | null; email: string | null }>> {
+  const ids = Array.from(new Set((userIds || []).map((id) => asString(id || "").trim()).filter(Boolean)));
+  if (!ids.length) return new Map();
+  const users = await prisma.user.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, displayName: true, email: true }
+  });
+  return new Map(users.map((user) => [user.id, { displayName: asString(user.displayName || "").trim() || null, email: user.email || null }]));
+}
+
+function resolvePrivateParticipantDisplayLabel(input: {
+  participantUserId?: string | null;
+  targetType?: string | null;
+  targetValue?: string | null;
+  participantEmail?: string | null;
+  userDisplayName?: string | null;
+}): string | null {
+  const displayName = asString(input.userDisplayName || "").trim();
+  if (displayName) return displayName;
+  const participantEmail = normalizeEmail(input.participantEmail || "");
+  if (participantEmail) return participantEmail;
+  const targetType = normalizeInviteTargetType(input.targetType || null);
+  const targetValue = asString(input.targetValue || "").trim();
+  if (targetType === "email" && targetValue) return normalizeEmail(targetValue);
+  if (targetType === "identity_ref") return "Pending identity claim";
+  if (targetType === "local_user" && targetValue && !looksLikeInternalUserId(targetValue)) return targetValue;
+  const participantUserId = asString(input.participantUserId || "").trim();
+  if (participantUserId && !looksLikeInternalUserId(participantUserId)) return participantUserId;
+  return null;
+}
+
 async function buildLockedParticipantSnapshotsForSplitVersion(input: {
   splitVersion: any;
   lockTime: Date | null;
@@ -24662,7 +24810,7 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
     const targetValue = asString(participant?.invitation?.targetValue || participant?.targetValue || "").trim();
     const displayNameSnapshot =
       asString(user?.displayName || "").trim() ||
-      (targetType !== "email" ? targetValue : "") ||
+      (targetType === "email" ? normalizeEmail(targetValue || participantEmail || "").split("@")[0] || "" : "") ||
       participantEmail ||
       null;
     const normalizedHandle = normalizePublicProfileHandle(displayNameSnapshot || "");
@@ -27486,6 +27634,20 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
   if (split.content.ownerUserId !== userId) return forbidden(reply);
 
   const pending = split.participants.filter((p) => !isActiveLedgerParticipant(p as any));
+  const pendingDisplayIds = Array.from(
+    new Set(
+      pending.flatMap((p) => {
+        const ids: string[] = [];
+        const participantUserId = asString((p as any)?.participantUserId || "").trim();
+        if (participantUserId) ids.push(participantUserId);
+        const targetType = normalizeInviteTargetType((p as any)?.targetType || (p as any)?.invitation?.targetType || null);
+        const targetValue = asString((p as any)?.targetValue || (p as any)?.invitation?.targetValue || "").trim();
+        if (targetType === "local_user" && targetValue) ids.push(targetValue);
+        return ids;
+      })
+    )
+  );
+  const pendingDisplayByUserId = await buildUserDisplayMap(pendingDisplayIds);
 
   const createdInvites: Array<{
     invitationId: string;
@@ -27494,6 +27656,8 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
     targetValue: string;
     splitParticipantId: string;
     participantState: "invited" | "active";
+    participantDisplayName: string | null;
+    targetDisplayName: string | null;
     status: "pending" | "accepted" | "declined" | "revoked" | "expired" | "tombstoned";
     deliveryMethod: "none" | "email" | "link" | "internal";
     token: string;
@@ -27571,6 +27735,24 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
         targetValue,
         splitParticipantId: p.id,
         participantState: isActiveLedgerParticipant(p as any) ? "active" : "invited",
+        participantDisplayName: resolvePrivateParticipantDisplayLabel({
+          participantUserId: asString((p as any)?.participantUserId || "").trim() || null,
+          targetType,
+          targetValue,
+          participantEmail: String(p.participantEmail || ""),
+          userDisplayName:
+            pendingDisplayByUserId.get(asString((p as any)?.participantUserId || "").trim() || targetValue)?.displayName || null
+        }),
+        targetDisplayName: resolvePrivateParticipantDisplayLabel({
+          participantUserId: asString((p as any)?.participantUserId || "").trim() || null,
+          targetType,
+          targetValue,
+          participantEmail: String(p.participantEmail || ""),
+          userDisplayName:
+            targetType === "local_user"
+              ? pendingDisplayByUserId.get(targetValue)?.displayName || null
+              : null
+        }),
         status: normalizeInviteStatus(createdInv.status),
         deliveryMethod,
         token,
@@ -27658,6 +27840,9 @@ async function handlePublicInviteLookup(req: any, reply: any) {
 
   const inviteTargetType = normalizeInviteTargetType(inv.targetType);
   const inviteTargetValue = asString(inv.targetValue).trim();
+  const inviteDisplayByUserId = await buildUserDisplayMap(
+    [asString(inv.splitParticipant?.participantUserId || "").trim(), inviteTargetType === "local_user" ? inviteTargetValue : ""].filter(Boolean)
+  );
   let authContext: {
     authenticated: boolean;
     authHeaderPresent: boolean;
@@ -27738,6 +27923,16 @@ async function handlePublicInviteLookup(req: any, reply: any) {
     acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
     acceptedByUserId: inv.acceptedByUserId || null,
     acceptedIdentityRef: inv.acceptedIdentityRef || null,
+    targetDisplayName: resolvePrivateParticipantDisplayLabel({
+      participantUserId: asString(inv.splitParticipant?.participantUserId || "").trim() || null,
+      targetType: inviteTargetType,
+      targetValue: inviteTargetValue,
+      participantEmail: inv.splitParticipant?.participantEmail || null,
+      userDisplayName:
+        inviteTargetType === "local_user"
+          ? inviteDisplayByUserId.get(inviteTargetValue)?.displayName || null
+          : null
+    }),
     revokedAt: inv.revokedAt ? inv.revokedAt.toISOString() : null,
     tombstonedAt: inv.tombstonedAt ? inv.tombstonedAt.toISOString() : null
   } as const;
@@ -27754,6 +27949,15 @@ async function handlePublicInviteLookup(req: any, reply: any) {
     role: sp.role,
     percent: percentToPrimitive(sp.percent),
     payoutIdentityId: sp.payoutIdentityId,
+    participantDisplayName: resolvePrivateParticipantDisplayLabel({
+      participantUserId: asString(sp.participantUserId || "").trim() || null,
+      targetType: (sp as any).targetType || inviteTargetType,
+      targetValue: asString((sp as any).targetValue || inviteTargetValue),
+      participantEmail: sp.participantEmail || null,
+      userDisplayName: asString(sp.participantUserId || "").trim()
+        ? inviteDisplayByUserId.get(asString(sp.participantUserId || "").trim())?.displayName || null
+        : null
+    }),
     acceptedAt: sp.acceptedAt ? sp.acceptedAt.toISOString() : null
   } as const;
 
@@ -27798,7 +28002,46 @@ async function handlePublicInviteLookup(req: any, reply: any) {
         include: { splitParticipant: true },
         orderBy: { createdAt: "desc" }
       });
+      const relatedDisplayByUserId = await buildUserDisplayMap(
+        Array.from(
+          new Set(
+            ris.flatMap((r) => {
+              const ids: string[] = [];
+              const participantUserId = asString(r.splitParticipant?.participantUserId || "").trim();
+              if (participantUserId) ids.push(participantUserId);
+              const tt = normalizeInviteTargetType(r.targetType);
+              const tv = asString(r.targetValue || "").trim();
+              if (tt === "local_user" && tv) ids.push(tv);
+              return ids;
+            })
+          )
+        )
+      );
       relatedInvites = ris.map((r) => ({
+        ...(() => {
+          const targetType = normalizeInviteTargetType(r.targetType);
+          const targetValue = asString(r.targetValue || "").trim();
+          const participantUserId = asString(r.splitParticipant?.participantUserId || "").trim();
+          const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+          const display = preferredUserId ? relatedDisplayByUserId.get(preferredUserId) : null;
+          return {
+            participantDisplayName: resolvePrivateParticipantDisplayLabel({
+              participantUserId: participantUserId || null,
+              targetType,
+              targetValue,
+              participantEmail: r.splitParticipant?.participantEmail || null,
+              userDisplayName: display?.displayName || null
+            }),
+            targetDisplayName: resolvePrivateParticipantDisplayLabel({
+              participantUserId: participantUserId || null,
+              targetType,
+              targetValue,
+              participantEmail: r.splitParticipant?.participantEmail || null,
+              userDisplayName:
+                targetType === "local_user" ? relatedDisplayByUserId.get(targetValue)?.displayName || null : display?.displayName || null
+            })
+          };
+        })(),
         id: r.id,
         status: normalizeInviteStatus(r.status),
         targetType: normalizeInviteTargetType(r.targetType),
