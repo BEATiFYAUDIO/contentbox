@@ -95,6 +95,7 @@ type NormalizedLibraryItem = {
   relationshipTags: LibraryRelationshipFilter[];
   availabilityState: ReturnType<typeof getAvailabilityState>;
   relation: LibraryRelation;
+  publicPageUrl: string | null;
 };
 
 const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: string; cls: string }> = {
@@ -391,7 +392,8 @@ export default function LibraryPage() {
             relationshipType,
             relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
             availabilityState: getAvailabilityState(normalizedItem),
-            relation
+            relation,
+            publicPageUrl: buildPublicPageUrl(contentId, participation?.remoteOrigin || null)
           });
         }
         setItems(applyLibraryFilters(normalized, libraryTypeFilter, libraryRelationshipFilter));
@@ -418,6 +420,7 @@ export default function LibraryPage() {
     const toLoad = items.slice(0, limit);
     toLoad.forEach((entry) => {
       const id = entry.item.id;
+      if (entry.relation === "participant") return;
       if (!previewById[id] && !previewLoading[id]) {
         loadPreview(id);
       }
@@ -444,6 +447,15 @@ export default function LibraryPage() {
     } finally {
       setPreviewLoading((m) => ({ ...m, [contentId]: false }));
     }
+  }
+
+  function handlePrimaryPreviewAction(entry: NormalizedLibraryItem) {
+    if (entry.relation === "participant") {
+      const target = entry.publicPageUrl || buildPublicPageUrl(entry.item.id);
+      window.open(target, "_blank", "noopener,noreferrer");
+      return;
+    }
+    void loadPreview(entry.item.id);
   }
 
   function previewFileFor(previewUrl: string | null | undefined, files: any[] | null | undefined) {
@@ -479,6 +491,12 @@ function normalizeAssetUrl(apiBase: string, raw: string | null | undefined): str
 function isForbiddenPreviewError(message?: string | null): boolean {
   const text = String(message || "").toLowerCase();
   return text.includes("403") || text.includes("forbidden");
+}
+
+function buildPublicPageUrl(contentId: string, remoteOrigin?: string | null): string {
+  const origin = String(remoteOrigin || "").trim().replace(/\/+$/, "");
+  if (origin) return `${origin}/p/${encodeURIComponent(contentId)}`;
+  return `/p/${encodeURIComponent(contentId)}`;
 }
 
 function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | null): string | null {
@@ -640,9 +658,9 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                             <button
                               type="button"
                               className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                              onClick={() => loadPreview(it.id)}
+                              onClick={() => handlePrimaryPreviewAction(entry)}
                             >
-                              {previewLoading[it.id] ? "Loading…" : "Load preview"}
+                              {entry.relation === "participant" ? "Open public page" : previewLoading[it.id] ? "Loading…" : "Load preview"}
                             </button>
                           </div>
                           {previewError[it.id] ? (
@@ -651,11 +669,11 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                               {isForbiddenPreviewError(previewError[it.id]) ? (
                                 <a
                                   className="inline-flex rounded border border-neutral-800 px-2 py-1 text-xs text-emerald-300 hover:bg-neutral-900"
-                                  href={`/buy/${encodeURIComponent(it.id)}`}
+                                  href={entry.publicPageUrl || buildPublicPageUrl(it.id)}
                                   target="_blank"
                                   rel="noreferrer"
                                 >
-                                  Open buy page
+                                  Open public page
                                 </a>
                               ) : null}
                             </div>
