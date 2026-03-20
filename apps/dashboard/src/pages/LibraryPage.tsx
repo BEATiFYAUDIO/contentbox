@@ -576,6 +576,17 @@ function buildPublicPageUrl(contentId: string, remoteOrigin?: string | null): st
   return `/p/${encodeURIComponent(contentId)}`;
 }
 
+function buildPublicAssetUrl(
+  contentId: string,
+  asset: "cover" | "preview-file",
+  remoteOrigin?: string | null
+): string {
+  const origin = String(remoteOrigin || "").trim().replace(/\/+$/, "");
+  const path = `/public/content/${encodeURIComponent(contentId)}/${asset}`;
+  if (origin) return `${origin}${path}`;
+  return path;
+}
+
 function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | null): string | null {
   const preferred = normalizeAssetUrl(apiBase, String(itemCoverUrl || "").trim());
   if (preferred) return preferred;
@@ -670,9 +681,25 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                       String(preview?.manifest?.sha256 || "").trim() ||
                       String(it.updatedAt || "").trim() ||
                       String(it.createdAt || "").trim();
+                    const participantCoverFallback =
+                      entry.relation === "participant"
+                        ? buildPublicAssetUrl(
+                            it.id,
+                            "cover",
+                            participationInfo?.kind === "remote" ? participationInfo.remoteOrigin : null
+                          )
+                        : null;
+                    const participantVideoPreviewFallback =
+                      entry.relation === "participant" && isVideo
+                        ? buildPublicAssetUrl(
+                            it.id,
+                            "preview-file",
+                            participationInfo?.kind === "remote" ? participationInfo.remoteOrigin : null
+                          )
+                        : null;
                     const rawCoverUrl = isAudio
-                      ? songCoverUrl(it.id, preview, it.coverUrl || null)
-                      : normalizeAssetUrl(apiBase, it.coverUrl || null);
+                      ? songCoverUrl(it.id, preview, it.coverUrl || null) || participantCoverFallback
+                      : normalizeAssetUrl(apiBase, it.coverUrl || null) || participantCoverFallback;
                     const coverUrl =
                       rawCoverUrl && version
                         ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
@@ -699,6 +726,16 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                             />
                           ) : preview && isOpen && previewUrl && isImage ? (
                             <img className="w-full h-full object-cover" src={previewUrl} alt={it.title || "Preview"} />
+                          ) : participantVideoPreviewFallback ? (
+                            <video
+                              className="w-full h-full object-cover"
+                              autoPlay
+                              muted
+                              loop
+                              playsInline
+                              preload="metadata"
+                              src={participantVideoPreviewFallback}
+                            />
                           ) : (
                             <div className="text-xs text-neutral-500">No media</div>
                           )}
