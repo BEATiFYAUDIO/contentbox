@@ -301,11 +301,10 @@ export default function SplitsPage(props: {
           <div className="mt-4 space-y-2">
             {remoteInvites
               .filter((inv) => (showTombstones ? true : !inv.contentDeletedAt))
-              .filter((inv) => {
-                const status = String(inv?.status || "").trim().toLowerCase();
-                return status === "accepted" || Boolean(inv?.acceptedAt);
-              })
-              .map((inv) => (
+              .map((inv) => {
+                const status = String(inv?.status || "pending").trim().toLowerCase();
+                const statusLabel = status === "accepted" || inv?.acceptedAt ? "Accepted" : titleCase(status || "pending");
+                return (
                 <div key={inv.id} className="rounded-lg border border-neutral-800 px-3 py-2">
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -314,6 +313,7 @@ export default function SplitsPage(props: {
                         {titleCase(inv.contentType)} • {inv.role ? `${inv.role}` : "role —"} • {inv.percent != null ? `${inv.percent}%` : "percent —"}
                         {inv.contentDeletedAt ? " • tombstoned" : ""}
                       </div>
+                      <div className="text-[11px] text-neutral-500">Status: {statusLabel}</div>
                       {inv.remoteOrigin ? (
                         <div className="text-[11px] text-neutral-500 break-all">Remote: {inv.remoteOrigin}</div>
                       ) : null}
@@ -340,7 +340,8 @@ export default function SplitsPage(props: {
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
           </div>
         </div>
       ) : null}

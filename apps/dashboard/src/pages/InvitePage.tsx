@@ -923,11 +923,15 @@ export default function InvitePage({
     return isActiveInviteStatus(status) && !inv.contentDeletedAt;
   });
   const dedupeKey = (inv: any) => {
-    const id = String(inv?.contentId || "").trim();
-    if (id) return id;
+    const inviteId = String(inv?.id || "").trim();
+    if (inviteId) return `id:${inviteId}`;
     return [
+      String(inv?.remoteOrigin || "").trim().toLowerCase(),
+      String(inv?.contentId || "").trim(),
       String(inv?.contentTitle || "").trim(),
-      String(inv?.role || "").trim(),
+      String(inv?.targetType || "").trim().toLowerCase(),
+      String(inv?.targetValue || "").trim().toLowerCase(),
+      String(inv?.role || "").trim().toLowerCase(),
       String(inv?.percent ?? "").trim()
     ].join("|");
   };
