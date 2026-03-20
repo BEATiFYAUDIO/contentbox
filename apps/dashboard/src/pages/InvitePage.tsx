@@ -938,26 +938,14 @@ export default function InvitePage({
   const localInviteKeys = new Set(visibleReceivedInvites.map(dedupeKey));
   const dedupedRemoteInvites = visibleRemoteInvites.filter((inv) => !localInviteKeys.has(dedupeKey(inv)));
 
-  const dedupeSentByClaim = (list: any[]) => {
-    const byKey = new Map<string, any>();
-    for (const inv of list || []) {
-      const key = [
-        String(inv?.contentId || "").trim(),
-        String(inv?.targetType || "").trim().toLowerCase(),
-        String(inv?.targetValue || inv?.participantUserId || inv?.participantEmail || "").trim().toLowerCase(),
-        String(inv?.role || "").trim().toLowerCase()
-      ].join("|");
-      const prev = byKey.get(key);
-      const prevTs = new Date(prev?.createdAt || 0).getTime();
-      const curTs = new Date(inv?.createdAt || 0).getTime();
-      if (!prev || curTs >= prevTs) byKey.set(key, inv);
-    }
-    return Array.from(byKey.values()).sort(
-      (a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime()
-    );
-  };
-
-  const dedupedSentInvites = dedupeSentByClaim(visibleSentInvites);
+  const dedupedSentInvites = Array.from(
+    new Map(
+      (visibleSentInvites || []).map((inv) => [
+        String(inv?.id || `${inv?.contentId || ""}|${inv?.targetType || ""}|${inv?.targetValue || inv?.participantEmail || ""}|${inv?.createdAt || ""}`),
+        inv
+      ])
+    ).values()
+  ).sort((a, b) => new Date(b?.createdAt || 0).getTime() - new Date(a?.createdAt || 0).getTime());
 
   async function acceptRemoteInvite(inv: any) {
     const inviteUrl = String(inv?.inviteUrl || "").trim();
