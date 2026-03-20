@@ -1826,7 +1826,7 @@ type ParticipantDestinationType = "lightning_address" | "lnurl" | "lnd";
 type ParticipantDestinationResolveResult = {
   destinationType: string | null;
   destinationSummary: string | null;
-  destinationSource: "identity_registry" | "identity_registry_remote" | "provider_snapshot" | null;
+  destinationSource: "participant_payout_destination" | "identity_lightning_address" | "provider_snapshot" | null;
   destinationFingerprint: string | null;
   destinationResolvedAt: Date | null;
   isVerified: boolean;
@@ -1982,40 +1982,6 @@ async function resolveParticipantRegistryDestination(userId: string): Promise<Pa
       take: 5
     });
     if (!rows.length) return null;
-    const verifiedPrimary =
-      rows.find((r) => r.isPrimary && r.isVerified) ||
-      rows.find((r) => r.isVerified) ||
-      rows.find((r) => r.isPrimary) ||
-      rows[0];
-    const type = parseParticipantDestinationType(verifiedPrimary.destinationType);
-    const summary = String(verifiedPrimary.destinationSummary || "").trim() || null;
-    const resolvedAt = verifiedPrimary.lastVerifiedAt || verifiedPrimary.updatedAt || null;
-    return {
-      destinationType: type,
-      destinationSummary: summary,
-      destinationSource: "identity_registry",
-      destinationFingerprint: computeDestinationFingerprint(type, summary),
-      destinationResolvedAt: resolvedAt,
-      isVerified: Boolean(verifiedPrimary.isVerified),
-      verificationStatus: String(verifiedPrimary.verificationStatus || (verifiedPrimary.isVerified ? "verified" : "pending")),
-      verificationError: verifiedPrimary.verificationError || null,
-      destinationValue: String(verifiedPrimary.destinationValue || "").trim() || null
-    };
-  } catch (err: any) {
-    if (isMissingParticipantPayoutTableError(err)) return null;
-    throw err;
-  }
-}
-
-async function resolvePublicParticipantPayoutDestination(userId: string): Promise<ParticipantDestinationResolveResult | null> {
-  if (!userId) return null;
-  try {
-    const rows = await prisma.participantPayoutDestination.findMany({
-      where: { userId, isActive: true, isVerified: true },
-      orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }],
-      take: 5
-    });
-    if (!rows.length) return null;
     const selected = rows.find((r) => r.isPrimary) || rows[0];
     const type = parseParticipantDestinationType(selected.destinationType);
     const value = String(selected.destinationValue || "").trim() || null;
@@ -2026,14 +1992,87 @@ async function resolvePublicParticipantPayoutDestination(userId: string): Promis
     return {
       destinationType: type,
       destinationSummary: summary,
-      destinationSource: "identity_registry",
+      destinationSource: "participant_payout_destination",
       destinationFingerprint: computeDestinationFingerprint(type, summary),
       destinationResolvedAt: resolvedAt,
       isVerified: Boolean(selected.isVerified),
-      verificationStatus: String(selected.verificationStatus || "verified"),
+      verificationStatus: String(selected.verificationStatus || (selected.isVerified ? "verified" : "pending")),
       verificationError: selected.verificationError || null,
       destinationValue: value
     };
+  } catch (err: any) {
+    if (isMissingParticipantPayoutTableError(err)) return null;
+    throw err;
+  }
+}
+
+async function resolveIdentityLightningAddressDestination(userId: string): Promise<ParticipantDestinationResolveResult | null> {
+  if (!userId) return null;
+  try {
+    const payoutMethod = await prisma.payoutMethod.findUnique({ where: { code: "lightning_address" as any } });
+    if (!payoutMethod?.id) return null;
+    const identity = await prisma.identity.findFirst({
+      where: { userId, payoutMethodId: payoutMethod.id },
+      orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }]
+    });
+    const valueRaw = String(identity?.value || "").trim();
+    if (!valueRaw) return null;
+    const destinationType: ParticipantDestinationType = "lightning_address";
+    const destinationValue = normalizeParticipantDestinationValue(destinationType, valueRaw);
+    if (!destinationValue) return null;
+    const verification = await verifyParticipantDestination(destinationType, destinationValue);
+    const resolvedAt = verification.checkedAt;
+    return {
+      destinationType,
+      destinationSummary: summarizeParticipantDestination(destinationType, destinationValue),
+      destinationSource: "identity_lightning_address",
+      destinationFingerprint: computeDestinationFingerprint(destinationType, destinationValue),
+      destinationResolvedAt: resolvedAt,
+      isVerified: verification.isVerified,
+      verificationStatus: verification.verificationStatus,
+      verificationError: verification.verificationError,
+      destinationValue
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveParticipantDestinationLocal(userId: string): Promise<ParticipantDestinationResolveResult | null> {
+  const fromRegistry = await resolveParticipantRegistryDestination(userId);
+  if (fromRegistry) return fromRegistry;
+  return resolveIdentityLightningAddressDestination(userId);
+}
+
+async function resolvePublicParticipantPayoutDestination(userId: string): Promise<ParticipantDestinationResolveResult | null> {
+  if (!userId) return null;
+  try {
+    const rows = await prisma.participantPayoutDestination.findMany({
+      where: { userId, isActive: true },
+      orderBy: [{ isPrimary: "desc" }, { updatedAt: "desc" }],
+      take: 5
+    });
+    if (rows.length) {
+      const selected = rows.find((r) => r.isPrimary) || rows[0];
+      const type = parseParticipantDestinationType(selected.destinationType);
+      const value = String(selected.destinationValue || "").trim() || null;
+      const summary =
+        String(selected.destinationSummary || "").trim() ||
+        (type && value ? summarizeParticipantDestination(type, value) : null);
+      const resolvedAt = selected.lastVerifiedAt || selected.updatedAt || null;
+      return {
+        destinationType: type,
+        destinationSummary: summary,
+        destinationSource: "participant_payout_destination",
+        destinationFingerprint: computeDestinationFingerprint(type, summary),
+        destinationResolvedAt: resolvedAt,
+        isVerified: Boolean(selected.isVerified),
+        verificationStatus: String(selected.verificationStatus || (selected.isVerified ? "verified" : "pending")),
+        verificationError: selected.verificationError || null,
+        destinationValue: value
+      };
+    }
+    return resolveIdentityLightningAddressDestination(userId);
   } catch (err: any) {
     if (isMissingParticipantPayoutTableError(err)) return null;
     throw err;
@@ -2084,10 +2123,17 @@ async function fetchRemoteParticipantPayoutDestination(
       (destinationType && destinationValue ? summarizeParticipantDestination(destinationType, destinationValue) : null);
     const verifiedAtRaw = asString(payload.destination.verifiedAt || payload.destination.lastVerifiedAt || "").trim();
     const verifiedAt = verifiedAtRaw ? new Date(verifiedAtRaw) : null;
+    const sourceRaw = asString(payload.destination.source || "").trim();
+    const destinationSource: ParticipantDestinationResolveResult["destinationSource"] =
+      sourceRaw === "identity_lightning_address"
+        ? "identity_lightning_address"
+        : sourceRaw === "participant_payout_destination"
+          ? "participant_payout_destination"
+          : "participant_payout_destination";
     return {
       destinationType,
       destinationSummary,
-      destinationSource: "identity_registry_remote",
+      destinationSource,
       destinationFingerprint: computeDestinationFingerprint(destinationType, destinationSummary),
       destinationResolvedAt: verifiedAt && !Number.isNaN(verifiedAt.getTime()) ? verifiedAt : null,
       isVerified: Boolean(payload.destination.isVerified),
@@ -2108,9 +2154,10 @@ async function resolveParticipantDestinationHandshake(input: {
   const participantUserId = asString(input.participantUserId || "").trim();
   const splitParticipantId = asString(input.splitParticipantId || "").trim();
   const participantRef = asString(input.participantRef || "").trim();
+  let unresolvedReason = "NO_USER_ID";
 
   if (participantUserId) {
-    const local = await resolveParticipantRegistryDestination(participantUserId);
+    const local = await resolveParticipantDestinationLocal(participantUserId);
     if (local) {
       app.log.info(
         {
@@ -2125,6 +2172,7 @@ async function resolveParticipantDestinationHandshake(input: {
       );
       return local;
     }
+    unresolvedReason = "LOCAL_DESTINATION_NOT_FOUND";
   }
 
   const snapshot = getLockedSnapshotBySplitParticipantId(splitParticipantId);
@@ -2141,11 +2189,17 @@ async function resolveParticipantDestinationHandshake(input: {
         destinationType: remote?.destinationType || null,
         destinationSource: remote?.destinationSource || null,
         participantOrigin: origin,
-        resolved: Boolean(remote)
+        resolved: Boolean(remote),
+        reason: remote ? null : "REMOTE_DESTINATION_NOT_FOUND"
       },
       "payoutDestination.resolve"
     );
     if (remote) return remote;
+    unresolvedReason = "REMOTE_DESTINATION_NOT_FOUND";
+  } else if (!origin) {
+    unresolvedReason = "REMOTE_ORIGIN_MISSING";
+  } else if (!remoteUserId) {
+    unresolvedReason = "REMOTE_USER_ID_MISSING";
   }
 
   app.log.info(
@@ -2155,11 +2209,103 @@ async function resolveParticipantDestinationHandshake(input: {
       participantRef: participantRef || null,
       destinationType: null,
       destinationSource: null,
-      resolved: false
+      resolved: false,
+      reason: unresolvedReason
     },
     "payoutDestination.resolve"
   );
   return null;
+}
+
+function normalizeParticipantDestinationForPayout(
+  resolved: ParticipantDestinationResolveResult | null
+): {
+  source: ParticipantDestinationResolveResult["destinationSource"];
+  destinationType: string | null;
+  destinationValue: string | null;
+  destinationSummary: string | null;
+  payableMode: "lightning_address" | "lnurlp" | "invoice_endpoint" | null;
+  ready: boolean;
+  reason: string | null;
+} {
+  if (!resolved) {
+    return {
+      source: null,
+      destinationType: null,
+      destinationValue: null,
+      destinationSummary: null,
+      payableMode: null,
+      ready: false,
+      reason: "DESTINATION_MISSING"
+    };
+  }
+  const destinationType = asString(resolved.destinationType || "").trim().toLowerCase() || null;
+  const destinationValue = asString(resolved.destinationValue || "").trim() || null;
+  const destinationSummary = asString(resolved.destinationSummary || "").trim() || destinationValue;
+  if (!destinationType || !destinationSummary) {
+    return {
+      source: resolved.destinationSource,
+      destinationType,
+      destinationValue,
+      destinationSummary,
+      payableMode: null,
+      ready: false,
+      reason: "DESTINATION_VALUE_MISSING"
+    };
+  }
+  if (!resolved.isVerified) {
+    return {
+      source: resolved.destinationSource,
+      destinationType,
+      destinationValue,
+      destinationSummary,
+      payableMode: destinationType === "lnurl" ? "lnurlp" : destinationType === "lnd" ? "invoice_endpoint" : "lightning_address",
+      ready: false,
+      reason: resolved.verificationError || "DESTINATION_UNVERIFIED"
+    };
+  }
+  if (destinationType === "lightning_address") {
+    return {
+      source: resolved.destinationSource,
+      destinationType,
+      destinationValue,
+      destinationSummary,
+      payableMode: "lightning_address",
+      ready: destinationSummary.includes("@"),
+      reason: destinationSummary.includes("@") ? null : "LIGHTNING_ADDRESS_INVALID"
+    };
+  }
+  if (destinationType === "lnurl") {
+    return {
+      source: resolved.destinationSource,
+      destinationType,
+      destinationValue,
+      destinationSummary,
+      payableMode: "lnurlp",
+      ready: false,
+      reason: "AUTO_FORWARD_UNSUPPORTED_DESTINATION"
+    };
+  }
+  if (destinationType === "lnd") {
+    return {
+      source: resolved.destinationSource,
+      destinationType,
+      destinationValue,
+      destinationSummary,
+      payableMode: "invoice_endpoint",
+      ready: false,
+      reason: "AUTO_FORWARD_UNSUPPORTED_DESTINATION"
+    };
+  }
+  return {
+    source: resolved.destinationSource,
+    destinationType,
+    destinationValue,
+    destinationSummary,
+    payableMode: null,
+    ready: false,
+    reason: "AUTO_FORWARD_UNSUPPORTED_DESTINATION"
+  };
 }
 
 async function resolveParticipantPayoutReadinessForAllocation(
@@ -2199,16 +2345,27 @@ async function resolveParticipantPayoutReadinessForAllocation(
     splitParticipantId: allocationCtx?.splitParticipantId || null,
     participantRef: allocationCtx?.participantRef || null
   });
+  const normalized = normalizeParticipantDestinationForPayout(registry);
+  app.log.info(
+    {
+      participantUserId: participantUserId || null,
+      splitParticipantId: allocationCtx?.splitParticipantId || null,
+      participantRef: allocationCtx?.participantRef || null,
+      source: normalized.source || "none",
+      destinationType: normalized.destinationType,
+      destinationSummary: normalized.destinationSummary,
+      payableMode: normalized.payableMode,
+      ready: normalized.ready,
+      reason: normalized.reason
+    },
+    "payoutDestination.normalize"
+  );
   if (registry) {
-    const destinationSummary =
-      registry.destinationSummary ||
-      (registry.destinationType && registry.destinationValue
-        ? summarizeParticipantDestination(registry.destinationType as ParticipantDestinationType, registry.destinationValue)
-        : null);
+    const destinationSummary = normalized.destinationSummary;
     if (!registry.isVerified) {
       return {
         status: "pending",
-        readinessReason: registry.verificationError ? "DESTINATION_UNVERIFIED" : "DESTINATION_VERIFICATION_PENDING",
+        readinessReason: normalized.reason || (registry.verificationError ? "DESTINATION_UNVERIFIED" : "DESTINATION_VERIFICATION_PENDING"),
         destinationType: registry.destinationType,
         destinationSummary,
         destinationSource: registry.destinationSource,
@@ -2241,10 +2398,10 @@ async function resolveParticipantPayoutReadinessForAllocation(
         blockedReason: null
       };
     }
-    if (registry.destinationType !== "lightning_address") {
+    if (!normalized.ready || normalized.payableMode !== "lightning_address") {
       return {
         status: "pending",
-        readinessReason: "AUTO_FORWARD_UNSUPPORTED_DESTINATION",
+        readinessReason: normalized.reason || "AUTO_FORWARD_UNSUPPORTED_DESTINATION",
         destinationType: registry.destinationType,
         destinationSummary,
         destinationSource: registry.destinationSource,
@@ -8171,6 +8328,7 @@ function registerPublicRoutes(appPublic: any) {
     return reply.send({
       ok: true,
       destination: {
+        source: destination.destinationSource,
         destinationType: destination.destinationType,
         destinationValue: destination.destinationValue,
         destinationSummary: destination.destinationSummary,
@@ -12582,10 +12740,23 @@ app.post("/api/participant/payout-destinations", { preHandler: requireAuth }, as
         verificationError: null
       }
     });
+    const verification = await verifyParticipantDestination(destinationType, destinationValue);
+    const verified = await prisma.participantPayoutDestination.update({
+      where: { id: created.id },
+      data: {
+        isVerified: verification.isVerified,
+        verifiedAt: verification.isVerified ? verification.checkedAt : null,
+        lastVerifiedAt: verification.checkedAt,
+        lastCheckedAt: verification.checkedAt,
+        verificationMethod: verification.verificationMethod,
+        verificationStatus: verification.verificationStatus,
+        verificationError: verification.verificationError
+      }
+    });
     if (created.isPrimary) {
       await setPrimaryParticipantDestinationForUser(userId, created.id);
     }
-    const destination = await prisma.participantPayoutDestination.findUnique({ where: { id: created.id } });
+    const destination = await prisma.participantPayoutDestination.findUnique({ where: { id: verified.id } });
     return reply.send({ ok: true, destination });
   } catch (err: any) {
     if (isMissingParticipantPayoutTableError(err)) {
@@ -12618,8 +12789,8 @@ app.put("/my/payout-destinations/lightning", { preHandler: requireAuth }, async 
           data: {
             isActive: body.isActive === undefined ? true : Boolean(body.isActive),
             destinationSummary: summarizeParticipantDestination(destinationType, destinationValue),
-            verificationStatus: existing.isVerified ? existing.verificationStatus : "pending",
-            verificationError: existing.isVerified ? existing.verificationError : null
+            verificationStatus: "pending",
+            verificationError: null
           }
         })
       : await prisma.participantPayoutDestination.create({
@@ -12638,11 +12809,24 @@ app.put("/my/payout-destinations/lightning", { preHandler: requireAuth }, async 
             verificationError: null
           }
         });
+    const verification = await verifyParticipantDestination(destinationType, destinationValue);
+    const refreshed = await prisma.participantPayoutDestination.update({
+      where: { id: destination.id },
+      data: {
+        isVerified: verification.isVerified,
+        verifiedAt: verification.isVerified ? verification.checkedAt : null,
+        lastVerifiedAt: verification.checkedAt,
+        lastCheckedAt: verification.checkedAt,
+        verificationMethod: verification.verificationMethod,
+        verificationStatus: verification.verificationStatus,
+        verificationError: verification.verificationError
+      }
+    });
 
     if (body.isPrimary === undefined || Boolean(body.isPrimary)) {
-      await setPrimaryParticipantDestinationForUser(userId, destination.id);
+      await setPrimaryParticipantDestinationForUser(userId, refreshed.id);
     }
-    const updated = await prisma.participantPayoutDestination.findUnique({ where: { id: destination.id } });
+    const updated = await prisma.participantPayoutDestination.findUnique({ where: { id: refreshed.id } });
     return reply.send({ ok: true, destination: updated });
   } catch (err: any) {
     if (isMissingParticipantPayoutTableError(err)) {
