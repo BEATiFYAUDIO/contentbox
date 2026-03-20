@@ -10087,7 +10087,7 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
         if (participantUserId) ids.push(participantUserId);
         const targetType = normalizeInviteTargetType(inv.targetType);
         const targetValue = asString(inv.targetValue).trim();
-        if (targetType === "local_user" && targetValue) ids.push(targetValue);
+        if ((targetType === "local_user" || targetType === "identity_ref") && targetValue) ids.push(targetValue);
         return ids;
       })
     )
@@ -10099,7 +10099,8 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
       const participantUserId = asString(inv.splitParticipant?.participantUserId || "").trim();
       const targetType = normalizeInviteTargetType(inv.targetType);
       const targetValue = asString(inv.targetValue).trim();
-      const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+      const preferredUserId =
+        participantUserId || (targetType === "local_user" || targetType === "identity_ref" ? targetValue : "");
       const display = preferredUserId ? displayByUserId.get(preferredUserId) : null;
       const participantDisplayName = resolvePrivateParticipantDisplayLabel({
         participantUserId: participantUserId || null,
@@ -10114,7 +10115,7 @@ app.get("/my/invitations", { preHandler: requireAuth }, async (req: any, reply: 
         targetValue,
         participantEmail: inv.splitParticipant?.participantEmail || null,
         userDisplayName:
-          targetType === "local_user"
+          targetType === "local_user" || targetType === "identity_ref"
             ? displayByUserId.get(targetValue)?.displayName || null
             : display?.displayName || null
       });
@@ -10187,7 +10188,7 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
         if (participantUserId) ids.push(participantUserId);
         const targetType = normalizeInviteTargetType(inv.targetType);
         const targetValue = asString(inv.targetValue).trim();
-        if (targetType === "local_user" && targetValue) ids.push(targetValue);
+        if ((targetType === "local_user" || targetType === "identity_ref") && targetValue) ids.push(targetValue);
         return ids;
       })
     )
@@ -10198,7 +10199,8 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
       const participantUserId = asString(inv.splitParticipant?.participantUserId || "").trim();
       const targetType = normalizeInviteTargetType(inv.targetType);
       const targetValue = asString(inv.targetValue).trim();
-      const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+      const preferredUserId =
+        participantUserId || (targetType === "local_user" || targetType === "identity_ref" ? targetValue : "");
       const display = preferredUserId ? displayByUserId.get(preferredUserId) : null;
       const participantDisplayName = resolvePrivateParticipantDisplayLabel({
         participantUserId: participantUserId || null,
@@ -10213,7 +10215,7 @@ app.get("/my/invitations/received", { preHandler: requireAuth }, async (req: any
         targetValue,
         participantEmail: inv.splitParticipant?.participantEmail || null,
         userDisplayName:
-          targetType === "local_user"
+          targetType === "local_user" || targetType === "identity_ref"
             ? displayByUserId.get(targetValue)?.displayName || null
             : display?.displayName || null
       });
@@ -24644,7 +24646,7 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
       if (participantUserId) displayCandidateIds.add(participantUserId);
       const targetType = normalizeInviteTargetType((participant as any)?.targetType || (participant as any)?.invitation?.targetType || null);
       const targetValue = asString((participant as any)?.targetValue || (participant as any)?.invitation?.targetValue || "").trim();
-      if (targetType === "local_user" && targetValue) displayCandidateIds.add(targetValue);
+      if ((targetType === "local_user" || targetType === "identity_ref") && targetValue) displayCandidateIds.add(targetValue);
     }
   }
   const displayByUserId = await buildUserDisplayMap(Array.from(displayCandidateIds));
@@ -24664,7 +24666,8 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
           const participantUserId = asString((p as any)?.participantUserId || "").trim();
           const targetType = normalizeInviteTargetType((p as any)?.targetType || (p as any)?.invitation?.targetType || null);
           const targetValue = asString((p as any)?.targetValue || (p as any)?.invitation?.targetValue || "").trim();
-          const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+          const preferredUserId =
+            participantUserId || (targetType === "local_user" || targetType === "identity_ref" ? targetValue : "");
           const display = preferredUserId ? displayByUserId.get(preferredUserId) : null;
           const participantDisplayName = resolvePrivateParticipantDisplayLabel({
             participantUserId,
@@ -25301,7 +25304,7 @@ function resolvePrivateParticipantDisplayLabel(input: {
   const targetType = normalizeInviteTargetType(input.targetType || null);
   const targetValue = asString(input.targetValue || "").trim();
   if (targetType === "email" && targetValue) return normalizeEmail(targetValue);
-  if (targetType === "identity_ref") return "Pending identity claim";
+  if (targetType === "identity_ref" && targetValue && !looksLikeInternalUserId(targetValue)) return targetValue;
   if (targetType === "local_user" && targetValue && !looksLikeInternalUserId(targetValue)) return targetValue;
   const participantUserId = asString(input.participantUserId || "").trim();
   if (participantUserId && !looksLikeInternalUserId(participantUserId)) return participantUserId;
@@ -28321,7 +28324,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
         if (participantUserId) ids.push(participantUserId);
         const targetType = normalizeInviteTargetType((p as any)?.targetType || (p as any)?.invitation?.targetType || null);
         const targetValue = asString((p as any)?.targetValue || (p as any)?.invitation?.targetValue || "").trim();
-        if (targetType === "local_user" && targetValue) ids.push(targetValue);
+        if ((targetType === "local_user" || targetType === "identity_ref") && targetValue) ids.push(targetValue);
         return ids;
       })
     )
@@ -28428,7 +28431,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
           targetValue,
           participantEmail: String(p.participantEmail || ""),
           userDisplayName:
-            targetType === "local_user"
+            targetType === "local_user" || targetType === "identity_ref"
               ? pendingDisplayByUserId.get(targetValue)?.displayName || null
               : null
         }),
@@ -28690,7 +28693,7 @@ async function handlePublicInviteLookup(req: any, reply: any) {
               if (participantUserId) ids.push(participantUserId);
               const tt = normalizeInviteTargetType(r.targetType);
               const tv = asString(r.targetValue || "").trim();
-              if (tt === "local_user" && tv) ids.push(tv);
+              if ((tt === "local_user" || tt === "identity_ref") && tv) ids.push(tv);
               return ids;
             })
           )
@@ -28701,7 +28704,8 @@ async function handlePublicInviteLookup(req: any, reply: any) {
           const targetType = normalizeInviteTargetType(r.targetType);
           const targetValue = asString(r.targetValue || "").trim();
           const participantUserId = asString(r.splitParticipant?.participantUserId || "").trim();
-          const preferredUserId = participantUserId || (targetType === "local_user" ? targetValue : "");
+          const preferredUserId =
+            participantUserId || (targetType === "local_user" || targetType === "identity_ref" ? targetValue : "");
           const display = preferredUserId ? relatedDisplayByUserId.get(preferredUserId) : null;
           return {
             participantDisplayName: resolvePrivateParticipantDisplayLabel({
@@ -28717,7 +28721,9 @@ async function handlePublicInviteLookup(req: any, reply: any) {
               targetValue,
               participantEmail: r.splitParticipant?.participantEmail || null,
               userDisplayName:
-                targetType === "local_user" ? relatedDisplayByUserId.get(targetValue)?.displayName || null : display?.displayName || null
+                targetType === "local_user" || targetType === "identity_ref"
+                  ? relatedDisplayByUserId.get(targetValue)?.displayName || null
+                  : display?.displayName || null
             })
           };
         })(),
