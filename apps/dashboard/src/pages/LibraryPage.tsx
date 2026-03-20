@@ -1,12 +1,22 @@
 import React from "react";
 import { api, getApiBase } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
+import {
+  classifyLibraryEligibility,
+  isEligibleSplitParticipation,
+  logLibraryEligibilityDecision,
+  type LibrarySection
+} from "../lib/libraryEligibility";
 
 type LibraryItem = {
   id: string;
   title: string;
   type: string;
   status: string;
+  archivedAt?: string | null;
+  trashedAt?: string | null;
+  deletedAt?: string | null;
+  tombstonedAt?: string | null;
   storefrontStatus?: string | null;
   createdAt: string;
   updatedAt?: string | null;
@@ -28,6 +38,10 @@ type LibraryParticipation = {
   remoteInviteId: string | null;
   remoteOrigin: string | null;
   status: string | null;
+  acceptedAt?: string | null;
+  verifiedAt?: string | null;
+  revokedAt?: string | null;
+  tombstonedAt?: string | null;
   highlightedOnProfile: boolean;
   creatorUserId: string | null;
   creatorDisplayName: string | null;
@@ -117,6 +131,7 @@ export default function LibraryPage() {
         const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
         const baseList = normalize(baseListRaw || []);
         const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
+        const participationByContentId = new Map<string, LibraryParticipation>();
 
         const localParticipationsRaw = Array.isArray(localParticipationsRes?.items) ? localParticipationsRes.items : [];
         const localParticipations: LibraryParticipation[] = localParticipationsRaw.map((row: any) => ({
@@ -127,12 +142,16 @@ export default function LibraryPage() {
           contentStatus: row?.contentStatus || null,
           contentDeletedAt: row?.contentDeletedAt || null,
           splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
-          remoteInviteId: null,
-          remoteOrigin: null,
-          status: null,
-          highlightedOnProfile: Boolean(row?.highlightedOnProfile),
-          creatorUserId: row?.creatorUserId || null,
-          creatorDisplayName: row?.creatorDisplayName || null,
+            remoteInviteId: null,
+            remoteOrigin: null,
+            status: String(row?.status || "").trim() || null,
+            acceptedAt: row?.acceptedAt || null,
+            verifiedAt: row?.verifiedAt || null,
+            revokedAt: row?.revokedAt || null,
+            tombstonedAt: row?.tombstonedAt || null,
+            highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+            creatorUserId: row?.creatorUserId || null,
+            creatorDisplayName: row?.creatorDisplayName || null,
           creatorEmail: row?.creatorEmail || null
         }));
         const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
@@ -150,20 +169,32 @@ export default function LibraryPage() {
             remoteInviteId: String(row.id || "").trim() || null,
             remoteOrigin: String(row.remoteOrigin || "").replace(/\/+$/, "") || null,
             status: row.status || null,
+            acceptedAt: row.acceptedAt || null,
+            verifiedAt: null,
+            revokedAt: row.revokedAt || null,
+            tombstonedAt: row.tombstonedAt || null,
             highlightedOnProfile: Boolean(row.highlightedOnProfile),
             creatorUserId: null,
             creatorDisplayName: null,
             creatorEmail: null
           }));
 
+        for (const p of [...localParticipations, ...remoteParticipations]) {
+          const contentId = String(p?.contentId || "").trim();
+          if (!contentId) continue;
+          const existing = participationByContentId.get(contentId);
+          if (!existing || p.kind === "local") participationByContentId.set(contentId, p);
+        }
+
         const participationOnlyItems: LibraryItem[] = [...localParticipations, ...remoteParticipations]
           .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
-          .filter((p) => String(p.contentStatus || "").trim().toLowerCase() === "published")
+          .filter((p) => isEligibleSplitParticipation(p).eligible)
           .map((p) => ({
             id: p.contentId,
             title: p.contentTitle || "Untitled",
             type: p.contentType || "file",
-            status: "published",
+            status: p.contentStatus || "published",
+            deletedAt: p.contentDeletedAt || null,
             createdAt: "",
             ownerUserId: p.creatorUserId || null,
             owner: {
@@ -172,8 +203,30 @@ export default function LibraryPage() {
             },
             libraryAccess: "participant"
           }));
-
-        setItems([...baseList, ...participationOnlyItems]);
+        const combined = [...baseList, ...participationOnlyItems];
+        const eligible: LibraryItem[] = [];
+        for (const item of combined) {
+          const contentId = String(item.id || "").trim();
+          const participation = participationByContentId.get(contentId) || null;
+          const decision = classifyLibraryEligibility({
+            item,
+            participation
+          });
+          logLibraryEligibilityDecision({
+            scope: "library_page",
+            contentId,
+            decision,
+            extra: {
+              access: item.libraryAccess || null
+            }
+          });
+          if (!decision.included) continue;
+          eligible.push({
+            ...item,
+            libraryAccess: decision.section as Exclude<LibrarySection, "excluded">
+          });
+        }
+        setItems(eligible);
       } catch (e: any) {
         const err = String(e?.message || "Failed to load library");
         setMsg(err.includes("INVALID_TYPE") ? "Invalid type filter." : err);

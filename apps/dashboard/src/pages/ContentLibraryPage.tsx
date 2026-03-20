@@ -6,6 +6,13 @@ import HistoryFeed, { type HistoryEvent } from "../components/HistoryFeed";
 import AuditPanel from "../components/AuditPanel";
 import { canArchive, canPublish, canRestore, canTrash, canUpload, computeContentUiState } from "../lib/contentState";
 import { type IdentityLevel, type FeatureMatrix, type CapabilitySet } from "../lib/identity";
+import {
+  canFeatureOnProfile,
+  classifyLibraryEligibility,
+  isEligibleSplitParticipation,
+  logLibraryEligibilityDecision,
+  type LibrarySection
+} from "../lib/libraryEligibility";
 
 type ContentType = "song" | "book" | "video" | "file" | "remix" | "mashup" | "derivative";
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
@@ -49,6 +56,8 @@ type ContentItem = {
   title: string;
   type: ContentType;
   status: "draft" | "published";
+  archivedAt?: string | null;
+  trashedAt?: string | null;
   previousVersionContentId?: string | null;
   previousVersion?: { id: string; title: string; status: string } | null;
   featureOnProfile?: boolean;
@@ -59,6 +68,7 @@ type ContentItem = {
   publishedAt?: string | null;
   repoPath?: string | null;
   deletedAt?: string | null;
+  tombstonedAt?: string | null;
   manifest?: { sha256: string };
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
@@ -668,7 +678,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           }))
         ]
           .filter((p) => p.contentId)
-          .filter((p) => String(p.contentStatus || "published").trim().toLowerCase() === "published");
+          .filter((p) => isEligibleSplitParticipation(p).eligible);
 
         for (const p of participationRows) {
           const contentId = String(p.contentId || "").trim();
@@ -711,6 +721,34 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           });
         }
         mergedList = Array.from(byId.values());
+      }
+
+      if (effectiveScope === "library" && !trashMode && !tombstoneMode) {
+        const eligible: ContentItem[] = [];
+        for (const item of mergedList) {
+          const contentId = String(item.id || "").trim();
+          const participation = nextParticipationByContentId[contentId] || null;
+          const decision = classifyLibraryEligibility({
+            item,
+            meUserId: meId || null,
+            participation
+          });
+          logLibraryEligibilityDecision({
+            scope: "content_library_page",
+            contentId,
+            decision,
+            extra: {
+              contentScope: effectiveScope,
+              access: item.libraryAccess || null
+            }
+          });
+          if (!decision.included) continue;
+          eligible.push({
+            ...item,
+            libraryAccess: decision.section as Exclude<LibrarySection, "excluded">
+          });
+        }
+        mergedList = eligible;
       }
 
       setParticipationByContentId(nextParticipationByContentId);
@@ -2615,6 +2653,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const accessTag = it.libraryAccess || (it.ownerUserId === meId ? "owned" : "preview");
               const participationInfo = participationByContentId[it.id];
               const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
+              const ownerFeatureAllowed = canFeatureOnProfile({
+                item: { ...it, libraryAccess: "owned" },
+                meUserId: meId || null
+              }).allowed;
+              const participationFeatureAllowed = canFeatureOnProfile({
+                item: { ...it, libraryAccess: "participant" },
+                meUserId: meId || null,
+                participation: participationInfo || null
+              }).allowed;
               const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(it.type || ""));
 
               const split = splitByContent[it.id] ?? null;
@@ -2765,7 +2812,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               {isOwner && allowUpload ? (
                                 <UploadButton contentId={it.id} disabled={busy} label="Upload" />
                               ) : null}
-                              {isOwner && uiState === "published" ? (
+                              {isOwner && ownerFeatureAllowed ? (
                                 <button
                                   type="button"
                                   className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
@@ -2798,7 +2845,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   {it.featureOnProfile ? "Unfeature" : "Feature on profile"}
                                 </button>
                               ) : null}
-                              {!isOwner && participationInfo && uiState === "published" ? (
+                              {!isOwner && participationInfo && participationFeatureAllowed ? (
                                 <button
                                   type="button"
                                   className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
