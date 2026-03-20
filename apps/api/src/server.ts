@@ -8874,6 +8874,10 @@ async function signInviteAcceptancePayload(
   userId: string,
   opts?: { audienceOrigin?: string | null }
 ): Promise<{ payload: any; signature: string }> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true }
+  });
   const signingNodeUrl =
     normalizeOrigin(getActivePublicOrigin()) ||
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
@@ -8883,6 +8887,7 @@ async function signInviteAcceptancePayload(
   const payload = {
     token,
     remoteUserId: userId,
+    remoteUserEmail: user?.email || null,
     nodeUrl: signingNodeUrl,
     ts: new Date().toISOString(),
     nonce: crypto.randomUUID(),
@@ -29398,7 +29403,12 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     where: { id: userId },
     select: { id: true, email: true }
   });
+  const remoteSignedEmail =
+    acceptanceAuthMode === "remote_signature"
+      ? normalizeEmail(asString((payload as any)?.remoteUserEmail || "").trim())
+      : "";
   const meEmail = normalizeEmail(me?.email || "");
+  const effectiveInviteEmail = remoteSignedEmail || meEmail;
   if (inviteTargetType === "local_user" && inviteTargetValue !== userId) {
     app.log.info(
       {
@@ -29418,7 +29428,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     });
   }
   if (inviteTargetType === "email") {
-    if (!meEmail || normalizeEmail(inviteTargetValue) !== meEmail) {
+    if (!effectiveInviteEmail || normalizeEmail(inviteTargetValue) !== effectiveInviteEmail) {
       app.log.info(
         {
           tokenId,
@@ -29426,7 +29436,8 @@ async function handlePublicInviteAccept(req: any, reply: any) {
           splitParticipantId: inv.splitParticipantId,
           targetType: inviteTargetType,
           targetValue: inviteTargetValue,
-          attemptedEmail: meEmail || null
+          attemptedEmail: effectiveInviteEmail || null,
+          authMode: acceptanceAuthMode
         },
         "invite.remote_accept_participant_mismatch"
       );
