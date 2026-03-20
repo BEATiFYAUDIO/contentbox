@@ -1678,26 +1678,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
-  async function createNewVersionDraft(sourceContentId: string) {
-    setBusyAction((m) => ({ ...m, [sourceContentId]: true }));
-    setError(null);
-    try {
-      const res = await api<{ ok: true; sourceContentId: string; content?: { id: string } }>(
-        `/content/${sourceContentId}/new-version`,
-        "POST",
-        {}
-      );
-      const newId = String(res?.content?.id || "").trim();
-      if (!newId) throw new Error("New version draft was created but no content id was returned.");
-      setPendingOpenContentId(newId);
-      await refreshCurrentView();
-    } catch (e: any) {
-      setError(e?.message || "Failed to create new version draft.");
-    } finally {
-      setBusyAction((m) => ({ ...m, [sourceContentId]: false }));
-    }
-  }
-
   async function softDelete(contentId: string) {
     const item = items.find((row) => row.id === contentId);
     const state = computeContentUiState(item || {});
@@ -2794,17 +2774,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
                               {isOwner && allowUpload ? (
                                 <UploadButton contentId={it.id} disabled={busy} label="Upload" />
-                              ) : null}
-                              {isOwner ? (
-                                <button
-                                  type="button"
-                                  className="text-sm rounded-lg border border-neutral-800 px-3 py-1 hover:bg-neutral-900 disabled:opacity-60 whitespace-nowrap"
-                                  onClick={() => createNewVersionDraft(it.id)}
-                                  disabled={busy}
-                                  title="Create a new draft version to upload updated media"
-                                >
-                                  {busy ? "Creating…" : "Upload New Version"}
-                                </button>
                               ) : null}
                               {isOwner && allowCoverUpload && COVER_UPLOAD_TYPES.has(String(it.type || "").toLowerCase() as ContentType) ? (
                                 <CoverUploadButton
