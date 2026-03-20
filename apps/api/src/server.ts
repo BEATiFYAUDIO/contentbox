@@ -29040,7 +29040,10 @@ async function handlePublicInvitePage(req: any, reply: any) {
         return;
       }
       try {
-        location.href = handoff;
+        const popup = window.open(handoff, "_blank", "noopener,noreferrer");
+        if (!popup) {
+          statusEl.textContent = "Popup blocked. Allow popups for this site and try again.";
+        }
       } catch {
         statusEl.textContent = "Could not open dashboard handoff URL.";
       }
