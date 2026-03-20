@@ -75,6 +75,26 @@ type AcceptResponse =
   | { ok: true; acceptedAt: string | null; alreadyAccepted?: boolean }
   | { ok: boolean; [k: string]: any };
 
+type RemoteRoyaltyRow = {
+  id: string;
+  remoteOrigin?: string | null;
+  inviteUrl?: string | null;
+  contentId?: string | null;
+  contentTitle?: string | null;
+  contentType?: string | null;
+  contentStatus?: string | null;
+  splitVersionNum?: number | null;
+  role?: string | null;
+  percent?: number | string | null;
+  status?: string | null;
+  participantEmail?: string | null;
+  acceptedAt?: string | null;
+  remoteUserId?: string | null;
+  remoteNodeUrl?: string | null;
+  remoteVerified?: boolean;
+  createdAt?: string | null;
+};
+
 type CreatedInviteRow = {
   invitationId: string;
   participantEmail: string;
@@ -209,6 +229,33 @@ function openExternalInNewWindow(url: string) {
   } catch {
     window.location.href = target;
   }
+}
+
+function mapRemoteRoyaltyToInviteRow(row: RemoteRoyaltyRow): any {
+  return {
+    id: String(row.id || "").trim(),
+    remoteOrigin: String(row.remoteOrigin || "").trim() || null,
+    inviteUrl: String(row.inviteUrl || "").trim() || null,
+    contentId: String(row.contentId || "").trim() || null,
+    contentTitle: row.contentTitle || null,
+    contentType: row.contentType || null,
+    contentStatus: row.contentStatus || "published",
+    splitVersionNum: Number.isFinite(Number(row.splitVersionNum)) ? Number(row.splitVersionNum) : null,
+    splitStatus: row.status === "accepted" ? "locked" : null,
+    role: row.role || null,
+    percent: row.percent ?? null,
+    participantEmail: row.participantEmail || null,
+    status: String(row.status || "").trim().toLowerCase() || "pending",
+    expiresAt: null,
+    acceptedAt: row.acceptedAt || null,
+    revokedAt: null,
+    tombstonedAt: null,
+    remoteUserId: row.remoteUserId || null,
+    remoteNodeUrl: row.remoteNodeUrl || null,
+    remoteVerified: Boolean(row.remoteVerified),
+    createdAt: row.createdAt || null,
+    source: "remote_royalty"
+  };
 }
 
 export default function InvitePage({
@@ -530,8 +577,25 @@ export default function InvitePage({
   }
 
   async function refreshRemoteReceivedList() {
-    const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
-    setRemoteReceivedInvites(listRemote || []);
+    const [listRemote, royaltyRemote] = await Promise.all([
+      api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET").catch(() => []),
+      api<RemoteRoyaltyRow[]>("/my/royalties/remote", "GET").catch(() => [])
+    ]);
+    const mappedRoyalty = (royaltyRemote || []).map(mapRemoteRoyaltyToInviteRow);
+    const merged = new Map<string, any>();
+    for (const inv of [...(listRemote || []), ...mappedRoyalty]) {
+      const id = String(inv?.id || "").trim();
+      if (!id) continue;
+      const prev = merged.get(id);
+      if (!prev) {
+        merged.set(id, inv);
+        continue;
+      }
+      const prevTs = new Date(prev?.createdAt || 0).getTime();
+      const curTs = new Date(inv?.createdAt || 0).getTime();
+      if (curTs >= prevTs) merged.set(id, { ...prev, ...inv });
+    }
+    setRemoteReceivedInvites(Array.from(merged.values()));
   }
 
   async function acceptRemoteInviteCanonical(params: {
@@ -712,8 +776,7 @@ export default function InvitePage({
       }
 
       try {
-        const listRemote = await api<any[]>(`/my/invitations/remote?includeHistory=${showHistory ? "1" : "0"}`, "GET");
-        setRemoteReceivedInvites(listRemote || []);
+        await refreshRemoteReceivedList();
       } catch {
         setRemoteReceivedInvites([]);
       }
