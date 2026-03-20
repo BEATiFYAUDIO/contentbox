@@ -664,23 +664,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       }
       setParticipationByContentId(participationMap);
       const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
-      const participationOnlyItems: ContentItem[] = participations
-        .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
-        .map((p) => ({
-          id: p.contentId,
-          title: p.contentTitle || "Untitled",
-          type: ((p.contentType || "file") as ContentType),
-          status: String(p.contentStatus || "").trim().toLowerCase() === "published" ? "published" : "draft",
-          createdAt: "",
-          deletedAt: p.contentDeletedAt || null,
-          ownerUserId: p.creatorUserId || null,
-          owner: {
-            displayName: p.creatorDisplayName || null,
-            email: p.creatorEmail || null
-          },
-          libraryAccess: "participant",
-          childOrigin: p.remoteOrigin || null
-        }));
+      const participationOnlyItems: ContentItem[] =
+        contentScope === "library"
+          ? participations
+              .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
+              .map((p) => ({
+                id: p.contentId,
+                title: p.contentTitle || "Untitled",
+                type: ((p.contentType || "file") as ContentType),
+                status: String(p.contentStatus || "").trim().toLowerCase() === "published" ? "published" : "draft",
+                createdAt: "",
+                deletedAt: p.contentDeletedAt || null,
+                ownerUserId: p.creatorUserId || null,
+                owner: {
+                  displayName: p.creatorDisplayName || null,
+                  email: p.creatorEmail || null
+                },
+                libraryAccess: "participant",
+                childOrigin: p.remoteOrigin || null
+              }))
+          : [];
       const list = [...baseList, ...participationOnlyItems];
       if (!Array.isArray(data)) {
         setError("Failed to load content (unexpected response)");
