@@ -599,7 +599,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           : `/content?scope=${effectiveScope}${typeQuery}`;
       const data = await api<ContentItem[] | any>(url);
       const baseList = Array.isArray(data) ? data : [];
-      setParticipationByContentId({});
+      const nextParticipationByContentId: Record<string, LibraryParticipation> = {};
       const scopedList =
         effectiveScope === "mine"
           ? baseList.filter((it) => {
@@ -618,7 +618,103 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       if (!Array.isArray(data)) {
         setError("Failed to load content (unexpected response)");
       }
-      setItems(list);
+      let mergedList: ContentItem[] = list;
+
+      // Library scope should always include accepted split/shared participations
+      // even when they are not returned by /content for this node yet.
+      if (effectiveScope === "library" && !trashMode && !tombstoneMode) {
+        const [localParticipationsRes, remoteParticipationsRes] = await Promise.all([
+          api<{ items: any[] }>("/my/participations", "GET").catch(() => ({ items: [] })),
+          api<any[]>("/my/royalties/remote", "GET").catch(() => [])
+        ]);
+
+        const localParticipations = Array.isArray(localParticipationsRes?.items) ? localParticipationsRes.items : [];
+        const remoteParticipations = (Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [])
+          .filter((row) => String(row?.status || "").trim().toLowerCase() === "accepted")
+          .filter((row) => Boolean(String(row?.contentId || "").trim()));
+
+        const participationRows: LibraryParticipation[] = [
+          ...localParticipations.map((row: any) => ({
+            kind: "local" as const,
+            contentId: String(row?.contentId || "").trim(),
+            contentTitle: row?.contentTitle || null,
+            contentType: row?.contentType || null,
+            contentStatus: row?.contentStatus || null,
+            contentDeletedAt: row?.contentDeletedAt || null,
+            splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
+            remoteInviteId: null,
+            remoteOrigin: null,
+            status: null,
+            highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+            creatorUserId: row?.creatorUserId || null,
+            creatorDisplayName: row?.creatorDisplayName || null,
+            creatorEmail: row?.creatorEmail || null
+          })),
+          ...remoteParticipations.map((row: any) => ({
+            kind: "remote" as const,
+            contentId: String(row?.contentId || "").trim(),
+            contentTitle: row?.contentTitle || null,
+            contentType: row?.contentType || null,
+            contentStatus: row?.contentStatus || "published",
+            contentDeletedAt: null,
+            splitParticipantId: null,
+            remoteInviteId: String(row?.id || "").trim() || null,
+            remoteOrigin: String(row?.remoteOrigin || "").replace(/\/+$/, "") || null,
+            status: row?.status || null,
+            highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+            creatorUserId: null,
+            creatorDisplayName: null,
+            creatorEmail: null
+          }))
+        ]
+          .filter((p) => p.contentId)
+          .filter((p) => String(p.contentStatus || "published").trim().toLowerCase() === "published");
+
+        for (const p of participationRows) {
+          const contentId = String(p.contentId || "").trim();
+          if (!contentId) continue;
+          const prev = nextParticipationByContentId[contentId];
+          if (!prev || p.kind === "local") nextParticipationByContentId[contentId] = p;
+        }
+
+        const byId = new Map<string, ContentItem>();
+        for (const item of mergedList) byId.set(item.id, item);
+        for (const p of participationRows) {
+          const contentId = String(p.contentId || "").trim();
+          if (!contentId) continue;
+          const existing = byId.get(contentId);
+          if (existing) {
+            byId.set(contentId, {
+              ...existing,
+              libraryAccess: "participant",
+              ownerUserId: existing.ownerUserId || p.creatorUserId || null,
+              owner:
+                existing.owner ||
+                (p.creatorDisplayName || p.creatorEmail
+                  ? { displayName: p.creatorDisplayName || null, email: p.creatorEmail || null }
+                  : null)
+            });
+            continue;
+          }
+          byId.set(contentId, {
+            id: contentId,
+            title: p.contentTitle || "Untitled",
+            type: ((p.contentType || "file") as ContentType),
+            status: "published",
+            createdAt: "",
+            ownerUserId: p.creatorUserId || null,
+            owner:
+              p.creatorDisplayName || p.creatorEmail
+                ? { displayName: p.creatorDisplayName || null, email: p.creatorEmail || null }
+                : null,
+            libraryAccess: "participant"
+          });
+        }
+        mergedList = Array.from(byId.values());
+      }
+
+      setParticipationByContentId(nextParticipationByContentId);
+      setItems(mergedList);
       const next: Record<string, string> = {};
       const nextDelivery: Record<string, string> = {};
       for (const it of list) {
