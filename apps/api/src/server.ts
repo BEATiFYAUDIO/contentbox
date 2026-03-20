@@ -10462,6 +10462,97 @@ async function mirrorRemoteInviteAcceptance(input: {
   });
 }
 
+async function upsertRemoteInviteMirrorFromPayload(input: {
+  userId: string;
+  remoteOrigin: string;
+  token: string;
+  payload: any;
+  forceAccepted?: boolean;
+}) {
+  const userId = asString(input.userId || "").trim();
+  const remoteOrigin = normalizeRemoteOrigin(input.remoteOrigin);
+  const token = asString(input.token || "").trim();
+  const payload = input.payload && typeof input.payload === "object" ? input.payload : {};
+  if (!userId || !remoteOrigin || !token) return;
+
+  const invitation = payload?.invitation && typeof payload.invitation === "object" ? payload.invitation : payload;
+  const content = payload?.content && typeof payload.content === "object" ? payload.content : {};
+  const splitParticipant = payload?.splitParticipant && typeof payload.splitParticipant === "object" ? payload.splitParticipant : {};
+  const splitVersion = payload?.splitVersion && typeof payload.splitVersion === "object" ? payload.splitVersion : {};
+
+  const acceptedAtRaw = asString(invitation?.acceptedAt || "").trim();
+  const acceptedAt = acceptedAtRaw ? new Date(acceptedAtRaw) : null;
+  const expiresAtRaw = asString(invitation?.expiresAt || "").trim();
+  const expiresAt = expiresAtRaw ? new Date(expiresAtRaw) : null;
+  const revokedAtRaw = asString(invitation?.revokedAt || "").trim();
+  const revokedAt = revokedAtRaw ? new Date(revokedAtRaw) : null;
+  const tombstonedAtRaw = asString(invitation?.tombstonedAt || "").trim();
+  const tombstonedAt = tombstonedAtRaw ? new Date(tombstonedAtRaw) : null;
+  const contentDeletedAtRaw = asString(content?.deletedAt || "").trim();
+  const contentDeletedAt = contentDeletedAtRaw ? new Date(contentDeletedAtRaw) : null;
+
+  let status = normalizeInviteStatus(invitation?.status || "");
+  if (input.forceAccepted || (acceptedAt && !Number.isNaN(acceptedAt.getTime()))) status = "accepted";
+  if (revokedAt && !Number.isNaN(revokedAt.getTime())) status = "revoked";
+  if (tombstonedAt && !Number.isNaN(tombstonedAt.getTime())) status = "tombstoned";
+
+  const percent = round3(num(splitParticipant?.percent));
+  const tokenHash = hashInviteToken(token);
+  const inviteUrl = `${remoteOrigin.replace(/\/+$/, "")}/invite/${encodeURIComponent(token)}`;
+
+  await prisma.remoteInvite.upsert({
+    where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } },
+    update: {
+      userId,
+      inviteUrl,
+      contentId: asString(content?.id || "").trim() || null,
+      contentTitle: asString(content?.title || "").trim() || null,
+      contentType: asString(content?.type || "").trim() || null,
+      contentStatus: asString(content?.status || "").trim() || null,
+      contentDeletedAt: contentDeletedAt && !Number.isNaN(contentDeletedAt.getTime()) ? contentDeletedAt : null,
+      splitVersionNum: Number.isFinite(Number(splitVersion?.versionNumber)) ? Number(splitVersion.versionNumber) : null,
+      splitStatus: asString(splitVersion?.status || "").trim() || null,
+      role: asString(splitParticipant?.role || "").trim() || null,
+      percent: Number.isFinite(percent) && percent > 0 ? percent : null,
+      participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
+      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
+      status,
+      expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
+      acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
+      revokedAt: revokedAt && !Number.isNaN(revokedAt.getTime()) ? revokedAt : null,
+      tombstonedAt: tombstonedAt && !Number.isNaN(tombstonedAt.getTime()) ? tombstonedAt : null,
+      remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
+      remoteNodeUrl: remoteOrigin,
+      remoteVerified: Boolean(acceptedAt || input.forceAccepted)
+    },
+    create: {
+      userId,
+      remoteOrigin,
+      tokenHash,
+      inviteUrl,
+      contentId: asString(content?.id || "").trim() || null,
+      contentTitle: asString(content?.title || "").trim() || null,
+      contentType: asString(content?.type || "").trim() || null,
+      contentStatus: asString(content?.status || "").trim() || null,
+      contentDeletedAt: contentDeletedAt && !Number.isNaN(contentDeletedAt.getTime()) ? contentDeletedAt : null,
+      splitVersionNum: Number.isFinite(Number(splitVersion?.versionNumber)) ? Number(splitVersion.versionNumber) : null,
+      splitStatus: asString(splitVersion?.status || "").trim() || null,
+      role: asString(splitParticipant?.role || "").trim() || null,
+      percent: Number.isFinite(percent) && percent > 0 ? percent : null,
+      participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
+      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
+      status,
+      expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
+      acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
+      revokedAt: revokedAt && !Number.isNaN(revokedAt.getTime()) ? revokedAt : null,
+      tombstonedAt: tombstonedAt && !Number.isNaN(tombstonedAt.getTime()) ? tombstonedAt : null,
+      remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
+      remoteNodeUrl: remoteOrigin,
+      remoteVerified: Boolean(acceptedAt || input.forceAccepted)
+    }
+  });
+}
+
 type ParticipationProjection = {
   contentId: string;
   contentTitle: string | null;
@@ -12594,6 +12685,28 @@ app.get("/api/remote/invites/:token", { preHandler: requireAuth }, async (req: a
       mismatchCode
     };
 
+    if (localUserId) {
+      try {
+        await upsertRemoteInviteMirrorFromPayload({
+          userId: localUserId,
+          remoteOrigin: origin,
+          token,
+          payload,
+          forceAccepted: false
+        });
+      } catch (mirrorErr: any) {
+        app.log.warn(
+          {
+            tokenId: safeInviteTokenId(token),
+            origin,
+            localUserId,
+            error: String(mirrorErr?.message || mirrorErr)
+          },
+          "invite.remote_lookup_mirror_failed"
+        );
+      }
+    }
+
     reply.code(res.status);
     reply.type("application/json");
     return reply.send(payload);
@@ -12765,6 +12878,25 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
       };
     }
     if (res.ok) {
+      try {
+        await upsertRemoteInviteMirrorFromPayload({
+          userId: localUserId,
+          remoteOrigin: origin,
+          token,
+          payload,
+          forceAccepted: true
+        });
+      } catch (mirrorErr: any) {
+        app.log.warn(
+          {
+            tokenId: safeInviteTokenId(token),
+            origin,
+            localUserId: localUserId || null,
+            error: String(mirrorErr?.message || mirrorErr)
+          },
+          "invite.remote_accept_mirror_seed_failed"
+        );
+      }
       try {
         await mirrorRemoteInviteAcceptance({
           userId: localUserId,
