@@ -77,6 +77,26 @@ const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   files: "Files"
 };
 
+type LibraryRelationshipFilter = "all" | "authored_work" | "shared_splits" | "derivatives";
+const LIBRARY_RELATIONSHIP_FILTERS: LibraryRelationshipFilter[] = ["all", "authored_work", "shared_splits", "derivatives"];
+const LIBRARY_RELATIONSHIP_LABEL: Record<LibraryRelationshipFilter, string> = {
+  all: "All",
+  authored_work: "Authored work",
+  shared_splits: "Shared splits",
+  derivatives: "Derivatives"
+};
+
+type LibraryRelationshipType = "authored_work" | "shared_splits" | "derivatives" | "other";
+
+type NormalizedLibraryItem = {
+  item: LibraryItem;
+  contentType: LibraryTypeFilter;
+  relationshipType: LibraryRelationshipType;
+  relationshipTags: LibraryRelationshipFilter[];
+  availabilityState: ReturnType<typeof getAvailabilityState>;
+  relation: LibraryRelation;
+};
+
 const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: string; cls: string }> = {
   owned: { label: "Owned", cls: "border-emerald-600/40 bg-emerald-500/10 text-emerald-300" },
   purchased: { label: "Purchased", cls: "border-sky-600/40 bg-sky-500/10 text-sky-300" },
@@ -94,25 +114,84 @@ function readLibraryTypeFromUrl(): LibraryTypeFilter {
   if (typeof window === "undefined") return "all";
   try {
     const params = new URLSearchParams(window.location.search);
-    return normalizeLibraryTypeFilter(params.get("type"));
+    return normalizeLibraryTypeFilter(params.get("libraryType") ?? params.get("type"));
   } catch {
     return "all";
   }
 }
 
-function writeLibraryTypeToUrl(next: LibraryTypeFilter) {
+function normalizeLibraryRelationshipFilter(raw: string | null | undefined): LibraryRelationshipFilter {
+  const v = String(raw || "").toLowerCase();
+  return (LIBRARY_RELATIONSHIP_FILTERS as string[]).includes(v)
+    ? (v as LibraryRelationshipFilter)
+    : "all";
+}
+
+function readLibraryRelationshipFromUrl(): LibraryRelationshipFilter {
+  if (typeof window === "undefined") return "all";
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return normalizeLibraryRelationshipFilter(params.get("libraryRelationship") ?? params.get("relationship"));
+  } catch {
+    return "all";
+  }
+}
+
+function writeLibraryFiltersToUrl(type: LibraryTypeFilter, relationship: LibraryRelationshipFilter) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
-  if (next === "all") url.searchParams.delete("type");
-  else url.searchParams.set("type", next);
+  url.searchParams.delete("type");
+  url.searchParams.delete("relationship");
+  if (type === "all") url.searchParams.delete("libraryType");
+  else url.searchParams.set("libraryType", type);
+  if (relationship === "all") url.searchParams.delete("libraryRelationship");
+  else url.searchParams.set("libraryRelationship", relationship);
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function mapContentType(type: string | null | undefined): LibraryTypeFilter {
+  const normalized = String(type || "").trim().toLowerCase();
+  if (normalized === "song") return "songs";
+  if (normalized === "video") return "videos";
+  if (normalized === "book") return "books";
+  return "files";
+}
+
+function applyLibraryFilters(
+  items: NormalizedLibraryItem[],
+  typeFilter: LibraryTypeFilter,
+  relationshipFilter: LibraryRelationshipFilter
+): NormalizedLibraryItem[] {
+  return items.filter((entry) => {
+    const typeMatch = typeFilter === "all" || entry.contentType === typeFilter;
+    const relationMatch =
+      relationshipFilter === "all" ||
+      entry.relationshipTags.includes(relationshipFilter);
+    const include = typeMatch && relationMatch;
+    if (import.meta.env.DEV) {
+      // eslint-disable-next-line no-console
+      console.debug("libraryFilters.axis_decision", {
+        contentId: entry.item.id,
+        typeFilter,
+        relationshipFilter,
+        contentType: entry.contentType,
+        relationshipType: entry.relationshipType,
+        relationshipTags: entry.relationshipTags,
+        availabilityState: entry.availabilityState,
+        included: include,
+        exclusionReason: include ? null : !typeMatch ? "type_mismatch" : "relationship_mismatch"
+      });
+    }
+    return include;
+  });
 }
 
 export default function LibraryPage() {
   const apiBase = getApiBase();
-  const [items, setItems] = React.useState<LibraryItem[]>([]);
+  const [items, setItems] = React.useState<NormalizedLibraryItem[]>([]);
   const [msg, setMsg] = React.useState<string | null>(null);
   const [libraryTypeFilter, setLibraryTypeFilter] = React.useState<LibraryTypeFilter>(() => readLibraryTypeFromUrl());
+  const [libraryRelationshipFilter, setLibraryRelationshipFilter] = React.useState<LibraryRelationshipFilter>(() => readLibraryRelationshipFromUrl());
   const [previewById, setPreviewById] = React.useState<Record<string, any | null>>({});
   const [previewLoading, setPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
@@ -128,13 +207,21 @@ export default function LibraryPage() {
             ...i,
             libraryAccess: i.libraryAccess || (i.ownerUserId ? "owned" : "preview")
           }));
-        const typeQuery = libraryTypeFilter === "all" ? "" : `&type=${encodeURIComponent(libraryTypeFilter)}`;
-        const [lib, mine, localParticipationsRes, remoteParticipationsRes] = await Promise.all([
-          api<LibraryItem[]>(`/content?scope=library${typeQuery}`, "GET").catch(() => []),
-          api<LibraryItem[]>(`/content?scope=mine${typeQuery}`, "GET").catch(() => []),
+        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes] = await Promise.all([
+          api<LibraryItem[]>(`/content?scope=library`, "GET").catch(() => []),
+          api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => []),
           api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
-          api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[])
+          api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[]),
+          api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null)
         ]);
+        const derivativeLinkedContentIds = new Set<string>();
+        const upstreamRows = Array.isArray(royaltiesRes?.upstreamIncome) ? royaltiesRes.upstreamIncome : [];
+        for (const row of upstreamRows) {
+          const parentContentId = String(row?.parentContentId || "").trim();
+          const childContentId = String(row?.childContentId || "").trim();
+          if (parentContentId) derivativeLinkedContentIds.add(parentContentId);
+          if (childContentId) derivativeLinkedContentIds.add(childContentId);
+        }
 
         const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
         const baseList = normalize(baseListRaw || []);
@@ -235,7 +322,7 @@ export default function LibraryPage() {
             libraryAccess: "participant"
           }));
         const combined = [...baseList, ...participationOnlyItems];
-        const eligible: LibraryItem[] = [];
+        const normalized: NormalizedLibraryItem[] = [];
         for (const item of combined) {
           const contentId = String(item.id || "").trim();
           const participation = participationByContentId.get(contentId) || null;
@@ -279,21 +366,47 @@ export default function LibraryPage() {
             }
           });
           if (!decision.included) continue;
-          eligible.push({
+          const section = decision.section as Exclude<LibrarySection, "excluded">;
+          const normalizedItem: LibraryItem = {
             ...item,
-            libraryAccess: decision.section as Exclude<LibrarySection, "excluded">
+            libraryAccess: section
+          };
+          const contentType = mapContentType(normalizedItem.type);
+          const derivativeByType = ["derivative", "remix", "mashup"].includes(String(normalizedItem.type || "").toLowerCase());
+          const derivativeLinked = derivativeByType || derivativeLinkedContentIds.has(contentId);
+          const relationshipTags: LibraryRelationshipFilter[] = [];
+          if (section === "owned") relationshipTags.push("authored_work");
+          if (section === "participant") relationshipTags.push("shared_splits");
+          if (derivativeLinked) relationshipTags.push("derivatives");
+          const relationshipType: LibraryRelationshipType = relationshipTags.includes("shared_splits")
+            ? "shared_splits"
+            : relationshipTags.includes("authored_work")
+              ? "authored_work"
+              : relationshipTags.includes("derivatives")
+                ? "derivatives"
+                : "other";
+          normalized.push({
+            item: normalizedItem,
+            contentType,
+            relationshipType,
+            relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
+            availabilityState: getAvailabilityState(normalizedItem),
+            relation
           });
         }
-        setItems(eligible);
+        setItems(applyLibraryFilters(normalized, libraryTypeFilter, libraryRelationshipFilter));
       } catch (e: any) {
         const err = String(e?.message || "Failed to load library");
         setMsg(err.includes("INVALID_TYPE") ? "Invalid type filter." : err);
       }
     })();
-  }, [libraryTypeFilter]);
+  }, [libraryTypeFilter, libraryRelationshipFilter]);
 
   React.useEffect(() => {
-    const onPopState = () => setLibraryTypeFilter(readLibraryTypeFromUrl());
+    const onPopState = () => {
+      setLibraryTypeFilter(readLibraryTypeFromUrl());
+      setLibraryRelationshipFilter(readLibraryRelationshipFromUrl());
+    };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
@@ -303,19 +416,20 @@ export default function LibraryPage() {
     autoLoadedRef.current = true;
     const limit = 6;
     const toLoad = items.slice(0, limit);
-    toLoad.forEach((it) => {
-      if (!previewById[it.id] && !previewLoading[it.id]) {
-        loadPreview(it.id);
+    toLoad.forEach((entry) => {
+      const id = entry.item.id;
+      if (!previewById[id] && !previewLoading[id]) {
+        loadPreview(id);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
-  const groups = {
-    owned: items.filter((i) => i.libraryAccess === "owned"),
-    purchased: items.filter((i) => i.libraryAccess === "purchased"),
-    preview: items.filter((i) => i.libraryAccess === "preview"),
-    participant: items.filter((i) => i.libraryAccess === "participant")
+  const groupedEntries = {
+    owned: items.filter((e) => e.item.libraryAccess === "owned"),
+    purchased: items.filter((e) => e.item.libraryAccess === "purchased"),
+    preview: items.filter((e) => e.item.libraryAccess === "preview"),
+    participant: items.filter((e) => e.item.libraryAccess === "participant")
   };
 
   async function loadPreview(contentId: string) {
@@ -386,14 +500,35 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                 className={`text-xs rounded-full border px-3 py-1 ${active ? "border-white/30 bg-white/5 text-white" : "border-neutral-800 text-neutral-300 hover:bg-neutral-900"}`}
                 onClick={() => {
                   setLibraryTypeFilter(value);
-                  writeLibraryTypeToUrl(value);
+                  writeLibraryFiltersToUrl(value, libraryRelationshipFilter);
                 }}
               >
                 {LIBRARY_TYPE_LABEL[value]}
               </button>
             );
           })}
-          <div className="text-xs text-neutral-500 sm:ml-auto">Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]}</div>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="text-xs text-neutral-500">Relationship</div>
+          {LIBRARY_RELATIONSHIP_FILTERS.map((value) => {
+            const active = libraryRelationshipFilter === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                className={`text-xs rounded-full border px-3 py-1 ${active ? "border-white/30 bg-white/5 text-white" : "border-neutral-800 text-neutral-300 hover:bg-neutral-900"}`}
+                onClick={() => {
+                  setLibraryRelationshipFilter(value);
+                  writeLibraryFiltersToUrl(libraryTypeFilter, value);
+                }}
+              >
+                {LIBRARY_RELATIONSHIP_LABEL[value]}
+              </button>
+            );
+          })}
+          <div className="text-xs text-neutral-500 sm:ml-auto">
+            Showing: {LIBRARY_TYPE_LABEL[libraryTypeFilter]} · {LIBRARY_RELATIONSHIP_LABEL[libraryRelationshipFilter]}
+          </div>
         </div>
       </div>
 
@@ -404,7 +539,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
       ) : (
         <div className="space-y-6">
           {(["owned", "purchased", "preview", "participant"] as const).map((key) => {
-            const list = groups[key];
+            const list = groupedEntries[key];
             if (!list.length) return null;
             const label =
               key === "owned" ? "Owned" : key === "purchased" ? "Purchased" : key === "preview" ? "Preview" : "Shared splits";
@@ -412,7 +547,8 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
               <div key={key} className="space-y-2">
                 <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {list.map((it) => {
+                  {list.map((entry) => {
+                    const it = entry.item;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
                     const pf = previewFileFor(previewUrl, preview?.files || []);
@@ -475,6 +611,9 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                               Owner: {it.owner?.displayName || it.owner?.email}
                             </div>
                           ) : null}
+                          <div className="mt-1 text-[11px] text-neutral-500">
+                            Relationship: {LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType]}
+                          </div>
                         </div>
 
                         {isAudio && coverLoadErrorById[it.id] ? (

@@ -37,7 +37,7 @@ function readLibraryTypeFromUrl(): LibraryTypeFilter {
   if (typeof window === "undefined") return "all";
   try {
     const params = new URLSearchParams(window.location.search);
-    return normalizeLibraryTypeFilter(params.get("type"));
+    return normalizeLibraryTypeFilter(params.get("catalogType"));
   } catch {
     return "all";
   }
@@ -46,8 +46,9 @@ function readLibraryTypeFromUrl(): LibraryTypeFilter {
 function writeLibraryTypeToUrl(next: LibraryTypeFilter) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
-  if (next === "all") url.searchParams.delete("type");
-  else url.searchParams.set("type", next);
+  url.searchParams.delete("type");
+  if (next === "all") url.searchParams.delete("catalogType");
+  else url.searchParams.set("catalogType", next);
   window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
@@ -2143,7 +2144,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         </div>
       ) : null}
       <div>
-        <div className="text-lg font-semibold">Content library</div>
+        <div className="text-lg font-semibold">Content catalog</div>
         <div className="text-sm text-neutral-400">Create an item, upload your master file, and the repo will track every version.</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <span className="text-neutral-500">View:</span>

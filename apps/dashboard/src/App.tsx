@@ -510,7 +510,7 @@ export default function App() {
     page === "profile" ? "Profile" :
     page === "royalties-terms" ? "Split terms" :
     page === "payouts" ? PAYOUT_DESTINATIONS_LABEL :
-    page === "content" ? "Content library" :
+    page === "content" ? "Content catalog" :
     page === "receipt" ? "Receipt" :
     page === "invite" ? "Invite" : "Dashboard";
 

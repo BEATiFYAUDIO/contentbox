@@ -16,6 +16,7 @@ export type LibraryExclusionReason =
 type ContentLike = {
   id?: string | null;
   status?: string | null;
+  storefrontStatus?: string | null;
   libraryAccess?: string | null;
   ownerUserId?: string | null;
   archivedAt?: string | null;
@@ -55,6 +56,10 @@ function isPublished(value: unknown): boolean {
   return normalizeStatus(value) === "published";
 }
 
+function isArchivedStorefront(value: unknown): boolean {
+  return normalizeStatus(value) === "archived";
+}
+
 function isAcceptedParticipation(participation: ParticipationLike | null | undefined): boolean {
   if (!participation) return false;
   if (hasValue(participation.revokedAt) || hasValue(participation.tombstonedAt)) return false;
@@ -65,6 +70,7 @@ function isAcceptedParticipation(participation: ParticipationLike | null | undef
 
 export function getContentExclusionReason(content: ContentLike | null | undefined): LibraryExclusionReason | null {
   if (!content) return "orphaned";
+  if (isArchivedStorefront(content.storefrontStatus)) return "archived";
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
   if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
@@ -74,6 +80,7 @@ export function getContentExclusionReason(content: ContentLike | null | undefine
 
 export function getAvailabilityState(content: ContentLike | null | undefined): AvailabilityState {
   if (!content) return "orphaned";
+  if (isArchivedStorefront(content.storefrontStatus)) return "archived";
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
   if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
@@ -209,6 +216,7 @@ export function logVisibilityDecision(input: {
     relation: input.relation,
     contentId: content?.id || null,
     status: content?.status || null,
+    storefrontStatus: content?.storefrontStatus || null,
     archivedAt: content?.archivedAt || null,
     trashedAt: content?.trashedAt || null,
     deletedAt: content?.deletedAt || null,
