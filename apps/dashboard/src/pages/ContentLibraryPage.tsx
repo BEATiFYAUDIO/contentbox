@@ -670,7 +670,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           id: p.contentId,
           title: p.contentTitle || "Untitled",
           type: ((p.contentType || "file") as ContentType),
-          status: p.contentStatus === "published" ? "published" : "draft",
+          status: String(p.contentStatus || "").trim().toLowerCase() === "published" ? "published" : "draft",
           createdAt: "",
           deletedAt: p.contentDeletedAt || null,
           ownerUserId: p.creatorUserId || null,

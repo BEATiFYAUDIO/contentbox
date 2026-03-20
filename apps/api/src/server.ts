@@ -10296,6 +10296,95 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
   }
 }
 
+async function fetchRemoteInviteSnapshot(remoteOrigin: string, token: string): Promise<any | null> {
+  const origin = normalizeRemoteOrigin(remoteOrigin);
+  if (!origin || !token) return null;
+  if (!(await isOriginReachable(origin))) return null;
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      8000
+    );
+    if (!res.ok) return null;
+    const payload: any = await res.json().catch(() => null);
+    if (!payload || typeof payload !== "object") return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function mirrorRemoteInviteAcceptance(input: {
+  userId: string;
+  remoteOrigin: string;
+  token: string;
+  acceptedAtOverride?: string | null;
+}) {
+  const userId = asString(input.userId || "").trim();
+  const remoteOrigin = normalizeRemoteOrigin(input.remoteOrigin);
+  const token = asString(input.token || "").trim();
+  if (!userId || !remoteOrigin || !token) return;
+  const snapshot = await fetchRemoteInviteSnapshot(remoteOrigin, token);
+  if (!snapshot) return;
+  const invitation = snapshot?.invitation || null;
+  const content = snapshot?.content || null;
+  const splitParticipant = snapshot?.splitParticipant || null;
+  const splitVersion = snapshot?.splitVersion || null;
+  const acceptedAtRaw = asString(input.acceptedAtOverride || invitation?.acceptedAt || "").trim() || null;
+  const acceptedAt = acceptedAtRaw ? new Date(acceptedAtRaw) : null;
+  const contentDeletedAtRaw = asString(content?.deletedAt || "").trim() || null;
+  const contentDeletedAt = contentDeletedAtRaw ? new Date(contentDeletedAtRaw) : null;
+  const percent = round3(num(splitParticipant?.percent));
+  const status = normalizeInviteStatus(invitation?.status || (acceptedAt ? "accepted" : "pending"));
+  const tokenHash = hashInviteToken(token);
+  await prisma.remoteInvite.upsert({
+    where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } },
+    update: {
+      userId,
+      inviteUrl: `${remoteOrigin.replace(/\/+$/, "")}/invite/${encodeURIComponent(token)}`,
+      contentId: asString(content?.id || "").trim() || null,
+      contentTitle: asString(content?.title || "").trim() || null,
+      contentType: asString(content?.type || "").trim() || null,
+      contentStatus: asString(content?.status || "").trim() || null,
+      contentDeletedAt,
+      splitVersionNum: Number.isFinite(Number(splitVersion?.versionNumber)) ? Number(splitVersion.versionNumber) : null,
+      splitStatus: asString(splitVersion?.status || "").trim() || null,
+      role: asString(splitParticipant?.role || "").trim() || null,
+      percent: Number.isFinite(percent) && percent > 0 ? percent : null,
+      participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
+      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
+      acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
+      status,
+      remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
+      remoteNodeUrl: remoteOrigin,
+      remoteVerified: Boolean(acceptedAt)
+    },
+    create: {
+      userId,
+      remoteOrigin,
+      tokenHash,
+      inviteUrl: `${remoteOrigin.replace(/\/+$/, "")}/invite/${encodeURIComponent(token)}`,
+      contentId: asString(content?.id || "").trim() || null,
+      contentTitle: asString(content?.title || "").trim() || null,
+      contentType: asString(content?.type || "").trim() || null,
+      contentStatus: asString(content?.status || "").trim() || null,
+      contentDeletedAt,
+      splitVersionNum: Number.isFinite(Number(splitVersion?.versionNumber)) ? Number(splitVersion.versionNumber) : null,
+      splitStatus: asString(splitVersion?.status || "").trim() || null,
+      role: asString(splitParticipant?.role || "").trim() || null,
+      percent: Number.isFinite(percent) && percent > 0 ? percent : null,
+      participantEmail: asString(splitParticipant?.participantEmail || "").trim() || null,
+      participantUserId: asString(splitParticipant?.participantUserId || "").trim() || null,
+      acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
+      status,
+      remoteUserId: asString(invitation?.acceptedByUserId || "").trim() || null,
+      remoteNodeUrl: remoteOrigin,
+      remoteVerified: Boolean(acceptedAt)
+    }
+  });
+}
+
 type ParticipationProjection = {
   contentId: string;
   contentTitle: string | null;
@@ -10595,7 +10684,24 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
   const rows = await Promise.all(
     list.map(async (inv) => {
       const inviteToken = extractInviteTokenFromUrl(inv.inviteUrl || null);
-      const inviteStatus = normalizeRemoteInviteStatusForList(inv as any);
+      let inviteStatus = normalizeRemoteInviteStatusForList(inv as any);
+      if (inviteToken && inviteStatus !== "accepted") {
+        const snapshot = await fetchRemoteInviteSnapshot(inv.remoteOrigin, inviteToken);
+        const remoteInvitation = snapshot?.invitation || null;
+        const remoteAcceptedAt = asString(remoteInvitation?.acceptedAt || "").trim();
+        const remoteStatus = normalizeInviteStatus(remoteInvitation?.status || "");
+        const normalizedRemoteStatus =
+          remoteStatus === "pending" && remoteAcceptedAt ? "accepted" : remoteStatus;
+        if (normalizedRemoteStatus === "accepted") {
+          await mirrorRemoteInviteAcceptance({
+            userId,
+            remoteOrigin: inv.remoteOrigin,
+            token: inviteToken,
+            acceptedAtOverride: remoteAcceptedAt || null
+          });
+          inviteStatus = "accepted";
+        }
+      }
       const accounting =
         inviteToken && inviteStatus === "accepted"
           ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken)
@@ -12584,6 +12690,26 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
         ...(payload && typeof payload === "object" ? payload : {}),
         code: mapRemoteInviteAcceptErrorCode(res.status, asString(payload?.code || ""))
       };
+    }
+    if (res.ok) {
+      try {
+        await mirrorRemoteInviteAcceptance({
+          userId: localUserId,
+          remoteOrigin: origin,
+          token,
+          acceptedAtOverride: asString(payload?.acceptedAt || payload?.invitation?.acceptedAt || "").trim() || null
+        });
+      } catch (mirrorErr: any) {
+        app.log.warn(
+          {
+            tokenId: safeInviteTokenId(token),
+            origin,
+            localUserId: localUserId || null,
+            error: String(mirrorErr?.message || mirrorErr)
+          },
+          "invite.remote_accept_mirror_failed"
+        );
+      }
     }
     app.log.info(
       {
