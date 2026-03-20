@@ -301,7 +301,10 @@ export default function SplitsPage(props: {
           <div className="mt-4 space-y-2">
             {remoteInvites
               .filter((inv) => (showTombstones ? true : !inv.contentDeletedAt))
-              .filter((inv) => inv.acceptedAt)
+              .filter((inv) => {
+                const status = String(inv?.status || "").trim().toLowerCase();
+                return status === "accepted" || Boolean(inv?.acceptedAt);
+              })
               .map((inv) => (
                 <div key={inv.id} className="rounded-lg border border-neutral-800 px-3 py-2">
                   <div className="flex items-center justify-between gap-3">

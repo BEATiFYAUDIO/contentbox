@@ -10264,33 +10264,58 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
       where: { userId },
       orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
     });
-    const visible = includeHistory ? list : list.filter((inv) => shouldShowRemoteInviteInActiveLists(inv as any));
-    return reply.send(
-      visible.map((inv) => ({
-        id: inv.id,
-        remoteOrigin: inv.remoteOrigin,
-        inviteUrl: inv.inviteUrl || null,
-        contentId: inv.contentId || null,
-        contentTitle: inv.contentTitle || null,
-        contentType: inv.contentType || null,
-        contentStatus: (inv as any).contentStatus || null,
-        contentDeletedAt: inv.contentDeletedAt ? inv.contentDeletedAt.toISOString() : null,
-        splitVersionNum: inv.splitVersionNum ?? null,
-        splitStatus: (inv as any).splitStatus || null,
-        role: inv.role || null,
-        percent: percentToPrimitive(inv.percent ?? null),
-        participantEmail: inv.participantEmail || null,
-        status: normalizeRemoteInviteStatusForList(inv as any),
-        expiresAt: (inv as any).expiresAt ? (inv as any).expiresAt.toISOString() : null,
-        acceptedAt: inv.acceptedAt ? inv.acceptedAt.toISOString() : null,
-        revokedAt: (inv as any).revokedAt ? (inv as any).revokedAt.toISOString() : null,
-        tombstonedAt: (inv as any).tombstonedAt ? (inv as any).tombstonedAt.toISOString() : null,
-        remoteUserId: inv.remoteUserId || null,
-        remoteNodeUrl: inv.remoteNodeUrl || null,
-        remoteVerified: Boolean(inv.remoteVerified),
-        createdAt: inv.createdAt.toISOString()
-      }))
+    const hydrated = await Promise.all(
+      list.map(async (inv) => {
+        const inviteToken = extractInviteTokenFromUrl(inv.inviteUrl || null);
+        let normalizedStatus = normalizeRemoteInviteStatusForList(inv as any);
+        let acceptedAt = inv.acceptedAt ? inv.acceptedAt.toISOString() : null;
+        if (inviteToken && normalizedStatus !== "accepted") {
+          const snapshot = await fetchRemoteInviteSnapshot(inv.remoteOrigin, inviteToken);
+          const remoteInvitation = snapshot?.invitation || null;
+          const remoteAcceptedAt = asString(remoteInvitation?.acceptedAt || "").trim();
+          const remoteStatus = normalizeInviteStatus(remoteInvitation?.status || "");
+          const normalizedRemoteStatus =
+            remoteStatus === "pending" && remoteAcceptedAt ? "accepted" : remoteStatus;
+          if (normalizedRemoteStatus === "accepted") {
+            const acceptedAtOverride = remoteAcceptedAt || new Date().toISOString();
+            await mirrorRemoteInviteAcceptance({
+              userId,
+              remoteOrigin: inv.remoteOrigin,
+              token: inviteToken,
+              acceptedAtOverride
+            });
+            normalizedStatus = "accepted";
+            acceptedAt = acceptedAtOverride;
+          }
+        }
+        return {
+          id: inv.id,
+          remoteOrigin: inv.remoteOrigin,
+          inviteUrl: inv.inviteUrl || null,
+          contentId: inv.contentId || null,
+          contentTitle: inv.contentTitle || null,
+          contentType: inv.contentType || null,
+          contentStatus: (inv as any).contentStatus || null,
+          contentDeletedAt: inv.contentDeletedAt ? inv.contentDeletedAt.toISOString() : null,
+          splitVersionNum: inv.splitVersionNum ?? null,
+          splitStatus: (inv as any).splitStatus || null,
+          role: inv.role || null,
+          percent: percentToPrimitive(inv.percent ?? null),
+          participantEmail: inv.participantEmail || null,
+          status: normalizedStatus,
+          expiresAt: (inv as any).expiresAt ? (inv as any).expiresAt.toISOString() : null,
+          acceptedAt,
+          revokedAt: (inv as any).revokedAt ? (inv as any).revokedAt.toISOString() : null,
+          tombstonedAt: (inv as any).tombstonedAt ? (inv as any).tombstonedAt.toISOString() : null,
+          remoteUserId: inv.remoteUserId || null,
+          remoteNodeUrl: inv.remoteNodeUrl || null,
+          remoteVerified: Boolean(inv.remoteVerified),
+          createdAt: inv.createdAt.toISOString()
+        };
+      })
     );
+    const visible = includeHistory ? hydrated : hydrated.filter((inv) => shouldShowRemoteInviteInActiveLists(inv as any));
+    return reply.send(visible);
   } catch (e: any) {
     app.log.warn({ err: String(e?.message || e), userId }, "remoteInvites.listFailed");
     return reply.send([]);
@@ -12768,7 +12793,9 @@ app.post("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async
           userId: localUserId,
           remoteOrigin: origin,
           token,
-          acceptedAtOverride: asString(payload?.acceptedAt || payload?.invitation?.acceptedAt || "").trim() || null
+          acceptedAtOverride:
+            asString(payload?.acceptedAt || payload?.invitation?.acceptedAt || "").trim() ||
+            new Date().toISOString()
         });
       } catch (mirrorErr: any) {
         app.log.warn(
