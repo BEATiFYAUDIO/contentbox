@@ -449,7 +449,7 @@ export default function InvitePage({
         next
       });
     }
-    window.location.href = next;
+    openExternalInNewWindow(next);
   }
 
   // Determine token to use: prop first, then parse from URL path (/invite/:token) or ?token=
