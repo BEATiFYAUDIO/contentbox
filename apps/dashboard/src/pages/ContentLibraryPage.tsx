@@ -599,7 +599,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       const data = await api<ContentItem[] | any>(url);
       const baseList = Array.isArray(data) ? data : [];
       setParticipationByContentId({});
-      const list = baseList;
+      const list = baseList.filter((it) => {
+        const access = String((it as any)?.libraryAccess || "").trim().toLowerCase();
+        if (!access) return true;
+        return access === "owned";
+      });
       if (!Array.isArray(data)) {
         setError("Failed to load content (unexpected response)");
       }
@@ -1521,7 +1525,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
       // Deterministic immediate refresh for the authored active view.
       const refreshed = await api<ContentItem[]>("/content?scope=mine");
-      setItems(Array.isArray(refreshed) ? refreshed : []);
+      const strictOwned = Array.isArray(refreshed)
+        ? refreshed.filter((it: any) => String(it?.libraryAccess || "owned").toLowerCase() === "owned")
+        : [];
+      setItems(strictOwned);
 
       setPendingOpenContentId(created.id);
     } catch (e: any) {
@@ -2490,7 +2497,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         ) : (
           <div className="space-y-2">
             {items.map((it) => {
-              const isOwner = !it.ownerUserId || it.ownerUserId === meId;
+              const isOwner = Boolean(it.ownerUserId && it.ownerUserId === meId);
               const canInspect = isOwner || it.libraryAccess === "participant";
               const ownerLabel = it.owner?.displayName || it.owner?.email || it.ownerUserId || "Unknown";
               const isOpen = !!expanded[it.id];
