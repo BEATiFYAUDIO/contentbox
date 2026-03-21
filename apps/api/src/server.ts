@@ -8828,11 +8828,13 @@ async function buildWellKnownContentboxPayload(req: any): Promise<{ nodeUrl: str
   const xfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
   const proto = xfProto === "http" || xfProto === "https" ? xfProto : "https";
   const host = getPublicHostnameFromReq(req);
-  const fallbackPublicOrigin =
+  const configuredPublicOrigin =
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
     normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
-    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
-  const nodeUrl = host ? `${proto}://${host}` : (fallbackPublicOrigin || "https://contentbox.local");
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN) ||
+    normalizeOrigin(getActivePublicOrigin() || "");
+  const requestDerivedOrigin = host ? `${proto}://${host}` : null;
+  const nodeUrl = configuredPublicOrigin || requestDerivedOrigin || "https://contentbox.local";
 
   try {
     const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
