@@ -96,6 +96,13 @@ function mapParticipantToRow(p: SplitParticipant): Row {
     (canonicalTargetType === "local_user" || canonicalTargetType === "identity_ref"
       ? String(canonicalTargetValue || "").trim()
       : normalizedEmailFromTarget || "");
+  const inviteAccepted = invitationStatus === "accepted" || Boolean(p.acceptedAt);
+  const displayCandidate = String(p.participantDisplayName || "").trim();
+  const isPlaceholderDisplay =
+    displayCandidate.toLowerCase() === "pending identity claim" ||
+    displayCandidate.toLowerCase() === "invited collaborator" ||
+    displayCandidate.toLowerCase() === "contributor";
+  const normalizedDisplayName = inviteAccepted && isPlaceholderDisplay ? null : (p.participantDisplayName || null);
 
   return {
     id: p.id,
@@ -112,16 +119,16 @@ function mapParticipantToRow(p: SplitParticipant): Row {
     resolutionKind,
     resolvedUserId: p.participantUserId || (hasIdentityClaim ? String(canonicalTargetValue) : null),
     resolvedDisplay:
-      p.participantDisplayName ||
+      normalizedDisplayName ||
       resolveParticipantDisplayLabel({
-        displayName: p.participantDisplayName || null,
+        displayName: normalizedDisplayName,
         handle: p.participantHandle || null,
         targetType: canonicalTargetType,
         targetValue: canonicalTargetValue,
         participantUserId: p.participantUserId || null,
         participantEmail: p.participantEmail || null,
         allowEmail: true,
-        fallbackLabel: "Invited collaborator"
+        fallbackLabel: inviteAccepted ? "Accepted collaborator" : "Invited collaborator"
       }),
     normalizedEmail: normalizedEmailFromTarget || p.participantEmail || null,
     resolvedVerifiedKey: p.verifiedAt ? true : null
@@ -1432,7 +1439,7 @@ export default function SplitEditorPage(props: {
                       <div className="mt-1 text-[11px]">
                         {resolvingByRowKey[rowKey(r, idx)] ? (
                           <span className="text-neutral-400">Resolving…</span>
-                        ) : (r.participantUserId && r.verifiedAt && (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt))) ? (
+                        ) : (r.invitationStatus === "accepted" || (!r.invitationStatus && r.acceptedAt)) ? (
                           <span className="text-emerald-300">Accepted</span>
                         ) : ((r.targetType === "local_user" || r.targetType === "identity_ref") && Boolean(r.targetValue)) ? (
                           <span className="text-amber-300">
