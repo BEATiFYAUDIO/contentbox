@@ -271,6 +271,31 @@ function parseSats(x: unknown): bigint {
   return Number.isFinite(n) ? BigInt(Math.floor(n)) : 0n;
 }
 
+type DatabaseTargetSource =
+  | "env_database_url"
+  | "contentbox_root"
+  | "dev_quickstart"
+  | "unset";
+
+function resolveRuntimeDatabaseUrl(
+  storage: "sqlite" | "postgres",
+  explicitDatabaseUrl: string,
+  explicitContentboxRoot: string,
+  contentboxRootResolved: string
+): { databaseUrl: string; source: DatabaseTargetSource } {
+  const rawDatabaseUrl = String(explicitDatabaseUrl || "").trim();
+  if (rawDatabaseUrl) return { databaseUrl: rawDatabaseUrl, source: "env_database_url" };
+  if (storage !== "sqlite") return { databaseUrl: "", source: "unset" };
+
+  const rawContentboxRoot = String(explicitContentboxRoot || "").trim();
+  if (rawContentboxRoot) {
+    const dbPath = path.join(contentboxRootResolved, "contentbox.db");
+    return { databaseUrl: `file:${dbPath}`, source: "contentbox_root" };
+  }
+
+  return { databaseUrl: "file:./prisma/data/dev.db", source: "dev_quickstart" };
+}
+
 function normalizePublicOriginBase(origin: unknown): string {
   return asString(origin || "").trim().replace(/\/+$/, "");
 }
@@ -880,6 +905,7 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
   const rawPath = String(req.raw?.url || req.url || "/");
   const pathname = rawPath.split("?")[0] || "/";
   if (pathname.startsWith("/api/")) return false;
+  if (/^\/public\/users\/[^/]+\/payout-destination\/?$/.test(pathname)) return false;
 
   const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const candidate = path.resolve(DASHBOARD_DIST_DIR, relative);
@@ -1011,11 +1037,11 @@ app.setErrorHandler((error, req, reply) => {
   reply.code(status).send(jsonStringifySafe(safe));
 });
 
-const prisma = new PrismaClient();
-
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
 const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
+const EXPLICIT_CONTENTBOX_ROOT = String(process.env.CONTENTBOX_ROOT || "").trim();
+const EXPLICIT_DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 const CONTENTBOX_ROOT_INFO = resolveContentboxRootInfo();
 const CONTENTBOX_ROOT = CONTENTBOX_ROOT_INFO.root;
 if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
@@ -1067,16 +1093,27 @@ function describeDatabaseTarget(rawUrl: string): { provider: "sqlite" | "postgre
   return { provider: "unknown", target: "unrecognized" };
 }
 
+const DB_URL_RESOLUTION = resolveRuntimeDatabaseUrl(
+  RUNTIME_CONFIG.storage,
+  EXPLICIT_DATABASE_URL,
+  EXPLICIT_CONTENTBOX_ROOT,
+  CONTENTBOX_ROOT
+);
+if (DB_URL_RESOLUTION.databaseUrl) {
+  process.env.DATABASE_URL = DB_URL_RESOLUTION.databaseUrl;
+}
 const DB_TARGET = describeDatabaseTarget(String(process.env.DATABASE_URL || ""));
 app.log.info(
   {
     contentboxRoot: CONTENTBOX_ROOT,
     contentboxRootSource: CONTENTBOX_ROOT_INFO.source,
     databaseProvider: DB_TARGET.provider,
-    databaseTarget: DB_TARGET.target
+    databaseTarget: DB_TARGET.target,
+    databaseTargetSource: DB_URL_RESOLUTION.source
   },
   "Startup runtime configuration"
 );
+const prisma = new PrismaClient();
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -8401,28 +8438,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
   appPublic.get("/public/users/:id", handlePublicUser);
-  appPublic.get("/public/users/:userId/payout-destination", async (req: any, reply: any) => {
-    const userId = asString((req.params as any)?.userId || "").trim();
-    if (!userId) return badRequest(reply, "userId is required");
-    const destination = await resolvePublicParticipantPayoutDestination(userId).catch(() => null);
-    if (!destination || !destination.destinationType || !destination.destinationValue) {
-      return reply.send({ ok: true, destination: null });
-    }
-    return reply.send({
-      ok: true,
-      destination: {
-        source: destination.destinationSource,
-        destinationType: destination.destinationType,
-        destinationValue: destination.destinationValue,
-        destinationSummary: destination.destinationSummary,
-        isVerified: destination.isVerified,
-        verifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
-        lastVerifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
-        verificationStatus: destination.verificationStatus,
-        verificationError: destination.verificationError
-      }
-    });
-  });
+  appPublic.get("/public/users/:userId/payout-destination", handlePublicPayoutDestination);
   // Buyer session + entitlement routes used by public buy pages.
   appPublic.post("/api/buyer/bootstrap", async (req: any, reply: any) => {
     const session = await getOrCreateBuyerSession(req, reply);
@@ -8862,7 +8878,41 @@ async function handlePublicUser(req: any, reply: any) {
   return reply.send({ id: u.id, displayName: u.displayName, createdAt: u.createdAt });
 }
 
+async function handlePublicPayoutDestination(req: any, reply: any) {
+  reply.type("application/json; charset=utf-8");
+  const userId = asString((req.params as any)?.userId || "").trim();
+  app.log.info(
+    {
+      userId,
+      route: "/public/users/:userId/payout-destination",
+      host: String(req.headers?.host || ""),
+      accept: String(req.headers?.accept || "")
+    },
+    "publicPayoutDestination.handler_reached"
+  );
+  if (!userId) return badRequest(reply, "userId is required");
+  const destination = await resolvePublicParticipantPayoutDestination(userId).catch(() => null);
+  if (!destination || !destination.destinationType || !destination.destinationValue) {
+    return reply.send({ ok: true, destination: null });
+  }
+  return reply.send({
+    ok: true,
+    destination: {
+      source: destination.destinationSource,
+      destinationType: destination.destinationType,
+      destinationValue: destination.destinationValue,
+      destinationSummary: destination.destinationSummary,
+      isVerified: destination.isVerified,
+      verifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
+      lastVerifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
+      verificationStatus: destination.verificationStatus,
+      verificationError: destination.verificationError
+    }
+  });
+}
+
 app.get("/public/users/:id", handlePublicUser);
+app.get("/public/users/:userId/payout-destination", handlePublicPayoutDestination);
 
 type RemoteDiscoveryCacheEntry = {
   origin: string;
