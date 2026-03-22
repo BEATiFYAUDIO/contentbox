@@ -54,6 +54,7 @@ import {
   probeLndConnection,
   saveLightningNodeConfig,
   sendBolt11Payment,
+  lookupOutgoingPaymentStatusByHash,
   testLightningNodeConnection
 } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
@@ -4027,6 +4028,31 @@ async function requestLightningAddressInvoice(lightningAddress: string, amountSa
   }
 }
 
+async function buildRemittanceMemo(args: {
+  prefix: string;
+  paymentIntentId: string | null | undefined;
+  contentId?: string | null | undefined;
+}): Promise<string> {
+  const paymentIntentId = String(args.paymentIntentId || "").trim();
+  const shortIntent = paymentIntentId ? paymentIntentId.slice(-8) : "unknown";
+  const contentId = String(args.contentId || "").trim();
+  let title: string | null = null;
+  if (contentId) {
+    try {
+      const item = await prisma.contentItem.findUnique({
+        where: { id: contentId },
+        select: { title: true }
+      });
+      title = String(item?.title || "").trim() || null;
+    } catch {
+      title = null;
+    }
+  }
+  if (title) return `${args.prefix} ${title} ${shortIntent}`;
+  if (contentId) return `${args.prefix} ${contentId.slice(0, 8)} ${shortIntent}`;
+  return `${args.prefix} ${shortIntent}`;
+}
+
 async function resolveLightningCapabilityRuntime(userId: string | null): Promise<{
   connected: boolean;
   canReceive: boolean;
@@ -4526,6 +4552,27 @@ async function markParticipantPayoutPendingVerification(
   });
 }
 
+async function markParticipantPayoutFailedAfterVerification(
+  id: string,
+  message: string,
+  payoutReference: string | null
+) {
+  await prisma.participantPayout.updateMany({
+    where: { id, status: "pending", readinessReason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED" },
+    data: {
+      status: "failed",
+      payoutReference: payoutReference || null,
+      readinessReason: null,
+      blockedReason: null,
+      lastError: message,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      nextRetryAt: nextParticipantRetryAt(1)
+    }
+  });
+}
+
 async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentIntentRecord, reason: string) {
   const payoutRuntime = await resolvePayoutExecutionRuntime(null);
   app.log.info(
@@ -4610,6 +4657,70 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
       logParticipantPayoutAttempt(intent.id, row, "executed", "ALREADY_EXECUTED");
       continue;
     }
+    if (row.status === "pending" && row.readinessReason === "LND_RESULT_UNKNOWN_VERIFY_REQUIRED") {
+      const payoutRef = String(row.payoutReference || "").trim().toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(payoutRef)) {
+        try {
+          const verified = await lookupOutgoingPaymentStatusByHash(prisma as any, payoutRef);
+          if (verified === "SUCCEEDED") {
+            await forceMarkParticipantPayoutPaidAfterExternalSuccess(row.id, payoutRef);
+            app.log.info(
+              {
+                providerPaymentIntentId: intent.id,
+                participantPayoutId: row.id,
+                participantRef: participantExecutionRef(row),
+                persistedStatus: "paid",
+                reason: "LND_RESULT_UNKNOWN_RECONCILED_SUCCEEDED",
+                payoutReference: payoutRef
+              },
+              "payoutExecution.persisted_status"
+            );
+            continue;
+          }
+          if (verified === "FAILED") {
+            await markParticipantPayoutFailedAfterVerification(
+              row.id,
+              "LND_SEND_NOT_PAID:FAILED_VERIFIED",
+              payoutRef
+            );
+            app.log.info(
+              {
+                providerPaymentIntentId: intent.id,
+                participantPayoutId: row.id,
+                participantRef: participantExecutionRef(row),
+                persistedStatus: "failed",
+                reason: "LND_RESULT_UNKNOWN_RECONCILED_FAILED",
+                payoutReference: payoutRef
+              },
+              "payoutExecution.persisted_status"
+            );
+            continue;
+          }
+        } catch (verifyErr: any) {
+          app.log.warn(
+            {
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: row.id,
+              participantRef: participantExecutionRef(row),
+              reason: String(verifyErr?.message || "UNKNOWN_VERIFY_CHECK_FAILED"),
+              payoutReference: payoutRef
+            },
+            "payoutExecution.auto_remit_blocked"
+          );
+        }
+      }
+      logParticipantPayoutAttempt(intent.id, row, "pending", String(row.readinessReason || "VERIFY_PENDING"));
+      app.log.info(
+        {
+          providerPaymentIntentId: intent.id,
+          participantPayoutId: row.id,
+          participantRef: participantExecutionRef(row),
+          reason: String(row.readinessReason || "VERIFY_PENDING")
+        },
+        "splitAccounting.payout_row_skipped"
+      );
+      continue;
+    }
     if (row.status !== "ready" && row.status !== "failed") {
       logParticipantPayoutAttempt(intent.id, row, "pending", String(row.readinessReason || "NOT_READY"));
       app.log.info(
@@ -4685,7 +4796,11 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         const invoice = await requestLightningAddressInvoice(
           destinationSummary,
           String(payout.amountSats || "0"),
-          `Certifyd participant remittance ${String(intent.paymentIntentId || "").slice(-8)}`
+          await buildRemittanceMemo({
+            prefix: "Certifyd participant remittance",
+            paymentIntentId: intent.paymentIntentId,
+            contentId: intent.contentId
+          })
         );
         app.log.info(
           {
@@ -4875,7 +4990,11 @@ async function executeCreatorRemittance(intent: ProviderPaymentIntentRecord, rea
       const invoice = await requestLightningAddressInvoice(
         lightningAddress,
         forwarding.creatorNetSats || "0",
-        `Certifyd remittance ${forwarding.paymentIntentId.slice(-8)}`
+        await buildRemittanceMemo({
+          prefix: "Certifyd remittance",
+          paymentIntentId: forwarding.paymentIntentId,
+          contentId: forwarding.contentId
+        })
       );
       const send = await payBolt11ViaLnd(invoice);
       const paidAt = new Date().toISOString();
@@ -15307,25 +15426,45 @@ app.post("/api/provider/payment-intents/:id/retry-remittance", { preHandler: req
     return reply.code(409).send({ error: "PAYMENT_NOT_SETTLED", message: "Remittance can only run after payment settlement." });
   }
   if (current.payoutExecutionMode === "participant") {
-    return reply.code(409).send({
-      error: "PARTICIPANT_PAYOUT_AUTHORITY",
-      message: "Creator-level remittance is disabled while participant payout authority is active."
-    });
+    const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+    if (!payoutRuntime.participantPayoutsEnabled || !payoutRuntime.participantPayoutExecutionEnabled) {
+      return reply.code(409).send({
+        error: "PARTICIPANT_PAYOUT_EXECUTION_DISABLED",
+        message: "Participant payout execution is currently disabled."
+      });
+    }
+    await executeParticipantPayoutRowsForIntent(current, "provider_retry_participant_remittance");
+    const summary = await deriveIntentPayoutSummaryStatus(current.id).catch(() => current.payoutSummaryStatus || "pending");
+    const refreshed =
+      updateProviderPaymentIntent(current.id, {
+        payoutSummaryStatus: summary
+      }) || listProviderPaymentIntents().find((row) => row.id === current.id) || current;
+    return reply.send({ ok: true, item: refreshed });
   }
   const result = await executeCreatorRemittance(current, "provider_retry_remittance");
   return reply.send({ ok: true, item: result });
 });
 
 app.post("/api/provider/remittances/reprocess", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const candidates = listProviderPaymentIntents().filter((row) => {
-    if (row.status !== "paid") return false;
-    if (row.payoutStatus === "paid") return false;
-    if (row.payoutExecutionMode === "participant") return false;
-    if (row.providerRemitMode !== "auto_forward") return false;
-    return row.payoutDestinationType === "lightning_address";
-  });
+  const candidates = listProviderPaymentIntents().filter((row) => row.status === "paid" && row.payoutStatus !== "paid");
   const items: ProviderPaymentIntentRecord[] = [];
   for (const row of candidates) {
+    if (row.payoutExecutionMode === "participant") {
+      const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+      if (!payoutRuntime.participantPayoutsEnabled || !payoutRuntime.participantPayoutExecutionEnabled) {
+        continue;
+      }
+      await executeParticipantPayoutRowsForIntent(row, "provider_bulk_reprocess_participant_remittance");
+      const summary = await deriveIntentPayoutSummaryStatus(row.id).catch(() => row.payoutSummaryStatus || "pending");
+      const refreshed =
+        updateProviderPaymentIntent(row.id, {
+          payoutSummaryStatus: summary
+        }) || listProviderPaymentIntents().find((r) => r.id === row.id) || row;
+      items.push(refreshed);
+      continue;
+    }
+    if (row.providerRemitMode !== "auto_forward") continue;
+    if (row.payoutDestinationType !== "lightning_address") continue;
     const forwarded = await executeCreatorRemittance(row, "provider_bulk_reprocess_remittance");
     items.push(forwarded);
   }

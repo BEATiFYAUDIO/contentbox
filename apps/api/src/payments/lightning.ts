@@ -1653,6 +1653,52 @@ function classifyLndTransportError(error: unknown): string {
   return "transport_connect_failed";
 }
 
+function normalizeOutgoingPaymentStatus(raw: unknown): "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN" {
+  const value = String(raw || "").trim().toUpperCase();
+  if (value === "SUCCEEDED" || value === "SUCCESS") return "SUCCEEDED";
+  if (value === "FAILED") return "FAILED";
+  if (value === "IN_FLIGHT") return "IN_FLIGHT";
+  return "UNKNOWN";
+}
+
+async function derivePaymentHashFromBolt11(lnd: RuntimeLndConfig, paymentRequest: string): Promise<string | null> {
+  try {
+    const decoded = await lndFetchJson(lnd, `/v1/payreq/${encodeURIComponent(paymentRequest)}`, { method: "GET" });
+    const hash = String((decoded as any)?.payment_hash || "").trim().toLowerCase();
+    return /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function lookupOutgoingPaymentStatusByHash(
+  prisma: PrismaLike,
+  paymentHash: string
+): Promise<"SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN"> {
+  const lnd = await getLndConfig(prisma);
+  if (!lnd) return "UNKNOWN";
+  const hash = String(paymentHash || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) return "UNKNOWN";
+  const res = await lndFetchJson(lnd, "/v1/payments?include_incomplete=true&reversed=true&max_payments=200", {
+    method: "GET"
+  });
+  const payments = Array.isArray((res as any)?.payments) ? (res as any).payments : [];
+  const match = payments.find((p: any) => String(p?.payment_hash || "").trim().toLowerCase() === hash);
+  if (!match) return "UNKNOWN";
+  const normalized = normalizeOutgoingPaymentStatus(match?.status);
+  if (normalized !== "UNKNOWN") return normalized;
+  const hasPreimage = String(match?.payment_preimage || "").trim().length > 0;
+  if (hasPreimage) return "SUCCEEDED";
+  if (Array.isArray(match?.htlcs)) {
+    const htlcs = match.htlcs as any[];
+    const hasFailure = htlcs.some((h) => String(h?.status || "").toUpperCase() === "FAILED");
+    const hasInFlight = htlcs.some((h) => String(h?.status || "").toUpperCase() === "IN_FLIGHT");
+    if (hasFailure && !hasInFlight) return "FAILED";
+    if (hasInFlight) return "IN_FLIGHT";
+  }
+  return "UNKNOWN";
+}
+
 export async function sendBolt11Payment(
   prisma: PrismaLike,
   input: { paymentRequest: string; timeoutSeconds?: number; feeLimitSat?: number }
@@ -1663,39 +1709,8 @@ export async function sendBolt11Payment(
   if (!lnd) throw new Error("LND_SEND_NOT_CONFIGURED");
   const timeoutSeconds = Math.max(5, Math.min(300, Math.floor(Number(input.timeoutSeconds ?? 60))));
   const feeLimitSat = Math.max(0, Math.min(100_000, Math.floor(Number(input.feeLimitSat ?? 50))));
-  const normalizeOutgoingStatus = (raw: unknown): "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN" => {
-    const value = String(raw || "").trim().toUpperCase();
-    if (value === "SUCCEEDED" || value === "SUCCESS") return "SUCCEEDED";
-    if (value === "FAILED") return "FAILED";
-    if (value === "IN_FLIGHT") return "IN_FLIGHT";
-    return "UNKNOWN";
-  };
   const wait = async (ms: number) => {
     await new Promise((resolve) => setTimeout(resolve, ms));
-  };
-  const lookupOutgoingPaymentStatus = async (
-    paymentHash: string
-  ): Promise<"SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN"> => {
-    const hash = String(paymentHash || "").trim().toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(hash)) return "UNKNOWN";
-    const res = await lndFetchJson(lnd, "/v1/payments?include_incomplete=true&reversed=true&max_payments=200", {
-      method: "GET"
-    });
-    const payments = Array.isArray((res as any)?.payments) ? (res as any).payments : [];
-    const match = payments.find((p: any) => String(p?.payment_hash || "").trim().toLowerCase() === hash);
-    if (!match) return "UNKNOWN";
-    const normalized = normalizeOutgoingStatus(match?.status);
-    if (normalized !== "UNKNOWN") return normalized;
-    const hasPreimage = String(match?.payment_preimage || "").trim().length > 0;
-    if (hasPreimage) return "SUCCEEDED";
-    if (Array.isArray(match?.htlcs)) {
-      const htlcs = match.htlcs as any[];
-      const hasFailure = htlcs.some((h) => String(h?.status || "").toUpperCase() === "FAILED");
-      const hasInFlight = htlcs.some((h) => String(h?.status || "").toUpperCase() === "IN_FLIGHT");
-      if (hasFailure && !hasInFlight) return "FAILED";
-      if (hasInFlight) return "IN_FLIGHT";
-    }
-    return "UNKNOWN";
   };
   const verifyOutgoingAfterSend = async (
     paymentHash: string
@@ -1703,7 +1718,7 @@ export async function sendBolt11Payment(
     // LND can return non-final send responses while payment state settles asynchronously.
     let last: "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN" = "UNKNOWN";
     for (let i = 0; i < 5; i += 1) {
-      const status = await lookupOutgoingPaymentStatus(paymentHash);
+      const status = await lookupOutgoingPaymentStatusByHash(prisma, paymentHash);
       if (status === "SUCCEEDED" || status === "FAILED") return status;
       last = status;
       await wait(800);
@@ -1724,8 +1739,11 @@ export async function sendBolt11Payment(
       })
     });
     const status = String((res as any)?.status || "").trim().toUpperCase();
-    const paymentHash = String((res as any)?.payment_hash || "").trim() || null;
-    const immediate = normalizeOutgoingStatus(status);
+    const responsePaymentHash = String((res as any)?.payment_hash || "").trim().toLowerCase();
+    const paymentHash =
+      (/^[0-9a-f]{64}$/.test(responsePaymentHash) ? responsePaymentHash : null) ||
+      (await derivePaymentHashFromBolt11(lnd, paymentRequest));
+    const immediate = normalizeOutgoingPaymentStatus(status);
     try {
       console.info("[payoutExecution.lnd_send_result_raw]", {
         immediateStatus: immediate,
