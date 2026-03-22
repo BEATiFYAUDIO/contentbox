@@ -117,6 +117,7 @@ import {
   computeCanonicalManifestHash,
   normalizeManifestForPublish
 } from "./lib/contentPublish.js";
+import { classifyDelegatedPublishFailure } from "./lib/contentPublishDelegation.js";
 import {
   appendLifecycleReceipt,
   getLifecycleReceiptById,
@@ -18367,6 +18368,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       }
     | null = null;
   let delegatedPublishRecord: ProviderDelegatedPublishRecord | null = null;
+  let delegatedPublishWarning: string | null = null;
   const shouldDelegatePublish =
     isNetworkProviderConfigured(providerCfg) &&
     evaluateProviderExecutionTrustReadiness().allowed &&
@@ -18414,18 +18416,35 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
           },
           "publish.delegated_provider_failed"
         );
-        if (providerResponse.status === 409) {
+        const failureAction = classifyDelegatedPublishFailure({
+          providerStatus: providerResponse.status,
+          providerCode
+        });
+        if (failureAction === "skip_relationship_required") {
+          delegatedPublishWarning = providerMessage;
+          app.log.warn(
+            {
+              contentId,
+              target,
+              providerStatus: providerResponse.status,
+              providerCode,
+              providerMessage
+            },
+            "publish.delegated_provider_skipped_relationship_required"
+          );
+        } else if (failureAction === "conflict") {
           return reply.code(409).send({
             code: providerCode || "delegated_publish_conflict",
             message: providerMessage,
             providerStatus: providerResponse.status
           });
+        } else {
+          return reply.code(502).send({
+            code: providerCode || "delegated_publish_failed",
+            message: providerMessage,
+            providerStatus: providerResponse.status
+          });
         }
-        return reply.code(502).send({
-          code: providerCode || "delegated_publish_failed",
-          message: providerMessage,
-          providerStatus: providerResponse.status
-        });
       }
       const providerJson: any = await providerResponse.json().catch(() => null);
       delegatedPublishRecord = providerJson?.delegatedPublish || null;
@@ -18511,6 +18530,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     publishedAt: now.toISOString(),
     manifestSha256: canonicalManifestHash,
     publicOrigin,
+    delegatedPublishWarning,
     delegatedPublish: delegatedPublishRecord
       ? {
           id: delegatedPublishRecord.id,
