@@ -21387,7 +21387,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
     .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
-    .brand-logo-image { display:block; width:92px; height:auto; object-fit:contain; }
+    .brand-logo-image { display:block; width:76px; height:auto; object-fit:contain; }
     .brand-mark {
       width:22px;
       height:22px;
@@ -21413,8 +21413,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     a:hover { text-decoration:underline; }
     .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
-    .profile-header-grid { display:grid; grid-template-columns:auto 1fr 340px; gap:16px; align-items:start; margin-top:14px; }
-    .brand-rail { display:flex; align-items:flex-start; justify-content:flex-start; padding-top:4px; }
+    .profile-header-grid { display:grid; grid-template-columns:96px 1fr 340px; gap:20px; align-items:start; margin-top:14px; }
+    .brand-rail { display:flex; align-items:flex-start; justify-content:flex-start; padding-top:4px; padding-right:8px; min-width:0; }
     .identity-rail { display:flex; gap:14px; align-items:center; min-width:0; }
     .avatar { width:124px; height:124px; border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; }
@@ -22250,17 +22250,18 @@ async function handleBuyPage(req: any, reply: any) {
             normalizedContributorHandle &&
             !looksInternalId(normalizedContributorHandle) &&
             contributorLabel.toLowerCase() !== ("@" + normalizedContributorHandle).toLowerCase()
-              ? (" @" + esc(normalizedContributorHandle))
+              ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
           const roleRaw = String(c?.role || "").trim();
           const role = roleRaw ? (" • " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
-          const profileLink = profilePathRaw
-            ? (" <a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(profilePathRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">profile</a>")
-            : "";
+          const nameLabel = ch ? (cn + " " + ch) : cn;
+          const contributorNameHtml = profilePathRaw
+            ? ("<a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\" " + (/^https?:\\/\\//i.test(profilePathRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + nameLabel + "</a>")
+            : nameLabel;
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
-          return "<li>" + cn + ch + role + (pct ? (" — " + pct) : "") + profileLink + "</li>";
+          return "<li>" + contributorNameHtml + role + (pct ? (" • " + pct) : "") + "</li>";
         }).join("") +
       "</ul>";
     } else if (split?.state === "draft") {
