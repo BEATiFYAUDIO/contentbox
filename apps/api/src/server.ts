@@ -16606,7 +16606,19 @@ app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
   const entitlements = await prisma.entitlement.findMany({
     where: { buyerUserId: userId },
-    include: { content: true },
+    include: {
+      content: true,
+      paymentIntent: {
+        select: {
+          id: true,
+          status: true,
+          paidAt: true,
+          amountSats: true,
+          receiptToken: true,
+          createdAt: true
+        }
+      }
+    },
     orderBy: { grantedAt: "desc" }
   });
 
@@ -16620,14 +16632,35 @@ app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
   }
 
   return entitlements.map((e) => ({
+    paymentIntentId: e.paymentIntentId || null,
     id: e.id,
     contentId: e.contentId,
     manifestSha256: e.manifestSha256,
     grantedAt: e.grantedAt.toISOString(),
+    unlockedAt: e.grantedAt.toISOString(),
+    purchaseCreatedAt: e.paymentIntent?.createdAt?.toISOString?.() || null,
+    purchasePaidAt: e.paymentIntent?.paidAt?.toISOString?.() || null,
+    purchaseStatus: e.paymentIntent?.status || null,
+    purchaseAmountSats: e.paymentIntent?.amountSats != null ? String(e.paymentIntent.amountSats) : null,
+    accessMode:
+      e.content?.deliveryMode === "stream_and_download"
+        ? "stream_and_download"
+        : e.content?.deliveryMode === "download_only"
+          ? "download_only"
+          : "stream_only",
+    canStream:
+      e.content?.deliveryMode === "download_only"
+        ? false
+        : true,
+    canDownload:
+      e.content?.deliveryMode === "download_only" || e.content?.deliveryMode === "stream_and_download",
     content: e.content
       ? { id: e.content.id, title: e.content.title, type: e.content.type, status: e.content.status }
       : null,
-    receiptToken: tokenByKey.get(`${e.contentId}:${e.manifestSha256}`) || null
+    receiptToken:
+      e.paymentIntent?.receiptToken ||
+      tokenByKey.get(`${e.contentId}:${e.manifestSha256}`) ||
+      null
   }));
 });
 
@@ -16636,7 +16669,20 @@ app.get("/me/purchases/payment-intents", { preHandler: requireAuth }, async (req
   const userId = (req.user as JwtUser).sub;
   const intents = await prisma.paymentIntent.findMany({
     where: { buyerUserId: userId },
-    include: { content: true },
+    include: {
+      content: {
+        include: {
+          owner: { select: { id: true, displayName: true, email: true } }
+        }
+      },
+      entitlements: {
+        where: { buyerUserId: userId },
+        select: {
+          id: true,
+          grantedAt: true
+        }
+      }
+    },
     orderBy: { createdAt: "desc" }
   });
   return intents.map((i) => ({
@@ -16647,8 +16693,35 @@ app.get("/me/purchases/payment-intents", { preHandler: requireAuth }, async (req
     status: i.status,
     paidVia: i.paidVia,
     createdAt: i.createdAt.toISOString(),
+    paidAt: i.paidAt?.toISOString?.() || null,
     receiptToken: i.receiptToken || null,
-    content: i.content ? { id: i.content.id, title: i.content.title, type: i.content.type } : null
+    unlockedAt: i.entitlements?.[0]?.grantedAt?.toISOString?.() || null,
+    accessMode:
+      i.content?.deliveryMode === "stream_and_download"
+        ? "stream_and_download"
+        : i.content?.deliveryMode === "download_only"
+          ? "download_only"
+          : "stream_only",
+    canStream:
+      i.content?.deliveryMode === "download_only"
+        ? false
+        : true,
+    canDownload:
+      i.content?.deliveryMode === "download_only" || i.content?.deliveryMode === "stream_and_download",
+    content: i.content
+      ? {
+          id: i.content.id,
+          title: i.content.title,
+          type: i.content.type,
+          owner: i.content.owner
+            ? {
+                id: i.content.owner.id,
+                displayName: i.content.owner.displayName || null,
+                email: i.content.owner.email || null
+              }
+            : null
+        }
+      : null
   }));
 });
 

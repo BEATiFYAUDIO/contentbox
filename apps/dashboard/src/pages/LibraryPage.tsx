@@ -54,6 +54,17 @@ type LibraryParticipation = {
   creatorEmail: string | null;
 };
 
+type EntitlementInventoryRow = {
+  id: string;
+  contentId: string;
+  unlockedAt?: string | null;
+  grantedAt: string;
+  receiptToken?: string | null;
+  accessMode?: "stream_only" | "download_only" | "stream_and_download";
+  canStream?: boolean;
+  canDownload?: boolean;
+};
+
 type RemoteRoyaltyParticipation = {
   id: string;
   remoteOrigin: string | null;
@@ -161,6 +172,13 @@ function mapContentType(type: string | null | undefined): LibraryTypeFilter {
   return "files";
 }
 
+function normalizeRemoteParticipationContentStatus(value: string | null | undefined, inviteStatus?: string | null): string {
+  const v = String(value || "").trim().toLowerCase();
+  if (v === "published" || v === "draft") return v;
+  if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "published";
+  return "draft";
+}
+
 function applyLibraryFilters(
   items: NormalizedLibraryItem[],
   typeFilter: LibraryTypeFilter,
@@ -204,6 +222,7 @@ export default function LibraryPage() {
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
   const [coverLoadErrorById, setCoverLoadErrorById] = React.useState<Record<string, boolean>>({});
+  const [entitlementByContentId, setEntitlementByContentId] = React.useState<Record<string, EntitlementInventoryRow>>({});
   const autoLoadedRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -214,13 +233,21 @@ export default function LibraryPage() {
             ...i,
             libraryAccess: i.libraryAccess || (i.ownerUserId ? "owned" : "preview")
           }));
-        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes] = await Promise.all([
+        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes] = await Promise.all([
           api<LibraryItem[]>(`/content?scope=library`, "GET").catch(() => []),
           api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => []),
           api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
           api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[]),
-          api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null)
+          api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null),
+          api<EntitlementInventoryRow[]>("/me/entitlements", "GET").catch(() => [] as EntitlementInventoryRow[])
         ]);
+        const nextEntitlementByContentId: Record<string, EntitlementInventoryRow> = {};
+        for (const row of Array.isArray(entitlementsRes) ? entitlementsRes : []) {
+          const contentId = String(row?.contentId || "").trim();
+          if (!contentId) continue;
+          nextEntitlementByContentId[contentId] = row;
+        }
+        setEntitlementByContentId(nextEntitlementByContentId);
         const derivativeLinkedContentIds = new Set<string>();
         const upstreamRows = Array.isArray(royaltiesRes?.upstreamIncome) ? royaltiesRes.upstreamIncome : [];
         for (const row of upstreamRows) {
@@ -265,7 +292,7 @@ export default function LibraryPage() {
             contentId: String(row.contentId || "").trim(),
             contentTitle: row.contentTitle || null,
             contentType: row.contentType || null,
-            contentStatus: row.contentStatus || "published",
+            contentStatus: normalizeRemoteParticipationContentStatus(row.contentStatus, row.status),
             contentDeletedAt: row.contentDeletedAt || null,
             splitParticipantId: null,
             remoteInviteId: String(row.id || "").trim() || null,
@@ -708,6 +735,15 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                     const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);
                     const hasMediaCard = Boolean(coverUrl || hasInlineImagePreview || participantVideoPreviewFallback);
                     const access = ACCESS_BADGE[(it.libraryAccess || "preview") as NonNullable<LibraryItem["libraryAccess"]>] || ACCESS_BADGE.preview;
+                    const entitlement = entitlementByContentId[it.id] || null;
+                    const accessModeLabel =
+                      entitlement?.accessMode === "stream_and_download"
+                        ? "Stream + download"
+                        : entitlement?.accessMode === "download_only"
+                          ? "Download only"
+                          : entitlement?.accessMode === "stream_only"
+                            ? "Stream only"
+                            : null;
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
                         {hasMediaCard ? (
@@ -761,6 +797,12 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                           <div className="mt-1 text-[11px] text-neutral-500">
                             Relationship: {LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType]}
                           </div>
+                          {entitlement ? (
+                            <div className="mt-1 text-[11px] text-neutral-500">
+                              Unlocked: {formatDateLabel(entitlement.unlockedAt || entitlement.grantedAt)}
+                              {accessModeLabel ? ` · ${accessModeLabel}` : ""}
+                            </div>
+                          ) : null}
                           {currentlyFeatured ? (
                             <div className="mt-1 text-[11px] text-sky-300">FEATURED ON PROFILE</div>
                           ) : null}
@@ -808,6 +850,14 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                   ? "Unfeature on profile"
                                   : "Feature on profile"}
                             </button>
+                            {entitlement?.receiptToken ? (
+                              <a
+                                href={`/receipt/${encodeURIComponent(entitlement.receiptToken)}`}
+                                className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              >
+                                View receipt
+                              </a>
+                            ) : null}
                           </div>
                           {featureMsgById[it.id] ? (
                             <div className="mt-2 text-xs text-amber-300">{featureMsgById[it.id]}</div>
