@@ -267,6 +267,15 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     load();
   }, [load]);
 
+  useEffect(() => {
+    const tick = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void load();
+      }
+    }, 20000);
+    return () => window.clearInterval(tick);
+  }, [load]);
+
   const summaryCards = [
     { label: "Delegated Creators", value: summary?.delegatedCreators ?? creatorLinks.length },
     { label: "Published Items", value: summary?.publishedItems ?? delegatedPublishes.length },

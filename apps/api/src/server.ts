@@ -28909,9 +28909,36 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     include: { settlement: true }
   });
 
-  const rows = new Map<string, { contentId: string; title: string; total: bigint; yourShare: bigint }>();
+  const payoutRows = await prisma.participantPayout.findMany({
+    where: {
+      allocation: {
+        contentId: { in: contentIds },
+        OR: [
+          { participantUserId: userId },
+          email ? { participantEmail: emailEquals(email) } : undefined
+        ].filter(Boolean) as any
+      }
+    },
+    select: {
+      status: true,
+      amountSats: true,
+      allocation: {
+        select: {
+          contentId: true
+        }
+      }
+    }
+  }).catch((err: any) => {
+    if (isMissingParticipantPayoutTableError(err)) return [];
+    throw err;
+  });
+
+  const rows = new Map<
+    string,
+    { contentId: string; title: string; total: bigint; yourShare: bigint; withdrawn: bigint; pending: bigint }
+  >();
   for (const c of contents) {
-    rows.set(c.id, { contentId: c.id, title: c.title, total: 0n, yourShare: 0n });
+    rows.set(c.id, { contentId: c.id, title: c.title, total: 0n, yourShare: 0n, withdrawn: 0n, pending: 0n });
   }
 
   for (const s of settlements) {
@@ -28927,10 +28954,25 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     row.yourShare += BigInt(l.amountSats as any);
   }
 
+  for (const payout of payoutRows) {
+    const contentId = String(payout.allocation?.contentId || "").trim();
+    if (!contentId) continue;
+    const row = rows.get(contentId);
+    if (!row) continue;
+    const amount = BigInt(String(payout.amountSats || "0"));
+    const status = String(payout.status || "").toLowerCase();
+    if (status === "paid") {
+      row.withdrawn += amount;
+    } else if (status !== "failed") {
+      row.pending += amount;
+    }
+  }
+
   let earnedTotal = 0n;
   let pendingTotal = 0n;
   const items = Array.from(rows.values()).map((r) => {
     earnedTotal += r.yourShare;
+    pendingTotal += r.pending;
     return {
       contentId: r.contentId,
       title: r.title,
@@ -28938,8 +28980,8 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
       grossRevenueSats: r.total.toString(),
       allocationSats: r.yourShare.toString(),
       settledSats: r.yourShare.toString(),
-      withdrawnSats: "0",
-      pendingSats: "0"
+      withdrawnSats: r.withdrawn.toString(),
+      pendingSats: r.pending.toString()
     };
   });
 

@@ -43,6 +43,11 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
     };
   }, [refreshSignal, retryTick]);
 
+  useEffect(() => {
+    const id = window.setInterval(() => setRetryTick((t) => t + 1), 20000);
+    return () => window.clearInterval(id);
+  }, []);
+
   const formatSats = (raw: string | null | undefined) => {
     const n = Number(raw || 0);
     if (!Number.isFinite(n)) return "0 sats";
@@ -91,7 +96,7 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                      <td colSpan={7} className="py-3 text-neutral-500">No royalty data yet.</td>
+                      <td colSpan={8} className="py-3 text-neutral-500">No royalty data yet.</td>
                     </tr>
                   ) : (
                     rows.map((r) => (
