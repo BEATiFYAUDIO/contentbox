@@ -4147,12 +4147,24 @@ async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | 
   try {
     const send = await sendBolt11Payment(prisma as any, { paymentRequest: bolt11, timeoutSeconds: 60, feeLimitSat: 50 });
     app.log.info(
+      { paymentRequestTag, sendStatus: String(send.status || "unknown"), paymentHashPresent: Boolean(send.paymentHash) },
+      "payoutExecution.lnd_send_result_raw"
+    );
+    app.log.info(
       { paymentRequestTag, paymentHash: send.paymentHash, status: send.status },
       "payoutExecution.lnd_send_result"
+    );
+    app.log.info(
+      { paymentRequestTag, classifiedStatus: "paid", paymentHashPresent: Boolean(send.paymentHash) },
+      "payoutExecution.lnd_send_classified"
     );
     return send;
   } catch (error: any) {
     const reasonRaw = String(error?.message || error || "").trim();
+    app.log.info(
+      { paymentRequestTag, rawReason: reasonRaw || null },
+      "payoutExecution.lnd_send_result_raw"
+    );
     const mappedReason = (() => {
       const code = reasonRaw.toLowerCase();
       if (code.includes("request_timeout")) return "request_timeout";
@@ -4160,6 +4172,7 @@ async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | 
       if (code.includes("lnd_rest_unreachable")) return "lnd_rest_unreachable";
       if (code.includes("invalid_response")) return "invalid_response";
       if (code.startsWith("lnd_send_not_paid:")) return reasonRaw;
+      if (code.startsWith("lnd_send_result_unknown:")) return reasonRaw;
       if (code.includes("transport_connect_failed")) return "transport_connect_failed";
       return reasonRaw || "transport_connect_failed";
     })();
@@ -4167,8 +4180,24 @@ async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | 
       { paymentRequestTag, reason: mappedReason },
       "payoutExecution.lnd_send_transport_error"
     );
+    app.log.info(
+      { paymentRequestTag, classifiedStatus: "failed_or_unknown", reason: mappedReason },
+      "payoutExecution.lnd_send_classified"
+    );
     throw new Error(mappedReason);
   }
+}
+
+function parseUnknownLndSendReason(input: string): { immediateStatus: string | null; paymentHash: string | null } {
+  const reason = String(input || "").trim();
+  if (!reason.startsWith("LND_SEND_RESULT_UNKNOWN:")) {
+    return { immediateStatus: null, paymentHash: null };
+  }
+  const parts = reason.split(":");
+  const immediateStatus = String(parts[1] || "").trim() || null;
+  const paymentHashRaw = String(parts[2] || "").trim().toLowerCase();
+  const paymentHash = /^[0-9a-f]{64}$/.test(paymentHashRaw) ? paymentHashRaw : null;
+  return { immediateStatus, paymentHash };
 }
 
 function isStaleForwardingRemittance(intent: ProviderPaymentIntentRecord, nowMs = Date.now()): boolean {
@@ -4475,6 +4504,28 @@ async function markParticipantPayoutFailed(id: string, attemptId: string, messag
   });
 }
 
+async function markParticipantPayoutPendingVerification(
+  id: string,
+  attemptId: string,
+  message: string,
+  payoutReference: string | null
+) {
+  await prisma.participantPayout.updateMany({
+    where: { id, attemptId },
+    data: {
+      status: "pending",
+      payoutReference: payoutReference || null,
+      readinessReason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED",
+      blockedReason: null,
+      lastError: message,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      nextRetryAt: null
+    }
+  });
+}
+
 async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentIntentRecord, reason: string) {
   const payoutRuntime = await resolvePayoutExecutionRuntime(null);
   app.log.info(
@@ -4690,6 +4741,15 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         );
         app.log.info(
           {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            persistedStatus: "paid",
+            payoutReference: send.paymentHash || null
+          },
+          "payoutExecution.persisted_status"
+        );
+        app.log.info(
+          {
             route: reason,
             providerPaymentIntentId: intent.id,
             participantPayoutId: payout.id,
@@ -4701,6 +4761,39 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         );
       } catch (e: any) {
         const message = String(e?.message || "participant_remit_failed");
+        if (message.startsWith("LND_SEND_RESULT_UNKNOWN:")) {
+          const unknown = parseUnknownLndSendReason(message);
+          await markParticipantPayoutPendingVerification(
+            payout.id,
+            lock.attemptId,
+            message,
+            unknown.paymentHash || null
+          );
+          logParticipantPayoutAttempt(intent.id, row, "pending", message);
+          app.log.warn(
+            {
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              participantRef: participantExecutionRef(row),
+              destinationType: String(payout.destinationType || "").trim().toLowerCase() || null,
+              amountSats: String(payout.amountSats || "0"),
+              immediateStatus: unknown.immediateStatus,
+              payoutReference: unknown.paymentHash || null,
+              reason: message
+            },
+            "payoutExecution.auto_remit_blocked"
+          );
+          app.log.info(
+            {
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              persistedStatus: "pending",
+              reason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED"
+            },
+            "payoutExecution.persisted_status"
+          );
+          continue;
+        }
         await markParticipantPayoutFailed(payout.id, lock.attemptId, message);
         logParticipantPayoutAttempt(intent.id, row, "pending", message);
         app.log.warn(
@@ -4713,6 +4806,15 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
             reason: message
           },
           "payoutExecution.auto_remit_failed"
+        );
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            persistedStatus: "failed",
+            reason: message
+          },
+          "payoutExecution.persisted_status"
         );
         app.log.warn(
           {
@@ -14663,6 +14765,59 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
   const intents = listProviderPaymentIntents();
   const activePaymentIntents = intents.filter((intent) => intent.status === "created" || intent.status === "issued").length;
   const settledPayments = intents.filter((intent) => intent.status === "paid").length;
+  const payoutRows = await prisma.participantPayout
+    .findMany({
+      select: {
+        providerPaymentIntentId: true,
+        status: true,
+        amountSats: true,
+        lastError: true,
+        payoutReference: true,
+        remittedAt: true,
+        updatedAt: true
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const payoutByIntent = new Map<
+    string,
+    {
+      counts: Record<ParticipantPayoutStatus, number>;
+      amounts: Record<ParticipantPayoutStatus, bigint>;
+      latestError: string | null;
+      latestReference: string | null;
+      latestRemittedAt: string | null;
+      latestUpdatedAtMs: number;
+    }
+  >();
+  for (const row of payoutRows) {
+    const key = String(row.providerPaymentIntentId || "").trim();
+    if (!key) continue;
+    const status = parseParticipantPayoutStatus(row.status);
+    const amount = BigInt(String(row.amountSats || "0"));
+    const updatedAtMs = row.updatedAt ? row.updatedAt.getTime() : 0;
+    const current =
+      payoutByIntent.get(key) ||
+      {
+        counts: { pending: 0, ready: 0, forwarding: 0, paid: 0, failed: 0, blocked: 0 },
+        amounts: { pending: 0n, ready: 0n, forwarding: 0n, paid: 0n, failed: 0n, blocked: 0n },
+        latestError: null,
+        latestReference: null,
+        latestRemittedAt: null,
+        latestUpdatedAtMs: 0
+      };
+    current.counts[status] += 1;
+    current.amounts[status] += amount;
+    if (updatedAtMs >= current.latestUpdatedAtMs) {
+      current.latestUpdatedAtMs = updatedAtMs;
+      current.latestError = String(row.lastError || "").trim() || null;
+      current.latestReference = String(row.payoutReference || "").trim() || null;
+      current.latestRemittedAt = row.remittedAt ? row.remittedAt.toISOString() : null;
+    }
+    payoutByIntent.set(key, current);
+  }
   const totals = intents.reduce(
     (acc, intent) => {
       const gross = BigInt(String(intent.grossAmountSats || intent.amountSats || "0"));
@@ -14670,15 +14825,27 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
       const durableHostingFee = BigInt(String(intent.providerDurableHostingFeeSats || "0"));
       const fee = BigInt(String(intent.providerFeeSats || "0"));
       const net = BigInt(String(intent.creatorNetSats || intent.amountSats || "0"));
+      const payoutTruth = payoutByIntent.get(intent.id) || null;
+      const paidAmount = payoutTruth ? payoutTruth.amounts.paid : 0n;
+      const pendingAmount = payoutTruth
+        ? payoutTruth.amounts.pending + payoutTruth.amounts.ready + payoutTruth.amounts.forwarding
+        : 0n;
+      const failedAmount = payoutTruth ? payoutTruth.amounts.failed + payoutTruth.amounts.blocked : 0n;
+      const accounted = paidAmount + pendingAmount + failedAmount;
+      const residualPending = net > accounted ? net - accounted : 0n;
       acc.grossCollectedSats += gross;
       acc.providerInvoicingFeeEarnedSats += invoicingFee;
       acc.providerDurableHostingFeeEarnedSats += durableHostingFee;
       acc.providerFeeEarnedSats += fee;
       acc.creatorNetOwedSats += net;
-      if (intent.payoutStatus === "paid") acc.creatorNetPaidSats += net;
-      if (intent.payoutStatus === "pending") acc.creatorNetPendingSats += net;
-      if (intent.payoutStatus === "forwarding") acc.creatorNetPendingSats += net;
-      if (intent.payoutStatus === "failed") acc.creatorNetFailedSats += net;
+      if (payoutTruth) {
+        acc.creatorNetPaidSats += paidAmount;
+        acc.creatorNetPendingSats += pendingAmount + residualPending;
+        acc.creatorNetFailedSats += failedAmount;
+      } else if (intent.status === "paid") {
+        // No participant rows yet: keep owed amount visible as pending.
+        acc.creatorNetPendingSats += net;
+      }
       return acc;
     },
     {
@@ -14692,14 +14859,10 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
       creatorNetFailedSats: 0n
     }
   );
-  const participantPayouts = await prisma.participantPayout.groupBy({
-    by: ["status"],
-    _count: { _all: true }
-  }).catch(() => []);
-  const participantPayoutSummary = participantPayouts.reduce(
+  const participantPayoutSummary = payoutRows.reduce(
     (acc, row) => {
-      const status = parseParticipantPayoutStatus((row as any).status);
-      acc[status] = Number((row as any)?._count?._all || 0);
+      const status = parseParticipantPayoutStatus((row as any)?.status);
+      acc[status] = Number(acc[status] || 0) + 1;
       return acc;
     },
     {
@@ -14739,10 +14902,107 @@ app.get("/api/provider/delegated-publishes", { preHandler: requireAuth }, async 
 });
 
 app.get("/api/provider/payment-intents", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send({ items: listProviderPaymentIntents() });
+  const intents = listProviderPaymentIntents();
+  const payoutRows = await prisma.participantPayout
+    .findMany({
+      select: {
+        providerPaymentIntentId: true,
+        status: true,
+        amountSats: true,
+        lastError: true,
+        payoutReference: true,
+        remittedAt: true,
+        updatedAt: true
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const payoutByIntent = new Map<
+    string,
+    {
+      counts: Record<ParticipantPayoutStatus, number>;
+      amounts: Record<ParticipantPayoutStatus, bigint>;
+      latestError: string | null;
+      latestReference: string | null;
+      latestRemittedAt: string | null;
+      latestUpdatedAtMs: number;
+    }
+  >();
+  for (const row of payoutRows) {
+    const key = String(row.providerPaymentIntentId || "").trim();
+    if (!key) continue;
+    const status = parseParticipantPayoutStatus(row.status);
+    const amount = BigInt(String(row.amountSats || "0"));
+    const updatedAtMs = row.updatedAt ? row.updatedAt.getTime() : 0;
+    const current =
+      payoutByIntent.get(key) ||
+      {
+        counts: { pending: 0, ready: 0, forwarding: 0, paid: 0, failed: 0, blocked: 0 },
+        amounts: { pending: 0n, ready: 0n, forwarding: 0n, paid: 0n, failed: 0n, blocked: 0n },
+        latestError: null,
+        latestReference: null,
+        latestRemittedAt: null,
+        latestUpdatedAtMs: 0
+      };
+    current.counts[status] += 1;
+    current.amounts[status] += amount;
+    if (updatedAtMs >= current.latestUpdatedAtMs) {
+      current.latestUpdatedAtMs = updatedAtMs;
+      current.latestError = String(row.lastError || "").trim() || null;
+      current.latestReference = String(row.payoutReference || "").trim() || null;
+      current.latestRemittedAt = row.remittedAt ? row.remittedAt.toISOString() : null;
+    }
+    payoutByIntent.set(key, current);
+  }
+  const items = intents.map((intent) => {
+    const payoutTruth = payoutByIntent.get(intent.id) || null;
+    if (!payoutTruth) return intent;
+    const net = BigInt(String(intent.creatorNetSats || intent.amountSats || "0"));
+    const paidAmount = payoutTruth.amounts.paid;
+    const pendingAmount = payoutTruth.amounts.pending + payoutTruth.amounts.ready + payoutTruth.amounts.forwarding;
+    const failedAmount = payoutTruth.amounts.failed + payoutTruth.amounts.blocked;
+    const accounted = paidAmount + pendingAmount + failedAmount;
+    const residualPending = net > accounted ? net - accounted : 0n;
+    const effectivePayoutStatus: ProviderPayoutStatus =
+      paidAmount >= net && net > 0n
+        ? "paid"
+        : pendingAmount > 0n || residualPending > 0n || paidAmount > 0n
+          ? "pending"
+          : failedAmount > 0n
+            ? "failed"
+            : intent.payoutStatus;
+    return {
+      ...intent,
+      payoutStatus: effectivePayoutStatus,
+      payoutSummaryStatus:
+        paidAmount >= net && net > 0n
+          ? "paid"
+          : pendingAmount > 0n || residualPending > 0n
+            ? paidAmount > 0n
+              ? "partial"
+              : "pending"
+            : failedAmount > 0n
+              ? paidAmount > 0n
+                ? "partial"
+                : "failed"
+              : intent.payoutSummaryStatus,
+      payoutReference: payoutTruth.latestReference || intent.payoutReference || null,
+      remittedAt: payoutTruth.latestRemittedAt || intent.remittedAt || null,
+      payoutLastError:
+        effectivePayoutStatus === "paid" ? null : payoutTruth.latestError || intent.payoutLastError || null
+    };
+  });
+  return reply.send({ items });
 });
 app.get("/api/provider/payments/intents", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send({ items: listProviderPaymentIntents() });
+  const intents = await app.inject({
+    method: "GET",
+    url: "/api/provider/payment-intents",
+    headers: { authorization: (_req.headers as any)?.authorization || "" }
+  });
+  return reply.code(intents.statusCode).type("application/json").send(intents.json());
 });
 
 app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {

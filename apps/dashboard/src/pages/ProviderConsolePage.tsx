@@ -295,6 +295,21 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     payoutTableScope === "latest" && latestPayoutIntentId
       ? participantPayouts.filter((row) => row.providerPaymentIntentId === latestPayoutIntentId)
       : participantPayouts;
+  const visiblePayoutCounts = visibleParticipantPayouts.reduce(
+    (acc, row) => {
+      const key = row.status;
+      if (key in acc) acc[key as keyof typeof acc] += 1;
+      return acc;
+    },
+    {
+      pending: 0,
+      ready: 0,
+      forwarding: 0,
+      paid: 0,
+      failed: 0,
+      blocked: 0
+    }
+  );
 
   return (
     <div className="space-y-5">
@@ -420,7 +435,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             <div key={k} className="rounded border border-neutral-800 px-3 py-2">
               <div className="text-[11px] uppercase tracking-wide text-neutral-500">{k}</div>
               <div className="text-lg font-semibold text-neutral-100">
-                {Number(summary?.participantPayouts?.[k] || 0).toLocaleString()}
+                {Number(visiblePayoutCounts[k] || 0).toLocaleString()}
               </div>
             </div>
           ))}
