@@ -724,7 +724,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
   const participantAccrued = Number(data?.totals?.participantRoyaltyAccruedSats || 0);
   const participantPayable = Number(data?.totals?.participantRoyaltyPayableSats || 0);
   const participantPaid = Number(data?.totals?.participantRoyaltyPaidSats || 0);
-  const totalRoyaltyAccrued = Math.max(0, localRoyaltyEarned + remoteRoyaltyAccrued + participantAccrued);
+  const totalRoyaltyAccrued = Math.max(0, localRoyaltyEarned + remoteRoyaltyAccrued);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -834,7 +834,6 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
           <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
           <div className="mt-1 text-xs text-neutral-500">
             Local: {formatSats(royaltyTotals.earnedSats || "0")} · Remote: {formatSats(data?.totals?.remoteRoyaltyAccruedSats || "0")}
-            {Number(data?.totals?.participantRoyaltyAccruedSats || 0) > 0 ? ` · Payout rows: ${formatSats(data?.totals?.participantRoyaltyAccruedSats || "0")}` : ""}
             {Number(data?.totals?.remoteRoyaltyItems || 0) > 0 ? ` · Remote works: ${Number(data?.totals?.remoteRoyaltyItems || 0)}` : ""}
           </div>
         </div>
@@ -847,6 +846,13 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
           <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty paid</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
           <div className="mt-1 text-xs text-neutral-500">Amount successfully remitted to your payout destination.</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4 md:col-span-3">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Payout-row principal (execution tracked)</div>
+          <div className="mt-1 text-sm text-neutral-200">{formatSats(String(participantAccrued))}</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            This is the payout execution principal tracked in ParticipantPayout rows. It is shown separately to avoid accrual double-counting.
+          </div>
         </div>
         </div>
       </section>
