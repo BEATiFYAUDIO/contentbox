@@ -20842,6 +20842,24 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
+  const brandLogoDataUri = (() => {
+    const candidates = [
+      path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd-creator-logo.png"),
+      path.resolve(process.cwd(), "../dashboard/src/assets/certifyd-creator-logo.png")
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (!fsSync.existsSync(candidate)) continue;
+        const bytes = fsSync.readFileSync(candidate);
+        if (!bytes || bytes.length === 0) continue;
+        return `data:image/png;base64,${bytes.toString("base64")}`;
+      } catch {
+        // try next path
+      }
+    }
+    return null;
+  })();
+  const safeBrandLogoDataUri = brandLogoDataUri ? escHtml(brandLogoDataUri) : "";
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -21097,13 +21115,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
           .join("")
       : "";
-  const creatorSignalHtml = `<div class="line"><strong>Creator Signal:</strong> ${escHtml(String(creatorSignal.score))} <span class="muted">(${escHtml(creatorSignal.tier)})</span></div>
-      <div class="signal-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
+  const creatorSignalCompactHtml = `<div class="signal-compact-title">Trust Score</div>
+      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">· ${escHtml(creatorSignal.tier)}</span></div>
+      <div class="signal-meter signal-compact-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
         <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
       </div>
-      <div class="muted">Signal meter: ${escHtml(String(creatorSignalPercent))}%</div>
-      <div class="line muted">Identity Proofs +${escHtml(String(creatorSignal.identityScore))} • Presence +${escHtml(String(creatorSignal.presenceBonus))} • Node Operator +${escHtml(String(creatorSignal.nodeScore))}</div>
-      <div class="line muted">Public Tunnel ${creatorSignal.nodeDetails.hasPublicTunnel ? "✓" : "—"} • Lightning ${creatorSignal.nodeDetails.hasLightningConfigured ? "✓" : "—"} • Receive ${creatorSignal.nodeDetails.canReceivePayments ? "✓" : "—"} • Channels ${escHtml(String(creatorSignal.nodeDetails.channelCount))}</div>`;
+      <div class="signal-compact-meta muted">Confidence ${escHtml(String(creatorSignalPercent))}%</div>
+      <div class="signal-chip-row">
+        <span class="signal-chip">Identity +${escHtml(String(creatorSignal.identityScore))}</span>
+        <span class="signal-chip">Presence +${escHtml(String(creatorSignal.presenceBonus))}</span>
+        <span class="signal-chip">Node +${escHtml(String(creatorSignal.nodeScore))}</span>
+      </div>`;
   const profilePostureBadgeHtml = `<div class="line"><span class="${escHtml(profilePostureBadgeClass)}">${escHtml(profilePostureBadgeLabel)}</span></div>`;
   const featuredContentHtml =
     featuredContent.length > 0
@@ -21364,7 +21386,25 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
     .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
-    .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; }
+    .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+    .brand-logo-image { display:block; width:92px; height:auto; object-fit:contain; }
+    .brand-mark {
+      width:22px;
+      height:22px;
+      border-radius:999px;
+      border:1px solid #2e3b4d;
+      background:linear-gradient(180deg, #152132 0%, #0f1724 100%);
+      color:#b8dbff;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      font-size:12px;
+      font-weight:700;
+      line-height:1;
+      text-transform:lowercase;
+    }
+    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#a5b7ca; }
+    .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
     .muted { color:#9aa0a6; font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
@@ -21373,16 +21413,60 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     a:hover { text-decoration:underline; }
     .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
-    .hero { display:flex; gap:14px; align-items:center; margin-top:14px; }
-    .avatar { width:84px; height:84px; border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
+    .profile-header-grid { display:grid; grid-template-columns:auto 1fr 340px; gap:16px; align-items:start; margin-top:14px; }
+    .brand-rail { display:flex; align-items:flex-start; justify-content:flex-start; padding-top:4px; }
+    .identity-rail { display:flex; gap:14px; align-items:center; min-width:0; }
+    .avatar { width:124px; height:124px; border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; }
     .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
     .hero-handle { margin-top:4px; }
+    .signal-rail { border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:12px; }
+    .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
+    .signal-compact-score { margin-top:6px; font-size:16px; }
+    .signal-compact-meter { margin-top:6px; height:6px; }
+    .signal-compact-meta { margin-top:6px; font-size:12px; line-height:1.35; }
+    .signal-chip-row { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; }
+    .signal-chip {
+      display:inline-flex;
+      align-items:center;
+      border:1px solid #2c3440;
+      border-radius:999px;
+      padding:2px 8px;
+      font-size:11px;
+      color:#b7c2d0;
+      background:#131922;
+      line-height:1.25;
+    }
     .meta-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
     .meta-item { border:1px solid #1f1f1f; border-radius:10px; background:#101113; padding:10px; }
     .meta-label { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
+    .details-toggle { margin-top:0; }
+    .details-toggle > summary {
+      list-style:none;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      font-size:16px;
+      font-weight:600;
+      letter-spacing:-0.01em;
+    }
+    .details-toggle > summary::-webkit-details-marker { display:none; }
+    .details-toggle > summary::after {
+      content:"Show";
+      font-size:12px;
+      font-weight:500;
+      color:#9aa0a6;
+      border:1px solid #2a2a2a;
+      border-radius:999px;
+      padding:2px 10px;
+    }
+    .details-toggle[open] > summary::after { content:"Hide"; }
+    .stack-tight { margin-top:10px; }
     .proof-group { margin-top:12px; }
-    .proof-group-title { color:#a5adb8; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; }
+    .proof-group-title { color:#bcc5d2; font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
+    .proof-group .line { margin-top:6px; line-height:1.35; }
     .proof-badge {
       display:inline-flex;
       width:20px;
@@ -21441,71 +21525,89 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
     @media (min-width: 720px) {
+      .identity-rail { align-items:flex-start; }
       .featured-grid { grid-template-columns:1fr 1fr; }
       .featured-item { grid-template-columns:200px 1fr; align-items:start; gap:12px; }
       .featured-media { width:200px; min-width:200px; }
       .featured-meta { flex:1; }
       .meta-grid { grid-template-columns:1fr 1fr; }
     }
+    @media (max-width: 960px) {
+      .profile-header-grid {
+        grid-template-columns:auto 1fr;
+        grid-template-areas:
+          "brand identity"
+          "signal signal";
+        gap:10px 12px;
+      }
+      .brand-rail { grid-area:brand; padding-top:0; }
+      .identity-rail { grid-area:identity; align-items:center; }
+      .signal-rail { grid-area:signal; width:100%; }
+      .brand-logo-image { width:72px; }
+      .avatar { width:90px; height:90px; }
+      .hero-name { font-size:18px; }
+      .signal-rail { width:100%; }
+    }
     @media (max-width: 640px) {
       body { padding:14px; }
       .card { padding:16px; }
+      .section { margin-top:14px; padding:12px; }
+      .profile-header-grid { gap:8px 10px; }
+      .brand-row { margin-bottom:0; }
+      .brand-logo-image { width:54px; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:20px; }
+      .hero-name { font-size:19px; }
+      .avatar { width:112px; height:112px; }
+      .signal-compact-meter { height:4px; }
+      .signal-compact-meta { margin-top:4px; }
+      .signal-chip-row { margin-top:6px; gap:5px; }
+      .proof-group-title { font-size:12px; }
     }
   </style>
 </head>
 <body>
   <div class="card">
     <h2 class="page-title">Certifyd Creator Profile</h2>
-    <section class="hero">
-      ${safeAvatarUrl
-        ? `<img src="${safeAvatarUrl}" alt="avatar" class="avatar" />`
-        : `<div aria-label="avatar fallback" class="avatar">No image</div>`}
-      <div class="hero-meta">
+    <section class="profile-header-grid">
+      <div class="brand-rail">
+        <div class="brand-row" aria-label="Certifyd">
+          ${
+            safeBrandLogoDataUri
+              ? `<img src="${safeBrandLogoDataUri}" alt="Certifyd Creator" class="brand-logo-image" />`
+              : `<span class="brand-mark">c</span><span class="brand-word">Certifyd</span>`
+          }
+        </div>
+      </div>
+      <div class="identity-rail">
+        ${safeAvatarUrl
+          ? `<img src="${safeAvatarUrl}" alt="avatar" class="avatar" />`
+          : `<div aria-label="avatar fallback" class="avatar">No image</div>`}
+        <div class="hero-meta">
         <div class="hero-name">${safeDisplayName}</div>
         <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
         ${profilePostureBadgeHtml}
         ${safeBio ? `<div class="line">${safeBio}</div>` : ""}
-      </div>
-    </section>
-
-    <section class="section">
-      <h3>Profile details</h3>
-      <div class="meta-grid">
-        <div class="meta-item">
-          <div class="meta-label">Node URL</div>
-          <div class="mono">${safeNodeUrl}</div>
-        </div>
-        <div class="meta-item">
-          <div class="meta-label">Creator key hash</div>
-          <div class="mono">${safeNodeSha}</div>
-          <div class="muted" style="margin-top:4px;">Short: <span class="mono">${safeShortSha}</span></div>
         </div>
       </div>
-    </section>
-
-    <section class="section">
-      <h3>Creator Signal</h3>
-      ${creatorSignalHtml}
+      <aside class="signal-rail">${creatorSignalCompactHtml}</aside>
     </section>
 
     <section class="section">
       <h3>Verification</h3>
       <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
       <div class="proof-group">
-        <div class="proof-group-title">Verified domains</div>
+        <div class="proof-group-title">Domains</div>
         ${domainProofsHtml}
       </div>
       <div class="proof-group">
-        <div class="proof-group-title">Social proofs</div>
+        <div class="proof-group-title">Social</div>
         ${socialProofsHtml}
       </div>
       <div class="proof-group">
-        <div class="proof-group-title">Nostr proofs</div>
+        <div class="proof-group-title">Nostr</div>
         ${nostrProofsHtml}
       </div>
-      ${otherProofsHtml ? `<div class="proof-group"><div class="proof-group-title">Other proofs</div>${otherProofsHtml}</div>` : ""}
+      ${otherProofsHtml ? `<div class="proof-group"><div class="proof-group-title">Other</div>${otherProofsHtml}</div>` : ""}
     </section>
     ${
       featuredContentHtml
@@ -21525,6 +21627,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   </section>`
         : ""
     }
+    <section class="section">
+      <details class="details-toggle">
+        <summary>Profile details</summary>
+        <div class="meta-grid">
+          <div class="meta-item">
+            <div class="meta-label">Node URL</div>
+            <div class="mono">${safeNodeUrl}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Creator key hash</div>
+            <div class="mono">${safeNodeSha}</div>
+            <div class="muted" style="margin-top:4px;">Short: <span class="mono">${safeShortSha}</span></div>
+          </div>
+        </div>
+      </details>
+    </section>
     <section class="section">
       <h3>Proof bundle</h3>
       <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(requested)}/proofs.json">proofs.json</a></div>
