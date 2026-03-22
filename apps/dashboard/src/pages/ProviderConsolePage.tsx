@@ -216,6 +216,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     "all" | "created" | "issued" | "paid" | "cancelled" | "expired"
   >("all");
   const [expandedIntentIds, setExpandedIntentIds] = useState<Record<string, boolean>>({});
+  const [payoutTableScope, setPayoutTableScope] = useState<"latest" | "all">("latest");
   const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
 
@@ -289,6 +290,11 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   };
   const runtime = lightningAdmin?.runtime || null;
   const formatLightningSats = (value: number | null | undefined) => `${Math.round(Number(value || 0)).toLocaleString()} sats`;
+  const latestPayoutIntentId = participantPayouts[0]?.providerPaymentIntentId || null;
+  const visibleParticipantPayouts =
+    payoutTableScope === "latest" && latestPayoutIntentId
+      ? participantPayouts.filter((row) => row.providerPaymentIntentId === latestPayoutIntentId)
+      : participantPayouts;
 
   return (
     <div className="space-y-5">
@@ -378,6 +384,37 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="text-sm font-semibold">Participant Payout Execution</div>
         <div className="mt-1 text-xs text-neutral-500">Per-participant payout rows are execution truth when participant mode is active.</div>
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPayoutTableScope("latest")}
+            className={[
+              "rounded-lg border px-2 py-1 text-[11px]",
+              payoutTableScope === "latest"
+                ? "border-neutral-500 bg-neutral-800/80 text-neutral-100"
+                : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/50"
+            ].join(" ")}
+          >
+            Latest intent
+          </button>
+          <button
+            type="button"
+            onClick={() => setPayoutTableScope("all")}
+            className={[
+              "rounded-lg border px-2 py-1 text-[11px]",
+              payoutTableScope === "all"
+                ? "border-neutral-500 bg-neutral-800/80 text-neutral-100"
+                : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/50"
+            ].join(" ")}
+          >
+            All history
+          </button>
+          {latestPayoutIntentId ? (
+            <div className="text-[11px] text-neutral-500">
+              Latest intent: <span className="text-neutral-300">{shortId(latestPayoutIntentId, 8, 6)}</span>
+            </div>
+          ) : null}
+        </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
           {(["pending", "ready", "forwarding", "paid", "failed", "blocked"] as const).map((k) => (
             <div key={k} className="rounded border border-neutral-800 px-3 py-2">
@@ -388,7 +425,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             </div>
           ))}
         </div>
-        {participantPayouts.length === 0 ? (
+        {visibleParticipantPayouts.length === 0 ? (
           <div className="mt-3 text-sm text-neutral-400">No participant payout rows yet.</div>
         ) : (
           <div className="mt-3 overflow-x-auto">
@@ -404,7 +441,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                 </tr>
               </thead>
               <tbody>
-                {participantPayouts.slice(0, 200).map((row) => (
+                {visibleParticipantPayouts.slice(0, 200).map((row) => (
                   <tr key={row.id} className="border-t border-neutral-800/80 align-top text-neutral-200">
                     <td className="py-2 pr-3">
                       <div>{row.allocation?.participantEmail || row.allocation?.participantUserId || row.allocation?.participantRef || "—"}</div>
