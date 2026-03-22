@@ -167,6 +167,11 @@ export type LightningNodeConfigStatus = {
   warnings: string[];
 };
 
+export type LightningSendPaymentResult = {
+  paymentHash: string | null;
+  status: "paid";
+};
+
 export type LightningPeerSuggestion = {
   pubkey: string;
   alias?: string;
@@ -1623,6 +1628,67 @@ export async function getLightningInvoices(prisma: PrismaLike, input?: { limit?:
   );
   const invoices = Array.isArray((res as any)?.invoices) ? (res as any).invoices : [];
   return invoices.map((x: any) => normalizeLndInvoice(x));
+}
+
+function classifyLndTransportError(error: unknown): string {
+  const msg = String((error as any)?.message || error || "").toLowerCase();
+  const code = String((error as any)?.code || "").toUpperCase();
+  if (code === "ABORT_ERR" || msg.includes("aborted") || msg.includes("timeout") || msg.includes("etimedout")) return "request_timeout";
+  if (
+    code === "ECONNREFUSED" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH" ||
+    msg.includes("connection refused") ||
+    msg.includes("connect econnrefused") ||
+    msg.includes("lnd connection failed")
+  ) {
+    return "lnd_rest_unreachable";
+  }
+  if (msg.includes("self signed certificate") || msg.includes("tls validation failed") || msg.includes("tls")) {
+    return "tls_handshake_failed";
+  }
+  if (msg.includes("invalid json response") || msg.includes("unexpected token") || msg.includes("raw")) {
+    return "invalid_response";
+  }
+  return "transport_connect_failed";
+}
+
+export async function sendBolt11Payment(
+  prisma: PrismaLike,
+  input: { paymentRequest: string; timeoutSeconds?: number; feeLimitSat?: number }
+): Promise<LightningSendPaymentResult> {
+  const paymentRequest = String(input.paymentRequest || "").trim();
+  if (!paymentRequest) throw new Error("BOLT11_REQUIRED");
+  const lnd = await getLndConfig(prisma);
+  if (!lnd) throw new Error("LND_SEND_NOT_CONFIGURED");
+  const timeoutSeconds = Math.max(5, Math.min(300, Math.floor(Number(input.timeoutSeconds ?? 60))));
+  const feeLimitSat = Math.max(0, Math.min(100_000, Math.floor(Number(input.feeLimitSat ?? 50))));
+  try {
+    const res = await lndFetchJson(lnd, "/v2/router/send", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json"
+      } as any,
+      body: JSON.stringify({
+        payment_request: paymentRequest,
+        timeout_seconds: timeoutSeconds,
+        fee_limit_sat: feeLimitSat
+      })
+    });
+    const status = String((res as any)?.status || "").trim().toUpperCase();
+    const paymentHash = String((res as any)?.payment_hash || "").trim() || null;
+    if (status === "SUCCEEDED" || status === "SUCCESS") {
+      return { paymentHash, status: "paid" };
+    }
+    throw new Error(`LND_SEND_NOT_PAID:${status || "UNKNOWN"}`);
+  } catch (error: any) {
+    const message = String(error?.message || error || "");
+    if (message.startsWith("LND_SEND_NOT_PAID:") || message === "LND_SEND_NOT_CONFIGURED") {
+      throw error;
+    }
+    throw new Error(classifyLndTransportError(error));
+  }
 }
 
 function mapCloseChannelErrorCode(error: unknown): string {

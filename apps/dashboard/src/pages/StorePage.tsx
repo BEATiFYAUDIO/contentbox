@@ -1775,13 +1775,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">Creator Payout Destination</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Commerce uses the local node wallet. This destination is only where creator remittance is sent.
+          </div>
           <div className="mt-2 grid gap-2 text-xs">
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
               <span className="text-neutral-500">Configured</span>
               <span className="text-neutral-200 text-right">{payoutConfigured ? "yes" : "no"}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-              <span className="text-neutral-500">Payout destination</span>
+              <span className="text-neutral-500">Creator payout destination</span>
               <span className="text-neutral-200 text-right break-all">{payoutDestinationLabel}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
@@ -1795,7 +1798,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               </span>
             </div>
             <div className="text-neutral-400">{providerBackedCommerceMessage}</div>
-            <div className="text-neutral-400">{payoutState?.message || "Set where creator net should be remitted when provider collects payment."}</div>
+            <div className="text-neutral-400">{payoutState?.message || "Set where creator net remittance should be sent when provider collects payment."}</div>
             <div className="text-neutral-500">
               Payout state wording: {payoutStatusVocabulary.pending} / {payoutStatusVocabulary.forwarding} / {payoutStatusVocabulary.paid} / {payoutStatusVocabulary.failed}
             </div>
@@ -1803,13 +1806,13 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
           <div className="mt-3 grid gap-2 md:grid-cols-2">
             <label className="text-xs text-neutral-400">
-              Payout destination
+              Creator payout destination type
               <select
                 className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
                 value={payoutDestinationTypeInput}
                 onChange={(e) => setPayoutDestinationTypeInput(e.target.value as any)}
               >
-                <option value="lightning_address">Lightning Address</option>
+                <option value="lightning_address">Creator Lightning Address</option>
                 <option value="onchain_address">On-chain address</option>
                 <option value="local_lnd">Local Lightning node</option>
               </select>
@@ -1827,7 +1830,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               </select>
             </label>
             <label className="text-xs text-neutral-400 md:col-span-2">
-              Lightning Address
+              Creator Lightning payout address
               <input
                 className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
                 value={payoutLightningInput}

@@ -26,6 +26,36 @@ type ProviderSummary = {
   };
 };
 
+type LightningRuntimeSnapshot = {
+  connected?: boolean;
+  canReceive?: boolean;
+  canSend?: boolean;
+  capabilityState?: string;
+  sendFailureReason?: string | null;
+};
+
+type LightningAdminSnapshot = {
+  configured: boolean;
+  runtime?: LightningRuntimeSnapshot;
+};
+
+type LightningBalancesSnapshot = {
+  wallet: {
+    confirmedSats: number;
+    unconfirmedSats: number;
+    totalSats: number;
+  };
+  channels: {
+    openCount: number;
+    pendingOpenCount: number;
+    pendingCloseCount: number;
+  };
+  liquidity: {
+    outboundSats: number;
+    inboundSats: number;
+  };
+};
+
 type ProviderCreatorLink = {
   id: string;
   providerNodeId: string;
@@ -172,7 +202,7 @@ function ExecutionPill({ allowed }: { allowed: boolean }) {
   );
 }
 
-export default function ProviderConsolePage() {
+export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenLightningConfig?: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<ProviderSummary | null>(null);
@@ -186,18 +216,22 @@ export default function ProviderConsolePage() {
     "all" | "created" | "issued" | "paid" | "cancelled" | "expired"
   >("all");
   const [expandedIntentIds, setExpandedIntentIds] = useState<Record<string, boolean>>({});
+  const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
+  const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes] = await Promise.all([
+      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes, lightningAdminRes, lightningBalancesRes] = await Promise.all([
         api<ProviderSummary>("/api/provider/summary", "GET"),
         api<{ items: ProviderCreatorLink[] }>("/api/provider/creator-links", "GET"),
         api<{ items: ProviderDelegatedPublish[] }>("/api/provider/delegated-publishes", "GET"),
         api<{ items: ProviderPaymentIntent[] }>("/api/provider/payment-intents", "GET"),
         api<{ items: ProviderPaymentReceipt[] }>("/api/provider/payment-receipts", "GET"),
-        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET")
+        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET"),
+        api<LightningAdminSnapshot>("/api/admin/lightning", "GET"),
+        api<LightningBalancesSnapshot>("/api/admin/lightning/balances", "GET")
       ]);
       setSummary(summaryRes || null);
       setCreatorLinks(Array.isArray(creatorLinksRes?.items) ? creatorLinksRes.items : []);
@@ -205,6 +239,8 @@ export default function ProviderConsolePage() {
       setPaymentIntents(Array.isArray(paymentIntentsRes?.items) ? paymentIntentsRes.items : []);
       setPaymentReceipts(Array.isArray(paymentReceiptsRes?.items) ? paymentReceiptsRes.items : []);
       setParticipantPayouts(Array.isArray(participantPayoutsRes?.items) ? participantPayoutsRes.items : []);
+      setLightningAdmin(lightningAdminRes || null);
+      setLightningBalances(lightningBalancesRes || null);
     } catch (e: any) {
       setError(e?.message || "Failed to load provider console.");
     } finally {
@@ -251,6 +287,8 @@ export default function ProviderConsolePage() {
   const toggleIntentDetails = (id: string) => {
     setExpandedIntentIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
+  const runtime = lightningAdmin?.runtime || null;
+  const formatLightningSats = (value: number | null | undefined) => `${Math.round(Number(value || 0)).toLocaleString()} sats`;
 
   return (
     <div className="space-y-5">
@@ -280,6 +318,61 @@ export default function ProviderConsolePage() {
             <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
           </div>
         ))}
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Commerce Wallet Source</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Local LND wallet on this machine handles commerce flows. Creator payout destinations are separate remittance targets.
+            </div>
+          </div>
+          <button
+            onClick={() => onOpenLightningConfig?.()}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-800/60"
+            type="button"
+          >
+            Open Lightning Config
+          </button>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">canReceive</div>
+            <div className="text-neutral-100">{runtime?.canReceive ? "yes" : "no"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">canSend</div>
+            <div className="text-neutral-100">{runtime?.canSend ? "yes" : "no"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">capability</div>
+            <div className="text-neutral-100">{runtime?.capabilityState || "disconnected"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">wallet total</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.wallet?.totalSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">outbound liquidity</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.outboundSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">inbound liquidity</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.inboundSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">settled sales (count)</div>
+            <div className="text-neutral-100">{Number(summary?.settledPayments || 0).toLocaleString()}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">participant payouts paid</div>
+            <div className="text-neutral-100">{Number(summary?.participantPayouts?.paid || 0).toLocaleString()}</div>
+          </div>
+        </div>
+        {runtime?.sendFailureReason ? (
+          <div className="mt-2 text-xs text-amber-300">send readiness reason: {runtime.sendFailureReason}</div>
+        ) : null}
       </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">

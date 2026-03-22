@@ -56,10 +56,21 @@ type NodeModeSnapshot = {
   commerceAuthorityAvailable?: boolean;
   providerCommerceConnected?: boolean;
   localSovereignReady?: boolean;
+  modeReadiness?: {
+    localLndReady?: boolean;
+  };
 };
 
 type LightningAdminSnapshot = {
   configured: boolean;
+  runtime?: {
+    connected?: boolean;
+    canReceive?: boolean;
+    canSend?: boolean;
+    capabilityState?: string;
+    sendFailureReason?: string | null;
+    source?: string;
+  };
 };
 
 type PageKey =
@@ -439,6 +450,12 @@ export default function App() {
   const canSeeProviderConsole = Boolean(sovereignCapabilities.canActAsProviderNode && nodeMode === "lan");
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
   const requireLocalLightning = nodeMode === "lan";
+  const localLightningDetected = Boolean(
+    nodeModeSnapshot?.modeReadiness?.localLndReady ||
+      lightningAdminSnapshot?.runtime?.canReceive ||
+      lightningAdminSnapshot?.runtime?.canSend ||
+      lightningAdminSnapshot?.configured
+  );
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
     !commerceEnabled &&
@@ -487,9 +504,9 @@ export default function App() {
     return true;
   });
 
-  const nodeSettingsNav = [
-    { key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }
-  ];
+  const nodeSettingsNav = localLightningDetected
+    ? [{ key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }]
+    : [];
 
   const pageTitle =
     page === "config" ? "Configuration" :
@@ -519,9 +536,14 @@ export default function App() {
   const isOperatorPage = page === "config" || page === "diagnostics" || page === "provider-console";
   const tunnelActive = publicStatus?.status === "online";
   const identityVerified = identityDetail?.level === "PERSISTENT";
-  const lightningConfigured = lightningAdminSnapshot?.configured ?? null;
+  const lightningConfigured =
+    (lightningAdminSnapshot?.runtime?.canReceive || lightningAdminSnapshot?.runtime?.canSend || lightningAdminSnapshot?.configured) ?? null;
 
   function goToNodeLightning() {
+    if (!localLightningDetected) {
+      setPage("config");
+      return;
+    }
     window.history.pushState({}, "", "/node/lightning");
     setPage("node-lightning");
   }
@@ -531,6 +553,12 @@ export default function App() {
       setPage("store");
     }
   }, [page, canSeeProviderConsole]);
+
+  useEffect(() => {
+    if (page === "node-lightning" && !localLightningDetected) {
+      setPage("config");
+    }
+  }, [page, localLightningDetected]);
 
   // Show loading state or Auth page if not logged in
   if (loading) {
@@ -1014,7 +1042,7 @@ export default function App() {
                 />
               )}
               {page === "diagnostics" && <DiagnosticsPage whoamiInfo={whoamiInfo} whoamiStatus={whoamiStatus} />}
-              {page === "provider-console" && <ProviderConsolePage />}
+              {page === "provider-console" && <ProviderConsolePage onOpenLightningConfig={() => setPage("config")} />}
 
               {page === "finance" && !isCommerceLockedPage && (
                 <ErrorBoundary>

@@ -53,6 +53,7 @@ import {
   interpretLightningDiscoveryHttpProbe,
   probeLndConnection,
   saveLightningNodeConfig,
+  sendBolt11Payment,
   testLightningNodeConnection
 } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
@@ -1678,11 +1679,6 @@ const REMITTANCE_FORWARDING_STALE_MS = Math.max(
   30_000,
   Number.parseInt(String(process.env.CERTIFYD_REMITTANCE_STALE_MS || "180000"), 10) || 180000
 );
-const PARTICIPANT_PAYOUTS_ENABLED = String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_ENABLED || "").trim() === "1";
-const PARTICIPANT_PAYOUTS_EXECUTION_ENABLED =
-  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_EXECUTION_ENABLED || "").trim() === "1";
-const PARTICIPANT_PAYOUTS_SUMMARY_ENABLED =
-  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_SUMMARY_ENABLED || "").trim() === "1";
 const PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY =
   String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY || "").trim() === "1";
 const PROVIDER_CREATOR_LINKS_FILE = path.join(RUNTIME_STATE_DIR, "provider-creator-links.json");
@@ -1706,6 +1702,8 @@ type ProviderPayoutExecutionMode = "legacy_creator" | "participant";
 type ProviderPayoutSummaryStatus = "pending" | "partial" | "paid" | "failed" | "blocked";
 type ProviderPayoutPolicy = "identity_preferred" | "identity_required";
 type ParticipantPayoutStatus = "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked";
+type LightningCapabilityState = "disconnected" | "receive_only" | "send_only" | "receive_send" | "destination_only";
+type PayoutExecutionState = "not_applicable" | "accrual_only" | "provider_pending" | "ready" | "blocked" | "failed" | "completed";
 
 type ProviderCreatorLinkRecord = {
   id: string;
@@ -2616,8 +2614,102 @@ function parseBooleanFlag(value: unknown, fallback: boolean): boolean {
 }
 const DEFAULT_ALLOW_PROVIDER_FALLBACK = parseBooleanFlag(process.env.CERTIFYD_ALLOW_PROVIDER_FALLBACK, true);
 
+type ParticipantPayoutRuntimeConfig = {
+  participantPayoutsEnabled: boolean;
+  participantPayoutExecutionEnabled: boolean;
+  participantPayoutSummaryEnabled: boolean;
+  source: string;
+};
+
+let participantPayoutRuntimeConfigCache:
+  | {
+      value: ParticipantPayoutRuntimeConfig;
+      expiresAt: number;
+    }
+  | null = null;
+
+function readParticipantPayoutEnvHardOverride(name: string): boolean | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  return parseBooleanFlag(trimmed, true);
+}
+
+async function resolveParticipantPayoutRuntimeConfig(forceRefresh = false): Promise<ParticipantPayoutRuntimeConfig> {
+  const now = Date.now();
+  if (!forceRefresh && participantPayoutRuntimeConfigCache && participantPayoutRuntimeConfigCache.expiresAt > now) {
+    return participantPayoutRuntimeConfigCache.value;
+  }
+
+  let participantPayoutsEnabled = true;
+  let participantPayoutExecutionEnabled = true;
+  let participantPayoutSummaryEnabled = true;
+  let source = "default_true";
+
+  try {
+    const rows = await prisma.$queryRawUnsafe<
+      Array<{
+        participantPayoutsEnabled?: unknown;
+        participantPayoutExecutionEnabled?: unknown;
+        participantPayoutSummaryEnabled?: unknown;
+      }>
+    >(
+      `SELECT participantPayoutsEnabled, participantPayoutExecutionEnabled, participantPayoutSummaryEnabled
+       FROM NodeSettings
+       ORDER BY updatedAt DESC
+       LIMIT 1`
+    );
+    const row = rows?.[0];
+    if (row) {
+      participantPayoutsEnabled = parseBooleanFlag(row.participantPayoutsEnabled, true);
+      participantPayoutExecutionEnabled = parseBooleanFlag(row.participantPayoutExecutionEnabled, true);
+      participantPayoutSummaryEnabled = parseBooleanFlag(row.participantPayoutSummaryEnabled, true);
+      source = "node_settings";
+    } else {
+      source = "node_settings_empty_default_true";
+    }
+  } catch (err: any) {
+    const message = String(err?.message || "").toLowerCase();
+    const nodeSettingsUnavailable =
+      message.includes("no such table") ||
+      message.includes("nodesettings") ||
+      message.includes("does not exist") ||
+      message.includes("unknown column") ||
+      message.includes("p2021");
+    source = nodeSettingsUnavailable ? "node_settings_unavailable_default_true" : "node_settings_error_default_true";
+    if (!nodeSettingsUnavailable) {
+      app.log.warn(
+        { error: String(err?.message || err || "node_settings_read_failed") },
+        "participantPayout.runtime_config_read_failed"
+      );
+    }
+  }
+
+  const envEnabled = readParticipantPayoutEnvHardOverride("CERTIFYD_PARTICIPANT_PAYOUTS_ENABLED");
+  const envExecution = readParticipantPayoutEnvHardOverride("CERTIFYD_PARTICIPANT_PAYOUTS_EXECUTION_ENABLED");
+  const envSummary = readParticipantPayoutEnvHardOverride("CERTIFYD_PARTICIPANT_PAYOUTS_SUMMARY_ENABLED");
+  if (envEnabled !== null) participantPayoutsEnabled = envEnabled;
+  if (envExecution !== null) participantPayoutExecutionEnabled = envExecution;
+  if (envSummary !== null) participantPayoutSummaryEnabled = envSummary;
+  if (envEnabled !== null || envExecution !== null || envSummary !== null) {
+    source = `${source}+env_hard_override`;
+  }
+
+  const resolved: ParticipantPayoutRuntimeConfig = {
+    participantPayoutsEnabled,
+    participantPayoutExecutionEnabled,
+    participantPayoutSummaryEnabled,
+    source
+  };
+  participantPayoutRuntimeConfigCache = {
+    value: resolved,
+    expiresAt: now + 15_000
+  };
+  return resolved;
+}
+
 function resolveNewIntentPayoutExecutionMode(): ProviderPayoutExecutionMode {
-  if (!PARTICIPANT_PAYOUTS_ENABLED) return "legacy_creator";
   if (!PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY) return "legacy_creator";
   return "participant";
 }
@@ -3409,7 +3501,19 @@ function createProviderPaymentReceipt(
 }
 
 async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaymentIntentRecord): Promise<void> {
-  if (!PARTICIPANT_PAYOUTS_ENABLED) return;
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  app.log.info(
+    {
+      providerPaymentIntentId: intent.id,
+      paymentIntentId: intent.paymentIntentId,
+      participantPayoutsEnabled: payoutRuntime.participantPayoutsEnabled,
+      participantPayoutExecutionEnabled: payoutRuntime.participantPayoutExecutionEnabled,
+      participantPayoutSummaryEnabled: payoutRuntime.participantPayoutSummaryEnabled,
+      source: payoutRuntime.source
+    },
+    "participantPayout.runtime_config"
+  );
+  if (!payoutRuntime.participantPayoutsEnabled) return;
   if (intent.status !== "paid") return;
   const contentId = String(intent.contentId || "").trim();
   if (!contentId) return;
@@ -3638,7 +3742,8 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
 }
 
 async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string): Promise<ProviderPayoutSummaryStatus> {
-  if (!PARTICIPANT_PAYOUTS_ENABLED || !PARTICIPANT_PAYOUTS_SUMMARY_ENABLED) return "pending";
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  if (!payoutRuntime.participantPayoutsEnabled || !payoutRuntime.participantPayoutSummaryEnabled) return "pending";
   const rows = await prisma.participantPayout
     .findMany({
       where: { providerPaymentIntentId },
@@ -3788,9 +3893,21 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
       "providerRemittance.participant_snapshot_failed"
     );
   }
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  app.log.info(
+    {
+      providerPaymentIntentId: settled.id,
+      paymentIntentId: settled.paymentIntentId,
+      participantPayoutsEnabled: payoutRuntime.participantPayoutsEnabled,
+      participantPayoutExecutionEnabled: payoutRuntime.participantPayoutExecutionEnabled,
+      participantPayoutSummaryEnabled: payoutRuntime.participantPayoutSummaryEnabled,
+      source: payoutRuntime.source
+    },
+    "participantPayout.runtime_config"
+  );
   const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settled.id).catch(() => settled.payoutSummaryStatus || "pending");
   const withSummary =
-    PARTICIPANT_PAYOUTS_ENABLED && PARTICIPANT_PAYOUTS_SUMMARY_ENABLED
+    payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutSummaryEnabled
       ? updateProviderPaymentIntent(settled.id, {
           payoutSummaryStatus
         }) || settled
@@ -3811,7 +3928,7 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   );
   if (withSummary.status === "paid" && withSummary.providerRemitMode === "auto_forward") {
     if (withSummary.payoutExecutionMode === "participant") {
-      if (PARTICIPANT_PAYOUTS_ENABLED && PARTICIPANT_PAYOUTS_EXECUTION_ENABLED) {
+      if (payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutExecutionEnabled) {
         await executeParticipantPayoutRowsForIntent(withSummary, "provider_settlement_participant");
       }
       app.log.info(
@@ -3910,51 +4027,148 @@ async function requestLightningAddressInvoice(lightningAddress: string, amountSa
   }
 }
 
-async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | null; status: string }> {
-  const lndRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "");
-  const macaroon = normalizeLndMacaroonHex();
-  if (!lndRest || !macaroon) throw new Error("LND_SEND_NOT_CONFIGURED");
-  const paymentRequestTag = crypto.createHash("sha256").update(String(bolt11 || "")).digest("hex").slice(0, 12);
+async function resolveLightningCapabilityRuntime(userId: string | null): Promise<{
+  connected: boolean;
+  canReceive: boolean;
+  canSend: boolean;
+  capabilityState: LightningCapabilityState;
+  sendFailureReason: string | null;
+  lndRestUrl: string | null;
+  lndMacaroonHex: string | null;
+  source: "stored_lnd" | "env_lnd" | "destination_only" | "none";
+}> {
+  const productTier = resolveProductTier().productTier;
+  const paymentsMode = getPaymentsMode(productTier);
+  if (productTier === "basic" || paymentsMode !== "node") {
+    const hasDestinationOnly = Boolean(userId && (await getWalletReceiveReady(userId, productTier).catch(() => false)));
+    const state: LightningCapabilityState = hasDestinationOnly ? "destination_only" : "disconnected";
+    const out = {
+      connected: false,
+      canReceive: hasDestinationOnly,
+      canSend: false,
+      capabilityState: state,
+      sendFailureReason: hasDestinationOnly ? "LND_SEND_NOT_APPLICABLE_DESTINATION_ONLY" : "LND_SEND_NOT_CONFIGURED",
+      lndRestUrl: null,
+      lndMacaroonHex: null,
+      source: hasDestinationOnly ? ("destination_only" as const) : ("none" as const)
+    };
+    app.log.info({ userId, ...out }, "lightning.runtime_state");
+    return out;
+  }
+
+  const lndStatus = await getLightningNodeConfigStatus(prisma as any).catch(() => null);
+  const lndReadiness = await getLightningReadiness(prisma as any).catch(() => null);
+  const stored = await getStoredLndConfig(prisma as any).catch(() => null);
+  const envRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "") || null;
+  const envMac = normalizeLndMacaroonHex();
+  const lndRestUrl = stored?.restUrl || envRest || null;
+  const lndMacaroonHex = stored?.macaroonHex || envMac || null;
+  const source = stored?.restUrl && stored?.macaroonHex ? "stored_lnd" : envRest && envMac ? "env_lnd" : "none";
+
+  const connected = Boolean(lndReadiness?.nodeReachable);
+  const canReceive = Boolean(lndReadiness?.receiveReady);
+  const channelCount = Math.max(0, Number(lndReadiness?.channels?.count || 0));
+  const hasTransport = Boolean(lndRestUrl && lndMacaroonHex);
+  const canSend = Boolean(hasTransport && connected && channelCount > 0);
+
+  let sendFailureReason: string | null = null;
+  if (!hasTransport) sendFailureReason = "LND_SEND_NOT_CONFIGURED";
+  else if (lndStatus && !lndStatus.decryptOk) sendFailureReason = "LND_SEND_KEY_MISMATCH";
+  else if (!connected) sendFailureReason = "LND_SEND_NODE_UNREACHABLE";
+  else if (channelCount <= 0) sendFailureReason = "LND_SEND_NO_CHANNELS";
+
+  let capabilityState: LightningCapabilityState = "disconnected";
+  if (canReceive && canSend) capabilityState = "receive_send";
+  else if (canReceive) capabilityState = "receive_only";
+  else if (canSend) capabilityState = "send_only";
+
+  const out = {
+    connected,
+    canReceive,
+    canSend,
+    capabilityState,
+    sendFailureReason,
+    lndRestUrl,
+    lndMacaroonHex,
+    source
+  } as const;
   app.log.info(
-    { lndRest, paymentRequestTag },
-    "providerRemittance.lnd_send_attempt"
-  );
-  const target = `${lndRest}/v2/router/send`;
-  const body = { payment_request: bolt11, timeout_seconds: 60, fee_limit_sat: 50 };
-  const { res, json, text } = await fetchJsonWithTimeout(
-    target,
     {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        Accept: "application/json",
-        "Grpc-Metadata-macaroon": macaroon
-      } as any,
-      body: JSON.stringify(body)
+      userId,
+      connected,
+      canReceive,
+      canSend,
+      capabilityState,
+      sendFailureReason,
+      lndRestUrl,
+      source,
+      channelCount
     },
-    15000
+    "lightning.runtime_state"
   );
-  if (!res.ok) {
-    app.log.warn(
-      { lndRest, paymentRequestTag, statusCode: res.status, response: String(json?.error || text || "send_failed") },
-      "providerRemittance.lnd_send_http_failed"
-    );
-    throw new Error(`LND_SEND_HTTP_${res.status}:${String(json?.error || text || "send_failed")}`);
+  return out;
+}
+
+async function resolvePayoutExecutionRuntime(userId: string | null): Promise<{
+  executionState: PayoutExecutionState;
+  blockReason: string | null;
+}> {
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  if (!payoutRuntime.participantPayoutsEnabled) {
+    return { executionState: "not_applicable", blockReason: "PARTICIPANT_PAYOUTS_DISABLED" };
   }
-  const status = String(json?.status || "").trim().toUpperCase();
-  const paymentHash = String(json?.payment_hash || "").trim() || null;
-  if (status === "SUCCEEDED" || status === "SUCCESS") {
+  if (!payoutRuntime.participantPayoutExecutionEnabled) {
+    return { executionState: "provider_pending", blockReason: "PARTICIPANT_PAYOUT_EXECUTION_DISABLED" };
+  }
+  const lightning = await resolveLightningCapabilityRuntime(userId);
+  if (!lightning.canSend) {
+    return { executionState: "blocked", blockReason: lightning.sendFailureReason || "LND_SEND_NOT_CONFIGURED" };
+  }
+  return { executionState: "ready", blockReason: null };
+}
+
+async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | null; status: string }> {
+  const runtime = await resolveLightningCapabilityRuntime(null);
+  const lndRest = String(runtime.lndRestUrl || "").trim().replace(/\/+$/, "");
+  const hasMacaroon = Boolean(String(runtime.lndMacaroonHex || "").trim());
+  if (!runtime.canSend || !lndRest || !hasMacaroon) {
+    throw new Error(runtime.sendFailureReason || "LND_SEND_NOT_CONFIGURED");
+  }
+  const paymentRequestTag = crypto.createHash("sha256").update(String(bolt11 || "")).digest("hex").slice(0, 12);
+  const target = `${lndRest}/v2/router/send`;
+  app.log.info(
+    { paymentRequestTag, source: runtime.source, capabilityState: runtime.capabilityState },
+    "payoutExecution.lnd_send_start"
+  );
+  app.log.info(
+    { paymentRequestTag, targetHost: (() => { try { return new URL(target).host; } catch { return null; } })(), targetPath: "/v2/router/send" },
+    "payoutExecution.lnd_send_request_target"
+  );
+  try {
+    const send = await sendBolt11Payment(prisma as any, { paymentRequest: bolt11, timeoutSeconds: 60, feeLimitSat: 50 });
     app.log.info(
-      { lndRest, paymentRequestTag, paymentHash, status },
-      "providerRemittance.lnd_send_success"
+      { paymentRequestTag, paymentHash: send.paymentHash, status: send.status },
+      "payoutExecution.lnd_send_result"
     );
-    return { paymentHash, status: "paid" };
+    return send;
+  } catch (error: any) {
+    const reasonRaw = String(error?.message || error || "").trim();
+    const mappedReason = (() => {
+      const code = reasonRaw.toLowerCase();
+      if (code.includes("request_timeout")) return "request_timeout";
+      if (code.includes("tls_handshake_failed")) return "tls_handshake_failed";
+      if (code.includes("lnd_rest_unreachable")) return "lnd_rest_unreachable";
+      if (code.includes("invalid_response")) return "invalid_response";
+      if (code.startsWith("lnd_send_not_paid:")) return reasonRaw;
+      if (code.includes("transport_connect_failed")) return "transport_connect_failed";
+      return reasonRaw || "transport_connect_failed";
+    })();
+    app.log.warn(
+      { paymentRequestTag, reason: mappedReason },
+      "payoutExecution.lnd_send_transport_error"
+    );
+    throw new Error(mappedReason);
   }
-  app.log.warn(
-    { lndRest, paymentRequestTag, status, paymentHash },
-    "providerRemittance.lnd_send_not_paid"
-  );
-  throw new Error(`LND_SEND_NOT_PAID:${status || "UNKNOWN"}`);
 }
 
 function isStaleForwardingRemittance(intent: ProviderPaymentIntentRecord, nowMs = Date.now()): boolean {
@@ -4262,6 +4476,27 @@ async function markParticipantPayoutFailed(id: string, attemptId: string, messag
 }
 
 async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentIntentRecord, reason: string) {
+  const payoutRuntime = await resolvePayoutExecutionRuntime(null);
+  app.log.info(
+    {
+      providerPaymentIntentId: intent.id,
+      paymentIntentId: intent.paymentIntentId,
+      executionState: payoutRuntime.executionState,
+      blockReason: payoutRuntime.blockReason
+    },
+    "payoutExecution.runtime_state"
+  );
+  if (payoutRuntime.executionState !== "ready") {
+    app.log.warn(
+      {
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        reason: payoutRuntime.blockReason || "PAYOUT_EXECUTION_NOT_READY"
+      },
+      "payoutExecution.blocked_reason"
+    );
+    return;
+  }
   const rows = await prisma.participantPayout
     .findMany({
       where: {
@@ -11011,6 +11246,14 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
         inviteToken && inviteStatus === "accepted"
           ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken)
           : null;
+      const normalizedContentStatus = (() => {
+        const v = asString(contentStatus || "").trim().toLowerCase();
+        if (v === "published" || v === "draft") return v;
+        // Older mirror rows may contain non-content statuses (for example "remote").
+        // Treat accepted remote participations as published for library eligibility.
+        if (inviteStatus === "accepted") return "published";
+        return null;
+      })();
       app.log.info(
         {
           userId,
@@ -11033,7 +11276,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       contentId,
       contentTitle,
       contentType,
-      contentStatus,
+      contentStatus: normalizedContentStatus,
       contentDeletedAt,
       splitVersionNum,
       role,
@@ -13375,6 +13618,8 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
   const ctx = getCapabilityContext();
   const userId = (req.user as JwtUser).sub;
   const paymentsReadiness = await getPaymentsReadiness(userId);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const payoutExecutionRuntime = await resolvePayoutExecutionRuntime(userId).catch(() => null);
   return reply.send({
     bootId: BOOT_ID,
     startedAt: STARTED_AT,
@@ -13391,6 +13636,8 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
     },
     paymentsMode: ctx.paymentsMode,
     paymentsReadiness,
+    lightningRuntime,
+    payoutExecutionRuntime,
     storage: runtime.storage
   });
 });
@@ -13410,12 +13657,14 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const providerConfig = getNetworkProviderConfig();
   const providerConnection = deriveProviderCommerceConnectionState(providerConfig);
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const payoutExecutionRuntime = await resolvePayoutExecutionRuntime(userId).catch(() => null);
   const sovereignReadiness = await getLocalSovereignReadiness();
 
   const localInvoiceMinting =
     ctx.paymentsMode === "node" &&
     ctx.nodeMode === "lan" &&
-    Boolean(paymentsReadiness?.lightning?.ready);
+    Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready);
 
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
@@ -13498,6 +13747,8 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       effectiveDestinationSummary: payoutDestination.effectiveDestinationSummary,
       effectivePayoutRail: payoutDestination.effectivePayoutRail
     },
+    lightningRuntime,
+    payoutExecutionRuntime,
     providerBinding: {
       configured: providerConfigured,
       providerNodeId: providerConfigured ? providerConfig.providerNodeId : null
@@ -13518,7 +13769,8 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 app.get("/api/network/payout-destination", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
-  const localLndReady = Boolean(paymentsReadiness?.lightning?.ready);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const localLndReady = Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready);
   const destination = await resolveEffectivePayoutDestination(userId, {
     localLndReady,
     paymentsReadiness
@@ -13546,8 +13798,9 @@ app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (
   });
 
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
   const destination = await resolveEffectivePayoutDestination(userId, {
-    localLndReady: Boolean(paymentsReadiness?.lightning?.ready),
+    localLndReady: Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     paymentsReadiness
   });
   if (!destination.valid) {
@@ -13980,17 +14233,18 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
   const ctx = getCapabilityContext();
   const userId = (req.user as JwtUser).sub;
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting:
       ctx.paymentsMode === "node" &&
-      Boolean(paymentsReadiness?.lightning?.ready),
+      Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     providerCfg: providerTarget,
     ctx
   });
   const payoutDestination = await resolveEffectivePayoutDestination(userId, {
     localLndReady:
       ctx.paymentsMode === "node" &&
-      Boolean(paymentsReadiness?.lightning?.ready),
+      Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     paymentsReadiness
   });
 
@@ -14004,6 +14258,7 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
     verification,
     acknowledgment,
     permit,
+    lightningRuntime,
     serviceProfile,
     payoutDestination,
     userStatus,
@@ -17745,9 +18000,32 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
         signal: controller.signal
       } as any);
       if (!providerResponse.ok) {
+        const providerError: any = await providerResponse.json().catch(() => null);
+        const providerCode = String(providerError?.error || providerError?.code || "").trim() || null;
+        const providerMessage =
+          String(providerError?.message || providerError?.reason || "").trim() ||
+          `Provider delegated publish failed (${providerResponse.status}).`;
+        app.log.warn(
+          {
+            contentId,
+            target,
+            providerStatus: providerResponse.status,
+            providerCode,
+            providerMessage
+          },
+          "publish.delegated_provider_failed"
+        );
+        if (providerResponse.status === 409) {
+          return reply.code(409).send({
+            code: providerCode || "delegated_publish_conflict",
+            message: providerMessage,
+            providerStatus: providerResponse.status
+          });
+        }
         return reply.code(502).send({
-          code: "delegated_publish_failed",
-          message: `Provider delegated publish failed (${providerResponse.status}).`
+          code: providerCode || "delegated_publish_failed",
+          message: providerMessage,
+          providerStatus: providerResponse.status
         });
       }
       const providerJson: any = await providerResponse.json().catch(() => null);
@@ -26530,6 +26808,136 @@ type FinalizePaymentIntentOptions = {
   confirmedByUserId?: string | null;
 };
 
+async function bridgeDirectSaleToParticipantPayouts(
+  paymentIntentId: string,
+  trigger: "finalize_existing_sale" | "finalize_basic_skip_settlement" | "finalize_sale_upsert"
+) {
+  app.log.info(
+    {
+      paymentIntentId,
+      trigger
+    },
+    "payments.finalize.payout_bridge_invoked"
+  );
+
+  try {
+    const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
+    if (!intent) {
+      app.log.info({ paymentIntentId, trigger, bridged: false, reason: "PAYMENT_INTENT_NOT_FOUND" }, "payments.finalize.payout_bridge_result");
+      return;
+    }
+    if (intent.status !== "paid") {
+      app.log.info(
+        { paymentIntentId, trigger, bridged: false, reason: "PAYMENT_INTENT_NOT_PAID", status: intent.status },
+        "payments.finalize.payout_bridge_result"
+      );
+      return;
+    }
+
+    const existing = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+    let providerIntent: ProviderPaymentIntentRecord;
+    if (existing) {
+      providerIntent =
+        updateProviderPaymentIntent(existing.id, {
+          status: "paid",
+          paidAt: existing.paidAt || intent.paidAt?.toISOString() || new Date().toISOString()
+        }) || existing;
+    } else {
+      const content = await prisma.contentItem.findUnique({
+        where: { id: intent.contentId },
+        select: { id: true, ownerUserId: true }
+      });
+      if (!content?.ownerUserId) {
+        app.log.info(
+          { paymentIntentId, trigger, bridged: false, reason: "CONTENT_OR_OWNER_MISSING", contentId: intent.contentId },
+          "payments.finalize.payout_bridge_result"
+        );
+        return;
+      }
+
+      const creatorNodeId = resolveNodeIdForRuntimeStatus();
+      const payoutPolicy = resolveNewIntentPayoutPolicy();
+      const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId).catch(() => null);
+      const amountSats = BigInt(String(intent.amountSats || "0"));
+      const grossAmountSats = amountSats > 0n ? amountSats.toString() : "0";
+      const creatorNetSats = grossAmountSats;
+
+      providerIntent = upsertProviderPaymentIntentByPaymentIntentId(paymentIntentId, {
+        providerNodeId: creatorNodeId,
+        creatorNodeId,
+        contentId: content.id,
+        paymentIntentId,
+        bolt11: intent.bolt11 || null,
+        providerInvoiceRef: intent.providerId || null,
+        amountSats: grossAmountSats,
+        grossAmountSats,
+        providerInvoicingFeeSats: "0",
+        providerDurableHostingFeeSats: "0",
+        providerFeeSats: "0",
+        creatorNetSats,
+        status: "paid",
+        payoutStatus: "pending",
+        payoutRail: payoutDestination?.effectivePayoutRail || "provider_custody",
+        payoutDestinationType: payoutDestination?.effectiveDestinationType || null,
+        payoutDestinationSummary: payoutDestination?.effectiveDestinationSummary || null,
+        // Direct sovereign sale bridge should attempt participant forwarding when destinations are ready.
+        providerRemitMode: "auto_forward",
+        payoutExecutionMode: "participant",
+        payoutPolicy: payoutPolicy.payoutPolicy,
+        allowProviderFallback: payoutPolicy.allowProviderFallback,
+        payoutSummaryStatus: "pending",
+        payoutReference: null,
+        remittedAt: null,
+        payoutLastError: null,
+        remittanceAttemptId: null,
+        remittanceLockedAt: null,
+        remittanceLastCheckedAt: null,
+        remittanceAttempts: 0,
+        paymentReceiptId: null,
+        buyerSessionId: null,
+        paidAt: intent.paidAt?.toISOString() || new Date().toISOString()
+      });
+    }
+
+    const settled = await ensureProviderPaymentSettlement(providerIntent);
+    let allocationCount = 0;
+    let payoutRowCount = 0;
+    try {
+      allocationCount = await prisma.providerPaymentParticipantAllocation.count({
+        where: { providerPaymentIntentId: settled.id }
+      });
+      payoutRowCount = await prisma.participantPayout.count({
+        where: { providerPaymentIntentId: settled.id }
+      });
+    } catch (err: any) {
+      if (!isMissingParticipantPayoutTableError(err)) throw err;
+    }
+
+    app.log.info(
+      {
+        paymentIntentId,
+        trigger,
+        bridged: true,
+        providerPaymentIntentId: settled.id,
+        allocationCount,
+        payoutRowCount,
+        payoutExecutionMode: settled.payoutExecutionMode,
+        providerRemitMode: settled.providerRemitMode
+      },
+      "payments.finalize.payout_bridge_result"
+    );
+  } catch (err: any) {
+    app.log.error(
+      {
+        paymentIntentId,
+        trigger,
+        error: String(err?.message || err || "payout_bridge_failed")
+      },
+      "payments.finalize.payout_bridge_failed"
+    );
+  }
+}
+
 async function finalizePaymentIntent(intentId: string, options: FinalizePaymentIntentOptions) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
   if (!intent) throw new Error("PaymentIntent not found");
@@ -26541,6 +26949,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   const existingSale = await prisma.sale.findUnique({ where: { intentId } });
   if (intent.status === "paid" && existingSale && !skipSettlement) {
     const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_existing_sale");
     return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
 
@@ -26566,6 +26975,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
     }
 
     const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_basic_skip_settlement");
     return { sale: null, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
 
@@ -26624,6 +27034,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   });
 
   const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+  await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_sale_upsert");
   // TODO(certifyd-entitlement-boundary): delegated/provider invoice execution must not become entitlement truth ownership.
   return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
 }
@@ -27063,30 +27474,9 @@ async function getPaymentsReadiness(userId: string) {
   }
 
   if (paymentsMode === "node") {
-    const lndStatus = await getLightningNodeConfigStatus(prisma as any);
-    let lightningReady = false;
-    let lightningReason: string | null = "NODE_NOT_CONFIGURED";
-    if (!lndStatus.endpoint) {
-      lightningReason = "NODE_ENDPOINT_MISSING";
-    } else if (!lndStatus.hasMacaroon) {
-      lightningReason = "NODE_NOT_CONFIGURED";
-    } else if (!lndStatus.decryptOk) {
-      lightningReason = "NODE_KEY_MISMATCH";
-    } else {
-      try {
-        const lndReadiness = await getLightningReadiness(prisma as any);
-        if (lndReadiness.nodeReachable) {
-          lightningReady = true;
-          lightningReason = null;
-        } else {
-          lightningReady = false;
-          lightningReason = "NODE_UNREACHABLE";
-        }
-      } catch {
-        lightningReady = false;
-        lightningReason = "NODE_UNREACHABLE";
-      }
-    }
+    const runtime = await resolveLightningCapabilityRuntime(userId);
+    const lightningReady = runtime.canReceive;
+    const lightningReason = lightningReady ? null : runtime.sendFailureReason || "NODE_NOT_CONFIGURED";
 
     let onchainReady = false;
     let onchainReason: string | null = "NOT_CONFIGURED";
@@ -27104,7 +27494,15 @@ async function getPaymentsReadiness(userId: string) {
     return {
       mode: "node",
       ready: lightningReady || onchainReady,
-      lightning: { ready: lightningReady, reason: lightningReason },
+      lightning: {
+        ready: lightningReady,
+        reason: lightningReason,
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason
+      },
       onchain: { ready: onchainReady, reason: onchainReason }
     };
   }
@@ -27259,7 +27657,20 @@ function lightningDiscoveryTargets(): string[] {
 
 app.get("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
-    return reply.send(await getLightningNodeConfigMeta(prisma as any));
+    const userId = (_req.user as JwtUser).sub;
+    const meta = await getLightningNodeConfigMeta(prisma as any);
+    const runtime = await resolveLightningCapabilityRuntime(userId);
+    return reply.send({
+      ...meta,
+      runtime: {
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason,
+        source: runtime.source
+      }
+    });
   } catch (e: any) {
     return reply.code(500).send({ error: String(e?.message || e) });
   }
@@ -27422,7 +27833,9 @@ app.post("/api/admin/external-claims/beatify/revoke", { preHandler: requireAuth 
 
 app.get("/api/admin/lightning/config/status", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
+    const userId = (_req.user as JwtUser).sub;
     const status = await getLightningNodeConfigStatus(prisma as any);
+    const runtime = await resolveLightningCapabilityRuntime(userId);
     return reply.send({
       configured: status.configured,
       hasTlsCert: status.hasTlsCert,
@@ -27434,7 +27847,15 @@ app.get("/api/admin/lightning/config/status", { preHandler: [requireAuth, requir
       lastTestedAt: status.lastTestedAt,
       lastStatus: status.lastStatus,
       lastError: status.lastError,
-      warnings: status.warnings
+      warnings: status.warnings,
+      runtime: {
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason,
+        source: runtime.source
+      }
     });
   } catch (e: any) {
     return reply.code(500).send({ error: String(e?.message || e) });
@@ -27459,8 +27880,20 @@ app.post("/api/admin/lightning/discover", { preHandler: [requireAuth, requireAdv
 
 app.get("/api/admin/lightning/readiness", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
+    const userId = (_req.user as JwtUser).sub;
     const readiness = await getLightningReadiness(prisma as any);
-    return reply.send(readiness);
+    const runtime = await resolveLightningCapabilityRuntime(userId);
+    return reply.send({
+      ...readiness,
+      runtime: {
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason,
+        source: runtime.source
+      }
+    });
   } catch (e: any) {
     return reply.code(500).send({ ok: false, error: String(e?.message || e) });
   }
