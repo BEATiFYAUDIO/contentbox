@@ -15,6 +15,11 @@ type Overview = {
     paymentsReceivedCount: number;
     paymentsPendingCount: number;
     paymentsLast30d: number;
+    remoteRoyaltyAccruedSats?: string;
+    remoteRoyaltyItems?: number;
+    participantRoyaltyAccruedSats?: string;
+    participantRoyaltyPayableSats?: string;
+    participantRoyaltyPaidSats?: string;
   };
   revenueSeries: Array<{ date: string; amountSats: string }>;
   lastUpdatedAt: string;
@@ -52,6 +57,23 @@ type LightningReadiness = {
   channels: { count: number };
   receiveReady: boolean;
   hints: string[];
+};
+
+type LightningBalances = {
+  wallet: {
+    confirmedSats: number;
+    unconfirmedSats: number;
+    totalSats: number;
+  };
+  channels: {
+    openCount: number;
+    pendingOpenCount: number;
+    pendingCloseCount: number;
+  };
+  liquidity: {
+    outboundSats: number;
+    inboundSats: number;
+  };
 };
 type LightningGuidanceResult = { ok: true; steps: string[] } | { ok: false; error: string };
 type ChannelOpenResponse =
@@ -198,6 +220,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
   const [wizardCandidates, setWizardCandidates] = useState<Array<{ restUrl: string; requiresTlsCertHint?: boolean; notes?: string }>>([]);
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
   const [lightningReadinessError, setLightningReadinessError] = useState<string | null>(null);
+  const [lightningBalances, setLightningBalances] = useState<LightningBalances | null>(null);
   const [showChannelGuidance, setShowChannelGuidance] = useState(false);
   const [channelGuidance, setChannelGuidance] = useState<string[]>([]);
   const [channelGuidanceError, setChannelGuidanceError] = useState<string | null>(null);
@@ -310,9 +333,13 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
         applyLightningAdmin(res || null, { syncForm: true });
         if (res?.configured) {
           try {
-            const readiness = await api<LightningReadiness>("/api/admin/lightning/readiness", "GET");
+            const [readiness, balances] = await Promise.all([
+              api<LightningReadiness>("/api/admin/lightning/readiness", "GET"),
+              api<LightningBalances>("/api/admin/lightning/balances", "GET")
+            ]);
             if (!active) return;
             setLightningReadiness(readiness || null);
+            setLightningBalances(balances || null);
             setLightningReadinessError(null);
           } catch (e: any) {
             if (!active) return;
@@ -320,6 +347,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
           }
         } else {
           setLightningReadiness(null);
+          setLightningBalances(null);
           setLightningReadinessError(null);
         }
       } catch (e: any) {
@@ -689,7 +717,14 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
     Number(data?.totals?.salesSats || 0) > 0 ||
     Number(data?.totals?.invoicesTotal || 0) > 0 ||
     Number(royaltyTotals.earnedSats || 0) > 0 ||
+    Number(data?.totals?.remoteRoyaltyAccruedSats || 0) > 0 ||
     Number(payoutTotals.pendingSats || 0) > 0;
+  const localRoyaltyEarned = Number(royaltyTotals.earnedSats || 0);
+  const remoteRoyaltyAccrued = Number(data?.totals?.remoteRoyaltyAccruedSats || 0);
+  const participantAccrued = Number(data?.totals?.participantRoyaltyAccruedSats || 0);
+  const participantPayable = Number(data?.totals?.participantRoyaltyPayableSats || 0);
+  const participantPaid = Number(data?.totals?.participantRoyaltyPaidSats || 0);
+  const totalRoyaltyAccrued = Math.max(0, localRoyaltyEarned + remoteRoyaltyAccrued + participantAccrued);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -771,37 +806,92 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
         {lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
       </section>
 
-      <section className="grid gap-4 md:grid-cols-3">
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold">Revenue</div>
+        <div className="mt-1 text-xs text-neutral-400">Accounting view of sales processed by this node.</div>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Creator sales (seller of record)</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Paid invoices only</div>
+          <div className="mt-1 text-xs text-neutral-500">Sales where this node is the seller-of-record (paid invoices only)</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalties earned</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(royaltyTotals.earnedSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Your share to date</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Pending payouts</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(payoutTotals.pendingSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Awaiting settlement</div>
-        </div>
-      </section>
-
-      <section className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days sales</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSatsLast30d || "0")}</div>
           <div className="mt-1 text-xs text-neutral-500">
             Invoices: {data?.totals?.invoicesTotal ?? 0} · Payments: {data?.totals?.paymentsLast30d ?? 0}
           </div>
         </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Invoices total</div>
-          <div className="mt-2 text-2xl font-semibold">{data?.totals?.invoicesTotal ?? 0}</div>
-          <div className="mt-1 text-xs text-neutral-500">Paid: {data?.totals?.invoicesPaid ?? 0}</div>
         </div>
+      </section>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold">Participation (Your Economics)</div>
+        <div className="mt-1 text-xs text-neutral-400">Your share from content participation.</div>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty accrued</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Local: {formatSats(royaltyTotals.earnedSats || "0")} · Remote: {formatSats(data?.totals?.remoteRoyaltyAccruedSats || "0")}
+            {Number(data?.totals?.participantRoyaltyAccruedSats || 0) > 0 ? ` · Payout rows: ${formatSats(data?.totals?.participantRoyaltyAccruedSats || "0")}` : ""}
+            {Number(data?.totals?.remoteRoyaltyItems || 0) > 0 ? ` · Remote works: ${Number(data?.totals?.remoteRoyaltyItems || 0)}` : ""}
+          </div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty payable</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPayable))}</div>
+          <div className="mt-1 text-xs text-neutral-500">Amount allocated to you but not yet remitted.</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty paid</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+          <div className="mt-1 text-xs text-neutral-500">Amount successfully remitted to your payout destination.</div>
+        </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold">Treasury — Local LND Wallet</div>
+        <div className="mt-1 text-xs text-neutral-400">
+          This reflects the actual wallet running on this machine. Commerce flows through this wallet. This is real funds, not accounting values.
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Wallet total</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(lightningBalances?.wallet?.totalSats || 0))}</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Confirmed: {formatSats(String(lightningBalances?.wallet?.confirmedSats || 0))}
+            </div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Unconfirmed: {formatSats(String(lightningBalances?.wallet?.unconfirmedSats || 0))}
+            </div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Inbound liquidity</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.inboundSats || 0))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Receive-side channel liquidity.</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Outbound liquidity</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.outboundSats || 0))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Send-side channel liquidity.</div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold">Revenue terms</div>
+        <div className="mt-2 text-xs text-neutral-400">
+          Sales = buyer payments collected by this node as seller-of-record.
+        </div>
+        <div className="mt-1 text-xs text-neutral-400">
+          Royalty accrual = your participant share from settlements (local + mirrored remote).
+        </div>
+        <div className="mt-1 text-xs text-neutral-400">
+          Paid/remitted value is tracked by payout state and may differ from accrual.
+        </div>
+        <div className="mt-1 text-xs text-neutral-500">Reconciliation (coming soon)</div>
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">

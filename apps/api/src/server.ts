@@ -28286,6 +28286,98 @@ function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reas
   return { lightning, onchain };
 }
 
+async function computeRemoteRoyaltyAccrualSummary(userId: string): Promise<{
+  accruedSats: string;
+  itemCount: number;
+  checkedCount: number;
+}> {
+  const invites = await prisma.remoteInvite.findMany({
+    where: {
+      userId,
+      acceptedAt: { not: null },
+      revokedAt: null,
+      tombstonedAt: null
+    },
+    orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
+    take: 50,
+    select: {
+      inviteUrl: true,
+      remoteOrigin: true
+    }
+  });
+  if (!invites.length) {
+    return { accruedSats: "0", itemCount: 0, checkedCount: 0 };
+  }
+  let accrued = 0n;
+  let itemCount = 0;
+  let checkedCount = 0;
+  const rows = await Promise.allSettled(
+    invites.map(async (inv) => {
+      const token = extractInviteTokenFromUrl(inv.inviteUrl || null);
+      if (!token) return null;
+      const accounting = await fetchRemoteInviteAccounting(inv.remoteOrigin, token);
+      return accounting;
+    })
+  );
+  for (const row of rows) {
+    if (row.status !== "fulfilled") continue;
+    checkedCount += 1;
+    const accounting = row.value;
+    if (!accounting) continue;
+    itemCount += 1;
+    const earned = BigInt(String(accounting.earnedSatsToDate || "0"));
+    accrued += earned;
+  }
+  return {
+    accruedSats: accrued.toString(),
+    itemCount,
+    checkedCount
+  };
+}
+
+async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
+  accruedSats: string;
+  payableSats: string;
+  paidSats: string;
+}> {
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const email = String(me?.email || "").trim().toLowerCase();
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: {
+        allocation: {
+          OR: [
+            { participantUserId: userId },
+            email ? { participantEmail: emailEquals(email) } : undefined
+          ].filter(Boolean) as any
+        }
+      },
+      select: {
+        amountSats: true,
+        status: true
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  let accrued = 0n;
+  let paid = 0n;
+  for (const row of rows) {
+    const amount = BigInt(String((row as any)?.amountSats || "0"));
+    accrued += amount;
+    if (String((row as any)?.status || "").trim().toLowerCase() === "paid") {
+      paid += amount;
+    }
+  }
+  const payable = accrued > paid ? accrued - paid : 0n;
+  return {
+    accruedSats: accrued.toString(),
+    payableSats: payable.toString(),
+    paidSats: paid.toString()
+  };
+}
+
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   await reconcileSellerPendingIntentsForDashboard(userId, "finance_overview");
@@ -28317,8 +28409,13 @@ app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("fi
     }))
   });
 
-  // Reuse readiness logic
-  const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
+  // Reuse readiness logic + remote royalty summary for participant nodes.
+  const [lnd, onchain, remoteRoyaltySummary, participantPayoutSummary] = await Promise.all([
+    lndHealthCheck(),
+    bitcoindHealthCheck(),
+    computeRemoteRoyaltyAccrualSummary(userId).catch(() => ({ accruedSats: "0", itemCount: 0, checkedCount: 0 })),
+    computeParticipantPayoutSummaryForUser(userId).catch(() => ({ accruedSats: "0", payableSats: "0", paidSats: "0" }))
+  ]);
   const health = { lightning: lnd, onchain };
   req.log.info(
     {
@@ -28328,13 +28425,26 @@ app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("fi
       matchedPaymentIntents: intents.length,
       paidCount: computed.totals.invoicesPaid,
       pendingCount: computed.totals.invoicesPending,
-      salesSats: computed.totals.salesSats
+      salesSats: computed.totals.salesSats,
+      remoteRoyaltyAccruedSats: remoteRoyaltySummary.accruedSats,
+      remoteRoyaltyItems: remoteRoyaltySummary.itemCount,
+      remoteRoyaltyChecked: remoteRoyaltySummary.checkedCount,
+      participantRoyaltyAccruedSats: participantPayoutSummary.accruedSats,
+      participantRoyaltyPayableSats: participantPayoutSummary.payableSats,
+      participantRoyaltyPaidSats: participantPayoutSummary.paidSats
     },
     "finance.overview computed"
   );
 
   return reply.send({
-    totals: computed.totals,
+    totals: {
+      ...computed.totals,
+      remoteRoyaltyAccruedSats: remoteRoyaltySummary.accruedSats,
+      remoteRoyaltyItems: remoteRoyaltySummary.itemCount,
+      participantRoyaltyAccruedSats: participantPayoutSummary.accruedSats,
+      participantRoyaltyPayableSats: participantPayoutSummary.payableSats,
+      participantRoyaltyPaidSats: participantPayoutSummary.paidSats
+    },
     revenueSeries: computed.revenueSeries,
     health,
     lastUpdatedAt: new Date().toISOString()
