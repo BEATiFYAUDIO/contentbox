@@ -31,6 +31,7 @@ type Overview = {
 
 type FinanceOverviewPageProps = {
   refreshSignal?: number;
+  onOpenRoyalties?: () => void;
 };
 
 type LightningAdminConfig = {
@@ -190,7 +191,7 @@ function mapPeerSuggestionNotice(errorCode: string | null | undefined, reasonRaw
   };
 }
 
-export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPageProps) {
+export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: FinanceOverviewPageProps) {
   const [data, setData] = useState<Overview | null>(null);
   const [royaltyTotals, setRoyaltyTotals] = useState<{ earnedSats: string; pendingSats: string }>({
     earnedSats: "0",
@@ -807,13 +808,15 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm font-semibold">Revenue</div>
-        <div className="mt-1 text-xs text-neutral-400">Accounting view of sales processed by this node.</div>
+        <div className="text-sm font-semibold">Sales</div>
+        <div className="mt-1 text-xs text-neutral-400">
+          Seller-of-record activity. These are sales where this node acted as seller of record.
+        </div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Creator sales (seller of record)</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Sales where this node is the seller-of-record (paid invoices only)</div>
+          <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days sales</div>
@@ -826,8 +829,19 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm font-semibold">Participation (Your Economics)</div>
-        <div className="mt-1 text-xs text-neutral-400">Your share from content participation.</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-semibold">Participation</div>
+          {onOpenRoyalties ? (
+            <button
+              type="button"
+              onClick={onOpenRoyalties}
+              className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+            >
+              Open detailed royalties
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-1 text-xs text-neutral-400">Earnings from shared participation and royalty splits.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-3">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty accrued</div>

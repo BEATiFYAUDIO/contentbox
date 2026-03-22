@@ -481,6 +481,14 @@ export default function App() {
 
   const commerceNav = [
     {
+      key: "finance" as const,
+      label: "Revenue",
+      hint: "Sales, royalties, payouts",
+      requiresCommerce: true,
+      requiresSplits: false,
+      requiresAdvanced: true
+    },
+    {
       key: "participations" as const,
       label: "My Royalties",
       hint: "Royalties I'm in",
@@ -515,7 +523,6 @@ export default function App() {
   });
 
   const advancedNav = [
-    { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
     { key: "provider-console" as const, label: "Provider Console", hint: "Delegated creators + commerce" },
     { key: "config" as const, label: "Configuration", hint: "Node + tunnel setup" },
     { key: "diagnostics" as const, label: "Diagnostics", hint: "Health + connectivity" }
@@ -700,6 +707,7 @@ export default function App() {
               <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Commerce</div>
               <div className="space-y-1">
               {commerceNav.map((item: any) => {
+                if (item.requiresAdvanced && !showAdvancedNav) return null;
                 const active = item.key === page;
                 const locked =
                   (item.requiresCommerce && !commerceEnabled) ||
@@ -768,7 +776,7 @@ export default function App() {
                 <div className="space-y-1">
                 {advancedNav.map((item) => {
                   const active = item.key === page;
-                  const locked = item.key === "finance" && !commerceEnabled;
+                  const locked = false;
                   return (
                     <button
                       key={item.key}

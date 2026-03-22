@@ -162,7 +162,12 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
         })}
       </div>
 
-      {tab === "overview" && <FinanceOverviewPage refreshSignal={tabRefresh.overview} />}
+      {tab === "overview" && (
+        <FinanceOverviewPage
+          refreshSignal={tabRefresh.overview}
+          onOpenRoyalties={() => setTab("royalties")}
+        />
+      )}
       {tab === "ledger" && <SalesPage />}
       {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} />}
       {tab === "payouts" && <PayoutRailsPage />}
