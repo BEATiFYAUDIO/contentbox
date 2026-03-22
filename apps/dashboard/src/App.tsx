@@ -469,30 +469,50 @@ export default function App() {
       page === "royalties-terms");
 
   // Navigation options for the sidebar
-  const accessNav = [
-    { key: "store" as const, label: "Network", hint: "Identity + reachability + links" },
-    { key: "library" as const, label: "Library", hint: "What I own" },
-    { key: "downloads" as const, label: "Downloads", hint: "Get your files" },
-    { key: "purchases" as const, label: "Purchase history", hint: "Receipts + status" }
-  ];
+  const accountNav = [{ key: "profile" as const, label: "Profile", hint: "Identity" }];
 
   const contentNav = [
-    { key: "content" as const, label: "Content", hint: "Your catalog" }
+    { key: "content" as const, label: "Catalog", hint: "Your content catalog" },
+    { key: "library" as const, label: "Library", hint: "What I own" },
+    { key: "downloads" as const, label: "Downloads", hint: "Get your files" }
   ];
 
-  const royaltiesNav = [
-    { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in", requiresSplits: false },
-    { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history", requiresSplits: true },
-    { key: "invite" as const, label: "Split Invites", hint: "Split requests", requiresSplits: true }
+  const networkNav = [{ key: "store" as const, label: "Network", hint: "Identity + reachability + links" }];
+
+  const commerceNav = [
+    {
+      key: "participations" as const,
+      label: "My Royalties",
+      hint: "Royalties I'm in",
+      requiresCommerce: true,
+      requiresSplits: false
+    },
+    {
+      key: "purchases" as const,
+      label: "Purchase History",
+      hint: "Receipts + status",
+      requiresCommerce: false,
+      requiresSplits: false
+    },
+    {
+      key: "splits" as const,
+      label: "Manage Splits",
+      hint: "Draft, lock, history",
+      requiresCommerce: true,
+      requiresSplits: true
+    },
+    {
+      key: "invite" as const,
+      label: "Split Invites",
+      hint: "Split requests",
+      requiresCommerce: true,
+      requiresSplits: true
+    }
   ].filter((item) => {
     if (!item.requiresSplits) return true;
     if (advancedInactive) return false;
     return true;
   });
-
-  const identityNav = [
-    { key: "profile" as const, label: "Profile", hint: "Identity" }
-  ];
 
   const advancedNav = [
     { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
@@ -603,9 +623,9 @@ export default function App() {
           
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
             <div>
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Account</div>
               <div className="space-y-1">
-              {identityNav.map((item) => {
+              {accountNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
@@ -651,9 +671,9 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Network</div>
               <div className="space-y-1">
-              {accessNav.map((item) => {
+              {networkNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
@@ -677,35 +697,13 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Node Settings</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Commerce</div>
               <div className="space-y-1">
-              {nodeSettingsNav.map((item) => {
+              {commerceNav.map((item: any) => {
                 const active = item.key === page;
-                return (
-                  <button
-                    key={item.key}
-                    onClick={goToNodeLightning}
-                    className={[
-                      "w-full text-left rounded-lg px-3 py-2 transition border",
-                      active
-                        ? "border-white/30 bg-white/5"
-                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
-                    ].join(" ")}
-                  >
-                    <div className="text-sm font-medium">{item.label}</div>
-                    <div className="text-xs text-neutral-400">{item.hint}</div>
-                  </button>
-                );
-              })}
-              </div>
-            </div>
-
-            <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
-              <div className="space-y-1">
-              {royaltiesNav.map((item: any) => {
-                const active = item.key === page;
-                const locked = !commerceEnabled || (item.requiresSplits && !capabilities.useSplits);
+                const locked =
+                  (item.requiresCommerce && !commerceEnabled) ||
+                  (item.requiresSplits && !capabilities.useSplits);
                 return (
                   <button
                     key={item.key}
@@ -740,9 +738,33 @@ export default function App() {
               </div>
             </div>
 
+            <div className="mt-4 border-t border-neutral-900 pt-4">
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Node</div>
+              <div className="space-y-1">
+              {nodeSettingsNav.map((item) => {
+                const active = item.key === page;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={goToNodeLightning}
+                    className={[
+                      "w-full text-left rounded-lg px-3 py-2 transition border",
+                      active
+                        ? "border-white/30 bg-white/5"
+                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                    ].join(" ")}
+                  >
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+
             {showAdvancedNav && (
               <div className="mt-4 border-t border-neutral-900 pt-4">
-                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Operator</div>
+                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Node (Operator)</div>
                 <div className="space-y-1">
                 {advancedNav.map((item) => {
                   const active = item.key === page;
