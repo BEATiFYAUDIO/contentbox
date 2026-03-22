@@ -819,7 +819,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
           <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days sales</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSatsLast30d || "0")}</div>
           <div className="mt-1 text-xs text-neutral-500">
-            Invoices: {data?.totals?.invoicesTotal ?? 0} · Payments: {data?.totals?.paymentsLast30d ?? 0}
+            Seller invoices: {data?.totals?.invoicesTotal ?? 0} · Settled purchases: {data?.totals?.paymentsLast30d ?? 0}
           </div>
         </div>
         </div>
@@ -918,18 +918,20 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-base font-semibold">Invoice status</div>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-            <div>Paid: <span className="text-neutral-200">{data?.totals?.invoicesPaid ?? 0}</span></div>
-            <div>Pending: <span className="text-neutral-200">{data?.totals?.invoicesPending ?? 0}</span></div>
-            <div>Failed: <span className="text-neutral-200">{data?.totals?.invoicesFailed ?? 0}</span></div>
-            <div>Expired: <span className="text-neutral-200">{data?.totals?.invoicesExpired ?? 0}</span></div>
-          </div>
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-base font-semibold">Seller invoice lifecycle</div>
+        <div className="mt-1 text-xs text-neutral-500">Seller-of-record invoice states. This is accounting flow, not participant remittance.</div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+          <div>Settled: <span className="text-neutral-200">{data?.totals?.invoicesPaid ?? 0}</span></div>
+          <div>Open: <span className="text-neutral-200">{data?.totals?.invoicesPending ?? 0}</span></div>
+          <div>Failed: <span className="text-neutral-200">{data?.totals?.invoicesFailed ?? 0}</span></div>
+          <div>Expired: <span className="text-neutral-200">{data?.totals?.invoicesExpired ?? 0}</span></div>
         </div>
+      </section>
+
+      <section className="grid gap-4 md:grid-cols-1">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-base font-semibold">Payments received</div>
+          <div className="text-base font-semibold">Seller cash collections</div>
           <div className="mt-2 text-sm text-neutral-200">
             Received: {formatSats(data?.totals?.paymentsReceivedSats || "0")} ({data?.totals?.paymentsReceivedCount ?? 0})
           </div>
