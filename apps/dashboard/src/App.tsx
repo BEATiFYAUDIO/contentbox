@@ -185,6 +185,12 @@ function normalizePublicProfileHandle(value: unknown): string | null {
   return clean || null;
 }
 
+function getFinanceTabFromLocation(): FinanceTab | null {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts[0] === "earnings-v2") return "earnings-v2";
+  return null;
+}
+
 /* =======================
    App Component
 ======================= */
@@ -358,6 +364,7 @@ export default function App() {
   useEffect(() => {
     const tokenFromUrl = getInviteTokenFromLocation();
     const splitEditorContentId = getSplitEditorContentIdFromLocation();
+    const financeTabFromUrl = getFinanceTabFromLocation();
     if (tokenFromUrl) {
       setInviteToken(tokenFromUrl);  // Set token when found
       setPage("invite");  // Show InvitePage directly
@@ -368,7 +375,10 @@ export default function App() {
       setPage("receipt");
     }
     if (!tokenFromUrl && !receiptFromUrl) {
-      if (splitEditorContentId) {
+      if (financeTabFromUrl) {
+        setFinanceTab(financeTabFromUrl);
+        setPage("finance");
+      } else if (splitEditorContentId) {
         setSelectedContentId(splitEditorContentId);
         setPage("split-editor");
       } else {

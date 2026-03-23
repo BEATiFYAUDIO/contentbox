@@ -5,11 +5,12 @@ import FinanceRoyaltiesPage from "./FinanceRoyaltiesPage";
 import PayoutRailsPage from "./PayoutRailsPage";
 import PaymentRailsPage from "./PaymentRailsPage";
 import FinanceTransactionsPage from "./FinanceTransactionsPage";
+import EarningsV2Page from "./EarningsV2Page";
 import { api } from "../lib/api";
 import type { NodeMode } from "../lib/identity";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
 
-export type FinanceTab = "overview" | "ledger" | "royalties" | "payouts" | "rails" | "transactions";
+export type FinanceTab = "overview" | "ledger" | "royalties" | "payouts" | "rails" | "transactions" | "earnings-v2";
 
 type FinancePageProps = {
   initialTab?: FinanceTab;
@@ -25,7 +26,8 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
     royalties: 0,
     payouts: 0,
     rails: 0,
-    transactions: 0
+    transactions: 0,
+    "earnings-v2": 0
   });
   const [summaryRefresh, setSummaryRefresh] = useState(0);
   const [rails, setRails] = useState<Array<{ id: string; status: string; label: string; hint?: string | null }>>([]);
@@ -71,6 +73,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
       { key: "overview", label: "Revenue Overview" },
       { key: "ledger", label: "Revenue Ledger" },
       { key: "royalties", label: "Royalties" },
+      { key: "earnings-v2", label: "Earnings v2" },
       { key: "payouts", label: "Payout Destinations" },
       { key: "rails", label: "Payment Rails" },
       { key: "transactions", label: "Transactions" }
@@ -170,6 +173,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
       )}
       {tab === "ledger" && <SalesPage />}
       {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} />}
+      {tab === "earnings-v2" && <EarningsV2Page refreshSignal={tabRefresh["earnings-v2"]} />}
       {tab === "payouts" && <PayoutRailsPage />}
       {tab === "rails" && <PaymentRailsPage refreshSignal={tabRefresh.rails} />}
       {tab === "transactions" && <FinanceTransactionsPage refreshSignal={tabRefresh.transactions} />}

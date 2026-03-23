@@ -417,6 +417,9 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
         <div className="text-base font-semibold">Sales ledger</div>
         <div className="text-sm text-neutral-400 mt-1">Recognized revenue events.</div>
+        <div className="mt-2 text-xs text-neutral-500">
+          Fee truth: provider invoicing fee is active only when provider invoicing is used. Durable hosting fee remains inactive unless a non-zero hosting fee is present on a row.
+        </div>
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
