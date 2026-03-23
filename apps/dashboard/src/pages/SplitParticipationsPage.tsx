@@ -31,6 +31,8 @@ type WorkRoyaltyRow = {
     percent?: any;
   }>;
   earnedSatsToDate: string;
+  pendingSats?: string;
+  withdrawnSats?: string;
   storefrontStatus?: string | null;
   contentStatus?: string | null;
   contentDeletedAt?: string | null;
@@ -119,6 +121,16 @@ export default function SplitParticipationsPage(props: {
   const [showInactive, setShowInactive] = useState(false);
   const [showInactiveWorks, setShowInactiveWorks] = useState(false);
   const [showAllUpstream, setShowAllUpstream] = useState(false);
+  const toBigInt = (v: unknown): bigint => {
+    try {
+      const s = String(v ?? "0").trim();
+      if (!s) return 0n;
+      return BigInt(s);
+    } catch {
+      return 0n;
+    }
+  };
+  const fmtSats = (v: bigint): string => `${Number(v).toLocaleString()} sats`;
 
   const activeWorks = works.filter((p) => {
     const relation: LibraryRelation = p.myRole === "owner" ? "owner" : "participant";
@@ -196,6 +208,10 @@ export default function SplitParticipationsPage(props: {
     });
     return include;
   });
+  const localRoyaltyAccrued = works.reduce((sum, row) => sum + toBigInt(row.earnedSatsToDate), 0n);
+  const localRoyaltyPayable = works.reduce((sum, row) => sum + toBigInt(row.pendingSats), 0n);
+  const localRoyaltyPaid = works.reduce((sum, row) => sum + toBigInt(row.withdrawnSats), 0n);
+  const remoteRoyaltyAccrued = remoteRoyalties.reduce((sum, row) => sum + toBigInt(row.earnedSatsToDate), 0n);
 
   useEffect(() => {
     if (isBasic) return;
@@ -234,7 +250,33 @@ export default function SplitParticipationsPage(props: {
     <div className="space-y-4">
       <div>
         <div className="text-lg font-semibold">My Royalties</div>
-        <div className="text-sm text-neutral-400 mt-1">Entitlements from content splits (owned or invited).</div>
+        <div className="text-sm text-neutral-400 mt-1">Participation economics from locked split rights.</div>
+        <div className="text-xs text-neutral-500 mt-1">
+          Royalties track accrued share, payable balance, and paid remittance. They do not represent seller-of-record sales totals.
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalty accrued</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(localRoyaltyAccrued + remoteRoyaltyAccrued)}</div>
+          <div className="text-xs text-neutral-500 mt-1">Local + remote participation accrual</div>
+        </div>
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalty payable</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(localRoyaltyPayable)}</div>
+          <div className="text-xs text-neutral-500 mt-1">Allocated but not yet remitted (local rows)</div>
+        </div>
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalty paid</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(localRoyaltyPaid)}</div>
+          <div className="text-xs text-neutral-500 mt-1">Successfully paid/withdrawn (local rows)</div>
+        </div>
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Remote accrued</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(remoteRoyaltyAccrued)}</div>
+          <div className="text-xs text-neutral-500 mt-1">Mirrored remote participation accrual</div>
+        </div>
       </div>
 
       {loading ? <div className="text-sm text-neutral-400">Loading…</div> : null}
@@ -244,8 +286,8 @@ export default function SplitParticipationsPage(props: {
         <div className="text-sm text-neutral-500">No works yet.</div>
       ) : null}
 
-      <div className="text-sm text-neutral-300">Participations (locked splits)</div>
-      <div className="text-xs text-neutral-500">Authoritative collaboration credits from locked split snapshots.</div>
+      <div className="text-sm text-neutral-300">Participation rights (locked splits)</div>
+      <div className="text-xs text-neutral-500">Authoritative rights records from locked split snapshots.</div>
       {participations.length === 0 ? (
         <div className="text-sm text-neutral-500 mt-2">No locked participations yet.</div>
       ) : (
@@ -265,28 +307,11 @@ export default function SplitParticipationsPage(props: {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={async () => {
-                      try {
-                        const next = !p.highlightedOnProfile;
-                        await api(`/my/participations/${encodeURIComponent(p.splitParticipantId)}/highlight`, "PATCH", {
-                          enabled: next
-                        });
-                        setParticipations((rows) =>
-                          rows.map((row) =>
-                            row.splitParticipantId === p.splitParticipantId
-                              ? { ...row, highlightedOnProfile: next }
-                              : row
-                          )
-                        );
-                      } catch (e: any) {
-                        setError(e?.message || "Failed to update profile highlight.");
-                      }
-                    }}
-                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                  >
-                    {p.highlightedOnProfile ? "Unfeature" : "Feature on profile"}
-                  </button>
+                  {p.highlightedOnProfile ? (
+                    <span className="text-[11px] rounded-full border border-cyan-700/60 bg-cyan-900/20 px-2 py-0.5 text-cyan-300">
+                      Featured on profile
+                    </span>
+                  ) : null}
                   {p.buyUrl ? (
                     <button
                       onClick={() => window.open(p.buyUrl as string, "_blank", "noopener,noreferrer")}
@@ -302,9 +327,9 @@ export default function SplitParticipationsPage(props: {
         </div>
       )}
 
-      <div className="text-sm text-neutral-300">Works I have a share in</div>
+      <div className="text-sm text-neutral-300">Local royalty accrual by work</div>
       <div className="mt-2 flex items-center justify-between">
-        <div className="text-xs text-neutral-500">Inactive works are tombstoned or trashed items.</div>
+        <div className="text-xs text-neutral-500">Accrual/payable/paid shown per work. Inactive works are tombstoned or trashed items.</div>
         <button
           onClick={() => setShowInactiveWorks((v) => !v)}
           className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -326,7 +351,9 @@ export default function SplitParticipationsPage(props: {
                 <div className="text-xs text-neutral-400 mt-1">
                   Role: <span className="text-neutral-200">{p.myRole === "owner" ? "owner" : "participant"}</span>
                   {" "}• Share: <span className="text-neutral-200">{p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"}</span>
-                  {" "}• Earned: <span className="text-neutral-200">{p.earnedSatsToDate} sats</span>
+                  {" "}• Accrued: <span className="text-neutral-200">{p.earnedSatsToDate} sats</span>
+                  {" "}• Payable: <span className="text-neutral-200">{p.pendingSats || "0"} sats</span>
+                  {" "}• Paid: <span className="text-neutral-200">{p.withdrawnSats || "0"} sats</span>
                 </div>
                 {p.ownerDisplayName || p.ownerEmail ? (
                   <div className="text-xs text-neutral-500 mt-1">
@@ -430,7 +457,8 @@ export default function SplitParticipationsPage(props: {
         </>
       ) : null}
 
-      <div className="text-sm text-neutral-300 mt-6">Remote royalties</div>
+      <div className="text-sm text-neutral-300 mt-6">Remote royalty accrual</div>
+      <div className="text-xs text-neutral-500 mt-1">Mirrored remote participations: accrual is accounting value, payout state tracks remittance progress.</div>
       {remoteRoyalties.length === 0 ? (
         <div className="text-sm text-neutral-500">No remote invites yet.</div>
       ) : (
@@ -448,7 +476,7 @@ export default function SplitParticipationsPage(props: {
                     {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
                   </div>
                   <div className="text-xs text-neutral-400 mt-1">
-                    Earned: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
+                    Accrued: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
                     {" "}• Payout state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
                     {" "}• Destination: <span className="text-neutral-200">{r.destinationState || "unknown"}</span>
                   </div>

@@ -137,57 +137,34 @@ function normalizeEmail(value?: string | null): string {
   return String(value || "").trim().toLowerCase();
 }
 
-function inviteIsAccepted(inv: any): boolean {
-  const status = String(inv?.status || "").trim().toLowerCase();
-  return status === "accepted" || Boolean(inv?.acceptedAt);
-}
-
-function normalizedInviteDisplayName(inv: any): string | null {
-  const accepted = inviteIsAccepted(inv);
-  const isPlaceholder = (value: string) => {
-    const v = value.trim().toLowerCase();
-    return v === "pending identity claim" || v === "invited collaborator" || v === "contributor";
-  };
-  const candidates = [inv?.targetDisplayName, inv?.participantDisplayName]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-  for (const candidate of candidates) {
-    if (accepted && isPlaceholder(candidate)) continue;
-    return candidate;
-  }
-  return null;
-}
-
 function inviteTargetLabel(inv: any): string {
-  const accepted = inviteIsAccepted(inv);
   return resolveParticipantDisplayLabel({
-    displayName: normalizedInviteDisplayName(inv),
+    displayName: inv?.targetDisplayName || inv?.participantDisplayName || null,
     targetType: inv?.targetType || null,
     targetValue: inv?.targetValue || null,
     participantUserId: inv?.participantUserId || null,
     participantEmail: inv?.participantEmail || null,
     allowEmail: true,
-    fallbackLabel: accepted ? "Accepted collaborator" : "Invited collaborator"
+    fallbackLabel: "Invited collaborator"
   });
 }
 
 function inviteTargetLabelPublic(inv: any): string {
-  const accepted = inviteIsAccepted(inv);
   return resolveParticipantDisplayLabel({
-    displayName: normalizedInviteDisplayName(inv),
+    displayName: inv?.targetDisplayName || inv?.participantDisplayName || null,
     targetType: inv?.targetType || null,
     targetValue: inv?.targetValue || null,
     participantUserId: inv?.participantUserId || null,
     participantEmail: inv?.participantEmail || null,
     allowEmail: false,
-    fallbackLabel: accepted ? "Accepted collaborator" : "Contributor"
+    fallbackLabel: "Contributor"
   });
 }
 
 function inviteAudienceLabel(inv: any): string {
   const targetType = String(inv?.targetType || "").trim().toLowerCase();
   if (targetType === "local_user") return "Sent to local user";
-  if (targetType === "identity_ref") return inviteIsAccepted(inv) ? "Identity claim accepted" : "Pending identity claim";
+  if (targetType === "identity_ref") return "Pending identity claim";
   if (targetType === "email") return "Sent to email target";
   if (inv?.remoteOrigin) return "Received from remote node";
   return "Invite target";

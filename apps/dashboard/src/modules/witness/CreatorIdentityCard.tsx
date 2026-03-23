@@ -13,6 +13,10 @@ type Props = {
 
 export default function CreatorIdentityCard({ witness }: Props) {
   const { state, identity, loading, creating, error, createIdentity } = witness;
+  const isBrowser = typeof window !== "undefined";
+  const isLocalDev = isBrowser && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+  const is4000Surface = isLocalDev && window.location.port === "4000";
+  const keyOpsBlockedOnThisSurface = isLocalDev && window.location.port === "5173";
 
   const createdText = useMemo(() => {
     if (!identity?.createdAt) return null;
@@ -25,8 +29,20 @@ export default function CreatorIdentityCard({ witness }: Props) {
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-4">
-      <div className="text-sm font-medium">Creator Identity</div>
+      <div className="flex items-center gap-2">
+        <div className="text-sm font-medium">Creator Identity</div>
+        {!loading && state === "registeredMissingLocalKey" && is4000Surface ? (
+          <span className="text-[10px] uppercase tracking-wide rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-amber-300">
+            Local key missing
+          </span>
+        ) : null}
+      </div>
       <div className="text-xs text-neutral-500">This keypair is the root signer for creator proofs on this device.</div>
+      {keyOpsBlockedOnThisSurface ? (
+        <div className="mt-2 text-xs rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-amber-200">
+          Key creation/registration is disabled on dev preview (`:5173`). Use the integrated app on `http://localhost:4000/profile`.
+        </div>
+      ) : null}
 
       <div className="mt-3">
         {loading ? <div className="text-xs text-neutral-400">Loading creator identity…</div> : null}
@@ -38,7 +54,7 @@ export default function CreatorIdentityCard({ witness }: Props) {
               onClick={() => {
                 createIdentity().catch(() => {});
               }}
-              disabled={creating}
+              disabled={creating || keyOpsBlockedOnThisSurface}
               className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {creating ? "Creating…" : "Create Verification Key"}
@@ -77,7 +93,7 @@ export default function CreatorIdentityCard({ witness }: Props) {
               onClick={() => {
                 createIdentity().catch(() => {});
               }}
-              disabled={creating}
+              disabled={creating || keyOpsBlockedOnThisSurface}
               className="text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900 disabled:opacity-60 disabled:cursor-not-allowed"
             >
               {creating ? "Registering…" : "Register Local Key"}
