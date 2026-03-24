@@ -238,6 +238,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
   const [openedChannel, setOpenedChannel] = useState<ChannelOpenResponse | null>(null);
   const [openedChannelStatus, setOpenedChannelStatus] = useState<ChannelStatusResponse | null>(null);
   const [channelStatusBusy, setChannelStatusBusy] = useState(false);
+  const [showPayoutDetails, setShowPayoutDetails] = useState(false);
   const hasLoadedOverviewRef = useRef(false);
 
   useEffect(() => {
@@ -732,6 +733,8 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
   );
   const totalRoyaltyAccrued = Math.max(0, localRoyaltyEarned + remoteRoyaltyAccrued);
   const hasRoyaltyEconomics = totalRoyaltyAccrued > 0 || participantAccrued > 0 || participantPayable > 0 || participantPaid > 0;
+  const processingPayouts = Math.max(0, Number(royaltyTotals.pendingSats || 0));
+  const needsAttentionPayouts = Math.max(0, participantPayable - processingPayouts);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -848,33 +851,57 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
           ) : null}
         </div>
         <div className="mt-1 text-xs text-neutral-400">Earnings from content participation and split allocations.</div>
-        <div className="mt-1 text-xs text-neutral-500">Earnings from your own content vs content created by others.</div>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
+        <div className="mt-1 text-xs text-neutral-500">{formatSats(String(participantPayable))} on the way.</div>
+        <div className="mt-1 text-xs text-emerald-300/90">Recent payouts are completing normally.</div>
+        <div className="mt-1 text-xs text-neutral-500">Includes payouts still processing and older payouts that may need review.</div>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty accrued</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Available to you</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+          <div className="mt-1 text-xs text-neutral-500">Amount marked paid in payout tracking.</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Total earned</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
           <div className="mt-1 text-xs text-neutral-500">
             Your Content: {formatSats(royaltyTotals.earnedSats || "0")} · From Other Creators: {formatSats(data?.totals?.remoteRoyaltyAccruedSats || "0")}
             {Number(data?.totals?.remoteRoyaltyItems || 0) > 0 ? ` · External Works: ${Number(data?.totals?.remoteRoyaltyItems || 0)}` : ""}
           </div>
         </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty payable</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPayable))}</div>
-          <div className="mt-1 text-xs text-neutral-500">Amount allocated to you but not yet remitted.</div>
         </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty paid</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
-          <div className="mt-1 text-xs text-neutral-500">Amount successfully remitted to your payout destination.</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4 md:col-span-3">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Payout-row principal (execution tracked)</div>
-          <div className="mt-1 text-sm text-neutral-200">{formatSats(String(participantAccrued))}</div>
-          <div className="mt-1 text-xs text-neutral-500">
-            This is the payout execution principal tracked in ParticipantPayout rows. It is shown separately to avoid accrual double-counting.
-          </div>
-        </div>
+        <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950/30 p-3">
+          <button
+            type="button"
+            onClick={() => setShowPayoutDetails((v) => !v)}
+            className="w-full flex items-center justify-between text-left text-xs text-neutral-300 hover:text-neutral-100"
+          >
+            <span className="font-medium">Review Payout Details</span>
+            <span className="text-neutral-500">{showPayoutDetails ? "Hide" : "Show"}</span>
+          </button>
+          {showPayoutDetails ? (
+            <div className="mt-3 space-y-2 text-xs text-neutral-400">
+              <div className="text-neutral-500">May include older unresolved payouts from earlier activity.</div>
+              <div className="grid gap-2 md:grid-cols-3">
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                  <div className="uppercase tracking-wide text-neutral-500">Processing</div>
+                  <div className="mt-1 text-neutral-200">{formatSats(String(processingPayouts))}</div>
+                </div>
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                  <div className="uppercase tracking-wide text-neutral-500">Needs attention</div>
+                  <div className="mt-1 text-neutral-200">{formatSats(String(needsAttentionPayouts))}</div>
+                </div>
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                  <div className="uppercase tracking-wide text-neutral-500">Sending</div>
+                  <div className="mt-1 text-neutral-300">Not separately available on this page</div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                <div className="uppercase tracking-wide text-neutral-500">Tracked payout amount</div>
+                <div className="mt-1 text-neutral-200">{formatSats(String(participantAccrued))}</div>
+                <div className="mt-1 text-neutral-500">Total amount currently tracked in payout rows.</div>
+              </div>
+            </div>
+          ) : null}
         </div>
       </section>
 
