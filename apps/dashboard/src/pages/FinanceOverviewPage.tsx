@@ -853,10 +853,11 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         <div className="mt-1 text-xs text-neutral-400">Earnings from content participation and split allocations.</div>
         <div className="mt-1 text-xs text-neutral-500">{formatSats(String(participantPayable))} on the way.</div>
         <div className="mt-1 text-xs text-emerald-300/90">Recent payouts are completing normally.</div>
+        <div className="mt-1 text-xs text-neutral-500">Earned = allocation total · Paid out = payout tracking marked paid · Pending = payouts not yet marked paid.</div>
         <div className="mt-1 text-xs text-neutral-500">Includes payouts still processing and older payouts that may need review.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Available to you</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Paid out (tracked)</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
           <div className="mt-1 text-xs text-neutral-500">Amount marked paid in payout tracking.</div>
         </div>
@@ -883,7 +884,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
               <div className="text-neutral-500">May include older unresolved payouts from earlier activity.</div>
               <div className="grid gap-2 md:grid-cols-3">
                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
-                  <div className="uppercase tracking-wide text-neutral-500">Processing</div>
+                  <div className="uppercase tracking-wide text-neutral-500">Pending payouts</div>
                   <div className="mt-1 text-neutral-200">{formatSats(String(processingPayouts))}</div>
                 </div>
                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
@@ -896,7 +897,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
                 </div>
               </div>
               <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
-                <div className="uppercase tracking-wide text-neutral-500">Tracked payout amount</div>
+                <div className="uppercase tracking-wide text-neutral-500">Total tracked for payout</div>
                 <div className="mt-1 text-neutral-200">{formatSats(String(participantAccrued))}</div>
                 <div className="mt-1 text-neutral-500">Total amount currently tracked in payout rows.</div>
               </div>
