@@ -327,10 +327,10 @@ export default function SplitParticipationsPage(props: {
         <div className="mt-2 flex flex-wrap gap-2">
           <a href="#collab-active" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Active collaborations ({visibleActiveCollaborations.length})</a>
           <a href="#collab-local" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Your content ({ownedLocalWorks.length}) • Collaborations ({collaborativeLocalWorks.length})</a>
+          <a href="#collab-remote" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Remote collaborations ({remoteRoyalties.length})</a>
           {derivativesAllowed ? (
             <a href="#collab-derivatives" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Upstream derivatives ({visibleUpstream.length})</a>
           ) : null}
-          <a href="#collab-remote" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Remote collaborations ({remoteRoyalties.length})</a>
           <a href="#collab-audit" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">History & audit</a>
         </div>
       </div>
@@ -530,6 +530,56 @@ export default function SplitParticipationsPage(props: {
         </div>
       </section>
 
+      <section id="collab-remote" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm text-neutral-300 font-medium">Collaborations from Others</div>
+        <div className="text-xs text-neutral-500 mt-1">Content from other creators where you participate.</div>
+        {remoteRoyalties.length === 0 ? (
+          <div className="text-sm text-neutral-500 mt-3">No remote collaborations yet.</div>
+        ) : (
+          <div className="space-y-3 mt-3">
+            {remoteRoyalties.map((r) => (
+            <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • Role: {r.role || "participant"} • Share: {r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}
+                  </div>
+                  <div className="text-xs text-neutral-400 mt-1">
+                    Accrued: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
+                    {" "}• Payout state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
+                    {" "}• Destination: <span className="text-neutral-200">{r.destinationState || "unknown"}</span>
+                  </div>
+                  <div className="text-xs text-neutral-500 mt-1">
+                    Remote: {r.remoteOrigin}
+                  </div>
+                  {r.acceptedAt ? (
+                    <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge label="Remote" tone="cyan" />
+                  {String(r.payoutState || "").toLowerCase() === "paid" ? <Badge label="Paid" tone="success" /> : null}
+                  {(String(r.payoutState || "").toLowerCase() === "pending" || String(r.payoutState || "").toLowerCase() === "ready" || String(r.payoutState || "").toLowerCase() === "forwarding") ? (
+                    <Badge label="Pending payout" tone="amber" />
+                  ) : null}
+                  {String(r.payoutState || "").toLowerCase() === "failed" ? <Badge label="Payout failed" tone="warning" /> : null}
+                  {r.inviteUrl ? (
+                    <button
+                      onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
+                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                    >
+                      Open
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+            ))}
+          </div>
+        )}
+      </section>
+
       {derivativesAllowed ? (
         <section id="collab-derivatives" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-sm text-neutral-300 font-medium">Upstream Derivatives</div>
@@ -582,56 +632,6 @@ export default function SplitParticipationsPage(props: {
           )}
         </section>
       ) : null}
-
-      <section id="collab-remote" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm text-neutral-300 font-medium">Collaborations from Others</div>
-        <div className="text-xs text-neutral-500 mt-1">Content from other creators where you participate.</div>
-        {remoteRoyalties.length === 0 ? (
-          <div className="text-sm text-neutral-500 mt-3">No remote collaborations yet.</div>
-        ) : (
-          <div className="space-y-3 mt-3">
-            {remoteRoyalties.map((r) => (
-            <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • Role: {r.role || "participant"} • Share: {r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}
-                  </div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    Accrued: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
-                    {" "}• Payout state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
-                    {" "}• Destination: <span className="text-neutral-200">{r.destinationState || "unknown"}</span>
-                  </div>
-                  <div className="text-xs text-neutral-500 mt-1">
-                    Remote: {r.remoteOrigin}
-                  </div>
-                  {r.acceptedAt ? (
-                    <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
-                  ) : null}
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge label="Remote" tone="cyan" />
-                  {String(r.payoutState || "").toLowerCase() === "paid" ? <Badge label="Paid" tone="success" /> : null}
-                  {(String(r.payoutState || "").toLowerCase() === "pending" || String(r.payoutState || "").toLowerCase() === "ready" || String(r.payoutState || "").toLowerCase() === "forwarding") ? (
-                    <Badge label="Pending payout" tone="amber" />
-                  ) : null}
-                  {String(r.payoutState || "").toLowerCase() === "failed" ? <Badge label="Payout failed" tone="warning" /> : null}
-                  {r.inviteUrl ? (
-                    <button
-                      onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
-                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                    >
-                      Open
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-            ))}
-          </div>
-        )}
-      </section>
 
       <section id="collab-audit" className="space-y-3">
         <HistoryFeed
