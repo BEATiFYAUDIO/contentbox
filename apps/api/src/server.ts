@@ -3090,7 +3090,7 @@ async function resolveEffectivePayoutDestination(
           payoutDestinationType: inferredType,
           lightningAddress: inferredLightning,
           onchainAddress: inferredOnchain,
-          providerRemitMode: "manual_payout"
+          providerRemitMode: "auto_forward"
         });
       }
     }
@@ -3099,7 +3099,9 @@ async function resolveEffectivePayoutDestination(
   const type = parsePayoutDestinationType(record?.payoutDestinationType || null);
   const lightningAddress = String(record?.lightningAddress || "").trim() || null;
   const onchainAddress = String(record?.onchainAddress || "").trim() || null;
-  const providerRemitMode = parseProviderRemitMode(record?.providerRemitMode || null) || "manual_payout";
+  const parsedProviderRemitMode = parseProviderRemitMode(record?.providerRemitMode || null);
+  const providerRemitMode: ProviderRemitMode =
+    parsedProviderRemitMode === "manual_payout" ? "auto_forward" : parsedProviderRemitMode || "auto_forward";
   const payoutConfiguredAt = record?.payoutConfiguredAt || null;
 
   if (!type) {
@@ -3297,7 +3299,7 @@ function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
       payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail,
       payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
       payoutDestinationSummary: row.payoutDestinationSummary || null,
-      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
+      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "auto_forward",
       payoutExecutionMode: parseProviderPayoutExecutionMode((row as any).payoutExecutionMode || null),
       payoutPolicy: policy.payoutPolicy,
       allowProviderFallback: policy.allowProviderFallback,
@@ -3475,7 +3477,7 @@ function listProviderPaymentReceipts(): ProviderPaymentReceiptRecord[] {
       payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail,
       payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
       payoutDestinationSummary: row.payoutDestinationSummary || null,
-      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
+      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "auto_forward",
       payoutReference: row.payoutReference || null,
       remittedAt: row.remittedAt || null,
       payoutLastError: row.payoutLastError || null
@@ -5124,7 +5126,7 @@ async function requestDelegatedProviderPaymentIntent(input: {
         needsDurablePublicHosting: Boolean(input.needsDurablePublicHosting),
         payoutDestinationType: input.payoutDestinationType || null,
         payoutDestinationSummary: input.payoutDestinationSummary || null,
-        providerRemitMode: input.providerRemitMode || "manual_payout"
+        providerRemitMode: input.providerRemitMode || "auto_forward"
       }),
       signal: controller.signal
     } as any);
@@ -9007,7 +9009,7 @@ function registerPublicRoutes(appPublic: any) {
       bolt11 = invoice?.bolt11 || null;
       providerInvoiceRef = invoice?.providerId || null;
     } catch {}
-    const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+    const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
     const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
     const fee = computeProviderFeeBreakdown(amountSats, {
       providerInvoicing: body.needsProviderInvoicing !== false,
@@ -12462,7 +12464,7 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     providerInvoicing: body.needsProviderInvoicing !== false,
     durablePublicHosting: Boolean(body.needsDurablePublicHosting)
   });
-  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
@@ -14011,7 +14013,7 @@ app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (
 
   const type = parsePayoutDestinationType(body?.payoutDestinationType || null);
   if (!type) return badRequest(reply, "payoutDestinationType must be lightning_address, local_lnd, or onchain_address");
-  const providerRemitMode = parseProviderRemitMode(body?.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body?.providerRemitMode || null) || "auto_forward";
   const record = upsertCreatorPayoutDestinationRecord(userId, {
     payoutDestinationType: type,
     lightningAddress: body?.lightningAddress || null,
@@ -15227,7 +15229,7 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
   } catch {}
-  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
@@ -15313,7 +15315,7 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
   } catch {}
-  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
@@ -17469,7 +17471,7 @@ app.post("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) 
     payoutDestinationType: inferredType,
     lightningAddress: lightningAddress || null,
     onchainAddress: normalizedBtc,
-    providerRemitMode: inferredType ? "manual_payout" : null
+    providerRemitMode: inferredType ? "auto_forward" : null
   });
 
   return reply.send({ ok: true });
