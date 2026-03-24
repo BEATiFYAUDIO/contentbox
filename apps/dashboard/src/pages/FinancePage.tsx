@@ -12,12 +12,18 @@ import LockedFeaturePanel from "../components/LockedFeaturePanel";
 
 export type FinanceTab = "overview" | "ledger" | "royalties" | "payouts" | "rails" | "transactions" | "earnings-v2";
 
+type FinancePosture = "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+
 type FinancePageProps = {
   initialTab?: FinanceTab;
   nodeMode?: NodeMode | null;
+  postureSnapshot?: {
+    providerCommerceConnected?: boolean;
+    localSovereignReady?: boolean;
+  } | null;
 };
 
-export default function FinancePage({ initialTab = "overview", nodeMode }: FinancePageProps) {
+export default function FinancePage({ initialTab = "overview", nodeMode, postureSnapshot }: FinancePageProps) {
   const isBasic = nodeMode === "basic";
   const [tab, setTab] = useState<FinanceTab>(initialTab);
   const [tabRefresh, setTabRefresh] = useState<Record<FinanceTab, number>>({
@@ -35,6 +41,20 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const railsHealthy = rails.some((r) => r.status === "healthy");
 
+  const financePosture: FinancePosture = useMemo(() => {
+    if (nodeMode === "basic") return "basic_creator";
+    if (nodeMode === "lan" || postureSnapshot?.localSovereignReady) return "sovereign_node";
+    if (postureSnapshot?.providerCommerceConnected) return "sovereign_creator_with_provider";
+    return "sovereign_creator";
+  }, [nodeMode, postureSnapshot?.localSovereignReady, postureSnapshot?.providerCommerceConnected]);
+
+  const hasInvoiceCommerce = useMemo(() => {
+    // Conservative presentation gate:
+    // - provider-backed invoice commerce is active, or
+    // - local sovereign commerce stack is explicitly ready.
+    return Boolean(postureSnapshot?.providerCommerceConnected || postureSnapshot?.localSovereignReady);
+  }, [postureSnapshot?.localSovereignReady, postureSnapshot?.providerCommerceConnected]);
+
   useEffect(() => {
     setTab(initialTab);
   }, [initialTab]);
@@ -49,7 +69,8 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
   }, [tab, isBasic]);
 
   useEffect(() => {
-    if (isBasic) return;
+    const showRailsOps = financePosture === "sovereign_node";
+    if (!showRailsOps) return;
     let active = true;
     (async () => {
       try {
@@ -66,20 +87,34 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
     return () => {
       active = false;
     };
-  }, [summaryRefresh, isBasic]);
+  }, [summaryRefresh, financePosture]);
 
-  const tabs = useMemo(
+  const allTabs = useMemo(
     () => [
       { key: "overview", label: "Revenue Overview" },
-      { key: "ledger", label: "Revenue Ledger" },
+      { key: "earnings-v2", label: "Earnings" },
       { key: "royalties", label: "Royalties" },
-      { key: "earnings-v2", label: "Earnings v2" },
+      { key: "ledger", label: "Revenue Ledger" },
       { key: "payouts", label: "Payout Destinations" },
       { key: "rails", label: "Payment Rails" },
       { key: "transactions", label: "Transactions" }
     ],
     []
   );
+
+  const visibleTabs = useMemo(() => {
+    // Transactions endpoint is still intentionally limited/stubbed.
+    // Keep route support, but remove it from normal navigation to reduce noise.
+    if (financePosture === "sovereign_node") {
+      return allTabs.filter((t) => t.key !== "transactions");
+    }
+    if (financePosture === "sovereign_creator_with_provider") {
+      return allTabs.filter((t) => t.key !== "transactions" && t.key !== "rails" && t.key !== "payouts");
+    }
+    return allTabs.filter(
+      (t) => t.key !== "ledger" && t.key !== "transactions" && t.key !== "rails" && t.key !== "payouts"
+    );
+  }, [allTabs, financePosture]);
 
   if (isBasic) {
     return <LockedFeaturePanel title="Revenue" />;
@@ -108,14 +143,23 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-xs uppercase tracking-wide text-neutral-500">Money in</div>
-            <div className="text-sm text-neutral-200 mt-1">Sales · Invoices · Transactions</div>
+            <div className="text-sm text-neutral-200 mt-1">
+              {financePosture === "sovereign_node" || financePosture === "sovereign_creator_with_provider"
+                ? "Sales · Invoices · Transactions"
+                : "Creator earnings snapshot"}
+            </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-xs uppercase tracking-wide text-neutral-500">Money out</div>
-            <div className="text-sm text-neutral-200 mt-1">Royalties · Settlements · Payout Destinations</div>
+            <div className="text-sm text-neutral-200 mt-1">
+              {financePosture === "sovereign_node"
+                ? "Royalties · Settlements · Payout Destinations"
+                : "Royalties · Settlement posture"}
+            </div>
           </div>
         </div>
-        <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 space-y-2">
+        {financePosture === "sovereign_node" ? (
+          <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 space-y-2">
           <div className="flex items-center flex-wrap gap-2">
             {rails.map((r) => (
               <span key={r.id} className="text-xs rounded-full border border-neutral-800 px-2 py-1 text-neutral-200">
@@ -142,11 +186,12 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
               Configure payout destinations
             </button>
           ) : null}
-        </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {tabs.map((t) => {
+        {visibleTabs.map((t) => {
           const active = t.key === tab;
           return (
             <button
@@ -164,6 +209,11 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
           );
         })}
       </div>
+      <div className="text-xs text-neutral-500">
+        Primary surfaces: <span className="text-neutral-300">Earnings</span> (summary),{" "}
+        <span className="text-neutral-300">Royalties</span> (content/contributor earnings),{" "}
+        <span className="text-neutral-300">Revenue Ledger</span> (accounting detail).
+      </div>
 
       {tab === "overview" && (
         <FinanceOverviewPage
@@ -171,9 +221,9 @@ export default function FinancePage({ initialTab = "overview", nodeMode }: Finan
           onOpenRoyalties={() => setTab("royalties")}
         />
       )}
-      {tab === "ledger" && <SalesPage />}
+      {tab === "ledger" && <SalesPage hasInvoiceCommerce={hasInvoiceCommerce} />}
       {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} />}
-      {tab === "earnings-v2" && <EarningsV2Page refreshSignal={tabRefresh["earnings-v2"]} />}
+      {tab === "earnings-v2" && <EarningsV2Page refreshSignal={tabRefresh["earnings-v2"]} hasInvoiceCommerce={hasInvoiceCommerce} />}
       {tab === "payouts" && <PayoutRailsPage />}
       {tab === "rails" && <PaymentRailsPage refreshSignal={tabRefresh.rails} />}
       {tab === "transactions" && <FinanceTransactionsPage refreshSignal={tabRefresh.transactions} />}

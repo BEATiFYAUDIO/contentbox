@@ -73,6 +73,11 @@ type LightningAdminSnapshot = {
   };
 };
 
+type FinancePostureSnapshot = {
+  providerCommerceConnected?: boolean;
+  localSovereignReady?: boolean;
+};
+
 type PageKey =
   | "library"
   | "store"
@@ -1086,7 +1091,18 @@ export default function App() {
 
               {page === "finance" && !isCommerceLockedPage && (
                 <ErrorBoundary>
-                  <FinancePage initialTab={financeTab} nodeMode={nodeMode} />
+                  <FinancePage
+                    initialTab={financeTab}
+                    nodeMode={nodeMode}
+                    postureSnapshot={
+                      nodeModeSnapshot
+                        ? ({
+                            providerCommerceConnected: nodeModeSnapshot.providerCommerceConnected,
+                            localSovereignReady: nodeModeSnapshot.localSovereignReady
+                          } satisfies FinancePostureSnapshot)
+                        : null
+                    }
+                  />
                 </ErrorBoundary>
               )}
 

@@ -39,6 +39,7 @@ type TransactionRow = {
 
 type EarningsV2PageProps = {
   refreshSignal?: number;
+  hasInvoiceCommerce?: boolean;
 };
 
 type PayoutState = "paid" | "forwarding" | "pending" | "failed" | "unknown";
@@ -147,7 +148,7 @@ type ByContentRow = {
   feeSource: "provider_fee_total" | "provider_fee_components" | "gross_minus_earnings";
 };
 
-export default function EarningsV2Page({ refreshSignal }: EarningsV2PageProps) {
+export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = false }: EarningsV2PageProps) {
   const [sales, setSales] = useState<SaleRow[]>([]);
   const [transactions, setTransactions] = useState<TransactionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -169,7 +170,7 @@ export default function EarningsV2Page({ refreshSignal }: EarningsV2PageProps) {
         setTransactions(Array.isArray(txRes?.items) ? txRes.items : []);
       } catch (e: any) {
         if (!active) return;
-        setError(e?.message || "Failed to load earnings v2.");
+        setError(e?.message || "Failed to load earnings.");
       } finally {
         if (active) setLoading(false);
       }
@@ -233,6 +234,12 @@ export default function EarningsV2Page({ refreshSignal }: EarningsV2PageProps) {
     return rows.sort((a, b) => b.gross - a.gross);
   }, [sales]);
 
+  const byContentMap = useMemo(() => {
+    const map = new Map<string, ByContentRow>();
+    for (const row of byContent) map.set(row.contentId, row);
+    return map;
+  }, [byContent]);
+
   const recentTransactions = useMemo(() => {
     return [...transactions]
       .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
@@ -244,7 +251,7 @@ export default function EarningsV2Page({ refreshSignal }: EarningsV2PageProps) {
   if (error) {
     return (
       <div className="rounded-lg border border-amber-900 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">
-        Earnings v2 failed to load. {error}
+        Earnings failed to load. {error}
       </div>
     );
   }
@@ -267,7 +274,9 @@ export default function EarningsV2Page({ refreshSignal }: EarningsV2PageProps) {
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Your Earnings</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.earnings)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Net after active provider fees</div>
+          <div className="text-xs text-neutral-500 mt-1">
+            {hasInvoiceCommerce ? "Net after active provider fees" : "Net creator earnings in current posture"}
+          </div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Paid Out</div>
@@ -353,7 +362,21 @@ export default function EarningsV2Page({ refreshSignal }: EarningsV2PageProps) {
                     <td className="py-2 text-neutral-200">{tx.contentTitle || "—"}</td>
                     <td className="py-2">{formatSats(tx.amountSats || 0)}</td>
                     <td className="py-2">{tx.metadata?.status || tx.metadata?.rail || tx.kind || "—"}</td>
-                    <td className="py-2 text-xs text-neutral-400 font-mono">{tx.refId}</td>
+                    <td className="py-2 text-xs">
+                      {tx.contentId && byContentMap.get(tx.contentId) ? (
+                        <button
+                          onClick={() => {
+                            if (!tx.contentId) return;
+                            setDetailRow(byContentMap.get(tx.contentId) || null);
+                          }}
+                          className="rounded-lg border border-neutral-800 px-2 py-1 text-neutral-200 hover:bg-neutral-900"
+                        >
+                          Open content proof
+                        </button>
+                      ) : (
+                        <span className="text-neutral-400 font-mono">{tx.refId}</span>
+                      )}
+                    </td>
                   </tr>
                 ))
               )}
@@ -375,37 +398,82 @@ export default function EarningsV2Page({ refreshSignal }: EarningsV2PageProps) {
           </div>
 
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/20 p-3">
-            <div className="text-sm font-medium">Human summary</div>
+            <div className="text-sm font-medium">Content summary</div>
             <div className="text-sm text-neutral-300 mt-2">{detailRow.contentTitle}</div>
             <div className="text-xs text-neutral-400 mt-1">Buyer paid: {formatSats(detailRow.gross)}</div>
             <div className="text-xs text-neutral-400">Your earnings: {formatSats(detailRow.earnings)}</div>
+            <div className="text-xs text-neutral-400">Paid: {formatSats(detailRow.paid)} · Pending: {formatSats(detailRow.pending)}</div>
             <div className="text-xs text-neutral-400">Payout state: {detailRow.latestStatus}</div>
             <div className="text-xs text-neutral-500 mt-2">
-              Content-level earnings summary. Exact payment-intent and settlement execution records remain in existing ledger/provider views.
+              Transactions contributing to this content’s earnings are shown below.
             </div>
           </div>
 
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/20 p-3">
-            <div className="text-sm font-medium">Financial flow</div>
-            <div className="mt-2 text-xs text-neutral-300 space-y-1">
-              <div>Buyer Paid: {formatSats(detailRow.gross)}</div>
-              <div className="text-neutral-400 mt-1">Fees</div>
-              <div>Invoicing Fee: {formatSats(detailRow.invoicingFee)}</div>
-              <div>
-                Durable Hosting Fee: {detailRow.durableHostingFee > 0 ? formatSats(detailRow.durableHostingFee) : "inactive"}
-              </div>
-              <div>Total Fees: {formatSats(detailRow.totalProviderFees)}</div>
-              <div>Net to creators: {formatSats(detailRow.earnings)}</div>
-              <div>Payouts completed: {formatSats(detailRow.paid)}</div>
-              <div>Residual unpaid: {formatSats(Math.max(0, detailRow.earnings - detailRow.paid))}</div>
-              {detailRow.feeSource === "gross_minus_earnings" ? (
-                <div className="text-neutral-500">Provider fees inferred from gross minus net (explicit fee fields not present).</div>
-              ) : null}
+            <div className="text-sm font-medium">Transaction proof rows</div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Content-level proof view. Exact payment-intent/settlement internals remain in ledger/provider execution views.
+            </div>
+            <div className="mt-3 overflow-x-auto">
+              <table className="min-w-full text-xs">
+                <thead className="text-neutral-400">
+                  <tr>
+                    <th className="text-left font-medium py-2">Time</th>
+                    <th className="text-left font-medium py-2">Buyer paid</th>
+                    {hasInvoiceCommerce ? <th className="text-left font-medium py-2">Invoicing Fee</th> : null}
+                    {hasInvoiceCommerce ? <th className="text-left font-medium py-2">Durable Hosting Fee</th> : null}
+                    {hasInvoiceCommerce ? <th className="text-left font-medium py-2">Total Fees</th> : null}
+                    <th className="text-left font-medium py-2">Your share</th>
+                    <th className="text-left font-medium py-2">Payout state</th>
+                    <th className="text-left font-medium py-2">Destination</th>
+                    <th className="text-left font-medium py-2">Details</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sales.filter((row) => row.contentId === detailRow.contentId).length === 0 ? (
+                    <tr>
+                      <td colSpan={hasInvoiceCommerce ? 9 : 6} className="py-3 text-neutral-500">
+                        No contributing sales rows found for this content.
+                      </td>
+                    </tr>
+                  ) : (
+                    sales
+                      .filter((row) => row.contentId === detailRow.contentId)
+                      .sort((a, b) => String(b.recognizedAt).localeCompare(String(a.recognizedAt)))
+                      .map((row) => {
+                        const fees = feeBreakdownForRow(row);
+                        const payoutState = normalizePayoutState(row.payoutStatus);
+                        return (
+                          <tr key={row.id} className="border-t border-neutral-900">
+                            <td className="py-2 text-neutral-400">{new Date(row.recognizedAt).toLocaleString()}</td>
+                            <td className="py-2">{formatSats(fees.gross)}</td>
+                            {hasInvoiceCommerce ? <td className="py-2">{formatSats(fees.invoicingFee)}</td> : null}
+                            {hasInvoiceCommerce ? <td className="py-2">{formatSats(fees.durableHostingFee)}</td> : null}
+                            {hasInvoiceCommerce ? <td className="py-2">{formatSats(fees.totalProviderFees)}</td> : null}
+                            <td className="py-2">{formatSats(fees.earnings)}</td>
+                            <td className="py-2 capitalize">{payoutState}</td>
+                            <td className="py-2 text-neutral-300">{row.payoutDestinationSummary || row.payoutDestinationType || "—"}</td>
+                            <td className="py-2">
+                              <div className="font-mono text-[11px] text-neutral-400">{row.intentId || row.id}</div>
+                              {row.payoutReference ? (
+                                <div className="font-mono text-[11px] text-neutral-500">{row.payoutReference}</div>
+                              ) : null}
+                              {row.payoutLastError ? <div className="text-[11px] text-rose-300">{row.payoutLastError}</div> : null}
+                              {hasInvoiceCommerce && fees.feeSource === "gross_minus_earnings" ? (
+                                <div className="text-[11px] text-neutral-500">Fee total inferred (gross - net)</div>
+                              ) : null}
+                            </td>
+                          </tr>
+                        );
+                      })
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
 
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/20 p-3">
-            <div className="text-sm font-medium">Participants</div>
+            <div className="text-sm font-medium">Split context</div>
             <div className="text-xs text-neutral-400 mt-2">
               Participant-level identities/shares remain available in split terms and provider settlement detail views.
             </div>

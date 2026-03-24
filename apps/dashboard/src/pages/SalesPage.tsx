@@ -63,9 +63,10 @@ type ProviderRevenueSnapshotResponse = {
 type SalesPageProps = {
   productTier?: string;
   disabled?: boolean;
+  hasInvoiceCommerce?: boolean;
 };
 
-export default function SalesPage({ productTier = "basic", disabled = false }: SalesPageProps) {
+export default function SalesPage({ productTier = "basic", disabled = false, hasInvoiceCommerce = false }: SalesPageProps) {
   const [pending, setPending] = React.useState<PendingRow[]>([]);
   const [sales, setSales] = React.useState<SaleRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -326,20 +327,24 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
           <div className="text-xs uppercase tracking-wide text-neutral-500">Gross Sales</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.gross)} sats</div>
         </div>
+        {hasInvoiceCommerce ? (
+          <>
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Invoicing Fee</div>
+              <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerInvoicingFee)} sats</div>
+            </div>
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Durable Hosting Fee</div>
+              <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerDurableHostingFee)} sats</div>
+            </div>
+            <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Total Fees</div>
+              <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerFee)} sats</div>
+            </div>
+          </>
+        ) : null}
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Provider Fee</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerFee)} sats</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Provider Invoicing Fee</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerInvoicingFee)} sats</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Provider Durable Hosting Fee</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerDurableHostingFee)} sats</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Net Creator Earnings</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net to Creators</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.creatorNet)} sats</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
@@ -417,9 +422,11 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
         <div className="text-base font-semibold">Sales ledger</div>
         <div className="text-sm text-neutral-400 mt-1">Recognized revenue events.</div>
-        <div className="mt-2 text-xs text-neutral-500">
-          Fee truth: provider invoicing fee is active only when provider invoicing is used. Durable hosting fee remains inactive unless a non-zero hosting fee is present on a row.
-        </div>
+        {hasInvoiceCommerce ? (
+          <div className="mt-2 text-xs text-neutral-500">
+            Fee truth: invoicing and durable-hosting fees are shown only for invoice-based commerce rows.
+          </div>
+        ) : null}
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -427,10 +434,10 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                 <th className="py-2 px-3">Recognized</th>
                 <th className="py-2 px-3">Item</th>
                 <th className="py-2 px-3">Amount</th>
-                <th className="py-2 px-3">Invoicing Fee</th>
-                <th className="py-2 px-3">Hosting Fee</th>
-                <th className="py-2 px-3">Provider Fee</th>
-                <th className="py-2 px-3">Creator Net</th>
+                {hasInvoiceCommerce ? <th className="py-2 px-3">Invoicing Fee</th> : null}
+                {hasInvoiceCommerce ? <th className="py-2 px-3">Durable Hosting Fee</th> : null}
+                {hasInvoiceCommerce ? <th className="py-2 px-3">Total Fees</th> : null}
+                <th className="py-2 px-3">Net to Creators</th>
                 <th className="py-2 px-3">Rail</th>
                 <th className="py-2 px-3">Payout</th>
                 <th className="py-2 px-3">Destination</th>
@@ -440,14 +447,14 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={11} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={hasInvoiceCommerce ? 11 : 8} className="py-4 px-3 text-sm text-neutral-400">
                     Loading sales ledger…
                   </td>
                 </tr>
               ) : null}
               {!loading && sales.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={hasInvoiceCommerce ? 11 : 8} className="py-4 px-3 text-sm text-neutral-400">
                     No sales recorded yet.
                   </td>
                 </tr>
@@ -458,9 +465,9 @@ export default function SalesPage({ productTier = "basic", disabled = false }: S
                     <td className="py-2 px-3 text-xs text-neutral-400">{new Date(s.recognizedAt).toLocaleString()}</td>
                     <td className="py-2 px-3">{s.content?.title || "Content"}</td>
                     <td className="py-2 px-3">{formatSats(s.grossAmountSats ?? s.amountSats)} {s.currency || "SAT"}</td>
-                    <td className="py-2 px-3">{formatSats(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0)} SAT</td>
-                    <td className="py-2 px-3">{formatSats(s.providerDurableHostingFeeSats ?? 0)} SAT</td>
-                    <td className="py-2 px-3">{formatSats(s.providerFeeSats ?? 0)} SAT</td>
+                    {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0)} SAT</td> : null}
+                    {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerDurableHostingFeeSats ?? 0)} SAT</td> : null}
+                    {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerFeeSats ?? 0)} SAT</td> : null}
                     <td className="py-2 px-3">{formatSats(s.creatorNetSats ?? s.amountSats)} SAT</td>
                     <td className="py-2 px-3">{s.rail}</td>
                     <td className="py-2 px-3">

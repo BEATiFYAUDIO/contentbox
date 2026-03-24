@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 type Overview = {
   totals: {
     salesSats: string;
-    salesSatsLast30d: string;
+    salesSatsLast30d?: string;
     invoicesTotal: number;
     invoicesPaid: number;
     invoicesPending: number;
@@ -21,7 +21,7 @@ type Overview = {
     participantRoyaltyPayableSats?: string;
     participantRoyaltyPaidSats?: string;
   };
-  revenueSeries: Array<{ date: string; amountSats: string }>;
+  revenueSeries: Array<{ date: string; amountSats?: string; sats?: string }>;
   lastUpdatedAt: string;
   health: {
     lightning?: { status: string; message?: string; endpoint?: string | null; hint?: string | null };
@@ -368,13 +368,14 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
   };
 
   const series = data?.revenueSeries || [];
+  const getSeriesAmountSats = (d: { amountSats?: string; sats?: string }) => String(d.amountSats ?? d.sats ?? "0");
   const chart = useMemo(() => {
     if (!series.length) return [] as Array<{ height: number; label: string; amountSats: string }>;
-    const max = series.reduce((m, d) => Math.max(m, Number(d.amountSats || 0)), 0);
+    const max = series.reduce((m, d) => Math.max(m, Number(getSeriesAmountSats(d) || 0)), 0);
     return series.map((d) => ({
-      height: max > 0 ? Math.round((Number(d.amountSats || 0) / max) * 100) : 0,
+      height: max > 0 ? Math.round((Number(getSeriesAmountSats(d) || 0) / max) * 100) : 0,
       label: d.date.slice(5),
-      amountSats: d.amountSats
+      amountSats: getSeriesAmountSats(d)
     }));
   }, [series]);
 
@@ -725,7 +726,12 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
   const participantAccrued = Number(data?.totals?.participantRoyaltyAccruedSats || 0);
   const participantPayable = Number(data?.totals?.participantRoyaltyPayableSats || 0);
   const participantPaid = Number(data?.totals?.participantRoyaltyPaidSats || 0);
+  const salesLast30d = Number(
+    data?.totals?.salesSatsLast30d ??
+      series.reduce((sum, point) => sum + Number(getSeriesAmountSats(point) || 0), 0)
+  );
   const totalRoyaltyAccrued = Math.max(0, localRoyaltyEarned + remoteRoyaltyAccrued);
+  const hasRoyaltyEconomics = totalRoyaltyAccrued > 0 || participantAccrued > 0 || participantPayable > 0 || participantPaid > 0;
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -807,11 +813,11 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         {lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
       </section>
 
+      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Summary</div>
+
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm font-semibold">Sales</div>
-        <div className="mt-1 text-xs text-neutral-400">
-          Seller-of-record activity. These are sales where this node acted as seller of record.
-        </div>
+        <div className="text-sm font-semibold">Sales (Seller of Record)</div>
+        <div className="mt-1 text-xs text-neutral-400">Revenue where this node acted as seller of record.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
@@ -820,7 +826,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days sales</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSatsLast30d || "0")}</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(salesLast30d))}</div>
           <div className="mt-1 text-xs text-neutral-500">
             Seller invoices: {data?.totals?.invoicesTotal ?? 0} · Settled purchases: {data?.totals?.paymentsLast30d ?? 0}
           </div>
@@ -830,7 +836,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-sm font-semibold">Participation</div>
+          <div className="text-sm font-semibold">Royalties (Your Share)</div>
           {onOpenRoyalties ? (
             <button
               type="button"
@@ -841,14 +847,15 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
             </button>
           ) : null}
         </div>
-        <div className="mt-1 text-xs text-neutral-400">Earnings from shared participation and royalty splits.</div>
+        <div className="mt-1 text-xs text-neutral-400">Earnings from content participation and split allocations.</div>
+        <div className="mt-1 text-xs text-neutral-500">Earnings from your own content vs content created by others.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-3">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Royalty accrued</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
           <div className="mt-1 text-xs text-neutral-500">
-            Local: {formatSats(royaltyTotals.earnedSats || "0")} · Remote: {formatSats(data?.totals?.remoteRoyaltyAccruedSats || "0")}
-            {Number(data?.totals?.remoteRoyaltyItems || 0) > 0 ? ` · Remote works: ${Number(data?.totals?.remoteRoyaltyItems || 0)}` : ""}
+            Your Content: {formatSats(royaltyTotals.earnedSats || "0")} · From Other Creators: {formatSats(data?.totals?.remoteRoyaltyAccruedSats || "0")}
+            {Number(data?.totals?.remoteRoyaltyItems || 0) > 0 ? ` · External Works: ${Number(data?.totals?.remoteRoyaltyItems || 0)}` : ""}
           </div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
@@ -871,34 +878,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         </div>
       </section>
 
-      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm font-semibold">Treasury — Local LND Wallet</div>
-        <div className="mt-1 text-xs text-neutral-400">
-          This reflects the actual wallet running on this machine. Commerce flows through this wallet. This is real funds, not accounting values.
-        </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-400">Wallet total</div>
-            <div className="mt-2 text-2xl font-semibold">{formatSats(String(lightningBalances?.wallet?.totalSats || 0))}</div>
-            <div className="mt-1 text-xs text-neutral-500">
-              Confirmed: {formatSats(String(lightningBalances?.wallet?.confirmedSats || 0))}
-            </div>
-            <div className="mt-1 text-xs text-neutral-500">
-              Unconfirmed: {formatSats(String(lightningBalances?.wallet?.unconfirmedSats || 0))}
-            </div>
-          </div>
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-400">Inbound liquidity</div>
-            <div className="mt-2 text-2xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.inboundSats || 0))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Receive-side channel liquidity.</div>
-          </div>
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-400">Outbound liquidity</div>
-            <div className="mt-2 text-2xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.outboundSats || 0))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Send-side channel liquidity.</div>
-          </div>
-        </div>
-      </section>
+      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Details</div>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Revenue terms</div>
@@ -916,17 +896,26 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-base font-semibold">Revenue over time (last 30 days)</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Seller-of-record sales only. Royalties and participation earnings are tracked in the Royalties section above.
+        </div>
         <div className="mt-3 flex items-end gap-1 h-32">
           {chart.length === 0 ? (
-            <div className="text-sm text-neutral-500">No revenue yet.</div>
+            <div className="text-sm text-neutral-500">
+              {hasRoyaltyEconomics && salesLast30d <= 0
+                ? "No seller-of-record sales in the last 30 days on this node."
+                : "No revenue yet."}
+            </div>
           ) : (
             chart.map((d, idx) => (
               <div key={`${d.label}-${idx}`} className="flex-1 flex flex-col items-center gap-1">
-                <div
-                  className="w-full rounded-sm bg-orange-400/70"
-                  style={{ height: `${Math.max(2, d.height)}%` }}
-                  title={`${formatSats(d.amountSats)} on ${d.label}`}
-                />
+                <div className="h-24 w-full flex items-end">
+                  <div
+                    className="w-full rounded-sm bg-orange-400/70"
+                    style={{ height: `${Math.max(2, d.height)}%` }}
+                    title={`${formatSats(d.amountSats)} on ${d.label}`}
+                  />
+                </div>
                 {idx % 5 === 0 ? (
                   <div className="text-[10px] text-neutral-500">{d.label}</div>
                 ) : (
@@ -938,8 +927,10 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         </div>
       </section>
 
+      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Advanced</div>
+
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Seller invoice lifecycle</div>
+        <div className="text-sm font-semibold text-neutral-300">Seller invoice lifecycle</div>
         <div className="mt-1 text-xs text-neutral-500">Seller-of-record invoice states. This is accounting flow, not participant remittance.</div>
         <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
           <div>Settled: <span className="text-neutral-200">{data?.totals?.invoicesPaid ?? 0}</span></div>
@@ -950,13 +941,42 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
       </section>
 
       <section className="grid gap-4 md:grid-cols-1">
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-base font-semibold">Seller cash collections</div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+          <div className="text-sm font-semibold text-neutral-300">Seller cash collections</div>
           <div className="mt-2 text-sm text-neutral-200">
             Received: {formatSats(data?.totals?.paymentsReceivedSats || "0")} ({data?.totals?.paymentsReceivedCount ?? 0})
           </div>
           <div className="text-sm text-neutral-400">
             Pending: {formatSats(data?.totals?.paymentsPendingSats || "0")} ({data?.totals?.paymentsPendingCount ?? 0})
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/20 p-4">
+        <div className="text-sm font-semibold text-neutral-300">Treasury — Local LND Wallet</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          This reflects the actual wallet running on this machine. Commerce flows through this wallet. This is real funds, not accounting values.
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Wallet total</div>
+            <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.wallet?.totalSats || 0))}</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Confirmed: {formatSats(String(lightningBalances?.wallet?.confirmedSats || 0))}
+            </div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Unconfirmed: {formatSats(String(lightningBalances?.wallet?.unconfirmedSats || 0))}
+            </div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Inbound liquidity</div>
+            <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.inboundSats || 0))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Receive-side channel liquidity.</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Outbound liquidity</div>
+            <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.outboundSats || 0))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Send-side channel liquidity.</div>
           </div>
         </div>
       </section>
