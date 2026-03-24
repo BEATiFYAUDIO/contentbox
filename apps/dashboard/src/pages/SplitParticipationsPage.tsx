@@ -212,6 +212,44 @@ export default function SplitParticipationsPage(props: {
   const localRoyaltyPayable = works.reduce((sum, row) => sum + toBigInt(row.pendingSats), 0n);
   const localRoyaltyPaid = works.reduce((sum, row) => sum + toBigInt(row.withdrawnSats), 0n);
   const remoteRoyaltyAccrued = remoteRoyalties.reduce((sum, row) => sum + toBigInt(row.earnedSatsToDate), 0n);
+  const visibleLocalWorks = showInactiveWorks ? [...activeWorks, ...inactiveWorks] : activeWorks;
+  const visibleOwnedSharedWorks = visibleLocalWorks.filter((row) => row.myRole === "owner");
+  const toSharePercent = (row: WorkRoyaltyRow): number | null => {
+    if (typeof row.myBps === "number" && Number.isFinite(row.myBps)) return row.myBps / 100;
+    const parsed = Number(String(row.myPercent ?? "").replace("%", "").trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const ownedLocalWorks = visibleOwnedSharedWorks.filter((row) => {
+    const pct = toSharePercent(row);
+    return pct != null && Math.abs(pct - 100) < 0.0001;
+  });
+  const collaborativeLocalWorks = visibleOwnedSharedWorks.filter((row) => {
+    const pct = toSharePercent(row);
+    return pct == null || pct < 100;
+  });
+  const ownedContentIds = new Set(visibleOwnedSharedWorks.map((row) => row.contentId));
+  const visibleActiveCollaborations = participations.filter((row) => !ownedContentIds.has(row.contentId));
+  const visibleUpstream = upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt));
+  const collaborationCount = participations.length + remoteRoyalties.length;
+  const Badge = ({
+    label,
+    tone = "neutral"
+  }: {
+    label: string;
+    tone?: "neutral" | "success" | "warning" | "cyan" | "amber";
+  }) => {
+    const cls =
+      tone === "success"
+        ? "border-emerald-700/60 bg-emerald-900/20 text-emerald-300"
+        : tone === "warning"
+          ? "border-rose-700/60 bg-rose-900/20 text-rose-300"
+          : tone === "cyan"
+            ? "border-cyan-700/60 bg-cyan-900/20 text-cyan-300"
+            : tone === "amber"
+              ? "border-amber-700/60 bg-amber-900/20 text-amber-300"
+              : "border-neutral-800 text-neutral-300";
+    return <span className={`text-[11px] rounded-full border px-2 py-0.5 ${cls}`}>{label}</span>;
+  };
 
   useEffect(() => {
     if (isBasic) return;
@@ -243,20 +281,25 @@ export default function SplitParticipationsPage(props: {
   }, [isBasic]);
 
   if (isBasic) {
-    return <LockedFeaturePanel title="My Royalties" />;
+    return <LockedFeaturePanel title="Collaborations" />;
   }
 
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-lg font-semibold">My Royalties</div>
-        <div className="text-sm text-neutral-400 mt-1">Participation economics from locked split rights.</div>
+        <div className="text-lg font-semibold">Collaborations</div>
+        <div className="text-sm text-neutral-400 mt-1">Songs and works you share with others, including split roles and accepted collaborations.</div>
         <div className="text-xs text-neutral-500 mt-1">
           Royalties track accrued share, payable balance, and paid remittance. They do not represent seller-of-record sales totals.
         </div>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-5">
+        <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Collaborations</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{collaborationCount.toLocaleString()}</div>
+          <div className="text-xs text-neutral-500 mt-1">Active + remote collaboration records</div>
+        </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalty accrued</div>
           <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(localRoyaltyAccrued + remoteRoyaltyAccrued)}</div>
@@ -279,6 +322,19 @@ export default function SplitParticipationsPage(props: {
         </div>
       </div>
 
+      <div className="rounded-lg border border-neutral-800 bg-neutral-950/30 p-3">
+        <div className="text-[11px] uppercase tracking-wide text-neutral-500">Sections</div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <a href="#collab-active" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Active collaborations ({visibleActiveCollaborations.length})</a>
+          <a href="#collab-local" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Your content ({ownedLocalWorks.length}) • Collaborations ({collaborativeLocalWorks.length})</a>
+          {derivativesAllowed ? (
+            <a href="#collab-derivatives" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Upstream derivatives ({visibleUpstream.length})</a>
+          ) : null}
+          <a href="#collab-remote" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Remote collaborations ({remoteRoyalties.length})</a>
+          <a href="#collab-audit" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">History & audit</a>
+        </div>
+      </div>
+
       {loading ? <div className="text-sm text-neutral-400">Loading…</div> : null}
       {error ? <div className="text-sm text-amber-300">{error}</div> : null}
 
@@ -286,72 +342,70 @@ export default function SplitParticipationsPage(props: {
         <div className="text-sm text-neutral-500">No works yet.</div>
       ) : null}
 
-      <div className="text-sm text-neutral-300">Participation rights (locked splits)</div>
-      <div className="text-xs text-neutral-500">Authoritative rights records from locked split snapshots.</div>
-      {participations.length === 0 ? (
-        <div className="text-sm text-neutral-500 mt-2">No locked participations yet.</div>
-      ) : (
-        <div className="space-y-3 mt-2">
-          {participations.map((p) => (
-            <div key={p.splitParticipantId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="text-sm font-medium text-neutral-100">{p.contentTitle || "Untitled"}</div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    {(p.contentType || "content").toUpperCase()} • {p.contentStatus || "unknown"}
+      <section id="collab-active" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm text-neutral-300 font-medium">Active Collaborations</div>
+        <div className="text-xs text-neutral-500 mt-1">Content you are part of with defined splits.</div>
+        {visibleActiveCollaborations.length === 0 ? (
+          <div className="text-sm text-neutral-500 mt-3">No locked participations yet.</div>
+        ) : (
+          <div className="space-y-3 mt-3">
+            {visibleActiveCollaborations.map((p) => (
+              <div key={p.splitParticipantId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-medium text-neutral-100">{p.contentTitle || "Untitled"}</div>
+                    <div className="text-xs text-neutral-400 mt-1">
+                      {(p.contentType || "content").toUpperCase()} • Role: {p.participantRole || "participant"} • Share: {p.participantBps != null ? `${(p.participantBps / 100).toFixed(2)}%` : (p.participantPercent != null ? `${Number(p.participantPercent).toFixed(2)}%` : "—")}
+                    </div>
+                    <div className="text-xs text-neutral-500 mt-1">
+                      Split v{p.splitVersionNumber ?? "?"} • Rights status: accepted
+                    </div>
                   </div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    Role: <span className="text-neutral-200">{p.participantRole || "participant"}</span>
-                    {" "}• Share: <span className="text-neutral-200">{p.participantBps != null ? `${(p.participantBps / 100).toFixed(2)}%` : (p.participantPercent != null ? `${Number(p.participantPercent).toFixed(2)}%` : "—")}</span>
-                    {" "}• Split v{p.splitVersionNumber ?? "?"}
+                  <div className="flex items-center gap-2">
+                    <Badge label="Active" tone="success" />
+                    <Badge label={p.contentStatus || "unknown"} />
+                    {p.highlightedOnProfile ? <Badge label="Featured" tone="cyan" /> : null}
+                    {p.buyUrl ? (
+                      <button
+                        onClick={() => window.open(p.buyUrl as string, "_blank", "noopener,noreferrer")}
+                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                      >
+                        Open
+                      </button>
+                    ) : null}
                   </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {p.highlightedOnProfile ? (
-                    <span className="text-[11px] rounded-full border border-cyan-700/60 bg-cyan-900/20 px-2 py-0.5 text-cyan-300">
-                      Featured on profile
-                    </span>
-                  ) : null}
-                  {p.buyUrl ? (
-                    <button
-                      onClick={() => window.open(p.buyUrl as string, "_blank", "noopener,noreferrer")}
-                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                    >
-                      Open
-                    </button>
-                  ) : null}
                 </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </section>
 
-      <div className="text-sm text-neutral-300">Local royalty accrual by work</div>
-      <div className="mt-2 flex items-center justify-between">
-        <div className="text-xs text-neutral-500">Accrual/payable/paid shown per work. Inactive works are tombstoned or trashed items.</div>
-        <button
-          onClick={() => setShowInactiveWorks((v) => !v)}
-          className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-        >
-          {showInactiveWorks ? "Hide inactive" : "Show inactive"}
-        </button>
-      </div>
-      <div className="space-y-3">
-        {(showInactiveWorks ? [...activeWorks, ...inactiveWorks] : activeWorks)
-          .map((p) => (
+      <section id="collab-local" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm text-neutral-300 font-medium">Your Content</div>
+        <div className="mt-2 flex items-center justify-between">
+          <div className="text-xs text-neutral-500">Your owned catalog, separated from true collaborations.</div>
+          <button
+            onClick={() => setShowInactiveWorks((v) => !v)}
+            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+          >
+            {showInactiveWorks ? "Hide inactive" : "Show inactive"}
+          </button>
+        </div>
+        <div className="mt-3 space-y-4">
+          <div>
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Your Content</div>
+            <div className="space-y-3 mt-2">
+          {ownedLocalWorks.map((p) => (
           <div key={p.contentId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-medium text-neutral-100">{p.title || "Untitled"}</div>
                 <div className="text-xs text-neutral-400 mt-1">
-                  {p.type ? p.type.toUpperCase() : "CONTENT"} • {p.contentStatus || "unknown"}
-                  {p.contentDeletedAt ? <span className="ml-2 text-[10px] text-amber-300">inactive</span> : null}
+                  {p.type ? p.type.toUpperCase() : "CONTENT"} • Role: {p.myRole === "owner" ? "owner" : "participant"} • Share: {p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"}
                 </div>
                 <div className="text-xs text-neutral-400 mt-1">
-                  Role: <span className="text-neutral-200">{p.myRole === "owner" ? "owner" : "participant"}</span>
-                  {" "}• Share: <span className="text-neutral-200">{p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"}</span>
-                  {" "}• Accrued: <span className="text-neutral-200">{p.earnedSatsToDate} sats</span>
+                  Accrued: <span className="text-neutral-200">{p.earnedSatsToDate} sats</span>
                   {" "}• Payable: <span className="text-neutral-200">{p.pendingSats || "0"} sats</span>
                   {" "}• Paid: <span className="text-neutral-200">{p.withdrawnSats || "0"} sats</span>
                 </div>
@@ -383,9 +437,10 @@ export default function SplitParticipationsPage(props: {
                 ) : null}
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-[11px] rounded-full border border-neutral-800 px-2 py-0.5 text-neutral-300">
-                  {p.myRole === "owner" ? "Owned" : "Participant"}
-                </span>
+                <Badge label="Owned • 100%" tone="neutral" />
+                {p.contentDeletedAt ? <Badge label="Inactive" tone="amber" /> : <Badge label="Active" tone="success" />}
+                {toBigInt(p.pendingSats) > 0n ? <Badge label="Pending payout" tone="amber" /> : null}
+                {toBigInt(p.withdrawnSats) > 0n ? <Badge label="Paid" tone="success" /> : null}
                 {p.contentId ? (
                   <button
                     onClick={() => {
@@ -400,12 +455,85 @@ export default function SplitParticipationsPage(props: {
             </div>
           </div>
         ))}
-      </div>
+          {ownedLocalWorks.length === 0 ? (
+            <div className="text-sm text-neutral-500">No fully owned content in this view.</div>
+          ) : null}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Collaborations</div>
+            <div className="space-y-3 mt-2">
+          {collaborativeLocalWorks.map((p) => (
+          <div key={p.contentId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-neutral-100">{p.title || "Untitled"}</div>
+                <div className="text-xs text-neutral-400 mt-1">
+                  {p.type ? p.type.toUpperCase() : "CONTENT"} • Role: owner • Share: {p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"}
+                </div>
+                <div className="text-xs text-neutral-400 mt-1">
+                  Accrued: <span className="text-neutral-200">{p.earnedSatsToDate} sats</span>
+                  {" "}• Payable: <span className="text-neutral-200">{p.pendingSats || "0"} sats</span>
+                  {" "}• Paid: <span className="text-neutral-200">{p.withdrawnSats || "0"} sats</span>
+                </div>
+                {p.ownerDisplayName || p.ownerEmail ? (
+                  <div className="text-xs text-neutral-500 mt-1">
+                    Original creator: {p.ownerDisplayName || p.ownerEmail}
+                  </div>
+                ) : null}
+                {splitsAllowed && p.splitSummary?.length ? (
+                  <details className="mt-2 text-xs text-neutral-400">
+                    <summary className="cursor-pointer select-none">Split terms</summary>
+                    <div className="mt-2 space-y-1">
+                      {p.splitSummary.map((s, idx) => (
+                        <div key={`${p.contentId}-${idx}`} className="flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            {resolveParticipantDisplayLabel({
+                              displayName: s.displayName || null,
+                              participantUserId: s.participantUserId || null,
+                              participantEmail: s.participantEmail || null,
+                              allowEmail: true,
+                              fallbackLabel: "Participant"
+                            })} — {s.role || "role"}
+                          </div>
+                          <div>{typeof s.bps === "number" ? `${(s.bps / 100).toFixed(2)}%` : s.percent || "—"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge label={`Collaboration • ${p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"} share`} tone="cyan" />
+                {p.contentDeletedAt ? <Badge label="Inactive" tone="amber" /> : <Badge label="Active" tone="success" />}
+                {toBigInt(p.pendingSats) > 0n ? <Badge label="Pending payout" tone="amber" /> : null}
+                {toBigInt(p.withdrawnSats) > 0n ? <Badge label="Paid" tone="success" /> : null}
+                {p.contentId ? (
+                  <button
+                    onClick={() => {
+                      window.location.href = `/royalties/${p.contentId}`;
+                    }}
+                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  >
+                    Open
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ))}
+          {collaborativeLocalWorks.length === 0 ? (
+            <div className="text-sm text-neutral-500">No collaboration-owned content yet.</div>
+          ) : null}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {derivativesAllowed ? (
-        <>
-          <div className="text-sm text-neutral-300 mt-6">Upstream derivatives</div>
-          <div className="text-xs text-neutral-500 mt-1">Derivative royalties tied to your splits.</div>
+        <section id="collab-derivatives" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-sm text-neutral-300 font-medium">Upstream Derivatives</div>
+          <div className="text-xs text-neutral-500 mt-1">Derivative royalties tied to your collaboration splits.</div>
           <div className="mt-2 flex items-center justify-between">
             <div className="text-xs text-neutral-500">Inactive items are tombstoned or deleted works.</div>
             <div className="flex items-center gap-2">
@@ -423,12 +551,11 @@ export default function SplitParticipationsPage(props: {
               </button>
             </div>
           </div>
-          {upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt)).length === 0 ? (
+          {visibleUpstream.length === 0 ? (
             <div className="text-sm text-neutral-500 mt-3">No upstream derivatives yet.</div>
           ) : (
             <div className="mt-3 space-y-3">
-              {upstream
-                .filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt))
+              {visibleUpstream
                 .slice(0, showAllUpstream ? upstream.length : 3)
                 .map((u, idx) => (
                   <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
@@ -453,27 +580,23 @@ export default function SplitParticipationsPage(props: {
                 ))}
             </div>
           )}
-
-        </>
+        </section>
       ) : null}
 
-      <div className="text-sm text-neutral-300 mt-6">Remote royalty accrual</div>
-      <div className="text-xs text-neutral-500 mt-1">Mirrored remote participations: accrual is accounting value, payout state tracks remittance progress.</div>
-      {remoteRoyalties.length === 0 ? (
-        <div className="text-sm text-neutral-500">No remote invites yet.</div>
-      ) : (
-        <div className="space-y-3">
-          {remoteRoyalties.map((r) => (
+      <section id="collab-remote" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm text-neutral-300 font-medium">Collaborations from Others</div>
+        <div className="text-xs text-neutral-500 mt-1">Content from other creators where you participate.</div>
+        {remoteRoyalties.length === 0 ? (
+          <div className="text-sm text-neutral-500 mt-3">No remote collaborations yet.</div>
+        ) : (
+          <div className="space-y-3 mt-3">
+            {remoteRoyalties.map((r) => (
             <div key={r.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-sm font-medium text-neutral-100">{r.contentTitle || "Untitled"}</div>
                   <div className="text-xs text-neutral-400 mt-1">
-                    {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • remote
-                  </div>
-                  <div className="text-xs text-neutral-400 mt-1">
-                    Role: <span className="text-neutral-200">{r.role || "participant"}</span>
-                    {" "}• Share: <span className="text-neutral-200">{r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}</span>
+                    {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • Role: {r.role || "participant"} • Share: {r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}
                   </div>
                   <div className="text-xs text-neutral-400 mt-1">
                     Accrued: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
@@ -487,44 +610,55 @@ export default function SplitParticipationsPage(props: {
                     <div className="text-xs text-neutral-400 mt-1">Accepted: {new Date(r.acceptedAt).toLocaleString()}</div>
                   ) : null}
                 </div>
-                {r.inviteUrl ? (
-                  <button
-                    onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
-                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                  >
-                    Open
-                  </button>
-                ) : null}
+                <div className="flex items-center gap-2">
+                  <Badge label="Remote" tone="cyan" />
+                  {String(r.payoutState || "").toLowerCase() === "paid" ? <Badge label="Paid" tone="success" /> : null}
+                  {(String(r.payoutState || "").toLowerCase() === "pending" || String(r.payoutState || "").toLowerCase() === "ready" || String(r.payoutState || "").toLowerCase() === "forwarding") ? (
+                    <Badge label="Pending payout" tone="amber" />
+                  ) : null}
+                  {String(r.payoutState || "").toLowerCase() === "failed" ? <Badge label="Payout failed" tone="warning" /> : null}
+                  {r.inviteUrl ? (
+                    <button
+                      onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
+                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                    >
+                      Open
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
+        )}
+      </section>
 
-      <HistoryFeed
-        title="Royalties history"
-        items={historyItems}
-        loading={historyLoading}
-        emptyText="No royalty history yet."
-        exportName="royalty-history.json"
-        onRefresh={async () => {
-          setHistoryLoading(true);
-          try {
-            const hist = await api<HistoryEvent[]>("/me/royalty-history", "GET");
-            setHistoryItems(hist || []);
-          } catch {
-            setHistoryItems([]);
-          } finally {
-            setHistoryLoading(false);
-          }
-        }}
-      />
+      <section id="collab-audit" className="space-y-3">
+        <HistoryFeed
+          title="Collaboration history"
+          items={historyItems}
+          loading={historyLoading}
+          emptyText="No collaboration history yet."
+          exportName="royalty-history.json"
+          onRefresh={async () => {
+            setHistoryLoading(true);
+            try {
+              const hist = await api<HistoryEvent[]>("/me/royalty-history", "GET");
+              setHistoryItems(hist || []);
+            } catch {
+              setHistoryItems([]);
+            } finally {
+              setHistoryLoading(false);
+            }
+          }}
+        />
 
-      <AuditPanel
-        scopeType="royalty"
-        title="Audit"
-        exportName="royalty-audit.json"
-      />
+        <AuditPanel
+          scopeType="royalty"
+          title="Audit"
+          exportName="royalty-audit.json"
+        />
+      </section>
     </div>
   );
 }

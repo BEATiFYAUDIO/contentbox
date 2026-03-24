@@ -16608,7 +16608,7 @@ app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
     where: { buyerUserId: userId },
     include: {
       content: true,
-      paymentIntent: {
+      payment: {
         select: {
           id: true,
           status: true,
@@ -16638,10 +16638,10 @@ app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
     manifestSha256: e.manifestSha256,
     grantedAt: e.grantedAt.toISOString(),
     unlockedAt: e.grantedAt.toISOString(),
-    purchaseCreatedAt: e.paymentIntent?.createdAt?.toISOString?.() || null,
-    purchasePaidAt: e.paymentIntent?.paidAt?.toISOString?.() || null,
-    purchaseStatus: e.paymentIntent?.status || null,
-    purchaseAmountSats: e.paymentIntent?.amountSats != null ? String(e.paymentIntent.amountSats) : null,
+    purchaseCreatedAt: e.payment?.createdAt?.toISOString?.() || null,
+    purchasePaidAt: e.payment?.paidAt?.toISOString?.() || null,
+    purchaseStatus: e.payment?.status || null,
+    purchaseAmountSats: e.payment?.amountSats != null ? String(e.payment.amountSats) : null,
     accessMode:
       e.content?.deliveryMode === "stream_and_download"
         ? "stream_and_download"
@@ -16658,7 +16658,7 @@ app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
       ? { id: e.content.id, title: e.content.title, type: e.content.type, status: e.content.status }
       : null,
     receiptToken:
-      e.paymentIntent?.receiptToken ||
+      e.payment?.receiptToken ||
       tokenByKey.get(`${e.contentId}:${e.manifestSha256}`) ||
       null
   }));

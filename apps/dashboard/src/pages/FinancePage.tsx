@@ -93,7 +93,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
     () => [
       { key: "overview", label: "Revenue Overview" },
       { key: "earnings-v2", label: "Earnings" },
-      { key: "royalties", label: "Royalties" },
+      { key: "royalties", label: "Royalty Earnings" },
       { key: "ledger", label: "Revenue Ledger" },
       { key: "payouts", label: "Payout Destinations" },
       { key: "rails", label: "Payment Rails" },
@@ -211,7 +211,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
       </div>
       <div className="text-xs text-neutral-500">
         Primary surfaces: <span className="text-neutral-300">Earnings</span> (summary),{" "}
-        <span className="text-neutral-300">Royalties</span> (content/contributor earnings),{" "}
+        <span className="text-neutral-300">Royalty Earnings</span> (content/contributor earnings),{" "}
         <span className="text-neutral-300">Revenue Ledger</span> (accounting detail).
       </div>
 

@@ -54,11 +54,11 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
     return `${Math.round(n).toLocaleString()} sats`;
   };
 
-  if (loading) return <div className="text-sm text-neutral-400">Loading royalties…</div>;
+  if (loading) return <div className="text-sm text-neutral-400">Loading royalty earnings…</div>;
   if (error) {
     return (
       <div className="rounded-lg border border-amber-900 bg-amber-950/30 px-4 py-3 text-sm text-amber-200 flex items-center justify-between">
-        <span>Couldn’t load royalties. {error}</span>
+        <span>Couldn’t load royalty earnings. {error}</span>
         <button
           onClick={() => setRetryTick((t) => t + 1)}
           className="rounded-lg border border-amber-700 px-2 py-1 text-xs hover:bg-amber-900/30"
@@ -72,9 +72,9 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Royalties by content</div>
+        <div className="text-base font-semibold">Royalty Earnings by content</div>
         <div className="text-sm text-neutral-400 mt-1">
-          Allocations update immediately after a sale is settled.
+          Royalty earnings from content participation and split allocations.
         </div>
       </div>
 
@@ -96,7 +96,7 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
             <tbody>
               {rows.length === 0 ? (
                 <tr>
-                      <td colSpan={8} className="py-3 text-neutral-500">No royalty data yet.</td>
+                      <td colSpan={8} className="py-3 text-neutral-500">No royalty earnings data yet.</td>
                     </tr>
                   ) : (
                     rows.map((r) => (
@@ -129,7 +129,7 @@ export default function FinanceRoyaltiesPage({ refreshSignal }: FinanceRoyalties
         </div>
       </div>
 
-      {/* Upstream derivatives live in My Royalties */}
+      {/* Upstream derivatives live in Collaborations */}
     </div>
   );
 }
