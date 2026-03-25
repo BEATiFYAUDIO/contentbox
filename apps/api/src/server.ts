@@ -1681,8 +1681,13 @@ const REMITTANCE_FORWARDING_STALE_MS = Math.max(
   30_000,
   Number.parseInt(String(process.env.CERTIFYD_REMITTANCE_STALE_MS || "180000"), 10) || 180000
 );
-const PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY =
-  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY || "").trim() === "1";
+const PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY = (() => {
+  const raw = String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY || "").trim().toLowerCase();
+  // Default on: participant payout execution is the standard runtime path.
+  // Allow explicit opt-out only.
+  if (!raw) return true;
+  return !(raw === "0" || raw === "false" || raw === "off");
+})();
 const PROVIDER_CREATOR_LINKS_FILE = path.join(RUNTIME_STATE_DIR, "provider-creator-links.json");
 const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider-delegated-publishes.json");
 const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
