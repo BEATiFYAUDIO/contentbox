@@ -9050,7 +9050,11 @@ function registerPublicRoutes(appPublic: any) {
 
     const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
     const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
-    const memo = `Certifyd delegated ${contentId.slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+    const memo = await buildRemittanceMemo({
+      prefix: "Certifyd delegated",
+      paymentIntentId,
+      contentId
+    });
     let bolt11: string | null = null;
     let providerInvoiceRef: string | null = null;
     try {
@@ -12501,7 +12505,11 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
 
   const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
   const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
-  const memo = `Certifyd delegated ${contentId.slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  const memo = await buildRemittanceMemo({
+    prefix: "Certifyd delegated",
+    paymentIntentId,
+    contentId
+  });
   let bolt11: string | null = null;
   let providerInvoiceRef: string | null = null;
   try {
@@ -15270,7 +15278,11 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
       });
     }
   }
-  const memo = `Certifyd delegated ${String(contentId || "").slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  const memo = await buildRemittanceMemo({
+    prefix: "Certifyd delegated",
+    paymentIntentId,
+    contentId
+  });
   let bolt11: string | null = null;
   let providerInvoiceRef: string | null = null;
   try {
@@ -15356,7 +15368,11 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
       });
     }
   }
-  const memo = `Certifyd delegated ${String(contentId || "").slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  const memo = await buildRemittanceMemo({
+    prefix: "Certifyd delegated",
+    paymentIntentId,
+    contentId
+  });
   let bolt11: string | null = null;
   let providerInvoiceRef: string | null = null;
   try {
@@ -27196,17 +27212,41 @@ async function computeContentParticipantAllocations(input: {
   splitVersionId: string;
   allocations: ContentParticipantAllocation[];
 }> {
-  const content = await prisma.contentItem.findUnique({ where: { id: input.contentId } });
-  if (!content) throw new Error("Content not found");
+  const contentId = String(input.contentId || "").trim();
+  if (!contentId) throw new Error("Content not found");
 
-  const childSplit = await getLockedSplitForContent(content.id);
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  let childSplit = content ? await getLockedSplitForContent(content.id) : null;
+  if (!childSplit) {
+    const snapshotRows = listLockedParticipantSnapshotRows().filter((row) => row.contentId === contentId);
+    const candidateSplitId =
+      snapshotRows
+        .slice()
+        .sort((a, b) => {
+          const aTime = String(a.lockedAt || a.updatedAt || a.createdAt || "");
+          const bTime = String(b.lockedAt || b.updatedAt || b.createdAt || "");
+          return bTime.localeCompare(aTime);
+        })
+        .map((row) => String(row.splitVersionId || "").trim())
+        .find(Boolean) || null;
+    if (candidateSplitId) {
+      childSplit = { id: candidateSplitId } as any;
+      app.log.info(
+        {
+          contentId,
+          splitVersionId: candidateSplitId
+        },
+        "splitAuthority.compute_allocations_snapshot_fallback"
+      );
+    }
+  }
   if (!childSplit) throw new Error("Locked child split not found");
   const childSnapshots = (await getLockedParticipantSnapshotsForSplitVersion(childSplit.id)).filter((snapshot) =>
     isTopologyNeutralLockedSnapshotEligible(snapshot)
   );
 
   const parents = await prisma.contentLink.findMany({
-    where: { childContentId: content.id },
+    where: { childContentId: contentId },
     orderBy: { id: "asc" }
   });
   if (parents.length > 1) {
@@ -27276,7 +27316,7 @@ async function computeContentParticipantAllocations(input: {
     const accountingState = resolveLockedSnapshotAccountingState(snapshot || {});
     app.log.info(
       {
-        contentId: content.id,
+        contentId,
         splitVersionId: childSplit.id,
         splitParticipantId: snapshot?.splitParticipantId || null,
         participantUserId: snapshot?.participantUserId || null,
@@ -27333,7 +27373,7 @@ async function computeContentParticipantAllocations(input: {
       const accountingState = resolveLockedSnapshotAccountingState(snapshot || {});
       app.log.info(
         {
-          contentId: content.id,
+          contentId,
           splitVersionId: parentSplit.id,
           splitParticipantId: snapshot?.splitParticipantId || null,
           participantUserId: snapshot?.participantUserId || null,
@@ -27352,7 +27392,7 @@ async function computeContentParticipantAllocations(input: {
 
   app.log.info(
     {
-      contentId: content.id,
+      contentId,
       splitVersionId: childSplit.id,
       parentSplitVersionIds: upstreamAlloc.map((row) => row.parentSplitVersionId).filter(Boolean),
       participantCount: allocations.length
@@ -27362,7 +27402,7 @@ async function computeContentParticipantAllocations(input: {
   const allocatedTotal = allocations.reduce((acc, row) => acc + row.amountSats, 0n);
   app.log.info(
     {
-      contentId: content.id,
+      contentId,
       splitVersionId: childSplit.id,
       distributableSats: input.poolSats.toString(),
       participantCount: allocations.length,
