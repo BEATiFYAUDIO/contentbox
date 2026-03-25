@@ -24283,6 +24283,13 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     const buyerSession = await resolveBuyerSession(req, reply);
     const buyerId = buyerSession?.buyer?.id || null;
+    const requestIpHash = hashIp(getRequestIp(req));
+    const buyerScopeHash =
+      buyerId
+        ? crypto.createHash("sha256").update(`buyer:${buyerId}`).digest("hex")
+        : requestIpHash
+          ? crypto.createHash("sha256").update(`ip:${requestIpHash}`).digest("hex")
+          : null;
     const { productTier } = resolveProductTier();
     const capabilityCtx = getCapabilityContext();
     const sellerPaymentsReadiness = await getPaymentsReadiness(content.ownerUserId).catch(() => null);
@@ -24357,6 +24364,73 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     }
 
+    if (buyerScopeHash) {
+      const existingPending = await prisma.paymentIntent.findFirst({
+        where: {
+          contentId,
+          manifestSha256,
+          amountSats,
+          status: "pending" as any,
+          ipHash: buyerScopeHash,
+          receiptTokenExpiresAt: { gt: new Date() }
+        },
+        orderBy: { createdAt: "desc" }
+      });
+      if (existingPending && (existingPending.bolt11 || existingPending.providerId || existingPending.onchainAddress)) {
+        app.log.info(
+          {
+            ...intentLog,
+            mappedCategory: "reuse_pending_intent",
+            mappedCode: "OK",
+            paymentIntentId: existingPending.id
+          },
+          "publicPaymentsIntents.reused"
+        );
+        return reply.send({
+          ok: true,
+          buyerId,
+          paymentIntentId: existingPending.id,
+          status: existingPending.status,
+          amountSats: existingPending.amountSats.toString(),
+          bolt11: existingPending.bolt11 || null,
+          lightningExpiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null,
+          onchainAddress: existingPending.onchainAddress || null,
+          onchainReason: existingPending.onchainAddress ? null : "NOT_AVAILABLE",
+          lightningReason: existingPending.bolt11 ? null : "NOT_AVAILABLE",
+          onchain: existingPending.onchainAddress ? { address: existingPending.onchainAddress } : null,
+          lightning: existingPending.bolt11
+            ? { bolt11: existingPending.bolt11, expiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null }
+            : null,
+          paymentOptions: {
+            lightning: {
+              available: Boolean(existingPending.bolt11),
+              bolt11: existingPending.bolt11 || null,
+              expiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null,
+              reason: existingPending.bolt11 ? null : "NOT_AVAILABLE"
+            },
+            onchain: {
+              available: Boolean(existingPending.onchainAddress),
+              address: existingPending.onchainAddress || null,
+              minConfirmations: ONCHAIN_MIN_CONFS,
+              reason: existingPending.onchainAddress ? null : "NOT_AVAILABLE"
+            }
+          },
+          creatorPayout: {
+            configured: payoutDestination.valid,
+            destinationType: payoutDestination.effectiveDestinationType,
+            destinationSummary: payoutDestination.effectiveDestinationSummary,
+            payoutRail: payoutDestination.effectivePayoutRail,
+            providerRemitMode: payoutDestination.providerRemitMode,
+            message: "Reusing existing pending payment intent."
+          },
+          receiptToken: existingPending.receiptToken || null,
+          receiptTokenExpiresAt: existingPending.receiptTokenExpiresAt
+            ? existingPending.receiptTokenExpiresAt.toISOString()
+            : null
+        });
+      }
+    }
+
     const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
     const receiptToken = crypto.randomBytes(24).toString("hex");
     const receiptTokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
@@ -24372,7 +24446,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         subjectType: "CONTENT" as any,
         subjectId: contentId,
         receiptToken,
-        receiptTokenExpiresAt
+        receiptTokenExpiresAt,
+        ipHash: buyerScopeHash
       }
     });
 
