@@ -4940,6 +4940,17 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
     },
     "payoutExecution.runtime_state"
   );
+  if (payoutRuntime.executionState === "not_applicable") {
+    app.log.warn(
+      {
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        reason: payoutRuntime.blockReason || "PAYOUT_EXECUTION_NOT_APPLICABLE"
+      },
+      "payoutExecution.blocked_reason"
+    );
+    return;
+  }
   if (payoutRuntime.executionState !== "ready") {
     app.log.warn(
       {
@@ -4949,7 +4960,6 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
       },
       "payoutExecution.blocked_reason"
     );
-    return;
   }
   const rows = await prisma.participantPayout
     .findMany({
