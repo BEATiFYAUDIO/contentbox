@@ -2480,14 +2480,15 @@ function normalizeParticipantDestinationForPayout(
     };
   }
   if (destinationType === "lightning_address") {
+    const normalizedSummary = canonicalizeLightningAddress(destinationSummary);
     return {
       source: resolved.destinationSource,
       destinationType,
       destinationValue,
-      destinationSummary,
+      destinationSummary: normalizedSummary,
       payableMode: "lightning_address",
-      ready: destinationSummary.includes("@"),
-      reason: destinationSummary.includes("@") ? null : "LIGHTNING_ADDRESS_INVALID"
+      ready: normalizedSummary.includes("@"),
+      reason: normalizedSummary.includes("@") ? null : "LIGHTNING_ADDRESS_INVALID"
     };
   }
   if (destinationType === "lnurl") {
@@ -3106,6 +3107,15 @@ function parsePayoutDestinationType(value: unknown): CreatorPayoutDestinationTyp
 function isValidLightningAddress(value: string): boolean {
   const v = String(value || "").trim();
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
+}
+
+function canonicalizeLightningAddress(value: string | null | undefined): string {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || !raw.includes("@")) return raw;
+  const [name, domain] = raw.split("@");
+  if (!name || !domain) return raw;
+  if (domain === "satoshiswallet.com") return `${name}@walletofsatoshi.com`;
+  return raw;
 }
 
 function isValidOnchainAddress(value: string): boolean {
@@ -5147,7 +5157,7 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
       const payout = lock.row;
       try {
         const destinationType = String(payout.destinationType || "").trim().toLowerCase();
-        const destinationSummary = String(payout.destinationSummary || "").trim();
+        const destinationSummary = canonicalizeLightningAddress(String(payout.destinationSummary || "").trim());
         if (destinationType !== "lightning_address" || !destinationSummary || !destinationSummary.includes("@")) {
           app.log.info(
             {
