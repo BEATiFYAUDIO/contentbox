@@ -5665,6 +5665,42 @@ function hasProviderPaymentTarget(cfg: NetworkProviderConfig): boolean {
   return Boolean(cfg.enabled && cfg.providerUrl);
 }
 
+async function resolveProviderExecutionAuthorityOnCurrentNode(): Promise<{
+  ok: boolean;
+  code?: string;
+  message?: string;
+  configuredProviderNodeId: string | null;
+  localNodeId: string | null;
+}> {
+  const cfg = getNetworkProviderConfig();
+  const configuredProviderNodeId = asString(cfg.providerNodeId || "").trim() || null;
+  const localIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
+  const localNodeId = asString(localIdentity?.nodeId || "").trim() || null;
+  if (!hasProviderPaymentTarget(cfg)) {
+    return {
+      ok: false,
+      code: "PROVIDER_NOT_READY",
+      message: "Provider payments are not configured on this node.",
+      configuredProviderNodeId,
+      localNodeId
+    };
+  }
+  if (configuredProviderNodeId && localNodeId && configuredProviderNodeId !== localNodeId) {
+    return {
+      ok: false,
+      code: "PROVIDER_NODE_MISMATCH",
+      message: "Delegated provider payment request reached a non-provider node.",
+      configuredProviderNodeId,
+      localNodeId
+    };
+  }
+  return {
+    ok: true,
+    configuredProviderNodeId,
+    localNodeId
+  };
+}
+
 function isNetworkProviderConfigEmpty(cfg: NetworkProviderConfig): boolean {
   return !cfg.enabled && !cfg.providerNodeId && !cfg.providerProfileId && !cfg.providerUrl && !cfg.providerPubKey;
 }
@@ -9095,6 +9131,13 @@ function registerPublicRoutes(appPublic: any) {
     const paymentIntentId = String(body.paymentIntentId || "").trim();
     if (!creatorNodeId || !contentId || !paymentIntentId) return badRequest(reply, "creatorNodeId, contentId, paymentIntentId required");
     if (!/^\d+$/.test(amountSats) || Number(amountSats) <= 0) return badRequest(reply, "amountSats must be a positive integer");
+    const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+    if (!providerAuthority.ok) {
+      return reply.code(409).send({
+        error: providerAuthority.code || "PROVIDER_NOT_READY",
+        message: providerAuthority.message || "Provider execution is not ready on this node."
+      });
+    }
 
     const link = getProviderCreatorLink(creatorNodeId);
     if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
@@ -9196,6 +9239,13 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: any, reply: any) => {
     const paymentIntentId = String((req.params as any)?.paymentIntentId || "").trim();
     if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+    const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+    if (!providerAuthority.ok) {
+      return reply.code(409).send({
+        error: providerAuthority.code || "PROVIDER_NOT_READY",
+        message: providerAuthority.message || "Provider execution is not ready on this node."
+      });
+    }
     let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
     if (!current) return notFound(reply, "Provider payment intent not found");
     if (current.status !== "paid" && current.providerInvoiceRef) {
@@ -12550,6 +12600,13 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
   const paymentIntentId = String(body.paymentIntentId || "").trim();
   if (!creatorNodeId || !contentId || !paymentIntentId) return badRequest(reply, "creatorNodeId, contentId, paymentIntentId required");
   if (!/^\d+$/.test(amountSats) || Number(amountSats) <= 0) return badRequest(reply, "amountSats must be a positive integer");
+  const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+  if (!providerAuthority.ok) {
+    return reply.code(409).send({
+      error: providerAuthority.code || "PROVIDER_NOT_READY",
+      message: providerAuthority.message || "Provider execution is not ready on this node."
+    });
+  }
 
   const link = getProviderCreatorLink(creatorNodeId);
   if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
@@ -12652,6 +12709,13 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
 app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: any, reply: any) => {
   const paymentIntentId = String((req.params as any)?.paymentIntentId || "").trim();
   if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+  const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+  if (!providerAuthority.ok) {
+    return reply.code(409).send({
+      error: providerAuthority.code || "PROVIDER_NOT_READY",
+      message: providerAuthority.message || "Provider execution is not ready on this node."
+    });
+  }
   let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
   if (!current) return notFound(reply, "Provider payment intent not found");
   if (current.status !== "paid" && current.providerInvoiceRef) {
@@ -23922,6 +23986,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     let onchain: { address: string; derivationIndex?: number | null } | null = null;
     let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
+    let delegatedProviderInvoiceRef: string | null = null;
     let onchainReason: string | null = null;
     let lightningReason: string | null = null;
 
@@ -24042,6 +24107,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             providerId: `providerpi:${delegated.paymentIntentId}`,
             expiresAt: null
           };
+          delegatedProviderInvoiceRef = String(delegated.providerInvoiceRef || "").trim() || null;
           lightningReason = null;
           intentLog.delegatedLightning = "provider_invoice_issued";
         } catch (e: any) {
@@ -24200,7 +24266,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         contentId,
         paymentIntentId: intent.id,
         bolt11: lightning?.bolt11 || null,
-        providerInvoiceRef: lightning?.providerId || null,
+        providerInvoiceRef: delegatedProviderInvoiceRef || providerIntent?.providerInvoiceRef || null,
         amountSats: amountSats.toString(),
         grossAmountSats: providerIntent?.grossAmountSats || fee.grossAmountSats,
         providerInvoicingFeeSats: providerIntent?.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
