@@ -2144,6 +2144,16 @@ function parseRemoteIdentityRef(identityRef: string | null | undefined): { origi
   return { origin: origin || null, userId };
 }
 
+function parseUserIdFromParticipantRef(participantRef: string | null | undefined): string | null {
+  const raw = asString(participantRef || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("user:")) {
+    const userId = asString(raw.slice("user:".length)).trim();
+    return userId || null;
+  }
+  return null;
+}
+
 async function fetchRemotePublicUserDisplayName(
   origin: string | null | undefined,
   userId: string | null | undefined
@@ -2276,14 +2286,17 @@ async function resolveParticipantDestinationHandshake(input: {
   const participantUserId = asString(input.participantUserId || "").trim();
   const splitParticipantId = asString(input.splitParticipantId || "").trim();
   const participantRef = asString(input.participantRef || "").trim();
+  const refUserId = parseUserIdFromParticipantRef(participantRef);
+  const effectiveUserId = participantUserId || refUserId || "";
   let unresolvedReason = "NO_USER_ID";
 
-  if (participantUserId) {
-    const local = await resolveParticipantDestinationLocal(participantUserId);
+  if (effectiveUserId) {
+    const local = await resolveParticipantDestinationLocal(effectiveUserId);
     if (local) {
       app.log.info(
         {
-          participantUserId,
+          participantUserId: effectiveUserId,
+          participantUserIdSource: participantUserId ? "allocation" : "participant_ref",
           splitParticipantId: splitParticipantId || null,
           participantRef: participantRef || null,
           destinationType: local.destinationType || null,
@@ -2300,7 +2313,7 @@ async function resolveParticipantDestinationHandshake(input: {
   const snapshot = getLockedSnapshotBySplitParticipantId(splitParticipantId);
   const parsedIdentity = parseRemoteIdentityRef(snapshot?.identityRef || null);
   const origin = snapshot?.participantOrigin || parsedIdentity.origin || null;
-  const remoteUserId = participantUserId || parsedIdentity.userId || null;
+  const remoteUserId = effectiveUserId || parsedIdentity.userId || null;
   if (origin && remoteUserId) {
     const remote = await fetchRemoteParticipantPayoutDestination(origin, remoteUserId);
     app.log.info(
@@ -2325,11 +2338,12 @@ async function resolveParticipantDestinationHandshake(input: {
   }
 
   app.log.info(
-    {
-      participantUserId: participantUserId || null,
-      splitParticipantId: splitParticipantId || null,
-      participantRef: participantRef || null,
-      destinationType: null,
+      {
+        participantUserId: effectiveUserId || null,
+        participantUserIdSource: participantUserId ? "allocation" : refUserId ? "participant_ref" : null,
+        splitParticipantId: splitParticipantId || null,
+        participantRef: participantRef || null,
+        destinationType: null,
       destinationSource: null,
       resolved: false,
       reason: unresolvedReason
@@ -3684,7 +3698,13 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
     });
     if (!allocations.length) return;
     const terminalStatus: ParticipantPayoutStatus | null =
-      intent.payoutStatus === "paid" ? "paid" : intent.payoutStatus === "failed" ? "failed" : null;
+      intent.payoutExecutionMode === "participant"
+        ? null
+        : intent.payoutStatus === "paid"
+          ? "paid"
+          : intent.payoutStatus === "failed"
+            ? "failed"
+            : null;
 
     for (const allocation of allocations) {
       const executionParticipantRef = resolveExecutionParticipantRef({
@@ -3827,6 +3847,7 @@ async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string):
 
 async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentRecord) {
   if (intent.status !== "paid") return intent;
+  const participantExecutionMode = intent.payoutExecutionMode === "participant";
   if (intent.paymentReceiptId) {
     const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
     const settledExisting = intent;
@@ -3843,12 +3864,20 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
       );
     }
     const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settledExisting.id).catch(() => settledExisting.payoutSummaryStatus || "pending");
-    const withSummaryExisting =
+    const withSummaryExistingBase =
       payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutSummaryEnabled
         ? updateProviderPaymentIntent(settledExisting.id, {
             payoutSummaryStatus
           }) || settledExisting
         : settledExisting;
+    const participantPayoutStatus =
+      payoutSummaryStatus === "paid" ? "paid" : payoutSummaryStatus === "failed" || payoutSummaryStatus === "blocked" ? "failed" : "pending";
+    const withSummaryExisting =
+      participantExecutionMode
+        ? updateProviderPaymentIntent(withSummaryExistingBase.id, {
+            payoutStatus: participantPayoutStatus
+          }) || withSummaryExistingBase
+        : withSummaryExistingBase;
     if (withSummaryExisting.status === "paid" && withSummaryExisting.providerRemitMode === "auto_forward") {
       if (withSummaryExisting.payoutExecutionMode === "participant") {
         if (payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutExecutionEnabled) {
@@ -3950,13 +3979,18 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
     paymentReceiptId,
     paidAt,
     status: "paid",
-    payoutStatus: intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node" ? "paid" : intent.payoutStatus || "pending",
+    payoutStatus:
+      participantExecutionMode
+        ? intent.payoutStatus || "pending"
+        : intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node"
+          ? "paid"
+          : intent.payoutStatus || "pending",
     remittedAt:
-      intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node"
+      !participantExecutionMode && (intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node")
         ? paidAt
         : intent.remittedAt || null,
     payoutReference:
-      intent.payoutRail === "forwarded" && !intent.payoutReference
+      !participantExecutionMode && intent.payoutRail === "forwarded" && !intent.payoutReference
         ? intent.providerInvoiceRef || paymentReceiptId
         : intent.payoutReference || null,
     payoutLastError: null,
@@ -3996,12 +4030,20 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
     "participantPayout.runtime_config"
   );
   const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settled.id).catch(() => settled.payoutSummaryStatus || "pending");
-  const withSummary =
+  const withSummaryBase =
     payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutSummaryEnabled
       ? updateProviderPaymentIntent(settled.id, {
           payoutSummaryStatus
         }) || settled
       : settled;
+  const participantPayoutStatus =
+    payoutSummaryStatus === "paid" ? "paid" : payoutSummaryStatus === "failed" || payoutSummaryStatus === "blocked" ? "failed" : "pending";
+  const withSummary =
+    participantExecutionMode
+      ? updateProviderPaymentIntent(withSummaryBase.id, {
+          payoutStatus: participantPayoutStatus
+        }) || withSummaryBase
+      : withSummaryBase;
   app.log.info(
     {
       paymentIntentId: withSummary.paymentIntentId,
@@ -23875,6 +23917,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       payoutRail: payoutDestination.effectivePayoutRail
     };
 
+    const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === contentId);
+    const forceDelegatedProviderInvoicing = Boolean(delegatedPublish);
+
     let onchain: { address: string; derivationIndex?: number | null } | null = null;
     let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
     let onchainReason: string | null = null;
@@ -23927,32 +23972,36 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       connectivity: "not_checked",
       reason: null
     };
-    try {
-      const invoice = await createLightningInvoiceWithRetry(
-        amountSats,
-        `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`,
-        {
-          route: "/buy/payments/intents",
-          paymentIntentId: intent.id,
-          contentId
-        }
-      );
-      if (invoice) lightning = invoice;
-      intentLog.invoiceCreation = lightning ? "created" : "not_configured";
-    } catch (e: any) {
-      lightningReason = "INVOICE_GENERATION_FAILED";
-      lndProbe = await diagnoseLightning();
-      intentLog.invoiceCreation = "failed";
-      app.log.warn(
-        {
-          ...intentLog,
-          lightningConfigured: lndProbe.configured,
-          lndConnectivity: lndProbe.connectivity,
-          lndReason: lndProbe.reason,
-          err: e
-        },
-        "publicPaymentsIntents.invoice_create_failed"
-      );
+    if (!forceDelegatedProviderInvoicing) {
+      try {
+        const invoice = await createLightningInvoiceWithRetry(
+          amountSats,
+          `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`,
+          {
+            route: "/buy/payments/intents",
+            paymentIntentId: intent.id,
+            contentId
+          }
+        );
+        if (invoice) lightning = invoice;
+        intentLog.invoiceCreation = lightning ? "created" : "not_configured";
+      } catch (e: any) {
+        lightningReason = "INVOICE_GENERATION_FAILED";
+        lndProbe = await diagnoseLightning();
+        intentLog.invoiceCreation = "failed";
+        app.log.warn(
+          {
+            ...intentLog,
+            lightningConfigured: lndProbe.configured,
+            lndConnectivity: lndProbe.connectivity,
+            lndReason: lndProbe.reason,
+            err: e
+          },
+          "publicPaymentsIntents.invoice_create_failed"
+        );
+      }
+    } else {
+      intentLog.invoiceCreation = "delegated_provider_required";
     }
     if (!lightning?.bolt11) {
       const providerCfg = getNetworkProviderConfig();
@@ -24135,7 +24184,6 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     });
 
-    const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === contentId);
     if (delegatedPublish) {
       const fee = computeProviderFeeBreakdown(amountSats.toString(), {
         providerInvoicing: serviceProfile.needsProviderInvoicing,
