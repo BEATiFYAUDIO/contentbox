@@ -1692,6 +1692,10 @@ const PROVIDER_CREATOR_LINKS_FILE = path.join(RUNTIME_STATE_DIR, "provider-creat
 const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider-delegated-publishes.json");
 const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
 const PROVIDER_PAYMENT_RECEIPTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-receipts.json");
+const PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE = path.join(
+  RUNTIME_STATE_DIR,
+  "provider-delegated-allocation-blueprints.json"
+);
 const CREATOR_PAYOUT_DESTINATIONS_FILE = path.join(RUNTIME_STATE_DIR, "creator-payout-destinations.json");
 const PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "participation-profile-highlights.json");
 const REMOTE_PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "remote-participation-profile-highlights.json");
@@ -1780,6 +1784,29 @@ type ProviderDelegatedPublishRecord = {
   publishReceiptId: string | null;
   publishedAt: string;
   status: ProviderPublishStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProviderDelegatedAllocationBlueprintParticipant = {
+  participantRef: string;
+  participantId: string | null;
+  splitParticipantId: string | null;
+  participantUserId: string | null;
+  participantEmail: string | null;
+  role: string | null;
+  roleKey: string;
+  bps: number;
+};
+
+type ProviderDelegatedAllocationBlueprintRecord = {
+  id: string;
+  paymentIntentId: string;
+  creatorNodeId: string;
+  contentId: string;
+  splitVersionId: string | null;
+  allocationVersion: number;
+  participants: ProviderDelegatedAllocationBlueprintParticipant[];
   createdAt: string;
   updatedAt: string;
 };
@@ -3300,6 +3327,57 @@ function createProviderDelegatedPublish(
   return created;
 }
 
+function getProviderDelegatedAllocationBlueprintByPaymentIntentId(
+  paymentIntentId: string
+): ProviderDelegatedAllocationBlueprintRecord | null {
+  if (!paymentIntentId) return null;
+  const rows = readJsonArrayState<ProviderDelegatedAllocationBlueprintRecord>(
+    PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE
+  );
+  return rows.find((row) => row.paymentIntentId === paymentIntentId) || null;
+}
+
+function upsertProviderDelegatedAllocationBlueprintByPaymentIntentId(
+  paymentIntentId: string,
+  input: Omit<ProviderDelegatedAllocationBlueprintRecord, "id" | "createdAt" | "updatedAt" | "paymentIntentId">
+): ProviderDelegatedAllocationBlueprintRecord {
+  const now = new Date().toISOString();
+  const rows = readJsonArrayState<ProviderDelegatedAllocationBlueprintRecord>(
+    PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE
+  );
+  const idx = rows.findIndex((row) => row.paymentIntentId === paymentIntentId);
+  const normalizedParticipants = (input.participants || [])
+    .map((row) => ({
+      participantRef: String(row.participantRef || "").trim(),
+      participantId: String(row.participantId || "").trim() || null,
+      splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+      participantUserId: String(row.participantUserId || "").trim() || null,
+      participantEmail: String(row.participantEmail || "").trim() || null,
+      role: String(row.role || "").trim() || null,
+      roleKey: String(row.roleKey || "").trim(),
+      bps: Math.max(0, Math.round(Number(row.bps || 0)))
+    }))
+    .filter((row) => row.participantRef && row.roleKey && row.bps > 0);
+  const next: ProviderDelegatedAllocationBlueprintRecord = {
+    id: idx >= 0 ? rows[idx].id : buildProviderRecordId("pab"),
+    paymentIntentId,
+    creatorNodeId: String(input.creatorNodeId || "").trim(),
+    contentId: String(input.contentId || "").trim(),
+    splitVersionId: String(input.splitVersionId || "").trim() || null,
+    allocationVersion: Math.max(1, Math.round(Number(input.allocationVersion || 1))),
+    participants: normalizedParticipants,
+    createdAt: idx >= 0 ? rows[idx].createdAt : now,
+    updatedAt: now
+  };
+  if (idx >= 0) {
+    rows[idx] = next;
+  } else {
+    rows.unshift(next);
+  }
+  writeJsonArrayState(PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE, rows);
+  return next;
+}
+
 function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
   const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE).map((row) => {
     const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0", {
@@ -3617,34 +3695,83 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
     if (existingAllocations.length === 0) {
       const netPool = distributableSats;
       if (netPool > 0n) {
-        const computed = await computeContentParticipantAllocations({
-          contentId,
-          poolSats: netPool
-        });
+        let splitVersionId: string | null = null;
+        let allocationRows: ContentParticipantAllocation[] = [];
+        let allocationSource: "split_locked" | "delegated_blueprint" = "split_locked";
+        try {
+          const computed = await computeContentParticipantAllocations({
+            contentId,
+            poolSats: netPool
+          });
+          splitVersionId = computed.splitVersionId;
+          allocationRows = computed.allocations;
+        } catch (computeErr: any) {
+          const blueprint = getProviderDelegatedAllocationBlueprintByPaymentIntentId(intent.paymentIntentId);
+          if (!blueprint || !Array.isArray(blueprint.participants) || blueprint.participants.length === 0) {
+            throw computeErr;
+          }
+          allocationSource = "delegated_blueprint";
+          splitVersionId = blueprint.splitVersionId || null;
+          const byBps = allocateByBps(
+            netPool,
+            blueprint.participants.map((row) => ({
+              id: `${row.participantRef}:${row.roleKey}`,
+              bps: Math.max(0, Math.round(Number(row.bps || 0)))
+            }))
+          );
+          allocationRows = byBps.map((amountRow) => {
+            const participant = blueprint.participants.find(
+              (p) => `${p.participantRef}:${p.roleKey}` === amountRow.id
+            )!;
+            return {
+              participantRef: participant.participantRef,
+              participantId: participant.participantId || null,
+              splitParticipantId: participant.splitParticipantId || null,
+              participantUserId: participant.participantUserId || null,
+              participantEmail: participant.participantEmail || null,
+              role: participant.role || null,
+              roleKey: participant.roleKey,
+              bps: Math.max(0, Math.round(Number(participant.bps || 0))),
+              amountSats: amountRow.amountSats,
+              allocationSource: "split_locked",
+              allocationVersion: Math.max(1, Number(blueprint.allocationVersion || 1))
+            };
+          });
+          app.log.info(
+            {
+              providerPaymentIntentId: intent.id,
+              paymentIntentId: intent.paymentIntentId,
+              contentId,
+              splitVersionId,
+              participantCount: allocationRows.length
+            },
+            "splitAuthority.provider_participant_blueprint_fallback"
+          );
+        }
         app.log.info(
           {
             providerPaymentIntentId: intent.id,
             paymentIntentId: intent.paymentIntentId,
             contentId,
-            splitVersionId: computed.splitVersionId,
-            participantCount: computed.allocations.length
+            splitVersionId,
+            participantCount: allocationRows.length
           },
           "splitAuthority.provider_participant_snapshot"
         );
-        const allocatedTotal = computed.allocations.reduce((acc, row) => acc + row.amountSats, 0n);
+        const allocatedTotal = allocationRows.reduce((acc, row) => acc + row.amountSats, 0n);
         app.log.info(
           {
             providerPaymentIntentId: intent.id,
             paymentIntentId: intent.paymentIntentId,
             contentId,
-            splitVersionId: computed.splitVersionId,
-            participantCount: computed.allocations.length,
+            splitVersionId,
+            participantCount: allocationRows.length,
             allocatedTotalSats: allocatedTotal.toString(),
             distributableSats: netPool.toString()
           },
           "splitAccounting.allocations"
         );
-        for (const row of computed.allocations) {
+        for (const row of allocationRows) {
           await prisma.providerPaymentParticipantAllocation.upsert({
             where: {
               providerPaymentIntentId_participantRef_roleKey: {
@@ -3668,7 +3795,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
               roleKey: row.roleKey,
               bps: row.bps,
               amountSats: row.amountSats,
-              allocationSource: row.allocationSource,
+              allocationSource: allocationSource,
               allocationVersion: row.allocationVersion
             }
           });
@@ -5211,6 +5338,17 @@ async function requestDelegatedProviderPaymentIntent(input: {
   payoutDestinationType?: CreatorPayoutDestinationType;
   payoutDestinationSummary?: string | null;
   providerRemitMode?: ProviderRemitMode;
+  splitVersionId?: string | null;
+  participantAllocations?: Array<{
+    participantRef: string;
+    participantId?: string | null;
+    splitParticipantId?: string | null;
+    participantUserId?: string | null;
+    participantEmail?: string | null;
+    role?: string | null;
+    roleKey: string;
+    bps: number;
+  }>;
 }): Promise<{
   paymentIntentId: string;
   bolt11: string;
@@ -5283,7 +5421,11 @@ async function requestDelegatedProviderPaymentIntent(input: {
         needsDurablePublicHosting: Boolean(input.needsDurablePublicHosting),
         payoutDestinationType: input.payoutDestinationType || null,
         payoutDestinationSummary: input.payoutDestinationSummary || null,
-        providerRemitMode: input.providerRemitMode || "auto_forward"
+        providerRemitMode: input.providerRemitMode || "auto_forward",
+        splitVersionId: input.splitVersionId || null,
+        participantAllocations: Array.isArray(input.participantAllocations)
+          ? input.participantAllocations
+          : []
       }),
       signal: controller.signal
     } as any);
@@ -9169,11 +9311,22 @@ function registerPublicRoutes(appPublic: any) {
       paymentIntentId?: string | null;
       buyerSessionId?: string | null;
       needsProviderInvoicing?: boolean;
-      needsDurablePublicHosting?: boolean;
-      payoutDestinationType?: CreatorPayoutDestinationType;
-      payoutDestinationSummary?: string | null;
-      providerRemitMode?: ProviderRemitMode;
-    };
+    needsDurablePublicHosting?: boolean;
+    payoutDestinationType?: CreatorPayoutDestinationType;
+    payoutDestinationSummary?: string | null;
+    providerRemitMode?: ProviderRemitMode;
+    splitVersionId?: string | null;
+    participantAllocations?: Array<{
+      participantRef?: string | null;
+      participantId?: string | null;
+      splitParticipantId?: string | null;
+      participantUserId?: string | null;
+      participantEmail?: string | null;
+      role?: string | null;
+      roleKey?: string | null;
+      bps?: number | string | null;
+    }>;
+  };
     const creatorNodeId = String(body.creatorNodeId || "").trim();
     const contentId = String(body.contentId || "").trim();
     const amountSats = String(body.amountSats ?? "").trim();
@@ -12645,6 +12798,17 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     providerRemitMode?: ProviderRemitMode;
     payoutPolicy?: ProviderPayoutPolicy;
     allowProviderFallback?: boolean;
+    splitVersionId?: string | null;
+    participantAllocations?: Array<{
+      participantRef?: string | null;
+      participantId?: string | null;
+      splitParticipantId?: string | null;
+      participantUserId?: string | null;
+      participantEmail?: string | null;
+      role?: string | null;
+      roleKey?: string | null;
+      bps?: number | string | null;
+    }>;
   };
   const creatorNodeId = String(body.creatorNodeId || "").trim();
   const contentId = String(body.contentId || "").trim();
@@ -12742,6 +12906,27 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
   });
+  const participantAllocations = Array.isArray(body.participantAllocations)
+    ? body.participantAllocations
+    : [];
+  if (participantAllocations.length > 0) {
+    upsertProviderDelegatedAllocationBlueprintByPaymentIntentId(paymentIntentId, {
+      creatorNodeId,
+      contentId,
+      splitVersionId: String(body.splitVersionId || "").trim() || null,
+      allocationVersion: 1,
+      participants: participantAllocations.map((row) => ({
+        participantRef: String(row?.participantRef || "").trim(),
+        participantId: String(row?.participantId || "").trim() || null,
+        splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
+        participantUserId: String(row?.participantUserId || "").trim() || null,
+        participantEmail: String(row?.participantEmail || "").trim() || null,
+        role: String(row?.role || "").trim() || null,
+        roleKey: String(row?.roleKey || "").trim(),
+        bps: Math.max(0, Math.round(Number(row?.bps || 0)))
+      }))
+    });
+  }
   return reply.send({
     ok: true,
     paymentIntentId: created.paymentIntentId,
@@ -24145,6 +24330,32 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         } else {
         try {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
+          let delegatedAllocationBlueprint:
+            | {
+                splitVersionId: string;
+                allocationVersion: number;
+                participants: ProviderDelegatedAllocationBlueprintParticipant[];
+              }
+            | null = null;
+          try {
+            const feeBreakdown = computeProviderFeeBreakdown(amountSats.toString(), {
+              providerInvoicing: serviceProfile.needsProviderInvoicing,
+              durablePublicHosting: serviceProfile.needsDurablePublicHosting
+            });
+            delegatedAllocationBlueprint = await buildDelegatedAllocationBlueprint({
+              contentId,
+              distributableSats: BigInt(String(feeBreakdown.creatorNetSats || "0"))
+            });
+          } catch (allocationErr: any) {
+            app.log.warn(
+              {
+                paymentIntentId: intent.id,
+                contentId,
+                reason: String(allocationErr?.message || allocationErr || "allocation_blueprint_failed")
+              },
+              "delegatedProviderPaymentIntent.allocation_blueprint_failed"
+            );
+          }
           const delegated = await requestDelegatedProviderPaymentIntent({
             creatorNodeId: creatorIdentity.nodeId,
             contentId,
@@ -24155,7 +24366,9 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             needsDurablePublicHosting: serviceProfile.needsDurablePublicHosting,
             payoutDestinationType: payoutDestination.effectiveDestinationType,
             payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
-            providerRemitMode: payoutDestination.providerRemitMode
+            providerRemitMode: payoutDestination.providerRemitMode,
+            splitVersionId: delegatedAllocationBlueprint?.splitVersionId || null,
+            participantAllocations: delegatedAllocationBlueprint?.participants || []
           });
           lightning = {
             bolt11: delegated.bolt11,
@@ -27641,6 +27854,39 @@ async function computeContentParticipantAllocations(input: {
   };
 }
 
+async function buildDelegatedAllocationBlueprint(input: {
+  contentId: string;
+  distributableSats: bigint;
+}): Promise<{
+  splitVersionId: string;
+  allocationVersion: number;
+  participants: ProviderDelegatedAllocationBlueprintParticipant[];
+} | null> {
+  if (input.distributableSats <= 0n) return null;
+  const computed = await computeContentParticipantAllocations({
+    contentId: input.contentId,
+    poolSats: input.distributableSats
+  });
+  const participants = computed.allocations
+    .map((row) => ({
+      participantRef: String(row.participantRef || "").trim(),
+      participantId: String(row.participantId || "").trim() || null,
+      splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+      participantUserId: String(row.participantUserId || "").trim() || null,
+      participantEmail: String(row.participantEmail || "").trim() || null,
+      role: String(row.role || "").trim() || null,
+      roleKey: String(row.roleKey || "").trim(),
+      bps: Math.max(0, Math.round(Number(row.bps || 0)))
+    }))
+    .filter((row) => row.participantRef && row.roleKey && row.bps > 0);
+  if (!participants.length) return null;
+  return {
+    splitVersionId: computed.splitVersionId,
+    allocationVersion: 1,
+    participants
+  };
+}
+
 async function settlePaymentIntent(paymentIntentId: string) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
   if (!intent) throw new Error("PaymentIntent not found");
@@ -29693,6 +29939,32 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
         if (content?.ownerUserId) {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
           const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId).catch(() => null);
+          let delegatedAllocationBlueprint:
+            | {
+                splitVersionId: string;
+                allocationVersion: number;
+                participants: ProviderDelegatedAllocationBlueprintParticipant[];
+              }
+            | null = null;
+          try {
+            const feeBreakdown = computeProviderFeeBreakdown(String(intent.amountSats || "0"), {
+              providerInvoicing: true,
+              durablePublicHosting: false
+            });
+            delegatedAllocationBlueprint = await buildDelegatedAllocationBlueprint({
+              contentId: intent.contentId,
+              distributableSats: BigInt(String(feeBreakdown.creatorNetSats || "0"))
+            });
+          } catch (allocationErr: any) {
+            app.log.warn(
+              {
+                paymentIntentId: intent.id,
+                contentId: intent.contentId,
+                reason: String(allocationErr?.message || allocationErr || "allocation_blueprint_refresh_failed")
+              },
+              "payments.intent_refresh.delegated_allocation_blueprint_failed"
+            );
+          }
           const delegated = await requestDelegatedProviderPaymentIntent({
             creatorNodeId: creatorIdentity.nodeId,
             contentId: intent.contentId,
@@ -29703,7 +29975,9 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
             needsDurablePublicHosting: false,
             payoutDestinationType: payoutDestination?.effectiveDestinationType || null,
             payoutDestinationSummary: payoutDestination?.effectiveDestinationSummary || null,
-            providerRemitMode: payoutDestination?.providerRemitMode || null
+            providerRemitMode: payoutDestination?.providerRemitMode || null,
+            splitVersionId: delegatedAllocationBlueprint?.splitVersionId || null,
+            participantAllocations: delegatedAllocationBlueprint?.participants || []
           });
           const minExpiryMs = Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000;
           const existingExpiryMs = intent.receiptTokenExpiresAt ? new Date(intent.receiptTokenExpiresAt).getTime() : 0;
