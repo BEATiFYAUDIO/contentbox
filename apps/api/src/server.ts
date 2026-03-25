@@ -29626,6 +29626,102 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
       return intent;
     }
 
+    const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === intent.contentId);
+    if (delegatedPublish) {
+      try {
+        const content = await prisma.contentItem.findUnique({
+          where: { id: intent.contentId },
+          select: { ownerUserId: true }
+        });
+        if (content?.ownerUserId) {
+          const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
+          const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId).catch(() => null);
+          const delegated = await requestDelegatedProviderPaymentIntent({
+            creatorNodeId: creatorIdentity.nodeId,
+            contentId: intent.contentId,
+            amountSats: String(intent.amountSats || "0"),
+            paymentIntentId: intent.id,
+            buyerSessionId: null,
+            needsProviderInvoicing: true,
+            needsDurablePublicHosting: false,
+            payoutDestinationType: payoutDestination?.effectiveDestinationType || null,
+            payoutDestinationSummary: payoutDestination?.effectiveDestinationSummary || null,
+            providerRemitMode: payoutDestination?.providerRemitMode || null
+          });
+          const minExpiryMs = Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000;
+          const existingExpiryMs = intent.receiptTokenExpiresAt ? new Date(intent.receiptTokenExpiresAt).getTime() : 0;
+          const nextExpiry = existingExpiryMs >= minExpiryMs ? new Date(existingExpiryMs) : new Date(minExpiryMs);
+          const delegatedProviderId = `providerpi:${delegated.paymentIntentId}`;
+          await prisma.paymentIntent.update({
+            where: { id: intent.id },
+            data: {
+              bolt11: delegated.bolt11,
+              providerId: delegatedProviderId,
+              lightningExpiresAt: null,
+              receiptToken: intent.receiptToken || crypto.randomBytes(24).toString("hex"),
+              receiptTokenExpiresAt: nextExpiry
+            }
+          });
+
+          const existingProviderIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
+          const fallbackFee = computeProviderFeeBreakdown(String(intent.amountSats || "0"), {
+            providerInvoicing: true,
+            durablePublicHosting: false
+          });
+          const payoutPolicy = normalizeProviderFallbackPolicy(
+            existingProviderIntent?.payoutPolicy,
+            existingProviderIntent?.allowProviderFallback
+          );
+          upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
+            providerNodeId: delegatedPublish.providerNodeId,
+            creatorNodeId: delegatedPublish.creatorNodeId,
+            contentId: intent.contentId,
+            paymentIntentId: intent.id,
+            bolt11: delegated.bolt11,
+            providerInvoiceRef: delegated.providerInvoiceRef || existingProviderIntent?.providerInvoiceRef || null,
+            amountSats: String(intent.amountSats || "0"),
+            grossAmountSats: existingProviderIntent?.grossAmountSats || fallbackFee.grossAmountSats,
+            providerInvoicingFeeSats: existingProviderIntent?.providerInvoicingFeeSats || delegated.providerInvoicingFeeSats || fallbackFee.providerInvoicingFeeSats,
+            providerDurableHostingFeeSats:
+              existingProviderIntent?.providerDurableHostingFeeSats || delegated.providerDurableHostingFeeSats || fallbackFee.providerDurableHostingFeeSats,
+            providerFeeSats: existingProviderIntent?.providerFeeSats || delegated.providerFeeSats || fallbackFee.providerFeeSats,
+            creatorNetSats: existingProviderIntent?.creatorNetSats || delegated.creatorNetSats || fallbackFee.creatorNetSats,
+            status: "issued",
+            payoutStatus: existingProviderIntent?.payoutStatus || "pending",
+            payoutRail: payoutDestination?.effectivePayoutRail || "provider_custody",
+            payoutDestinationType: payoutDestination?.effectiveDestinationType || null,
+            payoutDestinationSummary: payoutDestination?.effectiveDestinationSummary || null,
+            providerRemitMode: payoutDestination?.providerRemitMode || null,
+            payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
+            payoutPolicy: payoutPolicy.payoutPolicy,
+            allowProviderFallback: payoutPolicy.allowProviderFallback,
+            payoutSummaryStatus: existingProviderIntent?.payoutSummaryStatus || "pending",
+            payoutReference: existingProviderIntent?.payoutReference || null,
+            remittedAt: existingProviderIntent?.remittedAt || null,
+            payoutLastError: null,
+            remittanceAttemptId: existingProviderIntent?.remittanceAttemptId || null,
+            remittanceLockedAt: existingProviderIntent?.remittanceLockedAt || null,
+            remittanceLastCheckedAt: existingProviderIntent?.remittanceLastCheckedAt || null,
+            remittanceAttempts: existingProviderIntent?.remittanceAttempts || 0,
+            paymentReceiptId: existingProviderIntent?.paymentReceiptId || null,
+            buyerSessionId: existingProviderIntent?.buyerSessionId || null,
+            paidAt: existingProviderIntent?.paidAt || null
+          });
+          return (await prisma.paymentIntent.findUnique({ where: { id: intent.id } })) || intent;
+        }
+      } catch (e: any) {
+        app.log.warn(
+          {
+            paymentIntentId: intent.id,
+            contentId: intent.contentId,
+            reason: String(e?.code || e?.message || "delegated_invoice_refresh_failed")
+          },
+          "payments.intent_refresh.delegated_invoice_failed"
+        );
+        return intent;
+      }
+    }
+
     const created = await createLightningInvoiceWithRetry(intent.amountSats, memo, {
       route: "/api/payments/intents/:id/refresh",
       paymentIntentId: intent.id,
