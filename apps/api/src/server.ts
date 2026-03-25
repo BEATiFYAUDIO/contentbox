@@ -3826,7 +3826,40 @@ async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string):
 }
 
 async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentRecord) {
-  if (intent.status !== "paid" || intent.paymentReceiptId) return intent;
+  if (intent.status !== "paid") return intent;
+  if (intent.paymentReceiptId) {
+    const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+    const settledExisting = intent;
+    try {
+      await ensureParticipantPayoutRowsForProviderIntent(settledExisting);
+    } catch (e: any) {
+      app.log.warn(
+        {
+          paymentIntentId: settledExisting.paymentIntentId,
+          providerPaymentIntentId: settledExisting.id,
+          error: String(e?.message || e || "participant_payout_snapshot_failed")
+        },
+        "providerRemittance.participant_snapshot_failed"
+      );
+    }
+    const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settledExisting.id).catch(() => settledExisting.payoutSummaryStatus || "pending");
+    const withSummaryExisting =
+      payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutSummaryEnabled
+        ? updateProviderPaymentIntent(settledExisting.id, {
+            payoutSummaryStatus
+          }) || settledExisting
+        : settledExisting;
+    if (withSummaryExisting.status === "paid" && withSummaryExisting.providerRemitMode === "auto_forward") {
+      if (withSummaryExisting.payoutExecutionMode === "participant") {
+        if (payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutExecutionEnabled) {
+          await executeParticipantPayoutRowsForIntent(withSummaryExisting, "provider_settlement_participant_existing_receipt");
+        }
+        return withSummaryExisting;
+      }
+      return executeCreatorRemittance(withSummaryExisting, "provider_settlement_existing_receipt");
+    }
+    return withSummaryExisting;
+  }
   const paidAt = intent.paidAt || new Date().toISOString();
   const paymentReceiptId = `payr_${crypto.randomBytes(8).toString("hex")}`;
   createProviderPaymentReceipt({
