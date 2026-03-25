@@ -24302,7 +24302,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     });
 
-    if (delegatedPublish) {
+    const providerBackedInvoice = Boolean(lightning?.providerId && String(lightning.providerId).startsWith("providerpi:"));
+    if (delegatedPublish || providerBackedInvoice) {
       const fee = computeProviderFeeBreakdown(amountSats.toString(), {
         providerInvoicing: serviceProfile.needsProviderInvoicing,
         durablePublicHosting: serviceProfile.needsDurablePublicHosting
@@ -24312,9 +24313,16 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         providerIntent?.payoutPolicy,
         providerIntent?.allowProviderFallback
       );
+      const providerCfg = getNetworkProviderConfig();
+      const configuredProviderNodeId = String(providerCfg.providerNodeId || "").trim() || null;
+      const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId).catch(() => null);
       upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
-        providerNodeId: delegatedPublish.providerNodeId,
-        creatorNodeId: delegatedPublish.creatorNodeId,
+        providerNodeId:
+          configuredProviderNodeId ||
+          delegatedPublish?.providerNodeId ||
+          providerIntent?.providerNodeId ||
+          resolveNodeIdForRuntimeStatus(),
+        creatorNodeId: creatorIdentity?.nodeId || delegatedPublish?.creatorNodeId || providerIntent?.creatorNodeId || resolveNodeIdForRuntimeStatus(),
         contentId,
         paymentIntentId: intent.id,
         bolt11: lightning?.bolt11 || null,
