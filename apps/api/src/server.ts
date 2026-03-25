@@ -3963,6 +3963,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
             status: "pending" as ParticipantPayoutStatus,
             readinessReason: identityGate.readinessReason
           };
+      const resolvedStatus: ParticipantPayoutStatus = terminalStatus || parseParticipantPayoutStatus(readiness.status);
       if (canBypassInviteGate) {
         app.log.warn(
           {
@@ -3980,7 +3981,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
         where: { allocationId: allocation.id },
         update: {
           payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
-          status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
+          status: resolvedStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
           destinationSummary: readiness.destinationSummary,
@@ -3992,7 +3993,8 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           payoutReference: intent.payoutReference,
           lastError: intent.payoutLastError,
           blockedReason: readiness.blockedReason,
-          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null,
+          ...(resolvedStatus === "ready" || resolvedStatus === "forwarding" ? { nextRetryAt: null } : {})
         },
         create: {
           allocationId: allocation.id,
@@ -4000,7 +4002,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           paymentIntentId: intent.paymentIntentId,
           payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
           amountSats: BigInt(String(allocation.amountSats || "0")),
-          status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
+          status: resolvedStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
           destinationSummary: readiness.destinationSummary,
