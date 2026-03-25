@@ -5238,6 +5238,35 @@ async function requestDelegatedProviderPaymentIntent(input: {
     err.code = "PROVIDER_NOT_READY";
     throw err;
   }
+  const expectedProviderNodeId = String(providerCfg.providerNodeId || "").trim();
+  if (expectedProviderNodeId) {
+    try {
+      const descriptorRes = await fetch(`${providerUrl}/.well-known/certifyd-node`, {
+        method: "GET"
+      } as any);
+      const descriptorJson: any = await descriptorRes.json().catch(() => null);
+      const observedProviderNodeId = String(descriptorJson?.nodeId || "").trim();
+      if (!descriptorRes.ok || !observedProviderNodeId || observedProviderNodeId !== expectedProviderNodeId) {
+        const err: any = new Error("provider_node_mismatch");
+        err.code = "PROVIDER_NODE_MISMATCH";
+        err.status = descriptorRes.status || 0;
+        err.body = {
+          expectedProviderNodeId,
+          observedProviderNodeId: observedProviderNodeId || null
+        };
+        throw err;
+      }
+    } catch (e: any) {
+      if (String(e?.code || "").trim().toUpperCase() === "PROVIDER_NODE_MISMATCH") throw e;
+      const err: any = new Error("provider_descriptor_unavailable");
+      err.code = "PROVIDER_DESCRIPTOR_UNAVAILABLE";
+      err.status = Number(e?.status || 0) || 0;
+      err.body = {
+        expectedProviderNodeId
+      };
+      throw err;
+    }
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
@@ -5681,6 +5710,15 @@ async function resolveProviderExecutionAuthorityOnCurrentNode(): Promise<{
       ok: false,
       code: "PROVIDER_NOT_READY",
       message: "Provider payments are not configured on this node.",
+      configuredProviderNodeId,
+      localNodeId
+    };
+  }
+  if (configuredProviderNodeId && !localNodeId) {
+    return {
+      ok: false,
+      code: "LOCAL_NODE_ID_UNAVAILABLE",
+      message: "Local node identity is unavailable for provider authority check.",
       configuredProviderNodeId,
       localNodeId
     };
@@ -24119,6 +24157,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             lightningReason = "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED";
           } else if (providerCode === "PROVIDER_NOT_READY") {
             lightningReason = "PROVIDER_NOT_READY";
+          } else if (providerCode === "PROVIDER_NODE_MISMATCH") {
+            lightningReason = "PROVIDER_NODE_MISMATCH";
+          } else if (providerCode === "PROVIDER_DESCRIPTOR_UNAVAILABLE") {
+            lightningReason = "PROVIDER_DESCRIPTOR_UNAVAILABLE";
           } else if (providerCode === "PROVIDER_ROUTE_MISMATCH" || providerCode === "PROVIDER_HTTP_404" || providerCode === "PROVIDER_HTTP_405") {
             lightningReason = "PROVIDER_ROUTE_MISMATCH";
           } else if (providerCode === "PROVIDER_INVALID_RESPONSE") {
@@ -24170,6 +24212,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         lightningReason === "PROVIDER_DELEGATED_PUBLISH_REQUIRED" ||
         lightningReason === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED" ||
         lightningReason === "PROVIDER_NOT_READY" ||
+        lightningReason === "PROVIDER_NODE_MISMATCH" ||
+        lightningReason === "PROVIDER_DESCRIPTOR_UNAVAILABLE" ||
         lightningReason === "PROVIDER_ROUTE_MISMATCH" ||
         lightningReason === "PROVIDER_INVALID_RESPONSE"
       ) {
@@ -24182,6 +24226,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               ? "PROVIDER_RELATIONSHIP_REQUIRED"
               : lightningReason === "PROVIDER_NOT_READY"
                 ? "PROVIDER_NOT_READY"
+              : lightningReason === "PROVIDER_NODE_MISMATCH"
+                ? "PROVIDER_NODE_MISMATCH"
+              : lightningReason === "PROVIDER_DESCRIPTOR_UNAVAILABLE"
+                ? "PROVIDER_DESCRIPTOR_UNAVAILABLE"
                 : lightningReason === "PROVIDER_ROUTE_MISMATCH"
                   ? "PROVIDER_ROUTE_MISMATCH"
                 : "PROVIDER_INVALID_RESPONSE";
@@ -24205,9 +24253,13 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               ? "Provider relationship is not ready for delegated payments."
               : mappedCode === "PROVIDER_NOT_READY"
                 ? "Provider is configured but not ready to issue delegated invoices."
-                : mappedCode === "PROVIDER_ROUTE_MISMATCH"
-                  ? "Provider delegated invoice route is unavailable or mismatched."
-                : "Provider returned an invalid payment response.",
+              : mappedCode === "PROVIDER_NODE_MISMATCH"
+                ? "Provider URL does not match the configured provider node."
+              : mappedCode === "PROVIDER_DESCRIPTOR_UNAVAILABLE"
+                ? "Provider identity descriptor is unavailable."
+              : mappedCode === "PROVIDER_ROUTE_MISMATCH"
+                ? "Provider delegated invoice route is unavailable or mismatched."
+              : "Provider returned an invalid payment response.",
           details: { lightningReason }
         });
       }
