@@ -29626,13 +29626,45 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
       return intent;
     }
 
+    const content = await prisma.contentItem.findUnique({
+      where: { id: intent.contentId },
+      select: { ownerUserId: true }
+    });
     const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === intent.contentId);
-    if (delegatedPublish) {
-      try {
-        const content = await prisma.contentItem.findUnique({
-          where: { id: intent.contentId },
-          select: { ownerUserId: true }
+    const providerCfg = getNetworkProviderConfig();
+    const providerTrust = evaluateProviderExecutionTrustReadiness();
+    let shouldDelegate = Boolean(delegatedPublish);
+    let delegatedProviderNodeId = String(delegatedPublish?.providerNodeId || "").trim() || null;
+
+    // Fallback delegated detection for /api/payments/intents refresh flow:
+    // if delegated-publish state is missing locally, still route through provider
+    // when capability truth says provider invoicing is required.
+    if (!shouldDelegate && content?.ownerUserId) {
+      const providerTargetReady =
+        providerCfg.enabled &&
+        hasProviderPaymentTarget(providerCfg) &&
+        Boolean(String(providerCfg.providerUrl || "").trim());
+      if (providerTargetReady && providerTrust.allowed) {
+        const capabilityCtx = getCapabilityContext();
+        const sellerPaymentsReadiness = await getPaymentsReadiness(content.ownerUserId).catch(() => null);
+        const localLndReady =
+          capabilityCtx.paymentsMode === "node" &&
+          capabilityCtx.nodeMode === "lan" &&
+          Boolean(sellerPaymentsReadiness?.lightning?.ready);
+        const serviceProfile = resolveProviderServiceProfile({
+          hasLocalInvoiceMinting: Boolean(sellerPaymentsReadiness?.lightning?.ready),
+          localSovereignReady: localLndReady,
+          providerConnected: isNetworkProviderConfigured(providerCfg),
+          providerCfg,
+          ctx: capabilityCtx
         });
+        shouldDelegate = Boolean(serviceProfile.needsProviderInvoicing);
+        delegatedProviderNodeId = String(providerCfg.providerNodeId || "").trim() || null;
+      }
+    }
+
+    if (shouldDelegate) {
+      try {
         if (content?.ownerUserId) {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
           const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId).catch(() => null);
@@ -29673,8 +29705,8 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
             existingProviderIntent?.allowProviderFallback
           );
           upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
-            providerNodeId: delegatedPublish.providerNodeId,
-            creatorNodeId: delegatedPublish.creatorNodeId,
+            providerNodeId: delegatedProviderNodeId || delegatedPublish?.providerNodeId || existingProviderIntent?.providerNodeId || "node:provider-unresolved",
+            creatorNodeId: creatorIdentity.nodeId,
             contentId: intent.contentId,
             paymentIntentId: intent.id,
             bolt11: delegated.bolt11,
