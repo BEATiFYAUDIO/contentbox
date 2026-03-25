@@ -4404,9 +4404,26 @@ async function resolvePayoutExecutionRuntime(userId: string | null): Promise<{
   if (!payoutRuntime.participantPayoutExecutionEnabled) {
     return { executionState: "provider_pending", blockReason: "PARTICIPANT_PAYOUT_EXECUTION_DISABLED" };
   }
-  const lightning = await resolveLightningCapabilityRuntime(userId);
-  if (!lightning.canSend) {
-    return { executionState: "blocked", blockReason: lightning.sendFailureReason || "LND_SEND_NOT_CONFIGURED" };
+  // Provider-side participant remittance must be gated by provider node send capability,
+  // not by creator-facing paymentsMode posture.
+  const lndStatus = await getLightningNodeConfigStatus(prisma as any).catch(() => null);
+  const lndReadiness = await getLightningReadiness(prisma as any).catch(() => null);
+  const stored = await getStoredLndConfig(prisma as any).catch(() => null);
+  const envRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "") || null;
+  const envMac = normalizeLndMacaroonHex();
+  const lndRestUrl = stored?.restUrl || envRest || null;
+  const lndMacaroonHex = stored?.macaroonHex || envMac || null;
+  const hasTransport = Boolean(lndRestUrl && lndMacaroonHex);
+  const connected = Boolean(lndReadiness?.nodeReachable);
+  const channelCount = Math.max(0, Number(lndReadiness?.channels?.count || 0));
+  const canSend = Boolean(hasTransport && connected && channelCount > 0);
+  if (!canSend) {
+    let reason: string = "LND_SEND_NOT_CONFIGURED";
+    if (!hasTransport) reason = "LND_SEND_NOT_CONFIGURED";
+    else if (lndStatus && !lndStatus.decryptOk) reason = "LND_SEND_KEY_MISMATCH";
+    else if (!connected) reason = "LND_SEND_NODE_UNREACHABLE";
+    else if (channelCount <= 0) reason = "LND_SEND_NO_CHANNELS";
+    return { executionState: "blocked", blockReason: reason };
   }
   return { executionState: "ready", blockReason: null };
 }
