@@ -9307,6 +9307,9 @@ function registerPublicRoutes(appPublic: any) {
         current = await ensureProviderPaymentSettlement(patched || current);
       }
     }
+    if (current.status === "paid") {
+      current = await ensureProviderPaymentSettlement(current);
+    }
     return reply.send({
       ok: true,
       paymentIntentId: current.paymentIntentId,
@@ -12776,6 +12779,9 @@ app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: 
       });
       current = await ensureProviderPaymentSettlement(patched || current);
     }
+  }
+  if (current.status === "paid") {
+    current = await ensureProviderPaymentSettlement(current);
   }
   return reply.send({
     ok: true,
