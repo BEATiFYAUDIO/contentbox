@@ -4424,6 +4424,10 @@ async function buildRemittanceMemo(args: {
     } catch {
       title = null;
     }
+    if (!title) {
+      const delegated = listProviderDelegatedPublishes().find((row) => String(row.contentId || "").trim() === contentId);
+      title = String(delegated?.title || "").trim() || null;
+    }
   }
   if (title) return `${args.prefix} ${title} ${shortIntent}`;
   if (contentId) return `${args.prefix} ${contentId.slice(0, 8)} ${shortIntent}`;
