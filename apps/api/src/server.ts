@@ -3933,13 +3933,39 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           participantRef: executionParticipantRef
         }
       );
+      const canBypassInviteGate =
+        !identityGate.active &&
+        identityGate.readinessReason === "INVITE_UNRESOLVED" &&
+        intent.payoutExecutionMode === "participant" &&
+        intent.providerRemitMode === "auto_forward" &&
+        baseReadiness.status === "ready" &&
+        String(baseReadiness.destinationType || "").trim().toLowerCase() === "lightning_address" &&
+        String(baseReadiness.destinationSummary || "").includes("@");
       const readiness = identityGate.active
         ? baseReadiness
+        : canBypassInviteGate
+          ? {
+              ...baseReadiness,
+              readinessReason: "INVITE_UNRESOLVED_BYPASSED"
+            }
         : {
             ...baseReadiness,
             status: "pending" as ParticipantPayoutStatus,
             readinessReason: identityGate.readinessReason
           };
+      if (canBypassInviteGate) {
+        app.log.warn(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantRef: executionParticipantRef,
+            participantUserId: allocation.participantUserId || null,
+            splitParticipantId: allocation.splitParticipantId || null,
+            destinationSummary: baseReadiness.destinationSummary || null
+          },
+          "participantIdentityGate.invite_unresolved_bypassed"
+        );
+      }
       await prisma.participantPayout.upsert({
         where: { allocationId: allocation.id },
         update: {
