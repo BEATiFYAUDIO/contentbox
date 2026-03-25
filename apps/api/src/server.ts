@@ -3365,6 +3365,7 @@ function upsertProviderPaymentIntentByPaymentIntentId(
       updatedAt: new Date().toISOString()
     };
     writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
+    syncProviderPaymentReceiptFromIntent(rows[idx]);
     return rows[idx];
   }
   const created = createProviderPaymentIntent(input);
@@ -3462,30 +3463,47 @@ function updateProviderPaymentIntent(
       updatedAt: new Date().toISOString()
     };
   writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
+  syncProviderPaymentReceiptFromIntent(rows[idx]);
   return rows[idx];
 }
 
 function listProviderPaymentReceipts(): ProviderPaymentReceiptRecord[] {
+  const intentByPaymentIntentId = new Map(
+    listProviderPaymentIntents().map((intent) => [intent.paymentIntentId, intent] as const)
+  );
   const rows = readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE).map((row) => {
+    const intent = intentByPaymentIntentId.get(row.paymentIntentId);
     const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0", {
       providerInvoicing: true,
       durablePublicHosting: false
     });
     return {
       ...row,
-      grossAmountSats: row.grossAmountSats || fee.grossAmountSats,
-      providerInvoicingFeeSats: row.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
-      providerDurableHostingFeeSats: row.providerDurableHostingFeeSats || fee.providerDurableHostingFeeSats,
-      providerFeeSats: row.providerFeeSats || fee.providerFeeSats,
-      creatorNetSats: row.creatorNetSats || fee.creatorNetSats,
-      payoutStatus: row.payoutStatus || "pending",
-      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail,
-      payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
-      payoutDestinationSummary: row.payoutDestinationSummary || null,
-      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "auto_forward",
-      payoutReference: row.payoutReference || null,
-      remittedAt: row.remittedAt || null,
-      payoutLastError: row.payoutLastError || null
+      providerNodeId: intent?.providerNodeId || row.providerNodeId,
+      creatorNodeId: intent?.creatorNodeId || row.creatorNodeId,
+      contentId: intent?.contentId ?? row.contentId,
+      bolt11: intent?.bolt11 || row.bolt11,
+      amountSats: intent?.amountSats || row.amountSats,
+      grossAmountSats: intent?.grossAmountSats || row.grossAmountSats || fee.grossAmountSats,
+      providerInvoicingFeeSats:
+        intent?.providerInvoicingFeeSats || row.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
+      providerDurableHostingFeeSats:
+        intent?.providerDurableHostingFeeSats || row.providerDurableHostingFeeSats || fee.providerDurableHostingFeeSats,
+      providerFeeSats: intent?.providerFeeSats || row.providerFeeSats || fee.providerFeeSats,
+      creatorNetSats: intent?.creatorNetSats || row.creatorNetSats || fee.creatorNetSats,
+      payoutStatus: intent?.payoutStatus || row.payoutStatus || "pending",
+      payoutRail: intent?.payoutRail ?? (row.payoutRail === undefined ? "provider_custody" : row.payoutRail),
+      payoutDestinationType: parsePayoutDestinationType(
+        intent?.payoutDestinationType !== undefined ? intent.payoutDestinationType : row.payoutDestinationType || null
+      ),
+      payoutDestinationSummary: intent?.payoutDestinationSummary || row.payoutDestinationSummary || null,
+      providerRemitMode:
+        parseProviderRemitMode(intent?.providerRemitMode || null) ||
+        parseProviderRemitMode(row.providerRemitMode || null) ||
+        "auto_forward",
+      payoutReference: intent?.payoutReference || row.payoutReference || null,
+      remittedAt: intent?.remittedAt || row.remittedAt || null,
+      payoutLastError: intent?.payoutLastError || row.payoutLastError || null
     };
   });
   return rows.sort((a, b) => String(b.paidAt || b.updatedAt || "").localeCompare(String(a.paidAt || a.updatedAt || "")));
@@ -3507,6 +3525,36 @@ function createProviderPaymentReceipt(
   rows.unshift(created);
   writeJsonArrayState(PROVIDER_PAYMENT_RECEIPTS_FILE, rows);
   return created;
+}
+
+function syncProviderPaymentReceiptFromIntent(intent: ProviderPaymentIntentRecord): void {
+  const rows = readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE);
+  const idx = rows.findIndex((row) => row.paymentIntentId === intent.paymentIntentId);
+  if (idx < 0) return;
+  rows[idx] = {
+    ...rows[idx],
+    providerNodeId: intent.providerNodeId,
+    creatorNodeId: intent.creatorNodeId,
+    contentId: intent.contentId,
+    bolt11: intent.bolt11,
+    amountSats: intent.amountSats,
+    grossAmountSats: intent.grossAmountSats,
+    providerInvoicingFeeSats: intent.providerInvoicingFeeSats,
+    providerDurableHostingFeeSats: intent.providerDurableHostingFeeSats,
+    providerFeeSats: intent.providerFeeSats,
+    creatorNetSats: intent.creatorNetSats,
+    payoutStatus: intent.payoutStatus,
+    payoutRail: intent.payoutRail,
+    payoutDestinationType: intent.payoutDestinationType,
+    payoutDestinationSummary: intent.payoutDestinationSummary,
+    providerRemitMode: intent.providerRemitMode,
+    payoutReference: intent.payoutReference,
+    remittedAt: intent.remittedAt,
+    payoutLastError: intent.payoutLastError,
+    paidAt: intent.paidAt || rows[idx].paidAt,
+    updatedAt: new Date().toISOString()
+  };
+  writeJsonArrayState(PROVIDER_PAYMENT_RECEIPTS_FILE, rows);
 }
 
 async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaymentIntentRecord): Promise<void> {
