@@ -1797,6 +1797,11 @@ type ProviderDelegatedAllocationBlueprintParticipant = {
   role: string | null;
   roleKey: string;
   bps: number;
+  destinationType?: string | null;
+  destinationSummary?: string | null;
+  destinationValue?: string | null;
+  destinationVerified?: boolean;
+  destinationVerificationError?: string | null;
 };
 
 type ProviderDelegatedAllocationBlueprintRecord = {
@@ -1906,7 +1911,12 @@ type ParticipantDestinationType = "lightning_address" | "lnurl" | "lnd";
 type ParticipantDestinationResolveResult = {
   destinationType: string | null;
   destinationSummary: string | null;
-  destinationSource: "participant_payout_destination" | "identity_lightning_address" | "provider_snapshot" | null;
+  destinationSource:
+    | "participant_payout_destination"
+    | "identity_lightning_address"
+    | "provider_snapshot"
+    | "delegated_blueprint"
+    | null;
   destinationFingerprint: string | null;
   destinationResolvedAt: Date | null;
   isVerified: boolean;
@@ -2380,6 +2390,48 @@ async function resolveParticipantDestinationHandshake(input: {
   return null;
 }
 
+function resolveDelegatedBlueprintDestination(input: {
+  paymentIntentId: string | null;
+  participantRef?: string | null;
+  splitParticipantId?: string | null;
+  participantUserId?: string | null;
+}): ParticipantDestinationResolveResult | null {
+  const paymentIntentId = asString(input.paymentIntentId || "").trim();
+  if (!paymentIntentId) return null;
+  const blueprint = getProviderDelegatedAllocationBlueprintByPaymentIntentId(paymentIntentId);
+  if (!blueprint?.participants?.length) return null;
+  const participantRef = asString(input.participantRef || "").trim();
+  const splitParticipantId = asString(input.splitParticipantId || "").trim();
+  const participantUserId = asString(input.participantUserId || "").trim();
+  const match =
+    blueprint.participants.find((row) => participantRef && String(row.participantRef || "").trim() === participantRef) ||
+    blueprint.participants.find(
+      (row) => splitParticipantId && String(row.splitParticipantId || "").trim() === splitParticipantId
+    ) ||
+    blueprint.participants.find(
+      (row) => participantUserId && String(row.participantUserId || "").trim() === participantUserId
+    ) ||
+    null;
+  if (!match) return null;
+  const destinationType = parseParticipantDestinationType(match.destinationType || null);
+  const destinationValue = asString(match.destinationValue || "").trim() || null;
+  const destinationSummary =
+    asString(match.destinationSummary || "").trim() ||
+    (destinationType && destinationValue ? summarizeParticipantDestination(destinationType, destinationValue) : null);
+  if (!destinationType || !destinationSummary) return null;
+  return {
+    destinationType,
+    destinationSummary,
+    destinationSource: "delegated_blueprint",
+    destinationFingerprint: computeDestinationFingerprint(destinationType, destinationSummary),
+    destinationResolvedAt: null,
+    isVerified: Boolean(match.destinationVerified),
+    verificationStatus: match.destinationVerified ? "verified" : "failed",
+    verificationError: asString(match.destinationVerificationError || "").trim() || null,
+    destinationValue
+  };
+}
+
 function normalizeParticipantDestinationForPayout(
   resolved: ParticipantDestinationResolveResult | null
 ): {
@@ -2581,6 +2633,30 @@ async function resolveParticipantPayoutReadinessForAllocation(
       destinationSource: registry.destinationSource,
       destinationFingerprint: registry.destinationFingerprint,
       destinationResolvedAt: registry.destinationResolvedAt,
+      blockedReason: null
+    };
+  }
+
+  const delegatedBlueprintDestination = resolveDelegatedBlueprintDestination({
+    paymentIntentId: intent.paymentIntentId,
+    participantRef: allocationCtx?.participantRef || null,
+    splitParticipantId: allocationCtx?.splitParticipantId || null,
+    participantUserId
+  });
+  if (delegatedBlueprintDestination) {
+    const delegatedNormalized = normalizeParticipantDestinationForPayout(delegatedBlueprintDestination);
+    return {
+      status:
+        delegatedNormalized.ready && delegatedNormalized.payableMode === "lightning_address" ? "ready" : "pending",
+      readinessReason:
+        delegatedNormalized.ready && delegatedNormalized.payableMode === "lightning_address"
+          ? null
+          : delegatedNormalized.reason || "DELEGATED_BLUEPRINT_DESTINATION_UNUSABLE",
+      destinationType: delegatedBlueprintDestination.destinationType,
+      destinationSummary: delegatedNormalized.destinationSummary || delegatedBlueprintDestination.destinationSummary,
+      destinationSource: delegatedBlueprintDestination.destinationSource,
+      destinationFingerprint: delegatedBlueprintDestination.destinationFingerprint,
+      destinationResolvedAt: delegatedBlueprintDestination.destinationResolvedAt,
       blockedReason: null
     };
   }
@@ -3355,7 +3431,12 @@ function upsertProviderDelegatedAllocationBlueprintByPaymentIntentId(
       participantEmail: String(row.participantEmail || "").trim() || null,
       role: String(row.role || "").trim() || null,
       roleKey: String(row.roleKey || "").trim(),
-      bps: Math.max(0, Math.round(Number(row.bps || 0)))
+      bps: Math.max(0, Math.round(Number(row.bps || 0))),
+      destinationType: parseParticipantDestinationType(row.destinationType || null),
+      destinationSummary: String(row.destinationSummary || "").trim() || null,
+      destinationValue: String(row.destinationValue || "").trim() || null,
+      destinationVerified: Boolean(row.destinationVerified),
+      destinationVerificationError: String(row.destinationVerificationError || "").trim() || null
     }))
     .filter((row) => row.participantRef && row.roleKey && row.bps > 0);
   const next: ProviderDelegatedAllocationBlueprintRecord = {
@@ -5365,6 +5446,11 @@ async function requestDelegatedProviderPaymentIntent(input: {
     role?: string | null;
     roleKey: string;
     bps: number;
+    destinationType?: string | null;
+    destinationSummary?: string | null;
+    destinationValue?: string | null;
+    destinationVerified?: boolean;
+    destinationVerificationError?: string | null;
   }>;
 }): Promise<{
   paymentIntentId: string;
@@ -9342,6 +9428,11 @@ function registerPublicRoutes(appPublic: any) {
       role?: string | null;
       roleKey?: string | null;
       bps?: number | string | null;
+      destinationType?: string | null;
+      destinationSummary?: string | null;
+      destinationValue?: string | null;
+      destinationVerified?: boolean | null;
+      destinationVerificationError?: string | null;
     }>;
   };
     const creatorNodeId = String(body.creatorNodeId || "").trim();
@@ -9440,6 +9531,32 @@ function registerPublicRoutes(appPublic: any) {
       buyerSessionId: String(body.buyerSessionId || "").trim() || null,
       paidAt: null
     });
+    const participantAllocations = Array.isArray(body.participantAllocations)
+      ? body.participantAllocations
+      : [];
+    if (participantAllocations.length > 0) {
+      upsertProviderDelegatedAllocationBlueprintByPaymentIntentId(paymentIntentId, {
+        creatorNodeId,
+        contentId,
+        splitVersionId: String(body.splitVersionId || "").trim() || null,
+        allocationVersion: 1,
+        participants: participantAllocations.map((row) => ({
+          participantRef: String(row?.participantRef || "").trim(),
+          participantId: String(row?.participantId || "").trim() || null,
+          splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
+          participantUserId: String(row?.participantUserId || "").trim() || null,
+          participantEmail: String(row?.participantEmail || "").trim() || null,
+          role: String(row?.role || "").trim() || null,
+          roleKey: String(row?.roleKey || "").trim(),
+          bps: Math.max(0, Math.round(Number(row?.bps || 0))),
+          destinationType: String(row?.destinationType || "").trim() || null,
+          destinationSummary: String(row?.destinationSummary || "").trim() || null,
+          destinationValue: String(row?.destinationValue || "").trim() || null,
+          destinationVerified: Boolean(row?.destinationVerified),
+          destinationVerificationError: String(row?.destinationVerificationError || "").trim() || null
+        }))
+      });
+    }
     return reply.send({
       ok: true,
       paymentIntentId: created.paymentIntentId,
@@ -9479,6 +9596,22 @@ function registerPublicRoutes(appPublic: any) {
     }
     if (current.status === "paid") {
       current = await ensureProviderPaymentSettlement(current);
+      if (current.payoutExecutionMode === "participant" && current.providerRemitMode === "auto_forward") {
+        try {
+          await executeParticipantPayoutRowsForIntent(current, "provider_status_participant_reconcile");
+          const refreshed = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+          if (refreshed) current = refreshed;
+        } catch (error: any) {
+          app.log.warn(
+            {
+              paymentIntentId: current.paymentIntentId,
+              providerPaymentIntentId: current.id,
+              error: String(error?.message || error || "participant_reconcile_failed")
+            },
+            "providerRemittance.participant_reconcile_failed"
+          );
+        }
+      }
     }
     return reply.send({
       ok: true,
@@ -12825,6 +12958,11 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
       role?: string | null;
       roleKey?: string | null;
       bps?: number | string | null;
+      destinationType?: string | null;
+      destinationSummary?: string | null;
+      destinationValue?: string | null;
+      destinationVerified?: boolean | null;
+      destinationVerificationError?: string | null;
     }>;
   };
   const creatorNodeId = String(body.creatorNodeId || "").trim();
@@ -12940,7 +13078,12 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
         participantEmail: String(row?.participantEmail || "").trim() || null,
         role: String(row?.role || "").trim() || null,
         roleKey: String(row?.roleKey || "").trim(),
-        bps: Math.max(0, Math.round(Number(row?.bps || 0)))
+        bps: Math.max(0, Math.round(Number(row?.bps || 0))),
+        destinationType: String(row?.destinationType || "").trim() || null,
+        destinationSummary: String(row?.destinationSummary || "").trim() || null,
+        destinationValue: String(row?.destinationValue || "").trim() || null,
+        destinationVerified: Boolean(row?.destinationVerified),
+        destinationVerificationError: String(row?.destinationVerificationError || "").trim() || null
       }))
     });
   }
@@ -12984,6 +13127,22 @@ app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: 
   }
   if (current.status === "paid") {
     current = await ensureProviderPaymentSettlement(current);
+    if (current.payoutExecutionMode === "participant" && current.providerRemitMode === "auto_forward") {
+      try {
+        await executeParticipantPayoutRowsForIntent(current, "provider_status_participant_reconcile");
+        const refreshed = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+        if (refreshed) current = refreshed;
+      } catch (error: any) {
+        app.log.warn(
+          {
+            paymentIntentId: current.paymentIntentId,
+            providerPaymentIntentId: current.id,
+            error: String(error?.message || error || "participant_reconcile_failed")
+          },
+          "providerRemittance.participant_reconcile_failed"
+        );
+      }
+    }
   }
   return reply.send({
     ok: true,
@@ -27884,7 +28043,32 @@ async function buildDelegatedAllocationBlueprint(input: {
     contentId: input.contentId,
     poolSats: input.distributableSats
   });
-  const participants = computed.allocations
+  const participantsRaw = await Promise.all(
+    computed.allocations.map(async (row) => {
+      const resolved = await resolveParticipantDestinationHandshake({
+        participantUserId: String(row.participantUserId || "").trim() || null,
+        splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+        participantRef: String(row.participantRef || "").trim() || null
+      });
+      const normalized = normalizeParticipantDestinationForPayout(resolved);
+      return {
+        participantRef: String(row.participantRef || "").trim(),
+        participantId: String(row.participantId || "").trim() || null,
+        splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+        participantUserId: String(row.participantUserId || "").trim() || null,
+        participantEmail: String(row.participantEmail || "").trim() || null,
+        role: String(row.role || "").trim() || null,
+        roleKey: String(row.roleKey || "").trim(),
+        bps: Math.max(0, Math.round(Number(row.bps || 0))),
+        destinationType: normalized.destinationType || null,
+        destinationSummary: normalized.destinationSummary || null,
+        destinationValue: normalized.destinationValue || null,
+        destinationVerified: Boolean(resolved?.isVerified),
+        destinationVerificationError: resolved?.verificationError || null
+      };
+    })
+  );
+  const participants = participantsRaw
     .map((row) => ({
       participantRef: String(row.participantRef || "").trim(),
       participantId: String(row.participantId || "").trim() || null,
@@ -27893,7 +28077,12 @@ async function buildDelegatedAllocationBlueprint(input: {
       participantEmail: String(row.participantEmail || "").trim() || null,
       role: String(row.role || "").trim() || null,
       roleKey: String(row.roleKey || "").trim(),
-      bps: Math.max(0, Math.round(Number(row.bps || 0)))
+      bps: Math.max(0, Math.round(Number(row.bps || 0))),
+      destinationType: parseParticipantDestinationType(row.destinationType || null),
+      destinationSummary: String(row.destinationSummary || "").trim() || null,
+      destinationValue: String(row.destinationValue || "").trim() || null,
+      destinationVerified: Boolean(row.destinationVerified),
+      destinationVerificationError: String(row.destinationVerificationError || "").trim() || null
     }))
     .filter((row) => row.participantRef && row.roleKey && row.bps > 0);
   if (!participants.length) return null;
