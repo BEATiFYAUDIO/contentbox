@@ -5705,7 +5705,18 @@ async function resolveProviderExecutionAuthorityOnCurrentNode(): Promise<{
   const configuredProviderNodeId = asString(cfg.providerNodeId || "").trim() || null;
   const localIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
   const localNodeId = asString(localIdentity?.nodeId || "").trim() || null;
+  const hasLocalProviderRole = Boolean(localIdentity?.serviceRoles?.invoiceProvider);
   if (!hasProviderPaymentTarget(cfg)) {
+    // Provider-side public delegated routes may run on a dedicated provider node
+    // without local networkProvider client config. Allow when local node advertises
+    // invoice-provider role.
+    if (hasLocalProviderRole) {
+      return {
+        ok: true,
+        configuredProviderNodeId,
+        localNodeId
+      };
+    }
     return {
       ok: false,
       code: "PROVIDER_NOT_READY",
