@@ -4551,7 +4551,55 @@ async function resolvePayoutExecutionRuntime(userId: string | null): Promise<{
   return { executionState: "ready", blockReason: null };
 }
 
-async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | null; status: string }> {
+type LndSendContext = {
+  entrypoint: "participant_payout" | "creator_remittance";
+  providerPaymentIntentId?: string | null;
+  paymentIntentId?: string | null;
+  participantPayoutId?: string | null;
+  payoutKey?: string | null;
+};
+
+async function payBolt11ViaLnd(
+  bolt11: string,
+  context: LndSendContext
+): Promise<{ paymentHash: string | null; status: string }> {
+  const entrypoint = String(context?.entrypoint || "").trim() || "unknown";
+  app.log.info(
+    {
+      entrypoint,
+      providerPaymentIntentId: context?.providerPaymentIntentId || null,
+      paymentIntentId: context?.paymentIntentId || null,
+      participantPayoutId: context?.participantPayoutId || null
+    },
+    "payoutExecution.send_entrypoint"
+  );
+  if (
+    entrypoint === "participant_payout" &&
+    (!context?.participantPayoutId || !context?.payoutKey || !context?.providerPaymentIntentId || !context?.paymentIntentId)
+  ) {
+    app.log.warn(
+      {
+        entrypoint,
+        providerPaymentIntentId: context?.providerPaymentIntentId || null,
+        paymentIntentId: context?.paymentIntentId || null,
+        participantPayoutId: context?.participantPayoutId || null
+      },
+      "payoutExecution.send_blocked_untracked"
+    );
+    throw new Error("UNTRACKED_PARTICIPANT_SEND_BLOCKED");
+  }
+  if (entrypoint === "participant_payout") {
+    app.log.info(
+      {
+        entrypoint,
+        providerPaymentIntentId: context.providerPaymentIntentId || null,
+        paymentIntentId: context.paymentIntentId || null,
+        participantPayoutId: context.participantPayoutId || null,
+        payoutKey: context.payoutKey || null
+      },
+      "payoutExecution.send_tracked"
+    );
+  }
   const runtime = await resolveLightningCapabilityRuntime(null);
   const lndRest = String(runtime.lndRestUrl || "").trim().replace(/\/+$/, "");
   const hasMacaroon = Boolean(String(runtime.lndMacaroonHex || "").trim());
@@ -4581,6 +4629,16 @@ async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | 
     app.log.info(
       { paymentRequestTag, classifiedStatus: "paid", paymentHashPresent: Boolean(send.paymentHash) },
       "payoutExecution.lnd_send_classified"
+    );
+    app.log.info(
+      {
+        entrypoint,
+        providerPaymentIntentId: context?.providerPaymentIntentId || null,
+        paymentIntentId: context?.paymentIntentId || null,
+        participantPayoutId: context?.participantPayoutId || null,
+        paymentHash: send.paymentHash || null
+      },
+      "payoutExecution.send_payment_hash"
     );
     return send;
   } catch (error: any) {
@@ -4818,11 +4876,19 @@ async function acquireParticipantPayoutLock(id: string): Promise<{
     const paid = await prisma.participantPayout.findFirst({
       where: {
         payoutKey: row.payoutKey,
-        OR: [{ status: "paid" }, { payoutReference: { not: null } }, { remittedAt: { not: null } }]
+        OR: [
+          { status: "paid" },
+          { payoutReference: { not: null } },
+          { remittedAt: { not: null } },
+          { status: "forwarding" }
+        ]
       },
       select: { id: true }
     });
     if (paid) return { ok: false, row, reason: "ALREADY_EXECUTED" };
+  }
+  if (row.status === "pending" && row.payoutReference) {
+    return { ok: false, row, reason: "PENDING_WITH_REFERENCE" };
   }
   if (row.status === "paid" || row.status === "blocked") return { ok: false, row, reason: "TERMINAL_STATUS" };
   if (row.status === "forwarding") return { ok: false, row, reason: "ALREADY_FORWARDING" };
@@ -4972,6 +5038,23 @@ async function markParticipantPayoutFailedAfterVerification(
 }
 
 async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentIntentRecord, reason: string) {
+  const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode().catch(() => null);
+  const localNodeId = String(providerAuthority?.localNodeId || "").trim() || null;
+  const intentProviderNodeId = String(intent.providerNodeId || "").trim() || null;
+  if (intentProviderNodeId && localNodeId && intentProviderNodeId !== localNodeId) {
+    app.log.warn(
+      {
+        route: reason,
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        intentProviderNodeId,
+        localNodeId,
+        reason: "PROVIDER_EXECUTION_NODE_MISMATCH"
+      },
+      "payoutExecution.blocked_reason"
+    );
+    return;
+  }
   const payoutRuntime = await resolvePayoutExecutionRuntime(null);
   app.log.info(
     {
@@ -5221,7 +5304,13 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
           },
           "payoutDestination.invoice_received"
         );
-        const send = await payBolt11ViaLnd(invoice);
+        const send = await payBolt11ViaLnd(invoice, {
+          entrypoint: "participant_payout",
+          providerPaymentIntentId: intent.id,
+          paymentIntentId: intent.paymentIntentId,
+          participantPayoutId: payout.id,
+          payoutKey: payout.payoutKey || null
+        });
         const marked = await markParticipantPayoutPaid(payout.id, lock.attemptId, send.paymentHash || null);
         if (!marked) {
           const reconciled = await forceMarkParticipantPayoutPaidAfterExternalSuccess(payout.id, send.paymentHash || null);
@@ -5404,7 +5493,11 @@ async function executeCreatorRemittance(intent: ProviderPaymentIntentRecord, rea
           contentId: forwarding.contentId
         })
       );
-      const send = await payBolt11ViaLnd(invoice);
+      const send = await payBolt11ViaLnd(invoice, {
+        entrypoint: "creator_remittance",
+        providerPaymentIntentId: forwarding.id,
+        paymentIntentId: forwarding.paymentIntentId
+      });
       const paidAt = new Date().toISOString();
       const paid =
         markRemittancePaid(forwarding.id, lock.attemptId, {
@@ -28237,13 +28330,24 @@ async function settlePaymentIntent(paymentIntentId: string) {
     return null;
   }
 
-  const net = BigInt(intent.amountSats);
+  const gross = BigInt(intent.amountSats);
+  const providerRecord = String(intent.providerId || "").startsWith("providerpi:")
+    ? findProviderPaymentIntentByPaymentIntentId(intent.id)
+    : null;
+  const providerNetCandidate = providerRecord ? BigInt(String(providerRecord.creatorNetSats || "0")) : 0n;
+  const providerFeeCandidate = providerRecord ? BigInt(String(providerRecord.providerFeeSats || "0")) : 0n;
+  const net = providerRecord
+    ? (providerNetCandidate > 0n && providerNetCandidate <= gross
+      ? providerNetCandidate
+      : (gross > providerFeeCandidate ? gross - providerFeeCandidate : 0n))
+    : gross;
+  const operatorFee = gross > net ? gross - net : 0n;
   app.log.info(
     {
       paymentIntentId: intent.id,
       contentId: intent.contentId,
-      grossSats: net.toString(),
-      operatorFeeSats: "0",
+      grossSats: gross.toString(),
+      operatorFeeSats: operatorFee.toString(),
       distributableSats: net.toString()
     },
     "splitAccounting.payment_base"
@@ -29745,13 +29849,24 @@ app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("r
         durablePublicHosting: false
       });
       const providerInvoicingFeeSats = providerBacked
-        ? BigInt(String(providerRecord?.providerInvoicingFeeSats || providerRecord?.providerFeeSats || fallbackFee.providerInvoicingFeeSats))
+        ? BigInt(String(providerRecord?.providerInvoicingFeeSats || fallbackFee.providerInvoicingFeeSats))
         : 0n;
       const providerDurableHostingFeeSats = providerBacked
         ? BigInt(String(providerRecord?.providerDurableHostingFeeSats || fallbackFee.providerDurableHostingFeeSats))
         : 0n;
-      const providerFeeSats = providerInvoicingFeeSats + providerDurableHostingFeeSats;
-      const creatorNetSats = gross > providerFeeSats ? gross - providerFeeSats : 0n;
+      const providerFeeFromRecord = providerBacked ? BigInt(String(providerRecord?.providerFeeSats || "0")) : 0n;
+      const creatorNetFromRecord = providerBacked ? BigInt(String(providerRecord?.creatorNetSats || "0")) : 0n;
+      const providerFeeFromComponents = providerInvoicingFeeSats + providerDurableHostingFeeSats;
+      const providerFeeSats = providerBacked
+        ? (providerFeeFromRecord > 0n
+          ? providerFeeFromRecord
+          : providerFeeFromComponents)
+        : 0n;
+      const creatorNetSats = providerBacked
+        ? (creatorNetFromRecord > 0n
+          ? creatorNetFromRecord
+          : (gross > providerFeeSats ? gross - providerFeeSats : 0n))
+        : gross;
       return {
         grossAmountSats: gross.toString(),
         providerInvoicingFeeSats: providerInvoicingFeeSats.toString(),
@@ -29872,14 +29987,17 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
     });
   let accrued = 0n;
   let paid = 0n;
+  let payable = 0n;
   for (const row of rows) {
     const amount = BigInt(String((row as any)?.amountSats || "0"));
+    const status = String((row as any)?.status || "").trim().toLowerCase();
     accrued += amount;
-    if (String((row as any)?.status || "").trim().toLowerCase() === "paid") {
+    if (status === "paid") {
       paid += amount;
+    } else if (status === "pending" || status === "ready" || status === "forwarding" || status === "blocked") {
+      payable += amount;
     }
   }
-  const payable = accrued > paid ? accrued - paid : 0n;
   return {
     accruedSats: accrued.toString(),
     payableSats: payable.toString(),
@@ -30084,6 +30202,225 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
 
 app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
   return reply.send({ items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null });
+});
+
+app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const paymentIntentId = String((req.params as any)?.id || "").trim();
+  if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+
+  const paymentIntent = await prisma.paymentIntent.findUnique({
+    where: { id: paymentIntentId },
+    select: {
+      id: true,
+      contentId: true,
+      amountSats: true,
+      providerId: true,
+      status: true,
+      paidAt: true
+    }
+  });
+  if (!paymentIntent) return notFound(reply, "payment intent not found");
+
+  const providerIntent = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+  const sale = await prisma.sale.findFirst({
+    where: { intentId: paymentIntentId },
+    select: { id: true, intentId: true, sellerUserId: true, amountSats: true, rail: true }
+  });
+  const settlement = await prisma.settlement.findUnique({
+    where: { paymentIntentId },
+    select: { id: true, paymentIntentId: true, contentId: true, netAmountSats: true }
+  });
+  const settlementLines = settlement
+    ? await prisma.settlementLine.findMany({
+        where: { settlementId: settlement.id },
+        select: { id: true, participantId: true, participantEmail: true, role: true, amountSats: true },
+        orderBy: { id: "asc" }
+      })
+    : [];
+  const allocations = await prisma.providerPaymentParticipantAllocation
+    .findMany({
+      where: { paymentIntentId },
+      select: {
+        id: true,
+        providerPaymentIntentId: true,
+        participantRef: true,
+        participantUserId: true,
+        splitParticipantId: true,
+        amountSats: true
+      },
+      orderBy: { createdAt: "asc" }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const allocationById = new Map(allocations.map((row) => [row.id, row]));
+  const payoutRows = await prisma.participantPayout
+    .findMany({
+      where: { paymentIntentId },
+      select: {
+        id: true,
+        providerPaymentIntentId: true,
+        paymentIntentId: true,
+        allocationId: true,
+        amountSats: true,
+        status: true,
+        payoutKey: true,
+        payoutReference: true,
+        attemptCount: true,
+        remittedAt: true,
+        createdAt: true,
+        updatedAt: true
+      },
+      orderBy: { createdAt: "asc" }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+
+  const gross = BigInt(String(paymentIntent.amountSats || "0"));
+  const providerFee = BigInt(String(providerIntent?.providerFeeSats || "0"));
+  const netSplitPool = providerIntent
+    ? BigInt(String(providerIntent.creatorNetSats || "0"))
+    : (gross > providerFee ? gross - providerFee : 0n);
+  const settlementLineTotal = settlementLines.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const allocationTotal = allocations.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const payoutTotal = payoutRows.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const paidTotal = payoutRows
+    .filter((row) => String(row.status || "").toLowerCase() === "paid")
+    .reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const pendingTotal = payoutRows
+    .filter((row) => {
+      const status = String(row.status || "").toLowerCase();
+      return status === "pending" || status === "ready" || status === "forwarding";
+    })
+    .reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const failedTotal = payoutRows
+    .filter((row) => String(row.status || "").toLowerCase() === "failed")
+    .reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+
+  const duplicatePayoutKeys = Array.from(
+    payoutRows.reduce((acc, row) => {
+      const key = String(row.payoutKey || "").trim();
+      if (!key) return acc;
+      acc.set(key, (acc.get(key) || 0) + 1);
+      return acc;
+    }, new Map<string, number>()).entries()
+  )
+    .filter(([, count]) => count > 1)
+    .map(([payoutKey, count]) => ({ payoutKey, count }));
+
+  const duplicateByParticipantRef = Array.from(
+    payoutRows.reduce((acc, row) => {
+      const alloc = allocationById.get(String(row.allocationId || "").trim());
+      const participantRef = String(alloc?.participantRef || alloc?.participantUserId || "unknown");
+      const key = `${paymentIntentId}:${participantRef}`;
+      acc.set(key, (acc.get(key) || 0) + 1);
+      return acc;
+    }, new Map<string, number>()).entries()
+  )
+    .filter(([, count]) => count > 1)
+    .map(([key, count]) => ({ key, count }));
+
+  return reply.send({
+    paymentIntent: {
+      id: paymentIntent.id,
+      amountSats: String(paymentIntent.amountSats),
+      providerId: paymentIntent.providerId || null,
+      status: paymentIntent.status,
+      paidAt: paymentIntent.paidAt?.toISOString?.() || null,
+      contentId: paymentIntent.contentId
+    },
+    providerPaymentIntent: providerIntent
+      ? {
+          id: providerIntent.id,
+          payoutExecutionMode: providerIntent.payoutExecutionMode,
+          providerRemitMode: providerIntent.providerRemitMode,
+          payoutStatus: providerIntent.payoutStatus,
+          payoutSummaryStatus: providerIntent.payoutSummaryStatus,
+          payoutLastError: providerIntent.payoutLastError || null,
+          providerFeeSats: providerIntent.providerFeeSats || "0",
+          providerInvoicingFeeSats: providerIntent.providerInvoicingFeeSats || "0",
+          providerDurableHostingFeeSats: providerIntent.providerDurableHostingFeeSats || "0",
+          creatorNetSats: providerIntent.creatorNetSats || "0"
+        }
+      : null,
+    sale: sale
+      ? {
+          id: sale.id,
+          sellerUserId: sale.sellerUserId,
+          amountSats: String(sale.amountSats),
+          rail: sale.rail
+        }
+      : null,
+    settlement: settlement
+      ? {
+          id: settlement.id,
+          netAmountSats: String(settlement.netAmountSats)
+        }
+      : null,
+    settlementLines: settlementLines.map((row) => ({
+      id: row.id,
+      participantId: row.participantId || null,
+      participantEmail: row.participantEmail || null,
+      role: row.role || null,
+      amountSats: String(row.amountSats)
+    })),
+    allocations: allocations.map((row) => ({
+      id: row.id,
+      providerPaymentIntentId: row.providerPaymentIntentId,
+      participantRef: row.participantRef,
+      participantUserId: row.participantUserId || null,
+      splitParticipantId: row.splitParticipantId || null,
+      amountSats: String(row.amountSats)
+    })),
+    participantPayoutRows: payoutRows.map((row) => {
+      const allocation = allocationById.get(String(row.allocationId || "").trim());
+      return {
+        id: row.id,
+        providerPaymentIntentId: row.providerPaymentIntentId,
+        paymentIntentId: row.paymentIntentId,
+        allocationId: row.allocationId,
+        participantRef: allocation?.participantRef || null,
+        participantUserId: allocation?.participantUserId || null,
+        amountSats: String(row.amountSats),
+        status: row.status,
+        payoutKey: row.payoutKey || null,
+        payoutReference: row.payoutReference || null,
+        attemptCount: row.attemptCount,
+        remittedAt: row.remittedAt?.toISOString?.() || null,
+        createdAt: row.createdAt?.toISOString?.() || null,
+        updatedAt: row.updatedAt?.toISOString?.() || null
+      };
+    }),
+    sums: {
+      grossSats: gross.toString(),
+      providerFeeSats: providerFee.toString(),
+      netSplitPoolSats: netSplitPool.toString(),
+      settlementLineTotalSats: settlementLineTotal.toString(),
+      allocationTotalSats: allocationTotal.toString(),
+      payoutTotalSats: payoutTotal.toString(),
+      payoutPaidSats: paidTotal.toString(),
+      payoutPendingSats: pendingTotal.toString(),
+      payoutFailedSats: failedTotal.toString()
+    },
+    duplicateChecks: {
+      duplicatePayoutKeys,
+      duplicateByParticipantRef
+    },
+    dashboardContributionForIntent: {
+      sellerOfRecordSalesGrossSats: gross.toString(),
+      royaltyEarnedSats: allocationTotal.toString(),
+      totalEarnedSats: allocationTotal.toString(),
+      providerFeeSats: providerFee.toString(),
+      invoicingFeeSats: String(providerIntent?.providerInvoicingFeeSats || "0"),
+      creatorNetOwedSats: netSplitPool.toString(),
+      creatorNetPaidSats: paidTotal.toString(),
+      creatorNetPendingSats: pendingTotal.toString(),
+      creatorNetFailedSats: failedTotal.toString()
+    }
+  });
 });
 
 app.get("/finance/transactions", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
