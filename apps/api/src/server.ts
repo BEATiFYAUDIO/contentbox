@@ -4410,6 +4410,12 @@ async function buildRemittanceMemo(args: {
   paymentIntentId: string | null | undefined;
   contentId?: string | null | undefined;
 }): Promise<string> {
+  const compactText = (value: string | null | undefined): string => {
+    return String(value || "")
+      .replace(/[\r\n\t]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
   const paymentIntentId = String(args.paymentIntentId || "").trim();
   const shortIntent = paymentIntentId ? paymentIntentId.slice(-8) : "unknown";
   const contentId = String(args.contentId || "").trim();
@@ -4420,18 +4426,34 @@ async function buildRemittanceMemo(args: {
         where: { id: contentId },
         select: { title: true }
       });
-      title = String(item?.title || "").trim() || null;
+      title = compactText(item?.title) || null;
     } catch {
       title = null;
     }
     if (!title) {
       const delegated = listProviderDelegatedPublishes().find((row) => String(row.contentId || "").trim() === contentId);
-      title = String(delegated?.title || "").trim() || null;
+      title = compactText(delegated?.title) || null;
     }
   }
-  if (title) return `${args.prefix} ${title} ${shortIntent}`;
-  if (contentId) return `${args.prefix} ${contentId.slice(0, 8)} ${shortIntent}`;
-  return `${args.prefix} ${shortIntent}`;
+  if (!title && paymentIntentId) {
+    try {
+      const intentContent = await prisma.paymentIntent.findUnique({
+        where: { id: paymentIntentId },
+        select: {
+          content: {
+            select: { title: true }
+          }
+        }
+      });
+      title = compactText(intentContent?.content?.title) || null;
+    } catch {
+      title = null;
+    }
+  }
+  const prefix = compactText(args.prefix) || "Certifyd remittance";
+  if (title) return `${prefix}: ${title} (${shortIntent})`;
+  if (contentId) return `${prefix}: ${contentId.slice(0, 8)} (${shortIntent})`;
+  return `${prefix}: ${shortIntent}`;
 }
 
 async function resolveLightningCapabilityRuntime(userId: string | null): Promise<{
