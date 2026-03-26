@@ -3925,6 +3925,27 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
             : null;
 
     for (const allocation of allocations) {
+      const existingPayoutRow = await prisma.participantPayout
+        .findUnique({
+          where: { allocationId: allocation.id },
+          select: {
+            id: true,
+            status: true,
+            payoutReference: true,
+            remittedAt: true,
+            attemptCount: true,
+            attemptId: true,
+            lockedAt: true,
+            nextRetryAt: true,
+            lastError: true,
+            blockedReason: true,
+            readinessReason: true
+          }
+        })
+        .catch((err: any) => {
+          if (isMissingParticipantPayoutTableError(err)) return null;
+          throw err;
+        });
       const executionParticipantRef = resolveExecutionParticipantRef({
         participantRef: allocation.participantRef,
         participantUserId: allocation.participantUserId,
@@ -3964,6 +3985,11 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
             readinessReason: identityGate.readinessReason
           };
       const resolvedStatus: ParticipantPayoutStatus = terminalStatus || parseParticipantPayoutStatus(readiness.status);
+      const preserveExecutedState =
+        Boolean(existingPayoutRow) &&
+        (String(existingPayoutRow?.status || "").trim().toLowerCase() === "paid" ||
+          Boolean(existingPayoutRow?.payoutReference) ||
+          Boolean(existingPayoutRow?.remittedAt));
       if (canBypassInviteGate) {
         app.log.warn(
           {
@@ -3981,19 +4007,43 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
         where: { allocationId: allocation.id },
         update: {
           payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
-          status: resolvedStatus,
+          status: preserveExecutedState
+            ? parseParticipantPayoutStatus(String(existingPayoutRow?.status || "paid"))
+            : resolvedStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
           destinationSummary: readiness.destinationSummary,
           lastCheckedAt: new Date(),
-          readinessReason: readiness.readinessReason,
+          readinessReason: preserveExecutedState
+            ? (existingPayoutRow?.readinessReason || null)
+            : readiness.readinessReason,
           destinationResolvedAt: readiness.destinationResolvedAt,
           destinationSource: readiness.destinationSource,
           destinationFingerprint: readiness.destinationFingerprint,
-          payoutReference: intent.payoutReference,
-          lastError: intent.payoutLastError,
-          blockedReason: readiness.blockedReason,
-          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null,
+          payoutReference: preserveExecutedState
+            ? String(existingPayoutRow?.payoutReference || "").trim() || null
+            : intent.payoutReference,
+          lastError: preserveExecutedState
+            ? String(existingPayoutRow?.lastError || "").trim() || null
+            : intent.payoutLastError,
+          blockedReason: preserveExecutedState
+            ? String(existingPayoutRow?.blockedReason || "").trim() || null
+            : readiness.blockedReason,
+          remittedAt: preserveExecutedState
+            ? (existingPayoutRow?.remittedAt || null)
+            : (intent.remittedAt ? new Date(intent.remittedAt) : null),
+          attemptCount: preserveExecutedState
+            ? Math.max(0, Number(existingPayoutRow?.attemptCount) || 0)
+            : undefined,
+          attemptId: preserveExecutedState
+            ? (String(existingPayoutRow?.attemptId || "").trim() || null)
+            : undefined,
+          lockedAt: preserveExecutedState
+            ? (existingPayoutRow?.lockedAt || null)
+            : undefined,
+          nextRetryAt: preserveExecutedState
+            ? (existingPayoutRow?.nextRetryAt || null)
+            : undefined,
           ...(resolvedStatus === "ready" || resolvedStatus === "forwarding" ? { nextRetryAt: null } : {})
         },
         create: {
