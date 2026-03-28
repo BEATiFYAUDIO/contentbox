@@ -441,15 +441,13 @@ async function lndRestJson(
   const res = await new Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; text: string }>((resolve, reject) => {
     const req = https.request(
       {
-        protocol: "https:",
         hostname: u.hostname,
-        port: Number(u.port || 443),
+        port: u.port ? Number(u.port) : 443,
         path: `${u.pathname}${u.search || ""}`,
         method: method.toUpperCase(),
         headers: reqHeaders,
         agent: false,
         ca: tlsCert,
-        ALPNProtocols: ["http/1.1"],
         rejectUnauthorized: true
       },
       (resp) => {
@@ -2045,7 +2043,7 @@ export async function createLightningInvoice(prisma: PrismaLike, amountSats: big
     body: JSON.stringify({ out: false, amount: Number(amountSats), memo })
   });
 
-  const data = await res.json();
+  const data: any = await res.json();
   if (!res.ok) throw new Error(data?.detail || "LNbits invoice error");
 
   return {
@@ -2083,7 +2081,7 @@ export async function checkLightningInvoice(prisma: PrismaLike, providerId: stri
     headers: { "X-Api-Key": key }
   });
 
-  const data = await res.json();
+  const data: any = await res.json();
   if (!res.ok) throw new Error(data?.detail || "LNbits check error");
   return {
     paid: Boolean(data?.paid),

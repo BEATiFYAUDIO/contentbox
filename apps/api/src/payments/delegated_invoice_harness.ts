@@ -203,10 +203,11 @@ async function readRuntimeTruth(cfg: HarnessConfig, warnings: Warning[]): Promis
   });
   if (summary.status === 200) {
     assertJsonObject(summary, "/api/network/summary");
+    const summaryJson = summary.json as JsonObject;
     truth.delegatedInvoiceSupport = Boolean(
-      (summary.json.paymentCapability as JsonObject | undefined)?.delegatedInvoiceSupport
+      (summaryJson.paymentCapability as JsonObject | undefined)?.delegatedInvoiceSupport
     );
-    truth.providerConfigured = Boolean((summary.json.providerBinding as JsonObject | undefined)?.configured);
+    truth.providerConfigured = Boolean((summaryJson.providerBinding as JsonObject | undefined)?.configured);
   } else {
     warnings.push({
       code: "SUMMARY_UNAVAILABLE",
@@ -222,9 +223,10 @@ async function readRuntimeTruth(cfg: HarnessConfig, warnings: Warning[]): Promis
   });
   if (providerCfg.status === 200) {
     assertJsonObject(providerCfg, "/api/network/provider");
-    truth.providerUrl = String(providerCfg.json.providerUrl || "").trim() || null;
+    const providerCfgJson = providerCfg.json as JsonObject;
+    truth.providerUrl = String(providerCfgJson.providerUrl || "").trim() || null;
     if (truth.providerConfigured == null) {
-      truth.providerConfigured = Boolean(providerCfg.json.configured);
+      truth.providerConfigured = Boolean(providerCfgJson.configured);
     }
   } else {
     warnings.push({
@@ -241,7 +243,8 @@ async function readRuntimeTruth(cfg: HarnessConfig, warnings: Warning[]): Promis
   });
   if (trust.status === 200) {
     assertJsonObject(trust, "/api/network/provider/trust-readiness");
-    truth.trustAllowed = Boolean(trust.json.allowed);
+    const trustJson = trust.json as JsonObject;
+    truth.trustAllowed = Boolean(trustJson.allowed);
   } else {
     warnings.push({
       code: "TRUST_READINESS_UNAVAILABLE",
@@ -460,6 +463,7 @@ async function main() {
   }
 
   const createJson = created.json;
+  assert.ok(createJson, "create response JSON missing");
   assert.ok(typeof createJson.paymentIntentId === "string" && createJson.paymentIntentId.length > 0, "paymentIntentId missing");
   const delegatedIntentId = createJson.paymentIntentId;
   if (!createJson.bolt11) {

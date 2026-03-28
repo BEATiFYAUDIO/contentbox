@@ -63,6 +63,7 @@ import {
   computePublicLinkState,
   getNamedTunnelConfig,
   isNamedConfigured,
+  type PublicMode,
   type PublicLinkState
 } from "./lib/publicLinkState.js";
 import {
@@ -231,16 +232,15 @@ function rateLimit(req: any, key: string, max: number, windowMs: number): boolea
 }
 
 const RUNTIME_CONFIG = resolveRuntimeConfig();
-const SUPPORTS_INSENSITIVE = RUNTIME_CONFIG.storage === "postgres";
 
 function emailEquals(email: string | null | undefined) {
   if (!email) return undefined;
-  return SUPPORTS_INSENSITIVE ? { equals: email, mode: "insensitive" as const } : { equals: email };
+  return { equals: email };
 }
 
 function emailIn(emails: Array<string> | null | undefined) {
   if (!emails || emails.length === 0) return undefined;
-  return SUPPORTS_INSENSITIVE ? { in: emails, mode: "insensitive" as const } : { in: emails };
+  return { in: emails };
 }
 
 function num(x: unknown): number {
@@ -783,9 +783,9 @@ function slugify(value: string): string {
     .slice(0, 32) || "user";
 }
 
-function execFileAsync(cmd: string, args: string[]) {
+function execFileAsync(cmd: string, args: string[], options?: Parameters<typeof execFile>[2]) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(cmd, args, (err, stdout, stderr) => {
+    execFile(cmd, args, options as any, (err, stdout, stderr) => {
       if (err) return reject(Object.assign(err, { stdout, stderr }));
       resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
     });
@@ -845,6 +845,10 @@ function notFound(reply: any, msg: string) {
 
 function forbidden(reply: any) {
   return reply.code(403).send({ error: "Forbidden" });
+}
+
+function unauthorized(reply: any) {
+  return reply.code(401).send({ error: "Unauthorized" });
 }
 
 function isIntegratedDashboardBuilt(): boolean {
@@ -994,11 +998,7 @@ function buildBuyerClearCookie(req: any): string {
 
 /** ---------- app init ---------- */
 
-const app = Fastify({
-  logger: true,
-  // Ensure BigInt never crashes JSON serialization at the root.
-  stringify: (obj: any) => JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v))
-});
+const app = Fastify({ logger: true });
 
 // Allow empty JSON bodies (treat as {})
 const jsonParser = (_req: any, body: string, done: (err: Error | null, value?: any) => void) => {
@@ -1031,7 +1031,7 @@ app.setErrorHandler((error, req, reply) => {
     requestId: id
   };
   if (process.env.NODE_ENV !== "production") {
-    payload.message = String(error?.message || error);
+    payload.message = String((error as any)?.message || error);
     payload.name = (error as any)?.name || "Error";
     if ((error as any)?.code) payload.code = (error as any)?.code;
   }
@@ -8257,7 +8257,7 @@ function normalizeRemoteOrigin(raw: string): string | null {
   }
 }
 
-function getPublicBindHost(mode: PublicMode): string {
+function getPublicBindHost(mode: PublicMode | "direct"): string {
   if (mode === "direct" && String(process.env.CONTENTBOX_BIND || "").trim() === "public") return "0.0.0.0";
   return "127.0.0.1";
 }
@@ -9559,6 +9559,10 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/u/:handle", handlePublicNodeProfilePage);
   appPublic.get("/u/:handle/proofs.json", handlePublicProofBundle);
   appPublic.get("/profile", handlePublicProfileRedirect);
+  appPublic.get("/certifyd-tab-icon.png", handleTabIcon);
+  appPublic.get("/favicon.ico", handleTabIcon);
+  appPublic.get("/favicon.png", handleTabIcon);
+  appPublic.get("/apple-touch-icon.png", handleTabIcon);
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
@@ -12125,7 +12129,7 @@ async function listLockedParticipationsForUser(userId: string): Promise<Particip
         participantUserId: lockedParticipant.participantUserId || null,
         acceptedAt: lockedParticipant.acceptedAt || null,
         verifiedAt: lockedParticipant.verifiedAt || null,
-        invitationStatus: lockedParticipant.invitation?.status || null
+        invitationStatus: (lockedParticipant as any)?.invitationStatus || null
       })
     ) {
       continue;
@@ -12772,6 +12776,27 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
 
   if (!latest) return notFound(reply, "No split version found");
 
+  const participantUserIds = Array.from(
+    new Set(
+      latest.participants
+        .map((p) => asString((p as any).participantUserId || ""))
+        .filter(Boolean)
+    )
+  );
+  const participantUsersById = new Map<string, { displayName: string | null; email: string | null }>();
+  if (participantUserIds.length > 0) {
+    const participantUsers = await prisma.user.findMany({
+      where: { id: { in: participantUserIds } },
+      select: { id: true, displayName: true, email: true }
+    });
+    for (const user of participantUsers) {
+      participantUsersById.set(user.id, {
+        displayName: user.displayName || null,
+        email: user.email || null
+      });
+    }
+  }
+
   return reply.send({
     content: {
       id: content.id,
@@ -12786,7 +12811,9 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
       lockedAt: latest.lockedAt ? latest.lockedAt.toISOString() : null
     },
     participants: latest.participants.map((p) => ({
-      participantEmail: p.participantEmail || null,
+      participantUserId: p.participantUserId || null,
+      participantDisplayName: participantUsersById.get(p.participantUserId || "")?.displayName || null,
+      participantEmail: p.participantEmail || participantUsersById.get(p.participantUserId || "")?.email || null,
       role: p.role || null,
       percent: percentToPrimitive(p.percent ?? null),
       acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null
@@ -19210,11 +19237,12 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 
     if (needsBasicSplit) {
       const now = new Date();
+      const currentVersionNumber = sv.versionNumber;
       const created = await prisma.$transaction(async (tx) => {
         const newSv = await tx.splitVersion.create({
           data: {
             contentId,
-            versionNumber: sv.versionNumber + 1,
+            versionNumber: currentVersionNumber + 1,
             createdByUserId: content.ownerUserId,
             status: "locked",
             lockedAt: now
@@ -19536,7 +19564,7 @@ app.get("/api/content/:id/links", { preHandler: requireAuth }, async (req: any, 
 
   const links = await prisma.contentLink.findMany({
     where: { childContentId: contentId, relation: { in: ["derivative", "remix", "mashup"] as any } },
-    orderBy: { createdAt: "asc" }
+    orderBy: { id: "asc" }
   });
 
   const parentLink = links[0] || null;
@@ -20152,7 +20180,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         }),
         signal: ctrl.signal as any
       });
-      const data = await res.json().catch(() => null);
+      const data: any = await res.json().catch(() => null);
       clearTimeout(timeout);
       if (res.ok && Array.isArray(data?.approvalUrls)) {
         remoteApprovalUrls = data.approvalUrls;
@@ -20469,7 +20497,7 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   }
 
   let status: string = "PENDING";
-  if (approveBps >= auth.approvalBpsTarget) status = "APPROVED";
+  if (approveBps >= (auth.approvalBpsTarget ?? 6667)) status = "APPROVED";
   // v1: keep rejections as PENDING
 
   await prisma.derivativeAuthorization.update({
@@ -22218,6 +22246,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
         ].join("")
       : "";
+  const creatorProfileFaviconDataUri = (() => {
+    const iconPath = resolveTabIconPath();
+    if (!iconPath) return null;
+    try {
+      const bytes = fsSync.readFileSync(iconPath);
+      if (!bytes || bytes.length === 0) return null;
+      return `data:image/png;base64,${bytes.toString("base64")}`;
+    } catch {
+      return null;
+    }
+  })();
+  const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
+  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260328b";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -22225,6 +22266,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Certifyd Creator Profile</title>
+  <link rel="icon" type="image/png" href="${creatorProfileFaviconHref}" />
+  <link rel="shortcut icon" type="image/png" href="${creatorProfileFaviconHref}" />
+  <link rel="apple-touch-icon" href="${creatorProfileFaviconHref}" />
   <style>
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
@@ -22864,6 +22908,40 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
   return reply.send("Thanks — your clearance response has been recorded.");
 });
 
+function resolveTabIconPath(): string | null {
+  const candidates = [
+    path.resolve(process.cwd(), "apps/dashboard/public/certifyd-tab-icon.png"),
+    path.resolve(process.cwd(), "apps/dashboard/public/certifyd-icon.png"),
+    path.resolve(process.cwd(), "../dashboard/public/certifyd-tab-icon.png"),
+    path.resolve(process.cwd(), "../dashboard/public/certifyd-icon.png"),
+    path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd-creator-logo.png"),
+    path.resolve(process.cwd(), "../dashboard/src/assets/certifyd-creator-logo.png")
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fsSync.existsSync(candidate)) return candidate;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+async function handleTabIcon(req: any, reply: any) {
+  const iconPath = resolveTabIconPath();
+  if (!iconPath) return notFound(reply, "Not found");
+  try {
+    const bytes = await fs.readFile(iconPath);
+    reply.header("content-type", "image/png");
+    const url = asString(req?.url || "").toLowerCase();
+    const isFaviconAlias = url.includes("/favicon.ico") || url.includes("/favicon.png") || url.includes("/apple-touch-icon.png");
+    reply.header("cache-control", isFaviconAlias ? "no-store" : "public, max-age=86400");
+    return reply.send(bytes);
+  } catch {
+    return notFound(reply, "Not found");
+  }
+}
+
 async function handleBuyPage(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   if (!contentId) return notFound(reply, "Not found");
@@ -22888,12 +22966,27 @@ async function handleBuyPage(req: any, reply: any) {
   } catch {
     sellerLightningAddress = null;
   }
+  const buyFaviconDataUri = (() => {
+    const iconPath = resolveTabIconPath();
+    if (!iconPath) return null;
+    try {
+      const bytes = fsSync.readFileSync(iconPath);
+      if (!bytes || bytes.length === 0) return null;
+      return `data:image/png;base64,${bytes.toString("base64")}`;
+    } catch {
+      return null;
+    }
+  })();
+  const safeBuyFaviconDataUri = buyFaviconDataUri ? escHtml(buyFaviconDataUri) : "";
 
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260327c" />
+  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260327c" />
+  ${safeBuyFaviconDataUri ? `<link rel="alternate icon" type="image/png" href="${safeBuyFaviconDataUri}" />` : ""}
   <title>Buy</title>
   <style>
     :root { color-scheme: light dark; }
@@ -23968,6 +24061,10 @@ async function handleBuyPage(req: any, reply: any) {
   return reply.send(html);
 }
 
+app.get("/certifyd-tab-icon.png", handleTabIcon);
+app.get("/favicon.ico", handleTabIcon);
+app.get("/favicon.png", handleTabIcon);
+app.get("/apple-touch-icon.png", handleTabIcon);
 app.get("/buy/:contentId", handleBuyPage);
 
 async function handleBuyerLibraryPage(_req: any, reply: any) {
@@ -25206,7 +25303,7 @@ async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: s
   return reconcileMissingEntitlementsForBuyer(
     {
       listPaidIntents: async (bid: string, contentFilter?: string) =>
-        prisma.paymentIntent.findMany({
+        (prisma.paymentIntent as any).findMany({
           where: {
             buyerId: bid,
             status: "paid",
@@ -25216,7 +25313,10 @@ async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: s
           orderBy: { paidAt: "desc" }
         }) as any,
       getEntitlement: async (bid: string, cid: string) =>
-        prisma.entitlement.findFirst({ where: { buyerId: bid, contentId: cid }, select: { id: true, buyerId: true, contentId: true } }),
+        ((await prisma.entitlement.findFirst({
+          where: { buyerId: bid, contentId: cid },
+          select: { id: true, buyerId: true, contentId: true }
+        })) as any) || null,
       upsertEntitlement: async ({ buyerId: bid, contentId, manifestSha256, paymentIntentId }) => {
         await prisma.entitlement.upsert({
           where: { buyerId_contentId: { buyerId: bid, contentId } },
@@ -25719,9 +25819,15 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       err.statusCode = 415;
       throw err;
     }
+    const repoPath = asString(content.repoPath || "").trim();
+    if (!repoPath) {
+      const err: any = new Error("content repository missing");
+      err.statusCode = 400;
+      throw err;
+    }
 
     const fileEntry = await addFileToContentRepo({
-      repoPath: content.repoPath,
+      repoPath,
       contentTitle: content.title,
       originalName,
       mime,
@@ -27190,7 +27296,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
               ? boundUserId
               : null,
           acceptedIdentityRef: bindNow && boundUserId ? `user:${boundUserId}` : null
-        }
+        } as any
       });
 
       await tx.splitParticipant.update({
@@ -27318,7 +27424,7 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
             acceptedAt: accepted ? (p.acceptedAt || new Date()) : null,
             acceptedByUserId: accepted ? (p.participantUserId || null) : null,
             acceptedIdentityRef: accepted && p.participantUserId ? `user:${p.participantUserId}` : null
-          }
+          } as any
         });
         await tx.splitParticipant.update({
           where: { id: createdParticipant.id },
@@ -27683,7 +27789,7 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
     new Set(
       participants
         .map((participant: any) => asString(participant?.participantUserId || "").trim())
-        .filter((id) => Boolean(id))
+        .filter((id: string) => Boolean(id))
     )
   );
   const users = participantUserIds.length
@@ -28463,14 +28569,15 @@ async function settlePaymentIntent(paymentIntentId: string) {
     }
   });
 
+  const manifestSha = asString(intent.manifestSha256 || "").trim();
   if (intent.buyerUserId) {
     await prisma.entitlement.upsert({
-      where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId: content.id, manifestSha256: intent.manifestSha256 } },
+      where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId: content.id, manifestSha256: manifestSha } },
       update: { paymentIntentId: intent.id },
       create: {
         buyerUserId: intent.buyerUserId,
         contentId: content.id,
-        manifestSha256: intent.manifestSha256,
+        manifestSha256: manifestSha,
         paymentIntentId: intent.id
       }
     }).catch(() => {});
@@ -28479,7 +28586,7 @@ async function settlePaymentIntent(paymentIntentId: string) {
       data: {
         buyerUserId: null,
         contentId: content.id,
-        manifestSha256: intent.manifestSha256,
+        manifestSha256: manifestSha,
         paymentIntentId: intent.id
       }
     }).catch(() => {});
@@ -30272,8 +30379,111 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
   });
 });
 
-app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
-  return reply.send({ items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null });
+app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const email = String(me?.email || "").trim().toLowerCase();
+
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: {
+        allocation: {
+          OR: [
+            { participantUserId: userId },
+            email ? { participantEmail: emailEquals(email) } : undefined
+          ].filter(Boolean) as any
+        }
+      },
+      select: {
+        id: true,
+        paymentIntentId: true,
+        providerPaymentIntentId: true,
+        allocationId: true,
+        amountSats: true,
+        status: true,
+        destinationSummary: true,
+        destinationType: true,
+        payoutReference: true,
+        attemptCount: true,
+        lastError: true,
+        blockedReason: true,
+        remittedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        allocation: {
+          select: {
+            contentId: true
+          }
+        }
+      },
+      orderBy: [{ updatedAt: "desc" }]
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+
+  const contentIds = Array.from(
+    new Set(rows.map((row) => String((row as any)?.allocation?.contentId || "").trim()).filter(Boolean))
+  );
+  const contents = contentIds.length
+    ? await prisma.contentItem.findMany({
+        where: { id: { in: contentIds } },
+        select: { id: true, title: true, type: true }
+      })
+    : [];
+  const contentById = new Map(contents.map((c) => [c.id, c]));
+
+  let paidSats = 0n;
+  let pendingSats = 0n;
+  let failedSats = 0n;
+
+  const items = rows.map((row) => {
+    const amount = BigInt(String((row as any)?.amountSats || "0"));
+    const status = parseParticipantPayoutStatus((row as any)?.status);
+    if (status === "paid") paidSats += amount;
+    else if (status === "failed") failedSats += amount;
+    else pendingSats += amount;
+
+    const contentId = String((row as any)?.allocation?.contentId || "").trim() || null;
+    const content = contentId ? contentById.get(contentId) : null;
+
+    return {
+      id: row.id,
+      paymentIntentId: row.paymentIntentId,
+      providerPaymentIntentId: row.providerPaymentIntentId,
+      allocationId: row.allocationId,
+      contentId,
+      content: content
+        ? {
+            id: content.id,
+            title: content.title,
+            type: content.type
+          }
+        : null,
+      amountSats: String((row as any)?.amountSats || "0"),
+      status,
+      payoutDestinationSummary: row.destinationSummary || null,
+      payoutDestinationType: row.destinationType || null,
+      payoutReference: row.payoutReference || null,
+      attemptCount: row.attemptCount,
+      lastError: row.lastError || null,
+      blockedReason: row.blockedReason || null,
+      remittedAt: row.remittedAt ? row.remittedAt.toISOString() : null,
+      createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+      updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null
+    };
+  });
+
+  return reply.send({
+    items,
+    totals: {
+      pendingSats: pendingSats.toString(),
+      paidSats: paidSats.toString(),
+      failedSats: failedSats.toString()
+    },
+    cursor: null
+  });
 });
 
 app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -31651,7 +31861,7 @@ async function handlePublicInviteLookup(req: any, reply: any) {
 
   const tokenHash = hashInviteToken(token);
 
-  const inv = await prisma.invitation.findFirst({
+  const inv: any = await prisma.invitation.findFirst({
     where: {
       OR: [{ token }, { tokenHash }]
     },
@@ -31821,7 +32031,7 @@ async function handlePublicInviteLookup(req: any, reply: any) {
     lockedFileObjectKey: sv.lockedFileObjectKey || null,
     lockedFileSha256: sv.lockedFileSha256 || null,
     createdAt: sv.createdAt.toISOString(),
-    participants: (sv.participants || []).map((p) => ({
+    participants: (sv.participants || []).map((p: any) => ({
       ...p,
       percent: percentToPrimitive(p.percent)
     }))
@@ -31944,7 +32154,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
   const token = asString((req.params as any).token).trim();
   if (!token) return notFound(reply, "Invite not found");
   const tokenHash = hashInviteToken(token);
-  const inv = await prisma.invitation.findFirst({
+  const inv: any = await prisma.invitation.findFirst({
     where: { OR: [{ token }, { tokenHash }] },
     include: { splitParticipant: true }
   });
@@ -32544,7 +32754,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 
   const tokenHash = hashInviteToken(token);
 
-  const inv = await prisma.invitation.findFirst({
+  const inv: any = await prisma.invitation.findFirst({
     where: { OR: [{ token }, { tokenHash }] },
     include: { splitParticipant: { include: { splitVersion: { include: { content: true } } } } }
   });
@@ -32983,11 +33193,13 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     },
     "invite.participant_bound"
   );
+  const canonicalBindingSource: "local_auth" | "remote_signature" =
+    acceptanceAuthMode === "remote_signature" ? "remote_signature" : "local_auth";
   const canonical = buildCanonicalInviteAcceptResult({
     invitation: inv,
     acceptedAt: now,
     boundIdentityRef,
-    bindingSource: acceptanceAuthMode
+    bindingSource: canonicalBindingSource
   });
   return reply.send(canonical);
 }
