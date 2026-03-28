@@ -1,5 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
+import TimeScopeControls from "../components/TimeScopeControls";
+import { isWithinPeriod, type TimeBasis, type TimePeriod } from "../lib/timeScope";
 
 type SaleRow = {
   id: string;
@@ -211,6 +213,8 @@ export default function EarningsV2Page({
   const [error, setError] = useState<string | null>(null);
   const [scopedContentId, setScopedContentId] = useState<string | null>(null);
   const [contentView, setContentView] = useState<ContentView>("performance");
+  const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
 
   useEffect(() => {
     let active = true;
@@ -271,8 +275,13 @@ export default function EarningsV2Page({
     };
   }, [refreshSignal]);
 
+  const scopedSales = useMemo(() => {
+    if (timePeriod === "all") return sales;
+    return sales.filter((row) => isWithinPeriod(row.recognizedAt, timePeriod));
+  }, [sales, timePeriod]);
+
   const summary = useMemo(() => {
-    return sales.reduce(
+    return scopedSales.reduce(
       (acc, row) => {
         const fees = feeBreakdownForRow(row);
         acc.gross += fees.gross;
@@ -284,12 +293,12 @@ export default function EarningsV2Page({
       },
       { gross: 0, earnings: 0, paidOut: 0, pending: 0 }
     );
-  }, [sales]);
+  }, [scopedSales]);
 
   const byContent = useMemo<ByContentRow[]>(() => {
     const map = new Map<string, ByContentRow>();
     const stateMap = new Map<string, PayoutState[]>();
-    for (const row of sales) {
+    for (const row of scopedSales) {
       const contentId = row.contentId;
       const fees = feeBreakdownForRow(row);
       const existing = map.get(contentId) || {
@@ -329,7 +338,7 @@ export default function EarningsV2Page({
       row.latestStatus = summarizePayoutState(stateMap.get(row.contentId) || []);
     }
     return rows.sort((a, b) => b.gross - a.gross);
-  }, [sales, roleByContent, shareByContent]);
+  }, [scopedSales, roleByContent, shareByContent]);
 
   const momentumByContent = useMemo(() => {
     const now = Date.now();
@@ -341,7 +350,7 @@ export default function EarningsV2Page({
     >();
     let hasTimestampSignal = false;
     let hasRecentSignal = false;
-    for (const row of sales) {
+    for (const row of scopedSales) {
       const contentId = String(row.contentId || "").trim();
       if (!contentId) continue;
       const ts = new Date(row.recognizedAt).getTime();
@@ -368,7 +377,7 @@ export default function EarningsV2Page({
       map.set(contentId, current);
     }
     return { map, hasTimestampSignal, hasRecentSignal };
-  }, [sales]);
+  }, [scopedSales]);
 
   const byContentRows = useMemo(() => {
     const rows = [...byContent];
@@ -492,10 +501,10 @@ export default function EarningsV2Page({
 
   const scopedSalesRows = useMemo(() => {
     if (!scopedRow) return [];
-    return sales
+    return scopedSales
       .filter((row) => row.contentId === scopedRow.contentId)
       .sort((a, b) => String(b.recognizedAt).localeCompare(String(a.recognizedAt)));
-  }, [sales, scopedRow]);
+  }, [scopedSales, scopedRow]);
 
   useEffect(() => {
     if (!byContent.length) {
@@ -655,6 +664,17 @@ export default function EarningsV2Page({
         <div className="text-xs text-neutral-500 mt-1">
           Role/share context is shown from existing Royalties context when available.
         </div>
+        <div className="mt-3">
+          <TimeScopeControls
+            basis={timeBasis}
+            onBasisChange={setTimeBasis}
+            period={timePeriod}
+            onPeriodChange={setTimePeriod}
+            basisOptions={["earned"]}
+            periodOptions={["7d", "30d", "90d", "all"]}
+            helperText="Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
+          />
+        </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs text-neutral-500">View:</span>
           {[
@@ -712,7 +732,9 @@ export default function EarningsV2Page({
                 <tbody>
                   {byContentRows.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-3 text-neutral-500">No earnings rows yet.</td>
+                      <td colSpan={8} className="py-3 text-neutral-500">
+                        {sales.length === 0 ? "No earnings rows yet." : "No earnings rows in the selected period."}
+                      </td>
                     </tr>
                   ) : contentView === "payout_state" ? (
                     (["mixed", "pending", "paid"] as PayoutBucket[]).map((bucket) => {

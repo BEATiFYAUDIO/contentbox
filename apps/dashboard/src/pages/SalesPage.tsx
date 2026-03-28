@@ -2,7 +2,9 @@ import React from "react";
 import { api } from "../lib/api";
 import AuditPanel from "../components/AuditPanel";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
+import TimeScopeControls from "../components/TimeScopeControls";
 import { readDelegatedRevenue, upsertDelegatedRevenue, type DelegatedRevenueRow } from "../lib/delegatedRevenueStore";
+import { isWithinPeriod, type TimeBasis, type TimePeriod } from "../lib/timeScope";
 
 type SaleRow = {
   id: string;
@@ -80,6 +82,8 @@ export default function SalesPage({
   const [royaltyRows, setRoyaltyRows] = React.useState<RoyaltyScopeRow[]>([]);
   const [selectedSaleId, setSelectedSaleId] = React.useState<string | null>(null);
   const [auditOpenSignal, setAuditOpenSignal] = React.useState(0);
+  const [timeBasis, setTimeBasis] = React.useState<TimeBasis>("sale");
+  const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("all");
 
   const syncDelegatedSnapshot = React.useCallback(async () => {
     try {
@@ -213,8 +217,13 @@ export default function SalesPage({
     window.location.href = `/content/${encodeURIComponent(contentId)}/splits`;
   }, []);
 
+  const scopedSales = React.useMemo(() => {
+    if (timePeriod === "all") return sales;
+    return sales.filter((row) => isWithinPeriod(row.recognizedAt, timePeriod));
+  }, [sales, timePeriod]);
+
   const totals = React.useMemo(() => {
-    return sales.reduce(
+    return scopedSales.reduce(
       (acc, s) => {
         acc.gross += Number(s.grossAmountSats ?? s.amountSats ?? 0) || 0;
         acc.providerInvoicingFee += Number(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0) || 0;
@@ -231,16 +240,16 @@ export default function SalesPage({
         creatorNet: 0
       }
     );
-  }, [sales]);
+  }, [scopedSales]);
 
   const selectedSale = React.useMemo(() => {
-    if (!sales.length) return null;
+    if (!scopedSales.length) return null;
     if (selectedSaleId) {
-      const match = sales.find((row) => row.id === selectedSaleId);
+      const match = scopedSales.find((row) => row.id === selectedSaleId);
       if (match) return match;
     }
-    return sales[0];
-  }, [sales, selectedSaleId]);
+    return scopedSales[0];
+  }, [scopedSales, selectedSaleId]);
 
   const scopedWorkTotals = React.useMemo(() => {
     const contentId = String(selectedSale?.content?.id || "").trim();
@@ -249,7 +258,7 @@ export default function SalesPage({
     let net = 0;
     let events = 0;
     let latestRecognizedAt = "";
-    for (const row of sales) {
+    for (const row of scopedSales) {
       if (String(row.content?.id || "").trim() !== contentId) continue;
       gross += Number(row.grossAmountSats ?? row.amountSats ?? 0) || 0;
       net += Number(row.creatorNetSats ?? row.amountSats ?? 0) || 0;
@@ -259,7 +268,7 @@ export default function SalesPage({
       }
     }
     return { gross, net, events, latestRecognizedAt };
-  }, [sales, selectedSale?.content?.id]);
+  }, [scopedSales, selectedSale?.content?.id]);
 
   const scopedSplitSnapshot = React.useMemo(() => {
     const contentId = String(selectedSale?.content?.id || selectedSale?.contentId || "").trim();
@@ -281,14 +290,14 @@ export default function SalesPage({
   }, [royaltyRows, selectedSale?.content?.id, selectedSale?.contentId]);
 
   React.useEffect(() => {
-    if (!sales.length) {
+    if (!scopedSales.length) {
       setSelectedSaleId(null);
       return;
     }
-    if (!selectedSaleId || !sales.some((row) => row.id === selectedSaleId)) {
-      setSelectedSaleId(sales[0].id);
+    if (!selectedSaleId || !scopedSales.some((row) => row.id === selectedSaleId)) {
+      setSelectedSaleId(scopedSales[0].id);
     }
-  }, [sales, selectedSaleId]);
+  }, [scopedSales, selectedSaleId]);
 
   if (disabled) {
     return <LockedFeaturePanel title="Revenue" />;
@@ -407,6 +416,17 @@ export default function SalesPage({
           <div className="mt-1 text-xs text-neutral-500">
             Where relationships go, money flows: Royalties defines participation and share for these works.
           </div>
+          <div className="mt-3">
+            <TimeScopeControls
+              basis={timeBasis}
+              onBasisChange={setTimeBasis}
+              period={timePeriod}
+              onPeriodChange={setTimePeriod}
+              basisOptions={["sale"]}
+              periodOptions={["7d", "30d", "90d", "all"]}
+              helperText="Sales are scoped by buyer payment date (recognized sale time)."
+            />
+          </div>
 
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs">
             <span className="text-neutral-500">Scope:</span>
@@ -417,7 +437,7 @@ export default function SalesPage({
                 </span>
                 <button
                   type="button"
-                  onClick={() => setSelectedSaleId(sales[0]?.id || null)}
+                  onClick={() => setSelectedSaleId(scopedSales[0]?.id || null)}
                   className="rounded-full border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800/60"
                 >
                   Clear scope
@@ -450,15 +470,15 @@ export default function SalesPage({
                     </td>
                   </tr>
                 ) : null}
-                {!loading && sales.length === 0 ? (
+                {!loading && scopedSales.length === 0 ? (
                   <tr>
                     <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
-                      No sales recorded yet.
+                      {sales.length === 0 ? "No sales recorded yet." : "No sales rows in the selected period."}
                     </td>
                   </tr>
                 ) : null}
                 {!loading &&
-                  sales.map((s) => {
+                  scopedSales.map((s) => {
                     const isScoped = selectedSale?.id === s.id;
                     return (
                       <tr
@@ -640,7 +660,7 @@ export default function SalesPage({
               </div>
             ) : (
               <div className="mt-3 text-xs text-neutral-500">
-                {sales.length ? "Selected row has no content scope." : "No sales recorded yet."}
+                {scopedSales.length ? "Selected row has no content scope." : sales.length ? "No sales rows in this period." : "No sales recorded yet."}
               </div>
             )}
           </div>

@@ -2,6 +2,8 @@ import React from "react";
 import { api } from "../lib/api";
 import { PAYOUT_DESTINATIONS_LABEL, SETTLEMENTS_LABEL, PAYMENTS_EXPLAINER } from "../lib/terminology";
 import AuditPanel from "../components/AuditPanel";
+import TimeScopeControls from "../components/TimeScopeControls";
+import { isWithinPeriod, type TimeBasis, type TimePeriod } from "../lib/timeScope";
 
 type PayoutMethod = {
   id: string;
@@ -95,6 +97,8 @@ export default function PayoutRailsPage() {
   const [roleByContent, setRoleByContent] = React.useState<Record<string, string>>({});
   const [shareByContent, setShareByContent] = React.useState<Record<string, string>>({});
   const [originByContent, setOriginByContent] = React.useState<Record<string, string>>({});
+  const [timeBasis, setTimeBasis] = React.useState<TimeBasis>("paid");
+  const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("all");
 
   async function load() {
     setLoading(true);
@@ -237,6 +241,21 @@ export default function PayoutRailsPage() {
     return "text-neutral-300";
   }
 
+  const visiblePayoutRows = React.useMemo(() => {
+    const rows = payoutRows.slice().sort((a, b) => {
+      const ta = Date.parse(String(a.remittedAt || a.updatedAt || a.createdAt || "")) || 0;
+      const tb = Date.parse(String(b.remittedAt || b.updatedAt || b.createdAt || "")) || 0;
+      return tb - ta;
+    });
+    if (timePeriod === "all") return rows;
+    return rows.filter((row) => isWithinPeriod(row.remittedAt, timePeriod));
+  }, [payoutRows, timePeriod]);
+
+  const rowsMissingPaidTimestamp = React.useMemo(() => {
+    if (timePeriod === "all") return 0;
+    return payoutRows.reduce((count, row) => (row.remittedAt ? count : count + 1), 0);
+  }, [payoutRows, timePeriod]);
+
   async function saveIdentity(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -316,6 +335,22 @@ export default function PayoutRailsPage() {
         <div className="text-xs text-neutral-500 mt-1">
           Status model: Pending/Ready = not remitted, Forwarding = in progress, Paid = remitted, Failed/Blocked = not remitted.
         </div>
+        <div className="mt-3">
+          <TimeScopeControls
+            basis={timeBasis}
+            onBasisChange={setTimeBasis}
+            period={timePeriod}
+            onPeriodChange={setTimePeriod}
+            basisOptions={["paid"]}
+            periodOptions={["7d", "30d", "90d", "all"]}
+            helperText="Payouts are scoped by paid/remitted date when a remitted timestamp is present."
+          />
+        </div>
+        {timePeriod !== "all" && rowsMissingPaidTimestamp > 0 ? (
+          <div className="mt-2 text-xs text-neutral-500">
+            {rowsMissingPaidTimestamp} non-remitted rows are excluded from this paid-time period scope.
+          </div>
+        ) : null}
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Paid</div>
@@ -344,21 +379,16 @@ export default function PayoutRailsPage() {
               </tr>
             </thead>
             <tbody>
-              {payoutRows.length === 0 ? (
+              {visiblePayoutRows.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-3 px-3 text-neutral-500">
-                    No payout execution rows yet for this account.
+                    {payoutRows.length === 0
+                      ? "No payout execution rows yet for this account."
+                      : "No payout rows in the selected paid-time period."}
                   </td>
                 </tr>
               ) : (
-                payoutRows
-                  .slice()
-                  .sort((a, b) => {
-                    const ta = Date.parse(String(a.updatedAt || a.createdAt || a.remittedAt || "")) || 0;
-                    const tb = Date.parse(String(b.updatedAt || b.createdAt || b.remittedAt || "")) || 0;
-                    return tb - ta;
-                  })
-                  .map((row) => (
+                visiblePayoutRows.map((row) => (
                     <React.Fragment key={row.id}>
                       <tr className="border-t border-neutral-800">
                         <td className="py-2 px-3 text-xs text-neutral-400">

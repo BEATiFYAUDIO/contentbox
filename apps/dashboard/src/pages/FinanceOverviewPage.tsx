@@ -774,6 +774,9 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         ) : null}
         {lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
         <div className="mt-2 text-xs text-neutral-500">Top-level snapshot for accounting review and reconciliation prep.</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Scope model: Sales uses sale time, Earnings uses earned time, and Payout execution uses paid/remitted time.
+        </div>
       </section>
 
       <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Priority Snapshot</div>
@@ -808,6 +811,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Sales Breakdown</div>
         <div className="mt-1 text-xs text-neutral-400">Payments from your audience for your content.</div>
+        <div className="mt-1 text-xs text-neutral-500">Time basis: Sale date.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
@@ -838,6 +842,7 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
           ) : null}
         </div>
         <div className="mt-1 text-xs text-neutral-400">Accrual and payout-state breakdown for owned/collaborative works.</div>
+        <div className="mt-1 text-xs text-neutral-500">Time basis: Earned date (when available in the current feed).</div>
         <div className="mt-1 text-xs text-neutral-500">
           Model: Earned (accrued) · Paid (tracked remitted) · Pending (awaiting payout execution). Pending now: {formatSats(String(participantPayable))}.
         </div>

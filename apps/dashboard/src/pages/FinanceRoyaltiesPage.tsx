@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
+import TimeScopeControls from "../components/TimeScopeControls";
+import type { TimeBasis, TimePeriod } from "../lib/timeScope";
 
 type RoyaltyRow = {
   contentId: string;
@@ -76,6 +78,8 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
   const [localRoleByContent, setLocalRoleByContent] = useState<Record<string, string>>({});
   const [remoteRoleByContent, setRemoteRoleByContent] = useState<Record<string, string>>({});
   const [remoteRows, setRemoteRows] = useState<RemoteRoyaltyContextRow[]>([]);
+  const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
 
   useEffect(() => {
     if (!bridgeFilter?.contentId) return;
@@ -351,6 +355,18 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
         <div className="text-xs text-neutral-500 mt-1">
           Each row reflects earnings from works you own or collaborate on. Participation and shares are defined in Royalties.
         </div>
+        <div className="mt-3">
+          <TimeScopeControls
+            basis={timeBasis}
+            onBasisChange={setTimeBasis}
+            period={timePeriod}
+            onPeriodChange={setTimePeriod}
+            basisOptions={["earned"]}
+            periodOptions={["all"]}
+            periodDisabled
+            helperText="Earnings use earned time. Time scoping will expand as row-level earned timestamps become available."
+          />
+        </div>
       </div>
 
       <section className="grid gap-3 sm:grid-cols-3">
@@ -384,6 +400,9 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
         </div>
         <div className="text-xs text-neutral-500 mt-1 mb-2">
           Includes earnings shown by the current finance feed. Date shows “—” when no row timestamp is available.
+        </div>
+        <div className="text-xs text-neutral-500 mt-1 mb-2">
+          Period scoping is currently all-time for this statement because local earned rows do not yet include consistent earned timestamps.
         </div>
         <div className="text-xs text-neutral-500 mt-1 mb-2">
           Share is derived from your settled share versus total settled amount for the work.
