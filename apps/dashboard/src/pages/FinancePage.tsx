@@ -104,20 +104,6 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
     []
   );
 
-  const visibleTabs = useMemo(() => {
-    // Transactions endpoint is still intentionally limited/stubbed.
-    // Keep route support, but remove it from normal navigation to reduce noise.
-    if (financePosture === "sovereign_node") {
-      return allTabs.filter((t) => t.key !== "transactions");
-    }
-    if (financePosture === "sovereign_creator_with_provider") {
-      return allTabs.filter((t) => t.key !== "transactions" && t.key !== "rails" && t.key !== "payouts");
-    }
-    return allTabs.filter(
-      (t) => t.key !== "ledger" && t.key !== "transactions" && t.key !== "rails" && t.key !== "payouts"
-    );
-  }, [allTabs, financePosture]);
-
   if (isBasic) {
     return <LockedFeaturePanel title="Revenue" />;
   }
@@ -129,7 +115,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
           <div>
             <div className="text-lg font-semibold">Revenue</div>
             <div className="text-sm text-neutral-400 mt-1">
-              Creator money flow across one system: Royalties → Content → Earnings → Payouts.
+              Sales input → Content intelligence → Earnings statement → Payout execution.
             </div>
             <div className="text-xs text-neutral-500 mt-1">Where relationships go, money flows.</div>
           </div>
@@ -143,25 +129,83 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
             Refresh now
           </button>
         </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Sales Input</div>
-            <div className="text-sm text-neutral-200 mt-1">
-              {financePosture === "sovereign_node" || financePosture === "sovereign_creator_with_provider"
-                ? "What buyers paid and how works performed"
-                : "Buyer payments and work performance snapshot"}
-            </div>
-          </div>
-          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Payout Execution</div>
-            <div className="text-sm text-neutral-200 mt-1">
+        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+          <button
+            type="button"
+            onClick={() => setTab("overview")}
+            className={[
+              "rounded-xl border p-3 text-left transition",
+              tab === "overview"
+                ? "border-white/30 bg-white/10"
+                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 0</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Revenue Overview</div>
+            <div className="mt-1 text-xs text-neutral-400">System summary, health, and top-level money posture.</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("ledger")}
+            className={[
+              "rounded-xl border p-3 text-left transition",
+              tab === "ledger"
+                ? "border-white/30 bg-white/10"
+                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 1</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Sales Input</div>
+            <div className="mt-1 text-xs text-neutral-400">Buyer payment truth and settlement node context.</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("earnings-v2")}
+            className={[
+              "rounded-xl border p-3 text-left transition",
+              tab === "earnings-v2"
+                ? "border-white/30 bg-white/10"
+                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 2</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Content Intelligence</div>
+            <div className="mt-1 text-xs text-neutral-400">Multi-view performance, risk, role, and freshness analysis.</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("royalties")}
+            className={[
+              "rounded-xl border p-3 text-left transition",
+              tab === "royalties"
+                ? "border-white/30 bg-white/10"
+                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 3</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Earnings Statement</div>
+            <div className="mt-1 text-xs text-neutral-400">Your personal royalty money statement by status.</div>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("payouts")}
+            className={[
+              "rounded-xl border p-3 text-left transition",
+              tab === "payouts"
+                ? "border-white/30 bg-white/10"
+                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 4</div>
+            <div className="mt-1 text-sm font-semibold text-neutral-100">Payout Execution</div>
+            <div className="mt-1 text-xs text-neutral-400">
               {financePosture === "sovereign_node"
-                ? "What was paid, what is pending, and node execution health"
-                : "What was paid and what is still pending"}
+                ? "Paid, pending, failed, and node execution health."
+                : "Paid and pending execution state."}
             </div>
-          </div>
+          </button>
         </div>
-        {financePosture === "sovereign_node" ? (
+        {financePosture === "sovereign_node" && tab !== "overview" ? (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 space-y-2">
           <div className="flex items-center flex-wrap gap-2">
             {rails.map((r) => (
@@ -193,33 +237,12 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         ) : null}
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        {visibleTabs.map((t) => {
-          const active = t.key === tab;
-          return (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key as FinanceTab)}
-              className={[
-                "rounded-full px-4 py-2 text-sm border transition",
-                active
-                  ? "border-white/40 bg-white/10 text-white"
-                  : "border-neutral-800 text-neutral-300 hover:bg-neutral-900"
-              ].join(" ")}
-            >
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
       <div className="text-xs text-neutral-500">
-        Financial layers: <span className="text-neutral-300">Sales</span> (buyer gross + settlement context),{" "}
-        <span className="text-neutral-300">Content</span> (performance + your share),{" "}
-        <span className="text-neutral-300">Royalties</span> (participation + share definition),{" "}
-        <span className="text-neutral-300">Payouts</span> (paid/pending/failed),{" "}
-        <span className="text-neutral-300">Node &amp; Wallet</span> (settlement path and wallet context).
+        Current stage:{" "}
+        <span className="text-neutral-300">
+          {(allTabs.find((t) => t.key === tab)?.label || "Revenue Overview").replace("Revenue ", "")}
+        </span>
       </div>
-
       {tab === "overview" && (
         <FinanceOverviewPage
           refreshSignal={tabRefresh.overview}
@@ -229,10 +252,6 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
       {tab === "ledger" && (
         <SalesPage
           hasInvoiceCommerce={hasInvoiceCommerce}
-          onOpenEarningsForContent={(contentId, title) => {
-            setEarningsBridgeFilter({ contentId, title, token: Date.now() });
-            setTab("royalties");
-          }}
         />
       )}
       {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} bridgeFilter={earningsBridgeFilter} />}

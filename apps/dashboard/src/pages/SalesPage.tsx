@@ -49,17 +49,25 @@ type ProviderRevenueSnapshotResponse = {
   items: DelegatedRevenueRow[];
 };
 
+type RoyaltyScopeRow = {
+  contentId: string;
+  title: string;
+  totalSalesSats: string;
+  allocationSats: string;
+  settledSats: string;
+  withdrawnSats: string;
+  pendingSats: string;
+};
+
 type SalesPageProps = {
   productTier?: string;
   disabled?: boolean;
   hasInvoiceCommerce?: boolean;
-  onOpenEarningsForContent?: (contentId: string, title: string) => void;
 };
 
 export default function SalesPage({
   disabled = false,
-  hasInvoiceCommerce = false,
-  onOpenEarningsForContent
+  hasInvoiceCommerce = false
 }: SalesPageProps) {
   const [sales, setSales] = React.useState<SaleRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -69,7 +77,8 @@ export default function SalesPage({
   const [delegatedMsg, setDelegatedMsg] = React.useState<string | null>(null);
   const [delegatedLastSyncAt, setDelegatedLastSyncAt] = React.useState<string | null>(null);
   const [delegatedSnapshotAsOf, setDelegatedSnapshotAsOf] = React.useState<string | null>(null);
-  const [selectedAuditContent, setSelectedAuditContent] = React.useState<{ id: string; title: string } | null>(null);
+  const [royaltyRows, setRoyaltyRows] = React.useState<RoyaltyScopeRow[]>([]);
+  const [selectedSaleId, setSelectedSaleId] = React.useState<string | null>(null);
   const [auditOpenSignal, setAuditOpenSignal] = React.useState(0);
 
   const syncDelegatedSnapshot = React.useCallback(async () => {
@@ -127,8 +136,21 @@ export default function SalesPage({
     setLoading(true);
     setError(null);
     try {
-      const salesRes = await api<SaleRow[]>("/api/revenue/sales", "GET");
-      setSales(salesRes || []);
+      const [salesRes, royaltiesRes] = await Promise.allSettled([
+        api<SaleRow[]>("/api/revenue/sales", "GET"),
+        api<{ items: RoyaltyScopeRow[] }>("/finance/royalties", "GET")
+      ]);
+      if (salesRes.status === "fulfilled") {
+        setSales(salesRes.value || []);
+      } else {
+        setSales([]);
+        setError(salesRes.reason?.message || "Failed to load sales data");
+      }
+      if (royaltiesRes.status === "fulfilled") {
+        setRoyaltyRows(Array.isArray(royaltiesRes.value?.items) ? royaltiesRes.value.items : []);
+      } else {
+        setRoyaltyRows([]);
+      }
       await syncDelegatedSnapshot();
     } catch (e: any) {
       setError(e?.message || "Failed to load revenue data");
@@ -162,6 +184,35 @@ export default function SalesPage({
     return Math.round(n).toLocaleString();
   };
 
+  const shortNodeId = (raw?: string | null) => {
+    const id = String(raw || "").trim();
+    if (!id) return "";
+    if (id.length <= 12) return id;
+    return `${id.slice(0, 6)}…${id.slice(-6)}`;
+  };
+
+  const settlementNodeLabel = (row: SaleRow) => {
+    const creatorNode = shortNodeId(row.creatorNodeId);
+    const providerNode = shortNodeId(row.providerNodeId);
+    const rail = String(row.rail || "").trim().toLowerCase();
+    const payoutRail = String(row.payoutRail || "").trim().toLowerCase();
+
+    if (creatorNode) return `Creator node${creatorNode ? ` (${creatorNode})` : ""}`;
+    if (providerNode) return `Provider node${providerNode ? ` (${providerNode})` : ""}`;
+    if (payoutRail === "creator_node") return "Creator node";
+    if (payoutRail === "provider_custody") return "Provider custody";
+    if (payoutRail === "forwarded") return "Forwarded";
+    if (rail === "node_invoice") return "Creator node";
+    if (rail === "provider_custody") return "Provider custody";
+    if (rail === "forwarded") return "Forwarded";
+    return "Unknown";
+  };
+
+  const openSplitEditorForContent = React.useCallback((contentId: string) => {
+    if (!contentId) return;
+    window.location.href = `/content/${encodeURIComponent(contentId)}/splits`;
+  }, []);
+
   const totals = React.useMemo(() => {
     return sales.reduce(
       (acc, s) => {
@@ -181,6 +232,63 @@ export default function SalesPage({
       }
     );
   }, [sales]);
+
+  const selectedSale = React.useMemo(() => {
+    if (!sales.length) return null;
+    if (selectedSaleId) {
+      const match = sales.find((row) => row.id === selectedSaleId);
+      if (match) return match;
+    }
+    return sales[0];
+  }, [sales, selectedSaleId]);
+
+  const scopedWorkTotals = React.useMemo(() => {
+    const contentId = String(selectedSale?.content?.id || "").trim();
+    if (!contentId) return null;
+    let gross = 0;
+    let net = 0;
+    let events = 0;
+    let latestRecognizedAt = "";
+    for (const row of sales) {
+      if (String(row.content?.id || "").trim() !== contentId) continue;
+      gross += Number(row.grossAmountSats ?? row.amountSats ?? 0) || 0;
+      net += Number(row.creatorNetSats ?? row.amountSats ?? 0) || 0;
+      events += 1;
+      if (!latestRecognizedAt || String(row.recognizedAt || "") > latestRecognizedAt) {
+        latestRecognizedAt = String(row.recognizedAt || "");
+      }
+    }
+    return { gross, net, events, latestRecognizedAt };
+  }, [sales, selectedSale?.content?.id]);
+
+  const scopedSplitSnapshot = React.useMemo(() => {
+    const contentId = String(selectedSale?.content?.id || selectedSale?.contentId || "").trim();
+    const contentTitle = String(selectedSale?.content?.title || "").trim().toLowerCase();
+    if (!contentId && !contentTitle) return null;
+    const row =
+      royaltyRows.find((r) => String(r?.contentId || "").trim() === contentId) ||
+      royaltyRows.find((r) => String(r?.title || "").trim().toLowerCase() === contentTitle);
+    if (!row) return null;
+    const total = Number(row.totalSalesSats || 0);
+    const allocation = Number(row.allocationSats || 0);
+    const sharePct = Number.isFinite(total) && total > 0 ? (allocation / total) * 100 : NaN;
+    return {
+      shareLabel: Number.isFinite(sharePct) ? `${sharePct % 1 === 0 ? sharePct.toFixed(0) : sharePct.toFixed(1)}%` : "—",
+      accruedSats: Number(row.settledSats || 0) || 0,
+      pendingSats: Number(row.pendingSats || 0) || 0,
+      paidSats: Number(row.withdrawnSats || 0) || 0
+    };
+  }, [royaltyRows, selectedSale?.content?.id, selectedSale?.contentId]);
+
+  React.useEffect(() => {
+    if (!sales.length) {
+      setSelectedSaleId(null);
+      return;
+    }
+    if (!selectedSaleId || !sales.some((row) => row.id === selectedSaleId)) {
+      setSelectedSaleId(sales[0].id);
+    }
+  }, [sales, selectedSaleId]);
 
   if (disabled) {
     return <LockedFeaturePanel title="Revenue" />;
@@ -284,141 +392,259 @@ export default function SalesPage({
         </div>
       </div>
 
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-        <div className="text-base font-semibold">Sales</div>
-        <div className="text-sm text-neutral-400 mt-1">Recognized revenue events.</div>
-        {hasInvoiceCommerce ? (
-          <div className="mt-2 text-xs text-neutral-500">
-            Fee truth: invoicing and durable-hosting fees are shown only for invoice-based commerce rows.
-          </div>
-        ) : null}
-        <div className="mt-1 text-xs text-neutral-500">
-          This page is sales input only. Your share is in Earnings. Payout execution details are in Payouts.
-        </div>
-        <div className="mt-1 text-xs text-neutral-500">
-          Where relationships go, money flows: Royalties defines participation and share for these works.
-        </div>
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-neutral-400">
-                <th className="py-2 px-3">Recognized</th>
-                <th className="py-2 px-3">Item</th>
-                <th className="py-2 px-3">Buyer Amount</th>
-                {hasInvoiceCommerce ? <th className="py-2 px-3">Invoicing Fee</th> : null}
-                {hasInvoiceCommerce ? <th className="py-2 px-3">Durable Hosting Fee</th> : null}
-                {hasInvoiceCommerce ? <th className="py-2 px-3">Total Fees</th> : null}
-                <th className="py-2 px-3">Net After Fees</th>
-                <th className="py-2 px-3">Settlement Node</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
-                    Loading sales ledger…
-                  </td>
-                </tr>
-              ) : null}
-              {!loading && sales.length === 0 ? (
-                <tr>
-                  <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
-                    No sales recorded yet.
-                  </td>
-                </tr>
-              ) : null}
-              {!loading &&
-                sales.map((s) => (
-                  <tr key={s.id} className="border-t border-neutral-800">
-                    <td className="py-2 px-3 text-xs text-neutral-400">{new Date(s.recognizedAt).toLocaleString()}</td>
-                    <td className="py-2 px-3">
-                      <div className="text-neutral-200">{s.content?.title || "Content"}</div>
-                      {s.content?.id ? (
-                        <div className="mt-1 flex flex-wrap gap-2">
-                          <a
-                            href={`/royalties/${encodeURIComponent(String(s.content.id))}`}
-                            className="rounded-md border border-neutral-700 px-2 py-0.5 text-[11px] hover:bg-neutral-800/60"
-                          >
-                            View locked split terms
-                          </a>
-                          {onOpenEarningsForContent ? (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onOpenEarningsForContent(
-                                  String(s.content?.id || ""),
-                                  String(s.content?.title || "Content")
-                                )
-                              }
-                              className="rounded-md border border-neutral-700 px-2 py-0.5 text-[11px] hover:bg-neutral-800/60"
-                            >
-                              View earnings for this work
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (!s.content?.id) return;
-                              setSelectedAuditContent({
-                                id: String(s.content.id),
-                                title: String(s.content.title || "Content")
-                              });
-                              setAuditOpenSignal((n) => n + 1);
-                            }}
-                            className="rounded-md border border-neutral-700 px-2 py-0.5 text-[11px] hover:bg-neutral-800/60"
-                          >
-                            Audit info
-                          </button>
-                        </div>
-                      ) : null}
-                    </td>
-                    <td className="py-2 px-3">{formatSats(s.grossAmountSats ?? s.amountSats)} {s.currency || "SAT"}</td>
-                    {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0)} SAT</td> : null}
-                    {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerDurableHostingFeeSats ?? 0)} SAT</td> : null}
-                    {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerFeeSats ?? 0)} SAT</td> : null}
-                    <td className="py-2 px-3">{formatSats(s.creatorNetSats ?? s.amountSats)} SAT</td>
-                    <td className="py-2 px-3">{s.rail}</td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold">Content audit evidence</div>
-            <div className="text-xs text-neutral-500 mt-1">
-              Use <span className="text-neutral-300">Audit info</span> on a content row to open evidence for that work.
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-base font-semibold">Sales</div>
+          <div className="text-sm text-neutral-400 mt-1">Recognized revenue events.</div>
+          {hasInvoiceCommerce ? (
+            <div className="mt-2 text-xs text-neutral-500">
+              Fee truth: invoicing and durable-hosting fees are shown only for invoice-based commerce rows.
             </div>
-          </div>
-          {selectedAuditContent ? (
-            <button
-              type="button"
-              onClick={() => setSelectedAuditContent(null)}
-              className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
-            >
-              Clear
-            </button>
           ) : null}
-        </div>
-        {selectedAuditContent ? (
-          <div className="mt-3 space-y-2">
-            <div className="text-xs text-neutral-400">
-              Showing audit for <span className="text-neutral-200">{selectedAuditContent.title}</span>
-            </div>
-            <AuditPanel
-              scopeType="content"
-              scopeId={selectedAuditContent.id}
-              title="Audit"
-              exportName={`content-audit-${selectedAuditContent.id}.json`}
-              openSignal={auditOpenSignal}
-            />
+          <div className="mt-1 text-xs text-neutral-500">
+            This page is sales input only. Your share is in Earnings. Payout execution details are in Payouts.
           </div>
-        ) : (
-          <div className="mt-3 text-xs text-neutral-500">No content selected yet.</div>
-        )}
+          <div className="mt-1 text-xs text-neutral-500">
+            Where relationships go, money flows: Royalties defines participation and share for these works.
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs">
+            <span className="text-neutral-500">Scope:</span>
+            {selectedSale?.content?.id ? (
+              <>
+                <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-200">
+                  {selectedSale.content.title || "Content"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSaleId(sales[0]?.id || null)}
+                  className="rounded-full border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800/60"
+                >
+                  Clear scope
+                </button>
+              </>
+            ) : (
+              <span className="text-neutral-500">All sales</span>
+            )}
+          </div>
+
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-neutral-400">
+                  <th className="py-2 px-3">Recognized</th>
+                  <th className="py-2 px-3">Item</th>
+                  <th className="py-2 px-3">Buyer Amount</th>
+                  {hasInvoiceCommerce ? <th className="py-2 px-3">Invoicing Fee</th> : null}
+                  {hasInvoiceCommerce ? <th className="py-2 px-3">Durable Hosting Fee</th> : null}
+                  {hasInvoiceCommerce ? <th className="py-2 px-3">Total Fees</th> : null}
+                  <th className="py-2 px-3">Net After Fees</th>
+                  <th className="py-2 px-3">Settlement Node</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
+                      Loading sales ledger…
+                    </td>
+                  </tr>
+                ) : null}
+                {!loading && sales.length === 0 ? (
+                  <tr>
+                    <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
+                      No sales recorded yet.
+                    </td>
+                  </tr>
+                ) : null}
+                {!loading &&
+                  sales.map((s) => {
+                    const isScoped = selectedSale?.id === s.id;
+                    return (
+                      <tr
+                        key={s.id}
+                        className={`border-t border-neutral-800 cursor-pointer ${isScoped ? "bg-neutral-900/40" : "hover:bg-neutral-900/30"}`}
+                        onClick={() => setSelectedSaleId(s.id)}
+                      >
+                        <td className="py-2 px-3 text-xs text-neutral-400">{new Date(s.recognizedAt).toLocaleString()}</td>
+                        <td className="py-2 px-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-neutral-200">{s.content?.title || "Content"}</span>
+                            <span className="text-[11px] text-neutral-500">{isScoped ? "Scoped" : "Details >"}</span>
+                          </div>
+                        </td>
+                        <td className="py-2 px-3">{formatSats(s.grossAmountSats ?? s.amountSats)} {s.currency || "SAT"}</td>
+                        {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0)} SAT</td> : null}
+                        {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerDurableHostingFeeSats ?? 0)} SAT</td> : null}
+                        {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerFeeSats ?? 0)} SAT</td> : null}
+                        <td className="py-2 px-3">{formatSats(s.creatorNetSats ?? s.amountSats)} SAT</td>
+                        <td className="py-2 px-3" title={String(s.rail || "") || undefined}>{settlementNodeLabel(s)}</td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/30 p-3 text-xs text-neutral-500 lg:hidden">
+            <div className="font-semibold text-neutral-300">Scoped work details</div>
+            <div className="mt-1">Select a row to open actions and audit evidence.</div>
+            {selectedSale?.content?.id ? (
+              <div className="mt-3 space-y-2">
+                <div className="text-neutral-300">{selectedSale.content.title || "Content"}</div>
+                {scopedWorkTotals ? (
+                  <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-2">
+                    <div className="text-[10px] uppercase tracking-wide text-neutral-500">Earnings snapshot (this work)</div>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                      <div>
+                        <div className="text-neutral-500">Events</div>
+                        <div className="text-neutral-200">{scopedWorkTotals.events}</div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-500">Gross</div>
+                        <div className="text-neutral-200">{formatSats(scopedWorkTotals.gross)} sats</div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-500">Net</div>
+                        <div className="text-neutral-200">{formatSats(scopedWorkTotals.net)} sats</div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-2">
+                  <div className="text-[10px] uppercase tracking-wide text-neutral-500">Locked split snapshot (this work)</div>
+                  {scopedSplitSnapshot ? (
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                      <div>
+                        <div className="text-neutral-500">Your Share</div>
+                        <div className="text-neutral-200">{scopedSplitSnapshot.shareLabel}</div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-500">Accrued</div>
+                        <div className="text-neutral-200">{formatSats(scopedSplitSnapshot.accruedSats)} sats</div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-500">Pending</div>
+                        <div className="text-neutral-200">{formatSats(scopedSplitSnapshot.pendingSats)} sats</div>
+                      </div>
+                      <div>
+                        <div className="text-neutral-500">Paid</div>
+                        <div className="text-neutral-200">{formatSats(scopedSplitSnapshot.paidSats)} sats</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mt-2 text-[11px] text-neutral-500">No locked split snapshot available for this work yet.</div>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openSplitEditorForContent(String(selectedSale.content?.id || ""))}
+                    className="rounded-full border border-neutral-700 px-3 py-1.5 text-[11px] text-neutral-200 hover:bg-neutral-800/60"
+                  >
+                    Open split editor
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="hidden lg:block">
+          <div className="sticky top-24 rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+            <div className="text-sm font-semibold">Scoped work details</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Actions and audit evidence for the currently scoped row.
+            </div>
+            {selectedSale?.content?.id ? (
+              <div className="mt-3 space-y-3">
+                <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 p-3">
+                  <div className="text-xs uppercase tracking-wide text-neutral-500">Scoped Work</div>
+                  <div className="mt-1 text-sm text-neutral-200">{selectedSale.content.title || "Content"}</div>
+                  {scopedWorkTotals ? (
+                    <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/50 p-2">
+                      <div className="text-[10px] uppercase tracking-wide text-neutral-500">Earnings snapshot (this work)</div>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-[11px]">
+                        <div>
+                          <div className="text-neutral-500">Events</div>
+                          <div className="text-neutral-200">{scopedWorkTotals.events}</div>
+                        </div>
+                        <div>
+                          <div className="text-neutral-500">Gross</div>
+                          <div className="text-neutral-200">{formatSats(scopedWorkTotals.gross)} sats</div>
+                        </div>
+                        <div>
+                          <div className="text-neutral-500">Net</div>
+                          <div className="text-neutral-200">{formatSats(scopedWorkTotals.net)} sats</div>
+                        </div>
+                      </div>
+                      <div className="mt-2 text-[10px] text-neutral-500">
+                        Latest recognized:{" "}
+                        {scopedWorkTotals.latestRecognizedAt
+                          ? new Date(scopedWorkTotals.latestRecognizedAt).toLocaleString()
+                          : "—"}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-900/50 p-2">
+                    <div className="text-[10px] uppercase tracking-wide text-neutral-500">Locked split snapshot (this work)</div>
+                    {scopedSplitSnapshot ? (
+                      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
+                        <div>
+                          <div className="text-neutral-500">Your Share</div>
+                          <div className="text-neutral-200">{scopedSplitSnapshot.shareLabel}</div>
+                        </div>
+                        <div>
+                          <div className="text-neutral-500">Accrued</div>
+                          <div className="text-neutral-200">{formatSats(scopedSplitSnapshot.accruedSats)} sats</div>
+                        </div>
+                        <div>
+                          <div className="text-neutral-500">Pending</div>
+                          <div className="text-neutral-200">{formatSats(scopedSplitSnapshot.pendingSats)} sats</div>
+                        </div>
+                        <div>
+                          <div className="text-neutral-500">Paid</div>
+                          <div className="text-neutral-200">{formatSats(scopedSplitSnapshot.paidSats)} sats</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-[11px] text-neutral-500">No locked split snapshot available for this work yet.</div>
+                    )}
+                  </div>
+                  <div className="mt-3 flex flex-col gap-2">
+                    <button
+                      type="button"
+                      onClick={() => openSplitEditorForContent(String(selectedSale.content?.id || ""))}
+                      className="rounded-full border border-neutral-700 px-3 py-1.5 text-[11px] text-neutral-200 hover:bg-neutral-800/60"
+                    >
+                      Open split editor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAuditOpenSignal((n) => n + 1)}
+                      className="rounded-full border border-neutral-700 px-3 py-1.5 text-[11px] text-neutral-200 hover:bg-neutral-800/60"
+                    >
+                      Refresh audit evidence
+                    </button>
+                  </div>
+                </div>
+                <AuditPanel
+                  scopeType="content"
+                  scopeId={String(selectedSale.content.id)}
+                  title="Audit"
+                  exportName={`content-audit-${selectedSale.content.id}.json`}
+                  openSignal={auditOpenSignal}
+                  eventFilter="commerce"
+                  showFilterToggle
+                />
+              </div>
+            ) : (
+              <div className="mt-3 text-xs text-neutral-500">
+                {sales.length ? "Selected row has no content scope." : "No sales recorded yet."}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

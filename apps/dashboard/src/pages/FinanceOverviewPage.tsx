@@ -684,38 +684,6 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
     return () => window.clearInterval(timer);
   }, [showLightningModal, openedChannel, openedChannelStatus]);
 
-  const onchain = data?.health?.onchain;
-  const healthTone = (status?: string) => {
-    if (status === "healthy") return "border-emerald-500/40 text-emerald-300 bg-emerald-500/10";
-    if (status === "locked" || status === "degraded" || status === "tlsError") return "border-amber-500/40 text-amber-300 bg-amber-500/10";
-    if (status === "missing") return "border-neutral-700 text-neutral-300 bg-neutral-900/50";
-    return "border-red-500/40 text-red-300 bg-red-500/10";
-  };
-  const lightningChipStatus = lightningAdmin?.configured
-    ? lightningAdmin.lastStatus === "error"
-      ? "error"
-      : "connected"
-    : "missing";
-  const lightningChipTone = healthTone(
-    lightningChipStatus === "connected" ? "healthy" : lightningChipStatus === "missing" ? "missing" : "error"
-  );
-  const receiveChipStatus = !lightningAdmin?.configured
-    ? "missing"
-    : lightningReadiness?.receiveReady
-      ? "ready"
-      : lightningReadiness?.configured && lightningReadiness.nodeReachable
-        ? "setup"
-        : lightningReadiness
-          ? "error"
-          : "unknown";
-  const receiveChipTone =
-    receiveChipStatus === "ready"
-      ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10"
-      : receiveChipStatus === "setup"
-        ? "border-amber-500/40 text-amber-300 bg-amber-500/10"
-        : receiveChipStatus === "missing" || receiveChipStatus === "unknown"
-          ? "border-neutral-700 text-neutral-300 bg-neutral-900/50"
-          : "border-red-500/40 text-red-300 bg-red-500/10";
   const hasRevenue =
     Number(data?.totals?.salesSats || 0) > 0 ||
     Number(data?.totals?.invoicesTotal || 0) > 0 ||
@@ -763,15 +731,6 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-base font-semibold">Revenue Overview</div>
           <div className="flex items-center gap-2 text-xs">
-            <span className={["rounded-full border px-2 py-1", lightningChipTone].join(" ")}>
-              Lightning: {lightningChipStatus}
-            </span>
-            <span className={["rounded-full border px-2 py-1", receiveChipTone].join(" ")}>
-              Receive: {receiveChipStatus}
-            </span>
-            <span className={["rounded-full border px-2 py-1", healthTone(onchain?.status)].join(" ")}>
-              On-chain: {onchain?.status || "unknown"}
-            </span>
             {!lightningAdmin?.configured ? (
               <button
                 onClick={openLightningWizard}
@@ -814,23 +773,40 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
           <div className="mt-1 text-xs text-amber-300">Lightning error: {lightningAdmin.lastError}</div>
         ) : null}
         {lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
-        <div className="mt-2 text-xs text-neutral-500">
-          Summary of your money from works you own or participate in.
-        </div>
-        <div className="mt-1 text-xs text-neutral-500">Money flows from sales to earnings to payouts.</div>
-        <div className="mt-1 text-xs text-neutral-500">
-          Sales shows sales events, Earnings shows money from works you own or participate in, Payouts shows execution, and Node &amp; Wallet shows infrastructure context.
-        </div>
-        <div className="mt-1 text-xs text-neutral-500">
-          Royalties is source truth for participation, role, and share; Revenue is that truth expressed as money.
-        </div>
-        <div className="mt-1 text-xs text-neutral-500">Where relationships go, money flows.</div>
+        <div className="mt-2 text-xs text-neutral-500">Top-level snapshot for accounting review and reconciliation prep.</div>
       </section>
 
-      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Summary</div>
+      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Priority Snapshot</div>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm font-semibold">Sales</div>
+        <div className="text-sm font-semibold">Topline Money Snapshot</div>
+        <div className="mt-1 text-xs text-neutral-400">Core numbers for accounting review.</div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Sales</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
+            <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Total earned</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Accrued from local + remote participation.</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Paid (tracked)</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Marked paid/remitted in payout tracking.</div>
+          </div>
+          <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-4">
+            <div className="text-xs uppercase tracking-wide text-amber-200/80">Pending</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(participantPayable))}</div>
+            <div className="mt-1 text-xs text-amber-200/80">Awaiting payout execution.</div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold">Sales Breakdown</div>
         <div className="mt-1 text-xs text-neutral-400">Payments from your audience for your content.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
@@ -850,22 +826,21 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-sm font-semibold">Earnings</div>
+          <div className="text-sm font-semibold">Earnings Breakdown</div>
           {onOpenRoyalties ? (
             <button
               type="button"
               onClick={onOpenRoyalties}
               className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
             >
-              Open detailed earnings
+              Open earnings statement
             </button>
           ) : null}
         </div>
-        <div className="mt-1 text-xs text-neutral-400">What you earned from works you own and collaborations you participate in.</div>
-        <div className="mt-1 text-xs text-neutral-500">Earnings are generated from works you own or participate in (see Royalties for participation, role, and share definitions).</div>
-        <div className="mt-1 text-xs text-neutral-500">{formatSats(String(participantPayable))} pending payout execution.</div>
-        <div className="mt-1 text-xs text-neutral-500">Earned = your share total · Paid = payout tracking marked paid/remitted · Pending = payouts not yet marked paid.</div>
-        <div className="mt-1 text-xs text-neutral-500">Total earned is accrual from works you own or participate in; Paid and Pending show payout execution state for that accrual.</div>
+        <div className="mt-1 text-xs text-neutral-400">Accrual and payout-state breakdown for owned/collaborative works.</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Model: Earned (accrued) · Paid (tracked remitted) · Pending (awaiting payout execution). Pending now: {formatSats(String(participantPayable))}.
+        </div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Paid (tracked)</div>
@@ -921,19 +896,25 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">How to read this page</div>
+        <div className="mt-2 grid gap-2 md:grid-cols-2">
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Sales</div>
+            <div className="mt-1 text-xs text-neutral-300">Seller-of-record input with settlement and scoped work detail.</div>
+          </div>
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
+            <div className="mt-1 text-xs text-neutral-300">Multi-view intelligence over the same content dataset.</div>
+          </div>
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Earnings</div>
+            <div className="mt-1 text-xs text-neutral-300">Your share statement from settled content sales.</div>
+          </div>
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
+            <div className="mt-1 text-xs text-neutral-300">Participation, role, and share source truth.</div>
+          </div>
+        </div>
         <div className="mt-2 text-xs text-neutral-400">
-          Sales = sales events collected by this node as seller-of-record.
-        </div>
-        <div className="mt-1 text-xs text-neutral-400">
-          Earnings = your share from settled content sales (local + mirrored remote).
-        </div>
-        <div className="mt-1 text-xs text-neutral-400">
-          Royalties = collaboration roles and share definitions for those earnings.
-        </div>
-        <div className="mt-1 text-xs text-neutral-400">
-          Paid/remitted value is tracked by payout state and may differ from accrual.
-        </div>
-        <div className="mt-1 text-xs text-neutral-400">
           State model: Earned (accrued) → Pending (payable/remittance pending) → Paid (remitted); Failed indicates remittance could not complete.
         </div>
         <div className="mt-1 text-xs text-neutral-500">Reconciliation (coming soon)</div>
