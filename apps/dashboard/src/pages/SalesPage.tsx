@@ -4,17 +4,6 @@ import AuditPanel from "../components/AuditPanel";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
 import { readDelegatedRevenue, upsertDelegatedRevenue, type DelegatedRevenueRow } from "../lib/delegatedRevenueStore";
 
-type PendingRow = {
-  id: string;
-  contentId: string;
-  amountSats: string | number;
-  status: string;
-  memo?: string | null;
-  createdAt: string;
-  destination?: { type: string; value: string } | null;
-  content?: { id: string; title: string; type: string } | null;
-};
-
 type SaleRow = {
   id: string;
   intentId: string;
@@ -64,22 +53,24 @@ type SalesPageProps = {
   productTier?: string;
   disabled?: boolean;
   hasInvoiceCommerce?: boolean;
+  onOpenEarningsForContent?: (contentId: string, title: string) => void;
 };
 
-export default function SalesPage({ productTier = "basic", disabled = false, hasInvoiceCommerce = false }: SalesPageProps) {
-  const [pending, setPending] = React.useState<PendingRow[]>([]);
+export default function SalesPage({
+  disabled = false,
+  hasInvoiceCommerce = false,
+  onOpenEarningsForContent
+}: SalesPageProps) {
   const [sales, setSales] = React.useState<SaleRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
-  const [confirmRow, setConfirmRow] = React.useState<PendingRow | null>(null);
-  const [actionError, setActionError] = React.useState<string | null>(null);
-  const [actionLoading, setActionLoading] = React.useState(false);
-  const [toastMsg, setToastMsg] = React.useState<string | null>(null);
   const [delegatedRows, setDelegatedRows] = React.useState<DelegatedRevenueRow[]>([]);
   const [delegatedMode, setDelegatedMode] = React.useState<"fresh" | "offline_snapshot" | "not_provider_mode" | "none">("none");
   const [delegatedMsg, setDelegatedMsg] = React.useState<string | null>(null);
   const [delegatedLastSyncAt, setDelegatedLastSyncAt] = React.useState<string | null>(null);
   const [delegatedSnapshotAsOf, setDelegatedSnapshotAsOf] = React.useState<string | null>(null);
+  const [selectedAuditContent, setSelectedAuditContent] = React.useState<{ id: string; title: string } | null>(null);
+  const [auditOpenSignal, setAuditOpenSignal] = React.useState(0);
 
   const syncDelegatedSnapshot = React.useCallback(async () => {
     try {
@@ -136,11 +127,7 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
     setLoading(true);
     setError(null);
     try {
-      const [pendingRes, salesRes] = await Promise.all([
-        api<PendingRow[]>("/api/revenue/pending-manual", "GET"),
-        api<SaleRow[]>("/api/revenue/sales", "GET")
-      ]);
-      setPending(pendingRes || []);
+      const salesRes = await api<SaleRow[]>("/api/revenue/sales", "GET");
       setSales(salesRes || []);
       await syncDelegatedSnapshot();
     } catch (e: any) {
@@ -169,38 +156,11 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
     };
   }, [disabled, syncDelegatedSnapshot]);
 
-  React.useEffect(() => {
-    if (!toastMsg) return;
-    const timer = window.setTimeout(() => setToastMsg(null), 2500);
-    return () => window.clearTimeout(timer);
-  }, [toastMsg]);
-
   const formatSats = (raw: string | number) => {
     const n = Number(raw || 0);
     if (!Number.isFinite(n)) return "0";
     return Math.round(n).toLocaleString();
   };
-
-  const copy = (text: string) => {
-    if (!text || !navigator.clipboard) return;
-    navigator.clipboard.writeText(text).catch(() => {});
-  };
-  const payoutStatusLabel = (status?: SaleRow["payoutStatus"]) =>
-    status === "forwarding"
-      ? "Forwarding payout"
-      : status === "paid"
-        ? "Paid out"
-        : status === "failed"
-          ? "Payout failed"
-          : "Pending payout";
-  const payoutStatusTone = (status?: SaleRow["payoutStatus"]) =>
-    status === "paid"
-      ? "text-emerald-300"
-      : status === "failed"
-        ? "text-rose-300"
-        : status === "forwarding"
-          ? "text-amber-300"
-          : "text-neutral-200";
 
   const totals = React.useMemo(() => {
     return sales.reduce(
@@ -210,10 +170,6 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
         acc.providerDurableHostingFee += Number(s.providerDurableHostingFeeSats ?? 0) || 0;
         acc.providerFee += Number(s.providerFeeSats ?? 0) || 0;
         acc.creatorNet += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
-        if (s.payoutStatus === "paid") acc.payoutsReceived += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
-        if (s.payoutStatus === "pending") acc.pendingPayout += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
-        if (s.payoutStatus === "forwarding") acc.pendingPayout += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
-        if (s.payoutStatus === "failed") acc.failedPayout += Number(s.creatorNetSats ?? s.amountSats ?? 0) || 0;
         return acc;
       },
       {
@@ -221,35 +177,10 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
         providerInvoicingFee: 0,
         providerDurableHostingFee: 0,
         providerFee: 0,
-        creatorNet: 0,
-        payoutsReceived: 0,
-        pendingPayout: 0,
-        failedPayout: 0
+        creatorNet: 0
       }
     );
   }, [sales]);
-
-  const onConfirmMarkPaid = async () => {
-    if (!confirmRow) return;
-    setActionError(null);
-    setActionLoading(true);
-    try {
-      const res = await api<{ ok: boolean; status: string; receiptToken?: string | null }>(
-        `/api/payments/intents/${confirmRow.id}/mark-paid`,
-        "POST"
-      );
-      if (res?.ok) {
-        setPending((prev) => prev.filter((r) => r.id !== confirmRow.id));
-        await loadData();
-        setToastMsg("Marked paid");
-        setConfirmRow(null);
-      }
-    } catch (e: any) {
-      setActionError(e?.message || "Failed to mark paid");
-    } finally {
-      setActionLoading(false);
-    }
-  };
 
   if (disabled) {
     return <LockedFeaturePanel title="Revenue" />;
@@ -258,8 +189,14 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-        <div className="text-lg font-semibold">Revenue Ledger</div>
-        <div className="text-sm text-neutral-400 mt-1">Unified sales tracking across payment rails.</div>
+        <div className="text-lg font-semibold">Sales</div>
+        <div className="text-sm text-neutral-400 mt-1">Sales events for your works, with fees and net after fees.</div>
+        <div className="text-xs text-neutral-500 mt-2">
+          This page is sales input only. Your share is in Earnings. Payout execution is in Payouts.
+        </div>
+        <div className="text-xs text-neutral-500 mt-1">
+          Share and participation for those earnings are defined in Royalties.
+        </div>
       </div>
 
       {error ? <div className="text-sm text-red-300">{error}</div> : null}
@@ -276,6 +213,9 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
                   ? "Provider-backed mode not active"
                   : "Unavailable"}
           </div>
+          <div className="mt-2 text-xs text-neutral-500">
+            Snapshot reflects provider-node settlement reporting for delegated commerce paths.
+          </div>
           {delegatedMsg ? <div className="mt-2 text-xs text-neutral-500">{delegatedMsg}</div> : null}
           <div className="mt-2 grid gap-1 text-xs text-neutral-500 sm:grid-cols-2">
             <div>Last sync: {delegatedLastSyncAt ? new Date(delegatedLastSyncAt).toLocaleString() : "—"}</div>
@@ -291,11 +231,8 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
                     <th className="py-2 px-3">Invoicing Fee</th>
                     <th className="py-2 px-3">Hosting Fee</th>
                     <th className="py-2 px-3">Provider Fee</th>
-                    <th className="py-2 px-3">Creator Net</th>
-                    <th className="py-2 px-3">Payout</th>
-                    <th className="py-2 px-3">Rail</th>
-                    <th className="py-2 px-3">Destination</th>
-                    <th className="py-2 px-3">Remit Mode</th>
+                    <th className="py-2 px-3">Net After Fees</th>
+                    <th className="py-2 px-3">Node</th>
                     <th className="py-2 px-3">Last Updated</th>
                   </tr>
                 </thead>
@@ -308,10 +245,7 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
                       <td className="py-2 px-3">{formatSats(row.provider_durable_hosting_fee_sats ?? 0)} sats</td>
                       <td className="py-2 px-3">{formatSats(row.provider_fee_sats)} sats</td>
                       <td className="py-2 px-3">{formatSats(row.creator_net_sats)} sats</td>
-                      <td className="py-2 px-3">{row.payout_status}</td>
                       <td className="py-2 px-3">{row.payout_rail || "—"}</td>
-                      <td className="py-2 px-3">{row.payout_destination_summary || row.payout_destination_type || "—"}</td>
-                      <td className="py-2 px-3">{row.provider_remit_mode || "—"}</td>
                       <td className="py-2 px-3 text-xs text-neutral-500">{new Date(row.last_updated).toLocaleString()}</td>
                     </tr>
                   ))}
@@ -324,7 +258,7 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Gross Sales</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Buyer Gross</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.gross)} sats</div>
         </div>
         {hasInvoiceCommerce ? (
@@ -344,117 +278,51 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
           </>
         ) : null}
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Net to Creators</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net After Fees</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.creatorNet)} sats</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Payouts Received</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(totals.payoutsReceived)} sats</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Pending Payout</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(totals.pendingPayout)} sats</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Failed Payout</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(totals.failedPayout)} sats</div>
+          <div className="text-xs text-neutral-500 mt-1">Distributable net after settlement fees.</div>
         </div>
       </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-        <div className="text-base font-semibold">Pending manual payments</div>
-        <div className="text-sm text-neutral-400 mt-1">Basic manual Lightning confirmations.</div>
-        <div className="mt-3 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-neutral-400">
-                <th className="py-2 px-3">Date</th>
-                <th className="py-2 px-3">Item</th>
-                <th className="py-2 px-3">Amount (sats)</th>
-                <th className="py-2 px-3">Memo</th>
-                <th className="py-2 px-3">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
-                    Loading pending payments…
-                  </td>
-                </tr>
-              ) : null}
-              {!loading && pending.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-4 px-3 text-sm text-neutral-400">
-                    No pending manual payments.
-                  </td>
-                </tr>
-              ) : null}
-              {!loading &&
-                pending.map((r) => (
-                  <tr key={r.id} className="border-t border-neutral-800">
-                    <td className="py-2 px-3 text-xs text-neutral-400">{new Date(r.createdAt).toLocaleString()}</td>
-                    <td className="py-2 px-3">{r.content?.title || "Content"}</td>
-                    <td className="py-2 px-3">{formatSats(r.amountSats)}</td>
-                    <td className="py-2 px-3 font-mono text-xs">{r.memo || "—"}</td>
-                    <td className="py-2 px-3">
-                      {productTier === "basic" ? (
-                        <button
-                          onClick={() => {
-                            setActionError(null);
-                            setConfirmRow(r);
-                          }}
-                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                        >
-                          Mark paid
-                        </button>
-                      ) : (
-                        <span className="text-xs text-neutral-500">—</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-        <div className="text-base font-semibold">Sales ledger</div>
+        <div className="text-base font-semibold">Sales</div>
         <div className="text-sm text-neutral-400 mt-1">Recognized revenue events.</div>
         {hasInvoiceCommerce ? (
           <div className="mt-2 text-xs text-neutral-500">
             Fee truth: invoicing and durable-hosting fees are shown only for invoice-based commerce rows.
           </div>
         ) : null}
+        <div className="mt-1 text-xs text-neutral-500">
+          This page is sales input only. Your share is in Earnings. Payout execution details are in Payouts.
+        </div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Where relationships go, money flows: Royalties defines participation and share for these works.
+        </div>
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-neutral-400">
                 <th className="py-2 px-3">Recognized</th>
                 <th className="py-2 px-3">Item</th>
-                <th className="py-2 px-3">Amount</th>
+                <th className="py-2 px-3">Buyer Amount</th>
                 {hasInvoiceCommerce ? <th className="py-2 px-3">Invoicing Fee</th> : null}
                 {hasInvoiceCommerce ? <th className="py-2 px-3">Durable Hosting Fee</th> : null}
                 {hasInvoiceCommerce ? <th className="py-2 px-3">Total Fees</th> : null}
-                <th className="py-2 px-3">Net to Creators</th>
-                <th className="py-2 px-3">Rail</th>
-                <th className="py-2 px-3">Payout</th>
-                <th className="py-2 px-3">Destination</th>
-                <th className="py-2 px-3">Memo</th>
+                <th className="py-2 px-3">Net After Fees</th>
+                <th className="py-2 px-3">Settlement Node</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={hasInvoiceCommerce ? 11 : 8} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
                     Loading sales ledger…
                   </td>
                 </tr>
               ) : null}
               {!loading && sales.length === 0 ? (
                 <tr>
-                  <td colSpan={hasInvoiceCommerce ? 11 : 8} className="py-4 px-3 text-sm text-neutral-400">
+                  <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
                     No sales recorded yet.
                   </td>
                 </tr>
@@ -463,25 +331,53 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
                 sales.map((s) => (
                   <tr key={s.id} className="border-t border-neutral-800">
                     <td className="py-2 px-3 text-xs text-neutral-400">{new Date(s.recognizedAt).toLocaleString()}</td>
-                    <td className="py-2 px-3">{s.content?.title || "Content"}</td>
+                    <td className="py-2 px-3">
+                      <div className="text-neutral-200">{s.content?.title || "Content"}</div>
+                      {s.content?.id ? (
+                        <div className="mt-1 flex flex-wrap gap-2">
+                          <a
+                            href={`/royalties/${encodeURIComponent(String(s.content.id))}`}
+                            className="rounded-md border border-neutral-700 px-2 py-0.5 text-[11px] hover:bg-neutral-800/60"
+                          >
+                            View locked split terms
+                          </a>
+                          {onOpenEarningsForContent ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenEarningsForContent(
+                                  String(s.content?.id || ""),
+                                  String(s.content?.title || "Content")
+                                )
+                              }
+                              className="rounded-md border border-neutral-700 px-2 py-0.5 text-[11px] hover:bg-neutral-800/60"
+                            >
+                              View earnings for this work
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!s.content?.id) return;
+                              setSelectedAuditContent({
+                                id: String(s.content.id),
+                                title: String(s.content.title || "Content")
+                              });
+                              setAuditOpenSignal((n) => n + 1);
+                            }}
+                            className="rounded-md border border-neutral-700 px-2 py-0.5 text-[11px] hover:bg-neutral-800/60"
+                          >
+                            Audit info
+                          </button>
+                        </div>
+                      ) : null}
+                    </td>
                     <td className="py-2 px-3">{formatSats(s.grossAmountSats ?? s.amountSats)} {s.currency || "SAT"}</td>
                     {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0)} SAT</td> : null}
                     {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerDurableHostingFeeSats ?? 0)} SAT</td> : null}
                     {hasInvoiceCommerce ? <td className="py-2 px-3">{formatSats(s.providerFeeSats ?? 0)} SAT</td> : null}
                     <td className="py-2 px-3">{formatSats(s.creatorNetSats ?? s.amountSats)} SAT</td>
                     <td className="py-2 px-3">{s.rail}</td>
-                    <td className="py-2 px-3">
-                      <div className={payoutStatusTone(s.payoutStatus)}>{payoutStatusLabel(s.payoutStatus)}</div>
-                      <div className="text-xs text-neutral-500">{s.payoutRail || "creator_node"}</div>
-                      {s.payoutStatus === "failed" ? <div className="text-xs text-neutral-500">Retry available</div> : null}
-                    </td>
-                    <td className="py-2 px-3">
-                      <div>{s.payoutDestinationSummary || s.payoutDestinationType || "—"}</div>
-                      <div className="text-xs text-neutral-500">{s.providerRemitMode || "self-received"}</div>
-                      {s.remittedAt ? <div className="text-xs text-neutral-500">Remitted: {new Date(s.remittedAt).toLocaleString()}</div> : null}
-                      {s.payoutLastError ? <div className="text-xs text-rose-300">{s.payoutLastError}</div> : null}
-                    </td>
-                    <td className="py-2 px-3 font-mono text-xs">{s.memo || "—"}</td>
                   </tr>
                 ))}
             </tbody>
@@ -489,66 +385,41 @@ export default function SalesPage({ productTier = "basic", disabled = false, has
         </div>
       </div>
 
-      <AuditPanel scopeType="royalty" title="Audit" exportName="royalty-audit.json" />
-
-      {confirmRow ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-xl border border-neutral-800 bg-neutral-950 p-5 text-neutral-100">
-            <div className="text-lg font-semibold">Mark paid</div>
-            <div className="text-sm text-neutral-400 mt-1">Confirm you received the manual payment.</div>
-            <div className="mt-4 space-y-2 text-sm">
-              <div>
-                <span className="text-neutral-400">Amount:</span> {formatSats(confirmRow.amountSats)} sats
-              </div>
-              <div>
-                <span className="text-neutral-400">Memo:</span>{" "}
-                <span className="font-mono text-xs">{confirmRow.memo || `CBX-${confirmRow.id.slice(-6).toUpperCase()}`}</span>
-                <button
-                  className="ml-2 text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                  onClick={() => copy(confirmRow.memo || `CBX-${confirmRow.id.slice(-6).toUpperCase()}`)}
-                >
-                  Copy memo
-                </button>
-              </div>
-              {confirmRow.destination?.value ? (
-                <div>
-                  <span className="text-neutral-400">Destination:</span>{" "}
-                  <span className="font-mono text-xs">{confirmRow.destination.value}</span>
-                  <button
-                    className="ml-2 text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                    onClick={() => copy(confirmRow.destination?.value || "")}
-                  >
-                    Copy address
-                  </button>
-                </div>
-              ) : null}
-              {actionError ? <div className="text-xs text-red-300">{actionError}</div> : null}
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                className="rounded-md border border-neutral-800 px-3 py-2 text-xs hover:bg-neutral-900"
-                onClick={() => setConfirmRow(null)}
-                disabled={actionLoading}
-              >
-                Cancel
-              </button>
-              <button
-                className="rounded-md bg-white px-3 py-2 text-xs font-semibold text-black disabled:opacity-70"
-                onClick={onConfirmMarkPaid}
-                disabled={actionLoading}
-              >
-                {actionLoading ? "Marking…" : "Mark paid"}
-              </button>
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Content audit evidence</div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Use <span className="text-neutral-300">Audit info</span> on a content row to open evidence for that work.
             </div>
           </div>
+          {selectedAuditContent ? (
+            <button
+              type="button"
+              onClick={() => setSelectedAuditContent(null)}
+              className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+            >
+              Clear
+            </button>
+          ) : null}
         </div>
-      ) : null}
-
-      {toastMsg ? (
-        <div className="fixed bottom-4 right-4 z-50 rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-xs text-neutral-100">
-          {toastMsg}
-        </div>
-      ) : null}
+        {selectedAuditContent ? (
+          <div className="mt-3 space-y-2">
+            <div className="text-xs text-neutral-400">
+              Showing audit for <span className="text-neutral-200">{selectedAuditContent.title}</span>
+            </div>
+            <AuditPanel
+              scopeType="content"
+              scopeId={selectedAuditContent.id}
+              title="Audit"
+              exportName={`content-audit-${selectedAuditContent.id}.json`}
+              openSignal={auditOpenSignal}
+            />
+          </div>
+        ) : (
+          <div className="mt-3 text-xs text-neutral-500">No content selected yet.</div>
+        )}
+      </div>
     </div>
   );
 }

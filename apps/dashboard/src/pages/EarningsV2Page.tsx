@@ -26,23 +26,31 @@ type SaleRow = {
   content?: { id: string; title: string; type: string } | null;
 };
 
-type TransactionRow = {
-  id: string;
-  kind: string;
-  refId: string;
-  contentId: string | null;
-  contentTitle: string | null;
-  amountSats: string | null;
-  createdAt: string;
-  metadata: any;
-};
-
 type EarningsV2PageProps = {
   refreshSignal?: number;
   hasInvoiceCommerce?: boolean;
+  onOpenEarningsForContent?: (contentId: string, title: string) => void;
+};
+
+type RoyaltiesContextResponse = {
+  works?: Array<{
+    contentId?: string | null;
+    myRole?: "owner" | "participant" | string | null;
+    myBps?: number | null;
+    myPercent?: number | string | null;
+  }>;
 };
 
 type PayoutState = "paid" | "forwarding" | "pending" | "failed" | "unknown";
+
+function normalizeRoleLabel(raw: string | null | undefined): string {
+  const role = String(raw || "").trim().toLowerCase();
+  if (!role) return "";
+  if (role === "owner") return "Owner";
+  if (role === "collaborator" || role === "collab") return "Collaborator";
+  if (role === "participant") return "Participant";
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
 
 function toNum(raw: string | number | null | undefined) {
   const n = Number(raw || 0);
@@ -137,6 +145,8 @@ function feeBreakdownForRow(row: SaleRow): {
 type ByContentRow = {
   contentId: string;
   contentTitle: string;
+  roleLabel: string;
+  shareLabel: string;
   gross: number;
   earnings: number;
   invoicingFee: number;
@@ -148,9 +158,14 @@ type ByContentRow = {
   feeSource: "provider_fee_total" | "provider_fee_components" | "gross_minus_earnings";
 };
 
-export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = false }: EarningsV2PageProps) {
+export default function EarningsV2Page({
+  refreshSignal,
+  hasInvoiceCommerce = false,
+  onOpenEarningsForContent
+}: EarningsV2PageProps) {
   const [sales, setSales] = useState<SaleRow[]>([]);
-  const [transactions, setTransactions] = useState<TransactionRow[]>([]);
+  const [roleByContent, setRoleByContent] = useState<Record<string, string>>({});
+  const [shareByContent, setShareByContent] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [detailRow, setDetailRow] = useState<ByContentRow | null>(null);
@@ -161,18 +176,52 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
       setLoading(true);
       setError(null);
       try {
-        const [salesRes, txRes] = await Promise.all([
-          api<SaleRow[]>("/api/revenue/sales", "GET"),
-          api<{ items: TransactionRow[] }>("/finance/transactions", "GET")
-        ]);
+        const salesRes = await api<SaleRow[]>("/api/revenue/sales", "GET");
         if (!active) return;
         setSales(Array.isArray(salesRes) ? salesRes : []);
-        setTransactions(Array.isArray(txRes?.items) ? txRes.items : []);
       } catch (e: any) {
         if (!active) return;
         setError(e?.message || "Failed to load earnings.");
       } finally {
         if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [refreshSignal]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api<RoyaltiesContextResponse>("/my/royalties", "GET");
+        if (!active) return;
+        const works = Array.isArray(res?.works) ? res.works : [];
+        const roleMap: Record<string, string> = {};
+        const shareMap: Record<string, string> = {};
+        for (const work of works) {
+          const contentId = String(work?.contentId || "").trim();
+          if (!contentId) continue;
+          const roleLabel = normalizeRoleLabel(work?.myRole);
+          if (roleLabel) roleMap[contentId] = roleLabel;
+
+          const bps = Number(work?.myBps ?? NaN);
+          if (Number.isFinite(bps) && bps > 0) {
+            shareMap[contentId] = `${(bps / 100).toFixed(2)}%`;
+            continue;
+          }
+          const pct = Number(work?.myPercent ?? NaN);
+          if (Number.isFinite(pct) && pct > 0) {
+            shareMap[contentId] = `${pct % 1 === 0 ? pct.toFixed(0) : pct.toFixed(1)}%`;
+          }
+        }
+        setRoleByContent(roleMap);
+        setShareByContent(shareMap);
+      } catch {
+        if (!active) return;
+        setRoleByContent({});
+        setShareByContent({});
       }
     })();
     return () => {
@@ -204,6 +253,8 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
       const existing = map.get(contentId) || {
         contentId,
         contentTitle: row.content?.title || "Untitled",
+        roleLabel: roleByContent[contentId] || "Participant",
+        shareLabel: shareByContent[contentId] || "—",
         gross: 0,
         earnings: 0,
         invoicingFee: 0,
@@ -232,19 +283,7 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
       row.latestStatus = summarizePayoutState(stateMap.get(row.contentId) || []);
     }
     return rows.sort((a, b) => b.gross - a.gross);
-  }, [sales]);
-
-  const byContentMap = useMemo(() => {
-    const map = new Map<string, ByContentRow>();
-    for (const row of byContent) map.set(row.contentId, row);
-    return map;
-  }, [byContent]);
-
-  const recentTransactions = useMemo(() => {
-    return [...transactions]
-      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-      .slice(0, 12);
-  }, [transactions]);
+  }, [sales, roleByContent, shareByContent]);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading earnings…</div>;
 
@@ -259,27 +298,33 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-        <div className="text-lg font-semibold">Earnings Overview</div>
+        <div className="text-lg font-semibold">Content Performance</div>
         <div className="text-sm text-neutral-400 mt-1">
-          Seller-of-record sales, your net earnings, payout progress, and recent commerce activity.
+          This shows how each work you participate in performed and what you earned from it.
+        </div>
+        <div className="text-xs text-neutral-500 mt-2">
+          Based on your participation and share (see Royalties).
+        </div>
+        <div className="text-xs text-neutral-500 mt-1">
+          Where relationships go, money flows: these earnings come from works you own or collaborate on.
         </div>
       </div>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Gross Sales</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Buyer Gross</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.gross)}</div>
           <div className="text-xs text-neutral-500 mt-1">Seller-of-record gross total</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Your Earnings</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Your Share</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.earnings)}</div>
           <div className="text-xs text-neutral-500 mt-1">
             {hasInvoiceCommerce ? "Net after active provider fees" : "Net creator earnings in current posture"}
           </div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Paid Out</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Paid</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.paidOut)}</div>
           <div className="text-xs text-neutral-500 mt-1">Based on earnings rows marked paid in existing payout truth.</div>
         </div>
@@ -291,30 +336,41 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Earnings by Content</div>
-        <div className="text-sm text-neutral-400 mt-1">Gross, net earnings, remitted amount, and pending amount by content.</div>
+        <div className="text-base font-semibold">Performance by Content</div>
+        <div className="text-sm text-neutral-400 mt-1">Content sales context, your share outcome, and payout status by title.</div>
+        <div className="text-xs text-neutral-500 mt-1">
+          Work performance here links to detailed money rows in Earnings.
+        </div>
+        <div className="text-xs text-neutral-500 mt-1">
+          Role/share context is shown from existing Royalties context when available.
+        </div>
         <div className="mt-3 overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="text-neutral-400">
               <tr>
                 <th className="text-left font-medium py-2">Content</th>
+                <th className="text-left font-medium py-2">Role</th>
+                <th className="text-left font-medium py-2">Share</th>
                 <th className="text-left font-medium py-2">Gross Sales</th>
-                <th className="text-left font-medium py-2">Your Earnings</th>
+                <th className="text-left font-medium py-2">Your Share</th>
                 <th className="text-left font-medium py-2">Payout State</th>
                 <th className="text-left font-medium py-2">Paid</th>
                 <th className="text-left font-medium py-2">Pending</th>
+                <th className="text-left font-medium py-2">Earnings</th>
                 <th className="text-left font-medium py-2">View Details</th>
               </tr>
             </thead>
             <tbody>
               {byContent.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-3 text-neutral-500">No earnings rows yet.</td>
+                  <td colSpan={10} className="py-3 text-neutral-500">No earnings rows yet.</td>
                 </tr>
               ) : (
                 byContent.map((row) => (
                   <tr key={row.contentId} className="border-t border-neutral-900">
                     <td className="py-2 text-neutral-200">{row.contentTitle}</td>
+                    <td className="py-2 text-neutral-300">{row.roleLabel}</td>
+                    <td className="py-2 text-neutral-300">{row.shareLabel}</td>
                     <td className="py-2">{formatSats(row.gross)}</td>
                     <td className="py-2">{formatSats(row.earnings)}</td>
                     <td className="py-2 text-neutral-300 capitalize">{row.latestStatus}</td>
@@ -322,60 +378,20 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
                     <td className="py-2 text-amber-300">{formatSats(row.pending)}</td>
                     <td className="py-2">
                       <button
+                        type="button"
+                        onClick={() => onOpenEarningsForContent?.(row.contentId, row.contentTitle)}
+                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                      >
+                        View earnings for this work
+                      </button>
+                    </td>
+                    <td className="py-2">
+                      <button
                         onClick={() => setDetailRow(row)}
                         className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                       >
                         View details
                       </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Recent Transactions</div>
-        <div className="text-sm text-neutral-400 mt-1">Latest finance events from the transaction stream.</div>
-        <div className="mt-3 overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="text-neutral-400">
-              <tr>
-                <th className="text-left font-medium py-2">Time</th>
-                <th className="text-left font-medium py-2">Content</th>
-                <th className="text-left font-medium py-2">Amount</th>
-                <th className="text-left font-medium py-2">Status</th>
-                <th className="text-left font-medium py-2">Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentTransactions.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-3 text-neutral-500">No transactions yet.</td>
-                </tr>
-              ) : (
-                recentTransactions.map((tx) => (
-                  <tr key={tx.id} className="border-t border-neutral-900">
-                    <td className="py-2 text-neutral-400">{new Date(tx.createdAt).toLocaleString()}</td>
-                    <td className="py-2 text-neutral-200">{tx.contentTitle || "—"}</td>
-                    <td className="py-2">{formatSats(tx.amountSats || 0)}</td>
-                    <td className="py-2">{tx.metadata?.status || tx.metadata?.rail || tx.kind || "—"}</td>
-                    <td className="py-2 text-xs">
-                      {tx.contentId && byContentMap.get(tx.contentId) ? (
-                        <button
-                          onClick={() => {
-                            if (!tx.contentId) return;
-                            setDetailRow(byContentMap.get(tx.contentId) || null);
-                          }}
-                          className="rounded-lg border border-neutral-800 px-2 py-1 text-neutral-200 hover:bg-neutral-900"
-                        >
-                          Open content proof
-                        </button>
-                      ) : (
-                        <span className="text-neutral-400 font-mono">{tx.refId}</span>
-                      )}
                     </td>
                   </tr>
                 ))
@@ -412,7 +428,7 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/20 p-3">
             <div className="text-sm font-medium">Transaction proof rows</div>
             <div className="text-xs text-neutral-500 mt-1">
-              Content-level proof view. Exact payment-intent/settlement internals remain in ledger/provider execution views.
+              Content-level view. Payout execution destination/reference details are in the Payouts tab.
             </div>
             <div className="mt-3 overflow-x-auto">
               <table className="min-w-full text-xs">
@@ -420,19 +436,14 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
                   <tr>
                     <th className="text-left font-medium py-2">Time</th>
                     <th className="text-left font-medium py-2">Buyer paid</th>
-                    {hasInvoiceCommerce ? <th className="text-left font-medium py-2">Invoicing Fee</th> : null}
-                    {hasInvoiceCommerce ? <th className="text-left font-medium py-2">Durable Hosting Fee</th> : null}
-                    {hasInvoiceCommerce ? <th className="text-left font-medium py-2">Total Fees</th> : null}
                     <th className="text-left font-medium py-2">Your share</th>
                     <th className="text-left font-medium py-2">Payout state</th>
-                    <th className="text-left font-medium py-2">Destination</th>
-                    <th className="text-left font-medium py-2">Details</th>
                   </tr>
                 </thead>
                 <tbody>
                   {sales.filter((row) => row.contentId === detailRow.contentId).length === 0 ? (
                     <tr>
-                      <td colSpan={hasInvoiceCommerce ? 9 : 6} className="py-3 text-neutral-500">
+                      <td colSpan={4} className="py-3 text-neutral-500">
                         No contributing sales rows found for this content.
                       </td>
                     </tr>
@@ -447,22 +458,8 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
                           <tr key={row.id} className="border-t border-neutral-900">
                             <td className="py-2 text-neutral-400">{new Date(row.recognizedAt).toLocaleString()}</td>
                             <td className="py-2">{formatSats(fees.gross)}</td>
-                            {hasInvoiceCommerce ? <td className="py-2">{formatSats(fees.invoicingFee)}</td> : null}
-                            {hasInvoiceCommerce ? <td className="py-2">{formatSats(fees.durableHostingFee)}</td> : null}
-                            {hasInvoiceCommerce ? <td className="py-2">{formatSats(fees.totalProviderFees)}</td> : null}
                             <td className="py-2">{formatSats(fees.earnings)}</td>
                             <td className="py-2 capitalize">{payoutState}</td>
-                            <td className="py-2 text-neutral-300">{row.payoutDestinationSummary || row.payoutDestinationType || "—"}</td>
-                            <td className="py-2">
-                              <div className="font-mono text-[11px] text-neutral-400">{row.intentId || row.id}</div>
-                              {row.payoutReference ? (
-                                <div className="font-mono text-[11px] text-neutral-500">{row.payoutReference}</div>
-                              ) : null}
-                              {row.payoutLastError ? <div className="text-[11px] text-rose-300">{row.payoutLastError}</div> : null}
-                              {hasInvoiceCommerce && fees.feeSource === "gross_minus_earnings" ? (
-                                <div className="text-[11px] text-neutral-500">Fee total inferred (gross - net)</div>
-                              ) : null}
-                            </td>
                           </tr>
                         );
                       })
@@ -481,14 +478,14 @@ export default function EarningsV2Page({ refreshSignal, hasInvoiceCommerce = fal
               href={`/royalties/${encodeURIComponent(detailRow.contentId)}`}
               className="mt-2 inline-flex rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900"
             >
-              View split terms
+              View locked split terms
             </a>
           </div>
 
           <div className="rounded-lg border border-neutral-800 bg-neutral-900/20 p-3">
             <div className="text-sm font-medium">Advanced execution details</div>
             <div className="text-xs text-neutral-500 mt-2">
-              BOLT11, payout references, rails, and transport diagnostics remain in existing ledger/provider views.
+              BOLT11, payout references, node transport details, and diagnostics remain in existing ledger/provider views.
             </div>
           </div>
         </div>

@@ -179,6 +179,16 @@ function getSplitEditorContentIdFromLocation(): string | null {
   return null;
 }
 
+function getRoyaltiesTermsContentIdFromLocation(): string | null {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  // route: /royalties/:contentId
+  if (parts[0] === "royalties" && typeof parts[1] === "string") {
+    const contentId = decodeURIComponent(parts[1]).trim();
+    return contentId || null;
+  }
+  return null;
+}
+
 function normalizePublicProfileHandle(value: unknown): string | null {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return null;
@@ -349,7 +359,10 @@ export default function App() {
       refresh();
     };
     window.addEventListener("focus", onFocus);
-    const t = window.setInterval(refresh, 10000);
+    const t = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      refresh();
+    }, 30000);
     return () => {
       alive = false;
       window.clearInterval(t);
@@ -369,6 +382,7 @@ export default function App() {
   useEffect(() => {
     const tokenFromUrl = getInviteTokenFromLocation();
     const splitEditorContentId = getSplitEditorContentIdFromLocation();
+    const royaltiesTermsContentId = getRoyaltiesTermsContentIdFromLocation();
     const financeTabFromUrl = getFinanceTabFromLocation();
     if (tokenFromUrl) {
       setInviteToken(tokenFromUrl);  // Set token when found
@@ -386,6 +400,9 @@ export default function App() {
       } else if (splitEditorContentId) {
         setSelectedContentId(splitEditorContentId);
         setPage("split-editor");
+      } else if (royaltiesTermsContentId) {
+        setSelectedContentId(royaltiesTermsContentId);
+        setPage("royalties-terms");
       } else {
         // Canonical refresh route: always land on Content unless this is an
         // explicit deep-link surface (invite/receipt/split editor).
@@ -505,7 +522,7 @@ export default function App() {
     },
     {
       key: "participations" as const,
-      label: "My Royalties",
+      label: "Royalties",
       hint: "Royalties I'm in",
       requiresCommerce: true,
       requiresSplits: false

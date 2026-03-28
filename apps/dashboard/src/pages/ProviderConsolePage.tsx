@@ -272,7 +272,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       if (document.visibilityState === "visible") {
         void load();
       }
-    }, 20000);
+    }, 30000);
     return () => window.clearInterval(tick);
   }, [load]);
 
@@ -280,20 +280,27 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     { label: "Delegated Creators", value: summary?.delegatedCreators ?? creatorLinks.length },
     { label: "Published Items", value: summary?.publishedItems ?? delegatedPublishes.length },
     { label: "Active Payment Intents", value: summary?.activePaymentIntents ?? paymentIntents.filter((p) => p.status === "created" || p.status === "issued").length },
-    { label: "Settled Payments", value: summary?.settledPayments ?? paymentReceipts.length }
+    { label: "Settled Invoices", value: summary?.settledPayments ?? paymentReceipts.length }
   ];
   const economicsCards = [
-    { label: "Gross Collected", value: `${sats(summary?.totals?.grossCollectedSats)} sats` },
+    { label: "Buyer Gross", value: `${sats(summary?.totals?.grossCollectedSats)} sats` },
     { label: "Invoicing Fee Earned", value: `${sats(summary?.totals?.providerInvoicingFeeEarnedSats)} sats` },
     { label: "Durable Hosting Fee Earned", value: `${sats(summary?.totals?.providerDurableHostingFeeEarnedSats)} sats` },
-    { label: "Provider Fee Earned", value: `${sats(summary?.totals?.providerFeeEarnedSats)} sats` },
-    { label: "Creator Net Owed", value: `${sats(summary?.totals?.creatorNetOwedSats)} sats` },
-    { label: "Creator Net Paid", value: `${sats(summary?.totals?.creatorNetPaidSats)} sats` },
-    { label: "Creator Net Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` },
-    { label: "Creator Net Failed", value: `${sats(summary?.totals?.creatorNetFailedSats)} sats` }
+    { label: "Total Provider Fees", value: `${sats(summary?.totals?.providerFeeEarnedSats)} sats` },
+    { label: "Distributable to Participants", value: `${sats(summary?.totals?.creatorNetOwedSats)} sats` },
+    { label: "Participant Payouts Paid", value: `${sats(summary?.totals?.creatorNetPaidSats)} sats` },
+    { label: "Participant Payouts Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` },
+    { label: "Participant Payouts Failed", value: `${sats(summary?.totals?.creatorNetFailedSats)} sats` }
   ];
   const visiblePaymentIntents =
     paymentStatusFilter === "all" ? paymentIntents : paymentIntents.filter((intent) => intent.status === paymentStatusFilter);
+  const contentTitleById = delegatedPublishes.reduce<Record<string, string>>((acc, row) => {
+    const id = String(row.contentId || "").trim();
+    const title = String(row.title || "").trim();
+    if (!id || !title) return acc;
+    if (!acc[id]) acc[id] = title;
+    return acc;
+  }, {});
   const toggleIntentDetails = (id: string) => {
     setExpandedIntentIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
@@ -327,7 +334,10 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           <div>
             <div className="text-base font-semibold">Provider Console</div>
             <div className="mt-1 text-sm text-neutral-400">
-              Manage delegated creator relationships, delegated publishes, and provider-side payment intents.
+              Settlement-authority view for delegated commerce on this node.
+            </div>
+            <div className="mt-1 text-xs text-neutral-500">
+              This node processes payments, applies fees, and executes payouts.
             </div>
           </div>
           <button
@@ -353,9 +363,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold">Commerce Wallet Source</div>
+            <div className="text-sm font-semibold">Settlement Wallet Source</div>
             <div className="mt-1 text-xs text-neutral-500">
-              Local LND wallet on this machine handles commerce flows. Creator payout destinations are separate remittance targets.
+              This node wallet executes settlement and remittance. Creator/participant payout destinations are downstream recipients.
             </div>
           </div>
           <button
@@ -407,7 +417,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="text-sm font-semibold">Participant Payout Execution</div>
-        <div className="mt-1 text-xs text-neutral-500">Per-participant payout rows are execution truth when participant mode is active.</div>
+        <div className="mt-1 text-xs text-neutral-500">Row-level participant payout execution truth for settled provider intents.</div>
         <div className="mt-2 flex items-center gap-2">
           <button
             type="button"
@@ -495,6 +505,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="sm:col-span-2 xl:col-span-4 text-xs text-neutral-500 px-1">
+          Fee semantics: invoicing + durable hosting are fee components; total provider fees is the combined amount. Distributable to participants is tracked separately.
+        </div>
         {economicsCards.map((card) => (
           <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
@@ -614,8 +627,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold">Payment Settlements</div>
-            <div className="mt-1 text-xs text-neutral-500">Provider-side BOLT11 intents, fee accounting, and creator net payout posture for delegated commerce.</div>
+            <div className="text-sm font-semibold">Settlement Ledger</div>
+            <div className="mt-1 text-xs text-neutral-500">Provider-side payment intents with buyer gross, fee accounting, distributable net, and payout execution state.</div>
           </div>
           <label className="inline-flex items-center gap-2 text-xs text-neutral-400">
             <span>Status</span>
@@ -650,8 +663,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                   <th className="py-2 pr-3 font-medium">Intent</th>
                   <th className="py-2 pr-3 font-medium">Creator Node</th>
                   <th className="hidden xl:table-cell py-2 pr-3 font-medium">Content</th>
-                  <th className="py-2 pr-3 font-medium">Amount</th>
-                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Creator Net</th>
+                  <th className="py-2 pr-3 font-medium">Buyer Gross</th>
+                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Distributable Net</th>
                   <th className="py-2 pr-3 font-medium">Settlement</th>
                   <th className="py-2 pr-3 font-medium">Payout</th>
                   <th className="py-2 pr-3 font-medium">Action</th>
@@ -674,7 +687,10 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                       </div>
                     </td>
                     <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
-                      <div className="max-w-[130px] truncate font-mono text-[12px]" title={row.contentId || ""}>
+                      <div className="max-w-[220px] truncate text-neutral-100" title={contentTitleById[row.contentId || ""] || ""}>
+                        {contentTitleById[row.contentId || ""] || "—"}
+                      </div>
+                      <div className="max-w-[220px] truncate font-mono text-[11px] text-neutral-500" title={row.contentId || ""}>
                         {row.contentId ? shortId(row.contentId, 10, 8) : "—"}
                       </div>
                     </td>
@@ -741,7 +757,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                           <div className="text-xs text-neutral-400">
                             <div className="uppercase tracking-wide text-neutral-500">Payout Routing</div>
                             <div className="mt-1 text-neutral-300">
-                              Rail: {row.payoutRail || "—"}
+                              Node: {row.payoutRail || "—"}
                               <span className="mx-1 text-neutral-500">|</span>
                               Mode: {row.providerRemitMode || "—"}
                             </div>

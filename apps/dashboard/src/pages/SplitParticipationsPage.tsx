@@ -105,6 +105,7 @@ export default function SplitParticipationsPage(props: {
   capabilities?: CapabilitySet;
   nodeMode?: NodeMode | null;
 }) {
+  type RoyaltiesScope = "active" | "local" | "remote" | "derivatives" | "history";
   const canAdvancedSplits = props.features?.advancedSplits ?? false;
   const splitsAllowed = props.capabilities?.useSplits ?? canAdvancedSplits;
   const derivativesAllowed = props.capabilities?.useDerivatives ?? canAdvancedSplits;
@@ -121,6 +122,7 @@ export default function SplitParticipationsPage(props: {
   const [showInactive, setShowInactive] = useState(false);
   const [showInactiveWorks, setShowInactiveWorks] = useState(false);
   const [showAllUpstream, setShowAllUpstream] = useState(false);
+  const [scope, setScope] = useState<RoyaltiesScope>("active");
   const toBigInt = (v: unknown): bigint => {
     try {
       const s = String(v ?? "0").trim();
@@ -290,8 +292,12 @@ export default function SplitParticipationsPage(props: {
         <div className="text-lg font-semibold">Collaborations</div>
         <div className="text-sm text-neutral-400 mt-1">Songs and works you share with others, including split roles and accepted collaborations.</div>
         <div className="text-xs text-neutral-500 mt-1">
-          Royalties track accrued share, payable balance, and paid remittance. They do not represent seller-of-record sales totals.
+          Primary source for participation, roles, and share across works, including accrued and paid amounts.
         </div>
+        <div className="text-xs text-neutral-500 mt-1">
+          This page shows your participation, roles, and share across works. Earnings are summarized in the Earnings tab.
+        </div>
+        <div className="text-xs text-neutral-500 mt-1">Where relationships go, money flows.</div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-5">
@@ -323,15 +329,61 @@ export default function SplitParticipationsPage(props: {
       </div>
 
       <div className="rounded-lg border border-neutral-800 bg-neutral-950/30 p-3">
-        <div className="text-[11px] uppercase tracking-wide text-neutral-500">Sections</div>
+        <div className="text-[11px] uppercase tracking-wide text-neutral-500">Scope</div>
+        <div className="text-xs text-neutral-500 mt-1">Choose one section at a time to reduce table noise.</div>
         <div className="mt-2 flex flex-wrap gap-2">
-          <a href="#collab-active" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Active collaborations ({visibleActiveCollaborations.length})</a>
-          <a href="#collab-local" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Your content ({ownedLocalWorks.length}) • Collaborations ({collaborativeLocalWorks.length})</a>
-          <a href="#collab-remote" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Remote collaborations ({remoteRoyalties.length})</a>
+          <button
+            type="button"
+            onClick={() => setScope("active")}
+            className={[
+              "text-xs rounded-full border px-2 py-1",
+              scope === "active" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            Active collaborations ({visibleActiveCollaborations.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setScope("local")}
+            className={[
+              "text-xs rounded-full border px-2 py-1",
+              scope === "local" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            Your content ({ownedLocalWorks.length}) • Collaborations ({collaborativeLocalWorks.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setScope("remote")}
+            className={[
+              "text-xs rounded-full border px-2 py-1",
+              scope === "remote" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            Remote collaborations ({remoteRoyalties.length})
+          </button>
           {derivativesAllowed ? (
-            <a href="#collab-derivatives" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">Upstream derivatives ({visibleUpstream.length})</a>
+            <button
+              type="button"
+              onClick={() => setScope("derivatives")}
+              className={[
+                "text-xs rounded-full border px-2 py-1",
+                scope === "derivatives" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
+              ].join(" ")}
+            >
+              Upstream derivatives ({visibleUpstream.length})
+            </button>
           ) : null}
-          <a href="#collab-audit" className="text-xs rounded-full border border-neutral-800 px-2 py-1 hover:bg-neutral-900">History & audit</a>
+          <button
+            type="button"
+            onClick={() => setScope("history")}
+            className={[
+              "text-xs rounded-full border px-2 py-1",
+              scope === "history" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
+            ].join(" ")}
+          >
+            History & audit
+          </button>
         </div>
       </div>
 
@@ -342,6 +394,7 @@ export default function SplitParticipationsPage(props: {
         <div className="text-sm text-neutral-500">No works yet.</div>
       ) : null}
 
+      {scope === "active" ? (
       <section id="collab-active" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm text-neutral-300 font-medium">Active Collaborations</div>
         <div className="text-xs text-neutral-500 mt-1">Content you are part of with defined splits.</div>
@@ -380,7 +433,9 @@ export default function SplitParticipationsPage(props: {
           </div>
         )}
       </section>
+      ) : null}
 
+      {scope === "local" ? (
       <section id="collab-local" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm text-neutral-300 font-medium">Your Content</div>
         <div className="mt-2 flex items-center justify-between">
@@ -529,7 +584,9 @@ export default function SplitParticipationsPage(props: {
           </div>
         </div>
       </section>
+      ) : null}
 
+      {scope === "remote" ? (
       <section id="collab-remote" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm text-neutral-300 font-medium">Collaborations from Others</div>
         <div className="text-xs text-neutral-500 mt-1">Content from other creators where you participate.</div>
@@ -579,8 +636,9 @@ export default function SplitParticipationsPage(props: {
           </div>
         )}
       </section>
+      ) : null}
 
-      {derivativesAllowed ? (
+      {derivativesAllowed && scope === "derivatives" ? (
         <section id="collab-derivatives" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-sm text-neutral-300 font-medium">Upstream Derivatives</div>
           <div className="text-xs text-neutral-500 mt-1">Derivative royalties tied to your collaboration splits.</div>
@@ -633,6 +691,7 @@ export default function SplitParticipationsPage(props: {
         </section>
       ) : null}
 
+      {scope === "history" ? (
       <section id="collab-audit" className="space-y-3">
         <HistoryFeed
           title="Collaboration history"
@@ -659,6 +718,7 @@ export default function SplitParticipationsPage(props: {
           exportName="royalty-audit.json"
         />
       </section>
+      ) : null}
     </div>
   );
 }

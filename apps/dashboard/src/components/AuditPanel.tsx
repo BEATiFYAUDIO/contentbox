@@ -32,6 +32,7 @@ type AuditPanelProps = {
   defaultOpen?: boolean;
   exportName?: string;
   showTombstoneToggle?: boolean;
+  openSignal?: number;
 };
 
 function formatTs(ts: string) {
@@ -69,7 +70,8 @@ export default function AuditPanel({
   title = "Audit",
   defaultOpen = false,
   exportName,
-  showTombstoneToggle = true
+  showTombstoneToggle = true,
+  openSignal = 0
 }: AuditPanelProps) {
   const [open, setOpen] = React.useState(defaultOpen);
   const [loading, setLoading] = React.useState(false);
@@ -95,6 +97,11 @@ export default function AuditPanel({
     if (open) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, scopeType, scopeId]);
+
+  React.useEffect(() => {
+    if (!openSignal) return;
+    setOpen(true);
+  }, [openSignal]);
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">

@@ -39,6 +39,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
   const [rails, setRails] = useState<Array<{ id: string; status: string; label: string; hint?: string | null }>>([]);
   const [railsError, setRailsError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
+  const [earningsBridgeFilter, setEarningsBridgeFilter] = useState<{ contentId: string; title: string; token: number } | null>(null);
   const railsHealthy = rails.some((r) => r.status === "healthy");
 
   const financePosture: FinancePosture = useMemo(() => {
@@ -62,9 +63,10 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
   useEffect(() => {
     if (isBasic) return;
     const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       setSummaryRefresh((s) => s + 1);
       setTabRefresh((prev) => ({ ...prev, [tab]: (prev[tab] || 0) + 1 }));
-    }, 30000);
+    }, 60000);
     return () => clearInterval(timer);
   }, [tab, isBasic]);
 
@@ -81,7 +83,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         setLastUpdatedAt(new Date().toISOString());
       } catch (e: any) {
         if (!active) return;
-        setRailsError(e.message || "Failed to load rail health.");
+        setRailsError(e.message || "Failed to load node health.");
       }
     })();
     return () => {
@@ -92,11 +94,11 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
   const allTabs = useMemo(
     () => [
       { key: "overview", label: "Revenue Overview" },
-      { key: "earnings-v2", label: "Earnings" },
-      { key: "royalties", label: "Royalty Earnings" },
-      { key: "ledger", label: "Revenue Ledger" },
-      { key: "payouts", label: "Payout Destinations" },
-      { key: "rails", label: "Payment Rails" },
+      { key: "ledger", label: "Sales" },
+      { key: "earnings-v2", label: "Content" },
+      { key: "royalties", label: "Earnings" },
+      { key: "payouts", label: "Payouts" },
+      { key: "rails", label: "Node & Wallet" },
       { key: "transactions", label: "Transactions" }
     ],
     []
@@ -127,8 +129,9 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
           <div>
             <div className="text-lg font-semibold">Revenue</div>
             <div className="text-sm text-neutral-400 mt-1">
-              Unified view of sales, settlements, and payout configuration.
+              Creator money flow across one system: Royalties → Content → Earnings → Payouts.
             </div>
+            <div className="text-xs text-neutral-500 mt-1">Where relationships go, money flows.</div>
           </div>
           <button
             onClick={() => {
@@ -142,19 +145,19 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         </div>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Money in</div>
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Sales Input</div>
             <div className="text-sm text-neutral-200 mt-1">
               {financePosture === "sovereign_node" || financePosture === "sovereign_creator_with_provider"
-                ? "Sales · Invoices · Transactions"
-                : "Creator earnings snapshot"}
+                ? "What buyers paid and how works performed"
+                : "Buyer payments and work performance snapshot"}
             </div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Money out</div>
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Payout Execution</div>
             <div className="text-sm text-neutral-200 mt-1">
               {financePosture === "sovereign_node"
-                ? "Royalties · Settlements · Payout Destinations"
-                : "Royalties · Settlement posture"}
+                ? "What was paid, what is pending, and node execution health"
+                : "What was paid and what is still pending"}
             </div>
           </div>
         </div>
@@ -167,7 +170,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
               </span>
             ))}
             {rails.length === 0 && !railsError ? (
-              <span className="text-xs text-neutral-500">Rails health unavailable</span>
+              <span className="text-xs text-neutral-500">Node health unavailable</span>
             ) : null}
             {railsError ? <span className="text-xs text-amber-300">{railsError}</span> : null}
           </div>
@@ -210,9 +213,11 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         })}
       </div>
       <div className="text-xs text-neutral-500">
-        Primary surfaces: <span className="text-neutral-300">Earnings</span> (summary),{" "}
-        <span className="text-neutral-300">Royalty Earnings</span> (content/contributor earnings),{" "}
-        <span className="text-neutral-300">Revenue Ledger</span> (accounting detail).
+        Financial layers: <span className="text-neutral-300">Sales</span> (buyer gross + settlement context),{" "}
+        <span className="text-neutral-300">Content</span> (performance + your share),{" "}
+        <span className="text-neutral-300">Royalties</span> (participation + share definition),{" "}
+        <span className="text-neutral-300">Payouts</span> (paid/pending/failed),{" "}
+        <span className="text-neutral-300">Node &amp; Wallet</span> (settlement path and wallet context).
       </div>
 
       {tab === "overview" && (
@@ -221,9 +226,26 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
           onOpenRoyalties={() => setTab("royalties")}
         />
       )}
-      {tab === "ledger" && <SalesPage hasInvoiceCommerce={hasInvoiceCommerce} />}
-      {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} />}
-      {tab === "earnings-v2" && <EarningsV2Page refreshSignal={tabRefresh["earnings-v2"]} hasInvoiceCommerce={hasInvoiceCommerce} />}
+      {tab === "ledger" && (
+        <SalesPage
+          hasInvoiceCommerce={hasInvoiceCommerce}
+          onOpenEarningsForContent={(contentId, title) => {
+            setEarningsBridgeFilter({ contentId, title, token: Date.now() });
+            setTab("royalties");
+          }}
+        />
+      )}
+      {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} bridgeFilter={earningsBridgeFilter} />}
+      {tab === "earnings-v2" && (
+        <EarningsV2Page
+          refreshSignal={tabRefresh["earnings-v2"]}
+          hasInvoiceCommerce={hasInvoiceCommerce}
+          onOpenEarningsForContent={(contentId, title) => {
+            setEarningsBridgeFilter({ contentId, title, token: Date.now() });
+            setTab("royalties");
+          }}
+        />
+      )}
       {tab === "payouts" && <PayoutRailsPage />}
       {tab === "rails" && <PaymentRailsPage refreshSignal={tabRefresh.rails} />}
       {tab === "transactions" && <FinanceTransactionsPage refreshSignal={tabRefresh.transactions} />}
