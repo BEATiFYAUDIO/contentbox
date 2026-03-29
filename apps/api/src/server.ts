@@ -54,6 +54,7 @@ import {
   probeLndConnection,
   saveLightningNodeConfig,
   sendBolt11Payment,
+  lookupOutgoingPaymentByHash,
   lookupOutgoingPaymentStatusByHash,
   testLightningNodeConnection
 } from "./payments/lightning.js";
@@ -4755,6 +4756,7 @@ type LndSendContext = {
   paymentIntentId?: string | null;
   participantPayoutId?: string | null;
   payoutKey?: string | null;
+  expectedAmountSats?: number | null;
 };
 
 async function payBolt11ViaLnd(
@@ -4815,7 +4817,12 @@ async function payBolt11ViaLnd(
     "payoutExecution.lnd_send_request_target"
   );
   try {
-    const send = await sendBolt11Payment(prisma as any, { paymentRequest: bolt11, timeoutSeconds: 60, feeLimitSat: 50 });
+    const send = await sendBolt11Payment(prisma as any, {
+      paymentRequest: bolt11,
+      timeoutSeconds: 60,
+      feeLimitSat: 50,
+      expectedAmountSats: context?.expectedAmountSats ?? null
+    });
     app.log.info(
       { paymentRequestTag, sendStatus: String(send.status || "unknown"), paymentHashPresent: Boolean(send.paymentHash) },
       "payoutExecution.lnd_send_result_raw"
@@ -5255,6 +5262,29 @@ async function markParticipantPayoutPendingVerification(
   });
 }
 
+async function markParticipantPayoutExecutionMismatch(
+  id: string,
+  attemptId: string,
+  message: string,
+  payoutReference: string | null
+) {
+  await prisma.participantPayout.updateMany({
+    where: { id, attemptId },
+    data: {
+      status: "blocked",
+      payoutReference: payoutReference || null,
+      remittedAt: null,
+      readinessReason: null,
+      blockedReason: "EXECUTION_AMOUNT_MISMATCH",
+      lastError: message,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      nextRetryAt: null
+    }
+  });
+}
+
 async function markParticipantPayoutFailedAfterVerification(
   id: string,
   message: string,
@@ -5515,6 +5545,16 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         app.log.info(
           {
             providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            plannedAmountSats: String(payout.amountSats || "0")
+          },
+          "payoutExecution.amount_planned"
+        );
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
             participantPayoutId: payout.id,
             participantRef: participantExecutionRef(row),
             destinationType,
@@ -5548,8 +5588,65 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
           providerPaymentIntentId: intent.id,
           paymentIntentId: intent.paymentIntentId,
           participantPayoutId: payout.id,
-          payoutKey: payout.payoutKey || null
+          payoutKey: payout.payoutKey || null,
+          expectedAmountSats: Number(String(payout.amountSats || "0"))
         });
+        const intendedAmountSats = Number(String(payout.amountSats || "0")) || 0;
+        const executed = send.paymentHash
+          ? await lookupOutgoingPaymentByHash(prisma as any, send.paymentHash).catch(() => null)
+          : null;
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            plannedAmountSats: intendedAmountSats,
+            actualSentSats: executed?.valueSats ?? null,
+            actualFeeSats: executed?.feeSats ?? null,
+            actualStatus: executed?.status ?? null,
+            payoutReference: send.paymentHash || null
+          },
+          "payoutExecution.amount_audit"
+        );
+        if (!executed || executed.valueSats === null || executed.status !== "SUCCEEDED") {
+          const message = `EXECUTION_AMOUNT_UNVERIFIED:planned_${intendedAmountSats}:status_${String(executed?.status || "unknown")}`;
+          await markParticipantPayoutExecutionMismatch(payout.id, lock.attemptId, message, send.paymentHash || null);
+          logParticipantPayoutAttempt(intent.id, row, "blocked", message);
+          app.log.error(
+            {
+              route: reason,
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              participantRef: participantExecutionRef(row),
+              plannedAmountSats: intendedAmountSats,
+              actualSentSats: executed?.valueSats ?? null,
+              actualStatus: executed?.status ?? null,
+              payoutReference: send.paymentHash || null
+            },
+            "providerParticipantRemittance.execution_amount_unverified"
+          );
+          continue;
+        }
+        if (executed.valueSats !== intendedAmountSats) {
+          const message = `EXECUTION_AMOUNT_MISMATCH:planned_${intendedAmountSats}:actual_${executed.valueSats}`;
+          await markParticipantPayoutExecutionMismatch(payout.id, lock.attemptId, message, send.paymentHash || null);
+          logParticipantPayoutAttempt(intent.id, row, "blocked", message);
+          app.log.error(
+            {
+              route: reason,
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              participantRef: participantExecutionRef(row),
+              plannedAmountSats: intendedAmountSats,
+              actualSentSats: executed.valueSats,
+              actualFeeSats: executed.feeSats ?? null,
+              payoutReference: send.paymentHash || null
+            },
+            "providerParticipantRemittance.execution_amount_mismatch"
+          );
+          continue;
+        }
         const marked = await markParticipantPayoutPaid(payout.id, lock.attemptId, send.paymentHash || null);
         if (!marked) {
           const reconciled = await forceMarkParticipantPayoutPaidAfterExternalSuccess(payout.id, send.paymentHash || null);

@@ -172,6 +172,13 @@ export type LightningSendPaymentResult = {
   status: "paid";
 };
 
+export type LightningOutgoingPaymentLookup = {
+  paymentHash: string;
+  status: "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN";
+  valueSats: number | null;
+  feeSats: number | null;
+};
+
 export type LightningPeerSuggestion = {
   pubkey: string;
   alias?: string;
@@ -1669,6 +1676,21 @@ async function derivePaymentHashFromBolt11(lnd: RuntimeLndConfig, paymentRequest
   }
 }
 
+async function decodeBolt11PaymentRequest(
+  lnd: RuntimeLndConfig,
+  paymentRequest: string
+): Promise<{ paymentHash: string | null; valueSats: number | null }> {
+  try {
+    const decoded = await lndFetchJson(lnd, `/v1/payreq/${encodeURIComponent(paymentRequest)}`, { method: "GET" });
+    const hash = String((decoded as any)?.payment_hash || "").trim().toLowerCase();
+    const paymentHash = /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+    const valueSats = numberField((decoded as any)?.num_satoshis ?? (decoded as any)?.numSatoshis ?? (decoded as any)?.value);
+    return { paymentHash, valueSats: Number.isFinite(valueSats) && valueSats > 0 ? valueSats : null };
+  } catch {
+    return { paymentHash: null, valueSats: null };
+  }
+}
+
 export async function lookupOutgoingPaymentStatusByHash(
   prisma: PrismaLike,
   paymentHash: string
@@ -1697,9 +1719,34 @@ export async function lookupOutgoingPaymentStatusByHash(
   return "UNKNOWN";
 }
 
+export async function lookupOutgoingPaymentByHash(
+  prisma: PrismaLike,
+  paymentHash: string
+): Promise<LightningOutgoingPaymentLookup | null> {
+  const lnd = await getLndConfig(prisma);
+  if (!lnd) return null;
+  const hash = String(paymentHash || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+  const res = await lndFetchJson(lnd, "/v1/payments?include_incomplete=true&reversed=true&max_payments=200", {
+    method: "GET"
+  });
+  const payments = Array.isArray((res as any)?.payments) ? (res as any).payments : [];
+  const match = payments.find((p: any) => String(p?.payment_hash || "").trim().toLowerCase() === hash);
+  if (!match) return null;
+  const status = normalizeOutgoingPaymentStatus(match?.status);
+  const valueSatsRaw = numberField(match?.value_sat ?? match?.value ?? match?.value_msat);
+  const feeSatsRaw = numberField(match?.fee_sat ?? match?.fee);
+  return {
+    paymentHash: hash,
+    status,
+    valueSats: Number.isFinite(valueSatsRaw) && valueSatsRaw >= 0 ? valueSatsRaw : null,
+    feeSats: Number.isFinite(feeSatsRaw) && feeSatsRaw >= 0 ? feeSatsRaw : null
+  };
+}
+
 export async function sendBolt11Payment(
   prisma: PrismaLike,
-  input: { paymentRequest: string; timeoutSeconds?: number; feeLimitSat?: number }
+  input: { paymentRequest: string; timeoutSeconds?: number; feeLimitSat?: number; expectedAmountSats?: number | null }
 ): Promise<LightningSendPaymentResult> {
   const paymentRequest = String(input.paymentRequest || "").trim();
   if (!paymentRequest) throw new Error("BOLT11_REQUIRED");
@@ -1707,6 +1754,20 @@ export async function sendBolt11Payment(
   if (!lnd) throw new Error("LND_SEND_NOT_CONFIGURED");
   const timeoutSeconds = Math.max(5, Math.min(300, Math.floor(Number(input.timeoutSeconds ?? 60))));
   const feeLimitSat = Math.max(0, Math.min(100_000, Math.floor(Number(input.feeLimitSat ?? 50))));
+  const expectedAmountSats =
+    input.expectedAmountSats === undefined || input.expectedAmountSats === null
+      ? null
+      : Math.max(0, Math.floor(Number(input.expectedAmountSats)));
+  const decoded = await decodeBolt11PaymentRequest(lnd, paymentRequest);
+  if (
+    expectedAmountSats !== null &&
+    Number.isFinite(expectedAmountSats) &&
+    expectedAmountSats > 0 &&
+    decoded.valueSats !== null &&
+    decoded.valueSats !== expectedAmountSats
+  ) {
+    throw new Error(`LND_SEND_AMOUNT_MISMATCH:expected_${expectedAmountSats}:invoice_${decoded.valueSats}`);
+  }
   const wait = async (ms: number) => {
     await new Promise((resolve) => setTimeout(resolve, ms));
   };
@@ -1740,6 +1801,7 @@ export async function sendBolt11Payment(
     const responsePaymentHash = String((res as any)?.payment_hash || "").trim().toLowerCase();
     const paymentHash =
       (/^[0-9a-f]{64}$/.test(responsePaymentHash) ? responsePaymentHash : null) ||
+      decoded.paymentHash ||
       (await derivePaymentHashFromBolt11(lnd, paymentRequest));
     const immediate = normalizeOutgoingPaymentStatus(status);
     try {

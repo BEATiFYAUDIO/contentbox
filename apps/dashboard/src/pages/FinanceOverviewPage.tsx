@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
+import TimeScopeControls from "../components/TimeScopeControls";
+import { isWithinPeriod, type TimeBasis, type TimePeriod } from "../lib/timeScope";
 
 type Overview = {
   totals: {
@@ -246,6 +248,8 @@ export default function FinanceOverviewPage({
   const [openedChannelStatus, setOpenedChannelStatus] = useState<ChannelStatusResponse | null>(null);
   const [channelStatusBusy, setChannelStatusBusy] = useState(false);
   const [showPayoutDetails, setShowPayoutDetails] = useState(false);
+  const [overviewTimeBasis, setOverviewTimeBasis] = useState<TimeBasis>("sale");
+  const [overviewTimePeriod, setOverviewTimePeriod] = useState<TimePeriod>("30d");
   const hasLoadedOverviewRef = useRef(false);
 
   useEffect(() => {
@@ -377,15 +381,30 @@ export default function FinanceOverviewPage({
 
   const series = data?.revenueSeries || [];
   const getSeriesAmountSats = (d: { amountSats?: string; sats?: string }) => String(d.amountSats ?? d.sats ?? "0");
+  const salesScopedSeries = useMemo(() => {
+    if (overviewTimeBasis !== "sale") return series;
+    return series.filter((point) => isWithinPeriod(point.date, overviewTimePeriod));
+  }, [series, overviewTimeBasis, overviewTimePeriod]);
+  const salesScopedSats = useMemo(
+    () => salesScopedSeries.reduce((sum, point) => sum + (Number(getSeriesAmountSats(point) || 0) || 0), 0),
+    [salesScopedSeries]
+  );
+  const scopedSalesSats =
+    overviewTimeBasis === "sale"
+      ? overviewTimePeriod === "all"
+        ? Number(data?.totals?.salesSats || 0) || 0
+        : salesScopedSats
+      : Number(data?.totals?.salesSats || 0) || 0;
+  const scopedSeries = overviewTimeBasis === "sale" ? salesScopedSeries : series;
   const chart = useMemo(() => {
-    if (!series.length) return [] as Array<{ height: number; label: string; amountSats: string }>;
-    const max = series.reduce((m, d) => Math.max(m, Number(getSeriesAmountSats(d) || 0)), 0);
-    return series.map((d) => ({
+    if (!scopedSeries.length) return [] as Array<{ height: number; label: string; amountSats: string }>;
+    const max = scopedSeries.reduce((m, d) => Math.max(m, Number(getSeriesAmountSats(d) || 0)), 0);
+    return scopedSeries.map((d) => ({
       height: max > 0 ? Math.round((Number(getSeriesAmountSats(d) || 0) / max) * 100) : 0,
       label: d.date.slice(5),
       amountSats: getSeriesAmountSats(d)
     }));
-  }, [series]);
+  }, [scopedSeries]);
 
   const openLightningWizard = () => {
     setWizardError(null);
@@ -708,6 +727,12 @@ export default function FinanceOverviewPage({
     data?.totals?.salesSatsLast30d ??
       series.reduce((sum, point) => sum + Number(getSeriesAmountSats(point) || 0), 0)
   );
+  const overviewScopeHelperText =
+    overviewTimeBasis === "sale"
+      ? "Sales are scoped by buyer payment date."
+      : overviewTimeBasis === "earned"
+        ? "Overview earnings totals are all-time on this page; period scoping for earned time lives in Earnings surfaces."
+        : "Overview payout totals are all-time on this page; period scoping for paid/remitted time lives in Payouts.";
   const localGrossEarned = participantAccrued > 0 ? participantAccrued : localRoyaltyEarned;
   const grossEarned = Math.max(0, localGrossEarned + remoteRoyaltyAccrued);
   const hasRoyaltyEconomics =
@@ -795,6 +820,21 @@ export default function FinanceOverviewPage({
         <div className="mt-1 text-xs text-neutral-500">
           Sales = gross buyer payments. Gross Earned = pre-fee participation accrual where fee fields exist. Net Paid/Net Payable = post-fee payout truth.
         </div>
+        <div className="mt-3">
+          <TimeScopeControls
+            basis={overviewTimeBasis}
+            onBasisChange={(basis) => {
+              setOverviewTimeBasis(basis);
+              if (basis !== "sale") setOverviewTimePeriod("all");
+            }}
+            period={overviewTimePeriod}
+            onPeriodChange={setOverviewTimePeriod}
+            basisOptions={["sale", "earned", "paid"]}
+            periodOptions={overviewTimeBasis === "sale" ? ["1d", "7d", "30d", "all"] : ["all"]}
+            periodDisabled={overviewTimeBasis !== "sale"}
+            helperText={overviewScopeHelperText}
+          />
+        </div>
       </section>
 
       <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Priority Snapshot</div>
@@ -805,8 +845,11 @@ export default function FinanceOverviewPage({
         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Sales</div>
-            <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
-            <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedSalesSats))}</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Seller of record · paid invoices only
+              {overviewTimeBasis === "sale" && overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}
+            </div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Gross earned</div>
@@ -834,7 +877,9 @@ export default function FinanceOverviewPage({
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Sales Breakdown</div>
         <div className="mt-1 text-xs text-neutral-400">Payments from your audience for your content.</div>
-        <div className="mt-1 text-xs text-neutral-500">Time basis: Sale date.</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Time basis: Sale date{overviewTimeBasis === "sale" && overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}.
+        </div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
@@ -842,8 +887,16 @@ export default function FinanceOverviewPage({
           <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days sales</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(salesLast30d))}</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">
+            {overviewTimeBasis === "sale"
+              ? overviewTimePeriod === "all"
+                ? "Scoped sales (all time)"
+                : `Scoped sales (${overviewTimePeriod})`
+              : "Last 30 days sales"}
+          </div>
+          <div className="mt-2 text-2xl font-semibold">
+            {formatSats(String(overviewTimeBasis === "sale" ? scopedSalesSats : salesLast30d))}
+          </div>
           <div className="mt-1 text-xs text-neutral-500">
             Seller invoices: {data?.totals?.invoicesTotal ?? 0} · Settled purchases: {data?.totals?.paymentsLast30d ?? 0}
           </div>
@@ -960,7 +1013,11 @@ export default function FinanceOverviewPage({
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Sales over time (last 30 days)</div>
+        <div className="text-base font-semibold">
+          {overviewTimeBasis === "sale" && overviewTimePeriod !== "all"
+            ? `Sales over time (${overviewTimePeriod})`
+            : "Sales over time (last 30 days)"}
+        </div>
         <div className="mt-1 text-xs text-neutral-500">
           Buyer payment sales only on this node. Earnings from works you own or participate in are tracked in the Earnings section above.
         </div>
