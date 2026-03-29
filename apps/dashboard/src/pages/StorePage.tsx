@@ -1824,10 +1824,17 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 value={payoutRemitModeInput}
                 onChange={(e) => setPayoutRemitModeInput(e.target.value as any)}
               >
-                <option value="manual_payout">Manual payout</option>
+                <option value="manual_payout" disabled>
+                  Manual payout (disabled)
+                </option>
                 <option value="auto_forward">Auto-forward</option>
-                <option value="provider_custody">Provider custody</option>
+                <option value="provider_custody" disabled>
+                  Provider custody (disabled)
+                </option>
               </select>
+              <div className="mt-1 text-[11px] text-neutral-500">
+                Auto-forward is the active remittance policy in this posture. Manual and custody modes are visible but disabled.
+              </div>
             </label>
             <label className="text-xs text-neutral-400 md:col-span-2">
               Creator Lightning payout address

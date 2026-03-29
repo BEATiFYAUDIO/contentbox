@@ -671,7 +671,7 @@ export default function EarningsV2Page({
             period={timePeriod}
             onPeriodChange={setTimePeriod}
             basisOptions={["earned"]}
-            periodOptions={["7d", "30d", "90d", "all"]}
+            periodOptions={["1d", "7d", "30d", "90d", "all"]}
             helperText="Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
           />
         </div>

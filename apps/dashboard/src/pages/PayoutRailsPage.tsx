@@ -225,20 +225,38 @@ export default function PayoutRailsPage() {
 
   function payoutStatusLabel(status: PayoutRow["status"]) {
     if (status === "paid") return "Paid";
-    if (status === "forwarding") return "Forwarding";
+    if (status === "forwarding" || status === "ready" || status === "pending") return "Processing";
     if (status === "failed") return "Failed";
     if (status === "blocked") return "Blocked";
-    if (status === "ready") return "Ready";
-    return "Pending";
+    return "Processing";
   }
 
   function payoutStatusTone(status: PayoutRow["status"]) {
     if (status === "paid") return "text-emerald-300";
     if (status === "failed") return "text-rose-300";
     if (status === "blocked") return "text-rose-300";
-    if (status === "forwarding") return "text-amber-300";
-    if (status === "ready") return "text-cyan-300";
-    return "text-neutral-300";
+    return "text-cyan-300";
+  }
+
+  function isProcessingStatus(status: PayoutRow["status"]) {
+    return status === "pending" || status === "ready" || status === "forwarding";
+  }
+
+  function processingSla(row: PayoutRow): { label: string; tone: string; detail: string } {
+    if (!isProcessingStatus(row.status)) return { label: "—", tone: "text-neutral-500", detail: "Not in processing state." };
+    const baseTs = Date.parse(String(row.updatedAt || row.createdAt || "")) || Date.parse(String(row.createdAt || "")) || NaN;
+    if (!Number.isFinite(baseTs)) {
+      return { label: "Unknown", tone: "text-neutral-500", detail: "Missing timestamp for SLA age." };
+    }
+    const ageMs = Math.max(0, Date.now() - baseTs);
+    const ageMin = Math.floor(ageMs / 60000);
+    if (ageMin < 2) {
+      return { label: "<2m", tone: "text-emerald-300", detail: "Normal processing window." };
+    }
+    if (ageMin <= 10) {
+      return { label: "2-10m", tone: "text-amber-300", detail: "Watch window." };
+    }
+    return { label: ">10m", tone: "text-rose-300", detail: "Needs attention." };
   }
 
   const visiblePayoutRows = React.useMemo(() => {
@@ -335,6 +353,9 @@ export default function PayoutRailsPage() {
         <div className="text-xs text-neutral-500 mt-1">
           Status model: Pending/Ready = not remitted, Forwarding = in progress, Paid = remitted, Failed/Blocked = not remitted.
         </div>
+        <div className="text-xs text-neutral-500 mt-1">
+          Processing SLA: &lt;2m normal, 2-10m watch, &gt;10m needs attention.
+        </div>
         <div className="mt-3">
           <TimeScopeControls
             basis={timeBasis}
@@ -342,7 +363,7 @@ export default function PayoutRailsPage() {
             period={timePeriod}
             onPeriodChange={setTimePeriod}
             basisOptions={["paid"]}
-            periodOptions={["7d", "30d", "90d", "all"]}
+            periodOptions={["1d", "7d", "30d", "90d", "all"]}
             helperText="Payouts are scoped by paid/remitted date when a remitted timestamp is present."
           />
         </div>
@@ -373,6 +394,7 @@ export default function PayoutRailsPage() {
                 <th className="py-2 px-3">Content</th>
                 <th className="py-2 px-3">Amount</th>
                 <th className="py-2 px-3">Status</th>
+                <th className="py-2 px-3">SLA</th>
                 <th className="py-2 px-3">Destination</th>
                 <th className="py-2 px-3">Reference / Hash</th>
                 <th className="py-2 px-3">Details</th>
@@ -381,7 +403,7 @@ export default function PayoutRailsPage() {
             <tbody>
               {visiblePayoutRows.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-3 px-3 text-neutral-500">
+                  <td colSpan={8} className="py-3 px-3 text-neutral-500">
                     {payoutRows.length === 0
                       ? "No payout execution rows yet for this account."
                       : "No payout rows in the selected paid-time period."}
@@ -403,6 +425,9 @@ export default function PayoutRailsPage() {
                         <td className="py-2 px-3 text-neutral-200">{row.content?.title || "Content"}</td>
                         <td className="py-2 px-3">{formatSats(row.amountSats)}</td>
                         <td className={["py-2 px-3", payoutStatusTone(row.status)].join(" ")}>{payoutStatusLabel(row.status)}</td>
+                        <td className={["py-2 px-3 text-xs", processingSla(row).tone].join(" ")} title={processingSla(row).detail}>
+                          {processingSla(row).label}
+                        </td>
                         <td className="py-2 px-3">{row.payoutDestinationSummary || row.payoutDestinationType || "—"}</td>
                         <td className="py-2 px-3 font-mono text-xs text-neutral-400">
                           {row.payoutReference || row.paymentIntentId || "—"}
@@ -419,7 +444,7 @@ export default function PayoutRailsPage() {
                       </tr>
                       {expandedPayouts[row.id] ? (
                         <tr className="border-t border-neutral-800/50 bg-neutral-950/40">
-                          <td colSpan={7} className="px-3 py-3">
+                          <td colSpan={8} className="px-3 py-3">
                             <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Payment Intent</div>
@@ -452,6 +477,10 @@ export default function PayoutRailsPage() {
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Attempts</div>
                                 <div className="mt-1 text-neutral-300">{Number(row.attemptCount || 0)}</div>
+                              </div>
+                              <div>
+                                <div className="uppercase tracking-wide text-neutral-500">Execution SLA</div>
+                                <div className={["mt-1", processingSla(row).tone].join(" ")}>{processingSla(row).label}</div>
                               </div>
                               <div className="sm:col-span-2">
                                 <div className="uppercase tracking-wide text-neutral-500">Last error / reason</div>

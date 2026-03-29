@@ -810,9 +810,9 @@ export default function FinanceOverviewPage({
             <div className="mt-1 text-xs text-neutral-500">Marked paid/remitted in payout tracking.</div>
           </div>
           <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-4">
-            <div className="text-xs uppercase tracking-wide text-amber-200/80">Pending</div>
+            <div className="text-xs uppercase tracking-wide text-amber-200/80">Payable (tracked)</div>
             <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(participantPayable))}</div>
-            <div className="mt-1 text-xs text-amber-200/80">Awaiting payout execution.</div>
+            <div className="mt-1 text-xs text-amber-200/80">Payout backlog in tracking (queued, processing, or attention needed).</div>
           </div>
         </div>
       </section>
@@ -853,7 +853,7 @@ export default function FinanceOverviewPage({
         <div className="mt-1 text-xs text-neutral-400">Accrual and payout-state breakdown for owned/collaborative works.</div>
         <div className="mt-1 text-xs text-neutral-500">Time basis: Earned date (when available in the current feed).</div>
         <div className="mt-1 text-xs text-neutral-500">
-          Model: Earned (accrued) · Paid (tracked remitted) · Pending (awaiting payout execution). Pending now: {formatSats(String(participantPayable))}.
+          Model: Earned (accrued) · Paid (tracked remitted) · Payable (tracked remittance backlog). Payable now: {formatSats(String(participantPayable))}.
         </div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
@@ -884,7 +884,7 @@ export default function FinanceOverviewPage({
               <div className="text-neutral-500">May include older unresolved payouts from earlier activity.</div>
               <div className="grid gap-2 md:grid-cols-3">
                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
-                  <div className="uppercase tracking-wide text-neutral-500">Pending payouts</div>
+                  <div className="uppercase tracking-wide text-neutral-500">Queued/processing payouts</div>
                   <div className="mt-1 text-neutral-200">{formatSats(String(processingPayouts))}</div>
                 </div>
                 <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">

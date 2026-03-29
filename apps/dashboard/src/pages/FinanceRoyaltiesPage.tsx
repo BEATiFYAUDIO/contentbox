@@ -190,7 +190,7 @@ export default function FinanceRoyaltiesPage({
     if (state === "mixed") return "Partial";
     if (state === "failed") return "Failed";
     if (state === "blocked") return "Blocked";
-    if (state === "pending") return "Pending";
+    if (state === "pending") return "Processing";
     return "Earned";
   };
 

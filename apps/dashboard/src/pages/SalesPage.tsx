@@ -423,7 +423,7 @@ export default function SalesPage({
               period={timePeriod}
               onPeriodChange={setTimePeriod}
               basisOptions={["sale"]}
-              periodOptions={["7d", "30d", "90d", "all"]}
+              periodOptions={["1d", "7d", "30d", "90d", "all"]}
               helperText="Sales are scoped by buyer payment date (recognized sale time)."
             />
           </div>
