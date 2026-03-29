@@ -32,6 +32,7 @@ type Overview = {
 type FinanceOverviewPageProps = {
   refreshSignal?: number;
   onOpenRoyalties?: () => void;
+  showNodeWalletContext?: boolean;
 };
 
 type LightningAdminConfig = {
@@ -191,7 +192,11 @@ function mapPeerSuggestionNotice(errorCode: string | null | undefined, reasonRaw
   };
 }
 
-export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: FinanceOverviewPageProps) {
+export default function FinanceOverviewPage({
+  refreshSignal,
+  onOpenRoyalties,
+  showNodeWalletContext = false
+}: FinanceOverviewPageProps) {
   const [data, setData] = useState<Overview | null>(null);
   const [royaltyTotals, setRoyaltyTotals] = useState<{ earnedSats: string; pendingSats: string }>({
     earnedSats: "0",
@@ -731,30 +736,34 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-base font-semibold">Revenue Overview</div>
           <div className="flex items-center gap-2 text-xs">
-            {!lightningAdmin?.configured ? (
-              <button
-                onClick={openLightningWizard}
-                className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
-              >
-                Connect Lightning Node
-              </button>
-            ) : (
+            {showNodeWalletContext ? (
               <>
-                <button
-                  onClick={openLightningWizard}
-                  className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
-                >
-                  Edit Lightning Node
-                </button>
-                <button
-                  onClick={onResetLightning}
-                  disabled={wizardBusy === "reset"}
-                  className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900 disabled:opacity-60"
-                >
-                  {wizardBusy === "reset" ? "Resetting…" : "Reset Lightning Config"}
-                </button>
+                {!lightningAdmin?.configured ? (
+                  <button
+                    onClick={openLightningWizard}
+                    className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+                  >
+                    Connect Lightning Node
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={openLightningWizard}
+                      className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+                    >
+                      Edit Lightning Node
+                    </button>
+                    <button
+                      onClick={onResetLightning}
+                      disabled={wizardBusy === "reset"}
+                      className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900 disabled:opacity-60"
+                    >
+                      {wizardBusy === "reset" ? "Resetting…" : "Reset Lightning Config"}
+                    </button>
+                  </>
+                )}
               </>
-            )}
+            ) : null}
             <span className="text-neutral-500">
               Last updated: {data?.lastUpdatedAt ? new Date(data.lastUpdatedAt).toLocaleString() : "—"}
             </span>
@@ -763,16 +772,16 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         {auxError ? (
           <div className="mt-2 text-xs text-amber-300">{auxError}</div>
         ) : null}
-        {lightningAdmin?.configured && lightningAdmin.lastTestedAt ? (
+        {showNodeWalletContext && lightningAdmin?.configured && lightningAdmin.lastTestedAt ? (
           <div className="mt-1 text-xs text-neutral-500">
             Lightning node last tested: {new Date(lightningAdmin.lastTestedAt).toLocaleString()}
             {lightningAdmin.restUrl ? ` · ${lightningAdmin.restUrl}` : ""}
           </div>
         ) : null}
-        {lightningAdmin?.lastStatus === "error" && lightningAdmin.lastError ? (
+        {showNodeWalletContext && lightningAdmin?.lastStatus === "error" && lightningAdmin.lastError ? (
           <div className="mt-1 text-xs text-amber-300">Lightning error: {lightningAdmin.lastError}</div>
         ) : null}
-        {lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
+        {showNodeWalletContext && lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
         <div className="mt-2 text-xs text-neutral-500">Top-level snapshot for accounting review and reconciliation prep.</div>
         <div className="mt-1 text-xs text-neutral-500">
           Scope model: Sales uses sale time, Earnings uses earned time, and Payout execution uses paid/remitted time.
@@ -983,41 +992,43 @@ export default function FinanceOverviewPage({ refreshSignal, onOpenRoyalties }: 
         </div>
       </section>
 
-      <section className="rounded-xl border border-neutral-800 bg-neutral-950/20 p-4">
-        <div className="text-sm font-semibold text-neutral-300">Treasury — Local LND Wallet</div>
-        <div className="mt-1 text-xs text-neutral-500">
-          This reflects the actual wallet running on this machine. Commerce flows through this wallet. This is real funds, not accounting values.
-        </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Wallet total</div>
-            <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.wallet?.totalSats || 0))}</div>
-            <div className="mt-1 text-xs text-neutral-500">
-              Confirmed: {formatSats(String(lightningBalances?.wallet?.confirmedSats || 0))}
+      {showNodeWalletContext ? (
+        <section className="rounded-xl border border-neutral-800 bg-neutral-950/20 p-4">
+          <div className="text-sm font-semibold text-neutral-300">Treasury — Local LND Wallet</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            This reflects the actual wallet running on this machine. Commerce flows through this wallet. This is real funds, not accounting values.
+          </div>
+          <div className="mt-3 grid gap-4 md:grid-cols-3">
+            <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Wallet total</div>
+              <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.wallet?.totalSats || 0))}</div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Confirmed: {formatSats(String(lightningBalances?.wallet?.confirmedSats || 0))}
+              </div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Unconfirmed: {formatSats(String(lightningBalances?.wallet?.unconfirmedSats || 0))}
+              </div>
             </div>
-            <div className="mt-1 text-xs text-neutral-500">
-              Unconfirmed: {formatSats(String(lightningBalances?.wallet?.unconfirmedSats || 0))}
+            <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Inbound liquidity</div>
+              <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.inboundSats || 0))}</div>
+              <div className="mt-1 text-xs text-neutral-500">Receive-side channel liquidity.</div>
+            </div>
+            <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">Outbound liquidity</div>
+              <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.outboundSats || 0))}</div>
+              <div className="mt-1 text-xs text-neutral-500">Send-side channel liquidity.</div>
             </div>
           </div>
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Inbound liquidity</div>
-            <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.inboundSats || 0))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Receive-side channel liquidity.</div>
-          </div>
-          <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Outbound liquidity</div>
-            <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.outboundSats || 0))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Send-side channel liquidity.</div>
-          </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       {/* Manual test checklist:
           1) Open Connect Lightning Node and click "Find my node" -> restUrl auto-fills if local LND is reachable.
           2) Select macaroon (+ optional TLS cert) and verify file labels persist while page auto-refreshes.
           3) Test connection shows alias/version on success; Save flips Lightning status to connected without restart.
       */}
-      {showLightningModal ? (
+      {showNodeWalletContext && showLightningModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-4xl max-h-[90vh] rounded-xl border border-neutral-800 bg-neutral-950 text-neutral-100 overflow-hidden shadow-2xl">
             <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-neutral-800 bg-neutral-950/95 px-5 py-4 backdrop-blur">

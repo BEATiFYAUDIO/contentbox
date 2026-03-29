@@ -247,6 +247,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         <FinanceOverviewPage
           refreshSignal={tabRefresh.overview}
           onOpenRoyalties={() => setTab("royalties")}
+          showNodeWalletContext={financePosture === "sovereign_node"}
         />
       )}
       {tab === "ledger" && (
