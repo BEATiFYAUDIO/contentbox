@@ -226,7 +226,7 @@ export default function FinanceOverviewPage({
   const [wizardCandidates, setWizardCandidates] = useState<Array<{ restUrl: string; requiresTlsCertHint?: boolean; notes?: string }>>([]);
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
   const [lightningReadinessError, setLightningReadinessError] = useState<string | null>(null);
-  const [lightningBalances, setLightningBalances] = useState<LightningBalances | null>(null);
+  const [, setLightningBalances] = useState<LightningBalances | null>(null);
   const [showChannelGuidance, setShowChannelGuidance] = useState(false);
   const [channelGuidance, setChannelGuidance] = useState<string[]>([]);
   const [channelGuidanceError, setChannelGuidanceError] = useState<string | null>(null);
@@ -991,37 +991,6 @@ export default function FinanceOverviewPage({
           </div>
         </div>
       </section>
-
-      {showNodeWalletContext ? (
-        <section className="rounded-xl border border-neutral-800 bg-neutral-950/20 p-4">
-          <div className="text-sm font-semibold text-neutral-300">Treasury — Local LND Wallet</div>
-          <div className="mt-1 text-xs text-neutral-500">
-            This reflects the actual wallet running on this machine. Commerce flows through this wallet. This is real funds, not accounting values.
-          </div>
-          <div className="mt-3 grid gap-4 md:grid-cols-3">
-            <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
-              <div className="text-xs uppercase tracking-wide text-neutral-500">Wallet total</div>
-              <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.wallet?.totalSats || 0))}</div>
-              <div className="mt-1 text-xs text-neutral-500">
-                Confirmed: {formatSats(String(lightningBalances?.wallet?.confirmedSats || 0))}
-              </div>
-              <div className="mt-1 text-xs text-neutral-500">
-                Unconfirmed: {formatSats(String(lightningBalances?.wallet?.unconfirmedSats || 0))}
-              </div>
-            </div>
-            <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
-              <div className="text-xs uppercase tracking-wide text-neutral-500">Inbound liquidity</div>
-              <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.inboundSats || 0))}</div>
-              <div className="mt-1 text-xs text-neutral-500">Receive-side channel liquidity.</div>
-            </div>
-            <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
-              <div className="text-xs uppercase tracking-wide text-neutral-500">Outbound liquidity</div>
-              <div className="mt-2 text-xl font-semibold">{formatSats(String(lightningBalances?.liquidity?.outboundSats || 0))}</div>
-              <div className="mt-1 text-xs text-neutral-500">Send-side channel liquidity.</div>
-            </div>
-          </div>
-        </section>
-      ) : null}
 
       {/* Manual test checklist:
           1) Open Connect Lightning Node and click "Find my node" -> restUrl auto-fills if local LND is reachable.

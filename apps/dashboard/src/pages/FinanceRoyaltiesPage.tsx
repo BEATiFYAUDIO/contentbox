@@ -29,6 +29,7 @@ type RemoteRoyaltyContextRow = {
   percent?: number | string | null;
   earnedSatsToDate?: string | number | null;
   payoutState?: string | null;
+  payoutSummary?: Record<string, number> | null;
   acceptedAt?: string | null;
 };
 
@@ -39,9 +40,10 @@ type FinanceRoyaltiesPageProps = {
     title: string;
     token: number;
   } | null;
+  onOpenPayouts?: () => void;
 };
 
-type EarningsLedgerStatus = "Earned" | "Pending" | "Paid";
+type EarningsLedgerStatus = "Earned" | "Pending" | "Processing" | "Partial" | "Paid" | "Failed" | "Blocked";
 
 type EarningsLedgerRow = {
   id: string;
@@ -54,6 +56,8 @@ type EarningsLedgerRow = {
   status: EarningsLedgerStatus;
   amountSats: number;
   dateLabel: string;
+  remittanceDetail?: string | null;
+  remittanceActionable?: boolean;
 };
 
 function normalizeRoleLabel(raw: string | null | undefined): string {
@@ -65,7 +69,11 @@ function normalizeRoleLabel(raw: string | null | undefined): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
-export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = null }: FinanceRoyaltiesPageProps) {
+export default function FinanceRoyaltiesPage({
+  refreshSignal,
+  bridgeFilter = null,
+  onOpenPayouts
+}: FinanceRoyaltiesPageProps) {
   const [rows, setRows] = useState<RoyaltyRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -178,8 +186,23 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
   const mapRemotePayoutStateToLedgerStatus = (raw: string | null | undefined): EarningsLedgerStatus => {
     const state = String(raw || "").trim().toLowerCase();
     if (state === "paid") return "Paid";
-    if (state === "pending" || state === "ready" || state === "forwarding" || state === "mixed") return "Pending";
+    if (state === "ready" || state === "forwarding") return "Processing";
+    if (state === "mixed") return "Partial";
+    if (state === "failed") return "Failed";
+    if (state === "blocked") return "Blocked";
+    if (state === "pending") return "Pending";
     return "Earned";
+  };
+
+  const formatRemotePayoutSummary = (summaryRaw: Record<string, number> | null | undefined) => {
+    const summary = summaryRaw && typeof summaryRaw === "object" ? summaryRaw : null;
+    if (!summary) return "";
+    const ordered: string[] = [];
+    for (const key of ["paid", "ready", "forwarding", "pending", "failed", "blocked"]) {
+      const count = Number((summary as any)[key] || 0);
+      if (count > 0) ordered.push(`${key}:${count}`);
+    }
+    return ordered.join(" ");
   };
 
   const totals = rows.reduce(
@@ -221,7 +244,9 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
           shareLabel,
           status: "Paid",
           amountSats: paid,
-          dateLabel
+          dateLabel,
+          remittanceDetail: null,
+          remittanceActionable: false
         });
       }
 
@@ -236,7 +261,9 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
           shareLabel,
           status: "Pending",
           amountSats: pending,
-          dateLabel
+          dateLabel,
+          remittanceDetail: null,
+          remittanceActionable: false
         });
       }
 
@@ -252,7 +279,9 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
           shareLabel,
           status: "Earned",
           amountSats: earnedOnly,
-          dateLabel
+          dateLabel,
+          remittanceDetail: null,
+          remittanceActionable: false
         });
       }
     }
@@ -271,6 +300,9 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
       const shareLabel = formatPercentLabel(row?.percent);
       const status = mapRemotePayoutStateToLedgerStatus(row?.payoutState);
       const dateLabel = row?.acceptedAt ? new Date(String(row.acceptedAt)).toLocaleDateString() : "—";
+      const payoutSummary = formatRemotePayoutSummary(row?.payoutSummary || null);
+      const remittanceDetail = payoutSummary ? `Remote payout rows: ${payoutSummary}` : `Remote payout state: ${String(row?.payoutState || "none")}`;
+      const remittanceActionable = status !== "Paid" && status !== "Earned";
 
       out.push({
         id: `remote:${rowId}:${status.toLowerCase()}`,
@@ -282,12 +314,22 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
         shareLabel,
         status,
         amountSats: earned,
-        dateLabel
+        dateLabel,
+        remittanceDetail,
+        remittanceActionable
       });
     }
 
     return out.sort((a, b) => {
-      const order: Record<EarningsLedgerStatus, number> = { Pending: 3, Earned: 2, Paid: 1 };
+      const order: Record<EarningsLedgerStatus, number> = {
+        Failed: 7,
+        Blocked: 6,
+        Partial: 5,
+        Processing: 4,
+        Pending: 3,
+        Earned: 2,
+        Paid: 1
+      };
       return order[b.status] - order[a.status];
     });
   }, [rows, remoteRows, localRoleByContent, remoteRoleByContent]);
@@ -393,7 +435,7 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
           Row-level earnings by content and lifecycle state. Sales stay in Sales. Payout execution details stay in Payouts.
         </div>
         <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Status model: Earned = accrued, Pending = payable/remittance pending, Paid = remitted.
+          Status model: Earned = accrued, Pending = queued, Processing = ready/forwarding, Partial = mixed payout outcomes, Paid = remitted.
         </div>
         <div className="text-xs text-neutral-500 mt-1 mb-2">
           Role/share/origin context is attached only from existing Royalties context; when role is unavailable, rows fall back to Participant.
@@ -436,7 +478,11 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
               <option value="all">All</option>
               <option value="Earned">Earned</option>
               <option value="Pending">Pending</option>
+              <option value="Processing">Processing</option>
+              <option value="Partial">Partial</option>
               <option value="Paid">Paid</option>
+              <option value="Failed">Failed</option>
+              <option value="Blocked">Blocked</option>
             </select>
           </label>
           <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
@@ -496,12 +542,13 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
                 <th className="text-left font-medium py-2">Share</th>
                 <th className="text-left font-medium py-2">Amount</th>
                 <th className="text-left font-medium py-2">Status</th>
+                <th className="text-left font-medium py-2">Remittance detail</th>
               </tr>
             </thead>
             <tbody>
               {visibleEarningsLedgerRows.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-3 text-neutral-500">
+                  <td colSpan={9} className="py-3 text-neutral-500">
                     {ledgerContentFilter
                       ? "No earnings rows found for this work."
                       : sourceFilter !== "all" || statusFilter !== "all" || roleFilter !== "all" || originFilter !== "all"
@@ -528,6 +575,18 @@ export default function FinanceRoyaltiesPage({ refreshSignal, bridgeFilter = nul
                     <td className="py-2 text-neutral-300">{row.shareLabel}</td>
                     <td className="py-2">{formatSats(String(row.amountSats))}</td>
                     <td className="py-2 text-neutral-300">{row.status}</td>
+                    <td className="py-2 text-neutral-400">
+                      {row.remittanceDetail ? <div className="text-xs">{row.remittanceDetail}</div> : <div className="text-xs text-neutral-600">—</div>}
+                      {row.remittanceActionable && onOpenPayouts ? (
+                        <button
+                          type="button"
+                          onClick={onOpenPayouts}
+                          className="mt-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                        >
+                          Open payouts
+                        </button>
+                      ) : null}
+                    </td>
                   </tr>
                 ))
               )}

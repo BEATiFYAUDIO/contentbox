@@ -255,7 +255,13 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
           hasInvoiceCommerce={hasInvoiceCommerce}
         />
       )}
-      {tab === "royalties" && <FinanceRoyaltiesPage refreshSignal={tabRefresh.royalties} bridgeFilter={earningsBridgeFilter} />}
+      {tab === "royalties" && (
+        <FinanceRoyaltiesPage
+          refreshSignal={tabRefresh.royalties}
+          bridgeFilter={earningsBridgeFilter}
+          onOpenPayouts={() => setTab("payouts")}
+        />
+      )}
       {tab === "earnings-v2" && (
         <EarningsV2Page
           refreshSignal={tabRefresh["earnings-v2"]}
