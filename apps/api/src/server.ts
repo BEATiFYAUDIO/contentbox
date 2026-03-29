@@ -3945,6 +3945,11 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           : intent.payoutStatus === "failed"
             ? "failed"
             : null;
+    const authoritativePaidFromIntent =
+      Boolean(intent.remittedAt) ||
+      String(intent.payoutStatus || "").trim().toLowerCase() === "paid" ||
+      String(intent.payoutSummaryStatus || "").trim().toLowerCase() === "paid" ||
+      isProviderIntentRemittanceSettled(intent.paymentIntentId);
 
     for (const allocation of allocations) {
       const existingPayoutRow = await prisma.participantPayout
@@ -4012,6 +4017,36 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
         (String(existingPayoutRow?.status || "").trim().toLowerCase() === "paid" ||
           Boolean(existingPayoutRow?.payoutReference) ||
           Boolean(existingPayoutRow?.remittedAt));
+      const needsForcePaidReconcile =
+        authoritativePaidFromIntent &&
+        (!existingPayoutRow ||
+          String(existingPayoutRow.status || "").trim().toLowerCase() !== "paid" ||
+          !existingPayoutRow.remittedAt);
+      if (needsForcePaidReconcile) {
+        app.log.warn(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            allocationId: allocation.id,
+            participantRef: executionParticipantRef,
+            existingStatus: String(existingPayoutRow?.status || "missing"),
+            existingRemittedAt: existingPayoutRow?.remittedAt ? new Date(existingPayoutRow.remittedAt).toISOString() : null,
+            reason: "EXECUTION_SUCCESS_FORCE_RECONCILE"
+          },
+          "participantPayout.reconcile_force_paid"
+        );
+      }
+      const forcePaidStatus = authoritativePaidFromIntent && resolvedStatus !== "failed" && resolvedStatus !== "blocked";
+      const reconciledStatus: ParticipantPayoutStatus = forcePaidStatus
+        ? "paid"
+        : preserveExecutedState
+          ? parseParticipantPayoutStatus(String(existingPayoutRow?.status || "paid"))
+          : resolvedStatus;
+      const reconciledRemittedAt = forcePaidStatus
+        ? existingPayoutRow?.remittedAt || (intent.remittedAt ? new Date(intent.remittedAt) : new Date())
+        : preserveExecutedState
+          ? (existingPayoutRow?.remittedAt || null)
+          : (intent.remittedAt ? new Date(intent.remittedAt) : null);
       if (canBypassInviteGate) {
         app.log.warn(
           {
@@ -4029,31 +4064,35 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
         where: { allocationId: allocation.id },
         update: {
           payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
-          status: preserveExecutedState
-            ? parseParticipantPayoutStatus(String(existingPayoutRow?.status || "paid"))
-            : resolvedStatus,
+          status: reconciledStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
           destinationSummary: readiness.destinationSummary,
           lastCheckedAt: new Date(),
-          readinessReason: preserveExecutedState
+          readinessReason: forcePaidStatus
+            ? null
+            : preserveExecutedState
             ? (existingPayoutRow?.readinessReason || null)
             : readiness.readinessReason,
           destinationResolvedAt: readiness.destinationResolvedAt,
           destinationSource: readiness.destinationSource,
           destinationFingerprint: readiness.destinationFingerprint,
-          payoutReference: preserveExecutedState
+          payoutReference: forcePaidStatus
+            ? String(existingPayoutRow?.payoutReference || "").trim() || intent.payoutReference || null
+            : preserveExecutedState
             ? String(existingPayoutRow?.payoutReference || "").trim() || null
             : intent.payoutReference,
-          lastError: preserveExecutedState
+          lastError: forcePaidStatus
+            ? null
+            : preserveExecutedState
             ? String(existingPayoutRow?.lastError || "").trim() || null
             : intent.payoutLastError,
-          blockedReason: preserveExecutedState
+          blockedReason: forcePaidStatus
+            ? null
+            : preserveExecutedState
             ? String(existingPayoutRow?.blockedReason || "").trim() || null
             : readiness.blockedReason,
-          remittedAt: preserveExecutedState
-            ? (existingPayoutRow?.remittedAt || null)
-            : (intent.remittedAt ? new Date(intent.remittedAt) : null),
+          remittedAt: reconciledRemittedAt,
           attemptCount: preserveExecutedState
             ? Math.max(0, Number(existingPayoutRow?.attemptCount) || 0)
             : undefined,
@@ -4074,11 +4113,11 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           paymentIntentId: intent.paymentIntentId,
           payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
           amountSats: BigInt(String(allocation.amountSats || "0")),
-          status: resolvedStatus,
+          status: forcePaidStatus ? "paid" : resolvedStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
           destinationSummary: readiness.destinationSummary,
-          readinessReason: readiness.readinessReason,
+          readinessReason: forcePaidStatus ? null : readiness.readinessReason,
           destinationResolvedAt: readiness.destinationResolvedAt,
           destinationSource: readiness.destinationSource,
           destinationFingerprint: readiness.destinationFingerprint,
@@ -4086,10 +4125,10 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           attemptId: intent.remittanceAttemptId,
           lockedAt: intent.remittanceLockedAt ? new Date(intent.remittanceLockedAt) : null,
           lastCheckedAt: new Date(),
-          payoutReference: intent.payoutReference,
-          lastError: intent.payoutLastError,
-          blockedReason: readiness.blockedReason,
-          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+          payoutReference: forcePaidStatus ? intent.payoutReference || null : intent.payoutReference,
+          lastError: forcePaidStatus ? null : intent.payoutLastError,
+          blockedReason: forcePaidStatus ? null : readiness.blockedReason,
+          remittedAt: forcePaidStatus ? (intent.remittedAt ? new Date(intent.remittedAt) : new Date()) : (intent.remittedAt ? new Date(intent.remittedAt) : null)
           // TODO(certifyd-payout-destination-versioning): snapshot destination rebinding/versioning
           // should support destination updates for future unpaid balances without mutating historical payout rows.
         }
@@ -5137,6 +5176,47 @@ async function forceMarkParticipantPayoutPaidAfterExternalSuccess(id: string, pa
   }
 }
 
+async function forceReconcileSuccessfulParticipantPayoutRows(providerPaymentIntentId: string): Promise<number> {
+  const now = new Date();
+  const withRemitted = await prisma.participantPayout.updateMany({
+    where: {
+      providerPaymentIntentId,
+      status: { in: ["pending", "ready", "forwarding"] },
+      remittedAt: { not: null }
+    },
+    data: {
+      status: "paid",
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: now,
+      readinessReason: null,
+      lastError: null,
+      blockedReason: null,
+      nextRetryAt: null
+    }
+  });
+  const withReferenceOnly = await prisma.participantPayout.updateMany({
+    where: {
+      providerPaymentIntentId,
+      status: { in: ["pending", "ready", "forwarding"] },
+      remittedAt: null,
+      payoutReference: { not: null }
+    },
+    data: {
+      status: "paid",
+      remittedAt: now,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: now,
+      readinessReason: null,
+      lastError: null,
+      blockedReason: null,
+      nextRetryAt: null
+    }
+  });
+  return (withRemitted.count || 0) + (withReferenceOnly.count || 0);
+}
+
 async function markParticipantPayoutFailed(id: string, attemptId: string, message: string) {
   const current = await prisma.participantPayout.findUnique({ where: { id }, select: { attemptCount: true } });
   const attempts = Math.max(0, Number(current?.attemptCount) || 0);
@@ -5602,6 +5682,18 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
     } finally {
       PARTICIPANT_REMITTANCE_FLIGHTS.delete(row.id);
     }
+  }
+  const reconciledCount = await forceReconcileSuccessfulParticipantPayoutRows(intent.id).catch(() => 0);
+  if (reconciledCount > 0) {
+    app.log.warn(
+      {
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        reconciledRows: reconciledCount,
+        reason: "EXECUTION_SUCCESS_FORCE_RECONCILE"
+      },
+      "participantPayout.reconcile_force_paid"
+    );
   }
 }
 
