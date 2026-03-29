@@ -43,6 +43,15 @@ type FinanceRoyaltiesPageProps = {
   onOpenPayouts?: () => void;
 };
 
+type OverviewSummary = {
+  totals?: {
+    participantRoyaltyAccruedSats?: string;
+    participantRoyaltyFeeWithheldSats?: string;
+    participantRoyaltyPayableSats?: string;
+    participantRoyaltyPaidSats?: string;
+  };
+};
+
 type EarningsLedgerStatus = "Earned" | "Pending" | "Processing" | "Partial" | "Paid" | "Failed" | "Blocked";
 
 type EarningsLedgerRow = {
@@ -86,6 +95,7 @@ export default function FinanceRoyaltiesPage({
   const [localRoleByContent, setLocalRoleByContent] = useState<Record<string, string>>({});
   const [remoteRoleByContent, setRemoteRoleByContent] = useState<Record<string, string>>({});
   const [remoteRows, setRemoteRows] = useState<RemoteRoyaltyContextRow[]>([]);
+  const [overviewSummary, setOverviewSummary] = useState<OverviewSummary | null>(null);
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
 
@@ -100,9 +110,13 @@ export default function FinanceRoyaltiesPage({
       setLoading(true);
       setError(null);
       try {
-        const res = await api<{ items: RoyaltyRow[] }>("/finance/royalties");
+        const [res, overview] = await Promise.all([
+          api<{ items: RoyaltyRow[] }>("/finance/royalties"),
+          api<OverviewSummary>("/finance/overview")
+        ]);
         if (!active) return;
         setRows(res.items || []);
+        setOverviewSummary(overview || null);
       } catch (e: any) {
         if (!active) return;
         setError(e.message || "Failed to load royalties.");
@@ -214,6 +228,10 @@ export default function FinanceRoyaltiesPage({
     },
     { earned: 0, paid: 0, pending: 0 }
   );
+  const grossEarned = Number(overviewSummary?.totals?.participantRoyaltyAccruedSats || 0) || totals.earned;
+  const feeWithheld = Number(overviewSummary?.totals?.participantRoyaltyFeeWithheldSats || 0);
+  const netPaid = Number(overviewSummary?.totals?.participantRoyaltyPaidSats || 0) || totals.paid;
+  const netPayable = Number(overviewSummary?.totals?.participantRoyaltyPayableSats || 0) || totals.pending;
 
   const earningsLedgerRows = useMemo<EarningsLedgerRow[]>(() => {
     const out: EarningsLedgerRow[] = [];
@@ -383,7 +401,7 @@ export default function FinanceRoyaltiesPage({
       <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-base font-semibold">Earnings</div>
         <div className="text-sm text-neutral-400 mt-1">
-          Your money across content: what you’ve earned, what’s been paid, and what’s still pending.
+          Your money across content: gross earned, fee impact, and net payout state.
         </div>
         <div className="text-xs text-neutral-500 mt-2">
           Seller revenue lives in Sales and Content. This Earnings view is your share only.
@@ -395,7 +413,7 @@ export default function FinanceRoyaltiesPage({
           If no royalty-type earnings are present in the current feed, this page shows catalog earnings only.
         </div>
         <div className="text-xs text-neutral-500 mt-1">
-          Each row reflects earnings from works you own or collaborate on. Participation and shares are defined in Royalties.
+          Gross earned is pre-fee participation accrual. Net paid/net payable are post-fee payout states.
         </div>
         <div className="mt-3">
           <TimeScopeControls
@@ -411,18 +429,22 @@ export default function FinanceRoyaltiesPage({
         </div>
       </div>
 
-      <section className="grid gap-3 sm:grid-cols-3">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Earned</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(String(totals.earned))}</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Gross earned</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(grossEarned))}</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Paid</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(String(totals.paid))}</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Fees</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(feeWithheld))}</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Pending</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(String(totals.pending))}</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net paid</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(netPaid))}</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net payable</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(netPayable))}</div>
         </div>
       </section>
 
@@ -435,7 +457,7 @@ export default function FinanceRoyaltiesPage({
           Row-level earnings by content and lifecycle state. Sales stay in Sales. Payout execution details stay in Payouts.
         </div>
         <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Status model: Earned = accrued, Pending = queued, Processing = ready/forwarding, Partial = mixed payout outcomes, Paid = remitted.
+          Status model: Earned = gross accrued, Pending/Processing = unresolved net remittance, Partial = mixed payout outcomes, Paid = remitted.
         </div>
         <div className="text-xs text-neutral-500 mt-1 mb-2">
           Role/share/origin context is attached only from existing Royalties context; when role is unavailable, rows fall back to Participant.

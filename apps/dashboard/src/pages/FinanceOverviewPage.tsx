@@ -20,6 +20,8 @@ type Overview = {
     participantRoyaltyAccruedSats?: string;
     participantRoyaltyPayableSats?: string;
     participantRoyaltyPaidSats?: string;
+    participantRoyaltyFeeWithheldSats?: string;
+    participantRoyaltyFailedSats?: string;
   };
   revenueSeries: Array<{ date: string; amountSats?: string; sats?: string }>;
   lastUpdatedAt: string;
@@ -700,14 +702,18 @@ export default function FinanceOverviewPage({
   const participantAccrued = Number(data?.totals?.participantRoyaltyAccruedSats || 0);
   const participantPayable = Number(data?.totals?.participantRoyaltyPayableSats || 0);
   const participantPaid = Number(data?.totals?.participantRoyaltyPaidSats || 0);
+  const participantFeesWithheld = Number(data?.totals?.participantRoyaltyFeeWithheldSats || 0);
+  const participantFailed = Number(data?.totals?.participantRoyaltyFailedSats || 0);
   const salesLast30d = Number(
     data?.totals?.salesSatsLast30d ??
       series.reduce((sum, point) => sum + Number(getSeriesAmountSats(point) || 0), 0)
   );
-  const totalRoyaltyAccrued = Math.max(0, localRoyaltyEarned + remoteRoyaltyAccrued);
-  const hasRoyaltyEconomics = totalRoyaltyAccrued > 0 || participantAccrued > 0 || participantPayable > 0 || participantPaid > 0;
-  const processingPayouts = Math.max(0, Number(royaltyTotals.pendingSats || 0));
-  const needsAttentionPayouts = Math.max(0, participantPayable - processingPayouts);
+  const localGrossEarned = participantAccrued > 0 ? participantAccrued : localRoyaltyEarned;
+  const grossEarned = Math.max(0, localGrossEarned + remoteRoyaltyAccrued);
+  const hasRoyaltyEconomics =
+    grossEarned > 0 || participantAccrued > 0 || participantPayable > 0 || participantPaid > 0 || participantFeesWithheld > 0;
+  const processingPayouts = Math.max(0, participantPayable);
+  const needsAttentionPayouts = Math.max(0, participantFailed);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -786,6 +792,9 @@ export default function FinanceOverviewPage({
         <div className="mt-1 text-xs text-neutral-500">
           Scope model: Sales uses sale time, Earnings uses earned time, and Payout execution uses paid/remitted time.
         </div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Sales = gross buyer payments. Gross Earned = pre-fee participation accrual where fee fields exist. Net Paid/Net Payable = post-fee payout truth.
+        </div>
       </section>
 
       <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Priority Snapshot</div>
@@ -793,26 +802,31 @@ export default function FinanceOverviewPage({
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Topline Money Snapshot</div>
         <div className="mt-1 text-xs text-neutral-400">Core numbers for accounting review.</div>
-        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Sales</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
             <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-400">Total earned</div>
-            <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Accrued from local + remote participation.</div>
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Gross earned</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(grossEarned))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Pre-fee participation accrual from works you own/collaborate on.</div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-400">Paid (tracked)</div>
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Fees withheld</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantFeesWithheld))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Fee impact recognized from existing settlement/payout fee fields.</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Net paid</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Marked paid/remitted in payout tracking.</div>
+            <div className="mt-1 text-xs text-neutral-500">Post-fee amount marked paid/remitted in payout tracking.</div>
           </div>
           <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-4">
-            <div className="text-xs uppercase tracking-wide text-amber-200/80">Payable (tracked)</div>
+            <div className="text-xs uppercase tracking-wide text-amber-200/80">Net payable</div>
             <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(participantPayable))}</div>
-            <div className="mt-1 text-xs text-amber-200/80">Payout backlog in tracking (queued, processing, or attention needed).</div>
+            <div className="mt-1 text-xs text-amber-200/80">Unresolved post-fee payout backlog (pending/ready/forwarding only).</div>
           </div>
         </div>
       </section>
@@ -853,20 +867,31 @@ export default function FinanceOverviewPage({
         <div className="mt-1 text-xs text-neutral-400">Accrual and payout-state breakdown for owned/collaborative works.</div>
         <div className="mt-1 text-xs text-neutral-500">Time basis: Earned date (when available in the current feed).</div>
         <div className="mt-1 text-xs text-neutral-500">
-          Model: Earned (accrued) · Paid (tracked remitted) · Payable (tracked remittance backlog). Payable now: {formatSats(String(participantPayable))}.
+          Model: Gross Earned (pre-fee) · Fees Withheld · Net Paid · Net Payable. Wallet receipts reflect net outcome after fees.
         </div>
-        <div className="mt-3 grid gap-4 md:grid-cols-2">
+        <div className="mt-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Paid (tracked)</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
-          <div className="mt-1 text-xs text-neutral-500">Amount marked paid/remitted in payout tracking.</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Total earned</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Gross earned</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(grossEarned))}</div>
           <div className="mt-1 text-xs text-neutral-500">
-            Your Content: {formatSats(royaltyTotals.earnedSats || "0")} · From Other Creators: {formatSats(data?.totals?.remoteRoyaltyAccruedSats || "0")}
-            {Number(data?.totals?.remoteRoyaltyItems || 0) > 0 ? ` · External Works: ${Number(data?.totals?.remoteRoyaltyItems || 0)}` : ""}
+            Your content + collaborations before fee withholding where fee fields are available.
+          </div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Fees withheld</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantFeesWithheld))}</div>
+          <div className="mt-1 text-xs text-neutral-500">Net payout delta attributable to invoicing/settlement fees.</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Net paid</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+          <div className="mt-1 text-xs text-neutral-500">Post-fee amount marked paid/remitted in payout tracking.</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Net payable</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPayable))}</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Unresolved post-fee payout backlog. Failed/blocked rows are excluded and tracked separately.
           </div>
         </div>
         </div>
@@ -898,8 +923,8 @@ export default function FinanceOverviewPage({
               </div>
               <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
                 <div className="uppercase tracking-wide text-neutral-500">Total tracked for payout</div>
-                <div className="mt-1 text-neutral-200">{formatSats(String(participantAccrued))}</div>
-                <div className="mt-1 text-neutral-500">Total amount currently tracked in payout rows.</div>
+                <div className="mt-1 text-neutral-200">{formatSats(String(participantPaid + participantPayable + participantFailed))}</div>
+                <div className="mt-1 text-neutral-500">Net payout rows in paid, payable, and attention states.</div>
               </div>
             </div>
           ) : null}
@@ -929,7 +954,7 @@ export default function FinanceOverviewPage({
           </div>
         </div>
         <div className="mt-2 text-xs text-neutral-400">
-          State model: Earned (accrued) → Pending (payable/remittance pending) → Paid (remitted); Failed indicates remittance could not complete.
+          State model: Gross Earned (pre-fee) → Fees Withheld → Net Payable (remittance pending) → Net Paid (remitted); Failed/Blocked indicates remittance could not complete.
         </div>
         <div className="mt-1 text-xs text-neutral-500">Reconciliation (coming soon)</div>
       </section>

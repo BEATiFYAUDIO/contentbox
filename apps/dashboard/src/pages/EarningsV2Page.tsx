@@ -286,12 +286,13 @@ export default function EarningsV2Page({
         const fees = feeBreakdownForRow(row);
         acc.gross += fees.gross;
         acc.earnings += fees.earnings;
+        acc.fees += Math.max(0, fees.totalProviderFees);
         const payoutState = normalizePayoutState(row.payoutStatus);
         if (payoutState === "paid") acc.paidOut += fees.earnings;
         if (payoutState === "pending" || payoutState === "forwarding") acc.pending += fees.earnings;
         return acc;
       },
-      { gross: 0, earnings: 0, paidOut: 0, pending: 0 }
+      { gross: 0, earnings: 0, fees: 0, paidOut: 0, pending: 0 }
     );
   }, [scopedSales]);
 
@@ -620,7 +621,7 @@ export default function EarningsV2Page({
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Content Performance</div>
         <div className="text-sm text-neutral-400 mt-1">
-          This shows how each work you participate in performed and what you earned from it.
+          This shows how each work you participate in performed, fee impact, and net payout outcome.
         </div>
         <div className="text-xs text-neutral-500 mt-2">
           Based on your participation and share (see Royalties).
@@ -630,26 +631,31 @@ export default function EarningsV2Page({
         </div>
       </div>
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Buyer Gross</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.gross)}</div>
           <div className="text-xs text-neutral-500 mt-1">Seller-of-record gross total</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Your Share</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Fees Withheld</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(summary.fees)}</div>
+          <div className="text-xs text-neutral-500 mt-1">Explicit provider/settlement fee deductions.</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net Earned</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.earnings)}</div>
           <div className="text-xs text-neutral-500 mt-1">
             {hasInvoiceCommerce ? "Net after active provider fees" : "Net creator earnings in current posture"}
           </div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Paid</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net Paid</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.paidOut)}</div>
           <div className="text-xs text-neutral-500 mt-1">Based on earnings rows marked paid in existing payout truth.</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Pending</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Net Payable</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.pending)}</div>
           <div className="text-xs text-neutral-500 mt-1">Earnings rows not yet marked paid (pending/forwarding).</div>
         </div>
@@ -722,7 +728,7 @@ export default function EarningsV2Page({
                     <th className="text-left font-medium py-2">Role</th>
                     <th className="text-left font-medium py-2">Share</th>
                     <th className="text-left font-medium py-2">Gross Sales</th>
-                    <th className="text-left font-medium py-2">Your Share</th>
+                    <th className="text-left font-medium py-2">Net Earned</th>
                     <th className="text-left font-medium py-2">Payout State</th>
                     <th className="text-left font-medium py-2">Paid</th>
                     <th className="text-left font-medium py-2">Pending</th>
@@ -849,7 +855,7 @@ export default function EarningsV2Page({
                     <div className="text-sm font-medium">Content summary</div>
                     <div className="text-sm text-neutral-300 mt-2">{scopedRow.contentTitle}</div>
                     <div className="text-xs text-neutral-400 mt-1">Buyer paid: {formatSats(scopedRow.gross)}</div>
-                    <div className="text-xs text-neutral-400">Your earnings: {formatSats(scopedRow.earnings)}</div>
+                    <div className="text-xs text-neutral-400">Net earned: {formatSats(scopedRow.earnings)}</div>
                     <div className="text-xs text-neutral-400">Paid: {formatSats(scopedRow.paid)} · Pending: {formatSats(scopedRow.pending)}</div>
                     <div className="text-xs text-neutral-400">Payout state: {scopedRow.latestStatus}</div>
                   </div>
@@ -868,7 +874,7 @@ export default function EarningsV2Page({
                   <div className="text-sm font-medium">Content summary</div>
                   <div className="text-sm text-neutral-300 mt-2">{scopedRow.contentTitle}</div>
                   <div className="text-xs text-neutral-400 mt-1">Buyer paid: {formatSats(scopedRow.gross)}</div>
-                  <div className="text-xs text-neutral-400">Your earnings: {formatSats(scopedRow.earnings)}</div>
+                  <div className="text-xs text-neutral-400">Net earned: {formatSats(scopedRow.earnings)}</div>
                   <div className="text-xs text-neutral-400">Paid: {formatSats(scopedRow.paid)} · Pending: {formatSats(scopedRow.pending)}</div>
                   <div className="text-xs text-neutral-400">Payout state: {scopedRow.latestStatus}</div>
                   <div className="text-xs text-neutral-500 mt-2">Transactions contributing to this content’s earnings are shown below.</div>

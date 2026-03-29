@@ -32,6 +32,9 @@ type PayoutRow = {
   updatedAt?: string | null;
   content?: { id: string; title: string; type: string } | null;
   amountSats?: string | number;
+  grossShareSats?: string | number;
+  feeWithheldSats?: string | number;
+  netAmountSats?: string | number;
   status?: "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked";
   payoutDestinationSummary?: string | null;
   payoutDestinationType?: string | null;
@@ -351,7 +354,7 @@ export default function PayoutRailsPage() {
           Execution truth only: remittance state, destination path, and payout references.
         </div>
         <div className="text-xs text-neutral-500 mt-1">
-          Status model: Pending/Ready = not remitted, Forwarding = in progress, Paid = remitted, Failed/Blocked = not remitted.
+          Status model: Pending/Ready = not remitted, Forwarding = in progress, Paid = remitted, Failed/Blocked = attention.
         </div>
         <div className="text-xs text-neutral-500 mt-1">
           Processing SLA: &lt;2m normal, 2-10m watch, &gt;10m needs attention.
@@ -378,7 +381,7 @@ export default function PayoutRailsPage() {
             <div className="mt-1 text-lg font-semibold">{formatSats(payoutTotals.paidSats)}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Pending</div>
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Net payable</div>
             <div className="mt-1 text-lg font-semibold">{formatSats(payoutTotals.pendingSats)}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
@@ -457,6 +460,18 @@ export default function PayoutRailsPage() {
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Status</div>
                                 <div className="mt-1 text-neutral-300">{payoutStatusLabel(row.status)}</div>
+                              </div>
+                              <div>
+                                <div className="uppercase tracking-wide text-neutral-500">Gross earned</div>
+                                <div className="mt-1 text-neutral-300">{formatSats(row.grossShareSats ?? row.amountSats)}</div>
+                              </div>
+                              <div>
+                                <div className="uppercase tracking-wide text-neutral-500">Fees withheld</div>
+                                <div className="mt-1 text-neutral-300">{formatSats(row.feeWithheldSats || 0)}</div>
+                              </div>
+                              <div>
+                                <div className="uppercase tracking-wide text-neutral-500">Net payout</div>
+                                <div className="mt-1 text-neutral-300">{formatSats(row.netAmountSats ?? row.amountSats)}</div>
                               </div>
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Role</div>
