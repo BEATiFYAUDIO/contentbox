@@ -56,10 +56,26 @@ type NodeModeSnapshot = {
   commerceAuthorityAvailable?: boolean;
   providerCommerceConnected?: boolean;
   localSovereignReady?: boolean;
+  modeReadiness?: {
+    localLndReady?: boolean;
+  };
 };
 
 type LightningAdminSnapshot = {
   configured: boolean;
+  runtime?: {
+    connected?: boolean;
+    canReceive?: boolean;
+    canSend?: boolean;
+    capabilityState?: string;
+    sendFailureReason?: string | null;
+    source?: string;
+  };
+};
+
+type FinancePostureSnapshot = {
+  providerCommerceConnected?: boolean;
+  localSovereignReady?: boolean;
 };
 
 type PageKey =
@@ -163,6 +179,16 @@ function getSplitEditorContentIdFromLocation(): string | null {
   return null;
 }
 
+function getRoyaltiesTermsContentIdFromLocation(): string | null {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  // route: /royalties/:contentId
+  if (parts[0] === "royalties" && typeof parts[1] === "string") {
+    const contentId = decodeURIComponent(parts[1]).trim();
+    return contentId || null;
+  }
+  return null;
+}
+
 function normalizePublicProfileHandle(value: unknown): string | null {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return null;
@@ -172,6 +198,12 @@ function normalizePublicProfileHandle(value: unknown): string | null {
     .replace(/-+/g, "-")
     .replace(/^[-._]+|[-._]+$/g, "");
   return clean || null;
+}
+
+function getFinanceTabFromLocation(): FinanceTab | null {
+  const parts = window.location.pathname.split("/").filter(Boolean);
+  if (parts[0] === "earnings-v2") return "earnings-v2";
+  return null;
 }
 
 /* =======================
@@ -327,7 +359,10 @@ export default function App() {
       refresh();
     };
     window.addEventListener("focus", onFocus);
-    const t = window.setInterval(refresh, 10000);
+    const t = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      refresh();
+    }, 30000);
     return () => {
       alive = false;
       window.clearInterval(t);
@@ -347,6 +382,8 @@ export default function App() {
   useEffect(() => {
     const tokenFromUrl = getInviteTokenFromLocation();
     const splitEditorContentId = getSplitEditorContentIdFromLocation();
+    const royaltiesTermsContentId = getRoyaltiesTermsContentIdFromLocation();
+    const financeTabFromUrl = getFinanceTabFromLocation();
     if (tokenFromUrl) {
       setInviteToken(tokenFromUrl);  // Set token when found
       setPage("invite");  // Show InvitePage directly
@@ -357,9 +394,15 @@ export default function App() {
       setPage("receipt");
     }
     if (!tokenFromUrl && !receiptFromUrl) {
-      if (splitEditorContentId) {
+      if (financeTabFromUrl) {
+        setFinanceTab(financeTabFromUrl);
+        setPage("finance");
+      } else if (splitEditorContentId) {
         setSelectedContentId(splitEditorContentId);
         setPage("split-editor");
+      } else if (royaltiesTermsContentId) {
+        setSelectedContentId(royaltiesTermsContentId);
+        setPage("royalties-terms");
       } else {
         // Canonical refresh route: always land on Content unless this is an
         // explicit deep-link surface (invite/receipt/split editor).
@@ -439,6 +482,12 @@ export default function App() {
   const canSeeProviderConsole = Boolean(sovereignCapabilities.canActAsProviderNode && nodeMode === "lan");
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
   const requireLocalLightning = nodeMode === "lan";
+  const localLightningDetected = Boolean(
+    nodeModeSnapshot?.modeReadiness?.localLndReady ||
+      lightningAdminSnapshot?.runtime?.canReceive ||
+      lightningAdminSnapshot?.runtime?.canSend ||
+      lightningAdminSnapshot?.configured
+  );
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
     !commerceEnabled &&
@@ -452,33 +501,60 @@ export default function App() {
       page === "royalties-terms");
 
   // Navigation options for the sidebar
-  const accessNav = [
-    { key: "store" as const, label: "Network", hint: "Identity + reachability + links" },
-    { key: "library" as const, label: "Library", hint: "What I own" },
-    { key: "downloads" as const, label: "Downloads", hint: "Get your files" },
-    { key: "purchases" as const, label: "Purchase history", hint: "Receipts + status" }
-  ];
+  const accountNav = [{ key: "profile" as const, label: "Profile", hint: "Identity" }];
 
   const contentNav = [
-    { key: "content" as const, label: "Content", hint: "Your catalog" }
+    { key: "content" as const, label: "Catalog", hint: "Your content catalog" },
+    { key: "library" as const, label: "Library", hint: "What I own" },
+    { key: "downloads" as const, label: "Downloads", hint: "Get your files" }
   ];
 
-  const royaltiesNav = [
-    { key: "participations" as const, label: "My Royalties", hint: "Royalties I'm in", requiresSplits: false },
-    { key: "splits" as const, label: "Manage Splits", hint: "Draft, lock, history", requiresSplits: true },
-    { key: "invite" as const, label: "Split Invites", hint: "Split requests", requiresSplits: true }
+  const networkNav = [{ key: "store" as const, label: "Network", hint: "Identity + reachability + links" }];
+
+  const commerceNav = [
+    {
+      key: "finance" as const,
+      label: "Revenue",
+      hint: "Sales, royalties, payouts",
+      requiresCommerce: true,
+      requiresSplits: false,
+      requiresAdvanced: true
+    },
+    {
+      key: "participations" as const,
+      label: "Royalties",
+      hint: "Royalties I'm in",
+      requiresCommerce: true,
+      requiresSplits: false
+    },
+    {
+      key: "purchases" as const,
+      label: "Purchase History",
+      hint: "Receipts + status",
+      requiresCommerce: false,
+      requiresSplits: false
+    },
+    {
+      key: "splits" as const,
+      label: "Manage Splits",
+      hint: "Draft, lock, history",
+      requiresCommerce: true,
+      requiresSplits: true
+    },
+    {
+      key: "invite" as const,
+      label: "Split Invites",
+      hint: "Split requests",
+      requiresCommerce: true,
+      requiresSplits: true
+    }
   ].filter((item) => {
     if (!item.requiresSplits) return true;
     if (advancedInactive) return false;
     return true;
   });
 
-  const identityNav = [
-    { key: "profile" as const, label: "Profile", hint: "Identity" }
-  ];
-
   const advancedNav = [
-    { key: "finance" as const, label: "Revenue", hint: "Sales, royalties, payouts" },
     { key: "provider-console" as const, label: "Provider Console", hint: "Delegated creators + commerce" },
     { key: "config" as const, label: "Configuration", hint: "Node + tunnel setup" },
     { key: "diagnostics" as const, label: "Diagnostics", hint: "Health + connectivity" }
@@ -487,9 +563,9 @@ export default function App() {
     return true;
   });
 
-  const nodeSettingsNav = [
-    { key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }
-  ];
+  const nodeSettingsNav = localLightningDetected
+    ? [{ key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }]
+    : [];
 
   const pageTitle =
     page === "config" ? "Configuration" :
@@ -519,9 +595,14 @@ export default function App() {
   const isOperatorPage = page === "config" || page === "diagnostics" || page === "provider-console";
   const tunnelActive = publicStatus?.status === "online";
   const identityVerified = identityDetail?.level === "PERSISTENT";
-  const lightningConfigured = lightningAdminSnapshot?.configured ?? null;
+  const lightningConfigured =
+    (lightningAdminSnapshot?.runtime?.canReceive || lightningAdminSnapshot?.runtime?.canSend || lightningAdminSnapshot?.configured) ?? null;
 
   function goToNodeLightning() {
+    if (!localLightningDetected) {
+      setPage("config");
+      return;
+    }
     window.history.pushState({}, "", "/node/lightning");
     setPage("node-lightning");
   }
@@ -531,6 +612,12 @@ export default function App() {
       setPage("store");
     }
   }, [page, canSeeProviderConsole]);
+
+  useEffect(() => {
+    if (page === "node-lightning" && !localLightningDetected) {
+      setPage("config");
+    }
+  }, [page, localLightningDetected]);
 
   // Show loading state or Auth page if not logged in
   if (loading) {
@@ -575,9 +662,9 @@ export default function App() {
           
           <div className="mt-6 flex-1 overflow-y-auto hide-scrollbar pr-1">
             <div>
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Identity</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Account</div>
               <div className="space-y-1">
-              {identityNav.map((item) => {
+              {accountNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
@@ -623,9 +710,9 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Access</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Network</div>
               <div className="space-y-1">
-              {accessNav.map((item) => {
+              {networkNav.map((item) => {
                 const active = item.key === page;
                 return (
                   <button
@@ -649,35 +736,14 @@ export default function App() {
             </div>
 
             <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Node Settings</div>
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Commerce</div>
               <div className="space-y-1">
-              {nodeSettingsNav.map((item) => {
+              {commerceNav.map((item: any) => {
+                if (item.requiresAdvanced && !showAdvancedNav) return null;
                 const active = item.key === page;
-                return (
-                  <button
-                    key={item.key}
-                    onClick={goToNodeLightning}
-                    className={[
-                      "w-full text-left rounded-lg px-3 py-2 transition border",
-                      active
-                        ? "border-white/30 bg-white/5"
-                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
-                    ].join(" ")}
-                  >
-                    <div className="text-sm font-medium">{item.label}</div>
-                    <div className="text-xs text-neutral-400">{item.hint}</div>
-                  </button>
-                );
-              })}
-              </div>
-            </div>
-
-            <div className="mt-4 border-t border-neutral-900 pt-4">
-              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
-              <div className="space-y-1">
-              {royaltiesNav.map((item: any) => {
-                const active = item.key === page;
-                const locked = !commerceEnabled || (item.requiresSplits && !capabilities.useSplits);
+                const locked =
+                  (item.requiresCommerce && !commerceEnabled) ||
+                  (item.requiresSplits && !capabilities.useSplits);
                 return (
                   <button
                     key={item.key}
@@ -712,13 +778,37 @@ export default function App() {
               </div>
             </div>
 
+            <div className="mt-4 border-t border-neutral-900 pt-4">
+              <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Node</div>
+              <div className="space-y-1">
+              {nodeSettingsNav.map((item) => {
+                const active = item.key === page;
+                return (
+                  <button
+                    key={item.key}
+                    onClick={goToNodeLightning}
+                    className={[
+                      "w-full text-left rounded-lg px-3 py-2 transition border",
+                      active
+                        ? "border-white/30 bg-white/5"
+                        : "border-transparent hover:border-neutral-800 hover:bg-neutral-900/30"
+                    ].join(" ")}
+                  >
+                    <div className="text-sm font-medium">{item.label}</div>
+                    <div className="text-xs text-neutral-400">{item.hint}</div>
+                  </button>
+                );
+              })}
+              </div>
+            </div>
+
             {showAdvancedNav && (
               <div className="mt-4 border-t border-neutral-900 pt-4">
-                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Operator</div>
+                <div className="px-3 pb-2 text-[11px] uppercase tracking-wide text-neutral-500">Node (Operator)</div>
                 <div className="space-y-1">
                 {advancedNav.map((item) => {
                   const active = item.key === page;
-                  const locked = item.key === "finance" && !commerceEnabled;
+                  const locked = false;
                   return (
                     <button
                       key={item.key}
@@ -1014,11 +1104,22 @@ export default function App() {
                 />
               )}
               {page === "diagnostics" && <DiagnosticsPage whoamiInfo={whoamiInfo} whoamiStatus={whoamiStatus} />}
-              {page === "provider-console" && <ProviderConsolePage />}
+              {page === "provider-console" && <ProviderConsolePage onOpenLightningConfig={() => setPage("config")} />}
 
               {page === "finance" && !isCommerceLockedPage && (
                 <ErrorBoundary>
-                  <FinancePage initialTab={financeTab} nodeMode={nodeMode} />
+                  <FinancePage
+                    initialTab={financeTab}
+                    nodeMode={nodeMode}
+                    postureSnapshot={
+                      nodeModeSnapshot
+                        ? ({
+                            providerCommerceConnected: nodeModeSnapshot.providerCommerceConnected,
+                            localSovereignReady: nodeModeSnapshot.localSovereignReady
+                          } satisfies FinancePostureSnapshot)
+                        : null
+                    }
+                  />
                 </ErrorBoundary>
               )}
 

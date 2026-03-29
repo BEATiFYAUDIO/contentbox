@@ -4,7 +4,7 @@ import { api } from "../lib/api";
 type Overview = {
   totals: {
     salesSats: string;
-    salesSatsLast30d: string;
+    salesSatsLast30d?: string;
     invoicesTotal: number;
     invoicesPaid: number;
     invoicesPending: number;
@@ -15,8 +15,13 @@ type Overview = {
     paymentsReceivedCount: number;
     paymentsPendingCount: number;
     paymentsLast30d: number;
+    remoteRoyaltyAccruedSats?: string;
+    remoteRoyaltyItems?: number;
+    participantRoyaltyAccruedSats?: string;
+    participantRoyaltyPayableSats?: string;
+    participantRoyaltyPaidSats?: string;
   };
-  revenueSeries: Array<{ date: string; amountSats: string }>;
+  revenueSeries: Array<{ date: string; amountSats?: string; sats?: string }>;
   lastUpdatedAt: string;
   health: {
     lightning?: { status: string; message?: string; endpoint?: string | null; hint?: string | null };
@@ -26,6 +31,8 @@ type Overview = {
 
 type FinanceOverviewPageProps = {
   refreshSignal?: number;
+  onOpenRoyalties?: () => void;
+  showNodeWalletContext?: boolean;
 };
 
 type LightningAdminConfig = {
@@ -52,6 +59,23 @@ type LightningReadiness = {
   channels: { count: number };
   receiveReady: boolean;
   hints: string[];
+};
+
+type LightningBalances = {
+  wallet: {
+    confirmedSats: number;
+    unconfirmedSats: number;
+    totalSats: number;
+  };
+  channels: {
+    openCount: number;
+    pendingOpenCount: number;
+    pendingCloseCount: number;
+  };
+  liquidity: {
+    outboundSats: number;
+    inboundSats: number;
+  };
 };
 type LightningGuidanceResult = { ok: true; steps: string[] } | { ok: false; error: string };
 type ChannelOpenResponse =
@@ -168,7 +192,11 @@ function mapPeerSuggestionNotice(errorCode: string | null | undefined, reasonRaw
   };
 }
 
-export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPageProps) {
+export default function FinanceOverviewPage({
+  refreshSignal,
+  onOpenRoyalties,
+  showNodeWalletContext = false
+}: FinanceOverviewPageProps) {
   const [data, setData] = useState<Overview | null>(null);
   const [royaltyTotals, setRoyaltyTotals] = useState<{ earnedSats: string; pendingSats: string }>({
     earnedSats: "0",
@@ -198,6 +226,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
   const [wizardCandidates, setWizardCandidates] = useState<Array<{ restUrl: string; requiresTlsCertHint?: boolean; notes?: string }>>([]);
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadiness | null>(null);
   const [lightningReadinessError, setLightningReadinessError] = useState<string | null>(null);
+  const [, setLightningBalances] = useState<LightningBalances | null>(null);
   const [showChannelGuidance, setShowChannelGuidance] = useState(false);
   const [channelGuidance, setChannelGuidance] = useState<string[]>([]);
   const [channelGuidanceError, setChannelGuidanceError] = useState<string | null>(null);
@@ -214,6 +243,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
   const [openedChannel, setOpenedChannel] = useState<ChannelOpenResponse | null>(null);
   const [openedChannelStatus, setOpenedChannelStatus] = useState<ChannelStatusResponse | null>(null);
   const [channelStatusBusy, setChannelStatusBusy] = useState(false);
+  const [showPayoutDetails, setShowPayoutDetails] = useState(false);
   const hasLoadedOverviewRef = useRef(false);
 
   useEffect(() => {
@@ -242,7 +272,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
           setRoyaltyTotals(royaltiesRes.value?.totals || { earnedSats: "0", pendingSats: "0" });
         } else {
           setRoyaltyTotals({ earnedSats: "0", pendingSats: "0" });
-          setAuxError("Royalties summary unavailable.");
+          setAuxError("Earnings summary unavailable.");
         }
         if (payoutsRes.status === "fulfilled") {
           setPayoutTotals(payoutsRes.value?.totals || { pendingSats: "0", paidSats: "0" });
@@ -310,9 +340,13 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
         applyLightningAdmin(res || null, { syncForm: true });
         if (res?.configured) {
           try {
-            const readiness = await api<LightningReadiness>("/api/admin/lightning/readiness", "GET");
+            const [readiness, balances] = await Promise.all([
+              api<LightningReadiness>("/api/admin/lightning/readiness", "GET"),
+              api<LightningBalances>("/api/admin/lightning/balances", "GET")
+            ]);
             if (!active) return;
             setLightningReadiness(readiness || null);
+            setLightningBalances(balances || null);
             setLightningReadinessError(null);
           } catch (e: any) {
             if (!active) return;
@@ -320,6 +354,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
           }
         } else {
           setLightningReadiness(null);
+          setLightningBalances(null);
           setLightningReadinessError(null);
         }
       } catch (e: any) {
@@ -339,13 +374,14 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
   };
 
   const series = data?.revenueSeries || [];
+  const getSeriesAmountSats = (d: { amountSats?: string; sats?: string }) => String(d.amountSats ?? d.sats ?? "0");
   const chart = useMemo(() => {
     if (!series.length) return [] as Array<{ height: number; label: string; amountSats: string }>;
-    const max = series.reduce((m, d) => Math.max(m, Number(d.amountSats || 0)), 0);
+    const max = series.reduce((m, d) => Math.max(m, Number(getSeriesAmountSats(d) || 0)), 0);
     return series.map((d) => ({
-      height: max > 0 ? Math.round((Number(d.amountSats || 0) / max) * 100) : 0,
+      height: max > 0 ? Math.round((Number(getSeriesAmountSats(d) || 0) / max) * 100) : 0,
       label: d.date.slice(5),
-      amountSats: d.amountSats
+      amountSats: getSeriesAmountSats(d)
     }));
   }, [series]);
 
@@ -653,43 +689,25 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
     return () => window.clearInterval(timer);
   }, [showLightningModal, openedChannel, openedChannelStatus]);
 
-  const onchain = data?.health?.onchain;
-  const healthTone = (status?: string) => {
-    if (status === "healthy") return "border-emerald-500/40 text-emerald-300 bg-emerald-500/10";
-    if (status === "locked" || status === "degraded" || status === "tlsError") return "border-amber-500/40 text-amber-300 bg-amber-500/10";
-    if (status === "missing") return "border-neutral-700 text-neutral-300 bg-neutral-900/50";
-    return "border-red-500/40 text-red-300 bg-red-500/10";
-  };
-  const lightningChipStatus = lightningAdmin?.configured
-    ? lightningAdmin.lastStatus === "error"
-      ? "error"
-      : "connected"
-    : "missing";
-  const lightningChipTone = healthTone(
-    lightningChipStatus === "connected" ? "healthy" : lightningChipStatus === "missing" ? "missing" : "error"
-  );
-  const receiveChipStatus = !lightningAdmin?.configured
-    ? "missing"
-    : lightningReadiness?.receiveReady
-      ? "ready"
-      : lightningReadiness?.configured && lightningReadiness.nodeReachable
-        ? "setup"
-        : lightningReadiness
-          ? "error"
-          : "unknown";
-  const receiveChipTone =
-    receiveChipStatus === "ready"
-      ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10"
-      : receiveChipStatus === "setup"
-        ? "border-amber-500/40 text-amber-300 bg-amber-500/10"
-        : receiveChipStatus === "missing" || receiveChipStatus === "unknown"
-          ? "border-neutral-700 text-neutral-300 bg-neutral-900/50"
-          : "border-red-500/40 text-red-300 bg-red-500/10";
   const hasRevenue =
     Number(data?.totals?.salesSats || 0) > 0 ||
     Number(data?.totals?.invoicesTotal || 0) > 0 ||
     Number(royaltyTotals.earnedSats || 0) > 0 ||
+    Number(data?.totals?.remoteRoyaltyAccruedSats || 0) > 0 ||
     Number(payoutTotals.pendingSats || 0) > 0;
+  const localRoyaltyEarned = Number(royaltyTotals.earnedSats || 0);
+  const remoteRoyaltyAccrued = Number(data?.totals?.remoteRoyaltyAccruedSats || 0);
+  const participantAccrued = Number(data?.totals?.participantRoyaltyAccruedSats || 0);
+  const participantPayable = Number(data?.totals?.participantRoyaltyPayableSats || 0);
+  const participantPaid = Number(data?.totals?.participantRoyaltyPaidSats || 0);
+  const salesLast30d = Number(
+    data?.totals?.salesSatsLast30d ??
+      series.reduce((sum, point) => sum + Number(getSeriesAmountSats(point) || 0), 0)
+  );
+  const totalRoyaltyAccrued = Math.max(0, localRoyaltyEarned + remoteRoyaltyAccrued);
+  const hasRoyaltyEconomics = totalRoyaltyAccrued > 0 || participantAccrued > 0 || participantPayable > 0 || participantPaid > 0;
+  const processingPayouts = Math.max(0, Number(royaltyTotals.pendingSats || 0));
+  const needsAttentionPayouts = Math.max(0, participantPayable - processingPayouts);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -718,39 +736,34 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="text-base font-semibold">Revenue Overview</div>
           <div className="flex items-center gap-2 text-xs">
-            <span className={["rounded-full border px-2 py-1", lightningChipTone].join(" ")}>
-              Lightning: {lightningChipStatus}
-            </span>
-            <span className={["rounded-full border px-2 py-1", receiveChipTone].join(" ")}>
-              Receive: {receiveChipStatus}
-            </span>
-            <span className={["rounded-full border px-2 py-1", healthTone(onchain?.status)].join(" ")}>
-              On-chain: {onchain?.status || "unknown"}
-            </span>
-            {!lightningAdmin?.configured ? (
-              <button
-                onClick={openLightningWizard}
-                className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
-              >
-                Connect Lightning Node
-              </button>
-            ) : (
+            {showNodeWalletContext ? (
               <>
-                <button
-                  onClick={openLightningWizard}
-                  className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
-                >
-                  Edit Lightning Node
-                </button>
-                <button
-                  onClick={onResetLightning}
-                  disabled={wizardBusy === "reset"}
-                  className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900 disabled:opacity-60"
-                >
-                  {wizardBusy === "reset" ? "Resetting…" : "Reset Lightning Config"}
-                </button>
+                {!lightningAdmin?.configured ? (
+                  <button
+                    onClick={openLightningWizard}
+                    className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+                  >
+                    Connect Lightning Node
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={openLightningWizard}
+                      className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+                    >
+                      Edit Lightning Node
+                    </button>
+                    <button
+                      onClick={onResetLightning}
+                      disabled={wizardBusy === "reset"}
+                      className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900 disabled:opacity-60"
+                    >
+                      {wizardBusy === "reset" ? "Resetting…" : "Reset Lightning Config"}
+                    </button>
+                  </>
+                )}
               </>
-            )}
+            ) : null}
             <span className="text-neutral-500">
               Last updated: {data?.lastUpdatedAt ? new Date(data.lastUpdatedAt).toLocaleString() : "—"}
             </span>
@@ -759,64 +772,190 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
         {auxError ? (
           <div className="mt-2 text-xs text-amber-300">{auxError}</div>
         ) : null}
-        {lightningAdmin?.configured && lightningAdmin.lastTestedAt ? (
+        {showNodeWalletContext && lightningAdmin?.configured && lightningAdmin.lastTestedAt ? (
           <div className="mt-1 text-xs text-neutral-500">
             Lightning node last tested: {new Date(lightningAdmin.lastTestedAt).toLocaleString()}
             {lightningAdmin.restUrl ? ` · ${lightningAdmin.restUrl}` : ""}
           </div>
         ) : null}
-        {lightningAdmin?.lastStatus === "error" && lightningAdmin.lastError ? (
+        {showNodeWalletContext && lightningAdmin?.lastStatus === "error" && lightningAdmin.lastError ? (
           <div className="mt-1 text-xs text-amber-300">Lightning error: {lightningAdmin.lastError}</div>
         ) : null}
-        {lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
-      </section>
-
-      <section className="grid gap-4 md:grid-cols-3">
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Paid invoices only</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Royalties earned</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(royaltyTotals.earnedSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Your share to date</div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Pending payouts</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(payoutTotals.pendingSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Awaiting settlement</div>
+        {showNodeWalletContext && lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
+        <div className="mt-2 text-xs text-neutral-500">Top-level snapshot for accounting review and reconciliation prep.</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Scope model: Sales uses sale time, Earnings uses earned time, and Payout execution uses paid/remitted time.
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSatsLast30d || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">
-            Invoices: {data?.totals?.invoicesTotal ?? 0} · Payments: {data?.totals?.paymentsLast30d ?? 0}
+      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Priority Snapshot</div>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold">Topline Money Snapshot</div>
+        <div className="mt-1 text-xs text-neutral-400">Core numbers for accounting review.</div>
+        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Sales</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
+            <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
           </div>
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-400">Invoices total</div>
-          <div className="mt-2 text-2xl font-semibold">{data?.totals?.invoicesTotal ?? 0}</div>
-          <div className="mt-1 text-xs text-neutral-500">Paid: {data?.totals?.invoicesPaid ?? 0}</div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Total earned</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Accrued from local + remote participation.</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-400">Paid (tracked)</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+            <div className="mt-1 text-xs text-neutral-500">Marked paid/remitted in payout tracking.</div>
+          </div>
+          <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-4">
+            <div className="text-xs uppercase tracking-wide text-amber-200/80">Payable (tracked)</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(participantPayable))}</div>
+            <div className="mt-1 text-xs text-amber-200/80">Payout backlog in tracking (queued, processing, or attention needed).</div>
+          </div>
         </div>
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Revenue over time (last 30 days)</div>
+        <div className="text-sm font-semibold">Sales Breakdown</div>
+        <div className="mt-1 text-xs text-neutral-400">Payments from your audience for your content.</div>
+        <div className="mt-1 text-xs text-neutral-500">Time basis: Sale date.</div>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
+          <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Last 30 days sales</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(salesLast30d))}</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Seller invoices: {data?.totals?.invoicesTotal ?? 0} · Settled purchases: {data?.totals?.paymentsLast30d ?? 0}
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-sm font-semibold">Earnings Breakdown</div>
+          {onOpenRoyalties ? (
+            <button
+              type="button"
+              onClick={onOpenRoyalties}
+              className="rounded-lg border border-neutral-800 px-2 py-1 text-xs text-neutral-200 hover:bg-neutral-900"
+            >
+              Open earnings statement
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-1 text-xs text-neutral-400">Accrual and payout-state breakdown for owned/collaborative works.</div>
+        <div className="mt-1 text-xs text-neutral-500">Time basis: Earned date (when available in the current feed).</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Model: Earned (accrued) · Paid (tracked remitted) · Payable (tracked remittance backlog). Payable now: {formatSats(String(participantPayable))}.
+        </div>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Paid (tracked)</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+          <div className="mt-1 text-xs text-neutral-500">Amount marked paid/remitted in payout tracking.</div>
+        </div>
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+          <div className="text-xs uppercase tracking-wide text-neutral-400">Total earned</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(totalRoyaltyAccrued))}</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Your Content: {formatSats(royaltyTotals.earnedSats || "0")} · From Other Creators: {formatSats(data?.totals?.remoteRoyaltyAccruedSats || "0")}
+            {Number(data?.totals?.remoteRoyaltyItems || 0) > 0 ? ` · External Works: ${Number(data?.totals?.remoteRoyaltyItems || 0)}` : ""}
+          </div>
+        </div>
+        </div>
+        <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950/30 p-3">
+          <button
+            type="button"
+            onClick={() => setShowPayoutDetails((v) => !v)}
+            className="w-full flex items-center justify-between text-left text-xs text-neutral-300 hover:text-neutral-100"
+          >
+            <span className="font-medium">Review Payout Details</span>
+            <span className="text-neutral-500">{showPayoutDetails ? "Hide" : "Show"}</span>
+          </button>
+          {showPayoutDetails ? (
+            <div className="mt-3 space-y-2 text-xs text-neutral-400">
+              <div className="text-neutral-500">May include older unresolved payouts from earlier activity.</div>
+              <div className="grid gap-2 md:grid-cols-3">
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                  <div className="uppercase tracking-wide text-neutral-500">Queued/processing payouts</div>
+                  <div className="mt-1 text-neutral-200">{formatSats(String(processingPayouts))}</div>
+                </div>
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                  <div className="uppercase tracking-wide text-neutral-500">Needs attention</div>
+                  <div className="mt-1 text-neutral-200">{formatSats(String(needsAttentionPayouts))}</div>
+                </div>
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                  <div className="uppercase tracking-wide text-neutral-500">Sending</div>
+                  <div className="mt-1 text-neutral-300">Not separately available on this page</div>
+                </div>
+              </div>
+              <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+                <div className="uppercase tracking-wide text-neutral-500">Total tracked for payout</div>
+                <div className="mt-1 text-neutral-200">{formatSats(String(participantAccrued))}</div>
+                <div className="mt-1 text-neutral-500">Total amount currently tracked in payout rows.</div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Details</div>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold">How to read this page</div>
+        <div className="mt-2 grid gap-2 md:grid-cols-2">
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Sales</div>
+            <div className="mt-1 text-xs text-neutral-300">Seller-of-record input with settlement and scoped work detail.</div>
+          </div>
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
+            <div className="mt-1 text-xs text-neutral-300">Multi-view intelligence over the same content dataset.</div>
+          </div>
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Earnings</div>
+            <div className="mt-1 text-xs text-neutral-300">Your share statement from settled content sales.</div>
+          </div>
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
+            <div className="mt-1 text-xs text-neutral-300">Participation, role, and share source truth.</div>
+          </div>
+        </div>
+        <div className="mt-2 text-xs text-neutral-400">
+          State model: Earned (accrued) → Pending (payable/remittance pending) → Paid (remitted); Failed indicates remittance could not complete.
+        </div>
+        <div className="mt-1 text-xs text-neutral-500">Reconciliation (coming soon)</div>
+      </section>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-base font-semibold">Sales over time (last 30 days)</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Buyer payment sales only on this node. Earnings from works you own or participate in are tracked in the Earnings section above.
+        </div>
         <div className="mt-3 flex items-end gap-1 h-32">
           {chart.length === 0 ? (
-            <div className="text-sm text-neutral-500">No revenue yet.</div>
+            <div className="text-sm text-neutral-500">
+              {hasRoyaltyEconomics && salesLast30d <= 0
+                ? "No seller-of-record sales in the last 30 days on this node."
+                : "No revenue yet."}
+            </div>
           ) : (
             chart.map((d, idx) => (
               <div key={`${d.label}-${idx}`} className="flex-1 flex flex-col items-center gap-1">
-                <div
-                  className="w-full rounded-sm bg-orange-400/70"
-                  style={{ height: `${Math.max(2, d.height)}%` }}
-                  title={`${formatSats(d.amountSats)} on ${d.label}`}
-                />
+                <div className="h-24 w-full flex items-end">
+                  <div
+                    className="w-full rounded-sm bg-orange-400/70"
+                    style={{ height: `${Math.max(2, d.height)}%` }}
+                    title={`${formatSats(d.amountSats)} on ${d.label}`}
+                  />
+                </div>
                 {idx % 5 === 0 ? (
                   <div className="text-[10px] text-neutral-500">{d.label}</div>
                 ) : (
@@ -828,18 +967,22 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
         </div>
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-base font-semibold">Invoice status</div>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
-            <div>Paid: <span className="text-neutral-200">{data?.totals?.invoicesPaid ?? 0}</span></div>
-            <div>Pending: <span className="text-neutral-200">{data?.totals?.invoicesPending ?? 0}</span></div>
-            <div>Failed: <span className="text-neutral-200">{data?.totals?.invoicesFailed ?? 0}</span></div>
-            <div>Expired: <span className="text-neutral-200">{data?.totals?.invoicesExpired ?? 0}</span></div>
-          </div>
+      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Advanced</div>
+
+      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+        <div className="text-sm font-semibold text-neutral-300">Seller invoice lifecycle</div>
+        <div className="mt-1 text-xs text-neutral-500">Seller-of-record invoice states. This is accounting flow, not participant remittance.</div>
+        <div className="mt-2 grid grid-cols-2 gap-2 text-sm">
+          <div>Settled: <span className="text-neutral-200">{data?.totals?.invoicesPaid ?? 0}</span></div>
+          <div>Open: <span className="text-neutral-200">{data?.totals?.invoicesPending ?? 0}</span></div>
+          <div>Failed: <span className="text-neutral-200">{data?.totals?.invoicesFailed ?? 0}</span></div>
+          <div>Expired: <span className="text-neutral-200">{data?.totals?.invoicesExpired ?? 0}</span></div>
         </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-          <div className="text-base font-semibold">Payments received</div>
+      </section>
+
+      <section className="grid gap-4 md:grid-cols-1">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-950/30 p-4">
+          <div className="text-sm font-semibold text-neutral-300">Seller cash collections</div>
           <div className="mt-2 text-sm text-neutral-200">
             Received: {formatSats(data?.totals?.paymentsReceivedSats || "0")} ({data?.totals?.paymentsReceivedCount ?? 0})
           </div>
@@ -854,7 +997,7 @@ export default function FinanceOverviewPage({ refreshSignal }: FinanceOverviewPa
           2) Select macaroon (+ optional TLS cert) and verify file labels persist while page auto-refreshes.
           3) Test connection shows alias/version on success; Save flips Lightning status to connected without restart.
       */}
-      {showLightningModal ? (
+      {showNodeWalletContext && showLightningModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-4xl max-h-[90vh] rounded-xl border border-neutral-800 bg-neutral-950 text-neutral-100 overflow-hidden shadow-2xl">
             <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-neutral-800 bg-neutral-950/95 px-5 py-4 backdrop-blur">

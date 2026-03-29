@@ -1001,8 +1001,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
   React.useEffect(() => {
     const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       refreshPublicStatus();
-    }, 10000);
+    }, 30000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1055,13 +1056,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     if (expandedIds.length === 0) return;
 
     const timer = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       expandedIds.forEach((id) => {
         const link = parentLinkByContent[id];
         if (link?.requiresApproval && !link?.approvedAt) {
           loadParentLink(id);
         }
       });
-    }, 10000);
+    }, 20000);
 
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

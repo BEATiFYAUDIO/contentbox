@@ -26,6 +26,36 @@ type ProviderSummary = {
   };
 };
 
+type LightningRuntimeSnapshot = {
+  connected?: boolean;
+  canReceive?: boolean;
+  canSend?: boolean;
+  capabilityState?: string;
+  sendFailureReason?: string | null;
+};
+
+type LightningAdminSnapshot = {
+  configured: boolean;
+  runtime?: LightningRuntimeSnapshot;
+};
+
+type LightningBalancesSnapshot = {
+  wallet: {
+    confirmedSats: number;
+    unconfirmedSats: number;
+    totalSats: number;
+  };
+  channels: {
+    openCount: number;
+    pendingOpenCount: number;
+    pendingCloseCount: number;
+  };
+  liquidity: {
+    outboundSats: number;
+    inboundSats: number;
+  };
+};
+
 type ProviderCreatorLink = {
   id: string;
   providerNodeId: string;
@@ -172,7 +202,7 @@ function ExecutionPill({ allowed }: { allowed: boolean }) {
   );
 }
 
-export default function ProviderConsolePage() {
+export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenLightningConfig?: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<ProviderSummary | null>(null);
@@ -186,18 +216,23 @@ export default function ProviderConsolePage() {
     "all" | "created" | "issued" | "paid" | "cancelled" | "expired"
   >("all");
   const [expandedIntentIds, setExpandedIntentIds] = useState<Record<string, boolean>>({});
+  const [payoutTableScope, setPayoutTableScope] = useState<"latest" | "all">("latest");
+  const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
+  const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes] = await Promise.all([
+      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes, lightningAdminRes, lightningBalancesRes] = await Promise.all([
         api<ProviderSummary>("/api/provider/summary", "GET"),
         api<{ items: ProviderCreatorLink[] }>("/api/provider/creator-links", "GET"),
         api<{ items: ProviderDelegatedPublish[] }>("/api/provider/delegated-publishes", "GET"),
         api<{ items: ProviderPaymentIntent[] }>("/api/provider/payment-intents", "GET"),
         api<{ items: ProviderPaymentReceipt[] }>("/api/provider/payment-receipts", "GET"),
-        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET")
+        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET"),
+        api<LightningAdminSnapshot>("/api/admin/lightning", "GET"),
+        api<LightningBalancesSnapshot>("/api/admin/lightning/balances", "GET")
       ]);
       setSummary(summaryRes || null);
       setCreatorLinks(Array.isArray(creatorLinksRes?.items) ? creatorLinksRes.items : []);
@@ -205,6 +240,8 @@ export default function ProviderConsolePage() {
       setPaymentIntents(Array.isArray(paymentIntentsRes?.items) ? paymentIntentsRes.items : []);
       setPaymentReceipts(Array.isArray(paymentReceiptsRes?.items) ? paymentReceiptsRes.items : []);
       setParticipantPayouts(Array.isArray(participantPayoutsRes?.items) ? participantPayoutsRes.items : []);
+      setLightningAdmin(lightningAdminRes || null);
+      setLightningBalances(lightningBalancesRes || null);
     } catch (e: any) {
       setError(e?.message || "Failed to load provider console.");
     } finally {
@@ -230,27 +267,65 @@ export default function ProviderConsolePage() {
     load();
   }, [load]);
 
+  useEffect(() => {
+    const tick = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void load();
+      }
+    }, 30000);
+    return () => window.clearInterval(tick);
+  }, [load]);
+
   const summaryCards = [
     { label: "Delegated Creators", value: summary?.delegatedCreators ?? creatorLinks.length },
     { label: "Published Items", value: summary?.publishedItems ?? delegatedPublishes.length },
     { label: "Active Payment Intents", value: summary?.activePaymentIntents ?? paymentIntents.filter((p) => p.status === "created" || p.status === "issued").length },
-    { label: "Settled Payments", value: summary?.settledPayments ?? paymentReceipts.length }
+    { label: "Settled Invoices", value: summary?.settledPayments ?? paymentReceipts.length }
   ];
   const economicsCards = [
-    { label: "Gross Collected", value: `${sats(summary?.totals?.grossCollectedSats)} sats` },
+    { label: "Buyer Gross", value: `${sats(summary?.totals?.grossCollectedSats)} sats` },
     { label: "Invoicing Fee Earned", value: `${sats(summary?.totals?.providerInvoicingFeeEarnedSats)} sats` },
     { label: "Durable Hosting Fee Earned", value: `${sats(summary?.totals?.providerDurableHostingFeeEarnedSats)} sats` },
-    { label: "Provider Fee Earned", value: `${sats(summary?.totals?.providerFeeEarnedSats)} sats` },
-    { label: "Creator Net Owed", value: `${sats(summary?.totals?.creatorNetOwedSats)} sats` },
-    { label: "Creator Net Paid", value: `${sats(summary?.totals?.creatorNetPaidSats)} sats` },
-    { label: "Creator Net Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` },
-    { label: "Creator Net Failed", value: `${sats(summary?.totals?.creatorNetFailedSats)} sats` }
+    { label: "Total Provider Fees", value: `${sats(summary?.totals?.providerFeeEarnedSats)} sats` },
+    { label: "Distributable to Participants", value: `${sats(summary?.totals?.creatorNetOwedSats)} sats` },
+    { label: "Participant Payouts Paid", value: `${sats(summary?.totals?.creatorNetPaidSats)} sats` },
+    { label: "Participant Payouts Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` },
+    { label: "Participant Payouts Failed", value: `${sats(summary?.totals?.creatorNetFailedSats)} sats` }
   ];
   const visiblePaymentIntents =
     paymentStatusFilter === "all" ? paymentIntents : paymentIntents.filter((intent) => intent.status === paymentStatusFilter);
+  const contentTitleById = delegatedPublishes.reduce<Record<string, string>>((acc, row) => {
+    const id = String(row.contentId || "").trim();
+    const title = String(row.title || "").trim();
+    if (!id || !title) return acc;
+    if (!acc[id]) acc[id] = title;
+    return acc;
+  }, {});
   const toggleIntentDetails = (id: string) => {
     setExpandedIntentIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
+  const runtime = lightningAdmin?.runtime || null;
+  const formatLightningSats = (value: number | null | undefined) => `${Math.round(Number(value || 0)).toLocaleString()} sats`;
+  const latestPayoutIntentId = participantPayouts[0]?.providerPaymentIntentId || null;
+  const visibleParticipantPayouts =
+    payoutTableScope === "latest" && latestPayoutIntentId
+      ? participantPayouts.filter((row) => row.providerPaymentIntentId === latestPayoutIntentId)
+      : participantPayouts;
+  const visiblePayoutCounts = visibleParticipantPayouts.reduce(
+    (acc, row) => {
+      const key = row.status;
+      if (key in acc) acc[key as keyof typeof acc] += 1;
+      return acc;
+    },
+    {
+      pending: 0,
+      ready: 0,
+      forwarding: 0,
+      paid: 0,
+      failed: 0,
+      blocked: 0
+    }
+  );
 
   return (
     <div className="space-y-5">
@@ -259,7 +334,10 @@ export default function ProviderConsolePage() {
           <div>
             <div className="text-base font-semibold">Provider Console</div>
             <div className="mt-1 text-sm text-neutral-400">
-              Manage delegated creator relationships, delegated publishes, and provider-side payment intents.
+              Settlement-authority view for delegated commerce on this node.
+            </div>
+            <div className="mt-1 text-xs text-neutral-500">
+              This node processes payments, applies fees, and executes payouts.
             </div>
           </div>
           <button
@@ -283,19 +361,105 @@ export default function ProviderConsolePage() {
       </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Settlement Wallet Source</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              This node wallet executes settlement and remittance. Creator/participant payout destinations are downstream recipients.
+            </div>
+          </div>
+          <button
+            onClick={() => onOpenLightningConfig?.()}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-800/60"
+            type="button"
+          >
+            Open Lightning Config
+          </button>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">canReceive</div>
+            <div className="text-neutral-100">{runtime?.canReceive ? "yes" : "no"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">canSend</div>
+            <div className="text-neutral-100">{runtime?.canSend ? "yes" : "no"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">capability</div>
+            <div className="text-neutral-100">{runtime?.capabilityState || "disconnected"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">wallet total</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.wallet?.totalSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">outbound liquidity</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.outboundSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">inbound liquidity</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.inboundSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">settled sales (count)</div>
+            <div className="text-neutral-100">{Number(summary?.settledPayments || 0).toLocaleString()}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">participant payouts paid</div>
+            <div className="text-neutral-100">{Number(summary?.participantPayouts?.paid || 0).toLocaleString()}</div>
+          </div>
+        </div>
+        {runtime?.sendFailureReason ? (
+          <div className="mt-2 text-xs text-amber-300">send readiness reason: {runtime.sendFailureReason}</div>
+        ) : null}
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="text-sm font-semibold">Participant Payout Execution</div>
-        <div className="mt-1 text-xs text-neutral-500">Per-participant payout rows are execution truth when participant mode is active.</div>
+        <div className="mt-1 text-xs text-neutral-500">Row-level participant payout execution truth for settled provider intents.</div>
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setPayoutTableScope("latest")}
+            className={[
+              "rounded-lg border px-2 py-1 text-[11px]",
+              payoutTableScope === "latest"
+                ? "border-neutral-500 bg-neutral-800/80 text-neutral-100"
+                : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/50"
+            ].join(" ")}
+          >
+            Latest intent
+          </button>
+          <button
+            type="button"
+            onClick={() => setPayoutTableScope("all")}
+            className={[
+              "rounded-lg border px-2 py-1 text-[11px]",
+              payoutTableScope === "all"
+                ? "border-neutral-500 bg-neutral-800/80 text-neutral-100"
+                : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/50"
+            ].join(" ")}
+          >
+            All history
+          </button>
+          {latestPayoutIntentId ? (
+            <div className="text-[11px] text-neutral-500">
+              Latest intent: <span className="text-neutral-300">{shortId(latestPayoutIntentId, 8, 6)}</span>
+            </div>
+          ) : null}
+        </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
           {(["pending", "ready", "forwarding", "paid", "failed", "blocked"] as const).map((k) => (
             <div key={k} className="rounded border border-neutral-800 px-3 py-2">
               <div className="text-[11px] uppercase tracking-wide text-neutral-500">{k}</div>
               <div className="text-lg font-semibold text-neutral-100">
-                {Number(summary?.participantPayouts?.[k] || 0).toLocaleString()}
+                {Number(visiblePayoutCounts[k] || 0).toLocaleString()}
               </div>
             </div>
           ))}
         </div>
-        {participantPayouts.length === 0 ? (
+        {visibleParticipantPayouts.length === 0 ? (
           <div className="mt-3 text-sm text-neutral-400">No participant payout rows yet.</div>
         ) : (
           <div className="mt-3 overflow-x-auto">
@@ -311,7 +475,7 @@ export default function ProviderConsolePage() {
                 </tr>
               </thead>
               <tbody>
-                {participantPayouts.slice(0, 200).map((row) => (
+                {visibleParticipantPayouts.slice(0, 200).map((row) => (
                   <tr key={row.id} className="border-t border-neutral-800/80 align-top text-neutral-200">
                     <td className="py-2 pr-3">
                       <div>{row.allocation?.participantEmail || row.allocation?.participantUserId || row.allocation?.participantRef || "—"}</div>
@@ -341,6 +505,9 @@ export default function ProviderConsolePage() {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="sm:col-span-2 xl:col-span-4 text-xs text-neutral-500 px-1">
+          Fee semantics: invoicing + durable hosting are fee components; total provider fees is the combined amount. Distributable to participants is tracked separately.
+        </div>
         {economicsCards.map((card) => (
           <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
@@ -460,8 +627,8 @@ export default function ProviderConsolePage() {
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold">Payment Settlements</div>
-            <div className="mt-1 text-xs text-neutral-500">Provider-side BOLT11 intents, fee accounting, and creator net payout posture for delegated commerce.</div>
+            <div className="text-sm font-semibold">Settlement Ledger</div>
+            <div className="mt-1 text-xs text-neutral-500">Provider-side payment intents with buyer gross, fee accounting, distributable net, and payout execution state.</div>
           </div>
           <label className="inline-flex items-center gap-2 text-xs text-neutral-400">
             <span>Status</span>
@@ -496,8 +663,8 @@ export default function ProviderConsolePage() {
                   <th className="py-2 pr-3 font-medium">Intent</th>
                   <th className="py-2 pr-3 font-medium">Creator Node</th>
                   <th className="hidden xl:table-cell py-2 pr-3 font-medium">Content</th>
-                  <th className="py-2 pr-3 font-medium">Amount</th>
-                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Creator Net</th>
+                  <th className="py-2 pr-3 font-medium">Buyer Gross</th>
+                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Distributable Net</th>
                   <th className="py-2 pr-3 font-medium">Settlement</th>
                   <th className="py-2 pr-3 font-medium">Payout</th>
                   <th className="py-2 pr-3 font-medium">Action</th>
@@ -520,7 +687,10 @@ export default function ProviderConsolePage() {
                       </div>
                     </td>
                     <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
-                      <div className="max-w-[130px] truncate font-mono text-[12px]" title={row.contentId || ""}>
+                      <div className="max-w-[220px] truncate text-neutral-100" title={contentTitleById[row.contentId || ""] || ""}>
+                        {contentTitleById[row.contentId || ""] || "—"}
+                      </div>
+                      <div className="max-w-[220px] truncate font-mono text-[11px] text-neutral-500" title={row.contentId || ""}>
                         {row.contentId ? shortId(row.contentId, 10, 8) : "—"}
                       </div>
                     </td>
@@ -587,7 +757,7 @@ export default function ProviderConsolePage() {
                           <div className="text-xs text-neutral-400">
                             <div className="uppercase tracking-wide text-neutral-500">Payout Routing</div>
                             <div className="mt-1 text-neutral-300">
-                              Rail: {row.payoutRail || "—"}
+                              Node: {row.payoutRail || "—"}
                               <span className="mx-1 text-neutral-500">|</span>
                               Mode: {row.providerRemitMode || "—"}
                             </div>

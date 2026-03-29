@@ -11,7 +11,7 @@ async function fetchJson(path: string, opts?: any) {
     headers: { "Content-Type": "application/json", ...(opts?.headers || {}) },
     body: opts?.body ? JSON.stringify(opts.body) : undefined
   });
-  const data = await res.json().catch(() => ({}));
+  const data: any = await res.json().catch(() => ({}));
   return { res, data };
 }
 
