@@ -30476,6 +30476,13 @@ async function buildIntentParticipantAccountingMap(paymentIntentIds: string[]): 
   for (const row of sales) {
     grossByIntentId.set(String(row.intentId || "").trim(), BigInt(String(row.amountSats || "0")));
   }
+  for (const id of ids) {
+    if ((grossByIntentId.get(id) || 0n) > 0n) continue;
+    const providerIntent = findProviderPaymentIntentByPaymentIntentId(id);
+    if (!providerIntent) continue;
+    const providerGross = BigInt(String(providerIntent.grossAmountSats || providerIntent.amountSats || "0"));
+    if (providerGross > 0n) grossByIntentId.set(id, providerGross);
+  }
   const allocationsByIntentId = new Map<string, Array<{ id: string; bps: number; amountSats: bigint }>>();
   for (const row of allocations) {
     const paymentIntentId = String(row.paymentIntentId || "").trim();
@@ -30648,7 +30655,6 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
   for (const row of rows) {
     const amount = BigInt(String((row as any)?.amountSats || "0"));
     const status = parseParticipantPayoutStatus((row as any)?.status);
-    const remittedAt = (row as any)?.remittedAt ? new Date((row as any).remittedAt) : null;
     const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
     const allocationId = String((row as any)?.allocationId || "").trim();
     const accounting = paymentIntentId
@@ -30660,13 +30666,11 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
     grossAccrued += grossShare;
     feesWithheld += feeWithheld;
 
-    const isRemitted = Boolean(remittedAt);
-    const providerSettled = isProviderIntentRemittanceSettled(paymentIntentId);
-    if (status === "paid" || isRemitted || providerSettled) {
+    if (status === "paid") {
       paid += amount;
     } else if (status === "failed" || status === "blocked") {
       failed += amount;
-    } else if ((status === "pending" || status === "ready" || status === "forwarding") && !isRemitted) {
+    } else if (status === "pending" || status === "ready" || status === "forwarding") {
       payable += amount;
     }
   }
@@ -30886,14 +30890,9 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     }
     const amount = BigInt(String(payout.amountSats || "0"));
     const status = parseParticipantPayoutStatus(payout.status);
-    const isRemitted = Boolean((payout as any).remittedAt);
-    const providerSettled = isProviderIntentRemittanceSettled(paymentIntentId);
-    if (status === "paid" || isRemitted || providerSettled) {
+    if (status === "paid") {
       row.withdrawn += amount;
-    } else if (
-      (status === "pending" || status === "ready" || status === "forwarding") &&
-      !providerSettled
-    ) {
+    } else if (status === "pending" || status === "ready" || status === "forwarding") {
       row.pending += amount;
     }
   }
@@ -30993,14 +30992,10 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
   const items = rows.map((row) => {
     const amount = BigInt(String((row as any)?.amountSats || "0"));
     const status = parseParticipantPayoutStatus((row as any)?.status);
-    const isRemitted = Boolean((row as any)?.remittedAt);
     const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
-    const providerSettled = isProviderIntentRemittanceSettled(paymentIntentId);
-    const effectiveStatus: ParticipantPayoutStatus =
-      providerSettled || isRemitted || status === "paid" ? "paid" : status;
-    if (effectiveStatus === "paid") paidSats += amount;
-    else if (effectiveStatus === "failed" || effectiveStatus === "blocked") failedSats += amount;
-    else if (effectiveStatus === "pending" || effectiveStatus === "ready" || effectiveStatus === "forwarding")
+    if (status === "paid") paidSats += amount;
+    else if (status === "failed" || status === "blocked") failedSats += amount;
+    else if (status === "pending" || status === "ready" || status === "forwarding")
       pendingSats += amount;
 
     const contentId = String((row as any)?.allocation?.contentId || "").trim() || null;
@@ -31025,7 +31020,7 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
       grossShareSats: accounting ? accounting.grossShareSats.toString() : String((row as any)?.amountSats || "0"),
       feeWithheldSats: accounting ? accounting.feeWithheldSats.toString() : "0",
       netAmountSats: String((row as any)?.amountSats || "0"),
-      status: effectiveStatus,
+      status,
       payoutDestinationSummary: row.destinationSummary || null,
       payoutDestinationType: row.destinationType || null,
       payoutReference: row.payoutReference || null,
