@@ -30605,6 +30605,17 @@ async function computeRemoteRoyaltyAccrualSummary(userId: string): Promise<{
   };
 }
 
+function participantPayoutUserAllocationWhere(userId: string, email: string) {
+  return {
+    OR: [
+      { participantUserId: userId },
+      email ? { participantEmail: emailEquals(email) } : undefined,
+      { participantRef: `user:${userId}` },
+      { participantRef: userId }
+    ].filter(Boolean) as any
+  } as any;
+}
+
 async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
   accruedSats: string;
   payableSats: string;
@@ -30614,15 +30625,58 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
 }> {
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = String(me?.email || "").trim().toLowerCase();
+  const allocationWhere = participantPayoutUserAllocationWhere(userId, email);
+  const now = new Date();
+  await prisma.participantPayout
+    .updateMany({
+      where: {
+        status: { in: ["pending", "ready", "forwarding"] },
+        remittedAt: { not: null },
+        allocation: allocationWhere
+      },
+      data: {
+        status: "paid",
+        lockedAt: null,
+        attemptId: null,
+        readinessReason: null,
+        blockedReason: null,
+        lastError: null,
+        nextRetryAt: null,
+        lastCheckedAt: now
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return null;
+      throw err;
+    });
+  await prisma.participantPayout
+    .updateMany({
+      where: {
+        status: { in: ["pending", "ready", "forwarding"] },
+        remittedAt: null,
+        payoutReference: { not: null },
+        allocation: allocationWhere
+      },
+      data: {
+        status: "paid",
+        remittedAt: now,
+        lockedAt: null,
+        attemptId: null,
+        readinessReason: null,
+        blockedReason: null,
+        lastError: null,
+        nextRetryAt: null,
+        lastCheckedAt: now
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return null;
+      throw err;
+    });
   const rows = await prisma.participantPayout
     .findMany({
       where: {
-        allocation: {
-          OR: [
-            { participantUserId: userId },
-            email ? { participantEmail: emailEquals(email) } : undefined
-          ].filter(Boolean) as any
-        }
+        allocation: allocationWhere
       },
       select: {
         allocationId: true,
@@ -30630,17 +30684,93 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
         status: true,
         remittedAt: true,
         paymentIntentId: true,
-        allocation: { select: { bps: true } }
+        allocation: { select: { bps: true, participantRef: true, participantUserId: true, participantEmail: true } }
       }
     })
     .catch((err: any) => {
       if (isMissingParticipantPayoutTableError(err)) return [];
       throw err;
     });
+  const unresolvedIntentIds = Array.from(
+    new Set(
+      rows
+        .filter((row: any) => {
+          const status = parseParticipantPayoutStatus((row as any)?.status);
+          return status === "pending" || status === "ready" || status === "forwarding";
+        })
+        .map((row: any) => String((row as any)?.paymentIntentId || "").trim())
+        .filter(Boolean)
+    )
+  );
+  let remoteForcedPaidCount = 0;
+  for (const paymentIntentId of unresolvedIntentIds) {
+    const remote = await fetchDelegatedProviderPaymentIntentStatus(paymentIntentId).catch(() => ({
+      paid: false,
+      paidAt: null,
+      status: "unavailable"
+    }));
+    if (!remote.paid) continue;
+    const remittedAt =
+      remote.paidAt && !Number.isNaN(new Date(remote.paidAt).getTime()) ? new Date(remote.paidAt) : new Date();
+    const updated = await prisma.participantPayout
+      .updateMany({
+        where: {
+          paymentIntentId,
+          status: { in: ["pending", "ready", "forwarding"] },
+          allocation: allocationWhere
+        },
+        data: {
+          status: "paid",
+          remittedAt,
+          lockedAt: null,
+          attemptId: null,
+          readinessReason: null,
+          blockedReason: null,
+          lastError: null,
+          nextRetryAt: null,
+          lastCheckedAt: new Date()
+        }
+      })
+      .catch((err: any) => {
+        if (isMissingParticipantPayoutTableError(err)) return { count: 0 };
+        throw err;
+      });
+    remoteForcedPaidCount += Number(updated?.count || 0);
+  }
+  const effectiveRows =
+    remoteForcedPaidCount > 0
+      ? await prisma.participantPayout
+          .findMany({
+            where: { allocation: allocationWhere },
+            select: {
+              allocationId: true,
+              amountSats: true,
+              status: true,
+              remittedAt: true,
+              paymentIntentId: true,
+              allocation: { select: { bps: true, participantRef: true, participantUserId: true, participantEmail: true } }
+            }
+          })
+          .catch((err: any) => {
+            if (isMissingParticipantPayoutTableError(err)) return [];
+            throw err;
+          })
+      : rows;
+  const filteredRows = effectiveRows.filter((row: any) => {
+    const participantUserId = String(row?.allocation?.participantUserId || "").trim();
+    if (participantUserId && participantUserId === userId) return true;
+    const participantRef = String(row?.allocation?.participantRef || "").trim();
+    if (participantRef === `user:${userId}` || participantRef === userId) return true;
+    const refUserId = parseUserIdFromParticipantRef(participantRef);
+    if (refUserId && refUserId === userId) return true;
+    const participantEmail = String(row?.allocation?.participantEmail || "").trim().toLowerCase();
+    if (email && participantEmail && participantEmail === email) return true;
+    return false;
+  });
 
   const paymentIntentIds = Array.from(
     new Set(
-      rows
+      filteredRows
         .map((row) => String((row as any)?.paymentIntentId || "").trim())
         .filter(Boolean)
     )
@@ -30652,9 +30782,27 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
   let payable = 0n;
   let failed = 0n;
   let feesWithheld = 0n;
-  for (const row of rows) {
+  const statusCounts: Record<ParticipantPayoutStatus, number> = {
+    pending: 0,
+    ready: 0,
+    forwarding: 0,
+    paid: 0,
+    failed: 0,
+    blocked: 0
+  };
+  const statusSats: Record<ParticipantPayoutStatus, bigint> = {
+    pending: 0n,
+    ready: 0n,
+    forwarding: 0n,
+    paid: 0n,
+    failed: 0n,
+    blocked: 0n
+  };
+  for (const row of filteredRows) {
     const amount = BigInt(String((row as any)?.amountSats || "0"));
     const status = parseParticipantPayoutStatus((row as any)?.status);
+    statusCounts[status] += 1;
+    statusSats[status] += amount;
     const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
     const allocationId = String((row as any)?.allocationId || "").trim();
     const accounting = paymentIntentId
@@ -30674,6 +30822,23 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
       payable += amount;
     }
   }
+  app.log.info(
+    {
+      userId,
+      remoteForcedPaidCount,
+      totalRows: filteredRows.length,
+      statusCounts,
+      statusSats: {
+        pending: statusSats.pending.toString(),
+        ready: statusSats.ready.toString(),
+        forwarding: statusSats.forwarding.toString(),
+        paid: statusSats.paid.toString(),
+        failed: statusSats.failed.toString(),
+        blocked: statusSats.blocked.toString()
+      }
+    },
+    "finance.overview.participant_payout_rows"
+  );
   return {
     accruedSats: grossAccrued.toString(),
     payableSats: payable.toString(),
@@ -30809,10 +30974,7 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     where: {
       allocation: {
         contentId: { in: contentIds },
-        OR: [
-          { participantUserId: userId },
-          email ? { participantEmail: emailEquals(email) } : undefined
-        ].filter(Boolean) as any
+        ...participantPayoutUserAllocationWhere(userId, email)
       }
     },
     select: {
@@ -30936,10 +31098,7 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
     .findMany({
       where: {
         allocation: {
-          OR: [
-            { participantUserId: userId },
-            email ? { participantEmail: emailEquals(email) } : undefined
-          ].filter(Boolean) as any
+          ...participantPayoutUserAllocationWhere(userId, email)
         }
       },
       select: {
