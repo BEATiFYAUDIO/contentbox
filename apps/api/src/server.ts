@@ -31006,6 +31006,55 @@ function participantPayoutUserAllocationWhere(userId: string, email: string) {
   } as any;
 }
 
+function payoutStatusPriorityForTruth(status: ParticipantPayoutStatus): number {
+  if (status === "paid") return 100;
+  if (status === "forwarding") return 80;
+  if (status === "ready") return 70;
+  if (status === "pending") return 60;
+  if (status === "failed") return 40;
+  if (status === "blocked") return 30;
+  return 0;
+}
+
+function payoutTruthRowKey(row: { paymentIntentId?: string | null; allocationId?: string | null; id?: string | null }): string {
+  const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
+  const allocationId = String((row as any)?.allocationId || "").trim();
+  if (paymentIntentId && allocationId) return `${paymentIntentId}::${allocationId}`;
+  if (paymentIntentId) return `intent::${paymentIntentId}`;
+  if (allocationId) return `alloc::${allocationId}`;
+  return `row::${String((row as any)?.id || "").trim()}`;
+}
+
+function pickCanonicalPayoutTruthRow<T extends { status?: any; remittedAt?: Date | null; updatedAt?: Date | null }>(a: T, b: T): T {
+  const aStatus = parseParticipantPayoutStatus((a as any)?.status);
+  const bStatus = parseParticipantPayoutStatus((b as any)?.status);
+  const aPaidSignal = aStatus === "paid" || Boolean((a as any)?.remittedAt);
+  const bPaidSignal = bStatus === "paid" || Boolean((b as any)?.remittedAt);
+  if (aPaidSignal !== bPaidSignal) return bPaidSignal ? b : a;
+  const aPriority = payoutStatusPriorityForTruth(aStatus);
+  const bPriority = payoutStatusPriorityForTruth(bStatus);
+  if (aPriority !== bPriority) return bPriority > aPriority ? b : a;
+  const aTs = new Date((a as any)?.updatedAt || 0).getTime();
+  const bTs = new Date((b as any)?.updatedAt || 0).getTime();
+  return bTs >= aTs ? b : a;
+}
+
+function canonicalizeParticipantPayoutTruthRows<T extends { id?: string | null; paymentIntentId?: string | null; allocationId?: string | null; status?: any; remittedAt?: Date | null; updatedAt?: Date | null }>(
+  rows: T[]
+): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows) {
+    const key = payoutTruthRowKey(row);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+    byKey.set(key, pickCanonicalPayoutTruthRow(existing, row));
+  }
+  return Array.from(byKey.values());
+}
+
 async function mapSettledWithConcurrency<T, R>(
   items: readonly T[],
   concurrency: number,
@@ -31456,9 +31505,12 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     if (isMissingParticipantPayoutTableError(err)) return [];
     throw err;
   });
+  const canonicalPayoutRows = canonicalizeParticipantPayoutTruthRows(
+    payoutRows.map((row: any) => ({ ...row, updatedAt: row.updatedAt || null }))
+  );
 
   const payoutIntentIds = Array.from(
-    new Set(payoutRows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean))
+    new Set(canonicalPayoutRows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean))
   );
   const accountingByIntent = await buildIntentParticipantAccountingMap(payoutIntentIds);
 
@@ -31501,7 +31553,7 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     row.yourShare += BigInt(l.amountSats as any);
   }
 
-  for (const payout of payoutRows) {
+  for (const payout of canonicalPayoutRows) {
     const contentId = String(payout.allocation?.contentId || "").trim();
     if (!contentId) continue;
     const row = rows.get(contentId);
@@ -31630,9 +31682,10 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
       if (isMissingParticipantPayoutTableError(err)) return [];
       throw err;
     });
+  const canonicalRows = canonicalizeParticipantPayoutTruthRows(rows as any[]);
 
   const contentIds = Array.from(
-    new Set(rows.map((row) => String((row as any)?.allocation?.contentId || "").trim()).filter(Boolean))
+    new Set(canonicalRows.map((row) => String((row as any)?.allocation?.contentId || "").trim()).filter(Boolean))
   );
   const contents = contentIds.length
     ? await prisma.contentItem.findMany({
@@ -31642,14 +31695,14 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
     : [];
   const contentById = new Map(contents.map((c) => [c.id, c]));
   const accountingByIntent = await buildIntentParticipantAccountingMap(
-    Array.from(new Set(rows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean)))
+    Array.from(new Set(canonicalRows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean)))
   );
 
   let paidSats = 0n;
   let pendingSats = 0n;
   let failedSats = 0n;
 
-  const items = rows.map((row) => {
+  const items = canonicalRows.map((row) => {
     const amount = BigInt(String((row as any)?.amountSats || "0"));
     const status = parseParticipantPayoutStatus((row as any)?.status);
     const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
