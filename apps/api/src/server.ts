@@ -10141,7 +10141,19 @@ function registerPublicRoutes(appPublic: any) {
       status: current.status,
       paid: current.status === "paid",
       paidAt: current.paidAt || null,
-      paymentReceiptId: current.paymentReceiptId || null
+      paymentReceiptId: current.paymentReceiptId || null,
+      payoutStatus: current.payoutStatus || null,
+      payoutSummaryStatus: current.payoutSummaryStatus || null,
+      payoutRail: current.payoutRail || null,
+      payoutExecutionMode: current.payoutExecutionMode || null,
+      payoutDestinationType: current.payoutDestinationType || null,
+      payoutDestinationSummary: current.payoutDestinationSummary || null,
+      providerRemitMode: current.providerRemitMode || null,
+      payoutReference: current.payoutReference || null,
+      remittedAt: current.remittedAt || null,
+      payoutLastError: current.payoutLastError || null,
+      remittanceAttempts: Number(current.remittanceAttempts || 0),
+      remittanceLastCheckedAt: current.remittanceLastCheckedAt || null
     });
   });
   appPublic.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
@@ -13975,7 +13987,19 @@ app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: 
     status: current.status,
     paid: current.status === "paid",
     paidAt: current.paidAt || null,
-    paymentReceiptId: current.paymentReceiptId || null
+    paymentReceiptId: current.paymentReceiptId || null,
+    payoutStatus: current.payoutStatus || null,
+    payoutSummaryStatus: current.payoutSummaryStatus || null,
+    payoutRail: current.payoutRail || null,
+    payoutExecutionMode: current.payoutExecutionMode || null,
+    payoutDestinationType: current.payoutDestinationType || null,
+    payoutDestinationSummary: current.payoutDestinationSummary || null,
+    providerRemitMode: current.providerRemitMode || null,
+    payoutReference: current.payoutReference || null,
+    remittedAt: current.remittedAt || null,
+    payoutLastError: current.payoutLastError || null,
+    remittanceAttempts: Number(current.remittanceAttempts || 0),
+    remittanceLastCheckedAt: current.remittanceLastCheckedAt || null
   });
 });
 
