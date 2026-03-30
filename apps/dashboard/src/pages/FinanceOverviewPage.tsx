@@ -222,16 +222,8 @@ export default function FinanceOverviewPage({
   showNodeWalletContext = false
 }: FinanceOverviewPageProps) {
   const [data, setData] = useState<Overview | null>(null);
-  const [royaltyTotals, setRoyaltyTotals] = useState<{ earnedSats: string; pendingSats: string }>({
-    earnedSats: "0",
-    pendingSats: "0"
-  });
   const [payoutItems, setPayoutItems] = useState<FinancePayoutItem[]>([]);
   const [salesRows, setSalesRows] = useState<RevenueSaleRow[]>([]);
-  const [payoutTotals, setPayoutTotals] = useState<{ pendingSats: string; paidSats: string }>({
-    pendingSats: "0",
-    paidSats: "0"
-  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [auxError, setAuxError] = useState<string | null>(null);
@@ -283,42 +275,10 @@ export default function FinanceOverviewPage({
         setLoading(true);
         setError(null);
       }
-      setAuxError(null);
       try {
-        const [overviewRes, royaltiesRes, payoutsRes, salesRes] = await Promise.allSettled([
-          api<Overview>("/finance/overview"),
-          api<{ totals: { earnedSats: string; pendingSats: string } }>("/finance/royalties"),
-          api<{ totals: { pendingSats: string; paidSats: string }; items?: FinancePayoutItem[] }>(
-            `/finance/payouts?basis=${encodeURIComponent(overviewTimeBasis)}&period=${encodeURIComponent(overviewTimePeriod)}`
-          ),
-          api<RevenueSaleRow[]>(`/api/revenue/sales?period=${encodeURIComponent(overviewTimePeriod)}`)
-        ]);
+        const overviewRes = await api<Overview>("/finance/overview");
         if (!active) return;
-        if (overviewRes.status === "fulfilled") {
-          setData(overviewRes.value);
-        } else {
-          throw overviewRes.reason;
-        }
-        if (royaltiesRes.status === "fulfilled") {
-          setRoyaltyTotals(royaltiesRes.value?.totals || { earnedSats: "0", pendingSats: "0" });
-        } else {
-          setRoyaltyTotals({ earnedSats: "0", pendingSats: "0" });
-          setAuxError("Earnings summary unavailable.");
-        }
-        if (payoutsRes.status === "fulfilled") {
-          setPayoutTotals(payoutsRes.value?.totals || { pendingSats: "0", paidSats: "0" });
-          setPayoutItems(Array.isArray(payoutsRes.value?.items) ? payoutsRes.value.items : []);
-        } else {
-          setPayoutTotals({ pendingSats: "0", paidSats: "0" });
-          setPayoutItems([]);
-          setAuxError((prev) => prev || "Payouts summary unavailable.");
-        }
-        if (salesRes.status === "fulfilled") {
-          setSalesRows(Array.isArray(salesRes.value) ? salesRes.value : []);
-        } else {
-          setSalesRows([]);
-          setAuxError((prev) => prev || "Sales rows unavailable.");
-        }
+        setData(overviewRes);
       } catch (e: any) {
         if (!active) return;
         if (isInitialLoad) setError(e.message || "Failed to load finance overview.");
@@ -332,6 +292,44 @@ export default function FinanceOverviewPage({
     })();
     return () => {
       active = false;
+    };
+  }, [refreshSignal, retryTick, showLightningModal]);
+
+  useEffect(() => {
+    if (showLightningModal) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      (async () => {
+        setAuxError(null);
+        try {
+          const [payoutsRes, salesRes] = await Promise.allSettled([
+            api<{ totals: { pendingSats: string; paidSats: string }; items?: FinancePayoutItem[] }>(
+              `/finance/payouts?basis=${encodeURIComponent(overviewTimeBasis)}&period=${encodeURIComponent(overviewTimePeriod)}`
+            ),
+            api<RevenueSaleRow[]>(`/api/revenue/sales?period=${encodeURIComponent(overviewTimePeriod)}&compact=1`)
+          ]);
+          if (!active) return;
+          if (payoutsRes.status === "fulfilled") {
+            setPayoutItems(Array.isArray(payoutsRes.value?.items) ? payoutsRes.value.items : []);
+          } else {
+            setPayoutItems([]);
+            setAuxError((prev) => prev || "Payouts summary unavailable.");
+          }
+          if (salesRes.status === "fulfilled") {
+            setSalesRows(Array.isArray(salesRes.value) ? salesRes.value : []);
+          } else {
+            setSalesRows([]);
+            setAuxError((prev) => prev || "Sales rows unavailable.");
+          }
+        } catch (e: any) {
+          if (!active) return;
+          setAuxError((prev) => prev || (e?.message || "Scoped refresh failed."));
+        }
+      })();
+    }, 150);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
     };
   }, [refreshSignal, retryTick, showLightningModal, overviewTimeBasis, overviewTimePeriod]);
 
@@ -784,9 +782,9 @@ export default function FinanceOverviewPage({
   const hasRevenue =
     Number(data?.totals?.salesSats || 0) > 0 ||
     Number(data?.totals?.invoicesTotal || 0) > 0 ||
-    Number(royaltyTotals.earnedSats || 0) > 0 ||
+    Number(data?.totals?.participantRoyaltyAccruedSats || 0) > 0 ||
     Number(data?.totals?.remoteRoyaltyAccruedSats || 0) > 0 ||
-    Number(payoutTotals.pendingSats || 0) > 0;
+    Number(data?.totals?.participantRoyaltyPayableSats || 0) > 0;
   const participantAccrued = Number(data?.totals?.participantRoyaltyAccruedSats || 0);
   const salesLast30d = Number(
     data?.totals?.salesSatsLast30d ??

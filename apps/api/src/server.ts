@@ -30600,6 +30600,7 @@ app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvanc
 app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
   const periodRaw = String((req.query as any)?.period || "all").trim().toLowerCase();
+  const compact = String((req.query as any)?.compact || "0").trim().toLowerCase() === "1";
   const periodDays =
     periodRaw === "1d" ? 1
       : periodRaw === "7d" ? 7
@@ -30608,6 +30609,36 @@ app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("r
             : null;
   const recognizedSince = periodDays ? new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000) : null;
   queueSellerPendingIntentsReconcile(userId, "revenue_sales", req.log);
+  if (compact) {
+    const rows = await prisma.sale.findMany({
+      where: {
+        sellerUserId: userId,
+        ...(recognizedSince ? { recognizedAt: { gte: recognizedSince } } : {})
+      },
+      select: {
+        id: true,
+        intentId: true,
+        contentId: true,
+        amountSats: true,
+        currency: true,
+        rail: true,
+        memo: true,
+        recognizedAt: true
+      },
+      orderBy: { recognizedAt: "desc" }
+    });
+    return rows.map((s) => ({
+      id: s.id,
+      intentId: s.intentId,
+      contentId: s.contentId,
+      amountSats: s.amountSats.toString(),
+      currency: s.currency,
+      rail: s.rail,
+      memo: s.memo,
+      recognizedAt: s.recognizedAt.toISOString(),
+      grossAmountSats: s.amountSats.toString()
+    }));
+  }
   const sales = await prisma.sale.findMany({
     where: {
       sellerUserId: userId,
@@ -30616,11 +30647,26 @@ app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("r
     include: { content: true },
     orderBy: { recognizedAt: "desc" }
   });
+  const saleIntentIds = Array.from(new Set(sales.map((s) => String(s.intentId || "").trim()).filter(Boolean)));
   const intents = await prisma.paymentIntent.findMany({
-    where: { id: { in: sales.map((s) => s.intentId) } },
+    where: { id: { in: saleIntentIds } },
     select: { id: true, providerId: true }
   });
   const intentById = new Map(intents.map((i) => [i.id, i]));
+  const providerBackedIntentIds = new Set(
+    intents
+      .filter((i) => String(i.providerId || "").startsWith("providerpi:"))
+      .map((i) => String(i.id || "").trim())
+      .filter(Boolean)
+  );
+  const providerIntentRows = providerBackedIntentIds.size
+    ? readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE)
+    : [];
+  const providerIntentByPaymentIntentId = new Map(
+    providerIntentRows
+      .map((row) => [String(row.paymentIntentId || "").trim(), row] as const)
+      .filter(([id]) => id && providerBackedIntentIds.has(id))
+  );
   const creatorIdentity = await buildLocalNodeIdentityDoc(userId).catch(() => null);
   const creatorNodeId = creatorIdentity?.nodeId || null;
   const providerCfg = getNetworkProviderConfig();
@@ -30630,7 +30676,9 @@ app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("r
       const gross = BigInt(s.amountSats as any);
       const providerIntent = intentById.get(s.intentId);
       const providerBacked = String(providerIntent?.providerId || "").startsWith("providerpi:");
-      const providerRecord = providerBacked ? findProviderPaymentIntentByPaymentIntentId(s.intentId) : null;
+      const providerRecord = providerBacked
+        ? (providerIntentByPaymentIntentId.get(String(s.intentId || "").trim()) || null)
+        : null;
       const fallbackFee = computeProviderFeeBreakdown(gross, {
         providerInvoicing: providerBacked,
         durablePublicHosting: false
@@ -30984,15 +31032,15 @@ async function mapSettledWithConcurrency<T, R>(
   return results;
 }
 
-async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
-  accruedSats: string;
-  payableSats: string;
-  paidSats: string;
-  feeWithheldSats: string;
-  failedSats: string;
-}> {
-  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  const email = String(me?.email || "").trim().toLowerCase();
+const participantPayoutStatusReconcileInflight = new Map<string, Promise<number>>();
+const participantPayoutStatusReconcileLastRunMs = new Map<string, number>();
+
+async function reconcileParticipantPayoutStatusTruthForUser(
+  userId: string,
+  email: string,
+  context: string,
+  log: { debug: (obj: any, msg?: string) => void } | null | undefined
+): Promise<number> {
   const allocationWhere = participantPayoutUserAllocationWhere(userId, email);
   const now = new Date();
   await prisma.participantPayout
@@ -31041,35 +31089,24 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
       if (isMissingParticipantPayoutTableError(err)) return null;
       throw err;
     });
-  const rows = await prisma.participantPayout
+
+  const unresolvedRows = await prisma.participantPayout
     .findMany({
       where: {
+        status: { in: ["pending", "ready", "forwarding"] },
         allocation: allocationWhere
       },
-      select: {
-        allocationId: true,
-        amountSats: true,
-        status: true,
-        remittedAt: true,
-        paymentIntentId: true,
-        allocation: { select: { bps: true, participantRef: true, participantUserId: true, participantEmail: true } }
-      }
+      select: { paymentIntentId: true }
     })
     .catch((err: any) => {
       if (isMissingParticipantPayoutTableError(err)) return [];
       throw err;
     });
   const unresolvedIntentIds = Array.from(
-    new Set(
-      rows
-        .filter((row: any) => {
-          const status = parseParticipantPayoutStatus((row as any)?.status);
-          return status === "pending" || status === "ready" || status === "forwarding";
-        })
-        .map((row: any) => String((row as any)?.paymentIntentId || "").trim())
-        .filter(Boolean)
-    )
+    new Set(unresolvedRows.map((row: any) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean))
   );
+  if (!unresolvedIntentIds.length) return 0;
+
   let remoteForcedPaidCount = 0;
   const remoteResults = await mapSettledWithConcurrency(
     unresolvedIntentIds,
@@ -31114,26 +31151,74 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
       });
     remoteForcedPaidCount += Number(updated?.count || 0);
   }
-  const effectiveRows =
-    remoteForcedPaidCount > 0
-      ? await prisma.participantPayout
-          .findMany({
-            where: { allocation: allocationWhere },
-            select: {
-              allocationId: true,
-              amountSats: true,
-              status: true,
-              remittedAt: true,
-              paymentIntentId: true,
-              allocation: { select: { bps: true, participantRef: true, participantUserId: true, participantEmail: true } }
-            }
-          })
-          .catch((err: any) => {
-            if (isMissingParticipantPayoutTableError(err)) return [];
-            throw err;
-          })
-      : rows;
-  const filteredRows = effectiveRows.filter((row: any) => {
+  if (remoteForcedPaidCount > 0) {
+    log?.debug?.({ userId, context, remoteForcedPaidCount }, "participant_payout.reconcile_remote_paid");
+  }
+  return remoteForcedPaidCount;
+}
+
+function queueParticipantPayoutStatusTruthReconcileForUser(
+  userId: string,
+  email: string,
+  context: string,
+  log: { debug: (obj: any, msg?: string) => void } | null | undefined
+): Promise<number> {
+  const key = String(userId || "").trim();
+  if (!key) return Promise.resolve(0);
+  const existing = participantPayoutStatusReconcileInflight.get(key);
+  if (existing) return existing;
+  const nowMs = Date.now();
+  const last = participantPayoutStatusReconcileLastRunMs.get(key) || 0;
+  if (nowMs - last < 5000) return Promise.resolve(0);
+
+  const run = reconcileParticipantPayoutStatusTruthForUser(key, email, context, log)
+    .catch((err: any) => {
+      log?.debug?.({ userId: key, context, err }, "participant_payout.reconcile_failed");
+      return 0;
+    })
+    .finally(() => {
+      participantPayoutStatusReconcileInflight.delete(key);
+      participantPayoutStatusReconcileLastRunMs.set(key, Date.now());
+    });
+  participantPayoutStatusReconcileInflight.set(key, run);
+  return run;
+}
+
+async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
+  accruedSats: string;
+  payableSats: string;
+  paidSats: string;
+  feeWithheldSats: string;
+  failedSats: string;
+}> {
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const email = String(me?.email || "").trim().toLowerCase();
+  const allocationWhere = participantPayoutUserAllocationWhere(userId, email);
+  const remoteForcedPaidCount = await queueParticipantPayoutStatusTruthReconcileForUser(
+    userId,
+    email,
+    "finance_overview",
+    app.log
+  );
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: {
+        allocation: allocationWhere
+      },
+      select: {
+        allocationId: true,
+        amountSats: true,
+        status: true,
+        remittedAt: true,
+        paymentIntentId: true,
+        allocation: { select: { bps: true, participantRef: true, participantUserId: true, participantEmail: true } }
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const filteredRows = rows.filter((row: any) => {
     const participantUserId = String(row?.allocation?.participantUserId || "").trim();
     if (participantUserId && participantUserId === userId) return true;
     const participantRef = String(row?.allocation?.participantRef || "").trim();
@@ -31470,6 +31555,7 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = String(me?.email || "").trim().toLowerCase();
+  await queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_payouts", app.log);
   const periodRaw = String((req.query as any)?.period || "all").trim().toLowerCase();
   const basisRaw = String((req.query as any)?.basis || "paid").trim().toLowerCase();
   const periodDays =
@@ -32356,6 +32442,7 @@ async function reconcileSellerPendingIntentsForDashboard(userId: string, context
 }
 
 const sellerPendingReconcileInflight = new Map<string, Promise<void>>();
+const sellerPendingReconcileLastRunMs = new Map<string, number>();
 
 function queueSellerPendingIntentsReconcile(
   userId: string,
@@ -32365,6 +32452,9 @@ function queueSellerPendingIntentsReconcile(
   const key = String(userId || "").trim();
   if (!key) return;
   if (sellerPendingReconcileInflight.has(key)) return;
+  const nowMs = Date.now();
+  const last = sellerPendingReconcileLastRunMs.get(key) || 0;
+  if (nowMs - last < 5000) return;
 
   const run = reconcileSellerPendingIntentsForDashboard(key, context)
     .catch((err: any) => {
@@ -32374,6 +32464,7 @@ function queueSellerPendingIntentsReconcile(
       if (sellerPendingReconcileInflight.get(key) === run) {
         sellerPendingReconcileInflight.delete(key);
       }
+      sellerPendingReconcileLastRunMs.set(key, Date.now());
     });
 
   sellerPendingReconcileInflight.set(key, run);
