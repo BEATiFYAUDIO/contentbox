@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useState } from "react";
 import AuthPage from "./pages/AuthPage";
 import PayoutRailsPage from "./pages/PayoutRailsPage";
 import ContentLibraryPage from "./pages/ContentLibraryPage";
@@ -17,7 +17,7 @@ import SalesPage from "./pages/SalesPage";
 import ConfigPage from "./pages/ConfigPage";
 import DiagnosticsPage from "./pages/DiagnosticsPage";
 import ProviderConsolePage from "./pages/ProviderConsolePage";
-import FinancePage, { type FinanceTab } from "./pages/FinancePage";
+import type { FinanceTab } from "./pages/FinancePage";
 import ProfilePage from "./pages/ProfilePage";
 import NodeLightningPage from "./pages/NodeLightningPage";
 import { api, getApiBase } from "./lib/api";
@@ -27,6 +27,8 @@ import { modeLabel } from "./lib/nodeMode";
 import { PAYOUT_DESTINATIONS_LABEL } from "./lib/terminology";
 import logo from "./assets/certifyd-creator-logo.png";
 import ErrorBoundary from "./components/ErrorBoundary";
+
+const FinancePage = lazy(() => import("./pages/FinancePage"));
 
 /* =======================
    Types
@@ -1108,18 +1110,26 @@ export default function App() {
 
               {page === "finance" && !isCommerceLockedPage && (
                 <ErrorBoundary>
-                  <FinancePage
-                    initialTab={financeTab}
-                    nodeMode={nodeMode}
-                    postureSnapshot={
-                      nodeModeSnapshot
-                        ? ({
-                            providerCommerceConnected: nodeModeSnapshot.providerCommerceConnected,
-                            localSovereignReady: nodeModeSnapshot.localSovereignReady
-                          } satisfies FinancePostureSnapshot)
-                        : null
+                  <Suspense
+                    fallback={
+                      <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4 text-sm text-neutral-400">
+                        Loading revenue workspace…
+                      </div>
                     }
-                  />
+                  >
+                    <FinancePage
+                      initialTab={financeTab}
+                      nodeMode={nodeMode}
+                      postureSnapshot={
+                        nodeModeSnapshot
+                          ? ({
+                              providerCommerceConnected: nodeModeSnapshot.providerCommerceConnected,
+                              localSovereignReady: nodeModeSnapshot.localSovereignReady
+                            } satisfies FinancePostureSnapshot)
+                          : null
+                      }
+                    />
+                  </Suspense>
                 </ErrorBoundary>
               )}
 

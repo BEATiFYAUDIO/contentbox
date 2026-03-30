@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import FinanceOverviewPage from "./FinanceOverviewPage";
-import SalesPage from "./SalesPage";
-import FinanceRoyaltiesPage from "./FinanceRoyaltiesPage";
-import PayoutRailsPage from "./PayoutRailsPage";
-import PaymentRailsPage from "./PaymentRailsPage";
-import FinanceTransactionsPage from "./FinanceTransactionsPage";
-import EarningsV2Page from "./EarningsV2Page";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import type { NodeMode } from "../lib/identity";
 import LockedFeaturePanel from "../components/LockedFeaturePanel";
+
+const FinanceOverviewPage = lazy(() => import("./FinanceOverviewPage"));
+const SalesPage = lazy(() => import("./SalesPage"));
+const FinanceRoyaltiesPage = lazy(() => import("./FinanceRoyaltiesPage"));
+const PayoutRailsPage = lazy(() => import("./PayoutRailsPage"));
+const PaymentRailsPage = lazy(() => import("./PaymentRailsPage"));
+const FinanceTransactionsPage = lazy(() => import("./FinanceTransactionsPage"));
+const EarningsV2Page = lazy(() => import("./EarningsV2Page"));
 
 export type FinanceTab = "overview" | "ledger" | "royalties" | "payouts" | "rails" | "transactions" | "earnings-v2";
 
@@ -108,6 +109,12 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
   if (isBasic) {
     return <LockedFeaturePanel title="Revenue" />;
   }
+
+  const tabFallback = (
+    <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4 text-sm text-neutral-400">
+      Loading section…
+    </div>
+  );
 
   return (
     <div className="space-y-4">
@@ -245,44 +252,64 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         </span>
       </div>
       {tab === "overview" && (
-        <FinanceOverviewPage
-          refreshSignal={tabRefresh.overview}
-          onOpenRoyalties={() => setTab("royalties")}
-          showNodeWalletContext={financePosture === "sovereign_node"}
-        />
+        <Suspense fallback={tabFallback}>
+          <FinanceOverviewPage
+            refreshSignal={tabRefresh.overview}
+            onOpenRoyalties={() => setTab("royalties")}
+            showNodeWalletContext={financePosture === "sovereign_node"}
+          />
+        </Suspense>
       )}
       {tab === "ledger" && (
-        <SalesPage
-          hasInvoiceCommerce={hasInvoiceCommerce}
-        />
+        <Suspense fallback={tabFallback}>
+          <SalesPage
+            hasInvoiceCommerce={hasInvoiceCommerce}
+          />
+        </Suspense>
       )}
       {tab === "royalties" && (
-        <FinanceRoyaltiesPage
-          refreshSignal={tabRefresh.royalties}
-          bridgeFilter={earningsBridgeFilter}
-          onOpenPayouts={(bridge) => {
-            setPayoutBridgeFilter({
-              contentId: String(bridge?.contentId || "").trim() || undefined,
-              title: bridge?.title || "Untitled",
-              token: Date.now()
-            });
-            setTab("payouts");
-          }}
-        />
+        <Suspense fallback={tabFallback}>
+          <FinanceRoyaltiesPage
+            refreshSignal={tabRefresh.royalties}
+            bridgeFilter={earningsBridgeFilter}
+            onOpenPayouts={(bridge) => {
+              setPayoutBridgeFilter({
+                contentId: String(bridge?.contentId || "").trim() || undefined,
+                title: bridge?.title || "Untitled",
+                token: Date.now()
+              });
+              setTab("payouts");
+            }}
+          />
+        </Suspense>
       )}
       {tab === "earnings-v2" && (
-        <EarningsV2Page
-          refreshSignal={tabRefresh["earnings-v2"]}
-          hasInvoiceCommerce={hasInvoiceCommerce}
-          onOpenEarningsForContent={(contentId, title) => {
-            setEarningsBridgeFilter({ contentId, title, token: Date.now() });
-            setTab("royalties");
-          }}
-        />
+        <Suspense fallback={tabFallback}>
+          <EarningsV2Page
+            refreshSignal={tabRefresh["earnings-v2"]}
+            hasInvoiceCommerce={hasInvoiceCommerce}
+            onOpenEarningsForContent={(contentId, title) => {
+              setEarningsBridgeFilter({ contentId, title, token: Date.now() });
+              setTab("royalties");
+            }}
+          />
+        </Suspense>
       )}
-      {tab === "payouts" && <PayoutRailsPage bridgeFilter={payoutBridgeFilter} />}
-      {tab === "rails" && <PaymentRailsPage refreshSignal={tabRefresh.rails} />}
-      {tab === "transactions" && <FinanceTransactionsPage refreshSignal={tabRefresh.transactions} />}
+      {tab === "payouts" && (
+        <Suspense fallback={tabFallback}>
+          <PayoutRailsPage bridgeFilter={payoutBridgeFilter} />
+        </Suspense>
+      )}
+      {tab === "rails" && (
+        <Suspense fallback={tabFallback}>
+          <PaymentRailsPage refreshSignal={tabRefresh.rails} />
+        </Suspense>
+      )}
+      {tab === "transactions" && (
+        <Suspense fallback={tabFallback}>
+          <FinanceTransactionsPage refreshSignal={tabRefresh.transactions} />
+        </Suspense>
+      )}
     </div>
   );
 }

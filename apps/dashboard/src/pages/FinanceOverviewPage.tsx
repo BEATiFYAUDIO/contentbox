@@ -296,9 +296,20 @@ export default function FinanceOverviewPage({
   }, [refreshSignal, retryTick, showLightningModal]);
 
   useEffect(() => {
+    if (!hasLoadedOverviewRef.current || !data) return;
     if (showLightningModal) return;
     let active = true;
-    const timer = window.setTimeout(() => {
+    let timer: number | null = null;
+    let idleId: number | null = null;
+    const schedule = (cb: () => void) => {
+      const ric = (window as any).requestIdleCallback as ((fn: () => void, opts?: { timeout: number }) => number) | undefined;
+      if (typeof ric === "function") {
+        idleId = ric(cb, { timeout: 700 });
+      } else {
+        timer = window.setTimeout(cb, 220);
+      }
+    };
+    schedule(() => {
       (async () => {
         setAuxError(null);
         try {
@@ -326,12 +337,14 @@ export default function FinanceOverviewPage({
           setAuxError((prev) => prev || (e?.message || "Scoped refresh failed."));
         }
       })();
-    }, 150);
+    });
     return () => {
       active = false;
-      window.clearTimeout(timer);
+      if (timer !== null) window.clearTimeout(timer);
+      const cic = (window as any).cancelIdleCallback as ((id: number) => void) | undefined;
+      if (idleId !== null && typeof cic === "function") cic(idleId);
     };
-  }, [refreshSignal, retryTick, showLightningModal, overviewTimeBasis, overviewTimePeriod]);
+  }, [refreshSignal, retryTick, showLightningModal, overviewTimeBasis, overviewTimePeriod, data]);
 
   useEffect(() => {
     if (!showLightningModal) return;
