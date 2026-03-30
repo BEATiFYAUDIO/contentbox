@@ -143,12 +143,12 @@ function Prompt-InstallCloudflared {
   }
 
   $archTag = ""
-  $procArch = String($env:PROCESSOR_ARCHITECTURE).ToUpperInvariant()
+  $procArch = ([string]$env:PROCESSOR_ARCHITECTURE).ToUpperInvariant()
   if ($procArch -eq "AMD64" -or $procArch -eq "X86_64") { $archTag = "amd64" }
   if ($procArch -eq "ARM64") { $archTag = "arm64" }
   if (-not $archTag -and (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) {
     try {
-      $osArch = String((Get-CimInstance Win32_OperatingSystem).OSArchitecture).ToUpperInvariant()
+      $osArch = ([string](Get-CimInstance Win32_OperatingSystem).OSArchitecture).ToUpperInvariant()
       if ($osArch -match "ARM64") { $archTag = "arm64" }
       elseif ($osArch -match "64") { $archTag = "amd64" }
     } catch {}
