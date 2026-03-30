@@ -903,19 +903,22 @@ export default function FinanceOverviewPage({
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Topline Money Snapshot</div>
         <div className="mt-1 text-xs text-neutral-400">Core numbers for accounting review.</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          Earnings may exceed sales because they include your share from collaborations and other works.
+        </div>
         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Sales</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedSalesSats))}</div>
             <div className="mt-1 text-xs text-neutral-500">
-              Seller of record · paid invoices only
+              Your direct sales (seller of record) · paid invoices only
               {overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}
             </div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Gross earned</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(grossEarned))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Pre-fee participation accrual from works you own/collaborate on.</div>
+            <div className="mt-1 text-xs text-neutral-500">Your total earnings across all works (including collaborations), before fees.</div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Fees withheld</div>
