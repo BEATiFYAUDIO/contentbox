@@ -30949,6 +30949,32 @@ function participantPayoutUserAllocationWhere(userId: string, email: string) {
   } as any;
 }
 
+async function mapSettledWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const safeConcurrency = Math.max(1, Math.min(items.length || 1, Math.floor(Number(concurrency) || 1)));
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      try {
+        const value = await mapper(items[index] as T);
+        results[index] = { status: "fulfilled", value };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: safeConcurrency }, () => worker()));
+  return results;
+}
+
 async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
   accruedSats: string;
   payableSats: string;
@@ -31036,15 +31062,17 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
     )
   );
   let remoteForcedPaidCount = 0;
-  const remoteResults = await Promise.allSettled(
-    unresolvedIntentIds.map(async (paymentIntentId) => ({
+  const remoteResults = await mapSettledWithConcurrency(
+    unresolvedIntentIds,
+    6,
+    async (paymentIntentId) => ({
       paymentIntentId,
       remote: await fetchDelegatedProviderPaymentIntentStatus(paymentIntentId).catch(() => ({
         paid: false,
         paidAt: null,
         status: "unavailable"
       }))
-    }))
+    })
   );
   for (const result of remoteResults) {
     if (result.status !== "fulfilled") continue;
