@@ -34,8 +34,10 @@ type AuditPanelProps = {
   exportName?: string;
   showTombstoneToggle?: boolean;
   openSignal?: number;
-  eventFilter?: "all" | "commerce";
+  eventFilter?: "all" | "commerce" | "content" | "splits" | "identity" | "clearance" | "payout";
   showFilterToggle?: boolean;
+  bodyMaxHeightClass?: string;
+  payloadMode?: "full" | "compact";
 };
 
 function formatTs(ts: string) {
@@ -55,6 +57,31 @@ function archetypeLabel(raw?: string | null) {
   const v = String(raw || "").trim();
   if (!v) return "";
   return v.replace(/_/g, " ");
+}
+
+function shortValue(v: unknown, max = 36) {
+  const s = String(v ?? "").trim();
+  if (!s) return "—";
+  if (s.length <= max) return s;
+  return `${s.slice(0, max - 1)}…`;
+}
+
+function commercePreview(e: AuditEvent): string | null {
+  const t = String(e.type || "").toLowerCase();
+  const d: any = e.details || {};
+  if (t === "sale.recognized") {
+    return `Amount ${shortValue(d.amountSats)} sats • Intent ${shortValue(d.paymentIntentId, 20)}`;
+  }
+  if (t === "payment.intent") {
+    return `Status ${shortValue(d.status)} • Amount ${shortValue(d.amountSats)} sats`;
+  }
+  if (t === "settlement.created") {
+    return `Net ${shortValue(d.netAmountSats)} sats • Intent ${shortValue(d.paymentIntentId, 20)}`;
+  }
+  if (t === "payout.participant") {
+    return `Status ${shortValue(d.status)} • Amount ${shortValue(d.amountSats)} sats • ${shortValue(d.destinationSummary || d.destinationType, 24)}`;
+  }
+  return null;
 }
 
 function downloadJson(filename: string, data: any) {
@@ -82,13 +109,17 @@ export default function AuditPanel({
   showTombstoneToggle = true,
   openSignal = 0,
   eventFilter = "all",
-  showFilterToggle = false
+  showFilterToggle = false,
+  bodyMaxHeightClass,
+  payloadMode = "full"
 }: AuditPanelProps) {
+  const scopedFilterMode = eventFilter === "all" ? "commerce" : eventFilter;
   const [open, setOpen] = React.useState(defaultOpen);
   const [loading, setLoading] = React.useState(false);
   const [items, setItems] = React.useState<AuditEvent[]>([]);
   const [showTombstones, setShowTombstones] = React.useState(false);
-  const [filterMode, setFilterMode] = React.useState<"all" | "commerce">(eventFilter);
+  const [filterMode, setFilterMode] = React.useState<"all" | "commerce" | "content" | "splits" | "identity" | "clearance" | "payout">(eventFilter);
+  const [expandedPayloadById, setExpandedPayloadById] = React.useState<Record<string, boolean>>({});
 
   React.useEffect(() => {
     setFilterMode(eventFilter);
@@ -109,11 +140,48 @@ export default function AuditPanel({
     return false;
   }, []);
 
+  const matchesFilterMode = React.useCallback(
+    (evt: AuditEvent) => {
+      if (filterMode === "all") return true;
+      const archetype = String(evt.archetype || "").trim().toLowerCase();
+      if (filterMode === "commerce") {
+        return archetype === "commerce" || isCommerceAuditEvent(evt);
+      }
+      if (filterMode === "content") {
+        return archetype === "content_lifecycle" || String(evt.type || "").toLowerCase().startsWith("content.");
+      }
+      if (filterMode === "splits") {
+        return archetype === "rights_and_splits" || String(evt.type || "").toLowerCase().startsWith("split.");
+      }
+      if (filterMode === "identity") {
+        return archetype === "identity_and_access" || String(evt.type || "").toLowerCase().startsWith("identity.");
+      }
+      if (filterMode === "clearance") {
+        return archetype === "clearance" || String(evt.type || "").toLowerCase().startsWith("clearance.");
+      }
+      if (filterMode === "payout") {
+        return archetype === "payout_execution" || String(evt.type || "").toLowerCase().startsWith("payout.");
+      }
+      return true;
+    },
+    [filterMode, isCommerceAuditEvent]
+  );
+
+  const filterLabel = React.useMemo(() => {
+    if (filterMode === "commerce") return "Commerce only";
+    if (filterMode === "content") return "Content only";
+    if (filterMode === "splits") return "Splits only";
+    if (filterMode === "identity") return "Identity only";
+    if (filterMode === "clearance") return "Clearance only";
+    if (filterMode === "payout") return "Payout only";
+    return "Filtered";
+  }, [filterMode]);
+
   const visibleItems = React.useMemo(() => {
     return items
       .filter((e) => (showTombstones ? true : !String(e.type || "").includes("tombstone")))
-      .filter((e) => (filterMode === "commerce" ? isCommerceAuditEvent(e) : true));
-  }, [items, showTombstones, filterMode, isCommerceAuditEvent]);
+      .filter(matchesFilterMode);
+  }, [items, showTombstones, matchesFilterMode]);
 
   async function load() {
     setLoading(true);
@@ -158,9 +226,9 @@ export default function AuditPanel({
             <button
               type="button"
               className="rounded-lg border border-neutral-800 px-2 py-1 text-[11px] leading-none hover:bg-neutral-900"
-              onClick={() => setFilterMode((m) => (m === "commerce" ? "all" : "commerce"))}
+              onClick={() => setFilterMode((m) => (m === "all" ? scopedFilterMode : "all"))}
             >
-              {filterMode === "commerce" ? "Full audit" : "Commerce only"}
+              {filterMode === "all" ? filterLabel : "Full audit"}
             </button>
           ) : null}
           <button
@@ -192,7 +260,7 @@ export default function AuditPanel({
       </div>
 
       {open ? (
-        <div className="mt-2 space-y-2 text-xs text-neutral-200">
+        <div className={`mt-2 space-y-2 overflow-y-auto text-xs text-neutral-200 ${bodyMaxHeightClass || ""}`}>
           {loading ? (
             <div className="text-neutral-400">Loading…</div>
           ) : visibleItems.length === 0 ? (
@@ -203,8 +271,8 @@ export default function AuditPanel({
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[11px] text-neutral-400">{formatTs(e.ts)}</div>
-                    <div className="mt-0.5 flex items-center gap-2">
-                      <span className="text-sm text-neutral-100 truncate">{e.type}</span>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                      <span className="min-w-0 text-sm text-neutral-100 truncate">{e.type}</span>
                       {e.archetype ? (
                         <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/70 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-300">
                           {archetypeLabel(e.archetype)}
@@ -212,16 +280,45 @@ export default function AuditPanel({
                       ) : null}
                     </div>
                     {e.summary ? <div className="text-[11px] text-neutral-400">{e.summary}</div> : null}
+                    {payloadMode === "compact" ? (
+                      <div className="mt-1 text-[11px] text-neutral-300">{commercePreview(e) || "Event recorded."}</div>
+                    ) : null}
                   </div>
                   {actorLabel(e.actor) ? (
                     <div className="text-[11px] text-neutral-500">{actorLabel(e.actor)}</div>
                   ) : null}
                 </div>
-                {e.details ? (
-                  <pre className="mt-2 text-[11px] text-neutral-300 whitespace-pre-wrap break-all">{JSON.stringify(e.details, null, 2)}</pre>
+                {(e.details || e.diff) && payloadMode === "compact" ? (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      className="rounded border border-neutral-800 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                      onClick={() =>
+                        setExpandedPayloadById((prev) => ({
+                          ...prev,
+                          [e.id]: !prev[e.id]
+                        }))
+                      }
+                    >
+                      {expandedPayloadById[e.id] ? "Hide payload" : "Show payload"}
+                    </button>
+                  </div>
                 ) : null}
-                {e.diff ? (
-                  <pre className="mt-2 text-[11px] text-neutral-300 whitespace-pre-wrap break-all">{JSON.stringify(e.diff, null, 2)}</pre>
+                {e.details && (payloadMode === "full" || expandedPayloadById[e.id]) ? (
+                  <details className="mt-2 rounded border border-neutral-800 bg-neutral-950/70 p-1.5" open={payloadMode === "full"}>
+                    <summary className="cursor-pointer text-[11px] text-neutral-400">Details</summary>
+                    <pre className="mt-1 text-[11px] text-neutral-300 whitespace-pre-wrap break-all">
+                      {JSON.stringify(e.details, null, 2)}
+                    </pre>
+                  </details>
+                ) : null}
+                {e.diff && (payloadMode === "full" || expandedPayloadById[e.id]) ? (
+                  <details className="mt-2 rounded border border-neutral-800 bg-neutral-950/70 p-1.5" open={payloadMode === "full"}>
+                    <summary className="cursor-pointer text-[11px] text-neutral-400">Diff</summary>
+                    <pre className="mt-1 text-[11px] text-neutral-300 whitespace-pre-wrap break-all">
+                      {JSON.stringify(e.diff, null, 2)}
+                    </pre>
+                  </details>
                 ) : null}
               </div>
             ))

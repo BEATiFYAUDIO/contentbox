@@ -40,7 +40,7 @@ type FinanceRoyaltiesPageProps = {
     title: string;
     token: number;
   } | null;
-  onOpenPayouts?: () => void;
+  onOpenPayouts?: (bridge?: { contentId?: string; title: string }) => void;
 };
 
 type OverviewSummary = {
@@ -89,7 +89,6 @@ export default function FinanceRoyaltiesPage({
   const [retryTick, setRetryTick] = useState(0);
   const [ledgerContentFilter, setLedgerContentFilter] = useState<{ contentId: string; title: string } | null>(null);
   const [sourceFilter, setSourceFilter] = useState<string>("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | EarningsLedgerStatus>("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [originFilter, setOriginFilter] = useState<string>("all");
   const [localRoleByContent, setLocalRoleByContent] = useState<Record<string, string>>({});
@@ -98,6 +97,7 @@ export default function FinanceRoyaltiesPage({
   const [overviewSummary, setOverviewSummary] = useState<OverviewSummary | null>(null);
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
+  const [showLedgerGuidance, setShowLedgerGuidance] = useState(false);
 
   useEffect(() => {
     if (!bridgeFilter?.contentId) return;
@@ -197,8 +197,29 @@ export default function FinanceRoyaltiesPage({
     return `${rounded}%`;
   };
 
-  const mapRemotePayoutStateToLedgerStatus = (raw: string | null | undefined): EarningsLedgerStatus => {
+  const mapRemotePayoutStateToLedgerStatus = (
+    raw: string | null | undefined,
+    summaryRaw: Record<string, number> | null | undefined
+  ): EarningsLedgerStatus => {
     const state = String(raw || "").trim().toLowerCase();
+    const summary = summaryRaw && typeof summaryRaw === "object" ? summaryRaw : null;
+    if (summary) {
+      const paid = Number((summary as any).paid || 0);
+      const pending = Number((summary as any).pending || 0);
+      const ready = Number((summary as any).ready || 0);
+      const forwarding = Number((summary as any).forwarding || 0);
+      const failed = Number((summary as any).failed || 0);
+      const blocked = Number((summary as any).blocked || 0);
+      const unresolved = pending + ready + forwarding;
+      const failedOrBlocked = failed + blocked;
+
+      // Priority: trust granular payout summary over coarse remote state string.
+      if (paid > 0 && unresolved === 0 && failedOrBlocked === 0) return "Paid";
+      if (paid > 0 && (unresolved > 0 || failedOrBlocked > 0)) return "Partial";
+      if (unresolved > 0) return "Processing";
+      if (failedOrBlocked > 0) return "Failed";
+    }
+
     if (state === "paid") return "Paid";
     if (state === "ready" || state === "forwarding") return "Processing";
     if (state === "mixed") return "Partial";
@@ -316,7 +337,7 @@ export default function FinanceRoyaltiesPage({
       const contentTitle = String(row?.contentTitle || "Remote collaboration").trim() || "Remote collaboration";
       const roleLabel = normalizeRoleLabel(row?.role) || "Participant";
       const shareLabel = formatPercentLabel(row?.percent);
-      const status = mapRemotePayoutStateToLedgerStatus(row?.payoutState);
+      const status = mapRemotePayoutStateToLedgerStatus(row?.payoutState, row?.payoutSummary || null);
       const dateLabel = row?.acceptedAt ? new Date(String(row.acceptedAt)).toLocaleDateString() : "—";
       const payoutSummary = formatRemotePayoutSummary(row?.payoutSummary || null);
       const remittanceDetail = payoutSummary ? `Remote payout rows: ${payoutSummary}` : `Remote payout state: ${String(row?.payoutState || "none")}`;
@@ -356,12 +377,11 @@ export default function FinanceRoyaltiesPage({
     return earningsLedgerRows.filter((row) => {
       if (ledgerContentFilter?.contentId && row.contentId !== ledgerContentFilter.contentId) return false;
       if (sourceFilter !== "all" && row.sourceLabel !== sourceFilter) return false;
-      if (statusFilter !== "all" && row.status !== statusFilter) return false;
       if (roleFilter !== "all" && row.roleLabel !== roleFilter) return false;
       if (originFilter !== "all" && row.originLabel !== originFilter) return false;
       return true;
     });
-  }, [earningsLedgerRows, ledgerContentFilter, sourceFilter, statusFilter, roleFilter, originFilter]);
+  }, [earningsLedgerRows, ledgerContentFilter, sourceFilter, roleFilter, originFilter]);
 
   const availableSources = useMemo(() => {
     const values = new Set<string>();
@@ -403,18 +423,8 @@ export default function FinanceRoyaltiesPage({
         <div className="text-sm text-neutral-400 mt-1">
           Your money across content: gross earned, fee impact, and net payout state.
         </div>
-        <div className="text-xs text-neutral-500 mt-2">
-          Seller revenue lives in Sales and Content. This Earnings view is your share only.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1">
-          This ledger reflects earnings visible from the current finance feed. Royalty-specific separation is shown only when source data supports it safely.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1">
-          If no royalty-type earnings are present in the current feed, this page shows catalog earnings only.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1">
-          Gross earned is pre-fee participation accrual. Net paid/net payable are post-fee payout states.
-        </div>
+        <div className="text-xs text-neutral-500 mt-2">Sales lives in Sales. This page is your participant/share statement.</div>
+        <div className="text-xs text-neutral-500 mt-1">Model: Gross earned (pre-fee) → Fees → Net paid + Net payable.</div>
         <div className="mt-3">
           <TimeScopeControls
             basis={timeBasis}
@@ -449,32 +459,31 @@ export default function FinanceRoyaltiesPage({
       </section>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Earnings Ledger</div>
-        <div className="text-xs text-neutral-500 mt-1">
-          Each row represents an earning event from a work in your catalog or collaborations.
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-base font-semibold">Earnings Ledger</div>
+            <div className="text-xs text-neutral-500 mt-1">Scope this statement by source, status, role, and origin.</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowLedgerGuidance((s) => !s)}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
+          >
+            {showLedgerGuidance ? "Hide guidance" : "Show guidance"}
+          </button>
         </div>
-        <div className="text-xs text-neutral-500 mt-1">
-          Row-level earnings by content and lifecycle state. Sales stay in Sales. Payout execution details stay in Payouts.
+        {showLedgerGuidance ? (
+          <div className="mt-2 rounded-lg border border-neutral-800 bg-neutral-900/30 p-3 text-xs text-neutral-500 space-y-1">
+            <div>Status model: Earned = gross accrued, Pending/Processing = unresolved net remittance, Partial = mixed outcomes, Paid = remitted.</div>
+            <div>Role/share/origin come from available royalties context; fallback role is Participant.</div>
+            <div>Date shows “—” when no row timestamp is available. Time scope is all-time until earned timestamps are consistently available.</div>
+            <div>Sales rows stay in Sales. Payout execution details stay in Payouts.</div>
+          </div>
+        ) : null}
+        <div className="mt-3 mb-2 text-xs text-neutral-500">
+          Filter rows:
         </div>
-        <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Status model: Earned = gross accrued, Pending/Processing = unresolved net remittance, Partial = mixed payout outcomes, Paid = remitted.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Role/share/origin context is attached only from existing Royalties context; when role is unavailable, rows fall back to Participant.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Includes earnings shown by the current finance feed. Date shows “—” when no row timestamp is available.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Period scoping is currently all-time for this statement because local earned rows do not yet include consistent earned timestamps.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Share is derived from your settled share versus total settled amount for the work.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1 mb-2">
-          Scope this ledger by source, role, origin, and status.
-        </div>
-        <div className="mb-2 flex flex-wrap gap-2">
+        <div className="mb-2 flex flex-wrap gap-2 rounded-lg border border-neutral-800 bg-neutral-900/30 p-2">
           <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
             <span>Source</span>
             <select
@@ -488,23 +497,6 @@ export default function FinanceRoyaltiesPage({
                   {source}
                 </option>
               ))}
-            </select>
-          </label>
-          <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
-            <span>Status</span>
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value as "all" | EarningsLedgerStatus)}
-              className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
-            >
-              <option value="all">All</option>
-              <option value="Earned">Earned</option>
-              <option value="Pending">Pending</option>
-              <option value="Processing">Processing</option>
-              <option value="Partial">Partial</option>
-              <option value="Paid">Paid</option>
-              <option value="Failed">Failed</option>
-              <option value="Blocked">Blocked</option>
             </select>
           </label>
           <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
@@ -563,17 +555,16 @@ export default function FinanceRoyaltiesPage({
                 <th className="text-left font-medium py-2">Origin</th>
                 <th className="text-left font-medium py-2">Share</th>
                 <th className="text-left font-medium py-2">Amount</th>
-                <th className="text-left font-medium py-2">Status</th>
                 <th className="text-left font-medium py-2">Remittance detail</th>
               </tr>
             </thead>
             <tbody>
               {visibleEarningsLedgerRows.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-3 text-neutral-500">
+                  <td colSpan={8} className="py-3 text-neutral-500">
                     {ledgerContentFilter
                       ? "No earnings rows found for this work."
-                      : sourceFilter !== "all" || statusFilter !== "all" || roleFilter !== "all" || originFilter !== "all"
+                      : sourceFilter !== "all" || roleFilter !== "all" || originFilter !== "all"
                         ? "No earnings rows match the current filters."
                         : "No earnings rows yet."}
                   </td>
@@ -596,13 +587,18 @@ export default function FinanceRoyaltiesPage({
                     <td className="py-2 text-neutral-300">{row.originLabel}</td>
                     <td className="py-2 text-neutral-300">{row.shareLabel}</td>
                     <td className="py-2">{formatSats(String(row.amountSats))}</td>
-                    <td className="py-2 text-neutral-300">{row.status}</td>
                     <td className="py-2 text-neutral-400">
-                      {row.remittanceDetail ? <div className="text-xs">{row.remittanceDetail}</div> : <div className="text-xs text-neutral-600">—</div>}
+                      {row.remittanceDetail ? (
+                        <div className="max-w-[20rem] truncate text-xs" title={row.remittanceDetail}>
+                          {row.remittanceDetail}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-neutral-600">—</div>
+                      )}
                       {row.remittanceActionable && onOpenPayouts ? (
                         <button
                           type="button"
-                          onClick={onOpenPayouts}
+                          onClick={() => onOpenPayouts({ contentId: String(row.contentId || "").trim(), title: row.contentTitle })}
                           className="mt-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
                         >
                           Open payouts

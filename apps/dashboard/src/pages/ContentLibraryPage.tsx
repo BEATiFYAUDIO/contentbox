@@ -4902,6 +4902,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         scopeId={it.id}
                         title="Audit"
                         exportName={`content-audit-${it.id}.json`}
+                        eventFilter="content"
                       />
 
                     </div>

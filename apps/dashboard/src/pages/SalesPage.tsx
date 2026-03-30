@@ -82,6 +82,7 @@ export default function SalesPage({
   const [royaltyRows, setRoyaltyRows] = React.useState<RoyaltyScopeRow[]>([]);
   const [selectedSaleId, setSelectedSaleId] = React.useState<string | null>(null);
   const [auditOpenSignal, setAuditOpenSignal] = React.useState(0);
+  const [showScopedAudit, setShowScopedAudit] = React.useState(false);
   const [timeBasis, setTimeBasis] = React.useState<TimeBasis>("sale");
   const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("all");
 
@@ -401,7 +402,7 @@ export default function SalesPage({
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-base font-semibold">Sales</div>
           <div className="text-sm text-neutral-400 mt-1">Recognized revenue events.</div>
@@ -571,7 +572,7 @@ export default function SalesPage({
         </div>
 
         <div className="hidden lg:block">
-          <div className="sticky top-24 rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
+          <div className="sticky top-32 rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
             <div className="text-sm font-semibold">Scoped work details</div>
             <div className="mt-1 text-xs text-neutral-500">
               Actions and audit evidence for the currently scoped row.
@@ -649,17 +650,32 @@ export default function SalesPage({
                   </div>
                 </div>
                 <div className="pt-1">
-                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-neutral-400">Audit evidence</div>
-                  <AuditPanel
-                    scopeType="content"
-                    scopeId={String(selectedSale.content.id)}
-                    title="Audit"
-                    defaultOpen
-                    exportName={`content-audit-${selectedSale.content.id}.json`}
-                    openSignal={auditOpenSignal}
-                    eventFilter="all"
-                    showFilterToggle
-                  />
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <div className="text-xs font-medium uppercase tracking-wide text-neutral-400">Audit evidence</div>
+                    <button
+                      type="button"
+                      onClick={() => setShowScopedAudit((s) => !s)}
+                      className="rounded-full border border-neutral-700 px-2.5 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800/60"
+                    >
+                      {showScopedAudit ? "Hide audit" : "Show audit"}
+                    </button>
+                  </div>
+                  {showScopedAudit ? (
+                    <AuditPanel
+                      scopeType="content"
+                      scopeId={String(selectedSale.content.id)}
+                      title="Audit"
+                      defaultOpen
+                      exportName={`content-audit-${selectedSale.content.id}.json`}
+                      openSignal={auditOpenSignal}
+                      eventFilter="commerce"
+                      bodyMaxHeightClass="max-h-[22rem]"
+                    />
+                  ) : (
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-500">
+                      Audit is hidden to keep Sales table first. Use “Show audit” when needed.
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (

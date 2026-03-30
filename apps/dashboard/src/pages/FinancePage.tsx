@@ -40,6 +40,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
   const [railsError, setRailsError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
   const [earningsBridgeFilter, setEarningsBridgeFilter] = useState<{ contentId: string; title: string; token: number } | null>(null);
+  const [payoutBridgeFilter, setPayoutBridgeFilter] = useState<{ contentId?: string; title: string; token: number } | null>(null);
   const railsHealthy = rails.some((r) => r.status === "healthy");
 
   const financePosture: FinancePosture = useMemo(() => {
@@ -259,7 +260,14 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         <FinanceRoyaltiesPage
           refreshSignal={tabRefresh.royalties}
           bridgeFilter={earningsBridgeFilter}
-          onOpenPayouts={() => setTab("payouts")}
+          onOpenPayouts={(bridge) => {
+            setPayoutBridgeFilter({
+              contentId: String(bridge?.contentId || "").trim() || undefined,
+              title: bridge?.title || "Untitled",
+              token: Date.now()
+            });
+            setTab("payouts");
+          }}
         />
       )}
       {tab === "earnings-v2" && (
@@ -272,7 +280,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
           }}
         />
       )}
-      {tab === "payouts" && <PayoutRailsPage />}
+      {tab === "payouts" && <PayoutRailsPage bridgeFilter={payoutBridgeFilter} />}
       {tab === "rails" && <PaymentRailsPage refreshSignal={tabRefresh.rails} />}
       {tab === "transactions" && <FinanceTransactionsPage refreshSignal={tabRefresh.transactions} />}
     </div>

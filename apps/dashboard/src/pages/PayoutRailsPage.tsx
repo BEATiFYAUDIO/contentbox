@@ -25,6 +25,7 @@ type Identity = {
 
 type PayoutRow = {
   id: string;
+  contentId?: string | null;
   paymentIntentId?: string | null;
   providerPaymentIntentId?: string | null;
   allocationId?: string | null;
@@ -65,6 +66,7 @@ type RoyaltiesContextResponse = {
 
 type RemoteRoyaltyContextRow = {
   contentId?: string | null;
+  contentTitle?: string | null;
   role?: string | null;
   percent?: number | string | null;
 };
@@ -78,7 +80,15 @@ function normalizeRoleLabel(raw: string | null | undefined): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
-export default function PayoutRailsPage() {
+type PayoutRailsPageProps = {
+  bridgeFilter?: {
+    contentId?: string;
+    title: string;
+    token: number;
+  } | null;
+};
+
+export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPageProps) {
   const [methods, setMethods] = React.useState<PayoutMethod[]>([]);
   const [identities, setIdentities] = React.useState<Identity[]>([]);
   const [selected, setSelected] = React.useState<PayoutMethod | null>(null);
@@ -100,8 +110,18 @@ export default function PayoutRailsPage() {
   const [roleByContent, setRoleByContent] = React.useState<Record<string, string>>({});
   const [shareByContent, setShareByContent] = React.useState<Record<string, string>>({});
   const [originByContent, setOriginByContent] = React.useState<Record<string, string>>({});
+  const [titleByContent, setTitleByContent] = React.useState<Record<string, string>>({});
   const [timeBasis, setTimeBasis] = React.useState<TimeBasis>("paid");
   const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("all");
+  const [contentScopeFilter, setContentScopeFilter] = React.useState<{ contentId?: string; title: string } | null>(null);
+
+  React.useEffect(() => {
+    if (!bridgeFilter) return;
+    setContentScopeFilter({
+      contentId: String(bridgeFilter?.contentId || "").trim() || undefined,
+      title: bridgeFilter.title || "Untitled"
+    });
+  }, [bridgeFilter?.token, bridgeFilter?.contentId, bridgeFilter?.title]);
 
   async function load() {
     setLoading(true);
@@ -143,6 +163,7 @@ export default function PayoutRailsPage() {
       const roleMap: Record<string, string> = {};
       const shareMap: Record<string, string> = {};
       const originMap: Record<string, string> = {};
+      const titleMap: Record<string, string> = {};
 
       if (localCtx.status === "fulfilled") {
         const works = Array.isArray(localCtx.value?.works) ? localCtx.value.works : [];
@@ -170,6 +191,8 @@ export default function PayoutRailsPage() {
         for (const row of rows) {
           const contentId = String(row?.contentId || "").trim();
           if (!contentId) continue;
+          const contentTitle = String((row as any)?.contentTitle || "").trim();
+          if (contentTitle) titleMap[contentId] = contentTitle;
           if (!roleMap[contentId]) {
             const roleLabel = normalizeRoleLabel(row?.role);
             if (roleLabel) roleMap[contentId] = roleLabel;
@@ -187,6 +210,7 @@ export default function PayoutRailsPage() {
       setRoleByContent(roleMap);
       setShareByContent(shareMap);
       setOriginByContent(originMap);
+      setTitleByContent(titleMap);
     })();
     return () => {
       active = false;
@@ -268,9 +292,33 @@ export default function PayoutRailsPage() {
       const tb = Date.parse(String(b.remittedAt || b.updatedAt || b.createdAt || "")) || 0;
       return tb - ta;
     });
-    if (timePeriod === "all") return rows;
-    return rows.filter((row) => isWithinPeriod(row.remittedAt, timePeriod));
-  }, [payoutRows, timePeriod]);
+    const scopeId = String(contentScopeFilter?.contentId || "").trim();
+    const scopeTitle = String(contentScopeFilter?.title || "").trim().toLowerCase();
+    const scopedByContent = (scopeId || scopeTitle)
+      ? rows.filter((row) => {
+          const rowContentId = String(row.content?.id || row.contentId || "").trim();
+          const rowTitle = String(row.content?.title || titleByContent[rowContentId] || "").trim().toLowerCase();
+          const useId = scopeId && !scopeId.startsWith("remote:");
+          const idMatch = useId ? rowContentId === scopeId : false;
+          const titleMatch = scopeTitle ? rowTitle === scopeTitle : false;
+          return idMatch || titleMatch;
+        })
+      : rows;
+    if (timePeriod === "all") return scopedByContent;
+    return scopedByContent.filter((row) => isWithinPeriod(row.remittedAt, timePeriod));
+  }, [payoutRows, timePeriod, contentScopeFilter, titleByContent]);
+
+  const payoutContentId = React.useCallback((row: PayoutRow) => {
+    return String(row.content?.id || row.contentId || "").trim();
+  }, []);
+
+  const payoutContentTitle = React.useCallback(
+    (row: PayoutRow) => {
+      const contentId = payoutContentId(row);
+      return String(row.content?.title || titleByContent[contentId] || "Content").trim() || "Content";
+    },
+    [payoutContentId, titleByContent]
+  );
 
   const rowsMissingPaidTimestamp = React.useMemo(() => {
     if (timePeriod === "all") return 0;
@@ -390,6 +438,21 @@ export default function PayoutRailsPage() {
           </div>
         </div>
         <div className="mt-3 overflow-x-auto">
+          {contentScopeFilter ? (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs">
+              <span className="text-neutral-500">Scope:</span>
+              <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-200">
+                {contentScopeFilter.title || "Content"}
+              </span>
+              <button
+                type="button"
+                onClick={() => setContentScopeFilter(null)}
+                className="rounded-full border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800/60"
+              >
+                Clear scope
+              </button>
+            </div>
+          ) : null}
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-neutral-400">
@@ -409,7 +472,9 @@ export default function PayoutRailsPage() {
                   <td colSpan={8} className="py-3 px-3 text-neutral-500">
                     {payoutRows.length === 0
                       ? "No payout execution rows yet for this account."
-                      : "No payout rows in the selected paid-time period."}
+                      : contentScopeFilter
+                        ? "No payout rows for the selected work in this paid-time scope."
+                        : "No payout rows in the selected paid-time period."}
                   </td>
                 </tr>
               ) : (
@@ -425,7 +490,7 @@ export default function PayoutRailsPage() {
                                 ? new Date(row.createdAt).toLocaleString()
                                 : "—"}
                         </td>
-                        <td className="py-2 px-3 text-neutral-200">{row.content?.title || "Content"}</td>
+                        <td className="py-2 px-3 text-neutral-200">{payoutContentTitle(row)}</td>
                         <td className="py-2 px-3">{formatSats(row.amountSats)}</td>
                         <td className={["py-2 px-3", payoutStatusTone(row.status)].join(" ")}>{payoutStatusLabel(row.status)}</td>
                         <td className={["py-2 px-3 text-xs", processingSla(row).tone].join(" ")} title={processingSla(row).detail}>
@@ -475,15 +540,15 @@ export default function PayoutRailsPage() {
                               </div>
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Role</div>
-                                <div className="mt-1 text-neutral-300">{roleByContent[String(row.content?.id || "").trim()] || "Participant"}</div>
+                                <div className="mt-1 text-neutral-300">{roleByContent[payoutContentId(row)] || "Participant"}</div>
                               </div>
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Origin</div>
-                                <div className="mt-1 text-neutral-300">{originByContent[String(row.content?.id || "").trim()] || "—"}</div>
+                                <div className="mt-1 text-neutral-300">{originByContent[payoutContentId(row)] || "—"}</div>
                               </div>
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Share</div>
-                                <div className="mt-1 text-neutral-300">{shareByContent[String(row.content?.id || "").trim()] || "—"}</div>
+                                <div className="mt-1 text-neutral-300">{shareByContent[payoutContentId(row)] || "—"}</div>
                               </div>
                               <div>
                                 <div className="uppercase tracking-wide text-neutral-500">Remitted</div>
