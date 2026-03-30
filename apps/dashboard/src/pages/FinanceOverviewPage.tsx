@@ -814,6 +814,11 @@ export default function FinanceOverviewPage({
     grossEarned > 0 || participantAccrued > 0 || scopedEarnings.netPayable > 0 || scopedEarnings.netPaid > 0 || scopedEarnings.feesWithheld > 0;
   const processingPayouts = Math.max(0, scopedEarnings.netPayable);
   const needsAttentionPayouts = Math.max(0, scopedEarnings.failed);
+  const earningsReconTotal = Math.max(
+    0,
+    scopedEarnings.netPaid + scopedEarnings.netPayable + scopedEarnings.feesWithheld + scopedEarnings.failed
+  );
+  const earningsReconDelta = Math.max(0, grossEarned - earningsReconTotal);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -946,6 +951,22 @@ export default function FinanceOverviewPage({
             <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(scopedEarnings.netPayable))}</div>
             <div className="mt-1 text-xs text-amber-200/80">Unresolved post-fee payout backlog (pending/ready/forwarding only).</div>
           </div>
+        </div>
+        <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950/30 p-3 text-xs text-neutral-400">
+          <div className="font-medium text-neutral-300">How these cards reconcile</div>
+          <div className="mt-1">
+            Sales is buyer-payment gross for your seller-of-record works. Earnings cards are your participant share across owned and collaborative works.
+          </div>
+          <div className="mt-1 text-neutral-300">
+            Your earnings math: {formatSats(String(grossEarned))} gross = {formatSats(String(scopedEarnings.netPaid))} net paid +{" "}
+            {formatSats(String(scopedEarnings.netPayable))} net payable + {formatSats(String(scopedEarnings.feesWithheld))} fees withheld
+            {scopedEarnings.failed > 0 ? ` + ${formatSats(String(scopedEarnings.failed))} failed/blocked` : ""}.
+          </div>
+          {earningsReconDelta > 0 ? (
+            <div className="mt-1 text-amber-300">
+              Reconciliation delta in this scoped view: {formatSats(String(earningsReconDelta))}.
+            </div>
+          ) : null}
         </div>
       </section>
 
