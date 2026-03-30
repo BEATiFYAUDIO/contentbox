@@ -133,6 +133,19 @@ export default function SplitParticipationsPage(props: {
     }
   };
   const fmtSats = (v: bigint): string => `${Number(v).toLocaleString()} sats`;
+  const openSplitEditor = (contentId: string) => {
+    const id = String(contentId || "").trim();
+    if (!id) return;
+    window.location.href = `/content/${encodeURIComponent(id)}/splits`;
+  };
+  const openSplitSummary = (contentId?: string | null) => {
+    const id = String(contentId || "").trim();
+    if (id) {
+      window.location.href = `/royalties/${encodeURIComponent(id)}`;
+      return;
+    }
+    window.location.href = "/splits";
+  };
 
   const activeWorks = works.filter((p) => {
     const relation: LibraryRelation = p.myRole === "owner" ? "owner" : "participant";
@@ -498,9 +511,7 @@ export default function SplitParticipationsPage(props: {
                 {toBigInt(p.withdrawnSats) > 0n ? <Badge label="Paid" tone="success" /> : null}
                 {p.contentId ? (
                   <button
-                    onClick={() => {
-                      window.location.href = `/royalties/${p.contentId}`;
-                    }}
+                    onClick={() => openSplitEditor(p.contentId)}
                     className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                   >
                     Open
@@ -565,9 +576,7 @@ export default function SplitParticipationsPage(props: {
                 {toBigInt(p.withdrawnSats) > 0n ? <Badge label="Paid" tone="success" /> : null}
                 {p.contentId ? (
                   <button
-                    onClick={() => {
-                      window.location.href = `/royalties/${p.contentId}`;
-                    }}
+                    onClick={() => openSplitEditor(p.contentId)}
                     className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                   >
                     Open
@@ -621,9 +630,9 @@ export default function SplitParticipationsPage(props: {
                     <Badge label="Pending payout" tone="amber" />
                   ) : null}
                   {String(r.payoutState || "").toLowerCase() === "failed" ? <Badge label="Payout failed" tone="warning" /> : null}
-                  {r.inviteUrl ? (
+                  {r.contentId || r.inviteUrl ? (
                     <button
-                      onClick={() => window.open(r.inviteUrl as string, "_blank", "noopener,noreferrer")}
+                      onClick={() => openSplitSummary(r.contentId)}
                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                     >
                       Open
