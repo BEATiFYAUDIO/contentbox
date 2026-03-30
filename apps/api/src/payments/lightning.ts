@@ -608,8 +608,9 @@ function graphCacheSet(key: string, candidates: GraphCandidate[]) {
   graphStaleCache.set(key, candidates, GRAPH_STALE_TTL_MS);
 }
 
-async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<GraphCandidate[]> {
-  const graph = await withTimeout(lndFetchJson(lnd, "/v1/graph", { method: "GET" }), 5000, "GRAPH_FETCH_TIMEOUT");
+async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig, graphTimeoutMs = 5000): Promise<GraphCandidate[]> {
+  const timeoutMs = Math.max(1000, Math.min(10000, Math.floor(Number(graphTimeoutMs) || 5000)));
+  const graph = await withTimeout(lndFetchJson(lnd, "/v1/graph", { method: "GET" }), timeoutMs, "GRAPH_FETCH_TIMEOUT");
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
   const degree = new Map<string, number>();
@@ -678,7 +679,10 @@ async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<Grap
   return sliced;
 }
 
-async function buildGraphCandidates(lnd: RuntimeLndConfig): Promise<{ candidates: GraphCandidate[]; fromCache: boolean }> {
+async function buildGraphCandidates(
+  lnd: RuntimeLndConfig,
+  graphTimeoutMs = 5000
+): Promise<{ candidates: GraphCandidate[]; fromCache: boolean }> {
   const key = lndCacheKey(lnd);
   const fresh = graphFreshCache.get(key);
   if (fresh) return { candidates: fresh, fromCache: true };
@@ -687,7 +691,7 @@ async function buildGraphCandidates(lnd: RuntimeLndConfig): Promise<{ candidates
   if (stale) {
     graphSingleFlight
       .do(`graph:${key}`, async () => {
-        const next = await fetchAndScoreGraphCandidates(lnd);
+        const next = await fetchAndScoreGraphCandidates(lnd, graphTimeoutMs);
         graphCacheSet(key, next);
       })
       .catch(() => {});
@@ -695,7 +699,7 @@ async function buildGraphCandidates(lnd: RuntimeLndConfig): Promise<{ candidates
   }
 
   const fetched = await graphSingleFlight.do(`graph:${key}`, async () => {
-    const next = await fetchAndScoreGraphCandidates(lnd);
+    const next = await fetchAndScoreGraphCandidates(lnd, graphTimeoutMs);
     graphCacheSet(key, next);
     return next;
   });
@@ -852,7 +856,7 @@ export async function ensurePeerConnected(
 
 export async function getPeerSuggestions(
   prisma: PrismaLike,
-  input?: { limit?: number; probeTop?: number }
+  input?: { limit?: number; probeTop?: number; graphTimeoutMs?: number }
 ): Promise<SuggestionResult> {
   const lnd = await getLndConfig(prisma);
   if (!lnd) throw new Error("NODE_NOT_CONFIGURED");
@@ -861,7 +865,8 @@ export async function getPeerSuggestions(
   const probeTop = Math.max(0, Math.min(12, Math.floor(Number(input?.probeTop ?? 12))));
 
   try {
-    const graphRes = await buildGraphCandidates(lnd);
+    const graphTimeoutMs = Math.max(1000, Math.min(10000, Math.floor(Number(input?.graphTimeoutMs ?? 5000))));
+    const graphRes = await buildGraphCandidates(lnd, graphTimeoutMs);
     const top = graphRes.candidates.slice(0, 50);
     const toProbe = top.slice(0, probeTop);
     const probeMap = new Map<string, { reachableNow: boolean; reason?: string }>();

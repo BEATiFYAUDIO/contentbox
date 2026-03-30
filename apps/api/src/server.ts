@@ -30312,7 +30312,9 @@ app.get("/api/admin/lightning/peers/suggestions", { preHandler: [requireAuth, re
   try {
     const limitRaw = Number((req.query || {}).limit ?? 20);
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
-    const out = await getPeerSuggestions(prisma as any, { limit, probeTop: 12 });
+    const probeTopRaw = Number((req.query || {}).probeTop ?? 6);
+    const probeTop = Number.isFinite(probeTopRaw) ? Math.max(0, Math.min(12, Math.floor(probeTopRaw))) : 6;
+    const out = await getPeerSuggestions(prisma as any, { limit, probeTop, graphTimeoutMs: 2000 });
     return reply.send({ status: "ok", peers: out.peers, meta: out.meta });
   } catch (e: any) {
     const message = String(e?.message || e || "");
@@ -31255,12 +31257,15 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = String(me?.email || "").trim().toLowerCase();
   const allocationWhere = participantPayoutUserAllocationWhere(userId, email);
-  const remoteForcedPaidCount = await queueParticipantPayoutStatusTruthReconcileForUser(
+  // Keep overview requests fast: kick reconciliation off in the background and
+  // compute summary from current canonical payout rows.
+  void queueParticipantPayoutStatusTruthReconcileForUser(
     userId,
     email,
     "finance_overview",
     app.log
   );
+  const remoteForcedPaidCount = 0;
   const rows = await prisma.participantPayout
     .findMany({
       where: {
@@ -31458,7 +31463,8 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = (me?.email || "").toLowerCase();
-  await queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_royalties", app.log);
+  // Avoid blocking first render on delegated-provider reconciliation calls.
+  void queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_royalties", app.log);
 
   const contents = await prisma.contentItem.findMany({
     where: { ownerUserId: userId },
@@ -31620,7 +31626,8 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = String(me?.email || "").trim().toLowerCase();
-  await queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_payouts", app.log);
+  // Avoid blocking first render on delegated-provider reconciliation calls.
+  void queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_payouts", app.log);
   const periodRaw = String((req.query as any)?.period || "all").trim().toLowerCase();
   const basisRaw = String((req.query as any)?.basis || "paid").trim().toLowerCase();
   const periodDays =
