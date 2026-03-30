@@ -301,7 +301,7 @@ export default function ConfigPage({
   }, [apiBase]);
 
   useEffect(() => {
-    if (!tunnelEnabled || !token) return;
+    if (!token) return;
     let cancelled = false;
     (async () => {
       try {
@@ -313,9 +313,17 @@ export default function ConfigPage({
         });
         const json = await res.json();
         if (!cancelled) {
-          setTunnelProvider(json?.provider || "cloudflare");
-          setTunnelDomain(json?.domain || "");
-          setTunnelName(json?.tunnelName || "");
+          const provider = json?.provider || "cloudflare";
+          const domain = json?.domain || "";
+          const name = json?.tunnelName || "";
+          setTunnelProvider(provider);
+          setTunnelDomain(domain);
+          setTunnelName(name);
+          const hasSavedNamedConfig = Boolean(String(provider || "").trim() || String(domain || "").trim() || String(name || "").trim());
+          if (hasSavedNamedConfig && !tunnelEnabled) {
+            setTunnelEnabled(true);
+            writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, "1");
+          }
         }
       } catch (e: any) {
         if (!cancelled) setTunnelError(e?.message || String(e));
@@ -1242,22 +1250,7 @@ export default function ConfigPage({
               const v = e.target.checked;
               setTunnelEnabled(v);
               writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
-              if (!v && token) {
-                try {
-                  const res = await fetch(`${apiBase}/api/public/config`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                    body: JSON.stringify({ provider: null, domain: null, tunnelName: null })
-                  });
-                  const json = await res.json();
-                  if (res.ok) {
-                    setTunnelProvider(json?.provider || "cloudflare");
-                    setTunnelDomain(json?.domain || "");
-                    setTunnelName(json?.tunnelName || "");
-                    await refreshPublicStatus();
-                  }
-                } catch {}
-              }
+              // UI preference only: do not clear persisted named-tunnel config when toggled off.
               if (!v && publicStatus?.mode === "named" && publicStatus?.status !== "offline") {
                 setPublicMsg("Named tunnel is still running. Click Stop sharing to shut it down.");
               }
