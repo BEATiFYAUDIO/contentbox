@@ -814,11 +814,37 @@ type AuditEventOut = {
   id: string;
   ts: string;
   type: string;
+  archetype?: string;
   summary?: string | null;
   actor?: HistoryActor | null;
   details?: any;
   diff?: any;
 };
+
+function resolveAuditArchetype(scopeType: string, type: string): string {
+  const scope = String(scopeType || "").trim().toLowerCase();
+  const action = String(type || "").trim().toLowerCase();
+  const isCommerce =
+    action.startsWith("sale.") ||
+    action.startsWith("sales.") ||
+    action.startsWith("payment.") ||
+    action.startsWith("payments.") ||
+    action.startsWith("invoice.") ||
+    action.startsWith("invoices.") ||
+    action.startsWith("settlement.") ||
+    action.startsWith("settlements.") ||
+    action.startsWith("revenue.");
+  if (scope === "split" || action.startsWith("split.") || action.startsWith("splits.")) return "rights_and_splits";
+  if (scope === "invite" || action.startsWith("invite.") || action === "invite") return "identity_and_access";
+  if (scope === "identity" || action.startsWith("identity.")) return "identity_and_access";
+  if (scope === "clearance" || action.startsWith("clearance.")) return "clearance";
+  if (scope === "library" || action.startsWith("library.")) return "content_lifecycle";
+  if (action.startsWith("payout.") || action.startsWith("payouts.")) return "payout_execution";
+  if (scope === "royalty" || action.startsWith("royalty.") || action.startsWith("royalties.")) return "commerce";
+  if (isCommerce) return "commerce";
+  if (scope === "content" || action.startsWith("content.")) return "content_lifecycle";
+  return "system";
+}
 
 function actorFromUser(u: { id: string; email?: string | null; displayName?: string | null } | null): HistoryActor | null {
   if (!u) return null;
@@ -11097,6 +11123,160 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         details: e.payloadJson || null
       });
     });
+
+    // Commerce evidence enrichment (read-only, owner-only):
+    // Adds sale/payment/settlement/payout snapshots so content-scoped audit can explain money flow
+    // without changing settlement logic or payout execution behavior.
+    if (content.ownerUserId === userId) {
+      const [salesRows, paymentIntentRows, settlementRows, participantPayoutRows] = await Promise.all([
+        prisma.sale.findMany({
+          where: { contentId: content.id },
+          orderBy: { recognizedAt: "desc" },
+          take: 50,
+          select: {
+            id: true,
+            intentId: true,
+            amountSats: true,
+            currency: true,
+            rail: true,
+            memo: true,
+            recognizedAt: true
+          }
+        }),
+        prisma.paymentIntent.findMany({
+          where: { contentId: content.id, purpose: "CONTENT_PURCHASE" as any },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+          select: {
+            id: true,
+            status: true,
+            amountSats: true,
+            providerId: true,
+            paidAt: true,
+            createdAt: true,
+            updatedAt: true
+          }
+        }),
+        prisma.settlement.findMany({
+          where: { contentId: content.id },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+          select: {
+            id: true,
+            paymentIntentId: true,
+            netAmountSats: true,
+            createdAt: true
+          }
+        }),
+        prisma.participantPayout
+          .findMany({
+            where: {
+              allocation: {
+                contentId: content.id
+              }
+            },
+            orderBy: { updatedAt: "desc" },
+            take: 100,
+            select: {
+              id: true,
+              paymentIntentId: true,
+              providerPaymentIntentId: true,
+              amountSats: true,
+              status: true,
+              payoutRail: true,
+              destinationType: true,
+              destinationSummary: true,
+              payoutReference: true,
+              remittedAt: true,
+              updatedAt: true,
+              allocation: {
+                select: {
+                  role: true,
+                  participantEmail: true,
+                  participantUserId: true
+                }
+              }
+            }
+          })
+          .catch((err: any) => {
+            if (isMissingParticipantPayoutTableError(err)) return [];
+            throw err;
+          })
+      ]);
+
+      salesRows.forEach((row) => {
+        events.push({
+          id: `sale:${row.id}`,
+          ts: row.recognizedAt.toISOString(),
+          type: "sale.recognized",
+          summary: content.title,
+          details: {
+            saleId: row.id,
+            paymentIntentId: row.intentId,
+            amountSats: String(row.amountSats || "0"),
+            currency: row.currency,
+            rail: row.rail,
+            memo: row.memo || null
+          }
+        });
+      });
+
+      paymentIntentRows.forEach((row) => {
+        events.push({
+          id: `payment.intent:${row.id}`,
+          ts: (row.paidAt || row.updatedAt || row.createdAt).toISOString(),
+          type: "payment.intent",
+          summary: content.title,
+          details: {
+            paymentIntentId: row.id,
+            status: String(row.status || "").toLowerCase(),
+            amountSats: String(row.amountSats || "0"),
+            providerId: row.providerId || null,
+            paidAt: row.paidAt ? row.paidAt.toISOString() : null
+          }
+        });
+      });
+
+      settlementRows.forEach((row) => {
+        events.push({
+          id: `settlement:${row.id}`,
+          ts: row.createdAt.toISOString(),
+          type: "settlement.created",
+          summary: content.title,
+          details: {
+            settlementId: row.id,
+            paymentIntentId: row.paymentIntentId,
+            netAmountSats: String(row.netAmountSats || "0")
+          }
+        });
+      });
+
+      participantPayoutRows.forEach((row) => {
+        events.push({
+          id: `participant_payout:${row.id}`,
+          ts: (row.remittedAt || row.updatedAt).toISOString(),
+          type: "payout.participant",
+          summary: content.title,
+          details: {
+            participantPayoutId: row.id,
+            paymentIntentId: row.paymentIntentId,
+            providerPaymentIntentId: row.providerPaymentIntentId || null,
+            amountSats: String(row.amountSats || "0"),
+            status: parseParticipantPayoutStatus(row.status),
+            payoutRail: row.payoutRail || null,
+            destinationType: row.destinationType || null,
+            destinationSummary: row.destinationSummary || null,
+            payoutReference: row.payoutReference || null,
+            remittedAt: row.remittedAt ? row.remittedAt.toISOString() : null,
+            participant: {
+              role: row.allocation?.role || null,
+              participantEmail: row.allocation?.participantEmail || null,
+              participantUserId: row.allocation?.participantUserId || null
+            }
+          }
+        });
+      });
+    }
   } else if (scopeType === "split") {
     if (!scopeId) {
       const splitVersions = await prisma.splitVersion.findMany({
@@ -11239,6 +11419,27 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         }
       });
     });
+
+    // Invite evidence enrichment (read-only):
+    // Include persisted invitation audit trail rows when present.
+    const inviteIds = Array.from(new Set(invites.map((inv) => String(inv.id || "").trim()).filter(Boolean)));
+    if (inviteIds.length) {
+      const inviteAudits = await prisma.auditEvent.findMany({
+        where: { entityType: "Invitation", entityId: { in: inviteIds } as any },
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        include: { user: { select: { id: true, email: true, displayName: true } } }
+      });
+      inviteAudits.forEach((e) => {
+        events.push({
+          id: `invite.audit:${e.id}`,
+          ts: e.createdAt.toISOString(),
+          type: e.action,
+          actor: actorFromUser(e.user),
+          details: e.payloadJson || null
+        });
+      });
+    }
   } else if (scopeType === "royalty") {
     const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, displayName: true } });
     const participantRows = await prisma.splitParticipant.findMany({
@@ -11286,6 +11487,69 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         }
       });
     }
+
+    // Royalty evidence enrichment (read-only):
+    // Append participant payout execution rows for this account so payable/paid state is auditable.
+    const payoutRows = await prisma.participantPayout
+      .findMany({
+        where: {
+          allocation: {
+            ...participantPayoutUserAllocationWhere(userId, me?.email || "")
+          }
+        },
+        orderBy: [{ remittedAt: "desc" }, { updatedAt: "desc" }],
+        take: 200,
+        select: {
+          id: true,
+          paymentIntentId: true,
+          providerPaymentIntentId: true,
+          amountSats: true,
+          status: true,
+          payoutRail: true,
+          destinationType: true,
+          destinationSummary: true,
+          payoutReference: true,
+          remittedAt: true,
+          updatedAt: true,
+          allocation: {
+            select: {
+              contentId: true,
+              role: true,
+              participantEmail: true,
+              participantUserId: true
+            }
+          }
+        }
+      })
+      .catch((err: any) => {
+        if (isMissingParticipantPayoutTableError(err)) return [];
+        throw err;
+      });
+    payoutRows.forEach((row) => {
+      events.push({
+        id: `royalty.payout:${row.id}`,
+        ts: (row.remittedAt || row.updatedAt).toISOString(),
+        type: "payout.participant",
+        summary: row.allocation?.contentId || null,
+        details: {
+          participantPayoutId: row.id,
+          paymentIntentId: row.paymentIntentId,
+          providerPaymentIntentId: row.providerPaymentIntentId || null,
+          amountSats: String(row.amountSats || "0"),
+          status: parseParticipantPayoutStatus(row.status),
+          payoutRail: row.payoutRail || null,
+          destinationType: row.destinationType || null,
+          destinationSummary: row.destinationSummary || null,
+          payoutReference: row.payoutReference || null,
+          remittedAt: row.remittedAt ? row.remittedAt.toISOString() : null,
+          participant: {
+            role: row.allocation?.role || null,
+            participantEmail: row.allocation?.participantEmail || null,
+            participantUserId: row.allocation?.participantUserId || null
+          }
+        }
+      });
+    });
   } else if (scopeType === "clearance" && scopeId) {
     const link = await prisma.contentLink.findUnique({
       where: { id: scopeId },
@@ -11340,6 +11604,24 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         avatarUrl: user.avatarUrl || null
       }
     });
+
+    // Identity evidence enrichment (read-only):
+    // Include payout destination/config changes already captured as Identity audit rows.
+    const identityAudits = await prisma.auditEvent.findMany({
+      where: { entityType: "Identity", entityId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+      include: { user: { select: { id: true, email: true, displayName: true } } }
+    });
+    identityAudits.forEach((e) => {
+      events.push({
+        id: `identity.audit:${e.id}`,
+        ts: e.createdAt.toISOString(),
+        type: e.action,
+        actor: actorFromUser(e.user),
+        details: e.payloadJson || null
+      });
+    });
   } else if (scopeType === "library") {
     const content = await prisma.contentItem.findMany({
       where: { ownerUserId: userId, deletedAt: null },
@@ -11355,12 +11637,37 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         details: { id: c.id, type: c.type, status: c.status, storefrontStatus: c.storefrontStatus }
       });
     });
+
+    // Library evidence enrichment (read-only):
+    // Include latest content-level audit actions across the current owner's catalog.
+    const contentIds = content.map((c) => c.id);
+    if (contentIds.length) {
+      const contentAudits = await prisma.auditEvent.findMany({
+        where: { entityType: "ContentItem", entityId: { in: contentIds } as any },
+        orderBy: { createdAt: "desc" },
+        take: 250,
+        include: { user: { select: { id: true, email: true, displayName: true } } }
+      });
+      contentAudits.forEach((e) => {
+        events.push({
+          id: `library.audit:${e.id}`,
+          ts: e.createdAt.toISOString(),
+          type: e.action,
+          actor: actorFromUser(e.user),
+          details: e.payloadJson || null
+        });
+      });
+    }
   } else {
     return badRequest(reply, "Unsupported scopeType");
   }
 
   events.sort((a, b) => (a.ts < b.ts ? 1 : -1));
-  return reply.send(jsonSafe({ ok: true, scopeType, scopeId, audit: events }));
+  const typedEvents = events.map((event) => ({
+    ...event,
+    archetype: resolveAuditArchetype(scopeType, event.type)
+  }));
+  return reply.send(jsonSafe({ ok: true, scopeType, scopeId, audit: typedEvents }));
 });
 
 // Invite audit history (owner only)

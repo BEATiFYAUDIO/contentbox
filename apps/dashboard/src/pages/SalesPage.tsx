@@ -648,15 +648,19 @@ export default function SalesPage({
                     </button>
                   </div>
                 </div>
-                <AuditPanel
-                  scopeType="content"
-                  scopeId={String(selectedSale.content.id)}
-                  title="Audit"
-                  exportName={`content-audit-${selectedSale.content.id}.json`}
-                  openSignal={auditOpenSignal}
-                  eventFilter="commerce"
-                  showFilterToggle
-                />
+                <div className="pt-1">
+                  <div className="mb-2 text-xs font-medium uppercase tracking-wide text-neutral-400">Audit evidence</div>
+                  <AuditPanel
+                    scopeType="content"
+                    scopeId={String(selectedSale.content.id)}
+                    title="Audit"
+                    defaultOpen
+                    exportName={`content-audit-${selectedSale.content.id}.json`}
+                    openSignal={auditOpenSignal}
+                    eventFilter="all"
+                    showFilterToggle
+                  />
+                </div>
               </div>
             ) : (
               <div className="mt-3 text-xs text-neutral-500">

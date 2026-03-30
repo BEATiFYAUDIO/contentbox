@@ -1,5 +1,7 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
+import TimeScopeControls from "../components/TimeScopeControls";
+import { isWithinPeriod, type TimeBasis, type TimePeriod } from "../lib/timeScope";
 
 type ProviderSummary = {
   delegatedCreators: number;
@@ -217,6 +219,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   >("all");
   const [expandedIntentIds, setExpandedIntentIds] = useState<Record<string, boolean>>({});
   const [payoutTableScope, setPayoutTableScope] = useState<"latest" | "all">("latest");
+  const [timeBasis, setTimeBasis] = useState<TimeBasis>("paid");
+  const [timePeriod, setTimePeriod] = useState<TimePeriod>("30d");
   const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
 
@@ -276,24 +280,77 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     return () => window.clearInterval(tick);
   }, [load]);
 
+  const scopedPaymentIntents = useMemo(() => {
+    if (timePeriod === "all") return paymentIntents;
+    return paymentIntents.filter((row) => {
+      const ts = timeBasis === "sale" ? (row.paidAt || row.createdAt) : (row.remittedAt || row.paidAt || row.updatedAt);
+      return isWithinPeriod(ts, timePeriod);
+    });
+  }, [paymentIntents, timeBasis, timePeriod]);
+  const scopedParticipantPayouts = useMemo(() => {
+    if (timePeriod === "all") return participantPayouts;
+    return participantPayouts.filter((row) => {
+      const ts = timeBasis === "sale" ? row.updatedAt : (row.remittedAt || row.updatedAt);
+      return isWithinPeriod(ts, timePeriod);
+    });
+  }, [participantPayouts, timeBasis, timePeriod]);
+  const scopedPaymentReceipts = useMemo(() => {
+    if (timePeriod === "all") return paymentReceipts;
+    return paymentReceipts.filter((row) => {
+      const ts = timeBasis === "sale" ? row.paidAt : row.paidAt;
+      return isWithinPeriod(ts, timePeriod);
+    });
+  }, [paymentReceipts, timeBasis, timePeriod]);
+  const scopedSummary = useMemo(() => {
+    const settledIntents = scopedPaymentIntents.filter((row) => row.status === "paid");
+    const add = (a: bigint, b: string | number | null | undefined) => a + BigInt(String(b || "0"));
+    const gross = settledIntents.reduce((acc, row) => add(acc, row.grossAmountSats || row.amountSats), 0n);
+    const invoicingFee = settledIntents.reduce((acc, row) => add(acc, row.providerInvoicingFeeSats), 0n);
+    const hostingFee = settledIntents.reduce((acc, row) => add(acc, row.providerDurableHostingFeeSats), 0n);
+    const providerFee = settledIntents.reduce((acc, row) => add(acc, row.providerFeeSats), 0n);
+    const distributable = settledIntents.reduce((acc, row) => add(acc, row.creatorNetSats), 0n);
+    const payoutsPaid = scopedParticipantPayouts
+      .filter((row) => row.status === "paid")
+      .reduce((acc, row) => add(acc, row.amountSats), 0n);
+    const payoutsPending = scopedParticipantPayouts
+      .filter((row) => row.status === "pending" || row.status === "ready" || row.status === "forwarding")
+      .reduce((acc, row) => add(acc, row.amountSats), 0n);
+    const payoutsFailed = scopedParticipantPayouts
+      .filter((row) => row.status === "failed" || row.status === "blocked")
+      .reduce((acc, row) => add(acc, row.amountSats), 0n);
+    return {
+      activePaymentIntents: scopedPaymentIntents.filter((p) => p.status === "created" || p.status === "issued").length,
+      settledPayments: settledIntents.length,
+      totals: {
+        grossCollectedSats: gross.toString(),
+        providerInvoicingFeeEarnedSats: invoicingFee.toString(),
+        providerDurableHostingFeeEarnedSats: hostingFee.toString(),
+        providerFeeEarnedSats: providerFee.toString(),
+        creatorNetOwedSats: distributable.toString(),
+        creatorNetPaidSats: payoutsPaid.toString(),
+        creatorNetPendingSats: payoutsPending.toString(),
+        creatorNetFailedSats: payoutsFailed.toString()
+      }
+    };
+  }, [scopedPaymentIntents, scopedParticipantPayouts]);
   const summaryCards = [
     { label: "Delegated Creators", value: summary?.delegatedCreators ?? creatorLinks.length },
     { label: "Published Items", value: summary?.publishedItems ?? delegatedPublishes.length },
-    { label: "Active Payment Intents", value: summary?.activePaymentIntents ?? paymentIntents.filter((p) => p.status === "created" || p.status === "issued").length },
-    { label: "Settled Invoices", value: summary?.settledPayments ?? paymentReceipts.length }
+    { label: "Active Payment Intents", value: scopedSummary.activePaymentIntents },
+    { label: "Settled Invoices", value: scopedSummary.settledPayments || scopedPaymentReceipts.length }
   ];
   const economicsCards = [
-    { label: "Buyer Gross", value: `${sats(summary?.totals?.grossCollectedSats)} sats` },
-    { label: "Invoicing Fee Earned", value: `${sats(summary?.totals?.providerInvoicingFeeEarnedSats)} sats` },
-    { label: "Durable Hosting Fee Earned", value: `${sats(summary?.totals?.providerDurableHostingFeeEarnedSats)} sats` },
-    { label: "Total Provider Fees", value: `${sats(summary?.totals?.providerFeeEarnedSats)} sats` },
-    { label: "Distributable to Participants", value: `${sats(summary?.totals?.creatorNetOwedSats)} sats` },
-    { label: "Participant Payouts Paid", value: `${sats(summary?.totals?.creatorNetPaidSats)} sats` },
-    { label: "Participant Payouts Pending", value: `${sats(summary?.totals?.creatorNetPendingSats)} sats` },
-    { label: "Participant Payouts Failed", value: `${sats(summary?.totals?.creatorNetFailedSats)} sats` }
+    { label: "Buyer Gross", value: `${sats(scopedSummary.totals.grossCollectedSats)} sats` },
+    { label: "Invoicing Fee Earned", value: `${sats(scopedSummary.totals.providerInvoicingFeeEarnedSats)} sats` },
+    { label: "Durable Hosting Fee Earned", value: `${sats(scopedSummary.totals.providerDurableHostingFeeEarnedSats)} sats` },
+    { label: "Total Provider Fees", value: `${sats(scopedSummary.totals.providerFeeEarnedSats)} sats` },
+    { label: "Distributable to Participants", value: `${sats(scopedSummary.totals.creatorNetOwedSats)} sats` },
+    { label: "Participant Payouts Paid", value: `${sats(scopedSummary.totals.creatorNetPaidSats)} sats` },
+    { label: "Participant Payouts Pending", value: `${sats(scopedSummary.totals.creatorNetPendingSats)} sats` },
+    { label: "Participant Payouts Failed", value: `${sats(scopedSummary.totals.creatorNetFailedSats)} sats` }
   ];
   const visiblePaymentIntents =
-    paymentStatusFilter === "all" ? paymentIntents : paymentIntents.filter((intent) => intent.status === paymentStatusFilter);
+    paymentStatusFilter === "all" ? scopedPaymentIntents : scopedPaymentIntents.filter((intent) => intent.status === paymentStatusFilter);
   const contentTitleById = delegatedPublishes.reduce<Record<string, string>>((acc, row) => {
     const id = String(row.contentId || "").trim();
     const title = String(row.title || "").trim();
@@ -306,11 +363,11 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   };
   const runtime = lightningAdmin?.runtime || null;
   const formatLightningSats = (value: number | null | undefined) => `${Math.round(Number(value || 0)).toLocaleString()} sats`;
-  const latestPayoutIntentId = participantPayouts[0]?.providerPaymentIntentId || null;
+  const latestPayoutIntentId = scopedParticipantPayouts[0]?.providerPaymentIntentId || null;
   const visibleParticipantPayouts =
     payoutTableScope === "latest" && latestPayoutIntentId
-      ? participantPayouts.filter((row) => row.providerPaymentIntentId === latestPayoutIntentId)
-      : participantPayouts;
+      ? scopedParticipantPayouts.filter((row) => row.providerPaymentIntentId === latestPayoutIntentId)
+      : scopedParticipantPayouts;
   const visiblePayoutCounts = visibleParticipantPayouts.reduce(
     (acc, row) => {
       const key = row.status;
@@ -326,6 +383,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       blocked: 0
     }
   );
+  const scopedSettledSalesCount = scopedSummary.settledPayments;
+  const scopedPayoutPaidCount = scopedParticipantPayouts.filter((row) => row.status === "paid").length;
 
   return (
     <div className="space-y-5">
@@ -339,6 +398,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             <div className="mt-1 text-xs text-neutral-500">
               This node processes payments, applies fees, and executes payouts.
             </div>
+            <div className="mt-1 text-xs text-neutral-500">
+              Time basis: {timeBasis === "sale" ? "Sale (buyer payment)" : "Paid (remitted execution)"}.
+            </div>
           </div>
           <button
             onClick={load}
@@ -349,6 +411,21 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           </button>
         </div>
         {error ? <div className="mt-3 text-xs text-rose-300">{error}</div> : null}
+        <div className="mt-3">
+          <TimeScopeControls
+            basis={timeBasis}
+            onBasisChange={setTimeBasis}
+            period={timePeriod}
+            onPeriodChange={setTimePeriod}
+            basisOptions={["sale", "paid"]}
+            periodOptions={["1d", "7d", "30d", "90d", "all"]}
+            helperText={
+              timeBasis === "sale"
+                ? "Scoped by provider-side sale/payment recognition timestamps."
+                : "Scoped by payout remittance timestamps where available; falls back to last update timestamp."
+            }
+          />
+        </div>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -403,11 +480,11 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           </div>
           <div className="rounded border border-neutral-800 px-3 py-2">
             <div className="text-neutral-500">settled sales (count)</div>
-            <div className="text-neutral-100">{Number(summary?.settledPayments || 0).toLocaleString()}</div>
+            <div className="text-neutral-100">{Number(scopedSettledSalesCount || 0).toLocaleString()}</div>
           </div>
           <div className="rounded border border-neutral-800 px-3 py-2">
             <div className="text-neutral-500">participant payouts paid</div>
-            <div className="text-neutral-100">{Number(summary?.participantPayouts?.paid || 0).toLocaleString()}</div>
+            <div className="text-neutral-100">{Number(scopedPayoutPaidCount || 0).toLocaleString()}</div>
           </div>
         </div>
         {runtime?.sendFailureReason ? (

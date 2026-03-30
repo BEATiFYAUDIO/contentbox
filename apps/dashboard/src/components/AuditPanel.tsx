@@ -12,6 +12,7 @@ type AuditEvent = {
   id: string;
   ts: string;
   type: string;
+  archetype?: string | null;
   summary?: string | null;
   actor?: AuditActor | null;
   details?: any;
@@ -48,6 +49,12 @@ function actorLabel(actor?: AuditActor | null) {
   if (actor.kind === "external") return actor.email ? `external:${actor.email}` : "external";
   if (actor.kind === "system") return "system";
   return actor.displayName || actor.email || actor.userId || "user";
+}
+
+function archetypeLabel(raw?: string | null) {
+  const v = String(raw || "").trim();
+  if (!v) return "";
+  return v.replace(/_/g, " ");
 }
 
 function downloadJson(filename: string, data: any) {
@@ -135,13 +142,13 @@ export default function AuditPanel({
 
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="text-xs text-neutral-300 font-medium">{title}</div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           {showTombstoneToggle ? (
             <button
               type="button"
-              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              className="rounded-lg border border-neutral-800 px-2 py-1 text-[11px] leading-none hover:bg-neutral-900"
               onClick={() => setShowTombstones((s) => !s)}
             >
               {showTombstones ? "Hide tombstones" : "Show tombstones"}
@@ -150,7 +157,7 @@ export default function AuditPanel({
           {showFilterToggle ? (
             <button
               type="button"
-              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              className="rounded-lg border border-neutral-800 px-2 py-1 text-[11px] leading-none hover:bg-neutral-900"
               onClick={() => setFilterMode((m) => (m === "commerce" ? "all" : "commerce"))}
             >
               {filterMode === "commerce" ? "Full audit" : "Commerce only"}
@@ -158,7 +165,7 @@ export default function AuditPanel({
           ) : null}
           <button
             type="button"
-            className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+            className="rounded-lg border border-neutral-800 px-2 py-1 text-[11px] leading-none hover:bg-neutral-900"
             onClick={() => setOpen((s) => !s)}
           >
             {open ? "Hide" : "Show"}
@@ -166,16 +173,16 @@ export default function AuditPanel({
           {exportName ? (
             <button
               type="button"
-              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              className="rounded-lg border border-neutral-800 px-2 py-1 text-[11px] leading-none hover:bg-neutral-900"
               onClick={() => downloadJson(exportName, items)}
             >
-              Export JSON
+              Export
             </button>
           ) : null}
           {open ? (
             <button
               type="button"
-              className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+              className="rounded-lg border border-neutral-800 px-2 py-1 text-[11px] leading-none hover:bg-neutral-900"
               onClick={load}
             >
               Refresh
@@ -196,7 +203,14 @@ export default function AuditPanel({
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-[11px] text-neutral-400">{formatTs(e.ts)}</div>
-                    <div className="text-sm text-neutral-100 truncate">{e.type}</div>
+                    <div className="mt-0.5 flex items-center gap-2">
+                      <span className="text-sm text-neutral-100 truncate">{e.type}</span>
+                      {e.archetype ? (
+                        <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/70 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-300">
+                          {archetypeLabel(e.archetype)}
+                        </span>
+                      ) : null}
+                    </div>
                     {e.summary ? <div className="text-[11px] text-neutral-400">{e.summary}</div> : null}
                   </div>
                   {actorLabel(e.actor) ? (
