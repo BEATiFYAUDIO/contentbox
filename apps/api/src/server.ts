@@ -30599,7 +30599,9 @@ app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvanc
 
 app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
-  await reconcileSellerPendingIntentsForDashboard(userId, "revenue_sales");
+  void reconcileSellerPendingIntentsForDashboard(userId, "revenue_sales").catch((err: any) => {
+    req.log.debug({ userId, err }, "revenue.sales.pending_reconcile_failed");
+  });
   const sales = await prisma.sale.findMany({
     where: { sellerUserId: userId },
     include: { content: true },
@@ -31034,12 +31036,19 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
     )
   );
   let remoteForcedPaidCount = 0;
-  for (const paymentIntentId of unresolvedIntentIds) {
-    const remote = await fetchDelegatedProviderPaymentIntentStatus(paymentIntentId).catch(() => ({
-      paid: false,
-      paidAt: null,
-      status: "unavailable"
-    }));
+  const remoteResults = await Promise.allSettled(
+    unresolvedIntentIds.map(async (paymentIntentId) => ({
+      paymentIntentId,
+      remote: await fetchDelegatedProviderPaymentIntentStatus(paymentIntentId).catch(() => ({
+        paid: false,
+        paidAt: null,
+        status: "unavailable"
+      }))
+    }))
+  );
+  for (const result of remoteResults) {
+    if (result.status !== "fulfilled") continue;
+    const { paymentIntentId, remote } = result.value;
     if (!remote.paid) continue;
     const remittedAt =
       remote.paidAt && !Number.isNaN(new Date(remote.paidAt).getTime()) ? new Date(remote.paidAt) : new Date();
@@ -31181,7 +31190,9 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  await reconcileSellerPendingIntentsForDashboard(userId, "finance_overview");
+  void reconcileSellerPendingIntentsForDashboard(userId, "finance_overview").catch((err: any) => {
+    req.log.debug({ userId, err }, "finance.overview.pending_reconcile_failed");
+  });
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const intents = await prisma.paymentIntent.findMany({
