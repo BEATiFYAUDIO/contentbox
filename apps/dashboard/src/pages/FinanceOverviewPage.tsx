@@ -288,8 +288,10 @@ export default function FinanceOverviewPage({
         const [overviewRes, royaltiesRes, payoutsRes, salesRes] = await Promise.allSettled([
           api<Overview>("/finance/overview"),
           api<{ totals: { earnedSats: string; pendingSats: string } }>("/finance/royalties"),
-          api<{ totals: { pendingSats: string; paidSats: string }; items?: FinancePayoutItem[] }>("/finance/payouts"),
-          api<RevenueSaleRow[]>("/api/revenue/sales")
+          api<{ totals: { pendingSats: string; paidSats: string }; items?: FinancePayoutItem[] }>(
+            `/finance/payouts?basis=${encodeURIComponent(overviewTimeBasis)}&period=${encodeURIComponent(overviewTimePeriod)}`
+          ),
+          api<RevenueSaleRow[]>(`/api/revenue/sales?period=${encodeURIComponent(overviewTimePeriod)}`)
         ]);
         if (!active) return;
         if (overviewRes.status === "fulfilled") {
@@ -331,7 +333,7 @@ export default function FinanceOverviewPage({
     return () => {
       active = false;
     };
-  }, [refreshSignal, retryTick, showLightningModal]);
+  }, [refreshSignal, retryTick, showLightningModal, overviewTimeBasis, overviewTimePeriod]);
 
   useEffect(() => {
     if (!showLightningModal) return;

@@ -30599,9 +30599,20 @@ app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvanc
 
 app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
+  const periodRaw = String((req.query as any)?.period || "all").trim().toLowerCase();
+  const periodDays =
+    periodRaw === "1d" ? 1
+      : periodRaw === "7d" ? 7
+        : periodRaw === "30d" ? 30
+          : periodRaw === "90d" ? 90
+            : null;
+  const recognizedSince = periodDays ? new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000) : null;
   queueSellerPendingIntentsReconcile(userId, "revenue_sales", req.log);
   const sales = await prisma.sale.findMany({
-    where: { sellerUserId: userId },
+    where: {
+      sellerUserId: userId,
+      ...(recognizedSince ? { recognizedAt: { gte: recognizedSince } } : {})
+    },
     include: { content: true },
     orderBy: { recognizedAt: "desc" }
   });
@@ -31459,13 +31470,50 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = String(me?.email || "").trim().toLowerCase();
+  const periodRaw = String((req.query as any)?.period || "all").trim().toLowerCase();
+  const basisRaw = String((req.query as any)?.basis || "paid").trim().toLowerCase();
+  const periodDays =
+    periodRaw === "1d" ? 1
+      : periodRaw === "7d" ? 7
+        : periodRaw === "30d" ? 30
+          : periodRaw === "90d" ? 90
+            : null;
+  const scopedSince = periodDays ? new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000) : null;
+  const scopedBasis: "sale" | "earned" | "paid" = basisRaw === "sale" ? "sale" : basisRaw === "earned" ? "earned" : "paid";
+  let scopedIntentIds: string[] | null = null;
+  if (scopedSince && scopedBasis === "sale") {
+    const salesForScope = await prisma.sale.findMany({
+      where: { sellerUserId: userId, recognizedAt: { gte: scopedSince } },
+      select: { intentId: true }
+    });
+    scopedIntentIds = Array.from(
+      new Set(
+        salesForScope.map((row) => String((row as any)?.intentId || "").trim()).filter(Boolean)
+      )
+    );
+  }
 
   const rows = await prisma.participantPayout
     .findMany({
       where: {
         allocation: {
           ...participantPayoutUserAllocationWhere(userId, email)
-        }
+        },
+        ...(scopedSince
+          ? scopedBasis === "sale"
+            ? {
+                paymentIntentId: {
+                  in: scopedIntentIds && scopedIntentIds.length > 0 ? scopedIntentIds : ["__none__"]
+                }
+              }
+            : scopedBasis === "earned"
+              ? {
+                  OR: [{ createdAt: { gte: scopedSince } }, { updatedAt: { gte: scopedSince } }]
+                }
+              : {
+                  OR: [{ remittedAt: { gte: scopedSince } }, { remittedAt: null, updatedAt: { gte: scopedSince } }]
+                }
+          : {})
       },
       select: {
         id: true,
