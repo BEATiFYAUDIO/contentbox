@@ -31397,6 +31397,7 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = (me?.email || "").toLowerCase();
+  await queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_royalties", app.log);
 
   const contents = await prisma.contentItem.findMany({
     where: { ownerUserId: userId },

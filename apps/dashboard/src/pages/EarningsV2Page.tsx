@@ -43,6 +43,15 @@ type RoyaltiesContextResponse = {
   }>;
 };
 
+type FinancePayoutItem = {
+  id: string;
+  paymentIntentId?: string | null;
+  contentId?: string | null;
+  amountSats?: string | number;
+  netAmountSats?: string | number;
+  status?: string | null;
+};
+
 type PayoutState = "paid" | "forwarding" | "pending" | "failed" | "unknown";
 
 function normalizeRoleLabel(raw: string | null | undefined): string {
@@ -214,6 +223,7 @@ export default function EarningsV2Page({
   onOpenEarningsForContent: _onOpenEarningsForContent
 }: EarningsV2PageProps) {
   const [sales, setSales] = useState<SaleRow[]>([]);
+  const [payoutItems, setPayoutItems] = useState<FinancePayoutItem[]>([]);
   const [roleByContent, setRoleByContent] = useState<Record<string, string>>({});
   const [shareByContent, setShareByContent] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -243,6 +253,25 @@ export default function EarningsV2Page({
       active = false;
     };
   }, [refreshSignal]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api<{ items?: FinancePayoutItem[] }>(
+          `/finance/payouts?basis=earned&period=${encodeURIComponent(timePeriod)}`
+        );
+        if (!active) return;
+        setPayoutItems(Array.isArray(res?.items) ? res.items : []);
+      } catch {
+        if (!active) return;
+        setPayoutItems([]);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [refreshSignal, timePeriod]);
 
   useEffect(() => {
     let active = true;
@@ -304,6 +333,20 @@ export default function EarningsV2Page({
   }, [scopedSales]);
 
   const byContent = useMemo<ByContentRow[]>(() => {
+    const payoutByContent = new Map<string, { earnings: number; paid: number; pending: number; failed: number }>();
+    for (const payout of payoutItems) {
+      const contentId = String(payout.contentId || "").trim();
+      if (!contentId) continue;
+      const amount = toNum(payout.netAmountSats ?? payout.amountSats);
+      const status = normalizePayoutState(payout.status as SaleRow["payoutStatus"]);
+      const existing = payoutByContent.get(contentId) || { earnings: 0, paid: 0, pending: 0, failed: 0 };
+      existing.earnings += amount;
+      if (status === "paid") existing.paid += amount;
+      else if (status === "pending" || status === "forwarding") existing.pending += amount;
+      else if (status === "failed") existing.failed += amount;
+      payoutByContent.set(contentId, existing);
+    }
+
     const map = new Map<string, ByContentRow>();
     const stateMap = new Map<string, PayoutState[]>();
     for (const row of scopedSales) {
@@ -343,10 +386,27 @@ export default function EarningsV2Page({
     }
     const rows = Array.from(map.values());
     for (const row of rows) {
-      row.latestStatus = summarizePayoutState(stateMap.get(row.contentId) || []);
+      const payoutSummary = payoutByContent.get(row.contentId);
+      if (payoutSummary) {
+        row.earnings = payoutSummary.earnings;
+        row.paid = payoutSummary.paid;
+        row.pending = payoutSummary.pending;
+        row.latestStatus =
+          payoutSummary.pending > 0 && payoutSummary.paid > 0
+            ? "forwarding"
+            : payoutSummary.pending > 0
+              ? "pending"
+              : payoutSummary.paid > 0
+                ? "paid"
+                : payoutSummary.failed > 0
+                  ? "failed"
+                  : "unknown";
+      } else {
+        row.latestStatus = summarizePayoutState(stateMap.get(row.contentId) || []);
+      }
     }
     return rows.sort((a, b) => b.gross - a.gross);
-  }, [scopedSales, roleByContent, shareByContent]);
+  }, [scopedSales, roleByContent, shareByContent, payoutItems]);
 
   const momentumByContent = useMemo(() => {
     const now = Date.now();
@@ -513,6 +573,29 @@ export default function EarningsV2Page({
       .filter((row) => row.contentId === scopedRow.contentId)
       .sort((a, b) => String(b.recognizedAt).localeCompare(String(a.recognizedAt)));
   }, [scopedSales, scopedRow]);
+
+  const scopedPayoutByIntent = useMemo(() => {
+    const map = new Map<string, { netAmount: number; status: PayoutState }>();
+    if (!scopedRow) return map;
+    const statuses = new Map<string, PayoutState[]>();
+    const amounts = new Map<string, number>();
+    for (const payout of payoutItems) {
+      const contentId = String(payout.contentId || "").trim();
+      const intentId = String(payout.paymentIntentId || "").trim();
+      if (!intentId || contentId !== scopedRow.contentId) continue;
+      const status = normalizePayoutState(payout.status as SaleRow["payoutStatus"]);
+      const amount = toNum(payout.netAmountSats ?? payout.amountSats);
+      statuses.set(intentId, [...(statuses.get(intentId) || []), status]);
+      amounts.set(intentId, (amounts.get(intentId) || 0) + amount);
+    }
+    for (const [intentId, list] of statuses.entries()) {
+      map.set(intentId, {
+        netAmount: amounts.get(intentId) || 0,
+        status: summarizePayoutState(list)
+      });
+    }
+    return map;
+  }, [payoutItems, scopedRow]);
 
   useEffect(() => {
     if (!byContent.length) {
@@ -912,8 +995,11 @@ export default function EarningsV2Page({
                         ) : (
                           scopedSalesRows.map((row) => {
                             const fees = feeBreakdownForRow(row);
-                            const payoutState = normalizePayoutState(row.payoutStatus);
-                            const yourShareSats = scopedRow ? computeRowShareSats(fees.earnings, scopedRow.shareLabel) : fees.earnings;
+                            const payoutTruth = scopedPayoutByIntent.get(String(row.intentId || "").trim());
+                            const payoutState = payoutTruth?.status || normalizePayoutState(row.payoutStatus);
+                            const yourShareSats =
+                              payoutTruth?.netAmount ??
+                              (scopedRow ? computeRowShareSats(fees.earnings, scopedRow.shareLabel) : fees.earnings);
                             return (
                               <tr key={row.id} className="border-t border-neutral-900">
                                 <td className="py-2 text-neutral-400">{new Date(row.recognizedAt).toLocaleString()}</td>
