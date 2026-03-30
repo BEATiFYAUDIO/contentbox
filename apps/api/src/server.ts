@@ -6128,9 +6128,21 @@ async function fetchDelegatedProviderPaymentIntentStatus(paymentIntentId: string
     const json: any = await res.json().catch(() => null);
     if (!res.ok) return { paid: false, paidAt: null, status: "unavailable" };
     const status = String(json?.status || "unknown").trim().toLowerCase();
-    const paid = Boolean(json?.paid) || status === "paid";
+    const payoutStatus = String(json?.payoutStatus || "").trim().toLowerCase();
+    const payoutSummaryStatus = String(json?.payoutSummaryStatus || "").trim().toLowerCase();
+    const payoutReference = String(json?.payoutReference || "").trim();
+    const remittedAtRaw = String(json?.remittedAt || "").trim();
     const paidAtRaw = String(json?.paidAt || "").trim();
+    const remittedAt =
+      remittedAtRaw && !Number.isNaN(new Date(remittedAtRaw).getTime()) ? new Date(remittedAtRaw).toISOString() : null;
     const paidAt = paidAtRaw && !Number.isNaN(new Date(paidAtRaw).getTime()) ? new Date(paidAtRaw).toISOString() : null;
+    const paid =
+      Boolean(json?.paid) ||
+      status === "paid" ||
+      payoutStatus === "paid" ||
+      payoutSummaryStatus === "paid" ||
+      Boolean(remittedAt) ||
+      Boolean(payoutReference);
     return { paid, paidAt, status: status || "unknown" };
   } catch {
     return { paid: false, paidAt: null, status: "unavailable" };
