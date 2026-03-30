@@ -33,6 +33,26 @@ type Overview = {
   };
 };
 
+type RevenueSaleRow = {
+  intentId: string;
+  recognizedAt: string;
+  grossAmountSats?: string | number;
+  amountSats?: string | number;
+};
+
+type FinancePayoutItem = {
+  id: string;
+  paymentIntentId?: string | null;
+  grossShareSats?: string | number;
+  feeWithheldSats?: string | number;
+  netAmountSats?: string | number;
+  amountSats?: string | number;
+  status?: string | null;
+  remittedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 type FinanceOverviewPageProps = {
   refreshSignal?: number;
   onOpenRoyalties?: () => void;
@@ -206,6 +226,8 @@ export default function FinanceOverviewPage({
     earnedSats: "0",
     pendingSats: "0"
   });
+  const [payoutItems, setPayoutItems] = useState<FinancePayoutItem[]>([]);
+  const [salesRows, setSalesRows] = useState<RevenueSaleRow[]>([]);
   const [payoutTotals, setPayoutTotals] = useState<{ pendingSats: string; paidSats: string }>({
     pendingSats: "0",
     paidSats: "0"
@@ -263,10 +285,11 @@ export default function FinanceOverviewPage({
       }
       setAuxError(null);
       try {
-        const [overviewRes, royaltiesRes, payoutsRes] = await Promise.allSettled([
+        const [overviewRes, royaltiesRes, payoutsRes, salesRes] = await Promise.allSettled([
           api<Overview>("/finance/overview"),
           api<{ totals: { earnedSats: string; pendingSats: string } }>("/finance/royalties"),
-          api<{ totals: { pendingSats: string; paidSats: string } }>("/finance/payouts")
+          api<{ totals: { pendingSats: string; paidSats: string }; items?: FinancePayoutItem[] }>("/finance/payouts"),
+          api<RevenueSaleRow[]>("/api/revenue/sales")
         ]);
         if (!active) return;
         if (overviewRes.status === "fulfilled") {
@@ -282,9 +305,17 @@ export default function FinanceOverviewPage({
         }
         if (payoutsRes.status === "fulfilled") {
           setPayoutTotals(payoutsRes.value?.totals || { pendingSats: "0", paidSats: "0" });
+          setPayoutItems(Array.isArray(payoutsRes.value?.items) ? payoutsRes.value.items : []);
         } else {
           setPayoutTotals({ pendingSats: "0", paidSats: "0" });
+          setPayoutItems([]);
           setAuxError((prev) => prev || "Payouts summary unavailable.");
+        }
+        if (salesRes.status === "fulfilled") {
+          setSalesRows(Array.isArray(salesRes.value) ? salesRes.value : []);
+        } else {
+          setSalesRows([]);
+          setAuxError((prev) => prev || "Sales rows unavailable.");
         }
       } catch (e: any) {
         if (!active) return;
@@ -378,24 +409,62 @@ export default function FinanceOverviewPage({
     if (!Number.isFinite(n)) return "0 sats";
     return `${Math.round(n).toLocaleString()} sats`;
   };
+  const toNum = (raw: string | number | null | undefined) => {
+    const n = Number(raw || 0);
+    return Number.isFinite(n) ? n : 0;
+  };
 
   const series = data?.revenueSeries || [];
   const getSeriesAmountSats = (d: { amountSats?: string; sats?: string }) => String(d.amountSats ?? d.sats ?? "0");
-  const salesScopedSeries = useMemo(() => {
-    if (overviewTimeBasis !== "sale") return series;
-    return series.filter((point) => isWithinPeriod(point.date, overviewTimePeriod));
-  }, [series, overviewTimeBasis, overviewTimePeriod]);
+  const salesScopedSeries = useMemo(
+    () => series.filter((point) => isWithinPeriod(point.date, overviewTimePeriod)),
+    [series, overviewTimePeriod]
+  );
   const salesScopedSats = useMemo(
     () => salesScopedSeries.reduce((sum, point) => sum + (Number(getSeriesAmountSats(point) || 0) || 0), 0),
     [salesScopedSeries]
   );
-  const scopedSalesSats =
-    overviewTimeBasis === "sale"
-      ? overviewTimePeriod === "all"
-        ? Number(data?.totals?.salesSats || 0) || 0
-        : salesScopedSats
-      : Number(data?.totals?.salesSats || 0) || 0;
-  const scopedSeries = overviewTimeBasis === "sale" ? salesScopedSeries : series;
+  const scopedSalesSats = overviewTimePeriod === "all" ? Number(data?.totals?.salesSats || 0) || 0 : salesScopedSats;
+  const scopedSeries = salesScopedSeries;
+  const recognizedAtByIntent = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of salesRows) {
+      const intentId = String(row.intentId || "").trim();
+      if (!intentId) continue;
+      const ts = String(row.recognizedAt || "").trim();
+      if (!ts) continue;
+      if (!map.has(intentId) || ts > String(map.get(intentId) || "")) map.set(intentId, ts);
+    }
+    return map;
+  }, [salesRows]);
+  const scopedPayoutItems = useMemo(() => {
+    if (overviewTimePeriod === "all") return payoutItems;
+    return payoutItems.filter((row) => {
+      const intentId = String(row.paymentIntentId || "").trim();
+      const saleTs = intentId ? recognizedAtByIntent.get(intentId) || null : null;
+      const earnedTs = row.createdAt || row.updatedAt || saleTs;
+      const paidTs = row.remittedAt || row.updatedAt || row.createdAt || saleTs;
+      const ts = overviewTimeBasis === "sale" ? saleTs : overviewTimeBasis === "earned" ? earnedTs : paidTs;
+      return isWithinPeriod(ts, overviewTimePeriod);
+    });
+  }, [overviewTimeBasis, overviewTimePeriod, payoutItems, recognizedAtByIntent]);
+  const scopedEarnings = useMemo(() => {
+    return scopedPayoutItems.reduce(
+      (acc, row) => {
+        const gross = toNum(row.grossShareSats ?? row.netAmountSats ?? row.amountSats);
+        const fee = Math.max(0, toNum(row.feeWithheldSats));
+        const net = toNum(row.netAmountSats ?? row.amountSats);
+        const status = String(row.status || "").trim().toLowerCase();
+        acc.grossEarned += gross;
+        acc.feesWithheld += fee;
+        if (status === "paid") acc.netPaid += net;
+        else if (status === "pending" || status === "ready" || status === "forwarding") acc.netPayable += net;
+        else if (status === "failed" || status === "blocked") acc.failed += net;
+        return acc;
+      },
+      { grossEarned: 0, feesWithheld: 0, netPaid: 0, netPayable: 0, failed: 0 }
+    );
+  }, [scopedPayoutItems]);
   const chart = useMemo(() => {
     if (!scopedSeries.length) return [] as Array<{ height: number; label: string; amountSats: string }>;
     const max = scopedSeries.reduce((m, d) => Math.max(m, Number(getSeriesAmountSats(d) || 0)), 0);
@@ -716,29 +785,22 @@ export default function FinanceOverviewPage({
     Number(royaltyTotals.earnedSats || 0) > 0 ||
     Number(data?.totals?.remoteRoyaltyAccruedSats || 0) > 0 ||
     Number(payoutTotals.pendingSats || 0) > 0;
-  const localRoyaltyEarned = Number(royaltyTotals.earnedSats || 0);
-  const remoteRoyaltyAccrued = Number(data?.totals?.remoteRoyaltyAccruedSats || 0);
   const participantAccrued = Number(data?.totals?.participantRoyaltyAccruedSats || 0);
-  const participantPayable = Number(data?.totals?.participantRoyaltyPayableSats || 0);
-  const participantPaid = Number(data?.totals?.participantRoyaltyPaidSats || 0);
-  const participantFeesWithheld = Number(data?.totals?.participantRoyaltyFeeWithheldSats || 0);
-  const participantFailed = Number(data?.totals?.participantRoyaltyFailedSats || 0);
   const salesLast30d = Number(
     data?.totals?.salesSatsLast30d ??
       series.reduce((sum, point) => sum + Number(getSeriesAmountSats(point) || 0), 0)
   );
   const overviewScopeHelperText =
     overviewTimeBasis === "sale"
-      ? "Sales are scoped by buyer payment date."
+      ? "All cards scoped by sale date (buyer payment recognized time)."
       : overviewTimeBasis === "earned"
-        ? "Overview earnings totals are all-time on this page; period scoping for earned time lives in Earnings surfaces."
-        : "Overview payout totals are all-time on this page; period scoping for paid/remitted time lives in Payouts.";
-  const localGrossEarned = participantAccrued > 0 ? participantAccrued : localRoyaltyEarned;
-  const grossEarned = Math.max(0, localGrossEarned + remoteRoyaltyAccrued);
+        ? "All cards scoped by earned date (payout row creation/recognition time where available)."
+        : "All cards scoped by paid/remitted date (remittedAt with update fallback).";
+  const grossEarned = Math.max(0, scopedEarnings.grossEarned);
   const hasRoyaltyEconomics =
-    grossEarned > 0 || participantAccrued > 0 || participantPayable > 0 || participantPaid > 0 || participantFeesWithheld > 0;
-  const processingPayouts = Math.max(0, participantPayable);
-  const needsAttentionPayouts = Math.max(0, participantFailed);
+    grossEarned > 0 || participantAccrued > 0 || scopedEarnings.netPayable > 0 || scopedEarnings.netPaid > 0 || scopedEarnings.feesWithheld > 0;
+  const processingPayouts = Math.max(0, scopedEarnings.netPayable);
+  const needsAttentionPayouts = Math.max(0, scopedEarnings.failed);
 
   if (loading) return <div className="text-sm text-neutral-400">Loading revenue overview…</div>;
   if (error) {
@@ -823,15 +885,12 @@ export default function FinanceOverviewPage({
         <div className="mt-3">
           <TimeScopeControls
             basis={overviewTimeBasis}
-            onBasisChange={(basis) => {
-              setOverviewTimeBasis(basis);
-              if (basis !== "sale") setOverviewTimePeriod("all");
-            }}
+            onBasisChange={setOverviewTimeBasis}
             period={overviewTimePeriod}
             onPeriodChange={setOverviewTimePeriod}
             basisOptions={["sale", "earned", "paid"]}
-            periodOptions={overviewTimeBasis === "sale" ? ["1d", "7d", "30d", "all"] : ["all"]}
-            periodDisabled={overviewTimeBasis !== "sale"}
+            periodOptions={["1d", "7d", "30d", "90d", "all"]}
+            periodDisabled={false}
             helperText={overviewScopeHelperText}
           />
         </div>
@@ -848,7 +907,7 @@ export default function FinanceOverviewPage({
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedSalesSats))}</div>
             <div className="mt-1 text-xs text-neutral-500">
               Seller of record · paid invoices only
-              {overviewTimeBasis === "sale" && overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}
+              {overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}
             </div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
@@ -858,17 +917,17 @@ export default function FinanceOverviewPage({
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Fees withheld</div>
-            <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantFeesWithheld))}</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedEarnings.feesWithheld))}</div>
             <div className="mt-1 text-xs text-neutral-500">Fee impact recognized from existing settlement/payout fee fields.</div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Net paid</div>
-            <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+            <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedEarnings.netPaid))}</div>
             <div className="mt-1 text-xs text-neutral-500">Post-fee amount marked paid/remitted in payout tracking.</div>
           </div>
           <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-4">
             <div className="text-xs uppercase tracking-wide text-amber-200/80">Net payable</div>
-            <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(participantPayable))}</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(scopedEarnings.netPayable))}</div>
             <div className="mt-1 text-xs text-amber-200/80">Unresolved post-fee payout backlog (pending/ready/forwarding only).</div>
           </div>
         </div>
@@ -877,9 +936,7 @@ export default function FinanceOverviewPage({
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Sales Breakdown</div>
         <div className="mt-1 text-xs text-neutral-400">Payments from your audience for your content.</div>
-        <div className="mt-1 text-xs text-neutral-500">
-          Time basis: Sale date{overviewTimeBasis === "sale" && overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}.
-        </div>
+        <div className="mt-1 text-xs text-neutral-500">Time basis: Sale date{overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
@@ -895,7 +952,7 @@ export default function FinanceOverviewPage({
               : "Last 30 days sales"}
           </div>
           <div className="mt-2 text-2xl font-semibold">
-            {formatSats(String(overviewTimeBasis === "sale" ? scopedSalesSats : salesLast30d))}
+            {formatSats(String(scopedSalesSats))}
           </div>
           <div className="mt-1 text-xs text-neutral-500">
             Seller invoices: {data?.totals?.invoicesTotal ?? 0} · Settled purchases: {data?.totals?.paymentsLast30d ?? 0}
@@ -932,17 +989,17 @@ export default function FinanceOverviewPage({
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Fees withheld</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantFeesWithheld))}</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedEarnings.feesWithheld))}</div>
           <div className="mt-1 text-xs text-neutral-500">Net payout delta attributable to invoicing/settlement fees.</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Net paid</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPaid))}</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedEarnings.netPaid))}</div>
           <div className="mt-1 text-xs text-neutral-500">Post-fee amount marked paid/remitted in payout tracking.</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Net payable</div>
-          <div className="mt-2 text-2xl font-semibold">{formatSats(String(participantPayable))}</div>
+          <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedEarnings.netPayable))}</div>
           <div className="mt-1 text-xs text-neutral-500">
             Unresolved post-fee payout backlog. Failed/blocked rows are excluded and tracked separately.
           </div>
@@ -976,7 +1033,7 @@ export default function FinanceOverviewPage({
               </div>
               <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
                 <div className="uppercase tracking-wide text-neutral-500">Total tracked for payout</div>
-                <div className="mt-1 text-neutral-200">{formatSats(String(participantPaid + participantPayable + participantFailed))}</div>
+                <div className="mt-1 text-neutral-200">{formatSats(String(scopedEarnings.netPaid + scopedEarnings.netPayable + scopedEarnings.failed))}</div>
                 <div className="mt-1 text-neutral-500">Net payout rows in paid, payable, and attention states.</div>
               </div>
             </div>
@@ -1014,7 +1071,7 @@ export default function FinanceOverviewPage({
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-base font-semibold">
-          {overviewTimeBasis === "sale" && overviewTimePeriod !== "all"
+          {overviewTimePeriod !== "all"
             ? `Sales over time (${overviewTimePeriod})`
             : "Sales over time (last 30 days)"}
         </div>

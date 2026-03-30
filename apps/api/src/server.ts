@@ -30599,9 +30599,7 @@ app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvanc
 
 app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
-  void reconcileSellerPendingIntentsForDashboard(userId, "revenue_sales").catch((err: any) => {
-    req.log.debug({ userId, err }, "revenue.sales.pending_reconcile_failed");
-  });
+  queueSellerPendingIntentsReconcile(userId, "revenue_sales", req.log);
   const sales = await prisma.sale.findMany({
     where: { sellerUserId: userId },
     include: { content: true },
@@ -31218,9 +31216,7 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  void reconcileSellerPendingIntentsForDashboard(userId, "finance_overview").catch((err: any) => {
-    req.log.debug({ userId, err }, "finance.overview.pending_reconcile_failed");
-  });
+  queueSellerPendingIntentsReconcile(userId, "finance_overview", req.log);
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const intents = await prisma.paymentIntent.findMany({
@@ -32309,6 +32305,30 @@ async function reconcileSellerPendingIntentsForDashboard(userId: string, context
       );
     }
   }
+}
+
+const sellerPendingReconcileInflight = new Map<string, Promise<void>>();
+
+function queueSellerPendingIntentsReconcile(
+  userId: string,
+  context: "finance_overview" | "revenue_sales",
+  log: { debug: (obj: any, msg?: string) => void } | null | undefined
+) {
+  const key = String(userId || "").trim();
+  if (!key) return;
+  if (sellerPendingReconcileInflight.has(key)) return;
+
+  const run = reconcileSellerPendingIntentsForDashboard(key, context)
+    .catch((err: any) => {
+      log?.debug?.({ userId: key, err }, `${context}.pending_reconcile_failed`);
+    })
+    .finally(() => {
+      if (sellerPendingReconcileInflight.get(key) === run) {
+        sellerPendingReconcileInflight.delete(key);
+      }
+    });
+
+  sellerPendingReconcileInflight.set(key, run);
 }
 
 app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: any, reply) => {

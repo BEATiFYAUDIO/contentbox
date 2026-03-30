@@ -183,6 +183,13 @@ function parseSharePercent(raw: string | null | undefined): number {
   return Number.isFinite(n) ? n : NaN;
 }
 
+function computeRowShareSats(rowNetSats: number, shareLabel: string): number {
+  const pct = parseSharePercent(shareLabel);
+  if (!Number.isFinite(pct) || pct <= 0) return rowNetSats;
+  const boundedPct = Math.min(100, Math.max(0, pct));
+  return Math.round(rowNetSats * (boundedPct / 100));
+}
+
 function classifyRoleBucket(row: ByContentRow): RoleViewFilter {
   const role = String(row.roleLabel || "").trim().toLowerCase();
   const sharePct = parseSharePercent(row.shareLabel);
@@ -891,7 +898,7 @@ export default function EarningsV2Page({
                         <tr>
                           <th className="text-left font-medium py-2">Time</th>
                           <th className="text-left font-medium py-2">Buyer paid</th>
-                          <th className="text-left font-medium py-2">Your share</th>
+                          <th className="text-left font-medium py-2">Your share (split)</th>
                           <th className="text-left font-medium py-2">Payout state</th>
                         </tr>
                       </thead>
@@ -906,11 +913,12 @@ export default function EarningsV2Page({
                           scopedSalesRows.map((row) => {
                             const fees = feeBreakdownForRow(row);
                             const payoutState = normalizePayoutState(row.payoutStatus);
+                            const yourShareSats = scopedRow ? computeRowShareSats(fees.earnings, scopedRow.shareLabel) : fees.earnings;
                             return (
                               <tr key={row.id} className="border-t border-neutral-900">
                                 <td className="py-2 text-neutral-400">{new Date(row.recognizedAt).toLocaleString()}</td>
                                 <td className="py-2">{formatSats(fees.gross)}</td>
-                                <td className="py-2">{formatSats(fees.earnings)}</td>
+                                <td className="py-2">{formatSats(yourShareSats)}</td>
                                 <td className="py-2 capitalize">{payoutState}</td>
                               </tr>
                             );
@@ -927,10 +935,10 @@ export default function EarningsV2Page({
                     Participant-level identities/shares remain available in split terms and provider settlement detail views.
                   </div>
                   <a
-                    href={`/royalties/${encodeURIComponent(scopedRow.contentId)}`}
+                    href={`/content/${encodeURIComponent(scopedRow.contentId)}/splits`}
                     className="mt-2 inline-flex rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900"
                   >
-                    View locked split terms
+                    Open split editor
                   </a>
                 </div>
 
