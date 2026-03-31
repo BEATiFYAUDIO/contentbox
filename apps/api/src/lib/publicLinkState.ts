@@ -64,25 +64,9 @@ const normalizeOrigin = (value: string | null | undefined): string | null => {
   return `https://${raw.replace(/\/+$/, "")}`;
 };
 
-const applyTunnelSubdomain = (origin: string | null, tunnelName: string | null | undefined): string | null => {
-  if (!origin) return null;
-  const tn = String(tunnelName || "").trim();
-  if (!tn) return origin;
-  try {
-    const u = new URL(origin);
-    const host = u.hostname.toLowerCase();
-    const lowerTn = tn.toLowerCase();
-    if (host === lowerTn || host.startsWith(`${lowerTn}.`)) return origin;
-    const parts = host.split(".");
-    if (parts.length === 2) {
-      u.hostname = `${lowerTn}.${host}`;
-      return u.origin;
-    }
-    return origin;
-  } catch {
-    return origin;
-  }
-};
+// Canonical origin must remain exactly what the node owner configured.
+// Tunnel name is transport metadata and must not rewrite host identity.
+const applyTunnelSubdomain = (origin: string | null, _tunnelName: string | null | undefined): string | null => origin;
 
 export const computePublicLinkState = (input: PublicLinkStateInput): PublicLinkState => {
   const envMode = normalizeMode(input.publicModeEnv);

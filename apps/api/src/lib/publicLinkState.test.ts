@@ -73,7 +73,7 @@ test("canonicalOriginForLinks prefers canonical origin", () => {
   assert.equal(base, "https://contentbox.example.com");
 });
 
-test("root domain config expands to tunnel subdomain", () => {
+test("root domain config stays canonical (no tunnel subdomain rewrite)", () => {
   const state = computePublicLinkState({
     publicModeEnv: "named",
     dbModeEnv: "advanced",
@@ -82,5 +82,5 @@ test("root domain config expands to tunnel subdomain", () => {
     quick: { status: "STOPPED", publicOrigin: null },
     namedHealthOk: true
   });
-  assert.equal(state.canonicalOrigin, "https://contentbox.darrylhillock.com");
+  assert.equal(state.canonicalOrigin, "https://darrylhillock.com");
 });

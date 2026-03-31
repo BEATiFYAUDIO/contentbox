@@ -652,7 +652,7 @@ async function isOriginReachable(origin: string | null | undefined): Promise<boo
   const cached = originReachabilityCache.get(normalized);
   if (cached && now - cached.checkedAt < 15000) return cached.reachable;
 
-  const endpoints = [`${normalized}/health`, `${normalized}/public/ping`];
+  const endpoints = [`${normalized}/api/health`, `${normalized}/health`, `${normalized}/public/ping`];
   let reachable = false;
   for (const url of endpoints) {
     try {
@@ -33643,7 +33643,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1200);
     try {
-      await fetch(base + "/healthz", { method: "GET", mode: "no-cors", cache: "no-store", signal: controller.signal });
+      await fetch(base + "/api/health", { method: "GET", mode: "no-cors", cache: "no-store", signal: controller.signal });
       return true;
     } catch {
       return false;
