@@ -317,13 +317,16 @@ export default function App() {
     let alive = true;
     const refresh = async () => {
       refreshIdentityDetail();
+      let canUseLightningAdmin = false;
       try {
         const modeSnapshot = await api<NodeModeSnapshot>("/api/node/mode", "GET");
         if (!alive) return;
         setNodeModeSnapshot(modeSnapshot || null);
+        canUseLightningAdmin = Boolean(modeSnapshot?.commerceAuthorityAvailable);
       } catch {
         if (!alive) return;
         setNodeModeSnapshot(null);
+        canUseLightningAdmin = false;
       }
       try {
         const d: any = await api("/api/diagnostics/status", "GET");
@@ -347,12 +350,16 @@ export default function App() {
         setDiagnosticsStatus(null);
         setPublicStatus(null);
       }
-      try {
-        const ln = await api<LightningAdminSnapshot>("/api/admin/lightning", "GET");
-        if (!alive) return;
-        setLightningAdminSnapshot(ln || null);
-      } catch {
-        if (!alive) return;
+      if (canUseLightningAdmin) {
+        try {
+          const ln = await api<LightningAdminSnapshot>("/api/admin/lightning", "GET");
+          if (!alive) return;
+          setLightningAdminSnapshot(ln || null);
+        } catch {
+          if (!alive) return;
+          setLightningAdminSnapshot(null);
+        }
+      } else if (alive) {
         setLightningAdminSnapshot(null);
       }
     };
