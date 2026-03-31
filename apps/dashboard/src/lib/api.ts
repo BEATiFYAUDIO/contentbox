@@ -70,10 +70,16 @@ function isPrivateHost(hostname: string): boolean {
 function shouldAutoFixApiBase(currentBase: string): boolean {
   if (typeof window === "undefined") return false;
   const uiHost = window.location.hostname || "";
+  const uiPort = window.location.port || "";
   const stored = readStoredApiBase();
   if (!stored) return false;
   try {
-    const apiHost = new URL(currentBase).hostname;
+    const parsedApi = new URL(currentBase);
+    const apiHost = parsedApi.hostname;
+    const apiPort = parsedApi.port || "";
+    // Localhost alias mismatch causes CORS on same-machine setups
+    // (e.g. UI on localhost hitting API on 127.0.0.1 or vice versa).
+    if (isLocalHost(uiHost) && isLocalHost(apiHost) && uiHost !== apiHost && uiPort === apiPort) return true;
     // If UI is opened from a non-loopback host (LAN/public), never keep a loopback API base.
     if (!isLocalHost(uiHost) && isLocalHost(apiHost)) return true;
     // Existing basic-mode safeguard: when UI is local-only, avoid stale remote private API bases.
