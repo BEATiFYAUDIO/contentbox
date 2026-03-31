@@ -7836,8 +7836,8 @@ async function deriveUserNetworkStatus(): Promise<UserNetworkStatus> {
       return {
         status: "action_required",
         title: "Action Required",
-        message: "Sovereign Node requires a named tunnel / stable public host.",
-        actionLabel: "Configure named tunnel"
+        message: "Sovereign Node requires a canonical public origin with a stable host route.",
+        actionLabel: "Configure canonical public origin"
       };
     }
     const blockers: string[] = [];
@@ -7864,7 +7864,7 @@ async function deriveUserNetworkStatus(): Promise<UserNetworkStatus> {
       status: "ready",
       title: "Ready",
       message: "Basic creator posture is active for publishing and tipping.",
-      actionLabel: "Add named tunnel to upgrade"
+      actionLabel: "Add canonical public origin to upgrade"
     };
   }
   if (trust === "unreachable") {
@@ -14559,7 +14559,7 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   if ((next === "advanced" || next === "lan") && !readiness.namedTunnelDetected) {
     return reply.code(409).send({
       error: "NAMED_TUNNEL_REQUIRED",
-      message: "Sovereign modes require a detected named tunnel / stable public host."
+      message: "Sovereign modes require a reachable canonical public origin (stable host route)."
     });
   }
   if (next === "lan" && !readiness.ready) {
@@ -14567,7 +14567,7 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
       error: "LOCAL_SOVEREIGN_STACK_REQUIRED",
       blockers: readiness.blockers,
       message:
-        "Sovereign Node requires a named tunnel plus local Bitcoin, local LND, and local commerce service readiness."
+        "Sovereign Node requires a reachable canonical public origin plus local Bitcoin, local LND, and local commerce service readiness."
     });
   }
   try {
@@ -17840,7 +17840,7 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
   if (wantsProviderConfig && !hasDetectedNamedTunnel()) {
     return reply.code(409).send({
       error: "NAMED_TUNNEL_REQUIRED",
-      message: "Connect a named tunnel first. Provider commerce services unlock after stable host detection."
+      message: "Configure a canonical public origin first. Provider commerce services unlock after stable host detection."
     });
   }
 
@@ -24856,7 +24856,7 @@ app.get("/embed.js", async (req: any, reply) => {
   if (getIdentityLevel() !== IdentityLevel.PERSISTENT) {
     reply.code(403);
     reply.type("application/javascript; charset=utf-8");
-    return reply.send("console.error('Certifyd Creator embed requires persistent identity (named tunnel).');");
+    return reply.send("console.error('Certifyd Creator embed requires persistent identity (canonical public origin).');");
   }
   const publicOrigin = getPublicOrigin(req).replace(/\/+$/, "");
   const js = `(function(){

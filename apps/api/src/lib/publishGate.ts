@@ -26,7 +26,7 @@ export type PublishGateError = {
 };
 
 const ADVANCED_INACTIVE_REASON =
-  "Sovereign creator publish requires either a trusted provider or a permanent named public link.";
+  "Sovereign creator publish requires either a trusted provider or a canonical public origin.";
 const BASIC_SHARE_ONLY_REASON = "Basic can only publish public links. Share links require Advanced.";
 const DERIVATIVE_ADVANCED_REASON = "Derivatives require Advanced mode and clearance before publishing.";
 const PAYMENTS_REASON = "Local node payments must be configured to use this feature.";

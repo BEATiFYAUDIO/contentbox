@@ -1385,7 +1385,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             : summaryNodeModeLabel;
   const summaryStorefrontAuthority =
     (networkSummary?.modeProfile?.hasStablePublicRoute || summaryCanonicalCommerceKind === "self_hosted_stable")
-      ? "Creator-hosted (stable named tunnel)"
+      ? "Creator-hosted (stable canonical origin)"
       : "Creator-hosted (temporary tunnel)";
   const providerCommerceActive = participationModeFromSummary === "sovereign_creator_with_provider";
   const summaryCommerceAuthority = networkSummary?.modeProfile?.localSovereignReady
@@ -1607,7 +1607,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           ? "Next step: connect a commerce provider or run local node stack."
           : networkSummary?.modeProfile?.providerConnected
             ? "Provider is connected. Next step: switch to Sovereign Creator to activate provider commerce."
-          : "Next step: bring named tunnel online to unlock Sovereign Creator.";
+          : "Next step: bring canonical public origin online to unlock Sovereign Creator.";
   const guardPillClass =
     commerceGuardLevel === "ready"
       ? "border-emerald-800/70 bg-emerald-900/20 text-emerald-300"
@@ -1970,7 +1970,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Configuration</div>
             <div className="mt-1 text-xs text-neutral-400">
-              Basic mode keeps provider configuration hidden. Add a named tunnel and switch out of Basic to enable provider commerce services.
+              Basic mode keeps provider configuration hidden. Add a canonical public origin and switch out of Basic to enable provider commerce services.
             </div>
           </div>
         ) : isSovereignNodeMode ? (
@@ -1993,7 +1993,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </div>
           {providerConfigLocked ? (
             <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-              Named tunnel required before provider configuration. Bring a named tunnel online first.
+              Canonical public origin required before provider configuration. Bring your canonical origin online first.
             </div>
           ) : null}
           {isSovereignCreatorMode ? (

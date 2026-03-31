@@ -500,7 +500,7 @@ export default function ConfigPage({
   const sovereignNodeBlockers = modeInfo?.modeReadiness?.blockers || [];
   const sovereignModeBlockedReason = sovereignCreatorEligible
     ? null
-    : "Named tunnel not detected yet. Sovereign Creator unlocks after stable public host detection.";
+    : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
   const lightningRuntime = (lightningReadiness?.runtime || lightningAdmin?.runtime || null) as Partial<LightningRuntimeSnapshot> | null;
@@ -1046,7 +1046,7 @@ export default function ConfigPage({
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             Sovereign Node requirements not met:
             <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
-              {sovereignNodeBlockers.includes("named_tunnel_required") ? <li>Named tunnel required</li> : null}
+              {sovereignNodeBlockers.includes("named_tunnel_required") ? <li>Canonical public origin required</li> : null}
               {sovereignNodeBlockers.includes("local_bitcoin_node_required") ? <li>Local Bitcoin node required</li> : null}
               {sovereignNodeBlockers.includes("local_lnd_required") ? <li>Local LND required</li> : null}
               {sovereignNodeBlockers.includes("local_commerce_service_required") ? <li>Local commerce service required</li> : null}
@@ -1077,10 +1077,10 @@ export default function ConfigPage({
             <b>1. Basic Creator</b> → Configure <b>Tunnel & routing</b>, publish content, collect tips.
           </div>
           <div>
-            <b>2. Sovereign Creator</b> → Named tunnel online, then connect commerce services.
+            <b>2. Sovereign Creator</b> → Canonical public origin online, then connect commerce services.
           </div>
           <div>
-            <b>3. Sovereign Node</b> → Named tunnel + local stack, then use advanced infra panels.
+            <b>3. Sovereign Node</b> → Canonical public origin + local stack, then use advanced infra panels.
           </div>
         </div>
       </div>

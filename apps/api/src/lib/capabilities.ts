@@ -43,15 +43,15 @@ export type CapabilityReasonContext = {
 const BASIC_REASON = "This feature is not available in the Basic edition.";
 const PAYMENTS_REASON = "Local node payments must be configured to use this feature.";
 const ADVANCED_INACTIVE_REASON =
-  "Sovereign creator mode requires either a trusted provider connection or a permanent named public link.";
+  "Sovereign creator mode requires either a trusted provider connection or a canonical public origin.";
 const ADVANCED_PROVIDER_PENDING_REASON =
-  "Provider is configured but not trusted/reachable yet. Verify provider or bring a named public link online.";
+  "Provider is configured but not trusted/reachable yet. Verify provider or bring your canonical public origin online.";
 const SPLITS_REASON = "Splits and royalties require Advanced or LAN mode.";
 const DERIVATIVES_REASON = "Derivatives require Advanced or LAN mode.";
 const INVITE_REASON = "Split invites require Advanced or LAN mode.";
 const LOCK_REASON = "Locking split proofs requires Advanced or LAN mode.";
 const CLEARANCE_REASON = "Clearance requests require Advanced or LAN mode.";
-const PUBLIC_SHARE_REASON = "Provider-node public sharing requires a permanent named public link and local node payments.";
+const PUBLIC_SHARE_REASON = "Provider-node public sharing requires a canonical public origin and local node payments.";
 const PROOFS_REASON = "Proof bundles require Advanced or LAN mode.";
 
 function isAdvancedTier(ctx: CapabilityContext) {
