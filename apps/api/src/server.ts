@@ -8849,7 +8849,14 @@ async function checkNamedTunnelConnected(): Promise<boolean> {
       const id = String(t?.id || "").trim().toLowerCase();
       return name === tunnelName || id === tunnelName;
     });
-    return Boolean(match && Array.isArray(match.connections) && match.connections.length > 0);
+    if (Boolean(match && Array.isArray(match.connections) && match.connections.length > 0)) return true;
+
+    // Machine-local fallback: if the configured tunnel name drifts, but exactly one
+    // tunnel is actually connected on this host, avoid false "offline" posture.
+    // We do not apply this when multiple tunnels are connected to prevent ambiguity.
+    const connected = tunnels.filter((t: any) => Array.isArray(t?.connections) && t.connections.length > 0);
+    if (!match && connected.length === 1) return true;
+    return false;
   } catch {
     return false;
   }
