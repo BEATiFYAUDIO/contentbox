@@ -84,3 +84,17 @@ test("root domain config stays canonical (no tunnel subdomain rewrite)", () => {
   });
   assert.equal(state.canonicalOrigin, "https://darrylhillock.com");
 });
+
+test("publicOrigin config enables canonical named identity without tunnel-name coupling", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: null, publicOrigin: null },
+    config: { provider: null, domain: null, tunnelName: null, publicOrigin: "https://inklinguy.pro" },
+    quick: { status: "ACTIVE", publicOrigin: "https://abc.trycloudflare.com" },
+    namedHealthOk: true
+  });
+  assert.equal(state.mode, "named");
+  assert.equal(state.isCanonical, true);
+  assert.equal(state.canonicalOrigin, "https://inklinguy.pro");
+});

@@ -8745,11 +8745,21 @@ function getPublicStatus() {
         ? quickState.lastError || "Public link error"
         : tunnelManager.status().lastError || "Public link error"
       : null;
+  const canonicalOriginConfigured = Boolean(state.canonicalOrigin);
+  const canonicalOriginReachable = state.status === "online";
+  const canonicalOriginReason = !canonicalOriginConfigured
+    ? "CANONICAL_ORIGIN_NOT_CONFIGURED"
+    : canonicalOriginReachable
+      ? null
+      : "CANONICAL_ORIGIN_UNREACHABLE_OR_OFFLINE";
 
   return {
     mode: state.mode,
     status: state.status,
     canonicalOrigin: state.canonicalOrigin,
+    canonicalOriginConfigured,
+    canonicalOriginReachable,
+    canonicalOriginReason,
     publicOrigin: state.canonicalOrigin,
     isCanonical: state.isCanonical,
     message: state.message,
@@ -8806,7 +8816,7 @@ async function triggerPublicStartBestEffort() {
     tunnelManager
       .startNamed({
         publicOrigin: cfg.publicOrigin,
-        tunnelName: cfg.tunnelName,
+        tunnelName: String(cfg.tunnelName || "").trim(),
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
         token: namedToken
       })
@@ -17931,7 +17941,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     await tunnelManager.stop();
     const status = await tunnelManager.startNamed({
       publicOrigin: cfg.publicOrigin,
-      tunnelName: cfg.tunnelName,
+      tunnelName: String(cfg.tunnelName || "").trim(),
       configPath,
       token: namedToken
     });
@@ -32979,7 +32989,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
       const namedToken = getNamedTunnelToken();
       tunnelManager.startNamed({
         publicOrigin: cfg.publicOrigin,
-        tunnelName: cfg.tunnelName,
+        tunnelName: String(cfg.tunnelName || "").trim(),
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
         token: namedToken
       }).catch((e) => app.log.warn(String(e?.message || e)));
