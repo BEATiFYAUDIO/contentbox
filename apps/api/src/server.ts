@@ -23998,7 +23998,15 @@ async function handleBuyPage(req: any, reply: any) {
   async function fetchJson(path, opts){
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", credentials: "include", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
     const data = await res.json().catch(()=>null);
-    if (!res.ok) throw new Error((data && (data.error || data.message)) || "Request failed");
+    if (!res.ok) {
+      const err = new Error((data && (data.error || data.message)) || "Request failed");
+      try {
+        err.code = data?.code || data?.error || null;
+        err.status = res.status;
+        err.details = data?.details || null;
+      } catch {}
+      throw err;
+    }
     return data;
   }
 
@@ -24550,7 +24558,23 @@ async function handleBuyPage(req: any, reply: any) {
     }
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
-    const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    let intent = null;
+    try {
+      intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    } catch (e) {
+      const code = String(e?.code || "").trim();
+      const msg = String(e?.message || "").trim();
+      if (statusEl) {
+        statusEl.textContent = code === "DELEGATED_PUBLISH_REQUIRED"
+          ? "Payment is not ready yet. Provider must publish this content first."
+          : code === "PROVIDER_RELATIONSHIP_REQUIRED"
+            ? "Payment is blocked until provider relationship is established."
+            : code === "PROVIDER_NOT_READY"
+              ? "Provider is configured but not ready to issue invoices."
+              : msg || "Unable to create payment right now.";
+      }
+      return;
+    }
     if (intent?.status === "manual_required") {
       const manualId = intent.intentId || null;
       receiptToken = manualId;
