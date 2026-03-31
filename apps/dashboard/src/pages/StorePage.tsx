@@ -284,6 +284,18 @@ type UserNetworkStatus = {
   title: "Ready" | "Connecting" | "Action Required" | "Offline";
   message: string;
   actionLabel: string | null;
+  reason?:
+    | "runtime_not_ready"
+    | "sovereign_node_ready"
+    | "sovereign_public_origin_missing"
+    | "sovereign_local_stack_missing"
+    | "sovereign_creator_ready"
+    | "basic_creator_ready"
+    | "provider_unreachable"
+    | "provider_ready"
+    | "provider_setup_in_progress"
+    | "provider_setup_blocked"
+    | "provider_setup_connecting";
 };
 
 type CreatorPayoutDestinationStatus = {
@@ -960,6 +972,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     try {
       const result = await api<ProviderHandshakeResult>("/api/network/provider/handshake", "POST", {});
       setProviderHandshake(result || null);
+      await refreshUserNetworkStatus();
+      await refreshProfileActivationStatus();
     } catch (e: any) {
       setProviderHandshake(null);
       setProviderHandshakeErr(e?.message || "Provider handshake failed.");
@@ -1121,12 +1135,12 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       }
       if (finalStatus?.status === "offline") {
         setGuidedSetupPhase("error");
-        setGuidedSetupMessage("We couldn’t reach your provider.");
+        setGuidedSetupMessage(finalStatus.message || "Provider connectivity is currently unavailable.");
         return;
       }
       if (finalStatus?.status === "action_required") {
         setGuidedSetupPhase("error");
-        setGuidedSetupMessage("Your provider connection needs to be refreshed.");
+        setGuidedSetupMessage(finalStatus.message || "Your provider connection needs to be refreshed.");
         return;
       }
       setGuidedSetupPhase("error");
@@ -1545,7 +1559,34 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       ? "Refresh setup"
       : userNetworkStatus?.status === "connecting" || userNetworkStatus?.status === "action_required"
         ? "Finish setup"
-        : "Connect provider";
+      : "Connect provider";
+  const providerBindingMessage = !networkSummary?.providerBinding?.configured
+    ? "No provider configured."
+    : networkSummary?.modeProfile?.providerConnected
+      ? "Provider configured and delegated invoice support is active."
+      : networkSummary?.modeProfile?.providerConnectionReason === "provider_not_trusted"
+        ? "Provider configured, but trust verification is required."
+        : networkSummary?.modeProfile?.providerConnectionReason === "provider_acknowledgment_required"
+          ? "Provider configured. Request provider acknowledgment to continue."
+          : networkSummary?.modeProfile?.providerConnectionReason === "provider_execution_permit_required"
+            ? "Provider configured. Request provider execution permit to continue."
+            : networkSummary?.paymentCapability?.providerBackedCommerceMessage ||
+              "Provider configured, but delegated invoice support is not active yet.";
+  React.useEffect(() => {
+    if (guidedSetupBusy || !userNetworkStatus) return;
+    if (userNetworkStatus.status === "ready") {
+      setGuidedSetupPhase("ready");
+      setGuidedSetupMessage(userNetworkStatus.message || "Connected and ready to use.");
+      return;
+    }
+    if (userNetworkStatus.status === "offline" || userNetworkStatus.status === "action_required") {
+      setGuidedSetupPhase("error");
+      setGuidedSetupMessage(userNetworkStatus.message || "Your provider connection needs attention.");
+      return;
+    }
+    setGuidedSetupPhase("idle");
+    setGuidedSetupMessage(userNetworkStatus.message || "Provider relationship setup is still in progress.");
+  }, [guidedSetupBusy, userNetworkStatus?.status, userNetworkStatus?.message, userNetworkStatus?.reason]);
   const profileActivationLabel =
     profileActivationStatus?.activation?.status === "activated"
       ? "Activated"
@@ -2018,6 +2059,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="text-xs text-neutral-400 mt-1">
               Network Status: <span className="text-neutral-300">{userNetworkStatusLabel}</span>
             </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Status reason: <span className="text-neutral-400">{userNetworkStatus?.reason || "unknown"}</span>
+            </div>
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={connectProviderGuided}
@@ -2317,9 +2361,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </>
           ) : null}
           <div className="mt-2 text-xs">
-            {networkSummary?.providerBinding?.configured
-              ? "Provider configured, but delegated invoice support is not active yet."
-              : "No provider configured."}
+            {providerBindingMessage}
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-2">
             <div>
