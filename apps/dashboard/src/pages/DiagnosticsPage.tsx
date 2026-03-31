@@ -4,7 +4,7 @@ import { getToken } from "../lib/auth";
 import { getApiBase } from "../lib/api";
 
 type HealthPath = "/health" | "/api/health" | "/public/health" | "/public/ping";
-const DEFAULT_HEALTH_PATH: HealthPath = "/health";
+const DEFAULT_HEALTH_PATH: HealthPath = "/api/health";
 
 type ProbeErrorType =
   | "FETCH_FAILED"
@@ -436,18 +436,9 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
     const rawOrigin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
     if (!rawOrigin) return "";
     try {
-      const u = new URL(rawOrigin);
-      const tunnelName = String(publicStatus?.tunnelName || "").trim();
-      if (!tunnelName) return rawOrigin;
-      const host = u.hostname.toLowerCase();
-      const sub = `${tunnelName.toLowerCase()}.`;
-      if (host.startsWith(sub)) return rawOrigin;
-      const isRootDomain = host.split(".").length === 2;
-      if (!isRootDomain) return rawOrigin;
-      u.hostname = `${tunnelName}.${host}`;
-      return u.origin;
+      return new URL(rawOrigin).origin;
     } catch {
-      return rawOrigin;
+      return rawOrigin.replace(/\/+$/, "");
     }
   };
 
@@ -458,7 +449,7 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
       setTunnelHealthErr("No public origin available.");
       return;
     }
-    const url = `${origin.replace(/\/$/, "")}/public/ping`;
+    const url = `${origin.replace(/\/$/, "")}/api/health`;
     setTunnelHealthBusy(true);
     setTunnelHealthErr(null);
     try {
@@ -467,7 +458,7 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
       for (let i = 0; i < attempts; i += 1) {
         const out = useProxy
           ? await probeViaProxy(url)
-          : await probeHealth({ origin, path: "/public/ping", timeoutMs: 4500 });
+          : await probeHealth({ origin, path: "/api/health", timeoutMs: 4500 });
         final = out;
         if (out.ok) break;
         if (i < attempts - 1) {

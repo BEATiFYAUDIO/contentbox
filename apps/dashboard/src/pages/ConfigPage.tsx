@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { clearToken, getToken } from "../lib/auth";
 import { getApiBase } from "../lib/api";
 
-const DEFAULT_HEALTH_PATH = "/health";
+const DEFAULT_HEALTH_PATH = "/api/health";
 
 type Health = {
   ok: boolean;

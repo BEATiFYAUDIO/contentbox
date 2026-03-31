@@ -1,6 +1,6 @@
 export type HealthPath = "/health" | "/api/health" | "/public/health";
 
-export const DEFAULT_HEALTH_PATH: HealthPath = "/health";
+export const DEFAULT_HEALTH_PATH: HealthPath = "/api/health";
 
 export type ProbeErrorType =
   | "FETCH_FAILED"

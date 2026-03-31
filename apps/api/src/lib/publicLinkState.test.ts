@@ -98,3 +98,38 @@ test("publicOrigin config enables canonical named identity without tunnel-name c
   assert.equal(state.isCanonical, true);
   assert.equal(state.canonicalOrigin, "https://inklinguy.pro");
 });
+
+test("explicit publicOrigin subdomain wins over domain+tunnel derivation", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: "certifyd-m4", publicOrigin: null },
+    config: {
+      provider: "cloudflare",
+      domain: "inklinguy.pro",
+      tunnelName: "certifyd-m4",
+      publicOrigin: "https://certifyd2.inklinguy.pro"
+    },
+    quick: { status: "ACTIVE", publicOrigin: "https://abc.trycloudflare.com" },
+    namedHealthOk: true
+  });
+  assert.equal(state.mode, "named");
+  assert.equal(state.canonicalOrigin, "https://certifyd2.inklinguy.pro");
+});
+
+test("canonical origin never rewrites root domain to tunnel subdomain", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: "certifyd-m4", publicOrigin: "https://darrylhillock.com" },
+    config: {
+      provider: "cloudflare",
+      domain: "darrylhillock.com",
+      tunnelName: "certifyd-m4",
+      publicOrigin: null
+    },
+    quick: { status: "STOPPED", publicOrigin: null },
+    namedHealthOk: true
+  });
+  assert.equal(state.canonicalOrigin, "https://darrylhillock.com");
+});
