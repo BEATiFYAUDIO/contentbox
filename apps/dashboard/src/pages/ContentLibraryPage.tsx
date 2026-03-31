@@ -2662,7 +2662,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               const monetizationAccessLabel = paidUnlockEnabled
                 ? "Paid unlock enabled"
                 : pricedButCommerceBlocked
-                  ? "Price set, waiting for commerce authority"
+                  ? "Suggested tip set (paid unlock requires commerce authority)"
                 : lightningAvailable
                   ? "Free access with tips enabled"
                   : "Free access";
@@ -3883,7 +3883,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             />
                           </div>
                           <div className="md:col-span-2 text-xs text-neutral-400 space-y-1">
-                            <div>Fans can pay with Lightning or Bitcoin.</div>
+                            <div>
+                              {lightningAvailable && onchainAvailable
+                                ? "Fans can pay with Lightning or Bitcoin."
+                                : lightningAvailable
+                                  ? "Fans can pay with Lightning."
+                                  : onchainAvailable
+                                    ? "Fans can pay with Bitcoin."
+                                    : "Add a payout destination to enable tips."}
+                            </div>
                             <button
                               type="button"
                               className="mt-2 text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -3894,20 +3902,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setPriceMsg((m) => ({ ...m, [it.id]: "Price must be 0 or more." }));
                                   return;
                                 }
-                                if (!commerceAuthorityAvailable && sats > 0) {
-                                  setPriceMsg((m) => ({
-                                    ...m,
-                                    [it.id]:
-                                      "Connect provider commerce services or verify local Sovereign Node readiness before enabling paid unlocks."
-                                  }));
-                                  return;
-                                }
                                 try {
                                   setBusyAction((m) => ({ ...m, [it.id]: true }));
                                   setPriceMsg((m) => ({ ...m, [it.id]: "" }));
                                   await api(`/content/${it.id}/price`, "PATCH", { priceSats: raw });
                                   await refreshCurrentView();
-                                  setPriceMsg((m) => ({ ...m, [it.id]: "Saved." }));
+                                  setPriceMsg((m) => ({
+                                    ...m,
+                                    [it.id]:
+                                      !commerceAuthorityAvailable && sats > 0
+                                        ? "Saved as suggested tip. Paid unlock activates when commerce authority is available."
+                                        : "Saved."
+                                  }));
                                 } catch (e: any) {
                                   setPriceMsg((m) => ({ ...m, [it.id]: e?.message || "Failed to save price." }));
                                 } finally {

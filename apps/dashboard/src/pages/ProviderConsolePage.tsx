@@ -57,6 +57,10 @@ type LightningBalancesSnapshot = {
     inboundSats: number;
   };
 };
+type NodeModeSnapshot = {
+  mode?: "basic" | "advanced" | "lan";
+  commerceAuthorityAvailable?: boolean;
+};
 
 type ProviderCreatorLink = {
   id: string;
@@ -228,24 +232,40 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     setLoading(true);
     setError(null);
     try {
-      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes, lightningAdminRes, lightningBalancesRes] = await Promise.all([
+      let canUseLightningAdmin = false;
+      try {
+        const modeSnapshot = await api<NodeModeSnapshot>("/api/node/mode", "GET");
+        canUseLightningAdmin = Boolean(modeSnapshot?.commerceAuthorityAvailable);
+      } catch {
+        canUseLightningAdmin = false;
+      }
+      const baseCalls = await Promise.all([
         api<ProviderSummary>("/api/provider/summary", "GET"),
         api<{ items: ProviderCreatorLink[] }>("/api/provider/creator-links", "GET"),
         api<{ items: ProviderDelegatedPublish[] }>("/api/provider/delegated-publishes", "GET"),
         api<{ items: ProviderPaymentIntent[] }>("/api/provider/payment-intents", "GET"),
         api<{ items: ProviderPaymentReceipt[] }>("/api/provider/payment-receipts", "GET"),
-        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET"),
-        api<LightningAdminSnapshot>("/api/admin/lightning", "GET"),
-        api<LightningBalancesSnapshot>("/api/admin/lightning/balances", "GET")
+        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET")
       ]);
+      let lightningAdminRes: LightningAdminSnapshot | null = null;
+      let lightningBalancesRes: LightningBalancesSnapshot | null = null;
+      if (canUseLightningAdmin) {
+        const [adminRes, balancesRes] = await Promise.all([
+          api<LightningAdminSnapshot>("/api/admin/lightning", "GET"),
+          api<LightningBalancesSnapshot>("/api/admin/lightning/balances", "GET")
+        ]);
+        lightningAdminRes = adminRes || null;
+        lightningBalancesRes = balancesRes || null;
+      }
+      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes] = baseCalls;
       setSummary(summaryRes || null);
       setCreatorLinks(Array.isArray(creatorLinksRes?.items) ? creatorLinksRes.items : []);
       setDelegatedPublishes(Array.isArray(delegatedPublishesRes?.items) ? delegatedPublishesRes.items : []);
       setPaymentIntents(Array.isArray(paymentIntentsRes?.items) ? paymentIntentsRes.items : []);
       setPaymentReceipts(Array.isArray(paymentReceiptsRes?.items) ? paymentReceiptsRes.items : []);
       setParticipantPayouts(Array.isArray(participantPayoutsRes?.items) ? participantPayoutsRes.items : []);
-      setLightningAdmin(lightningAdminRes || null);
-      setLightningBalances(lightningBalancesRes || null);
+      setLightningAdmin(lightningAdminRes);
+      setLightningBalances(lightningBalancesRes);
     } catch (e: any) {
       setError(e?.message || "Failed to load provider console.");
     } finally {

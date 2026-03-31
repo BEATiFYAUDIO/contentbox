@@ -67,6 +67,10 @@ type LightningAdminConfig = {
   lastStatus: string | null;
   lastError: string | null;
 };
+type NodeModeSnapshot = {
+  mode?: "basic" | "advanced" | "lan";
+  commerceAuthorityAvailable?: boolean;
+};
 
 type LightningTestResult =
   | { ok: true; info: { alias: string; version: string; identityPubkey: string } }
@@ -230,6 +234,7 @@ export default function FinanceOverviewPage({
   const [retryTick, setRetryTick] = useState(0);
   const [lightningAdmin, setLightningAdmin] = useState<LightningAdminConfig | null>(null);
   const [lightningAdminError, setLightningAdminError] = useState<string | null>(null);
+  const [lightningAdminAllowed, setLightningAdminAllowed] = useState<boolean>(true);
   const [showLightningModal, setShowLightningModal] = useState(false);
   const [lndRestUrl, setLndRestUrl] = useState("");
   const [lndNetwork, setLndNetwork] = useState<"mainnet" | "testnet" | "regtest">("mainnet");
@@ -375,6 +380,11 @@ export default function FinanceOverviewPage({
   };
 
   const loadLightningAdmin = async () => {
+    if (!lightningAdminAllowed) {
+      setLightningAdmin(null);
+      setLightningAdminError(null);
+      return null;
+    }
     const res = await api<LightningAdminConfig>("/api/admin/lightning", "GET");
     applyLightningAdmin(res || null);
     return res || null;
@@ -385,6 +395,23 @@ export default function FinanceOverviewPage({
     let active = true;
     (async () => {
       try {
+        let canUseLightningAdmin = false;
+        try {
+          const modeSnapshot = await api<NodeModeSnapshot>("/api/node/mode", "GET");
+          canUseLightningAdmin = Boolean(modeSnapshot?.commerceAuthorityAvailable);
+        } catch {
+          canUseLightningAdmin = false;
+        }
+        if (!active) return;
+        setLightningAdminAllowed(canUseLightningAdmin);
+        if (!canUseLightningAdmin) {
+          setLightningAdmin(null);
+          setLightningReadiness(null);
+          setLightningBalances(null);
+          setLightningAdminError(null);
+          setLightningReadinessError(null);
+          return;
+        }
         const res = await api<LightningAdminConfig>("/api/admin/lightning", "GET");
         if (!active) return;
         applyLightningAdmin(res || null, { syncForm: true });

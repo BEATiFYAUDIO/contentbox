@@ -27526,17 +27526,6 @@ app.patch("/content/:id/price", { preHandler: requireAuth }, async (req: any, re
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  if (sats > 0n) {
-    const authority = await resolveCommerceAuthorityForUser(userId);
-    if (!authority.authority) {
-      return reply.code(409).send({
-        error: "COMMERCE_AUTHORITY_REQUIRED",
-        message:
-          "Paid unlocks require connected provider commerce services or a verified local Sovereign Node stack.",
-        blockers: authority.sovereignReadiness.blockers
-      });
-    }
-  }
 
   const updated = await prisma.contentItem.update({
     where: { id: contentId },
