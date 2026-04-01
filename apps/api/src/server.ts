@@ -22990,6 +22990,38 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-title { font-weight:700; font-size:19px; line-height:1.25; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
+    body.iframe-embedded .profile-header-grid {
+      grid-template-columns:1fr;
+      grid-template-areas:
+        "brand"
+        "identity"
+        "signal";
+      gap:10px;
+    }
+    body.iframe-embedded .brand-rail {
+      justify-content:flex-start;
+      align-self:start;
+      padding-top:0;
+    }
+    body.iframe-embedded .identity-rail {
+      flex-direction:row;
+      align-items:flex-start;
+      gap:10px;
+      margin-top:-2px;
+    }
+    body.iframe-embedded .hero-meta {
+      width:100%;
+      min-width:0;
+      display:flex;
+      flex-direction:column;
+      align-items:flex-start;
+      text-align:left;
+    }
+    body.iframe-embedded .hero-handle { text-align:left; }
+    body.iframe-embedded .hero-meta .line { text-align:left; }
+    body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
+    body.iframe-embedded .avatar { width:84px; height:84px; }
+    body.iframe-embedded .brand-logo-image { width:42px; }
     @media (min-width: 720px) {
       .identity-rail { align-items:flex-start; }
       .featured-grid { grid-template-columns:1fr 1fr; }
@@ -23030,37 +23062,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .proof-group-title { font-size:12px; }
     }
     @media (max-width: 640px) {
-      body.iframe-embedded .profile-header-grid {
-        grid-template-columns:1fr;
-        grid-template-areas:
-          "brand"
-          "identity"
-          "signal";
-        gap:10px;
-      }
-      body.iframe-embedded .brand-rail {
-        justify-content:flex-start;
-        align-self:start;
-      }
-      body.iframe-embedded .identity-rail {
-        flex-direction:row;
-        align-items:flex-start;
-        gap:10px;
-        margin-top:-2px;
-      }
-      body.iframe-embedded .hero-meta {
-        width:100%;
-        min-width:0;
-        display:flex;
-        flex-direction:column;
-        align-items:flex-start;
-        text-align:left;
-      }
-      body.iframe-embedded .hero-handle { text-align:left; }
-      body.iframe-embedded .hero-meta .line { text-align:left; }
-      body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
-      body.iframe-embedded .avatar { width:84px; height:84px; }
-      body.iframe-embedded .brand-logo-image { width:42px; }
+      body.iframe-embedded .profile-header-grid { gap:10px; }
     }
   </style>
 </head>
