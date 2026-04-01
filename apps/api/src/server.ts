@@ -13630,13 +13630,27 @@ async function handleBuyerBuys(req: any, reply: any) {
   const manifest = await ensureManifestForContent(content);
   if (!manifest?.sha256) return notFound(reply, "Manifest not found");
 
-  if (content.priceSats == null || content.priceSats < 1n) {
-    return reply.code(409).send({ code: "PRICE_NOT_SET", error: "Creator has not set a price yet." });
+  // Guardrail: priced releases must be unlocked by real payment flow.
+  // Self-claim is only allowed for free/tip-style content.
+  const listedPriceSats = content.priceSats == null ? 0n : BigInt(content.priceSats);
+  if (listedPriceSats > 0n) {
+    app.log.info(
+      {
+        route: "/api/buyer/buys",
+        buyerId: session.buyer.id,
+        contentId,
+        productTier,
+        listedPriceSats: listedPriceSats.toString(),
+        mappedCode: "PAYMENT_REQUIRED"
+      },
+      "buyerBuys.self_claim_blocked_priced_content"
+    );
+    return reply.code(409).send({ code: "PAYMENT_REQUIRED", error: "Payment required for priced content." });
   }
 
-  const amountSats = parseSats(body.amountSats ?? content.priceSats);
-  if (amountSats <= 0n) return badRequest(reply, "amountSats must be > 0");
-  if (amountSats !== content.priceSats) {
+  const amountSats = parseSats(body.amountSats ?? listedPriceSats);
+  if (amountSats < 0n) return badRequest(reply, "amountSats must be >= 0");
+  if (amountSats !== listedPriceSats) {
     return reply.code(409).send({ code: "AMOUNT_MISMATCH", error: "Amount must match creator price." });
   }
 
