@@ -23038,24 +23038,29 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           "signal";
         gap:10px;
       }
-      body.iframe-embedded .brand-rail { justify-content:center; }
+      body.iframe-embedded .brand-rail {
+        justify-content:flex-start;
+        align-self:start;
+      }
       body.iframe-embedded .identity-rail {
-        flex-direction:column;
-        align-items:center;
+        flex-direction:row;
+        align-items:flex-start;
         gap:10px;
+        margin-top:-2px;
       }
       body.iframe-embedded .hero-meta {
         width:100%;
         min-width:0;
         display:flex;
         flex-direction:column;
-        align-items:center;
-        text-align:center;
+        align-items:flex-start;
+        text-align:left;
       }
-      body.iframe-embedded .hero-handle { text-align:center; }
-      body.iframe-embedded .hero-meta .line { text-align:center; }
+      body.iframe-embedded .hero-handle { text-align:left; }
+      body.iframe-embedded .hero-meta .line { text-align:left; }
       body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
-      body.iframe-embedded .avatar { width:96px; height:96px; }
+      body.iframe-embedded .avatar { width:84px; height:84px; }
+      body.iframe-embedded .brand-logo-image { width:42px; }
     }
   </style>
 </head>
