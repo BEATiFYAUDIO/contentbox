@@ -23029,9 +23029,46 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-chip-row { margin-top:6px; gap:5px; }
       .proof-group-title { font-size:12px; }
     }
+    @media (max-width: 640px) {
+      body.iframe-embedded .profile-header-grid {
+        grid-template-columns:1fr;
+        grid-template-areas:
+          "brand"
+          "identity"
+          "signal";
+        gap:10px;
+      }
+      body.iframe-embedded .brand-rail { justify-content:center; }
+      body.iframe-embedded .identity-rail {
+        flex-direction:column;
+        align-items:center;
+        gap:10px;
+      }
+      body.iframe-embedded .hero-meta {
+        width:100%;
+        min-width:0;
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        text-align:center;
+      }
+      body.iframe-embedded .hero-handle { text-align:center; }
+      body.iframe-embedded .hero-meta .line { text-align:center; }
+      body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
+      body.iframe-embedded .avatar { width:96px; height:96px; }
+    }
   </style>
 </head>
 <body>
+  <script>
+    (function () {
+      try {
+        if (window.self !== window.top) document.body.classList.add("iframe-embedded");
+      } catch (_) {
+        document.body.classList.add("iframe-embedded");
+      }
+    })();
+  </script>
   <div class="card">
     <h2 class="page-title">Certifyd Creator Profile</h2>
     <section class="profile-header-grid">
