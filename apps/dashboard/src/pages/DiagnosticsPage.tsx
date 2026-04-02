@@ -633,7 +633,10 @@ export default function DiagnosticsPage({ whoamiInfo = null, whoamiStatus = "idl
               </div>
             )}
             <div style={{ opacity: 0.65, marginTop: 6 }}>
-              Command line: <code>apps/api/src/scripts/backup_db.sh</code>
+              Restore (Linux/macOS): <code>ops/recovery/restore_db.sh &lt;backup-file&gt;</code>
+            </div>
+            <div style={{ opacity: 0.65 }}>
+              Restore (PowerShell): <code>ops/recovery/restore_db.ps1 -BackupFile &lt;backup-file&gt;</code>
             </div>
           </div>
         )}
