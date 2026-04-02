@@ -1,0 +1,1227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title></title>
+
+  <meta
+    name="description"
+    content="Certifyd Creator helps creators publish from their own workspace, prove identity, and connect attribution, proofs, and payments across the open web."
+  />
+
+  <style>
+
+    /* ===== Anchor jump offset (so header doesn't cover section titles) ===== */
+:root{
+  --header-offset: 132px; /* desktop default */
+}
+
+/* Tell the browser how much space to leave when scrolling to #anchors */
+html{
+  scroll-padding-top: var(--header-offset);
+  scroll-behavior: smooth;
+}
+
+/* Also apply per-section so it works even if some browsers ignore scroll-padding */
+section[id]{
+  scroll-margin-top: var(--header-offset);
+}
+
+/* Match your header sizing on smaller screens */
+@media (max-width: 860px){
+  :root{ --header-offset: 128px; }
+}
+@media (max-width: 520px){
+  :root{ --header-offset: 148px; } /* your mobile header is taller because of the big logo */
+}
+
+    :root{
+      --bg:#070a10;
+      --panel:rgba(255,255,255,0.06);
+      --panel2:rgba(255,255,255,0.08);
+      --border:rgba(255,255,255,0.14);
+      --border2:rgba(255,255,255,0.18);
+      --text:rgba(255,255,255,0.96);
+      --muted:rgba(255,255,255,0.72);
+      --focus:#00e1ff;
+      --radius:18px;
+      --wrap:1200px;
+      --pad:22px;
+      --shadow:0 30px 90px rgba(0,0,0,0.65);
+    }
+
+    *{ box-sizing:border-box; }
+    html{ font-size:clamp(16px,1.1vw,18px); }
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+      background:
+        radial-gradient(900px 600px at 10% -10%, rgba(0,225,255,0.12), transparent 55%),
+        radial-gradient(800px 500px at 90% 10%, rgba(138,77,255,0.18), transparent 55%),
+        var(--bg);
+      color:var(--text);
+      line-height:1.6;
+      overflow-x:hidden;
+      text-rendering:optimizeLegibility;
+    }
+
+    a{ color:inherit; text-decoration:none; }
+    img{ max-width:100%; display:block; }
+
+    :focus-visible{
+      outline:3px solid var(--focus);
+      outline-offset:3px;
+      border-radius:10px;
+    }
+
+    /* ✅ One container rule everywhere = no asymmetry */
+    .wrap{
+      max-width:var(--wrap);
+      margin:0 auto;
+      padding:0 var(--pad);
+    }
+
+    /* ---------- Accessibility ---------- */
+    .skip-link{
+      position:absolute;
+      left:12px;
+      top:12px;
+      padding:12px 14px;
+      background:#000;
+      color:#fff;
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:12px;
+      transform:translateY(-220%);
+      z-index:2000;
+    }
+    .skip-link:focus{ transform:translateY(0); }
+
+    /* ---------- Header ---------- */
+    .site-header{
+      position:sticky;
+      top:0;
+      z-index:50;
+      background:rgba(7,10,16,0.78);
+      backdrop-filter:blur(16px);
+      border-bottom:1px solid var(--border);
+    }
+
+    /* ✅ “symmetry rail”: forces equal left/right edges even on mobile */
+    .header-rail{
+      border-bottom:0px solid rgba(255,255,255,0.10);
+      background:linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.00));
+    }
+
+    .header-inner{
+      display:grid;
+      grid-template-columns:auto 1fr auto; /* brand | nav | menu */
+      align-items:center;
+      gap:10px;
+      min-height:100px;
+      padding:6px 0;https://beatifyaudio.github.io/contentbox/index.html#top
+    }
+
+    /* Brand */
+    .brand{
+      display:flex;
+      align-items:center;
+      height:96px;
+      overflow:visible;
+      min-width:0;
+    }
+    .brand img{
+      height:72px;
+      width:auto;
+      max-width:100%;
+      object-fit:contain;
+      transform:none;
+      filter:drop-shadow(0 12px 28px rgba(0,0,0,0.45));
+    }
+
+    /* Desktop nav */
+    .nav-desktop{
+      justify-self:end;
+      display:flex;
+      gap:6px;
+      align-items:center;
+      white-space:nowrap;
+    }
+    .nav-desktop a{
+      padding:10px 14px;
+      font-size:0.95rem;
+      border-radius:12px;
+      min-height:44px;
+      display:flex;
+      align-items:center;
+      border:1px solid transparent;
+    }
+    .nav-desktop a:hover{
+      background:rgba(255,255,255,0.06);
+      border-color:rgba(255,255,255,0.08);
+    }
+
+    /* Mobile menu */
+    .nav-mobile{
+      display:none;
+      position:relative;
+      justify-self:end;
+    }
+    .nav-mobile summary{
+      list-style:none;
+      cursor:pointer;
+      padding:10px 12px;
+      border-radius:14px;
+      border:1px solid var(--border2);
+      background:rgba(255,255,255,0.06);
+      min-height:44px;
+      width:56px;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      box-shadow:0 14px 40px rgba(0,0,0,0.25);
+    }
+    .nav-mobile summary::-webkit-details-marker{ display:none; }
+
+    .burger{
+      display:inline-block;
+      width:22px;
+      height:14px;
+      position:relative;
+    }
+    .burger::before,
+    .burger::after,
+    .burger span{
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      height:2px;
+      background:rgba(255,255,255,0.88);
+      border-radius:999px;
+    }
+    .burger::before{ top:0; }
+    .burger::after{ bottom:0; }
+    .burger span{ top:6px; }
+
+    .nav-drawer{
+      position:absolute;
+      right:0;
+      top:calc(100% + 12px);
+      min-width:260px;
+      padding:10px;
+      border-radius:18px;
+      border:1px solid rgba(255,255,255,0.16);
+      background:rgba(7,10,16,0.92);
+      backdrop-filter:blur(16px);
+      display:grid;
+      gap:6px;
+      box-shadow:var(--shadow);
+      z-index:100;
+    }
+    .nav-drawer a{
+      padding:12px 12px;
+      border-radius:14px;
+      min-height:44px;
+      display:flex;
+      align-items:center;
+    }
+    .nav-drawer a:hover{ background:rgba(255,255,255,0.06); }
+
+    @media (max-width: 860px){
+      .nav-desktop{ display:none; }
+      .nav-mobile{ display:block; }
+      .header-inner{
+        min-height:100px;
+        padding:8px 0;
+      }
+    }
+
+    @media (max-width: 768px){
+      :root{ --pad:18px; }
+      .header-inner{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        min-height:118px;
+        padding:12px 0;
+        gap:12px;
+      }
+      .brand{
+        display:flex;
+        align-items:center;
+        height:88px;
+        margin-left:8px;
+      }
+      .brand img{
+        height:72px;
+        width:auto;
+        max-width:min(72vw, 360px);
+        max-height:88px;
+        object-fit:contain;
+        object-position:left center;
+        display:block;
+      }
+      .nav-mobile{
+        margin-left:auto;
+        align-self:center;
+      }
+      .nav-drawer{
+        right:0;
+        min-width:min(320px, calc(100vw - (var(--pad) * 2)));
+      }
+    }
+    @media (max-width: 380px){
+      .brand img{
+        height:62px;
+        max-width:min(66vw, 300px);
+      }
+      .nav-mobile summary{
+        width:52px;
+      }
+    }
+
+    /* ---------- Sections ---------- */
+    section{ padding:clamp(56px, 8vw, 96px) 0; }
+
+    h1{
+      font-size:clamp(2.4rem, 6vw, 3.6rem);
+      line-height:1.05;
+      margin:0 0 20px;
+      letter-spacing:-0.02em;
+    }
+    h2{
+      font-size:clamp(1.5rem, 3vw, 2rem);
+      margin:0 0 14px;
+    }
+    h3{ margin:0 0 8px; font-size:1.05rem; }
+
+    p{
+      max-width:72ch;
+      color:var(--muted);
+      margin:0;
+      font-size:1rem;
+    }
+    ul{
+      margin:12px 0 0;
+      padding-left:20px;
+      color:var(--muted);
+    }
+    li{ margin:8px 0; }
+
+    /* ---------- Hero ---------- */
+    .hero-grid{
+      display:grid;
+      grid-template-columns:0.85fr 1.15fr;
+      gap:34px;
+      align-items:center;
+    }
+    @media (max-width: 900px){
+      .hero-grid{ grid-template-columns:1fr; }
+    }
+
+    .panel{
+      background:rgba(255,255,255,0.06);
+      border:1px solid rgba(255,255,255,0.14);
+      border-radius:var(--radius);
+      padding:22px;
+      box-shadow:0 26px 80px rgba(0,0,0,0.25);
+    }
+    .hero-shot{
+      display:block;
+      border-radius:18px;
+      border:1px solid rgba(255,255,255,0.16);
+      overflow:hidden;
+      box-shadow:0 26px 80px rgba(0,0,0,0.32);
+    }
+    .hero-shot img{
+      width:100%;
+      height:auto;
+      display:block;
+      object-fit:cover;
+    }
+
+    .hero-actions{
+      display:flex;
+      gap:14px;
+      margin-top:24px;
+      flex-wrap:wrap;
+    }
+
+    .btn{
+      padding:14px 20px;
+      border-radius:16px;
+      border:1px solid rgba(255,255,255,0.16);
+      background:rgba(255,255,255,0.06);
+      font-weight:700;
+      min-height:44px;
+      font-size:0.95rem;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      box-shadow:0 18px 60px rgba(0,0,0,0.18);
+    }
+    .btn.primary{
+      border-color:rgba(255,255,255,0.18);
+      background:linear-gradient(135deg, rgba(138,77,255,0.45), rgba(0,225,255,0.22));
+    }
+
+    /* ---------- Cards ---------- */
+    .grid{ display:grid; gap:22px; }
+    .grid-3{ grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }
+    .grid-2{ grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); }
+
+    .card{
+      background:rgba(255,255,255,0.06);
+      border:1px solid rgba(255,255,255,0.14);
+      border-radius:var(--radius);
+      padding:22px;
+      box-shadow:0 22px 70px rgba(0,0,0,0.22);
+    }
+
+    /* ---------- Screenshots ---------- */
+    .shot{ cursor:zoom-in; display:block; }
+    .shot img{
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,0.14);
+      transition:transform 140ms ease, filter 140ms ease;
+    }
+    .shot:hover img{ transform:translateY(-1px); filter:brightness(1.05); }
+    .shot-card{
+      display:block;
+      text-decoration:none;
+      color:inherit;
+    }
+    .shot-card img{
+      border-radius:14px;
+      border:1px solid rgba(255,255,255,0.14);
+      box-shadow:0 22px 70px rgba(0,0,0,0.22);
+    }
+    .shot-meta{
+      margin-top:12px;
+    }
+    .shot-meta h3{
+      margin:0 0 6px;
+      font-size:1.02rem;
+    }
+    .ea-form{
+      margin-top:18px;
+      display:grid;
+      gap:12px;
+    }
+    .ea-status{
+      display:none;
+      border-radius:12px;
+      padding:10px 12px;
+      font-size:0.92rem;
+      border:1px solid rgba(255,255,255,0.16);
+      background:rgba(255,255,255,0.04);
+      color:var(--muted);
+    }
+    .ea-status.show{ display:block; }
+    .ea-status.success{
+      border-color:rgba(0,225,255,0.35);
+      background:rgba(0,225,255,0.10);
+      color:rgba(225,255,255,0.96);
+    }
+    .ea-status.error{
+      border-color:rgba(255,99,132,0.45);
+      background:rgba(255,99,132,0.12);
+      color:rgba(255,235,240,0.96);
+    }
+    .ea-grid{
+      display:grid;
+      gap:12px;
+      grid-template-columns:repeat(2, minmax(0, 1fr));
+    }
+    .ea-field{
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .ea-label{
+      font-size:0.86rem;
+      color:var(--muted);
+    }
+    .ea-input,
+    .ea-select,
+    .ea-textarea{
+      width:100%;
+      background:rgba(255,255,255,0.04);
+      border:1px solid rgba(255,255,255,0.16);
+      color:var(--fg);
+      border-radius:12px;
+      padding:12px 14px;
+      font:inherit;
+    }
+    .ea-textarea{
+      min-height:110px;
+      resize:vertical;
+    }
+    @media (max-width: 820px){
+      .ea-grid{ grid-template-columns:1fr; }
+    }
+    @media (max-width: 900px){
+      .grid-2{ grid-template-columns:1fr; }
+    }
+
+    /* ---------- Lightbox ---------- */
+    .lightbox{
+      position:fixed;
+      inset:0;
+      background:rgba(0,0,0,0.88);
+      display:none;
+      align-items:center;
+      justify-content:center;
+      padding:18px;
+      z-index:1000;
+    }
+    .lightbox:target{ display:flex; }
+    .lightbox img{
+      position:relative;
+      z-index:2;
+      max-width:min(1280px, 96vw);
+      max-height:92vh;
+      border-radius:16px;
+      box-shadow:0 40px 120px rgba(0,0,0,0.8);
+      border:1px solid rgba(255,255,255,0.12);
+      background:rgba(0,0,0,0.12);
+    }
+    .lightbox-bg{ position:absolute; inset:0; z-index:1; }
+
+    .lightbox-close{
+      position:absolute;
+      top:calc(18px + env(safe-area-inset-top, 0px));
+      right:calc(18px + env(safe-area-inset-right, 0px));
+      width:56px;
+      height:56px;
+      display:grid;
+      place-items:center;
+      font-size:34px;
+      line-height:1;
+      color:#fff;
+      background:rgba(0,0,0,0.35);
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:14px;
+      text-decoration:none;
+      cursor:pointer;
+      padding:0;
+      z-index:3;
+    }
+    .lightbox-close:hover,
+    .lightbox-close:focus-visible{ background:rgba(255,255,255,0.12); }
+
+    /* ---------- Footer ---------- */
+    footer{
+      border-top:1px solid rgba(255,255,255,0.14);
+      padding:48px 0;
+      color:var(--muted);
+    }
+
+    /* ---------- Chatbot ---------- */
+    .chatbot-toggle{
+      position:fixed;
+      right:18px;
+      bottom:18px;
+      z-index:1200;
+      border:1px solid rgba(255,255,255,0.24);
+      background:linear-gradient(180deg, rgba(0,225,255,0.24), rgba(0,225,255,0.14));
+      color:#eaffff;
+      border-radius:999px;
+      min-height:44px;
+      padding:10px 14px;
+      font:inherit;
+      font-weight:600;
+      cursor:pointer;
+      box-shadow:0 16px 34px rgba(0,0,0,0.45);
+    }
+    .chatbot-panel{
+      position:fixed;
+      right:18px;
+      bottom:74px;
+      width:min(360px, calc(100vw - 28px));
+      background:rgba(10,13,20,0.96);
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:16px;
+      z-index:1201;
+      box-shadow:0 28px 70px rgba(0,0,0,0.58);
+      overflow:hidden;
+    }
+    .chatbot-panel[hidden]{ display:none; }
+    .chatbot-head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:12px 14px;
+      border-bottom:1px solid rgba(255,255,255,0.12);
+    }
+    .chatbot-title{
+      font-size:0.95rem;
+      font-weight:700;
+    }
+    .chatbot-close{
+      border:1px solid rgba(255,255,255,0.2);
+      background:rgba(255,255,255,0.06);
+      color:var(--text);
+      border-radius:10px;
+      min-height:34px;
+      padding:6px 10px;
+      cursor:pointer;
+      font:inherit;
+    }
+    .chatbot-body{
+      display:grid;
+      gap:10px;
+      padding:12px;
+    }
+    .chatbot-messages{
+      max-height:280px;
+      overflow:auto;
+      display:grid;
+      gap:8px;
+      padding-right:2px;
+    }
+    .chatbot-msg{
+      border-radius:12px;
+      padding:9px 10px;
+      font-size:0.88rem;
+      line-height:1.4;
+    }
+    .chatbot-msg.bot{
+      background:rgba(255,255,255,0.08);
+      border:1px solid rgba(255,255,255,0.12);
+      color:#e9efff;
+    }
+    .chatbot-msg.user{
+      background:rgba(0,225,255,0.14);
+      border:1px solid rgba(0,225,255,0.28);
+      color:#e9feff;
+      justify-self:end;
+      max-width:95%;
+    }
+    .chatbot-quick{
+      display:flex;
+      gap:6px;
+      flex-wrap:wrap;
+    }
+    .chatbot-chip{
+      border:1px solid rgba(255,255,255,0.18);
+      background:rgba(255,255,255,0.04);
+      color:var(--text);
+      border-radius:999px;
+      min-height:32px;
+      padding:6px 10px;
+      font:inherit;
+      font-size:0.8rem;
+      cursor:pointer;
+    }
+    .chatbot-form{
+      display:flex;
+      gap:8px;
+    }
+    .chatbot-input{
+      flex:1;
+      min-width:0;
+      border:1px solid rgba(255,255,255,0.18);
+      background:rgba(255,255,255,0.04);
+      color:var(--text);
+      border-radius:10px;
+      min-height:38px;
+      padding:8px 10px;
+      font:inherit;
+      font-size:0.88rem;
+    }
+    .chatbot-send{
+      border:1px solid rgba(255,255,255,0.22);
+      background:rgba(255,255,255,0.1);
+      color:var(--text);
+      border-radius:10px;
+      min-height:38px;
+      padding:8px 12px;
+      font:inherit;
+      font-weight:600;
+      cursor:pointer;
+    }
+    @media (max-width: 640px){
+      .chatbot-toggle{
+        right:12px;
+        bottom:12px;
+      }
+      .chatbot-panel{
+        right:12px;
+        bottom:66px;
+        width:min(360px, calc(100vw - 20px));
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header" role="banner">
+    <div class="header-rail">
+      <div class="wrap header-inner">
+        <a class="brand" href="#top" aria-label="Certifyd Creator home">
+          <img src="docs/screenshots/logo.png" alt="Certifyd Creator logo" />
+        </a>
+
+        <nav class="nav-desktop" aria-label="Primary navigation">
+          <a href="#why">Why Certifyd</a>
+          <a href="#how">How it works</a>
+          <a href="#built-for">Built for</a>
+          <a href="#network">Network</a>
+          <a href="#product">Product</a>
+        </nav>
+
+        <details class="nav-mobile">
+          <summary aria-label="Open menu">
+            <span class="burger" aria-hidden="true"><span></span></span>
+          </summary>
+
+          <nav class="nav-drawer" aria-label="Mobile navigation">
+            <a href="#why">Why Certifyd</a>
+            <a href="#how">How it works</a>
+            <a href="#built-for">Built for</a>
+            <a href="#network">Network</a>
+            <a href="#product">Product</a>
+          </nav>
+        </details>
+      </div>
+    </div>
+  </header>
+
+  <main id="main">
+    <!-- HERO -->
+    <section class="wrap" id="top">
+      <div class="hero-grid">
+        <div>
+          <p style="font-size:0.9rem; letter-spacing:0.08em; text-transform:uppercase; color:#b8c5ff; margin-bottom:12px;">
+            Certifyd Creator
+          </p>
+          <h1>Own your identity. Publish from your domain. Get paid with proof.</h1>
+
+          <p>
+            Certifyd Creator connects identity, attribution, and Bitcoin-native payments so every release keeps clear authorship, split context, and payout truth.
+          </p>
+
+          <div class="hero-actions">
+            <a class="btn primary" href="#product">Get Certifyd</a>
+            <a class="btn" href="#network">Explore Certifyd Network</a>
+          </div>
+        </div>
+
+        <a class="hero-shot shot" href="#shot-hero" aria-label="Open Certifyd Creator product screenshot">
+          <img src="images/screenshots/contentattribution.png" alt="Certifyd Creator view showing publishing with attribution and collaborator context" />
+        </a>
+      </div>
+    </section>
+
+    <!-- PRODUCT PREVIEW -->
+    <section id="product" class="wrap">
+      <h2>Certifyd Creator in action</h2>
+      <p>
+        One workspace for publishing, collaborator rights, and financial truth.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <a class="shot-card" href="#shot-library" aria-label="Open Publish your work screenshot">
+          <img src="images/screenshots/contentlibrary.png" alt="Content library view for publishing with structured creator metadata" />
+          <div class="shot-meta">
+            <h3>Publish with context</h3>
+            <p>Release content with persistent identity, structured metadata, and verifiable ownership context.</p>
+          </div>
+        </a>
+        <a class="shot-card" href="#shot-royalties" aria-label="Open Credit collaborators screenshot">
+          <img src="images/screenshots/royalties.png" alt="Royalties view showing contributor attribution and split details" />
+          <div class="shot-meta">
+            <h3>Lock collaborator rights</h3>
+            <p>Keep contributor attribution, participation roles, and split terms attached to every release.</p>
+          </div>
+        </a>
+        <a class="shot-card" href="#shot-revenue" aria-label="Open Route payments screenshot">
+          <img src="images/screenshots/revenue.png" alt="Revenue dashboard showing Bitcoin and Lightning payment activity" />
+          <div class="shot-meta">
+            <h3>Reconcile revenue</h3>
+            <p>Track sales, earnings, fees, and payouts with source-backed accounting views.</p>
+          </div>
+        </a>
+      </div>
+    </section>
+
+    <!-- WHY -->
+    <section id="why" class="wrap">
+      <h2>Why Certifyd</h2>
+      <p>
+        Most creator tools split identity, rights, and payments across disconnected systems. Certifyd keeps them linked.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Verified Identity</h3>
+          <p>
+            Prove creator identity with domain and platform verification that travels with your publishing profile.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Attribution &amp; Splits</h3>
+          <p>
+            Keep contributor roles and split terms explicit, versioned, and visible at the work level.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Creator-Controlled Publishing</h3>
+          <p>
+            Publish from your own workspace and domain without surrendering identity or release ownership.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- TRUST -->
+    <section id="trust" class="wrap">
+      <h2>Identity and trust</h2>
+      <p>
+        Persistent creator identity plus verifiable proofs make releases attributable and discoverable with confidence.
+      </p>
+      <div class="grid grid-2" style="margin-top:22px">
+        <a class="shot-card" href="#shot-identity" aria-label="Open Creator identity screenshot">
+          <img src="images/screenshots/identity.png" alt="Creator identity panel with verification fingerprint and proof state" />
+          <div class="shot-meta">
+            <h3>Creator identity</h3>
+            <p>Each creator has a persistent identity fingerprint anchored to their profile and proofs.</p>
+          </div>
+        </a>
+        <a class="shot-card" href="#shot-workspace" aria-label="Open Creator workspace screenshot">
+          <img src="images/screenshots/personallibrary.png" alt="Personal creator workspace for releases, proofs, and publishing" />
+          <div class="shot-meta">
+            <h3>Creator workspace</h3>
+            <p>Manage releases, verification proofs, and publishing operations from one workspace.</p>
+          </div>
+        </a>
+      </div>
+    </section>
+
+    <!-- HOW -->
+    <section id="how" class="wrap">
+      <h2>How it works</h2>
+      <p>
+        Start with identity, attach proof, publish with attribution, then route payouts with reconciliation.
+      </p>
+
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Create your identity</h3>
+          <p>
+            Generate your creator identity and persistent fingerprint.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Verify your presence</h3>
+          <p>
+            Add domain and platform proofs to strengthen trust and portability.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Publish your work</h3>
+          <p>
+            Release content with rights context, attribution, split terms, and creator verification.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Join the network</h3>
+          <p>
+            Make your verified creator profile and releases discoverable across the Certifyd network.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- BUILT FOR -->
+    <section id="built-for" class="wrap">
+      <h2>Built for</h2>
+      <p>Independent creators and teams who want clear rights, attribution, and payment accountability.</p>
+      <div class="grid grid-3" style="margin-top:22px">
+        <div class="card">
+          <h3>Musicians</h3>
+          <p>Release tracks with verified credits, contributor splits, and payout clarity.</p>
+        </div>
+        <div class="card">
+          <h3>Producers</h3>
+          <p>Track collaborator participation and manage rights-aware releases.</p>
+        </div>
+        <div class="card">
+          <h3>Video creators</h3>
+          <p>Connect published work to verified identity, contributor context, and revenue flow.</p>
+        </div>
+        <div class="card">
+          <h3>Creative teams</h3>
+          <p>Coordinate shared publishing with explicit roles, attribution, and settlement visibility.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- NETWORK -->
+    <section id="network" class="wrap">
+      <h2>Certifyd Network</h2>
+      <p>
+        A discovery layer for verified creators, attributable works, and trustworthy publishing metadata.
+      </p>
+      <p style="margin-top:14px;">
+        Certifyd Creator nodes publish identity, proofs, rights context, and releases.
+        The network surfaces those creators and works through shared trust signals.
+      </p>
+      <div class="hero-actions">
+        <a class="btn primary" href="https://beatifyaudio.github.io/contentbox/" target="_blank" rel="noopener noreferrer">Explore the Network</a>
+        <a class="btn" href="#product">Get Certifyd</a>
+      </div>
+    </section>
+
+    <!-- EARLY ACCESS -->
+    <section id="early-access" class="wrap">
+      <h2>Apply for Early Access</h2>
+      <p>
+        Certifyd Creator is currently opening to a small group of creators and node operators.
+      </p>
+      <p style="margin-top:10px;">
+        We are especially looking for early testers running Bitcoin / Lightning nodes and creators publishing from their own domains.
+      </p>
+
+      <div class="card" style="margin-top:20px;">
+        <form class="ea-form" id="early-access-form" action="#" method="post" data-endpoint="https://script.google.com/macros/s/AKfycbxO8lMdZTsPWvtEuTInZ1jRtuW854X_hde4gBSYXa1PktcT9bAuAhFR3Bwl_9lVqWENpw/exec">
+          <div class="ea-grid">
+            <label class="ea-field">
+              <span class="ea-label">Name</span>
+              <input class="ea-input" type="text" name="name" autocomplete="name" />
+            </label>
+            <label class="ea-field">
+              <span class="ea-label">Email</span>
+              <input class="ea-input" type="email" name="email" autocomplete="email" />
+            </label>
+          </div>
+
+          <label class="ea-field">
+            <span class="ea-label">Website / Domain</span>
+            <input class="ea-input" type="url" name="website" placeholder="https://yourdomain.com" />
+          </label>
+
+          <div class="ea-grid">
+            <label class="ea-field">
+              <span class="ea-label">Role</span>
+              <select class="ea-select" name="role">
+                <option>Musician</option>
+                <option>Producer</option>
+                <option>Video creator</option>
+                <option>Developer</option>
+                <option>Creative team</option>
+              </select>
+            </label>
+            <label class="ea-field">
+              <span class="ea-label">Do you run a Bitcoin / Lightning node?</span>
+              <select class="ea-select" name="node_status">
+                <option>Yes — Bitcoin Core + LND</option>
+                <option>Yes — another Lightning implementation</option>
+                <option>No but interested</option>
+                <option>No</option>
+              </select>
+            </label>
+          </div>
+
+          <label class="ea-field">
+            <span class="ea-label">Are you comfortable testing early software?</span>
+            <select class="ea-select" name="testing_comfort">
+              <option>Yes</option>
+              <option>Somewhat</option>
+              <option>No</option>
+            </select>
+          </label>
+
+          <label class="ea-field">
+            <span class="ea-label">What do you want to publish with Certifyd?</span>
+            <textarea class="ea-textarea" name="publish_goals"></textarea>
+          </label>
+
+          <div class="hero-actions" style="margin-top:6px;">
+            <button class="btn primary" type="submit">Apply for Early Access</button>
+          </div>
+          <div id="early-access-status" class="ea-status" role="status" aria-live="polite"></div>
+        </form>
+      </div>
+    </section>
+
+    <!-- Lightboxes -->
+    <div id="shot-library" class="lightbox" role="dialog" aria-modal="true" aria-label="Publish your work screenshot">
+      <a class="lightbox-bg" href="#product" aria-label="Close"></a>
+      <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/contentlibrary.png" alt="Content library view for publishing with structured creator metadata" />
+    </div>
+
+    <div id="shot-royalties" class="lightbox" role="dialog" aria-modal="true" aria-label="Credit collaborators screenshot">
+      <a class="lightbox-bg" href="#product" aria-label="Close"></a>
+      <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/royalties.png" alt="Royalties view showing contributor attribution and split details" />
+    </div>
+
+    <div id="shot-revenue" class="lightbox" role="dialog" aria-modal="true" aria-label="Route payments screenshot">
+      <a class="lightbox-bg" href="#product" aria-label="Close"></a>
+      <a href="#product" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/revenue.png" alt="Revenue dashboard showing Bitcoin and Lightning payment activity" />
+    </div>
+
+    <div id="shot-identity" class="lightbox" role="dialog" aria-modal="true" aria-label="Creator identity screenshot">
+      <a class="lightbox-bg" href="#trust" aria-label="Close"></a>
+      <a href="#trust" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/identity.png" alt="Creator identity panel with verification fingerprint and proof state" />
+    </div>
+
+    <div id="shot-workspace" class="lightbox" role="dialog" aria-modal="true" aria-label="Creator workspace screenshot">
+      <a class="lightbox-bg" href="#trust" aria-label="Close"></a>
+      <a href="#trust" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/personallibrary.png" alt="Personal creator workspace for releases, proofs, and publishing" />
+    </div>
+
+    <div id="shot-hero" class="lightbox" role="dialog" aria-modal="true" aria-label="Attribution hero screenshot">
+      <a class="lightbox-bg" href="#top" aria-label="Close"></a>
+      <a href="#top" class="lightbox-close" aria-label="Close image">×</a>
+      <img src="images/screenshots/contentattribution.png" alt="Certifyd Creator view showing publishing with attribution and collaborator context" />
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      Certifyd Creator · Built by Beatify Group · © <span id="year"></span>
+    </div>
+  </footer>
+
+  <button id="chatbot-toggle" class="chatbot-toggle" type="button" aria-expanded="false" aria-controls="chatbot-panel">
+    Ask Certifyd
+  </button>
+  <section id="chatbot-panel" class="chatbot-panel" hidden aria-label="Certifyd assistant">
+    <div class="chatbot-head">
+      <div>
+        <div class="chatbot-title">Certifyd Assistant</div>
+        <div class="muted" style="font-size:12px;">Quick answers about setup and onboarding</div>
+      </div>
+      <button id="chatbot-close" class="chatbot-close" type="button">Close</button>
+    </div>
+    <div class="chatbot-body">
+      <div id="chatbot-messages" class="chatbot-messages" aria-live="polite"></div>
+      <div class="chatbot-quick">
+        <button class="chatbot-chip" type="button" data-question="How do I start?">How do I start?</button>
+        <button class="chatbot-chip" type="button" data-question="Do I need my own domain?">Need my own domain?</button>
+        <button class="chatbot-chip" type="button" data-question="What does Certifyd do?">What does Certifyd do?</button>
+        <button class="chatbot-chip" type="button" data-question="How do payments work?">How do payments work?</button>
+      </div>
+      <form id="chatbot-form" class="chatbot-form">
+        <input id="chatbot-input" class="chatbot-input" type="text" maxlength="180" placeholder="Ask a question..." />
+        <button class="chatbot-send" type="submit">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <script>
+    // Footer year
+    document.getElementById("year").textContent = new Date().getFullYear();
+
+    // Mobile menu auto-close (link click, outside click, Escape)
+    (function () {
+      const menu = document.querySelector(".nav-mobile");
+      if (!menu) return;
+
+      menu.querySelectorAll("a").forEach((a) => {
+        a.addEventListener("click", () => { menu.open = false; });
+      });
+
+      document.addEventListener("click", (e) => {
+        if (!menu.open) return;
+        if (!menu.contains(e.target)) menu.open = false;
+      });
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") menu.open = false;
+      });
+    })();
+
+    // Early access form -> Google Apps Script endpoint
+    (function () {
+      const form = document.getElementById("early-access-form");
+      const statusEl = document.getElementById("early-access-status");
+      if (!form || !statusEl) return;
+
+      const submitButton = form.querySelector("button[type='submit']");
+      const endpoint =
+        form.dataset.endpoint ||
+        window.EARLY_ACCESS_ENDPOINT ||
+        "";
+
+      function setStatus(kind, message) {
+        statusEl.className = "ea-status show " + kind;
+        statusEl.textContent = message;
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+
+        if (!endpoint) {
+          setStatus(
+            "error",
+            "Form endpoint is not configured yet. Add your Google Apps Script URL to data-endpoint."
+          );
+          return;
+        }
+
+        const formData = new FormData(form);
+        const payload = {
+          name: String(formData.get("name") || "").trim(),
+          email: String(formData.get("email") || "").trim(),
+          website: String(formData.get("website") || "").trim(),
+          role: String(formData.get("role") || "").trim(),
+          nodeStatus: String(formData.get("node_status") || "").trim(),
+          testingComfort: String(formData.get("testing_comfort") || "").trim(),
+          publishIntent: String(formData.get("publish_goals") || "").trim(),
+        };
+
+        if (!payload.name || !payload.email) {
+          setStatus("error", "Please provide your name and email.");
+          return;
+        }
+
+        if (submitButton) submitButton.disabled = true;
+        setStatus("success", "Submitting...");
+
+        try {
+          const body = new URLSearchParams();
+          body.set("name", payload.name);
+          body.set("email", payload.email);
+          body.set("website", payload.website);
+          body.set("role", payload.role);
+          body.set("nodeStatus", payload.nodeStatus);
+          body.set("testingComfort", payload.testingComfort);
+          body.set("publishIntent", payload.publishIntent);
+
+          const isGoogleAppsScript = endpoint.includes("script.google.com/macros/s/");
+          if (isGoogleAppsScript) {
+            // Apps Script web apps often don't return CORS headers for browser fetch reads.
+            // Use no-cors submit mode so the POST still reaches Sheets.
+            await fetch(endpoint, {
+              method: "POST",
+              mode: "no-cors",
+              body,
+            });
+          } else {
+            const res = await fetch(endpoint, {
+              method: "POST",
+              body,
+            });
+
+            const text = await res.text();
+            let data = null;
+            try { data = text ? JSON.parse(text) : null; } catch {}
+
+            if (!res.ok || (data && data.ok === false)) {
+              throw new Error((data && data.error) || "Submission failed");
+            }
+          }
+
+          setStatus("success", "Thanks. Your early access application was submitted.");
+          form.reset();
+        } catch (err) {
+          setStatus(
+            "error",
+            "Could not submit right now. Please try again in a moment."
+          );
+          console.error("Early access form submission failed", err);
+        } finally {
+          if (submitButton) submitButton.disabled = false;
+        }
+      });
+    })();
+
+    // Lightweight static chatbot
+    (function () {
+      const toggle = document.getElementById("chatbot-toggle");
+      const panel = document.getElementById("chatbot-panel");
+      const closeBtn = document.getElementById("chatbot-close");
+      const list = document.getElementById("chatbot-messages");
+      const form = document.getElementById("chatbot-form");
+      const input = document.getElementById("chatbot-input");
+      if (!toggle || !panel || !closeBtn || !list || !form || !input) return;
+
+      function addMessage(kind, text) {
+        const row = document.createElement("div");
+        row.className = "chatbot-msg " + kind;
+        row.textContent = text;
+        list.appendChild(row);
+        list.scrollTop = list.scrollHeight;
+      }
+
+      function answer(question) {
+        const q = String(question || "").toLowerCase();
+        if (!q) return "Ask about onboarding, domains, identity, payments, or early access.";
+        if (q.includes("start") || q.includes("onboard") || q.includes("first")) {
+          return "Start with identity, add domain/social proofs, publish your first work, then apply for early access if you want to join the active node cohort.";
+        }
+        if (q.includes("domain") || q.includes("url") || q.includes("host")) {
+          return "You can use your own domain. Certifyd is moving to canonical-origin routing so each creator/node can run on their own URL.";
+        }
+        if (q.includes("payment") || q.includes("payout") || q.includes("bitcoin") || q.includes("lightning")) {
+          return "Sales reflect buyer payment truth. Earnings reflect your participation share. Payouts show remittance execution truth.";
+        }
+        if (q.includes("royalt") || q.includes("split") || q.includes("collab") || q.includes("attribution")) {
+          return "Royalties is the source-of-truth layer for collaborator roles, share splits, and accrual context. Revenue surfaces project that into money views.";
+        }
+        if (q.includes("early access") || q.includes("apply") || q.includes("waitlist")) {
+          return "Use the Early Access form on this page. Include your role, domain, and whether you run a node for faster triage.";
+        }
+        if (q.includes("what") || q.includes("certifyd")) {
+          return "Certifyd Creator links identity, attribution, publishing, and Bitcoin-native payments so rights and money stay connected.";
+        }
+        return "I can help with identity setup, proofs, collaboration splits, payments, and early access. Try one of the quick questions.";
+      }
+
+      let initialized = false;
+      function initIfNeeded() {
+        if (initialized) return;
+        initialized = true;
+        addMessage("bot", "Hi, I’m the Certifyd assistant. Ask about setup, domains, proofs, or payments.");
+      }
+
+      function openPanel() {
+        initIfNeeded();
+        panel.hidden = false;
+        toggle.setAttribute("aria-expanded", "true");
+        input.focus();
+      }
+      function closePanel() {
+        panel.hidden = true;
+        toggle.setAttribute("aria-expanded", "false");
+      }
+
+      toggle.addEventListener("click", () => (panel.hidden ? openPanel() : closePanel()));
+      closeBtn.addEventListener("click", closePanel);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && !panel.hidden) closePanel();
+      });
+      document.querySelectorAll(".chatbot-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const q = String(chip.getAttribute("data-question") || "").trim();
+          if (!q) return;
+          initIfNeeded();
+          addMessage("user", q);
+          addMessage("bot", answer(q));
+        });
+      });
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const q = String(input.value || "").trim();
+        if (!q) return;
+        initIfNeeded();
+        addMessage("user", q);
+        addMessage("bot", answer(q));
+        input.value = "";
+      });
+    })();
+  </script>
+</body>
+</html>
