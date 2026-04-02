@@ -517,6 +517,143 @@ section[id]{
       padding:48px 0;
       color:var(--muted);
     }
+
+    /* ---------- Chatbot ---------- */
+    .chatbot-toggle{
+      position:fixed;
+      right:18px;
+      bottom:18px;
+      z-index:1200;
+      border:1px solid rgba(255,255,255,0.24);
+      background:linear-gradient(180deg, rgba(0,225,255,0.24), rgba(0,225,255,0.14));
+      color:#eaffff;
+      border-radius:999px;
+      min-height:44px;
+      padding:10px 14px;
+      font:inherit;
+      font-weight:600;
+      cursor:pointer;
+      box-shadow:0 16px 34px rgba(0,0,0,0.45);
+    }
+    .chatbot-panel{
+      position:fixed;
+      right:18px;
+      bottom:74px;
+      width:min(360px, calc(100vw - 28px));
+      background:rgba(10,13,20,0.96);
+      border:1px solid rgba(255,255,255,0.18);
+      border-radius:16px;
+      z-index:1201;
+      box-shadow:0 28px 70px rgba(0,0,0,0.58);
+      overflow:hidden;
+    }
+    .chatbot-panel[hidden]{ display:none; }
+    .chatbot-head{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      padding:12px 14px;
+      border-bottom:1px solid rgba(255,255,255,0.12);
+    }
+    .chatbot-title{
+      font-size:0.95rem;
+      font-weight:700;
+    }
+    .chatbot-close{
+      border:1px solid rgba(255,255,255,0.2);
+      background:rgba(255,255,255,0.06);
+      color:var(--text);
+      border-radius:10px;
+      min-height:34px;
+      padding:6px 10px;
+      cursor:pointer;
+      font:inherit;
+    }
+    .chatbot-body{
+      display:grid;
+      gap:10px;
+      padding:12px;
+    }
+    .chatbot-messages{
+      max-height:280px;
+      overflow:auto;
+      display:grid;
+      gap:8px;
+      padding-right:2px;
+    }
+    .chatbot-msg{
+      border-radius:12px;
+      padding:9px 10px;
+      font-size:0.88rem;
+      line-height:1.4;
+    }
+    .chatbot-msg.bot{
+      background:rgba(255,255,255,0.08);
+      border:1px solid rgba(255,255,255,0.12);
+      color:#e9efff;
+    }
+    .chatbot-msg.user{
+      background:rgba(0,225,255,0.14);
+      border:1px solid rgba(0,225,255,0.28);
+      color:#e9feff;
+      justify-self:end;
+      max-width:95%;
+    }
+    .chatbot-quick{
+      display:flex;
+      gap:6px;
+      flex-wrap:wrap;
+    }
+    .chatbot-chip{
+      border:1px solid rgba(255,255,255,0.18);
+      background:rgba(255,255,255,0.04);
+      color:var(--text);
+      border-radius:999px;
+      min-height:32px;
+      padding:6px 10px;
+      font:inherit;
+      font-size:0.8rem;
+      cursor:pointer;
+    }
+    .chatbot-form{
+      display:flex;
+      gap:8px;
+    }
+    .chatbot-input{
+      flex:1;
+      min-width:0;
+      border:1px solid rgba(255,255,255,0.18);
+      background:rgba(255,255,255,0.04);
+      color:var(--text);
+      border-radius:10px;
+      min-height:38px;
+      padding:8px 10px;
+      font:inherit;
+      font-size:0.88rem;
+    }
+    .chatbot-send{
+      border:1px solid rgba(255,255,255,0.22);
+      background:rgba(255,255,255,0.1);
+      color:var(--text);
+      border-radius:10px;
+      min-height:38px;
+      padding:8px 12px;
+      font:inherit;
+      font-weight:600;
+      cursor:pointer;
+    }
+    @media (max-width: 640px){
+      .chatbot-toggle{
+        right:12px;
+        bottom:12px;
+      }
+      .chatbot-panel{
+        right:12px;
+        bottom:66px;
+        width:min(360px, calc(100vw - 20px));
+      }
+    }
   </style>
 </head>
 
@@ -563,10 +700,10 @@ section[id]{
           <p style="font-size:0.9rem; letter-spacing:0.08em; text-transform:uppercase; color:#b8c5ff; margin-bottom:12px;">
             Certifyd Creator
           </p>
-          <h1>Own your identity. Publish anywhere. Get Certifyd.</h1>
+          <h1>Own your identity. Publish from your domain. Get paid with proof.</h1>
 
           <p>
-            Certifyd Creator connects publishing, attribution, and Bitcoin-native payments so collaborators are credited and paid with clarity.
+            Certifyd Creator connects identity, attribution, and Bitcoin-native payments so every release keeps clear authorship, split context, and payout truth.
           </p>
 
           <div class="hero-actions">
@@ -585,29 +722,29 @@ section[id]{
     <section id="product" class="wrap">
       <h2>Certifyd Creator in action</h2>
       <p>
-        Publishing, attribution, revenue, and identity in one creator workspace.
+        One workspace for publishing, collaborator rights, and financial truth.
       </p>
 
       <div class="grid grid-3" style="margin-top:22px">
         <a class="shot-card" href="#shot-library" aria-label="Open Publish your work screenshot">
           <img src="images/screenshots/contentlibrary.png" alt="Content library view for publishing with structured creator metadata" />
           <div class="shot-meta">
-            <h3>Publish your work</h3>
-            <p>Release content with structured metadata and creator context.</p>
+            <h3>Publish with context</h3>
+            <p>Release content with persistent identity, structured metadata, and verifiable ownership context.</p>
           </div>
         </a>
         <a class="shot-card" href="#shot-royalties" aria-label="Open Credit collaborators screenshot">
           <img src="images/screenshots/royalties.png" alt="Royalties view showing contributor attribution and split details" />
           <div class="shot-meta">
-            <h3>Credit collaborators</h3>
-            <p>Keep contributor attribution and revenue splits attached to every release.</p>
+            <h3>Lock collaborator rights</h3>
+            <p>Keep contributor attribution, participation roles, and split terms attached to every release.</p>
           </div>
         </a>
         <a class="shot-card" href="#shot-revenue" aria-label="Open Route payments screenshot">
           <img src="images/screenshots/revenue.png" alt="Revenue dashboard showing Bitcoin and Lightning payment activity" />
           <div class="shot-meta">
-            <h3>Route payments</h3>
-            <p>Bitcoin and Lightning payments connect revenue directly to creators.</p>
+            <h3>Reconcile revenue</h3>
+            <p>Track sales, earnings, fees, and payouts with source-backed accounting views.</p>
           </div>
         </a>
       </div>
@@ -617,26 +754,26 @@ section[id]{
     <section id="why" class="wrap">
       <h2>Why Certifyd</h2>
       <p>
-        Certifyd Creator is built for creators who need verification, attribution, and payments to stay connected to each release.
+        Most creator tools split identity, rights, and payments across disconnected systems. Certifyd keeps them linked.
       </p>
 
       <div class="grid grid-3" style="margin-top:22px">
         <div class="card">
           <h3>Verified Identity</h3>
           <p>
-            Attach a real identity to your creator presence using domain and platform proofs.
+            Prove creator identity with domain and platform verification that travels with your publishing profile.
           </p>
         </div>
         <div class="card">
           <h3>Attribution &amp; Splits</h3>
           <p>
-            Keep contributor attribution and revenue splits linked to every release.
+            Keep contributor roles and split terms explicit, versioned, and visible at the work level.
           </p>
         </div>
         <div class="card">
           <h3>Creator-Controlled Publishing</h3>
           <p>
-            Publish from your own workspace without surrendering custody of your work.
+            Publish from your own workspace and domain without surrendering identity or release ownership.
           </p>
         </div>
       </div>
@@ -646,21 +783,21 @@ section[id]{
     <section id="trust" class="wrap">
       <h2>Identity and trust</h2>
       <p>
-        Persistent creator identity and verification proofs support trusted publishing.
+        Persistent creator identity plus verifiable proofs make releases attributable and discoverable with confidence.
       </p>
       <div class="grid grid-2" style="margin-top:22px">
         <a class="shot-card" href="#shot-identity" aria-label="Open Creator identity screenshot">
           <img src="images/screenshots/identity.png" alt="Creator identity panel with verification fingerprint and proof state" />
           <div class="shot-meta">
             <h3>Creator identity</h3>
-            <p>Each creator has a persistent identity fingerprint.</p>
+            <p>Each creator has a persistent identity fingerprint anchored to their profile and proofs.</p>
           </div>
         </a>
         <a class="shot-card" href="#shot-workspace" aria-label="Open Creator workspace screenshot">
           <img src="images/screenshots/personallibrary.png" alt="Personal creator workspace for releases, proofs, and publishing" />
           <div class="shot-meta">
             <h3>Creator workspace</h3>
-            <p>Manage releases, proofs, and publishing from one workspace.</p>
+            <p>Manage releases, verification proofs, and publishing operations from one workspace.</p>
           </div>
         </a>
       </div>
@@ -670,32 +807,32 @@ section[id]{
     <section id="how" class="wrap">
       <h2>How it works</h2>
       <p>
-        Certifyd Creator keeps the workflow clear: identity first, proofs second, publishing third.
+        Start with identity, attach proof, publish with attribution, then route payouts with reconciliation.
       </p>
 
       <div class="grid grid-3" style="margin-top:22px">
         <div class="card">
           <h3>Create your identity</h3>
           <p>
-            Generate your creator identity and fingerprint.
+            Generate your creator identity and persistent fingerprint.
           </p>
         </div>
         <div class="card">
           <h3>Verify your presence</h3>
           <p>
-            Add proofs for domains and creator platforms.
+            Add domain and platform proofs to strengthen trust and portability.
           </p>
         </div>
         <div class="card">
           <h3>Publish your work</h3>
           <p>
-            Release content with attribution, splits, and verified creator context.
+            Release content with rights context, attribution, split terms, and creator verification.
           </p>
         </div>
         <div class="card">
           <h3>Join the network</h3>
           <p>
-            Connect your verified publishing profile into the broader Certifyd discovery layer.
+            Make your verified creator profile and releases discoverable across the Certifyd network.
           </p>
         </div>
       </div>
@@ -704,23 +841,23 @@ section[id]{
     <!-- BUILT FOR -->
     <section id="built-for" class="wrap">
       <h2>Built for</h2>
-      <p>Certifyd Creator supports independent creators and teams who need verifiable publishing infrastructure.</p>
+      <p>Independent creators and teams who want clear rights, attribution, and payment accountability.</p>
       <div class="grid grid-3" style="margin-top:22px">
         <div class="card">
           <h3>Musicians</h3>
-          <p>Release tracks with verified credits and attribution.</p>
+          <p>Release tracks with verified credits, contributor splits, and payout clarity.</p>
         </div>
         <div class="card">
           <h3>Producers</h3>
-          <p>Track contributions and manage collaborative releases.</p>
+          <p>Track collaborator participation and manage rights-aware releases.</p>
         </div>
         <div class="card">
           <h3>Video creators</h3>
-          <p>Connect published work to verified identity and history.</p>
+          <p>Connect published work to verified identity, contributor context, and revenue flow.</p>
         </div>
         <div class="card">
           <h3>Creative teams</h3>
-          <p>Coordinate shared publishing with clear contributor context.</p>
+          <p>Coordinate shared publishing with explicit roles, attribution, and settlement visibility.</p>
         </div>
       </div>
     </section>
@@ -729,11 +866,11 @@ section[id]{
     <section id="network" class="wrap">
       <h2>Certifyd Network</h2>
       <p>
-        A discovery layer for verified creators and trusted works.
+        A discovery layer for verified creators, attributable works, and trustworthy publishing metadata.
       </p>
       <p style="margin-top:14px;">
-        Certifyd Creator nodes publish identity, proofs, attribution, and releases.
-        The network surfaces these verified creators and connects them through shared trust signals.
+        Certifyd Creator nodes publish identity, proofs, rights context, and releases.
+        The network surfaces those creators and works through shared trust signals.
       </p>
       <div class="hero-actions">
         <a class="btn primary" href="https://beatifyaudio.github.io/contentbox/" target="_blank" rel="noopener noreferrer">Explore the Network</a>
@@ -857,6 +994,32 @@ section[id]{
     </div>
   </footer>
 
+  <button id="chatbot-toggle" class="chatbot-toggle" type="button" aria-expanded="false" aria-controls="chatbot-panel">
+    Ask Certifyd
+  </button>
+  <section id="chatbot-panel" class="chatbot-panel" hidden aria-label="Certifyd assistant">
+    <div class="chatbot-head">
+      <div>
+        <div class="chatbot-title">Certifyd Assistant</div>
+        <div class="muted" style="font-size:12px;">Quick answers about setup and onboarding</div>
+      </div>
+      <button id="chatbot-close" class="chatbot-close" type="button">Close</button>
+    </div>
+    <div class="chatbot-body">
+      <div id="chatbot-messages" class="chatbot-messages" aria-live="polite"></div>
+      <div class="chatbot-quick">
+        <button class="chatbot-chip" type="button" data-question="How do I start?">How do I start?</button>
+        <button class="chatbot-chip" type="button" data-question="Do I need my own domain?">Need my own domain?</button>
+        <button class="chatbot-chip" type="button" data-question="What does Certifyd do?">What does Certifyd do?</button>
+        <button class="chatbot-chip" type="button" data-question="How do payments work?">How do payments work?</button>
+      </div>
+      <form id="chatbot-form" class="chatbot-form">
+        <input id="chatbot-input" class="chatbot-input" type="text" maxlength="180" placeholder="Ask a question..." />
+        <button class="chatbot-send" type="submit">Send</button>
+      </form>
+    </div>
+  </section>
+
   <script>
     // Footer year
     document.getElementById("year").textContent = new Date().getFullYear();
@@ -972,6 +1135,91 @@ section[id]{
         } finally {
           if (submitButton) submitButton.disabled = false;
         }
+      });
+    })();
+
+    // Lightweight static chatbot
+    (function () {
+      const toggle = document.getElementById("chatbot-toggle");
+      const panel = document.getElementById("chatbot-panel");
+      const closeBtn = document.getElementById("chatbot-close");
+      const list = document.getElementById("chatbot-messages");
+      const form = document.getElementById("chatbot-form");
+      const input = document.getElementById("chatbot-input");
+      if (!toggle || !panel || !closeBtn || !list || !form || !input) return;
+
+      function addMessage(kind, text) {
+        const row = document.createElement("div");
+        row.className = "chatbot-msg " + kind;
+        row.textContent = text;
+        list.appendChild(row);
+        list.scrollTop = list.scrollHeight;
+      }
+
+      function answer(question) {
+        const q = String(question || "").toLowerCase();
+        if (!q) return "Ask about onboarding, domains, identity, payments, or early access.";
+        if (q.includes("start") || q.includes("onboard") || q.includes("first")) {
+          return "Start with identity, add domain/social proofs, publish your first work, then apply for early access if you want to join the active node cohort.";
+        }
+        if (q.includes("domain") || q.includes("url") || q.includes("host")) {
+          return "You can use your own domain. Certifyd is moving to canonical-origin routing so each creator/node can run on their own URL.";
+        }
+        if (q.includes("payment") || q.includes("payout") || q.includes("bitcoin") || q.includes("lightning")) {
+          return "Sales reflect buyer payment truth. Earnings reflect your participation share. Payouts show remittance execution truth.";
+        }
+        if (q.includes("royalt") || q.includes("split") || q.includes("collab") || q.includes("attribution")) {
+          return "Royalties is the source-of-truth layer for collaborator roles, share splits, and accrual context. Revenue surfaces project that into money views.";
+        }
+        if (q.includes("early access") || q.includes("apply") || q.includes("waitlist")) {
+          return "Use the Early Access form on this page. Include your role, domain, and whether you run a node for faster triage.";
+        }
+        if (q.includes("what") || q.includes("certifyd")) {
+          return "Certifyd Creator links identity, attribution, publishing, and Bitcoin-native payments so rights and money stay connected.";
+        }
+        return "I can help with identity setup, proofs, collaboration splits, payments, and early access. Try one of the quick questions.";
+      }
+
+      let initialized = false;
+      function initIfNeeded() {
+        if (initialized) return;
+        initialized = true;
+        addMessage("bot", "Hi, I’m the Certifyd assistant. Ask about setup, domains, proofs, or payments.");
+      }
+
+      function openPanel() {
+        initIfNeeded();
+        panel.hidden = false;
+        toggle.setAttribute("aria-expanded", "true");
+        input.focus();
+      }
+      function closePanel() {
+        panel.hidden = true;
+        toggle.setAttribute("aria-expanded", "false");
+      }
+
+      toggle.addEventListener("click", () => (panel.hidden ? openPanel() : closePanel()));
+      closeBtn.addEventListener("click", closePanel);
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && !panel.hidden) closePanel();
+      });
+      document.querySelectorAll(".chatbot-chip").forEach((chip) => {
+        chip.addEventListener("click", () => {
+          const q = String(chip.getAttribute("data-question") || "").trim();
+          if (!q) return;
+          initIfNeeded();
+          addMessage("user", q);
+          addMessage("bot", answer(q));
+        });
+      });
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const q = String(input.value || "").trim();
+        if (!q) return;
+        initIfNeeded();
+        addMessage("user", q);
+        addMessage("bot", answer(q));
+        input.value = "";
       });
     })();
   </script>
