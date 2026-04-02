@@ -248,6 +248,27 @@ export default function App() {
     }
   });
 
+  // If advanced-nav preference has never been set, default it on for Advanced/LAN
+  // postures so core commerce pages (Revenue, provider surfaces) remain discoverable.
+  useEffect(() => {
+    let hasStoredPreference = false;
+    try {
+      hasStoredPreference = window.localStorage.getItem("contentbox.showAdvancedNav") !== null;
+    } catch {
+      hasStoredPreference = false;
+    }
+    if (hasStoredPreference) return;
+
+    const inferredTier =
+      diagnosticsStatus?.productTier ||
+      identityDetail?.productTier ||
+      identityDetail?.nodeMode ||
+      null;
+    if (inferredTier === "advanced" || inferredTier === "lan") {
+      setShowAdvancedNav(true);
+    }
+  }, [diagnosticsStatus?.productTier, identityDetail?.nodeMode, identityDetail?.productTier]);
+
   useEffect(() => {
     const hash = window.location.hash || "";
     if (hash.includes("payments")) {
