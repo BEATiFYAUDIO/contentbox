@@ -680,11 +680,11 @@ export default function App() {
           <div className="flex items-center justify-center pt-4 pb-3">
             <a href={logoHref} className="block">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <div className="w-[214px] h-[140px] overflow-visible flex items-center justify-center">
+              <div className="w-[214px] max-w-full overflow-visible flex items-center justify-center">
                 <img
                   src={logo}
                   alt="Certifyd Creator"
-                  className="w-full h-full object-contain scale-[1.38] origin-center"
+                  className="w-full h-auto object-contain"
                 />
               </div>
             </a>

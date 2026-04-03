@@ -23091,12 +23091,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .identity-rail { grid-area:identity; margin-left:0; align-items:center; gap:10px; }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
-      .brand-logo-image { width:62px; }
+      .brand-logo-image { width:68px; }
       .page-title { font-size:30px; }
       .hero-name { font-size:22px; line-height:1.08; }
       .hero-handle { font-size:14px; }
       .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
-      .avatar { width:78px; height:78px; }
+      .avatar { width:84px; height:84px; }
       .signal-compact-meter { height:4px; }
       .signal-compact-meta { margin-top:4px; }
       .signal-chip-row { margin-top:6px; gap:5px; }
