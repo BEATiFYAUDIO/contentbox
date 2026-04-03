@@ -22837,7 +22837,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   })();
   const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
-  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260328b";
+  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260402m";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -22853,7 +22853,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
     .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
-    .brand-logo-image { display:block; width:76px; height:auto; object-fit:contain; }
+    .brand-logo-image { display:block; width:96px; height:auto; object-fit:contain; }
     .brand-mark {
       width:22px;
       height:22px;
@@ -22881,7 +22881,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
     .profile-header-grid { display:grid; grid-template-columns:96px 1fr 340px; gap:20px; align-items:start; margin-top:14px; }
     .brand-rail { display:flex; align-items:flex-start; justify-content:flex-start; padding-top:4px; padding-right:8px; min-width:0; }
-    .identity-rail { display:flex; gap:14px; align-items:center; min-width:0; }
+    .identity-rail { display:flex; gap:14px; align-items:center; min-width:0; margin-left:30px; }
     .avatar { width:124px; height:124px; border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; }
     .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
@@ -22991,23 +22991,39 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
     body.iframe-embedded .profile-header-grid {
-      grid-template-columns:1fr;
-      grid-template-areas:
-        "brand"
-        "identity"
-        "signal";
-      gap:10px;
+      grid-template-columns:108px minmax(220px, 1.1fr) minmax(240px, 1fr);
+      grid-template-areas:"brand identity signal";
+      align-items:center;
+      gap:10px 14px;
+      margin-top:4px;
     }
+    body.iframe-embedded { padding:10px; }
+    body.iframe-embedded .card {
+      width:100%;
+      max-width:none;
+      padding:14px 16px;
+    }
+    body.iframe-embedded .brand-row { margin-bottom:0; }
     body.iframe-embedded .brand-rail {
+      grid-area:brand;
       justify-content:flex-start;
-      align-self:start;
+      align-self:center;
       padding-top:0;
+      padding-right:0;
+      align-items:center;
     }
     body.iframe-embedded .identity-rail {
+      grid-area:identity;
       flex-direction:row;
-      align-items:flex-start;
-      gap:10px;
-      margin-top:-2px;
+      align-items:center;
+      gap:12px;
+      margin-left:0;
+      margin-top:0;
+    }
+    body.iframe-embedded .signal-rail {
+      grid-area:signal;
+      width:100%;
+      padding:10px 12px;
     }
     body.iframe-embedded .hero-meta {
       width:100%;
@@ -23020,8 +23036,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body.iframe-embedded .hero-handle { text-align:left; }
     body.iframe-embedded .hero-meta .line { text-align:left; }
     body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
-    body.iframe-embedded .avatar { width:84px; height:84px; }
-    body.iframe-embedded .brand-logo-image { width:42px; }
+    body.iframe-embedded .avatar { width:96px; height:96px; }
+    body.iframe-embedded .brand-logo-image { width:96px; }
+    body.iframe-embedded .hero-name { font-size:30px; line-height:1.04; }
+    body.iframe-embedded .hero-handle { font-size:16px; margin-top:5px; }
+    @media (max-width: 820px) {
+      body.iframe-embedded .profile-header-grid {
+        grid-template-columns:100px minmax(0, 1fr);
+        grid-template-areas:
+          "brand identity"
+          "signal signal";
+      }
+      body.iframe-embedded .brand-logo-image { width:82px; }
+      body.iframe-embedded .avatar { width:92px; height:92px; }
+      body.iframe-embedded .hero-name { font-size:27px; }
+      body.iframe-embedded .hero-handle { font-size:16px; }
+    }
     @media (min-width: 720px) {
       .identity-rail { align-items:flex-start; }
       .featured-grid { grid-template-columns:1fr 1fr; }
@@ -23039,7 +23069,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         gap:10px 12px;
       }
       .brand-rail { grid-area:brand; padding-top:0; }
-      .identity-rail { grid-area:identity; align-items:center; }
+      .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
       .signal-rail { grid-area:signal; width:100%; }
       .brand-logo-image { width:72px; }
       .avatar { width:90px; height:90px; }
@@ -23047,22 +23077,47 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .signal-rail { width:100%; }
     }
     @media (max-width: 640px) {
-      body { padding:14px; }
-      .card { padding:16px; }
+      body { padding:10px; }
+      .card { padding:14px; }
       .section { margin-top:14px; padding:12px; }
-      .profile-header-grid { gap:8px 10px; }
+      .profile-header-grid {
+        grid-template-columns:1fr;
+        grid-template-areas:
+          "brand"
+          "identity"
+          "signal";
+        gap:10px;
+      }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; }
+      .identity-rail { grid-area:identity; margin-left:0; align-items:center; gap:10px; }
+      .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
-      .brand-logo-image { width:54px; }
+      .brand-logo-image { width:68px; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:19px; }
-      .avatar { width:112px; height:112px; }
+      .hero-name { font-size:24px; line-height:1.08; }
+      .hero-handle { font-size:15px; }
+      .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
+      .avatar { width:84px; height:84px; }
       .signal-compact-meter { height:4px; }
       .signal-compact-meta { margin-top:4px; }
       .signal-chip-row { margin-top:6px; gap:5px; }
       .proof-group-title { font-size:12px; }
     }
     @media (max-width: 640px) {
-      body.iframe-embedded .profile-header-grid { gap:10px; }
+      body.iframe-embedded .profile-header-grid {
+        grid-template-columns:1fr;
+        grid-template-areas:
+          "brand"
+          "identity"
+          "signal";
+        gap:10px;
+      }
+      body.iframe-embedded .brand-rail { justify-content:flex-start; }
+      body.iframe-embedded .identity-rail { gap:10px; }
+      body.iframe-embedded .brand-logo-image { width:72px; }
+      body.iframe-embedded .avatar { width:84px; height:84px; }
+      body.iframe-embedded .hero-name { font-size:24px; }
+      body.iframe-embedded .hero-handle { font-size:15px; }
     }
   </style>
 </head>
@@ -23607,8 +23662,9 @@ async function handleBuyPage(req: any, reply: any) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260327c" />
-  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260327c" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260402m" />
+  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260402m" />
+  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260402m" />
   ${safeBuyFaviconDataUri ? `<link rel="alternate icon" type="image/png" href="${safeBuyFaviconDataUri}" />` : ""}
   <title>Buy</title>
   <style>
@@ -23689,7 +23745,7 @@ async function handleBuyPage(req: any, reply: any) {
     <div class="card">
       <div id="app">Loading…</div>
       <div class="footer">
-        <a href="https://beatifyaudio.github.io/contentbox/index.html#mission" target="_blank" rel="noreferrer">Mission</a>
+        <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
     </div>
   </div>
@@ -24750,7 +24806,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     <div class="card">
       <div id="app">Loading…</div>
       <div class="footer">
-        <a href="https://beatifyaudio.github.io/contentbox/index.html#mission" target="_blank" rel="noreferrer">Mission</a>
+        <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
     </div>
   </div>
