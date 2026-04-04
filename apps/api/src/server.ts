@@ -22837,7 +22837,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   })();
   const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
-  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260402m";
+  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404c";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -23661,9 +23661,9 @@ async function handleBuyPage(req: any, reply: any) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260402m" />
-  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260402m" />
-  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260402m" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260404c" />
+  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404c" />
+  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404c" />
   ${safeBuyFaviconDataUri ? `<link rel="alternate icon" type="image/png" href="${safeBuyFaviconDataUri}" />` : ""}
   <title>Buy</title>
   <style>
