@@ -22837,7 +22837,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
   })();
   const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
-  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404f";
+  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404g";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -22853,7 +22853,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
     .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
-    .brand-logo-image { display:block; width:118px; height:auto; object-fit:contain; }
+    .brand-logo-image { display:block; width:146px; height:auto; object-fit:contain; }
     .brand-mark {
       width:22px;
       height:22px;
@@ -23037,7 +23037,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body.iframe-embedded .hero-meta .line { text-align:left; }
     body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
     body.iframe-embedded .avatar { width:96px; height:96px; }
-    body.iframe-embedded .brand-logo-image { width:112px; }
+    body.iframe-embedded .brand-logo-image { width:136px; }
     body.iframe-embedded .hero-name { font-size:30px; line-height:1.04; }
     body.iframe-embedded .hero-handle { font-size:16px; margin-top:5px; }
     @media (max-width: 820px) {
@@ -23047,7 +23047,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           "brand identity"
           "signal signal";
       }
-      body.iframe-embedded .brand-logo-image { width:96px; }
+      body.iframe-embedded .brand-logo-image { width:118px; }
       body.iframe-embedded .avatar { width:92px; height:92px; }
       body.iframe-embedded .hero-name { font-size:27px; }
       body.iframe-embedded .hero-handle { font-size:16px; }
@@ -23071,7 +23071,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .brand-rail { grid-area:brand; padding-top:0; }
       .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
       .signal-rail { grid-area:signal; width:100%; }
-      .brand-logo-image { width:86px; }
+      .brand-logo-image { width:102px; }
       .avatar { width:90px; height:90px; }
       .hero-name { font-size:18px; }
       .signal-rail { width:100%; }
@@ -23091,7 +23091,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .identity-rail { grid-area:identity; margin-left:0; align-items:center; gap:10px; }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
-      .brand-logo-image { width:80px; }
+      .brand-logo-image { width:96px; }
       .page-title { font-size:30px; }
       .hero-name { font-size:22px; line-height:1.08; }
       .hero-handle { font-size:14px; }
@@ -23113,7 +23113,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       }
       body.iframe-embedded .brand-rail { justify-content:flex-start; }
       body.iframe-embedded .identity-rail { gap:10px; }
-      body.iframe-embedded .brand-logo-image { width:84px; }
+      body.iframe-embedded .brand-logo-image { width:100px; }
       body.iframe-embedded .avatar { width:84px; height:84px; }
       body.iframe-embedded .hero-name { font-size:24px; }
       body.iframe-embedded .hero-handle { font-size:15px; }
@@ -23661,9 +23661,9 @@ async function handleBuyPage(req: any, reply: any) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260404f" />
-  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404f" />
-  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404f" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260404g" />
+  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
+  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
   ${safeBuyFaviconDataUri ? `<link rel="alternate icon" type="image/png" href="${safeBuyFaviconDataUri}" />` : ""}
   <title>Buy</title>
   <style>
