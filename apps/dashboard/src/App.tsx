@@ -678,9 +678,9 @@ export default function App() {
       {!hideSidebar && (
         <aside className="w-64 border-r border-neutral-900 bg-neutral-950/60 p-4 h-screen shrink-0 flex flex-col">
           <div className="flex items-center justify-center pt-1 pb-1">
-            <a href={logoHref} className="block">
+            <a href={logoHref} className="block w-full">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <div className="w-full max-w-full overflow-visible flex items-center justify-center">
+              <div className="w-[72%] max-w-[178px] mx-auto overflow-visible flex items-center justify-center">
                 <img
                   src={logo}
                   alt="Certifyd Creator"
