@@ -22294,6 +22294,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
   const brandLogoDataUri = (() => {
     const candidates = [
+      path.resolve(path.dirname(SERVER_FILE), "assets/certifyd-profile-logo.png"),
+      path.resolve(process.cwd(), "apps/api/src/assets/certifyd-profile-logo.png"),
+      path.resolve(process.cwd(), "src/assets/certifyd-profile-logo.png"),
       path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd-creator-logo.png"),
       path.resolve(process.cwd(), "../dashboard/src/assets/certifyd-creator-logo.png")
     ];
@@ -23102,11 +23105,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 56px;
+        --profile-brand-col: 60px;
         --profile-gap-x: var(--space-5);
-        --profile-id-offset: 26px;
+        --profile-id-offset: 30px;
         --profile-id-gap: var(--space-4);
-        --profile-logo-size: 50px;
+        --profile-logo-size: 56px;
         --profile-avatar-size: 78px;
       }
       body { padding:10px; }
@@ -23120,7 +23123,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         gap:10px var(--profile-gap-x);
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:6px; align-self:center; justify-content:flex-start; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:18px; align-self:center; justify-content:flex-start; }
       .identity-rail { grid-area:identity; margin-left:var(--profile-id-offset); align-items:center; gap:var(--profile-id-gap); }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
