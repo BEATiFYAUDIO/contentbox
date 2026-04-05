@@ -22849,11 +22849,26 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   <link rel="shortcut icon" type="image/png" href="${creatorProfileFaviconHref}" />
   <link rel="apple-touch-icon" href="${creatorProfileFaviconHref}" />
   <style>
+    :root {
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --profile-brand-col: 82px;
+      --profile-gap-x: var(--space-3);
+      --profile-gap-y: var(--space-3);
+      --profile-logo-size: 74px;
+      --profile-id-offset: 26px;
+      --profile-id-gap: 14px;
+      --profile-avatar-size: 124px;
+    }
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
     .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
     .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
-    .brand-logo-image { display:block; width:74px; height:auto; object-fit:contain; }
+    .brand-logo-image { display:block; width:var(--profile-logo-size); height:auto; object-fit:contain; }
     .brand-mark {
       width:22px;
       height:22px;
@@ -22879,10 +22894,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     a:hover { text-decoration:underline; }
     .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
-    .profile-header-grid { display:grid; grid-template-columns:82px minmax(260px, 320px) minmax(280px, 1fr); gap:12px; align-items:start; margin-top:14px; }
+    .profile-header-grid {
+      display:grid;
+      grid-template-columns:var(--profile-brand-col) minmax(260px, 320px) minmax(280px, 1fr);
+      gap:var(--profile-gap-y) var(--profile-gap-x);
+      align-items:start;
+      margin-top:14px;
+    }
     .brand-rail { display:flex; align-items:flex-start; justify-content:flex-start; padding-top:4px; padding-right:2px; min-width:0; }
-    .identity-rail { display:flex; gap:14px; align-items:center; min-width:0; margin-left:26px; }
-    .avatar { width:124px; height:124px; border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
+    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; margin-left:var(--profile-id-offset); }
+    .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; }
     .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
     .hero-handle { margin-top:4px; }
@@ -23062,6 +23083,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 960px) {
       .profile-header-grid {
+        --profile-logo-size: 58px;
+        --profile-avatar-size: 90px;
+        --profile-id-offset: 0;
+      }
+      .profile-header-grid {
         grid-template-columns:auto 1fr;
         grid-template-areas:
           "brand identity"
@@ -23071,33 +23097,37 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .brand-rail { grid-area:brand; padding-top:0; }
       .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
       .signal-rail { grid-area:signal; width:100%; }
-      .brand-logo-image { width:58px; }
-      .avatar { width:90px; height:90px; }
       .hero-name { font-size:18px; }
       .signal-rail { width:100%; }
     }
     @media (max-width: 640px) {
+      .profile-header-grid {
+        --profile-brand-col: 56px;
+        --profile-gap-x: var(--space-5);
+        --profile-id-offset: 26px;
+        --profile-id-gap: var(--space-4);
+        --profile-logo-size: 50px;
+        --profile-avatar-size: 78px;
+      }
       body { padding:10px; }
       .card { padding:14px; }
       .section { margin-top:14px; padding:12px; }
       .profile-header-grid {
-        grid-template-columns:56px minmax(0, 1fr);
+        grid-template-columns:var(--profile-brand-col) minmax(0, 1fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
-        gap:10px 18px;
+        gap:10px var(--profile-gap-x);
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-right:2px; align-self:center; justify-content:flex-end; }
-      .identity-rail { grid-area:identity; margin-left:14px; align-items:center; gap:12px; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:6px; align-self:center; justify-content:flex-start; }
+      .identity-rail { grid-area:identity; margin-left:var(--profile-id-offset); align-items:center; gap:var(--profile-id-gap); }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
-      .brand-logo-image { width:50px; }
       .page-title { font-size:30px; }
       .hero-name { font-size:22px; line-height:1.08; }
       .hero-handle { font-size:14px; }
       .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
-      .avatar { width:78px; height:78px; }
       .signal-compact-meter { height:4px; }
       .signal-compact-meta { margin-top:4px; }
       .signal-chip-row { margin-top:6px; gap:5px; }
