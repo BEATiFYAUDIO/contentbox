@@ -680,7 +680,7 @@ export default function App() {
           <div className="flex items-center justify-center pt-1 pb-1">
             <a href={logoHref} className="block w-full">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <div className="w-[72%] max-w-[178px] mx-auto overflow-visible flex items-center justify-center">
+              <div className="w-[68%] max-w-[170px] mx-auto overflow-visible flex items-center justify-center">
                 <img
                   src={logo}
                   alt="Certifyd Creator"

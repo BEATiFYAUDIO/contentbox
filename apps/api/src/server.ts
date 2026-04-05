@@ -22859,10 +22859,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       --space-4: 16px;
       --space-5: 20px;
       --space-6: 24px;
-      --profile-brand-col: 82px;
+      --profile-brand-col: 148px;
       --profile-gap-x: var(--space-3);
       --profile-gap-y: var(--space-3);
-      --profile-logo-size: 74px;
+      --profile-logo-size: 148px;
       --profile-id-offset: 26px;
       --profile-id-gap: 14px;
       --profile-avatar-size: 124px;
@@ -22901,10 +22901,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       display:grid;
       grid-template-columns:var(--profile-brand-col) minmax(260px, 320px) minmax(280px, 1fr);
       gap:var(--profile-gap-y) var(--profile-gap-x);
-      align-items:start;
+      align-items:center;
       margin-top:14px;
     }
-    .brand-rail { display:flex; align-items:flex-start; justify-content:flex-start; padding-top:4px; padding-right:2px; min-width:0; }
+    .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding-top:0; padding-right:2px; min-width:0; }
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; margin-left:var(--profile-id-offset); }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; }
