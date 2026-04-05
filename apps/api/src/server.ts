@@ -23105,11 +23105,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 60px;
+        --profile-brand-col: 96px;
         --profile-gap-x: var(--space-5);
-        --profile-id-offset: 30px;
+        --profile-id-offset: 10px;
         --profile-id-gap: var(--space-4);
-        --profile-logo-size: 56px;
+        --profile-logo-size: 92px;
         --profile-avatar-size: 78px;
       }
       body { padding:10px; }
@@ -23138,19 +23138,24 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       body.iframe-embedded .profile-header-grid {
-        grid-template-columns:1fr;
+        grid-template-columns:84px minmax(0, 1fr);
         grid-template-areas:
-          "brand"
-          "identity"
+          "brand identity"
           "signal";
-        gap:12px;
+        gap:10px 14px;
       }
-      body.iframe-embedded .brand-rail { justify-content:flex-start; }
-      body.iframe-embedded .identity-rail { gap:12px; }
-      body.iframe-embedded .brand-logo-image { width:52px; }
-      body.iframe-embedded .avatar { width:78px; height:78px; }
-      body.iframe-embedded .hero-name { font-size:24px; }
-      body.iframe-embedded .hero-handle { font-size:15px; }
+      body.iframe-embedded .brand-rail { justify-content:flex-start; padding-left:8px; }
+      body.iframe-embedded .identity-rail { gap:10px; margin-left:6px; }
+      body.iframe-embedded .hero-meta { min-width:0; flex:1; }
+      body.iframe-embedded .brand-logo-image { width:76px; }
+      body.iframe-embedded .avatar { width:74px; height:74px; }
+      body.iframe-embedded .hero-name {
+        font-size:clamp(19px, 5.2vw, 22px);
+        line-height:1.08;
+        overflow-wrap:anywhere;
+        word-break:break-word;
+      }
+      body.iframe-embedded .hero-handle { font-size:14px; }
     }
   </style>
 </head>
