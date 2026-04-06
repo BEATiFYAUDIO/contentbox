@@ -535,8 +535,7 @@ export default function App() {
 
   const contentNav = [
     { key: "content" as const, label: "Catalog", hint: "Your content catalog" },
-    { key: "library" as const, label: "Library", hint: "What I own" },
-    { key: "downloads" as const, label: "Downloads", hint: "Get your files" }
+    { key: "library" as const, label: "Library", hint: "What I own" }
   ];
 
   const networkNav = [{ key: "store" as const, label: "Network", hint: "Identity + reachability + links" }];
@@ -555,13 +554,6 @@ export default function App() {
       label: "Royalties",
       hint: "Royalties I'm in",
       requiresCommerce: true,
-      requiresSplits: false
-    },
-    {
-      key: "purchases" as const,
-      label: "Purchase History",
-      hint: "Receipts + status",
-      requiresCommerce: false,
       requiresSplits: false
     },
     {
