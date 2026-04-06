@@ -998,7 +998,16 @@ export async function createSocialChallenge(
 ): Promise<ProofRecordDto> {
   const provider = normalizeSocialProvider(inputProvider);
   if (!provider) throw new Error("INVALID_SOCIAL_PROVIDER");
-  if (provider !== "github" && provider !== "youtube" && provider !== "tiktok" && provider !== "x" && provider !== "rumble" && provider !== "reddit" && provider !== "substack") {
+  if (
+    provider !== "github" &&
+    provider !== "youtube" &&
+    provider !== "instagram" &&
+    provider !== "tiktok" &&
+    provider !== "x" &&
+    provider !== "rumble" &&
+    provider !== "reddit" &&
+    provider !== "substack"
+  ) {
     throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
   }
 
@@ -1158,7 +1167,16 @@ export async function verifySocialProof(
 ): Promise<ProofRecordDto> {
   const provider = normalizeSocialProvider(inputProvider);
   if (!provider) throw new Error("INVALID_SOCIAL_PROVIDER");
-  if (provider !== "github" && provider !== "youtube" && provider !== "tiktok" && provider !== "x" && provider !== "rumble" && provider !== "reddit" && provider !== "substack") {
+  if (
+    provider !== "github" &&
+    provider !== "youtube" &&
+    provider !== "instagram" &&
+    provider !== "tiktok" &&
+    provider !== "x" &&
+    provider !== "rumble" &&
+    provider !== "reddit" &&
+    provider !== "substack"
+  ) {
     throw new Error("SOCIAL_PROVIDER_NOT_SUPPORTED");
   }
 

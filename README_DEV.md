@@ -96,3 +96,7 @@ If mode/commerce panels look stale after major routing changes:
 1. restart API
 2. hard refresh dashboard
 3. recheck `/api/network/summary` and `/api/node/mode`
+
+## Crash recovery
+
+Use [docs/recovery.md](docs/recovery.md) for backup restore and account recovery-key flow.

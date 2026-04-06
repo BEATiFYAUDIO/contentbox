@@ -1,0 +1,32 @@
+<svg width="1200" height="800" viewBox="0 0 1200 800" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="120" x2="0" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F4D77A"/>
+      <stop offset="0.5" stop-color="#E1B54E"/>
+      <stop offset="1" stop-color="#C48719"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Refined waveform bars: uniform width (52), tighter gap (20), mirrored heights -->
+  <rect x="202" y="254" width="52" height="180" rx="26" fill="url(#gold)"/>
+
+  <rect x="346" y="228" width="52" height="252" rx="26" fill="url(#gold)"/>
+  <rect x="418" y="176" width="52" height="356" rx="26" fill="url(#gold)"/>
+  <rect x="490" y="150" width="52" height="420" rx="26" fill="url(#gold)"/>
+  <rect x="562" y="150" width="52" height="420" rx="26" fill="url(#gold)"/>
+  <rect x="634" y="176" width="52" height="356" rx="26" fill="url(#gold)"/>
+  <rect x="706" y="228" width="52" height="252" rx="26" fill="url(#gold)"/>
+  <rect x="778" y="254" width="52" height="180" rx="26" fill="url(#gold)"/>
+
+  <!-- Key aligned to bar grid: stem width equals bar width -->
+  <g fill="url(#gold)">
+    <rect x="274" y="190" width="52" height="360" rx="26"/>
+    <circle cx="300" cy="152" r="64"/>
+  </g>
+
+  <!-- Key hole -->
+  <circle cx="300" cy="152" r="28" fill="transparent" stroke="#A96F12" stroke-width="5"/>
+
+  <!-- Key teeth (subtle optical-weight reduction via shorter projection) -->
+  <path d="M222 430H274V466H222V518H274V554H198V498H250V466H198V430H222Z" fill="url(#gold)"/>
+</svg>

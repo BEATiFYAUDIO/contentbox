@@ -167,6 +167,18 @@ export type LightningNodeConfigStatus = {
   warnings: string[];
 };
 
+export type LightningSendPaymentResult = {
+  paymentHash: string | null;
+  status: "paid";
+};
+
+export type LightningOutgoingPaymentLookup = {
+  paymentHash: string;
+  status: "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN";
+  valueSats: number | null;
+  feeSats: number | null;
+};
+
 export type LightningPeerSuggestion = {
   pubkey: string;
   alias?: string;
@@ -436,15 +448,13 @@ async function lndRestJson(
   const res = await new Promise<{ statusCode: number; headers: http.IncomingHttpHeaders; text: string }>((resolve, reject) => {
     const req = https.request(
       {
-        protocol: "https:",
         hostname: u.hostname,
-        port: Number(u.port || 443),
+        port: u.port ? Number(u.port) : 443,
         path: `${u.pathname}${u.search || ""}`,
         method: method.toUpperCase(),
         headers: reqHeaders,
         agent: false,
         ca: tlsCert,
-        ALPNProtocols: ["http/1.1"],
         rejectUnauthorized: true
       },
       (resp) => {
@@ -593,13 +603,22 @@ async function withTimeout<T>(p: Promise<T>, ms: number, code: string): Promise<
   });
 }
 
+function resolveGraphTimeoutMs(input?: number): number {
+  const envValue = Number(process.env.LND_GRAPH_TIMEOUT_MS || "");
+  const baseline = Number.isFinite(envValue) && envValue > 0 ? envValue : 15000;
+  const requested = Number(input);
+  const effective = Number.isFinite(requested) && requested > 0 ? requested : baseline;
+  return Math.max(2000, Math.min(60000, Math.floor(effective)));
+}
+
 function graphCacheSet(key: string, candidates: GraphCandidate[]) {
   graphFreshCache.set(key, candidates, GRAPH_CACHE_TTL_MS);
   graphStaleCache.set(key, candidates, GRAPH_STALE_TTL_MS);
 }
 
-async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<GraphCandidate[]> {
-  const graph = await withTimeout(lndFetchJson(lnd, "/v1/graph", { method: "GET" }), 5000, "GRAPH_FETCH_TIMEOUT");
+async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig, graphTimeoutMs?: number): Promise<GraphCandidate[]> {
+  const timeoutMs = resolveGraphTimeoutMs(graphTimeoutMs);
+  const graph = await withTimeout(lndFetchJson(lnd, "/v1/graph", { method: "GET" }), timeoutMs, "GRAPH_FETCH_TIMEOUT");
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
   const degree = new Map<string, number>();
@@ -668,7 +687,10 @@ async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig): Promise<Grap
   return sliced;
 }
 
-async function buildGraphCandidates(lnd: RuntimeLndConfig): Promise<{ candidates: GraphCandidate[]; fromCache: boolean }> {
+async function buildGraphCandidates(
+  lnd: RuntimeLndConfig,
+  graphTimeoutMs?: number
+): Promise<{ candidates: GraphCandidate[]; fromCache: boolean }> {
   const key = lndCacheKey(lnd);
   const fresh = graphFreshCache.get(key);
   if (fresh) return { candidates: fresh, fromCache: true };
@@ -677,7 +699,7 @@ async function buildGraphCandidates(lnd: RuntimeLndConfig): Promise<{ candidates
   if (stale) {
     graphSingleFlight
       .do(`graph:${key}`, async () => {
-        const next = await fetchAndScoreGraphCandidates(lnd);
+        const next = await fetchAndScoreGraphCandidates(lnd, graphTimeoutMs);
         graphCacheSet(key, next);
       })
       .catch(() => {});
@@ -685,7 +707,7 @@ async function buildGraphCandidates(lnd: RuntimeLndConfig): Promise<{ candidates
   }
 
   const fetched = await graphSingleFlight.do(`graph:${key}`, async () => {
-    const next = await fetchAndScoreGraphCandidates(lnd);
+    const next = await fetchAndScoreGraphCandidates(lnd, graphTimeoutMs);
     graphCacheSet(key, next);
     return next;
   });
@@ -842,7 +864,7 @@ export async function ensurePeerConnected(
 
 export async function getPeerSuggestions(
   prisma: PrismaLike,
-  input?: { limit?: number; probeTop?: number }
+  input?: { limit?: number; probeTop?: number; graphTimeoutMs?: number; forceRefresh?: boolean }
 ): Promise<SuggestionResult> {
   const lnd = await getLndConfig(prisma);
   if (!lnd) throw new Error("NODE_NOT_CONFIGURED");
@@ -851,7 +873,26 @@ export async function getPeerSuggestions(
   const probeTop = Math.max(0, Math.min(12, Math.floor(Number(input?.probeTop ?? 12))));
 
   try {
-    const graphRes = await buildGraphCandidates(lnd);
+    const graphTimeoutMs = resolveGraphTimeoutMs(input?.graphTimeoutMs);
+    const forceRefresh = Boolean(input?.forceRefresh);
+    const key = lndCacheKey(lnd);
+    const graphRes = forceRefresh
+      ? await (async () => {
+          try {
+            // Prevent refresh stampedes when multiple clients hit "Refresh" together.
+            const next = await graphSingleFlight.do(`graph-refresh:${key}`, async () => {
+              const fetched = await fetchAndScoreGraphCandidates(lnd, graphTimeoutMs);
+              graphCacheSet(key, fetched);
+              return fetched;
+            });
+            return { candidates: next, fromCache: false as const };
+          } catch (refreshErr) {
+            const stale = graphStaleCache.get(key);
+            if (stale) return { candidates: stale, fromCache: true as const };
+            throw refreshErr;
+          }
+        })()
+      : await buildGraphCandidates(lnd, graphTimeoutMs);
     const top = graphRes.candidates.slice(0, 50);
     const toProbe = top.slice(0, probeTop);
     const probeMap = new Map<string, { reachableNow: boolean; reason?: string }>();
@@ -1206,6 +1247,12 @@ function mapOpenChannelErrorCode(error: unknown): string {
   if (lower.includes("not synced") || lower.includes("syncing")) return "NOT_SYNCED";
   if (lower.includes("wallet locked") || lower.includes("unlock")) return "WALLET_LOCKED";
   if (lower.includes("insufficient") && (lower.includes("fund") || lower.includes("balance"))) return "INSUFFICIENT_FUNDS";
+  if (
+    (lower.includes("not enough witness outputs") && lower.includes("available")) ||
+    (lower.includes("need") && lower.includes("only have") && lower.includes("available"))
+  ) {
+    return "INSUFFICIENT_FUNDS";
+  }
   if (lower.includes("minimum") && lower.includes("channel")) return "MIN_CHAN_SIZE";
   if (lower.includes("rejected") || lower.includes("rejecting channel")) return "PEER_REJECTED";
   if (lower.includes("not online") || lower.includes("connection refused") || lower.includes("unreachable")) return "PEER_OFFLINE";
@@ -1625,6 +1672,218 @@ export async function getLightningInvoices(prisma: PrismaLike, input?: { limit?:
   return invoices.map((x: any) => normalizeLndInvoice(x));
 }
 
+function classifyLndTransportError(error: unknown): string {
+  const msg = String((error as any)?.message || error || "").toLowerCase();
+  const code = String((error as any)?.code || "").toUpperCase();
+  if (code === "ABORT_ERR" || msg.includes("aborted") || msg.includes("timeout") || msg.includes("etimedout")) return "request_timeout";
+  if (
+    code === "ECONNREFUSED" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH" ||
+    msg.includes("connection refused") ||
+    msg.includes("connect econnrefused") ||
+    msg.includes("lnd connection failed")
+  ) {
+    return "lnd_rest_unreachable";
+  }
+  if (msg.includes("self signed certificate") || msg.includes("tls validation failed") || msg.includes("tls")) {
+    return "tls_handshake_failed";
+  }
+  if (msg.includes("invalid json response") || msg.includes("unexpected token") || msg.includes("raw")) {
+    return "invalid_response";
+  }
+  return "transport_connect_failed";
+}
+
+function normalizeOutgoingPaymentStatus(raw: unknown): "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN" {
+  const value = String(raw || "").trim().toUpperCase();
+  if (value === "SUCCEEDED" || value === "SUCCESS") return "SUCCEEDED";
+  if (value === "FAILED") return "FAILED";
+  if (value === "IN_FLIGHT") return "IN_FLIGHT";
+  return "UNKNOWN";
+}
+
+async function derivePaymentHashFromBolt11(lnd: RuntimeLndConfig, paymentRequest: string): Promise<string | null> {
+  try {
+    const decoded = await lndFetchJson(lnd, `/v1/payreq/${encodeURIComponent(paymentRequest)}`, { method: "GET" });
+    const hash = String((decoded as any)?.payment_hash || "").trim().toLowerCase();
+    return /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+  } catch {
+    return null;
+  }
+}
+
+async function decodeBolt11PaymentRequest(
+  lnd: RuntimeLndConfig,
+  paymentRequest: string
+): Promise<{ paymentHash: string | null; valueSats: number | null }> {
+  try {
+    const decoded = await lndFetchJson(lnd, `/v1/payreq/${encodeURIComponent(paymentRequest)}`, { method: "GET" });
+    const hash = String((decoded as any)?.payment_hash || "").trim().toLowerCase();
+    const paymentHash = /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+    const valueSats = numberField((decoded as any)?.num_satoshis ?? (decoded as any)?.numSatoshis ?? (decoded as any)?.value);
+    return { paymentHash, valueSats: Number.isFinite(valueSats) && valueSats > 0 ? valueSats : null };
+  } catch {
+    return { paymentHash: null, valueSats: null };
+  }
+}
+
+export async function lookupOutgoingPaymentStatusByHash(
+  prisma: PrismaLike,
+  paymentHash: string
+): Promise<"SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN"> {
+  const lnd = await getLndConfig(prisma);
+  if (!lnd) return "UNKNOWN";
+  const hash = String(paymentHash || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) return "UNKNOWN";
+  const res = await lndFetchJson(lnd, "/v1/payments?include_incomplete=true&reversed=true&max_payments=200", {
+    method: "GET"
+  });
+  const payments = Array.isArray((res as any)?.payments) ? (res as any).payments : [];
+  const match = payments.find((p: any) => String(p?.payment_hash || "").trim().toLowerCase() === hash);
+  if (!match) return "UNKNOWN";
+  const normalized = normalizeOutgoingPaymentStatus(match?.status);
+  if (normalized !== "UNKNOWN") return normalized;
+  const hasPreimage = String(match?.payment_preimage || "").trim().length > 0;
+  if (hasPreimage) return "SUCCEEDED";
+  if (Array.isArray(match?.htlcs)) {
+    const htlcs = match.htlcs as any[];
+    const hasFailure = htlcs.some((h) => String(h?.status || "").toUpperCase() === "FAILED");
+    const hasInFlight = htlcs.some((h) => String(h?.status || "").toUpperCase() === "IN_FLIGHT");
+    if (hasFailure && !hasInFlight) return "FAILED";
+    if (hasInFlight) return "IN_FLIGHT";
+  }
+  return "UNKNOWN";
+}
+
+export async function lookupOutgoingPaymentByHash(
+  prisma: PrismaLike,
+  paymentHash: string
+): Promise<LightningOutgoingPaymentLookup | null> {
+  const lnd = await getLndConfig(prisma);
+  if (!lnd) return null;
+  const hash = String(paymentHash || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+  const res = await lndFetchJson(lnd, "/v1/payments?include_incomplete=true&reversed=true&max_payments=200", {
+    method: "GET"
+  });
+  const payments = Array.isArray((res as any)?.payments) ? (res as any).payments : [];
+  const match = payments.find((p: any) => String(p?.payment_hash || "").trim().toLowerCase() === hash);
+  if (!match) return null;
+  const status = normalizeOutgoingPaymentStatus(match?.status);
+  const valueSatsRaw = numberField(match?.value_sat ?? match?.value ?? match?.value_msat);
+  const feeSatsRaw = numberField(match?.fee_sat ?? match?.fee);
+  return {
+    paymentHash: hash,
+    status,
+    valueSats: Number.isFinite(valueSatsRaw) && valueSatsRaw >= 0 ? valueSatsRaw : null,
+    feeSats: Number.isFinite(feeSatsRaw) && feeSatsRaw >= 0 ? feeSatsRaw : null
+  };
+}
+
+export async function sendBolt11Payment(
+  prisma: PrismaLike,
+  input: { paymentRequest: string; timeoutSeconds?: number; feeLimitSat?: number; expectedAmountSats?: number | null }
+): Promise<LightningSendPaymentResult> {
+  const paymentRequest = String(input.paymentRequest || "").trim();
+  if (!paymentRequest) throw new Error("BOLT11_REQUIRED");
+  const lnd = await getLndConfig(prisma);
+  if (!lnd) throw new Error("LND_SEND_NOT_CONFIGURED");
+  const timeoutSeconds = Math.max(5, Math.min(300, Math.floor(Number(input.timeoutSeconds ?? 60))));
+  const feeLimitSat = Math.max(0, Math.min(100_000, Math.floor(Number(input.feeLimitSat ?? 50))));
+  const expectedAmountSats =
+    input.expectedAmountSats === undefined || input.expectedAmountSats === null
+      ? null
+      : Math.max(0, Math.floor(Number(input.expectedAmountSats)));
+  const decoded = await decodeBolt11PaymentRequest(lnd, paymentRequest);
+  if (
+    expectedAmountSats !== null &&
+    Number.isFinite(expectedAmountSats) &&
+    expectedAmountSats > 0 &&
+    decoded.valueSats !== null &&
+    decoded.valueSats !== expectedAmountSats
+  ) {
+    throw new Error(`LND_SEND_AMOUNT_MISMATCH:expected_${expectedAmountSats}:invoice_${decoded.valueSats}`);
+  }
+  const wait = async (ms: number) => {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+  };
+  const verifyOutgoingAfterSend = async (
+    paymentHash: string
+  ): Promise<"SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN"> => {
+    // LND can return non-final send responses while payment state settles asynchronously.
+    let last: "SUCCEEDED" | "FAILED" | "IN_FLIGHT" | "UNKNOWN" = "UNKNOWN";
+    for (let i = 0; i < 5; i += 1) {
+      const status = await lookupOutgoingPaymentStatusByHash(prisma, paymentHash);
+      if (status === "SUCCEEDED" || status === "FAILED") return status;
+      last = status;
+      await wait(800);
+    }
+    return last;
+  };
+  try {
+    const res = await lndFetchJson(lnd, "/v2/router/send", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json"
+      } as any,
+      body: JSON.stringify({
+        payment_request: paymentRequest,
+        timeout_seconds: timeoutSeconds,
+        fee_limit_sat: feeLimitSat
+      })
+    });
+    const status = String((res as any)?.status || "").trim().toUpperCase();
+    const responsePaymentHash = String((res as any)?.payment_hash || "").trim().toLowerCase();
+    const paymentHash =
+      (/^[0-9a-f]{64}$/.test(responsePaymentHash) ? responsePaymentHash : null) ||
+      decoded.paymentHash ||
+      (await derivePaymentHashFromBolt11(lnd, paymentRequest));
+    const immediate = normalizeOutgoingPaymentStatus(status);
+    try {
+      console.info("[payoutExecution.lnd_send_result_raw]", {
+        immediateStatus: immediate,
+        paymentHashPresent: Boolean(paymentHash)
+      });
+    } catch {}
+    if (immediate === "SUCCEEDED") {
+      return { paymentHash, status: "paid" };
+    }
+    if (paymentHash) {
+      const verified = await verifyOutgoingAfterSend(paymentHash);
+      try {
+        console.info("[payoutExecution.lnd_send_classified]", {
+          immediateStatus: immediate,
+          verifiedStatus: verified,
+          paymentHash
+        });
+      } catch {}
+      if (verified === "SUCCEEDED") {
+        return { paymentHash, status: "paid" };
+      }
+      if (verified === "FAILED") {
+        throw new Error("LND_SEND_NOT_PAID:FAILED");
+      }
+      throw new Error(`LND_SEND_RESULT_UNKNOWN:${immediate || "UNKNOWN"}:${paymentHash}`);
+    }
+    if (immediate === "FAILED") {
+      throw new Error("LND_SEND_NOT_PAID:FAILED");
+    }
+    throw new Error(`LND_SEND_RESULT_UNKNOWN:${immediate || "UNKNOWN"}`);
+  } catch (error: any) {
+    const message = String(error?.message || error || "");
+    if (
+      message.startsWith("LND_SEND_NOT_PAID:") ||
+      message.startsWith("LND_SEND_RESULT_UNKNOWN:") ||
+      message === "LND_SEND_NOT_CONFIGURED"
+    ) {
+      throw error;
+    }
+    throw new Error(classifyLndTransportError(error));
+  }
+}
+
 function mapCloseChannelErrorCode(error: unknown): string {
   const msg = String((error as any)?.message || error || "").toLowerCase();
   if (msg.includes("not found") || msg.includes("unable to find channel")) return "CHANNEL_NOT_FOUND";
@@ -1883,7 +2142,7 @@ export async function createLightningInvoice(prisma: PrismaLike, amountSats: big
     body: JSON.stringify({ out: false, amount: Number(amountSats), memo })
   });
 
-  const data = await res.json();
+  const data: any = await res.json();
   if (!res.ok) throw new Error(data?.detail || "LNbits invoice error");
 
   return {
@@ -1921,7 +2180,7 @@ export async function checkLightningInvoice(prisma: PrismaLike, providerId: stri
     headers: { "X-Api-Key": key }
   });
 
-  const data = await res.json();
+  const data: any = await res.json();
   if (!res.ok) throw new Error(data?.detail || "LNbits check error");
   return {
     paid: Boolean(data?.paid),

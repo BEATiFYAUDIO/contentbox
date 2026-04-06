@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { clearToken, getToken } from "../lib/auth";
 import { getApiBase } from "../lib/api";
 
-const DEFAULT_HEALTH_PATH = "/health";
+const DEFAULT_HEALTH_PATH = "/api/health";
 
 type Health = {
   ok: boolean;
@@ -34,6 +34,58 @@ type NodeModeStatus = {
     localLndReady: boolean;
     localCommerceReady: boolean;
     blockers: string[];
+  };
+};
+
+type ProgressStep = {
+  title: string;
+  detail: string;
+  state: "done" | "current" | "pending";
+};
+
+type LightningRuntimeSnapshot = {
+  connected: boolean;
+  canReceive: boolean;
+  canSend: boolean;
+  capabilityState: string;
+  sendFailureReason: string | null;
+  source: string;
+};
+
+type LightningAdminSnapshot = {
+  configured: boolean;
+  restUrl: string | null;
+  network: string | null;
+  lastTestedAt: string | null;
+  lastStatus: string | null;
+  lastError: string | null;
+  runtime?: Partial<LightningRuntimeSnapshot>;
+};
+
+type LightningReadinessSnapshot = {
+  ok: boolean;
+  configured: boolean;
+  nodeReachable: boolean;
+  wallet?: { syncedToChain?: boolean; syncedToGraph?: boolean; blockHeight?: number };
+  channels?: { count?: number };
+  receiveReady?: boolean;
+  runtime?: Partial<LightningRuntimeSnapshot>;
+};
+
+type LightningBalancesSnapshot = {
+  wallet: {
+    confirmedSats: number;
+    unconfirmedSats: number;
+    totalSats: number;
+  };
+  channels: {
+    openCount: number;
+    pendingOpenCount: number;
+    pendingCloseCount: number;
+  };
+  liquidity: {
+    outboundSats: number;
+    inboundSats: number;
   };
 };
 
@@ -148,6 +200,10 @@ export default function ConfigPage({
   const [modeInfo, setModeInfo] = useState<NodeModeStatus | null>(null);
   const [modeBusy, setModeBusy] = useState(false);
   const [modeMsg, setModeMsg] = useState<string | null>(null);
+  const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
+  const [lightningReadiness, setLightningReadiness] = useState<LightningReadinessSnapshot | null>(null);
+  const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
+  const [lightningWalletError, setLightningWalletError] = useState<string | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -251,7 +307,7 @@ export default function ConfigPage({
   }, [apiBase]);
 
   useEffect(() => {
-    if (!tunnelEnabled || !token) return;
+    if (!token) return;
     let cancelled = false;
     (async () => {
       try {
@@ -263,9 +319,17 @@ export default function ConfigPage({
         });
         const json = await res.json();
         if (!cancelled) {
-          setTunnelProvider(json?.provider || "cloudflare");
-          setTunnelDomain(json?.domain || "");
-          setTunnelName(json?.tunnelName || "");
+          const provider = json?.provider || "cloudflare";
+          const domain = json?.domain || "";
+          const name = json?.tunnelName || "";
+          setTunnelProvider(provider);
+          setTunnelDomain(domain);
+          setTunnelName(name);
+          const hasSavedNamedConfig = Boolean(String(provider || "").trim() || String(domain || "").trim() || String(name || "").trim());
+          if (hasSavedNamedConfig && !tunnelEnabled) {
+            setTunnelEnabled(true);
+            writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, "1");
+          }
         }
       } catch (e: any) {
         if (!cancelled) setTunnelError(e?.message || String(e));
@@ -291,6 +355,61 @@ export default function ConfigPage({
         if (!cancelled) setPublicStatus(json || null);
       } catch {
         if (!cancelled) setPublicStatus(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!token) {
+        if (cancelled) return;
+        setLightningAdmin(null);
+        setLightningReadiness(null);
+        setLightningBalances(null);
+        setLightningWalletError(null);
+        return;
+      }
+      try {
+        setLightningWalletError(null);
+        const headers = { Authorization: `Bearer ${token}` };
+        const [adminRes, readinessRes, balancesRes] = await Promise.all([
+          fetch(`${apiBase}/api/admin/lightning`, { method: "GET", headers }),
+          fetch(`${apiBase}/api/admin/lightning/readiness`, { method: "GET", headers }),
+          fetch(`${apiBase}/api/admin/lightning/balances`, { method: "GET", headers })
+        ]);
+        const [adminJson, readinessJson, balancesJson] = await Promise.all([
+          adminRes.json().catch(() => null),
+          readinessRes.json().catch(() => null),
+          balancesRes.json().catch(() => null)
+        ]);
+        if (cancelled) return;
+        if (adminRes.ok && adminJson) setLightningAdmin(adminJson as LightningAdminSnapshot);
+        else setLightningAdmin(null);
+        if (readinessRes.ok && readinessJson) setLightningReadiness(readinessJson as LightningReadinessSnapshot);
+        else setLightningReadiness(null);
+        if (balancesRes.ok && balancesJson) setLightningBalances(balancesJson as LightningBalancesSnapshot);
+        else setLightningBalances(null);
+        if (!adminRes.ok && !readinessRes.ok && !balancesRes.ok) {
+          const permissionBlocked = [adminRes.status, readinessRes.status, balancesRes.status].every((code) => code === 401 || code === 403);
+          if (permissionBlocked) {
+            setLightningWalletError("Local LND wallet details are available in sovereign/provider mode.");
+            return;
+          }
+          setLightningWalletError(
+            String(
+              (adminJson as any)?.error ||
+                (readinessJson as any)?.error ||
+                (balancesJson as any)?.error ||
+                "Lightning wallet details unavailable."
+            )
+          );
+        }
+      } catch (e: any) {
+        if (!cancelled) setLightningWalletError(e?.message || "Lightning wallet details unavailable.");
       }
     })();
     return () => {
@@ -387,9 +506,51 @@ export default function ConfigPage({
   const sovereignNodeBlockers = modeInfo?.modeReadiness?.blockers || [];
   const sovereignModeBlockedReason = sovereignCreatorEligible
     ? null
-    : "Named tunnel not detected yet. Sovereign Creator unlocks after stable public host detection.";
+    : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
+  const creatorProgressionSteps = useMemo<ProgressStep[]>(() => {
+    const selected = modeInfo?.selectedMode || modeInfo?.nodeMode;
+    const localCommerceReady = Boolean(modeInfo?.modeReadiness?.localCommerceReady);
+    if (selected === "basic") {
+      return [
+        { title: "Advanced Posture", detail: "Switch from Basic to Advanced.", state: "current" },
+        { title: "Commerce Route", detail: "Choose provider-backed or local sovereign route.", state: "pending" },
+        { title: "Rails Readiness", detail: "If local route: configure Lightning + rails.", state: "pending" },
+        { title: "Operate", detail: "Use Revenue stages for daily operations.", state: "pending" }
+      ];
+    }
+    if (selected === "lan" && localCommerceReady) {
+      return [
+        { title: "Advanced Posture", detail: "Sovereign posture enabled.", state: "done" },
+        { title: "Commerce Route", detail: "Local sovereign route selected.", state: "done" },
+        { title: "Rails Readiness", detail: "Lightning + rails are commerce-ready.", state: "done" },
+        { title: "Operate", detail: "Use Revenue stages for daily operations.", state: "current" }
+      ];
+    }
+    if (selected === "lan" && !localCommerceReady) {
+      return [
+        { title: "Advanced Posture", detail: "Sovereign posture enabled.", state: "done" },
+        { title: "Commerce Route", detail: "Local sovereign route selected.", state: "done" },
+        { title: "Rails Readiness", detail: "Finish local Lightning + rails setup.", state: "current" },
+        { title: "Operate", detail: "Run Revenue stages once rails are ready.", state: "pending" }
+      ];
+    }
+    return [
+      { title: "Advanced Posture", detail: "Sovereign creator posture active.", state: "done" },
+      { title: "Commerce Route", detail: "Connect provider commerce or move to local sovereign route.", state: "current" },
+      { title: "Rails Readiness", detail: "Optional: local Lightning + rails for full sovereignty.", state: "pending" },
+      { title: "Operate", detail: "Use Revenue stages for accounting + execution.", state: "pending" }
+    ];
+  }, [modeInfo?.modeReadiness?.localCommerceReady, modeInfo?.nodeMode, modeInfo?.selectedMode]);
+  const lightningRuntime = (lightningReadiness?.runtime || lightningAdmin?.runtime || null) as Partial<LightningRuntimeSnapshot> | null;
+  const lightningConfigured = Boolean(lightningAdmin?.configured || lightningReadiness?.configured);
+  const localLndDetected = Boolean(lightningRuntime?.connected || lightningConfigured);
+  const formatSats = (raw: number | null | undefined) => {
+    const n = Number(raw || 0);
+    if (!Number.isFinite(n)) return "0 sats";
+    return `${Math.round(n).toLocaleString()} sats`;
+  };
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
     if (!token || !modeInfo || modeBusy || nextMode === modeInfo.nodeMode) return;
@@ -925,7 +1086,7 @@ export default function ConfigPage({
           <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
             Sovereign Node requirements not met:
             <ul style={{ margin: "6px 0 0 18px", padding: 0 }}>
-              {sovereignNodeBlockers.includes("named_tunnel_required") ? <li>Named tunnel required</li> : null}
+              {sovereignNodeBlockers.includes("named_tunnel_required") ? <li>Canonical public origin required</li> : null}
               {sovereignNodeBlockers.includes("local_bitcoin_node_required") ? <li>Local Bitcoin node required</li> : null}
               {sovereignNodeBlockers.includes("local_lnd_required") ? <li>Local LND required</li> : null}
               {sovereignNodeBlockers.includes("local_commerce_service_required") ? <li>Local commerce service required</li> : null}
@@ -956,11 +1117,32 @@ export default function ConfigPage({
             <b>1. Basic Creator</b> → Configure <b>Tunnel & routing</b>, publish content, collect tips.
           </div>
           <div>
-            <b>2. Sovereign Creator</b> → Named tunnel online, then connect commerce services.
+            <b>2. Sovereign Creator</b> → Canonical public origin online, then connect commerce services.
           </div>
           <div>
-            <b>3. Sovereign Node</b> → Named tunnel + local stack, then use advanced infra panels.
+            <b>3. Sovereign Node</b> → Canonical public origin + local stack, then use advanced infra panels.
           </div>
+        </div>
+        <div style={{ marginTop: 12, display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {creatorProgressionSteps.map((step) => {
+            const tone =
+              step.state === "done"
+                ? { border: "1px solid rgba(16,185,129,0.45)", background: "rgba(6,78,59,0.28)" }
+                : step.state === "current"
+                  ? { border: "1px solid rgba(56,189,248,0.55)", background: "rgba(8,47,73,0.35)" }
+                  : { border: "1px solid rgba(255,255,255,0.12)", background: "rgba(10,10,10,0.35)" };
+            return (
+              <div key={step.title} style={{ borderRadius: 10, padding: "9px 10px", ...tone }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#e5e7eb" }}>{step.title}</div>
+                  <span style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.85 }}>
+                    {step.state}
+                  </span>
+                </div>
+                <div style={{ marginTop: 5, fontSize: 11, opacity: 0.78 }}>{step.detail}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -1129,22 +1311,7 @@ export default function ConfigPage({
               const v = e.target.checked;
               setTunnelEnabled(v);
               writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
-              if (!v && token) {
-                try {
-                  const res = await fetch(`${apiBase}/api/public/config`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-                    body: JSON.stringify({ provider: null, domain: null, tunnelName: null })
-                  });
-                  const json = await res.json();
-                  if (res.ok) {
-                    setTunnelProvider(json?.provider || "cloudflare");
-                    setTunnelDomain(json?.domain || "");
-                    setTunnelName(json?.tunnelName || "");
-                    await refreshPublicStatus();
-                  }
-                } catch {}
-              }
+              // UI preference only: do not clear persisted named-tunnel config when toggled off.
               if (!v && publicStatus?.mode === "named" && publicStatus?.status !== "offline") {
                 setPublicMsg("Named tunnel is still running. Click Stop sharing to shut it down.");
               }
@@ -1479,12 +1646,25 @@ export default function ConfigPage({
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
         <div style={{ opacity: 0.7, marginBottom: 12 }}>
-          Public hosts used for buy + studio + creator-profile routing.
+          Use one primary public host by default. Route-specific hosts below are optional overrides.
         </div>
 
         <div style={{ display: "grid", gap: 8 }}>
+          <label htmlFor="public-origin">
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Primary public host (recommended)</div>
+            <input
+              id="public-origin"
+              name="publicOrigin"
+              value={publicOrigin}
+              onChange={(e) => setPublicOrigin(e.target.value)}
+              placeholder="https://creator.yourdomain.com"
+              className={inputClass}
+              disabled={!namedTunnelOnline}
+              autoComplete="url"
+            />
+          </label>
           <label htmlFor="public-buy-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host (public)</div>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host override (optional)</div>
             <input
               id="public-buy-origin"
               name="publicBuyOrigin"
@@ -1497,7 +1677,7 @@ export default function ConfigPage({
             />
           </label>
           <label htmlFor="public-studio-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host (public)</div>
+            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host override (optional)</div>
             <input
               id="public-studio-origin"
               name="publicStudioOrigin"
@@ -1509,19 +1689,9 @@ export default function ConfigPage({
               autoComplete="url"
             />
           </label>
-          <label htmlFor="public-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator host (public)</div>
-            <input
-              id="public-origin"
-              name="publicOrigin"
-              value={publicOrigin}
-              onChange={(e) => setPublicOrigin(e.target.value)}
-              placeholder="https://creator.yourdomain.com"
-              className={inputClass}
-              disabled={!namedTunnelOnline}
-              autoComplete="url"
-            />
-          </label>
+        </div>
+        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+          If overrides are blank, routing uses the primary public host.
         </div>
         {!namedTunnelOnline ? (
           <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>
@@ -1592,9 +1762,45 @@ export default function ConfigPage({
       ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Local LND Wallet</div>
+        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 10 }}>
+          This machine&apos;s local LND wallet is the commerce wallet/treasury for sovereign commerce flows.
+        </div>
+        <div style={{ display: "grid", gap: 6, fontSize: 12 }}>
+          <div>Node detected: <b>{localLndDetected ? "yes" : "no"}</b></div>
+          <div>REST URL: <b>{lightningAdmin?.restUrl || "—"}</b></div>
+          <div>Network: <b>{lightningAdmin?.network || "—"}</b></div>
+          <div>Last tested: <b>{lightningAdmin?.lastTestedAt ? new Date(lightningAdmin.lastTestedAt).toLocaleString() : "—"}</b></div>
+          <div>canReceive: <b>{lightningRuntime?.canReceive ? "yes" : "no"}</b></div>
+          <div>canSend: <b>{lightningRuntime?.canSend ? "yes" : "no"}</b></div>
+          <div>capabilityState: <b>{lightningRuntime?.capabilityState || "disconnected"}</b></div>
+          <div>channel count: <b>{Number(lightningReadiness?.channels?.count || 0).toLocaleString()}</b></div>
+          <div>wallet confirmed: <b>{formatSats(lightningBalances?.wallet?.confirmedSats)}</b></div>
+          <div>wallet unconfirmed: <b>{formatSats(lightningBalances?.wallet?.unconfirmedSats)}</b></div>
+          <div>wallet total: <b>{formatSats(lightningBalances?.wallet?.totalSats)}</b></div>
+          <div>inbound liquidity: <b>{formatSats(lightningBalances?.liquidity?.inboundSats)}</b></div>
+          <div>outbound liquidity: <b>{formatSats(lightningBalances?.liquidity?.outboundSats)}</b></div>
+          <div>
+            pending channels:{" "}
+            <b>{Number((lightningBalances?.channels?.pendingOpenCount || 0) + (lightningBalances?.channels?.pendingCloseCount || 0)).toLocaleString()}</b>
+          </div>
+          <div>open channels: <b>{Number(lightningBalances?.channels?.openCount || 0).toLocaleString()}</b></div>
+          <div>Alias/Pubkey: <b>Not exposed by current read-only integration</b></div>
+        </div>
+        {lightningRuntime?.sendFailureReason ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>
+            send readiness reason: {lightningRuntime.sendFailureReason}
+          </div>
+        ) : null}
+        {lightningWalletError ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#fca5a5" }}>{lightningWalletError}</div>
+        ) : null}
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Payments</div>
         <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 10 }}>
-          Set your Lightning address or LNURL to receive payments in Basic mode.
+          In Basic mode, set your creator payout destination (Lightning address or LNURL). In sovereign/provider modes, commerce runs from this machine&apos;s local LND wallet.
         </div>
         <button
           onClick={() => onOpenPayments?.()}

@@ -73,7 +73,7 @@ test("canonicalOriginForLinks prefers canonical origin", () => {
   assert.equal(base, "https://contentbox.example.com");
 });
 
-test("root domain config expands to tunnel subdomain", () => {
+test("root domain config stays canonical (no tunnel subdomain rewrite)", () => {
   const state = computePublicLinkState({
     publicModeEnv: "named",
     dbModeEnv: "advanced",
@@ -82,5 +82,54 @@ test("root domain config expands to tunnel subdomain", () => {
     quick: { status: "STOPPED", publicOrigin: null },
     namedHealthOk: true
   });
-  assert.equal(state.canonicalOrigin, "https://contentbox.darrylhillock.com");
+  assert.equal(state.canonicalOrigin, "https://darrylhillock.com");
+});
+
+test("publicOrigin config enables canonical named identity without tunnel-name coupling", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: null, publicOrigin: null },
+    config: { provider: null, domain: null, tunnelName: null, publicOrigin: "https://inklinguy.pro" },
+    quick: { status: "ACTIVE", publicOrigin: "https://abc.trycloudflare.com" },
+    namedHealthOk: true
+  });
+  assert.equal(state.mode, "named");
+  assert.equal(state.isCanonical, true);
+  assert.equal(state.canonicalOrigin, "https://inklinguy.pro");
+});
+
+test("explicit publicOrigin subdomain wins over domain+tunnel derivation", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: "certifyd-m4", publicOrigin: null },
+    config: {
+      provider: "cloudflare",
+      domain: "inklinguy.pro",
+      tunnelName: "certifyd-m4",
+      publicOrigin: "https://certifyd2.inklinguy.pro"
+    },
+    quick: { status: "ACTIVE", publicOrigin: "https://abc.trycloudflare.com" },
+    namedHealthOk: true
+  });
+  assert.equal(state.mode, "named");
+  assert.equal(state.canonicalOrigin, "https://certifyd2.inklinguy.pro");
+});
+
+test("canonical origin never rewrites root domain to tunnel subdomain", () => {
+  const state = computePublicLinkState({
+    publicModeEnv: "named",
+    dbModeEnv: "advanced",
+    namedEnv: { tunnelName: "certifyd-m4", publicOrigin: "https://darrylhillock.com" },
+    config: {
+      provider: "cloudflare",
+      domain: "darrylhillock.com",
+      tunnelName: "certifyd-m4",
+      publicOrigin: null
+    },
+    quick: { status: "STOPPED", publicOrigin: null },
+    namedHealthOk: true
+  });
+  assert.equal(state.canonicalOrigin, "https://darrylhillock.com");
 });

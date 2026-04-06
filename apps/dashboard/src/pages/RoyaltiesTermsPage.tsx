@@ -15,6 +15,8 @@ type TermsResponse = {
     lockedAt: string | null;
   };
   participants: Array<{
+    participantUserId?: string | null;
+    participantDisplayName?: string | null;
     participantEmail: string | null;
     role: string | null;
     percent: any;
@@ -57,11 +59,21 @@ export default function RoyaltiesTermsPage({ contentId }: RoyaltiesTermsPageProp
     return <div className="text-sm text-neutral-400">Missing content id.</div>;
   }
 
+  const participantIdentifier = (p: TermsResponse["participants"][number]) => {
+    const displayName = String(p.participantDisplayName || "").trim();
+    if (displayName) return displayName;
+    const email = String(p.participantEmail || "").trim();
+    if (email) return email;
+    const userId = String(p.participantUserId || "").trim();
+    if (userId) return `user:${userId}`;
+    return "(unresolved participant)";
+  };
+
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-lg font-semibold">Split terms</div>
-        <div className="text-sm text-neutral-400 mt-1">Read-only view of split terms.</div>
+        <div className="text-lg font-semibold">Locked split terms</div>
+        <div className="text-sm text-neutral-400 mt-1">Read-only split participants and locked share terms.</div>
       </div>
 
       {loading ? <div className="text-sm text-neutral-400">Loading…</div> : null}
@@ -87,7 +99,7 @@ export default function RoyaltiesTermsPage({ contentId }: RoyaltiesTermsPageProp
               {data.participants.map((p, idx) => (
                 <div key={idx} className="flex items-center justify-between text-sm border-b border-neutral-900 pb-2">
                   <div className="text-neutral-200">
-                    {p.participantEmail || "(no email)"} • {p.role || "participant"}
+                    {participantIdentifier(p)} • {p.role || "participant"}
                   </div>
                   <div className="text-neutral-300">
                     {p.percent != null ? `${Number(p.percent)}%` : "—"}

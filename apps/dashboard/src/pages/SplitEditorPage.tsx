@@ -330,6 +330,7 @@ export default function SplitEditorPage(props: {
   const lightningReady = paymentsReadiness?.lightning?.ready ?? true;
   const lightningReason = paymentsReadiness?.lightning?.reason ?? "UNKNOWN";
   const lightningBlocked = readinessLoaded && !lightningReady;
+  const showLegacyPlaybackCredits = false;
 
   function rowKey(r: Row, idx: number) {
     return r.id ? `id:${r.id}` : `idx:${idx}`;
@@ -1231,6 +1232,7 @@ export default function SplitEditorPage(props: {
                       )}
                     </div>
 
+                    {showLegacyPlaybackCredits ? (
                     <div className="mt-2 border-t border-neutral-800 pt-2">
                       <div className="text-xs text-neutral-500">Sell playback credits</div>
                       {proofByVersionId[selectedVersion.id] ? (
@@ -1320,6 +1322,7 @@ export default function SplitEditorPage(props: {
                         <div className="text-xs text-neutral-500">Load proof to purchase credits.</div>
                       )}
                     </div>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="mt-2 text-xs text-neutral-400">

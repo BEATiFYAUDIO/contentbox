@@ -42,9 +42,8 @@ export function getIdentityDetail(): IdentityDetail {
   }
 
   const publicMode = String(process.env.PUBLIC_MODE || "").trim().toLowerCase();
-  const tunnelName = String(process.env.CLOUDFLARE_TUNNEL_NAME || "").trim();
   const publicOrigin = String(process.env.CONTENTBOX_PUBLIC_ORIGIN || "").trim() || null;
-  const persistentConfigured = publicMode === "named" && Boolean(tunnelName && publicOrigin);
+  const persistentConfigured = publicMode === "named" && Boolean(publicOrigin);
 
   if (!persistentConfigured) {
     return {
@@ -52,7 +51,7 @@ export function getIdentityDetail(): IdentityDetail {
       dbMode,
       storage: runtime.storage,
       persistentConfigured: false,
-      reason: "named_tunnel_missing",
+      reason: "named_public_origin_missing",
       publicOrigin
     };
   }

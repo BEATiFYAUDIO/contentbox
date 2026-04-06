@@ -53,6 +53,9 @@ import {
   interpretLightningDiscoveryHttpProbe,
   probeLndConnection,
   saveLightningNodeConfig,
+  sendBolt11Payment,
+  lookupOutgoingPaymentByHash,
+  lookupOutgoingPaymentStatusByHash,
   testLightningNodeConnection
 } from "./payments/lightning.js";
 import { finalizePurchase } from "./payments/finalizePurchase.js";
@@ -61,6 +64,7 @@ import {
   computePublicLinkState,
   getNamedTunnelConfig,
   isNamedConfigured,
+  type PublicMode,
   type PublicLinkState
 } from "./lib/publicLinkState.js";
 import {
@@ -82,6 +86,7 @@ import { assertCanPublish, evaluatePublishGate } from "./lib/publishGate.js";
 import { dbModeCompatFromStorage, getNodeMode, resolveRuntimeConfig, shouldBlockAdditionalUser } from "./lib/nodeMode.js";
 import { getPaymentsMode, resolveProductTier } from "./lib/productTier.js";
 import { validateNodeMode, writeNodeConfig, writeProductTier } from "./lib/nodeConfig.js";
+import { deriveActivationStatusMessageFromNetwork, deriveUserNetworkStatusFromState } from "./lib/userNetworkStatus.js";
 import { TunnelManager } from "./lib/tunnelManager.js";
 import { startPublicServer } from "./publicServer.js";
 import { mapLightningErrorMessage } from "./lib/railHealth.js";
@@ -115,6 +120,7 @@ import {
   computeCanonicalManifestHash,
   normalizeManifestForPublish
 } from "./lib/contentPublish.js";
+import { classifyDelegatedPublishFailure } from "./lib/contentPublishDelegation.js";
 import {
   appendLifecycleReceipt,
   getLifecycleReceiptById,
@@ -228,16 +234,15 @@ function rateLimit(req: any, key: string, max: number, windowMs: number): boolea
 }
 
 const RUNTIME_CONFIG = resolveRuntimeConfig();
-const SUPPORTS_INSENSITIVE = RUNTIME_CONFIG.storage === "postgres";
 
 function emailEquals(email: string | null | undefined) {
   if (!email) return undefined;
-  return SUPPORTS_INSENSITIVE ? { equals: email, mode: "insensitive" as const } : { equals: email };
+  return { equals: email };
 }
 
 function emailIn(emails: Array<string> | null | undefined) {
   if (!emails || emails.length === 0) return undefined;
-  return SUPPORTS_INSENSITIVE ? { in: emails, mode: "insensitive" as const } : { in: emails };
+  return { in: emails };
 }
 
 function num(x: unknown): number {
@@ -269,6 +274,31 @@ function parseSats(x: unknown): bigint {
   if (/^\d+$/.test(s)) return BigInt(s);
   const n = Number(s);
   return Number.isFinite(n) ? BigInt(Math.floor(n)) : 0n;
+}
+
+type DatabaseTargetSource =
+  | "env_database_url"
+  | "contentbox_root"
+  | "dev_quickstart"
+  | "unset";
+
+function resolveRuntimeDatabaseUrl(
+  storage: "sqlite" | "postgres",
+  explicitDatabaseUrl: string,
+  explicitContentboxRoot: string,
+  contentboxRootResolved: string
+): { databaseUrl: string; source: DatabaseTargetSource } {
+  const rawDatabaseUrl = String(explicitDatabaseUrl || "").trim();
+  if (rawDatabaseUrl) return { databaseUrl: rawDatabaseUrl, source: "env_database_url" };
+  if (storage !== "sqlite") return { databaseUrl: "", source: "unset" };
+
+  const rawContentboxRoot = String(explicitContentboxRoot || "").trim();
+  if (rawContentboxRoot) {
+    const dbPath = path.join(contentboxRootResolved, "contentbox.db");
+    return { databaseUrl: `file:${dbPath}`, source: "contentbox_root" };
+  }
+
+  return { databaseUrl: "file:./prisma/data/dev.db", source: "dev_quickstart" };
 }
 
 function normalizePublicOriginBase(origin: unknown): string {
@@ -623,7 +653,7 @@ async function isOriginReachable(origin: string | null | undefined): Promise<boo
   const cached = originReachabilityCache.get(normalized);
   if (cached && now - cached.checkedAt < 15000) return cached.reachable;
 
-  const endpoints = [`${normalized}/health`, `${normalized}/public/ping`];
+  const endpoints = [`${normalized}/api/health`, `${normalized}/health`, `${normalized}/public/ping`];
   let reachable = false;
   for (const url of endpoints) {
     try {
@@ -755,9 +785,9 @@ function slugify(value: string): string {
     .slice(0, 32) || "user";
 }
 
-function execFileAsync(cmd: string, args: string[]) {
+function execFileAsync(cmd: string, args: string[], options?: Parameters<typeof execFile>[2]) {
   return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    execFile(cmd, args, (err, stdout, stderr) => {
+    execFile(cmd, args, options as any, (err, stdout, stderr) => {
       if (err) return reject(Object.assign(err, { stdout, stderr }));
       resolve({ stdout: String(stdout || ""), stderr: String(stderr || "") });
     });
@@ -785,11 +815,37 @@ type AuditEventOut = {
   id: string;
   ts: string;
   type: string;
+  archetype?: string;
   summary?: string | null;
   actor?: HistoryActor | null;
   details?: any;
   diff?: any;
 };
+
+function resolveAuditArchetype(scopeType: string, type: string): string {
+  const scope = String(scopeType || "").trim().toLowerCase();
+  const action = String(type || "").trim().toLowerCase();
+  const isCommerce =
+    action.startsWith("sale.") ||
+    action.startsWith("sales.") ||
+    action.startsWith("payment.") ||
+    action.startsWith("payments.") ||
+    action.startsWith("invoice.") ||
+    action.startsWith("invoices.") ||
+    action.startsWith("settlement.") ||
+    action.startsWith("settlements.") ||
+    action.startsWith("revenue.");
+  if (scope === "split" || action.startsWith("split.") || action.startsWith("splits.")) return "rights_and_splits";
+  if (scope === "invite" || action.startsWith("invite.") || action === "invite") return "identity_and_access";
+  if (scope === "identity" || action.startsWith("identity.")) return "identity_and_access";
+  if (scope === "clearance" || action.startsWith("clearance.")) return "clearance";
+  if (scope === "library" || action.startsWith("library.")) return "content_lifecycle";
+  if (action.startsWith("payout.") || action.startsWith("payouts.")) return "payout_execution";
+  if (scope === "royalty" || action.startsWith("royalty.") || action.startsWith("royalties.")) return "commerce";
+  if (isCommerce) return "commerce";
+  if (scope === "content" || action.startsWith("content.")) return "content_lifecycle";
+  return "system";
+}
 
 function actorFromUser(u: { id: string; email?: string | null; displayName?: string | null } | null): HistoryActor | null {
   if (!u) return null;
@@ -817,6 +873,10 @@ function notFound(reply: any, msg: string) {
 
 function forbidden(reply: any) {
   return reply.code(403).send({ error: "Forbidden" });
+}
+
+function unauthorized(reply: any) {
+  return reply.code(401).send({ error: "Unauthorized" });
 }
 
 function isIntegratedDashboardBuilt(): boolean {
@@ -880,6 +940,7 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
   const rawPath = String(req.raw?.url || req.url || "/");
   const pathname = rawPath.split("?")[0] || "/";
   if (pathname.startsWith("/api/")) return false;
+  if (/^\/public\/users\/[^/]+\/payout-destination\/?$/.test(pathname)) return false;
 
   const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
   const candidate = path.resolve(DASHBOARD_DIST_DIR, relative);
@@ -965,11 +1026,7 @@ function buildBuyerClearCookie(req: any): string {
 
 /** ---------- app init ---------- */
 
-const app = Fastify({
-  logger: true,
-  // Ensure BigInt never crashes JSON serialization at the root.
-  stringify: (obj: any) => JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? v.toString() : v))
-});
+const app = Fastify({ logger: true });
 
 // Allow empty JSON bodies (treat as {})
 const jsonParser = (_req: any, body: string, done: (err: Error | null, value?: any) => void) => {
@@ -1002,7 +1059,7 @@ app.setErrorHandler((error, req, reply) => {
     requestId: id
   };
   if (process.env.NODE_ENV !== "production") {
-    payload.message = String(error?.message || error);
+    payload.message = String((error as any)?.message || error);
     payload.name = (error as any)?.name || "Error";
     if ((error as any)?.code) payload.code = (error as any)?.code;
   }
@@ -1011,11 +1068,11 @@ app.setErrorHandler((error, req, reply) => {
   reply.code(status).send(jsonStringifySafe(safe));
 });
 
-const prisma = new PrismaClient();
-
 const JWT_SECRET = mustEnv("JWT_SECRET");
 const PERMIT_SECRET = (process.env.PERMIT_SECRET || JWT_SECRET || "").toString();
 const STREAM_TOKEN_MODE = (process.env.STREAM_TOKEN_MODE || "allow").toLowerCase();
+const EXPLICIT_CONTENTBOX_ROOT = String(process.env.CONTENTBOX_ROOT || "").trim();
+const EXPLICIT_DATABASE_URL = String(process.env.DATABASE_URL || "").trim();
 const CONTENTBOX_ROOT_INFO = resolveContentboxRootInfo();
 const CONTENTBOX_ROOT = CONTENTBOX_ROOT_INFO.root;
 if (!String(process.env.CONTENTBOX_ROOT || "").trim()) {
@@ -1067,16 +1124,27 @@ function describeDatabaseTarget(rawUrl: string): { provider: "sqlite" | "postgre
   return { provider: "unknown", target: "unrecognized" };
 }
 
+const DB_URL_RESOLUTION = resolveRuntimeDatabaseUrl(
+  RUNTIME_CONFIG.storage,
+  EXPLICIT_DATABASE_URL,
+  EXPLICIT_CONTENTBOX_ROOT,
+  CONTENTBOX_ROOT
+);
+if (DB_URL_RESOLUTION.databaseUrl) {
+  process.env.DATABASE_URL = DB_URL_RESOLUTION.databaseUrl;
+}
 const DB_TARGET = describeDatabaseTarget(String(process.env.DATABASE_URL || ""));
 app.log.info(
   {
     contentboxRoot: CONTENTBOX_ROOT,
     contentboxRootSource: CONTENTBOX_ROOT_INFO.source,
     databaseProvider: DB_TARGET.provider,
-    databaseTarget: DB_TARGET.target
+    databaseTarget: DB_TARGET.target,
+    databaseTargetSource: DB_URL_RESOLUTION.source
   },
   "Startup runtime configuration"
 );
+const prisma = new PrismaClient();
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -1382,6 +1450,18 @@ type UserNetworkStatus = {
   title: "Ready" | "Connecting" | "Action Required" | "Offline";
   message: string;
   actionLabel: string | null;
+  reason:
+    | "runtime_not_ready"
+    | "sovereign_node_ready"
+    | "sovereign_public_origin_missing"
+    | "sovereign_local_stack_missing"
+    | "sovereign_creator_ready"
+    | "basic_creator_ready"
+    | "provider_unreachable"
+    | "provider_ready"
+    | "provider_setup_in_progress"
+    | "provider_setup_blocked"
+    | "provider_setup_connecting";
 };
 
 type PublishReadiness = {
@@ -1641,17 +1721,21 @@ const REMITTANCE_FORWARDING_STALE_MS = Math.max(
   30_000,
   Number.parseInt(String(process.env.CERTIFYD_REMITTANCE_STALE_MS || "180000"), 10) || 180000
 );
-const PARTICIPANT_PAYOUTS_ENABLED = String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_ENABLED || "").trim() === "1";
-const PARTICIPANT_PAYOUTS_EXECUTION_ENABLED =
-  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_EXECUTION_ENABLED || "").trim() === "1";
-const PARTICIPANT_PAYOUTS_SUMMARY_ENABLED =
-  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_SUMMARY_ENABLED || "").trim() === "1";
-const PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY =
-  String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY || "").trim() === "1";
+const PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY = (() => {
+  const raw = String(process.env.CERTIFYD_PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY || "").trim().toLowerCase();
+  // Default on: participant payout execution is the standard runtime path.
+  // Allow explicit opt-out only.
+  if (!raw) return true;
+  return !(raw === "0" || raw === "false" || raw === "off");
+})();
 const PROVIDER_CREATOR_LINKS_FILE = path.join(RUNTIME_STATE_DIR, "provider-creator-links.json");
 const PROVIDER_DELEGATED_PUBLISHES_FILE = path.join(RUNTIME_STATE_DIR, "provider-delegated-publishes.json");
 const PROVIDER_PAYMENT_INTENTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-intents.json");
 const PROVIDER_PAYMENT_RECEIPTS_FILE = path.join(RUNTIME_STATE_DIR, "provider-payment-receipts.json");
+const PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE = path.join(
+  RUNTIME_STATE_DIR,
+  "provider-delegated-allocation-blueprints.json"
+);
 const CREATOR_PAYOUT_DESTINATIONS_FILE = path.join(RUNTIME_STATE_DIR, "creator-payout-destinations.json");
 const PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "participation-profile-highlights.json");
 const REMOTE_PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "remote-participation-profile-highlights.json");
@@ -1669,6 +1753,8 @@ type ProviderPayoutExecutionMode = "legacy_creator" | "participant";
 type ProviderPayoutSummaryStatus = "pending" | "partial" | "paid" | "failed" | "blocked";
 type ProviderPayoutPolicy = "identity_preferred" | "identity_required";
 type ParticipantPayoutStatus = "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked";
+type LightningCapabilityState = "disconnected" | "receive_only" | "send_only" | "receive_send" | "destination_only";
+type PayoutExecutionState = "not_applicable" | "accrual_only" | "provider_pending" | "ready" | "blocked" | "failed" | "completed";
 
 type ProviderCreatorLinkRecord = {
   id: string;
@@ -1738,6 +1824,34 @@ type ProviderDelegatedPublishRecord = {
   publishReceiptId: string | null;
   publishedAt: string;
   status: ProviderPublishStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ProviderDelegatedAllocationBlueprintParticipant = {
+  participantRef: string;
+  participantId: string | null;
+  splitParticipantId: string | null;
+  participantUserId: string | null;
+  participantEmail: string | null;
+  role: string | null;
+  roleKey: string;
+  bps: number;
+  destinationType?: string | null;
+  destinationSummary?: string | null;
+  destinationValue?: string | null;
+  destinationVerified?: boolean;
+  destinationVerificationError?: string | null;
+};
+
+type ProviderDelegatedAllocationBlueprintRecord = {
+  id: string;
+  paymentIntentId: string;
+  creatorNodeId: string;
+  contentId: string;
+  splitVersionId: string | null;
+  allocationVersion: number;
+  participants: ProviderDelegatedAllocationBlueprintParticipant[];
   createdAt: string;
   updatedAt: string;
 };
@@ -1837,7 +1951,12 @@ type ParticipantDestinationType = "lightning_address" | "lnurl" | "lnd";
 type ParticipantDestinationResolveResult = {
   destinationType: string | null;
   destinationSummary: string | null;
-  destinationSource: "participant_payout_destination" | "identity_lightning_address" | "provider_snapshot" | null;
+  destinationSource:
+    | "participant_payout_destination"
+    | "identity_lightning_address"
+    | "provider_snapshot"
+    | "delegated_blueprint"
+    | null;
   destinationFingerprint: string | null;
   destinationResolvedAt: Date | null;
   isVerified: boolean;
@@ -2102,6 +2221,16 @@ function parseRemoteIdentityRef(identityRef: string | null | undefined): { origi
   return { origin: origin || null, userId };
 }
 
+function parseUserIdFromParticipantRef(participantRef: string | null | undefined): string | null {
+  const raw = asString(participantRef || "").trim();
+  if (!raw) return null;
+  if (raw.startsWith("user:")) {
+    const userId = asString(raw.slice("user:".length)).trim();
+    return userId || null;
+  }
+  return null;
+}
+
 async function fetchRemotePublicUserDisplayName(
   origin: string | null | undefined,
   userId: string | null | undefined
@@ -2234,14 +2363,17 @@ async function resolveParticipantDestinationHandshake(input: {
   const participantUserId = asString(input.participantUserId || "").trim();
   const splitParticipantId = asString(input.splitParticipantId || "").trim();
   const participantRef = asString(input.participantRef || "").trim();
+  const refUserId = parseUserIdFromParticipantRef(participantRef);
+  const effectiveUserId = participantUserId || refUserId || "";
   let unresolvedReason = "NO_USER_ID";
 
-  if (participantUserId) {
-    const local = await resolveParticipantDestinationLocal(participantUserId);
+  if (effectiveUserId) {
+    const local = await resolveParticipantDestinationLocal(effectiveUserId);
     if (local) {
       app.log.info(
         {
-          participantUserId,
+          participantUserId: effectiveUserId,
+          participantUserIdSource: participantUserId ? "allocation" : "participant_ref",
           splitParticipantId: splitParticipantId || null,
           participantRef: participantRef || null,
           destinationType: local.destinationType || null,
@@ -2258,7 +2390,7 @@ async function resolveParticipantDestinationHandshake(input: {
   const snapshot = getLockedSnapshotBySplitParticipantId(splitParticipantId);
   const parsedIdentity = parseRemoteIdentityRef(snapshot?.identityRef || null);
   const origin = snapshot?.participantOrigin || parsedIdentity.origin || null;
-  const remoteUserId = participantUserId || parsedIdentity.userId || null;
+  const remoteUserId = effectiveUserId || parsedIdentity.userId || null;
   if (origin && remoteUserId) {
     const remote = await fetchRemoteParticipantPayoutDestination(origin, remoteUserId);
     app.log.info(
@@ -2283,11 +2415,12 @@ async function resolveParticipantDestinationHandshake(input: {
   }
 
   app.log.info(
-    {
-      participantUserId: participantUserId || null,
-      splitParticipantId: splitParticipantId || null,
-      participantRef: participantRef || null,
-      destinationType: null,
+      {
+        participantUserId: effectiveUserId || null,
+        participantUserIdSource: participantUserId ? "allocation" : refUserId ? "participant_ref" : null,
+        splitParticipantId: splitParticipantId || null,
+        participantRef: participantRef || null,
+        destinationType: null,
       destinationSource: null,
       resolved: false,
       reason: unresolvedReason
@@ -2295,6 +2428,48 @@ async function resolveParticipantDestinationHandshake(input: {
     "payoutDestination.resolve"
   );
   return null;
+}
+
+function resolveDelegatedBlueprintDestination(input: {
+  paymentIntentId: string | null;
+  participantRef?: string | null;
+  splitParticipantId?: string | null;
+  participantUserId?: string | null;
+}): ParticipantDestinationResolveResult | null {
+  const paymentIntentId = asString(input.paymentIntentId || "").trim();
+  if (!paymentIntentId) return null;
+  const blueprint = getProviderDelegatedAllocationBlueprintByPaymentIntentId(paymentIntentId);
+  if (!blueprint?.participants?.length) return null;
+  const participantRef = asString(input.participantRef || "").trim();
+  const splitParticipantId = asString(input.splitParticipantId || "").trim();
+  const participantUserId = asString(input.participantUserId || "").trim();
+  const match =
+    blueprint.participants.find((row) => participantRef && String(row.participantRef || "").trim() === participantRef) ||
+    blueprint.participants.find(
+      (row) => splitParticipantId && String(row.splitParticipantId || "").trim() === splitParticipantId
+    ) ||
+    blueprint.participants.find(
+      (row) => participantUserId && String(row.participantUserId || "").trim() === participantUserId
+    ) ||
+    null;
+  if (!match) return null;
+  const destinationType = parseParticipantDestinationType(match.destinationType || null);
+  const destinationValue = asString(match.destinationValue || "").trim() || null;
+  const destinationSummary =
+    asString(match.destinationSummary || "").trim() ||
+    (destinationType && destinationValue ? summarizeParticipantDestination(destinationType, destinationValue) : null);
+  if (!destinationType || !destinationSummary) return null;
+  return {
+    destinationType,
+    destinationSummary,
+    destinationSource: "delegated_blueprint",
+    destinationFingerprint: computeDestinationFingerprint(destinationType, destinationSummary),
+    destinationResolvedAt: null,
+    isVerified: Boolean(match.destinationVerified),
+    verificationStatus: match.destinationVerified ? "verified" : "failed",
+    verificationError: asString(match.destinationVerificationError || "").trim() || null,
+    destinationValue
+  };
 }
 
 function normalizeParticipantDestinationForPayout(
@@ -2345,14 +2520,15 @@ function normalizeParticipantDestinationForPayout(
     };
   }
   if (destinationType === "lightning_address") {
+    const normalizedSummary = canonicalizeLightningAddress(destinationSummary);
     return {
       source: resolved.destinationSource,
       destinationType,
       destinationValue,
-      destinationSummary,
+      destinationSummary: normalizedSummary,
       payableMode: "lightning_address",
-      ready: destinationSummary.includes("@"),
-      reason: destinationSummary.includes("@") ? null : "LIGHTNING_ADDRESS_INVALID"
+      ready: normalizedSummary.includes("@"),
+      reason: normalizedSummary.includes("@") ? null : "LIGHTNING_ADDRESS_INVALID"
     };
   }
   if (destinationType === "lnurl") {
@@ -2502,6 +2678,30 @@ async function resolveParticipantPayoutReadinessForAllocation(
     };
   }
 
+  const delegatedBlueprintDestination = resolveDelegatedBlueprintDestination({
+    paymentIntentId: intent.paymentIntentId,
+    participantRef: allocationCtx?.participantRef || null,
+    splitParticipantId: allocationCtx?.splitParticipantId || null,
+    participantUserId
+  });
+  if (delegatedBlueprintDestination) {
+    const delegatedNormalized = normalizeParticipantDestinationForPayout(delegatedBlueprintDestination);
+    return {
+      status:
+        delegatedNormalized.ready && delegatedNormalized.payableMode === "lightning_address" ? "ready" : "pending",
+      readinessReason:
+        delegatedNormalized.ready && delegatedNormalized.payableMode === "lightning_address"
+          ? null
+          : delegatedNormalized.reason || "DELEGATED_BLUEPRINT_DESTINATION_UNUSABLE",
+      destinationType: delegatedBlueprintDestination.destinationType,
+      destinationSummary: delegatedNormalized.destinationSummary || delegatedBlueprintDestination.destinationSummary,
+      destinationSource: delegatedBlueprintDestination.destinationSource,
+      destinationFingerprint: delegatedBlueprintDestination.destinationFingerprint,
+      destinationResolvedAt: delegatedBlueprintDestination.destinationResolvedAt,
+      blockedReason: null
+    };
+  }
+
   if (!allowProviderFallback) {
     return {
       status: "pending",
@@ -2579,8 +2779,102 @@ function parseBooleanFlag(value: unknown, fallback: boolean): boolean {
 }
 const DEFAULT_ALLOW_PROVIDER_FALLBACK = parseBooleanFlag(process.env.CERTIFYD_ALLOW_PROVIDER_FALLBACK, true);
 
+type ParticipantPayoutRuntimeConfig = {
+  participantPayoutsEnabled: boolean;
+  participantPayoutExecutionEnabled: boolean;
+  participantPayoutSummaryEnabled: boolean;
+  source: string;
+};
+
+let participantPayoutRuntimeConfigCache:
+  | {
+      value: ParticipantPayoutRuntimeConfig;
+      expiresAt: number;
+    }
+  | null = null;
+
+function readParticipantPayoutEnvHardOverride(name: string): boolean | null {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null) return null;
+  const trimmed = String(raw).trim();
+  if (!trimmed) return null;
+  return parseBooleanFlag(trimmed, true);
+}
+
+async function resolveParticipantPayoutRuntimeConfig(forceRefresh = false): Promise<ParticipantPayoutRuntimeConfig> {
+  const now = Date.now();
+  if (!forceRefresh && participantPayoutRuntimeConfigCache && participantPayoutRuntimeConfigCache.expiresAt > now) {
+    return participantPayoutRuntimeConfigCache.value;
+  }
+
+  let participantPayoutsEnabled = true;
+  let participantPayoutExecutionEnabled = true;
+  let participantPayoutSummaryEnabled = true;
+  let source = "default_true";
+
+  try {
+    const rows = await prisma.$queryRawUnsafe<
+      Array<{
+        participantPayoutsEnabled?: unknown;
+        participantPayoutExecutionEnabled?: unknown;
+        participantPayoutSummaryEnabled?: unknown;
+      }>
+    >(
+      `SELECT participantPayoutsEnabled, participantPayoutExecutionEnabled, participantPayoutSummaryEnabled
+       FROM NodeSettings
+       ORDER BY updatedAt DESC
+       LIMIT 1`
+    );
+    const row = rows?.[0];
+    if (row) {
+      participantPayoutsEnabled = parseBooleanFlag(row.participantPayoutsEnabled, true);
+      participantPayoutExecutionEnabled = parseBooleanFlag(row.participantPayoutExecutionEnabled, true);
+      participantPayoutSummaryEnabled = parseBooleanFlag(row.participantPayoutSummaryEnabled, true);
+      source = "node_settings";
+    } else {
+      source = "node_settings_empty_default_true";
+    }
+  } catch (err: any) {
+    const message = String(err?.message || "").toLowerCase();
+    const nodeSettingsUnavailable =
+      message.includes("no such table") ||
+      message.includes("nodesettings") ||
+      message.includes("does not exist") ||
+      message.includes("unknown column") ||
+      message.includes("p2021");
+    source = nodeSettingsUnavailable ? "node_settings_unavailable_default_true" : "node_settings_error_default_true";
+    if (!nodeSettingsUnavailable) {
+      app.log.warn(
+        { error: String(err?.message || err || "node_settings_read_failed") },
+        "participantPayout.runtime_config_read_failed"
+      );
+    }
+  }
+
+  const envEnabled = readParticipantPayoutEnvHardOverride("CERTIFYD_PARTICIPANT_PAYOUTS_ENABLED");
+  const envExecution = readParticipantPayoutEnvHardOverride("CERTIFYD_PARTICIPANT_PAYOUTS_EXECUTION_ENABLED");
+  const envSummary = readParticipantPayoutEnvHardOverride("CERTIFYD_PARTICIPANT_PAYOUTS_SUMMARY_ENABLED");
+  if (envEnabled !== null) participantPayoutsEnabled = envEnabled;
+  if (envExecution !== null) participantPayoutExecutionEnabled = envExecution;
+  if (envSummary !== null) participantPayoutSummaryEnabled = envSummary;
+  if (envEnabled !== null || envExecution !== null || envSummary !== null) {
+    source = `${source}+env_hard_override`;
+  }
+
+  const resolved: ParticipantPayoutRuntimeConfig = {
+    participantPayoutsEnabled,
+    participantPayoutExecutionEnabled,
+    participantPayoutSummaryEnabled,
+    source
+  };
+  participantPayoutRuntimeConfigCache = {
+    value: resolved,
+    expiresAt: now + 15_000
+  };
+  return resolved;
+}
+
 function resolveNewIntentPayoutExecutionMode(): ProviderPayoutExecutionMode {
-  if (!PARTICIPANT_PAYOUTS_ENABLED) return "legacy_creator";
   if (!PARTICIPANT_PAYOUTS_NEW_INTENTS_ONLY) return "legacy_creator";
   return "participant";
 }
@@ -2855,6 +3149,15 @@ function isValidLightningAddress(value: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v);
 }
 
+function canonicalizeLightningAddress(value: string | null | undefined): string {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw || !raw.includes("@")) return raw;
+  const [name, domain] = raw.split("@");
+  if (!name || !domain) return raw;
+  if (domain === "satoshiswallet.com") return `${name}@walletofsatoshi.com`;
+  return raw;
+}
+
 function isValidOnchainAddress(value: string): boolean {
   const v = String(value || "").trim();
   return /^(bc1|tb1|bcrt1|[13mn2])[a-zA-HJ-NP-Z0-9]{20,}$/i.test(v);
@@ -2959,7 +3262,7 @@ async function resolveEffectivePayoutDestination(
           payoutDestinationType: inferredType,
           lightningAddress: inferredLightning,
           onchainAddress: inferredOnchain,
-          providerRemitMode: "manual_payout"
+          providerRemitMode: "auto_forward"
         });
       }
     }
@@ -2968,7 +3271,9 @@ async function resolveEffectivePayoutDestination(
   const type = parsePayoutDestinationType(record?.payoutDestinationType || null);
   const lightningAddress = String(record?.lightningAddress || "").trim() || null;
   const onchainAddress = String(record?.onchainAddress || "").trim() || null;
-  const providerRemitMode = parseProviderRemitMode(record?.providerRemitMode || null) || "manual_payout";
+  const parsedProviderRemitMode = parseProviderRemitMode(record?.providerRemitMode || null);
+  const providerRemitMode: ProviderRemitMode =
+    parsedProviderRemitMode === "manual_payout" ? "auto_forward" : parsedProviderRemitMode || "auto_forward";
   const payoutConfiguredAt = record?.payoutConfiguredAt || null;
 
   if (!type) {
@@ -3148,6 +3453,62 @@ function createProviderDelegatedPublish(
   return created;
 }
 
+function getProviderDelegatedAllocationBlueprintByPaymentIntentId(
+  paymentIntentId: string
+): ProviderDelegatedAllocationBlueprintRecord | null {
+  if (!paymentIntentId) return null;
+  const rows = readJsonArrayState<ProviderDelegatedAllocationBlueprintRecord>(
+    PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE
+  );
+  return rows.find((row) => row.paymentIntentId === paymentIntentId) || null;
+}
+
+function upsertProviderDelegatedAllocationBlueprintByPaymentIntentId(
+  paymentIntentId: string,
+  input: Omit<ProviderDelegatedAllocationBlueprintRecord, "id" | "createdAt" | "updatedAt" | "paymentIntentId">
+): ProviderDelegatedAllocationBlueprintRecord {
+  const now = new Date().toISOString();
+  const rows = readJsonArrayState<ProviderDelegatedAllocationBlueprintRecord>(
+    PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE
+  );
+  const idx = rows.findIndex((row) => row.paymentIntentId === paymentIntentId);
+  const normalizedParticipants = (input.participants || [])
+    .map((row) => ({
+      participantRef: String(row.participantRef || "").trim(),
+      participantId: String(row.participantId || "").trim() || null,
+      splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+      participantUserId: String(row.participantUserId || "").trim() || null,
+      participantEmail: String(row.participantEmail || "").trim() || null,
+      role: String(row.role || "").trim() || null,
+      roleKey: String(row.roleKey || "").trim(),
+      bps: Math.max(0, Math.round(Number(row.bps || 0))),
+      destinationType: parseParticipantDestinationType(row.destinationType || null),
+      destinationSummary: String(row.destinationSummary || "").trim() || null,
+      destinationValue: String(row.destinationValue || "").trim() || null,
+      destinationVerified: Boolean(row.destinationVerified),
+      destinationVerificationError: String(row.destinationVerificationError || "").trim() || null
+    }))
+    .filter((row) => row.participantRef && row.roleKey && row.bps > 0);
+  const next: ProviderDelegatedAllocationBlueprintRecord = {
+    id: idx >= 0 ? rows[idx].id : buildProviderRecordId("pab"),
+    paymentIntentId,
+    creatorNodeId: String(input.creatorNodeId || "").trim(),
+    contentId: String(input.contentId || "").trim(),
+    splitVersionId: String(input.splitVersionId || "").trim() || null,
+    allocationVersion: Math.max(1, Math.round(Number(input.allocationVersion || 1))),
+    participants: normalizedParticipants,
+    createdAt: idx >= 0 ? rows[idx].createdAt : now,
+    updatedAt: now
+  };
+  if (idx >= 0) {
+    rows[idx] = next;
+  } else {
+    rows.unshift(next);
+  }
+  writeJsonArrayState(PROVIDER_DELEGATED_ALLOCATION_BLUEPRINTS_FILE, rows);
+  return next;
+}
+
 function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
   const rows = readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE).map((row) => {
     const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0", {
@@ -3166,7 +3527,7 @@ function listProviderPaymentIntents(): ProviderPaymentIntentRecord[] {
       payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail,
       payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
       payoutDestinationSummary: row.payoutDestinationSummary || null,
-      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
+      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "auto_forward",
       payoutExecutionMode: parseProviderPayoutExecutionMode((row as any).payoutExecutionMode || null),
       payoutPolicy: policy.payoutPolicy,
       allowProviderFallback: policy.allowProviderFallback,
@@ -3227,6 +3588,7 @@ function upsertProviderPaymentIntentByPaymentIntentId(
       updatedAt: new Date().toISOString()
     };
     writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
+    syncProviderPaymentReceiptFromIntent(rows[idx]);
     return rows[idx];
   }
   const created = createProviderPaymentIntent(input);
@@ -3324,30 +3686,47 @@ function updateProviderPaymentIntent(
       updatedAt: new Date().toISOString()
     };
   writeJsonArrayState(PROVIDER_PAYMENT_INTENTS_FILE, rows);
+  syncProviderPaymentReceiptFromIntent(rows[idx]);
   return rows[idx];
 }
 
 function listProviderPaymentReceipts(): ProviderPaymentReceiptRecord[] {
+  const intentByPaymentIntentId = new Map(
+    listProviderPaymentIntents().map((intent) => [intent.paymentIntentId, intent] as const)
+  );
   const rows = readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE).map((row) => {
+    const intent = intentByPaymentIntentId.get(row.paymentIntentId);
     const fee = computeProviderFeeBreakdown(row.grossAmountSats || row.amountSats || "0", {
       providerInvoicing: true,
       durablePublicHosting: false
     });
     return {
       ...row,
-      grossAmountSats: row.grossAmountSats || fee.grossAmountSats,
-      providerInvoicingFeeSats: row.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
-      providerDurableHostingFeeSats: row.providerDurableHostingFeeSats || fee.providerDurableHostingFeeSats,
-      providerFeeSats: row.providerFeeSats || fee.providerFeeSats,
-      creatorNetSats: row.creatorNetSats || fee.creatorNetSats,
-      payoutStatus: row.payoutStatus || "pending",
-      payoutRail: row.payoutRail === undefined ? "provider_custody" : row.payoutRail,
-      payoutDestinationType: parsePayoutDestinationType(row.payoutDestinationType || null),
-      payoutDestinationSummary: row.payoutDestinationSummary || null,
-      providerRemitMode: parseProviderRemitMode(row.providerRemitMode || null) || "manual_payout",
-      payoutReference: row.payoutReference || null,
-      remittedAt: row.remittedAt || null,
-      payoutLastError: row.payoutLastError || null
+      providerNodeId: intent?.providerNodeId || row.providerNodeId,
+      creatorNodeId: intent?.creatorNodeId || row.creatorNodeId,
+      contentId: intent?.contentId ?? row.contentId,
+      bolt11: intent?.bolt11 || row.bolt11,
+      amountSats: intent?.amountSats || row.amountSats,
+      grossAmountSats: intent?.grossAmountSats || row.grossAmountSats || fee.grossAmountSats,
+      providerInvoicingFeeSats:
+        intent?.providerInvoicingFeeSats || row.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
+      providerDurableHostingFeeSats:
+        intent?.providerDurableHostingFeeSats || row.providerDurableHostingFeeSats || fee.providerDurableHostingFeeSats,
+      providerFeeSats: intent?.providerFeeSats || row.providerFeeSats || fee.providerFeeSats,
+      creatorNetSats: intent?.creatorNetSats || row.creatorNetSats || fee.creatorNetSats,
+      payoutStatus: intent?.payoutStatus || row.payoutStatus || "pending",
+      payoutRail: intent?.payoutRail ?? (row.payoutRail === undefined ? "provider_custody" : row.payoutRail),
+      payoutDestinationType: parsePayoutDestinationType(
+        intent?.payoutDestinationType !== undefined ? intent.payoutDestinationType : row.payoutDestinationType || null
+      ),
+      payoutDestinationSummary: intent?.payoutDestinationSummary || row.payoutDestinationSummary || null,
+      providerRemitMode:
+        parseProviderRemitMode(intent?.providerRemitMode || null) ||
+        parseProviderRemitMode(row.providerRemitMode || null) ||
+        "auto_forward",
+      payoutReference: intent?.payoutReference || row.payoutReference || null,
+      remittedAt: intent?.remittedAt || row.remittedAt || null,
+      payoutLastError: intent?.payoutLastError || row.payoutLastError || null
     };
   });
   return rows.sort((a, b) => String(b.paidAt || b.updatedAt || "").localeCompare(String(a.paidAt || a.updatedAt || "")));
@@ -3371,8 +3750,50 @@ function createProviderPaymentReceipt(
   return created;
 }
 
+function syncProviderPaymentReceiptFromIntent(intent: ProviderPaymentIntentRecord): void {
+  const rows = readJsonArrayState<ProviderPaymentReceiptRecord>(PROVIDER_PAYMENT_RECEIPTS_FILE);
+  const idx = rows.findIndex((row) => row.paymentIntentId === intent.paymentIntentId);
+  if (idx < 0) return;
+  rows[idx] = {
+    ...rows[idx],
+    providerNodeId: intent.providerNodeId,
+    creatorNodeId: intent.creatorNodeId,
+    contentId: intent.contentId,
+    bolt11: intent.bolt11,
+    amountSats: intent.amountSats,
+    grossAmountSats: intent.grossAmountSats,
+    providerInvoicingFeeSats: intent.providerInvoicingFeeSats,
+    providerDurableHostingFeeSats: intent.providerDurableHostingFeeSats,
+    providerFeeSats: intent.providerFeeSats,
+    creatorNetSats: intent.creatorNetSats,
+    payoutStatus: intent.payoutStatus,
+    payoutRail: intent.payoutRail,
+    payoutDestinationType: intent.payoutDestinationType,
+    payoutDestinationSummary: intent.payoutDestinationSummary,
+    providerRemitMode: intent.providerRemitMode,
+    payoutReference: intent.payoutReference,
+    remittedAt: intent.remittedAt,
+    payoutLastError: intent.payoutLastError,
+    paidAt: intent.paidAt || rows[idx].paidAt,
+    updatedAt: new Date().toISOString()
+  };
+  writeJsonArrayState(PROVIDER_PAYMENT_RECEIPTS_FILE, rows);
+}
+
 async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaymentIntentRecord): Promise<void> {
-  if (!PARTICIPANT_PAYOUTS_ENABLED) return;
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  app.log.info(
+    {
+      providerPaymentIntentId: intent.id,
+      paymentIntentId: intent.paymentIntentId,
+      participantPayoutsEnabled: payoutRuntime.participantPayoutsEnabled,
+      participantPayoutExecutionEnabled: payoutRuntime.participantPayoutExecutionEnabled,
+      participantPayoutSummaryEnabled: payoutRuntime.participantPayoutSummaryEnabled,
+      source: payoutRuntime.source
+    },
+    "participantPayout.runtime_config"
+  );
+  if (!payoutRuntime.participantPayoutsEnabled) return;
   if (intent.status !== "paid") return;
   const contentId = String(intent.contentId || "").trim();
   if (!contentId) return;
@@ -3405,34 +3826,105 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
     if (existingAllocations.length === 0) {
       const netPool = distributableSats;
       if (netPool > 0n) {
-        const computed = await computeContentParticipantAllocations({
-          contentId,
-          poolSats: netPool
-        });
+        let splitVersionId: string | null = null;
+        let allocationRows: ContentParticipantAllocation[] = [];
+        let allocationSource: "split_locked" | "delegated_blueprint" = "split_locked";
+        try {
+          const computed = await computeContentParticipantAllocations({
+            contentId,
+            poolSats: netPool
+          });
+          splitVersionId = computed.splitVersionId;
+          allocationRows = computed.allocations;
+        } catch (computeErr: any) {
+          const blueprint = getProviderDelegatedAllocationBlueprintByPaymentIntentId(intent.paymentIntentId);
+          if (!blueprint || !Array.isArray(blueprint.participants) || blueprint.participants.length === 0) {
+            throw computeErr;
+          }
+          allocationSource = "delegated_blueprint";
+          splitVersionId = blueprint.splitVersionId || null;
+          const byBps = allocateByBps(
+            netPool,
+            blueprint.participants.map((row) => ({
+              id: `${row.participantRef}:${row.roleKey}`,
+              bps: Math.max(0, Math.round(Number(row.bps || 0)))
+            }))
+          );
+          allocationRows = byBps.map((amountRow) => {
+            const participant = blueprint.participants.find(
+              (p) => `${p.participantRef}:${p.roleKey}` === amountRow.id
+            )!;
+            return {
+              participantRef: participant.participantRef,
+              participantId: participant.participantId || null,
+              splitParticipantId: participant.splitParticipantId || null,
+              participantUserId: participant.participantUserId || null,
+              participantEmail: participant.participantEmail || null,
+              role: participant.role || null,
+              roleKey: participant.roleKey,
+              bps: Math.max(0, Math.round(Number(participant.bps || 0))),
+              amountSats: amountRow.amountSats,
+              allocationSource: "split_locked",
+              allocationVersion: Math.max(1, Number(blueprint.allocationVersion || 1))
+            };
+          });
+          app.log.info(
+            {
+              providerPaymentIntentId: intent.id,
+              paymentIntentId: intent.paymentIntentId,
+              contentId,
+              splitVersionId,
+              participantCount: allocationRows.length
+            },
+            "splitAuthority.provider_participant_blueprint_fallback"
+          );
+        }
+        const settlementFeePool = grossSats > netPool ? grossSats - netPool : 0n;
+        if (grossSats > 0n && allocationRows.length > 0) {
+          const byId = allocateParticipantGrossFeeNetByBps({
+            grossPoolSats: grossSats,
+            feePoolSats: settlementFeePool,
+            items: allocationRows.map((row) => ({
+              id: `${row.participantRef}:${row.roleKey}`,
+              bps: Math.max(0, Math.floor(Number(row.bps || 0)))
+            }))
+          });
+          allocationRows = allocationRows.map((row) => {
+            const key = `${row.participantRef}:${row.roleKey}`;
+            const policy = byId.get(key);
+            if (!policy) return row;
+            return {
+              ...row,
+              amountSats: policy.netShareSats
+            };
+          });
+        }
         app.log.info(
           {
             providerPaymentIntentId: intent.id,
             paymentIntentId: intent.paymentIntentId,
             contentId,
-            splitVersionId: computed.splitVersionId,
-            participantCount: computed.allocations.length
+            splitVersionId,
+            participantCount: allocationRows.length,
+            feePolicySats: settlementFeePool.toString(),
+            feePolicy: "proportional_by_gross_entitlement_with_deterministic_residue"
           },
           "splitAuthority.provider_participant_snapshot"
         );
-        const allocatedTotal = computed.allocations.reduce((acc, row) => acc + row.amountSats, 0n);
+        const allocatedTotal = allocationRows.reduce((acc, row) => acc + row.amountSats, 0n);
         app.log.info(
           {
             providerPaymentIntentId: intent.id,
             paymentIntentId: intent.paymentIntentId,
             contentId,
-            splitVersionId: computed.splitVersionId,
-            participantCount: computed.allocations.length,
+            splitVersionId,
+            participantCount: allocationRows.length,
             allocatedTotalSats: allocatedTotal.toString(),
             distributableSats: netPool.toString()
           },
           "splitAccounting.allocations"
         );
-        for (const row of computed.allocations) {
+        for (const row of allocationRows) {
           await prisma.providerPaymentParticipantAllocation.upsert({
             where: {
               providerPaymentIntentId_participantRef_roleKey: {
@@ -3456,7 +3948,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
               roleKey: row.roleKey,
               bps: row.bps,
               amountSats: row.amountSats,
-              allocationSource: row.allocationSource,
+              allocationSource: allocationSource,
               allocationVersion: row.allocationVersion
             }
           });
@@ -3486,9 +3978,41 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
     });
     if (!allocations.length) return;
     const terminalStatus: ParticipantPayoutStatus | null =
-      intent.payoutStatus === "paid" ? "paid" : intent.payoutStatus === "failed" ? "failed" : null;
+      intent.payoutExecutionMode === "participant"
+        ? null
+        : intent.payoutStatus === "paid"
+          ? "paid"
+          : intent.payoutStatus === "failed"
+            ? "failed"
+            : null;
+    const authoritativePaidFromIntent =
+      Boolean(intent.remittedAt) ||
+      String(intent.payoutStatus || "").trim().toLowerCase() === "paid" ||
+      String(intent.payoutSummaryStatus || "").trim().toLowerCase() === "paid" ||
+      isProviderIntentRemittanceSettled(intent.paymentIntentId);
 
     for (const allocation of allocations) {
+      const existingPayoutRow = await prisma.participantPayout
+        .findUnique({
+          where: { allocationId: allocation.id },
+          select: {
+            id: true,
+            status: true,
+            payoutReference: true,
+            remittedAt: true,
+            attemptCount: true,
+            attemptId: true,
+            lockedAt: true,
+            nextRetryAt: true,
+            lastError: true,
+            blockedReason: true,
+            readinessReason: true
+          }
+        })
+        .catch((err: any) => {
+          if (isMissingParticipantPayoutTableError(err)) return null;
+          throw err;
+        });
       const executionParticipantRef = resolveExecutionParticipantRef({
         participantRef: allocation.participantRef,
         participantUserId: allocation.participantUserId,
@@ -3507,30 +4031,121 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           participantRef: executionParticipantRef
         }
       );
+      const canBypassInviteGate =
+        !identityGate.active &&
+        identityGate.readinessReason === "INVITE_UNRESOLVED" &&
+        intent.payoutExecutionMode === "participant" &&
+        intent.providerRemitMode === "auto_forward" &&
+        baseReadiness.status === "ready" &&
+        String(baseReadiness.destinationType || "").trim().toLowerCase() === "lightning_address" &&
+        String(baseReadiness.destinationSummary || "").includes("@");
       const readiness = identityGate.active
         ? baseReadiness
+        : canBypassInviteGate
+          ? {
+              ...baseReadiness,
+              readinessReason: "INVITE_UNRESOLVED_BYPASSED"
+            }
         : {
             ...baseReadiness,
             status: "pending" as ParticipantPayoutStatus,
             readinessReason: identityGate.readinessReason
           };
+      const resolvedStatus: ParticipantPayoutStatus = terminalStatus || parseParticipantPayoutStatus(readiness.status);
+      const preserveExecutedState =
+        Boolean(existingPayoutRow) &&
+        (String(existingPayoutRow?.status || "").trim().toLowerCase() === "paid" ||
+          Boolean(existingPayoutRow?.payoutReference) ||
+          Boolean(existingPayoutRow?.remittedAt));
+      const needsForcePaidReconcile =
+        authoritativePaidFromIntent &&
+        (!existingPayoutRow ||
+          String(existingPayoutRow.status || "").trim().toLowerCase() !== "paid" ||
+          !existingPayoutRow.remittedAt);
+      if (needsForcePaidReconcile) {
+        app.log.warn(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            allocationId: allocation.id,
+            participantRef: executionParticipantRef,
+            existingStatus: String(existingPayoutRow?.status || "missing"),
+            existingRemittedAt: existingPayoutRow?.remittedAt ? new Date(existingPayoutRow.remittedAt).toISOString() : null,
+            reason: "EXECUTION_SUCCESS_FORCE_RECONCILE"
+          },
+          "participantPayout.reconcile_force_paid"
+        );
+      }
+      const forcePaidStatus = authoritativePaidFromIntent && resolvedStatus !== "failed" && resolvedStatus !== "blocked";
+      const reconciledStatus: ParticipantPayoutStatus = forcePaidStatus
+        ? "paid"
+        : preserveExecutedState
+          ? parseParticipantPayoutStatus(String(existingPayoutRow?.status || "paid"))
+          : resolvedStatus;
+      const reconciledRemittedAt = forcePaidStatus
+        ? existingPayoutRow?.remittedAt || (intent.remittedAt ? new Date(intent.remittedAt) : new Date())
+        : preserveExecutedState
+          ? (existingPayoutRow?.remittedAt || null)
+          : (intent.remittedAt ? new Date(intent.remittedAt) : null);
+      if (canBypassInviteGate) {
+        app.log.warn(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantRef: executionParticipantRef,
+            participantUserId: allocation.participantUserId || null,
+            splitParticipantId: allocation.splitParticipantId || null,
+            destinationSummary: baseReadiness.destinationSummary || null
+          },
+          "participantIdentityGate.invite_unresolved_bypassed"
+        );
+      }
       await prisma.participantPayout.upsert({
         where: { allocationId: allocation.id },
         update: {
           payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
-          status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
+          status: reconciledStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
           destinationSummary: readiness.destinationSummary,
           lastCheckedAt: new Date(),
-          readinessReason: readiness.readinessReason,
+          readinessReason: forcePaidStatus
+            ? null
+            : preserveExecutedState
+            ? (existingPayoutRow?.readinessReason || null)
+            : readiness.readinessReason,
           destinationResolvedAt: readiness.destinationResolvedAt,
           destinationSource: readiness.destinationSource,
           destinationFingerprint: readiness.destinationFingerprint,
-          payoutReference: intent.payoutReference,
-          lastError: intent.payoutLastError,
-          blockedReason: readiness.blockedReason,
-          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+          payoutReference: forcePaidStatus
+            ? String(existingPayoutRow?.payoutReference || "").trim() || intent.payoutReference || null
+            : preserveExecutedState
+            ? String(existingPayoutRow?.payoutReference || "").trim() || null
+            : intent.payoutReference,
+          lastError: forcePaidStatus
+            ? null
+            : preserveExecutedState
+            ? String(existingPayoutRow?.lastError || "").trim() || null
+            : intent.payoutLastError,
+          blockedReason: forcePaidStatus
+            ? null
+            : preserveExecutedState
+            ? String(existingPayoutRow?.blockedReason || "").trim() || null
+            : readiness.blockedReason,
+          remittedAt: reconciledRemittedAt,
+          attemptCount: preserveExecutedState
+            ? Math.max(0, Number(existingPayoutRow?.attemptCount) || 0)
+            : undefined,
+          attemptId: preserveExecutedState
+            ? (String(existingPayoutRow?.attemptId || "").trim() || null)
+            : undefined,
+          lockedAt: preserveExecutedState
+            ? (existingPayoutRow?.lockedAt || null)
+            : undefined,
+          nextRetryAt: preserveExecutedState
+            ? (existingPayoutRow?.nextRetryAt || null)
+            : undefined,
+          ...(resolvedStatus === "ready" || resolvedStatus === "forwarding" ? { nextRetryAt: null } : {})
         },
         create: {
           allocationId: allocation.id,
@@ -3538,11 +4153,11 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           paymentIntentId: intent.paymentIntentId,
           payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
           amountSats: BigInt(String(allocation.amountSats || "0")),
-          status: terminalStatus || parseParticipantPayoutStatus(readiness.status),
+          status: forcePaidStatus ? "paid" : resolvedStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
           destinationSummary: readiness.destinationSummary,
-          readinessReason: readiness.readinessReason,
+          readinessReason: forcePaidStatus ? null : readiness.readinessReason,
           destinationResolvedAt: readiness.destinationResolvedAt,
           destinationSource: readiness.destinationSource,
           destinationFingerprint: readiness.destinationFingerprint,
@@ -3550,10 +4165,10 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           attemptId: intent.remittanceAttemptId,
           lockedAt: intent.remittanceLockedAt ? new Date(intent.remittanceLockedAt) : null,
           lastCheckedAt: new Date(),
-          payoutReference: intent.payoutReference,
-          lastError: intent.payoutLastError,
-          blockedReason: readiness.blockedReason,
-          remittedAt: intent.remittedAt ? new Date(intent.remittedAt) : null
+          payoutReference: forcePaidStatus ? intent.payoutReference || null : intent.payoutReference,
+          lastError: forcePaidStatus ? null : intent.payoutLastError,
+          blockedReason: forcePaidStatus ? null : readiness.blockedReason,
+          remittedAt: forcePaidStatus ? (intent.remittedAt ? new Date(intent.remittedAt) : new Date()) : (intent.remittedAt ? new Date(intent.remittedAt) : null)
           // TODO(certifyd-payout-destination-versioning): snapshot destination rebinding/versioning
           // should support destination updates for future unpaid balances without mutating historical payout rows.
         }
@@ -3601,18 +4216,19 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
 }
 
 async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string): Promise<ProviderPayoutSummaryStatus> {
-  if (!PARTICIPANT_PAYOUTS_ENABLED || !PARTICIPANT_PAYOUTS_SUMMARY_ENABLED) return "pending";
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  if (!payoutRuntime.participantPayoutsEnabled || !payoutRuntime.participantPayoutSummaryEnabled) return "pending";
   const rows = await prisma.participantPayout
     .findMany({
       where: { providerPaymentIntentId },
-      select: { status: true }
+      select: { status: true, remittedAt: true }
     })
     .catch((err: any) => {
       if (isMissingParticipantPayoutTableError(err)) return [];
       throw err;
     });
   if (!rows.length) return "pending";
-  const statuses = rows.map((r) => parseParticipantPayoutStatus(r.status));
+  const statuses = rows.map((r) => (r.remittedAt ? "paid" : parseParticipantPayoutStatus(r.status)));
   const allPaid = statuses.every((s) => s === "paid");
   if (allPaid) return "paid";
   const paidCount = statuses.filter((s) => s === "paid").length;
@@ -3626,8 +4242,115 @@ async function deriveIntentPayoutSummaryStatus(providerPaymentIntentId: string):
   return "pending";
 }
 
+async function syncProviderIntentPayoutTruthFromParticipantRows(intent: ProviderPaymentIntentRecord): Promise<ProviderPaymentIntentRecord> {
+  if (intent.payoutExecutionMode !== "participant") return intent;
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: { providerPaymentIntentId: intent.id },
+      select: {
+        status: true,
+        remittedAt: true,
+        payoutReference: true,
+        lastError: true
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  if (!rows.length) return intent;
+
+  const normalized = rows.map((row) => ({
+    status: parseParticipantPayoutStatus(row.status),
+    remittedAt: row.remittedAt || null,
+    payoutReference: String(row.payoutReference || "").trim() || null,
+    lastError: String(row.lastError || "").trim() || null
+  }));
+  const paidRows = normalized.filter((row) => row.status === "paid" || Boolean(row.remittedAt));
+  const activeRows = normalized.filter(
+    (row) => (row.status === "pending" || row.status === "ready" || row.status === "forwarding") && !row.remittedAt
+  );
+  const blockedRows = normalized.filter((row) => row.status === "blocked" && !row.remittedAt);
+  const failedRows = normalized.filter((row) => row.status === "failed" && !row.remittedAt);
+  const allPaid = paidRows.length > 0 && paidRows.length === normalized.length;
+
+  const payoutSummaryStatus: ProviderPayoutSummaryStatus = allPaid
+    ? "paid"
+    : paidRows.length > 0
+      ? "partial"
+      : activeRows.length > 0
+        ? "pending"
+        : blockedRows.length > 0
+          ? "blocked"
+          : failedRows.length > 0
+            ? "failed"
+            : "pending";
+  const payoutStatus: ProviderPayoutStatus =
+    payoutSummaryStatus === "paid" ? "paid" : payoutSummaryStatus === "failed" || payoutSummaryStatus === "blocked" ? "failed" : "pending";
+
+  const latestPaid = paidRows
+    .slice()
+    .sort((a, b) => {
+      const aTs = a.remittedAt ? new Date(a.remittedAt).getTime() : 0;
+      const bTs = b.remittedAt ? new Date(b.remittedAt).getTime() : 0;
+      return bTs - aTs;
+    })[0];
+  const latestError = [...blockedRows, ...failedRows].map((row) => row.lastError).find(Boolean) || null;
+  const patched =
+    updateProviderPaymentIntent(intent.id, {
+      payoutSummaryStatus,
+      payoutStatus,
+      remittedAt: latestPaid?.remittedAt ? new Date(latestPaid.remittedAt).toISOString() : intent.remittedAt || null,
+      payoutReference: latestPaid?.payoutReference || intent.payoutReference || null,
+      payoutLastError: payoutStatus === "failed" ? latestError || intent.payoutLastError || null : null
+    }) || intent;
+  return patched;
+}
+
 async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentRecord) {
-  if (intent.status !== "paid" || intent.paymentReceiptId) return intent;
+  if (intent.status !== "paid") return intent;
+  const participantExecutionMode = intent.payoutExecutionMode === "participant";
+  if (intent.paymentReceiptId) {
+    const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+    const settledExisting = intent;
+    try {
+      await ensureParticipantPayoutRowsForProviderIntent(settledExisting);
+    } catch (e: any) {
+      app.log.warn(
+        {
+          paymentIntentId: settledExisting.paymentIntentId,
+          providerPaymentIntentId: settledExisting.id,
+          error: String(e?.message || e || "participant_payout_snapshot_failed")
+        },
+        "providerRemittance.participant_snapshot_failed"
+      );
+    }
+    const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settledExisting.id).catch(() => settledExisting.payoutSummaryStatus || "pending");
+    const withSummaryExistingBase =
+      payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutSummaryEnabled
+        ? updateProviderPaymentIntent(settledExisting.id, {
+            payoutSummaryStatus
+          }) || settledExisting
+        : settledExisting;
+    const participantPayoutStatus =
+      payoutSummaryStatus === "paid" ? "paid" : payoutSummaryStatus === "failed" || payoutSummaryStatus === "blocked" ? "failed" : "pending";
+    const withSummaryExisting =
+      participantExecutionMode
+        ? updateProviderPaymentIntent(withSummaryExistingBase.id, {
+            payoutStatus: participantPayoutStatus
+          }) || withSummaryExistingBase
+        : withSummaryExistingBase;
+    if (withSummaryExisting.status === "paid" && withSummaryExisting.providerRemitMode === "auto_forward") {
+      if (withSummaryExisting.payoutExecutionMode === "participant") {
+        if (payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutExecutionEnabled) {
+          await executeParticipantPayoutRowsForIntent(withSummaryExisting, "provider_settlement_participant_existing_receipt");
+        }
+        return syncProviderIntentPayoutTruthFromParticipantRows(withSummaryExisting);
+      }
+      return executeCreatorRemittance(withSummaryExisting, "provider_settlement_existing_receipt");
+    }
+    return withSummaryExisting;
+  }
   const paidAt = intent.paidAt || new Date().toISOString();
   const paymentReceiptId = `payr_${crypto.randomBytes(8).toString("hex")}`;
   createProviderPaymentReceipt({
@@ -3718,13 +4441,18 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
     paymentReceiptId,
     paidAt,
     status: "paid",
-    payoutStatus: intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node" ? "paid" : intent.payoutStatus || "pending",
+    payoutStatus:
+      participantExecutionMode
+        ? intent.payoutStatus || "pending"
+        : intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node"
+          ? "paid"
+          : intent.payoutStatus || "pending",
     remittedAt:
-      intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node"
+      !participantExecutionMode && (intent.payoutRail === "forwarded" || intent.payoutRail === "creator_node")
         ? paidAt
         : intent.remittedAt || null,
     payoutReference:
-      intent.payoutRail === "forwarded" && !intent.payoutReference
+      !participantExecutionMode && intent.payoutRail === "forwarded" && !intent.payoutReference
         ? intent.providerInvoiceRef || paymentReceiptId
         : intent.payoutReference || null,
     payoutLastError: null,
@@ -3751,13 +4479,33 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
       "providerRemittance.participant_snapshot_failed"
     );
   }
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  app.log.info(
+    {
+      providerPaymentIntentId: settled.id,
+      paymentIntentId: settled.paymentIntentId,
+      participantPayoutsEnabled: payoutRuntime.participantPayoutsEnabled,
+      participantPayoutExecutionEnabled: payoutRuntime.participantPayoutExecutionEnabled,
+      participantPayoutSummaryEnabled: payoutRuntime.participantPayoutSummaryEnabled,
+      source: payoutRuntime.source
+    },
+    "participantPayout.runtime_config"
+  );
   const payoutSummaryStatus = await deriveIntentPayoutSummaryStatus(settled.id).catch(() => settled.payoutSummaryStatus || "pending");
-  const withSummary =
-    PARTICIPANT_PAYOUTS_ENABLED && PARTICIPANT_PAYOUTS_SUMMARY_ENABLED
+  const withSummaryBase =
+    payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutSummaryEnabled
       ? updateProviderPaymentIntent(settled.id, {
           payoutSummaryStatus
         }) || settled
       : settled;
+  const participantPayoutStatus =
+    payoutSummaryStatus === "paid" ? "paid" : payoutSummaryStatus === "failed" || payoutSummaryStatus === "blocked" ? "failed" : "pending";
+  const withSummary =
+    participantExecutionMode
+      ? updateProviderPaymentIntent(withSummaryBase.id, {
+          payoutStatus: participantPayoutStatus
+        }) || withSummaryBase
+      : withSummaryBase;
   app.log.info(
     {
       paymentIntentId: withSummary.paymentIntentId,
@@ -3774,7 +4522,7 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
   );
   if (withSummary.status === "paid" && withSummary.providerRemitMode === "auto_forward") {
     if (withSummary.payoutExecutionMode === "participant") {
-      if (PARTICIPANT_PAYOUTS_ENABLED && PARTICIPANT_PAYOUTS_EXECUTION_ENABLED) {
+      if (payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutExecutionEnabled) {
         await executeParticipantPayoutRowsForIntent(withSummary, "provider_settlement_participant");
       }
       app.log.info(
@@ -3785,7 +4533,7 @@ async function ensureProviderPaymentSettlement(intent: ProviderPaymentIntentReco
         },
         "providerRemittance.creator_path_skipped"
       );
-      return withSummary;
+      return syncProviderIntentPayoutTruthFromParticipantRows(withSummary);
     }
     app.log.info(
       { paymentIntentId: withSummary.paymentIntentId, creatorNodeId: withSummary.creatorNodeId },
@@ -3873,51 +4621,309 @@ async function requestLightningAddressInvoice(lightningAddress: string, amountSa
   }
 }
 
-async function payBolt11ViaLnd(bolt11: string): Promise<{ paymentHash: string | null; status: string }> {
-  const lndRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "");
-  const macaroon = normalizeLndMacaroonHex();
-  if (!lndRest || !macaroon) throw new Error("LND_SEND_NOT_CONFIGURED");
-  const paymentRequestTag = crypto.createHash("sha256").update(String(bolt11 || "")).digest("hex").slice(0, 12);
+async function buildRemittanceMemo(args: {
+  prefix: string;
+  paymentIntentId: string | null | undefined;
+  contentId?: string | null | undefined;
+}): Promise<string> {
+  const compactText = (value: string | null | undefined): string => {
+    return String(value || "")
+      .replace(/[\r\n\t]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+  const paymentIntentId = String(args.paymentIntentId || "").trim();
+  const shortIntent = paymentIntentId ? paymentIntentId.slice(-8) : "unknown";
+  const contentId = String(args.contentId || "").trim();
+  let title: string | null = null;
+  if (contentId) {
+    try {
+      const item = await prisma.contentItem.findUnique({
+        where: { id: contentId },
+        select: { title: true }
+      });
+      title = compactText(item?.title) || null;
+    } catch {
+      title = null;
+    }
+    if (!title) {
+      const delegated = listProviderDelegatedPublishes().find((row) => String(row.contentId || "").trim() === contentId);
+      title = compactText(delegated?.title) || null;
+    }
+  }
+  if (!title && paymentIntentId) {
+    try {
+      const intentContent = await prisma.paymentIntent.findUnique({
+        where: { id: paymentIntentId },
+        select: {
+          content: {
+            select: { title: true }
+          }
+        }
+      });
+      title = compactText(intentContent?.content?.title) || null;
+    } catch {
+      title = null;
+    }
+  }
+  const prefix = compactText(args.prefix) || "Certifyd remittance";
+  if (title) return `${prefix}: ${title} (${shortIntent})`;
+  if (contentId) return `${prefix}: ${contentId.slice(0, 8)} (${shortIntent})`;
+  return `${prefix}: ${shortIntent}`;
+}
+
+async function resolveLightningCapabilityRuntime(userId: string | null): Promise<{
+  connected: boolean;
+  canReceive: boolean;
+  canSend: boolean;
+  capabilityState: LightningCapabilityState;
+  sendFailureReason: string | null;
+  lndRestUrl: string | null;
+  lndMacaroonHex: string | null;
+  source: "stored_lnd" | "env_lnd" | "destination_only" | "none";
+}> {
+  const productTier = resolveProductTier().productTier;
+  const paymentsMode = getPaymentsMode(productTier);
+  if (productTier === "basic" || paymentsMode !== "node") {
+    const hasDestinationOnly = Boolean(userId && (await getWalletReceiveReady(userId, productTier).catch(() => false)));
+    const state: LightningCapabilityState = hasDestinationOnly ? "destination_only" : "disconnected";
+    const out = {
+      connected: false,
+      canReceive: hasDestinationOnly,
+      canSend: false,
+      capabilityState: state,
+      sendFailureReason: hasDestinationOnly ? "LND_SEND_NOT_APPLICABLE_DESTINATION_ONLY" : "LND_SEND_NOT_CONFIGURED",
+      lndRestUrl: null,
+      lndMacaroonHex: null,
+      source: hasDestinationOnly ? ("destination_only" as const) : ("none" as const)
+    };
+    app.log.info({ userId, ...out }, "lightning.runtime_state");
+    return out;
+  }
+
+  const lndStatus = await getLightningNodeConfigStatus(prisma as any).catch(() => null);
+  const lndReadiness = await getLightningReadiness(prisma as any).catch(() => null);
+  const stored = await getStoredLndConfig(prisma as any).catch(() => null);
+  const envRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "") || null;
+  const envMac = normalizeLndMacaroonHex();
+  const lndRestUrl = stored?.restUrl || envRest || null;
+  const lndMacaroonHex = stored?.macaroonHex || envMac || null;
+  const source = stored?.restUrl && stored?.macaroonHex ? "stored_lnd" : envRest && envMac ? "env_lnd" : "none";
+
+  const connected = Boolean(lndReadiness?.nodeReachable);
+  const canReceive = Boolean(lndReadiness?.receiveReady);
+  const channelCount = Math.max(0, Number(lndReadiness?.channels?.count || 0));
+  const hasTransport = Boolean(lndRestUrl && lndMacaroonHex);
+  const canSend = Boolean(hasTransport && connected && channelCount > 0);
+
+  let sendFailureReason: string | null = null;
+  if (!hasTransport) sendFailureReason = "LND_SEND_NOT_CONFIGURED";
+  else if (lndStatus && !lndStatus.decryptOk) sendFailureReason = "LND_SEND_KEY_MISMATCH";
+  else if (!connected) sendFailureReason = "LND_SEND_NODE_UNREACHABLE";
+  else if (channelCount <= 0) sendFailureReason = "LND_SEND_NO_CHANNELS";
+
+  let capabilityState: LightningCapabilityState = "disconnected";
+  if (canReceive && canSend) capabilityState = "receive_send";
+  else if (canReceive) capabilityState = "receive_only";
+  else if (canSend) capabilityState = "send_only";
+
+  const out = {
+    connected,
+    canReceive,
+    canSend,
+    capabilityState,
+    sendFailureReason,
+    lndRestUrl,
+    lndMacaroonHex,
+    source
+  } as const;
   app.log.info(
-    { lndRest, paymentRequestTag },
-    "providerRemittance.lnd_send_attempt"
-  );
-  const target = `${lndRest}/v2/router/send`;
-  const body = { payment_request: bolt11, timeout_seconds: 60, fee_limit_sat: 50 };
-  const { res, json, text } = await fetchJsonWithTimeout(
-    target,
     {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        Accept: "application/json",
-        "Grpc-Metadata-macaroon": macaroon
-      } as any,
-      body: JSON.stringify(body)
+      userId,
+      connected,
+      canReceive,
+      canSend,
+      capabilityState,
+      sendFailureReason,
+      lndRestUrl,
+      source,
+      channelCount
     },
-    15000
+    "lightning.runtime_state"
   );
-  if (!res.ok) {
+  return out;
+}
+
+async function resolvePayoutExecutionRuntime(userId: string | null): Promise<{
+  executionState: PayoutExecutionState;
+  blockReason: string | null;
+}> {
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  if (!payoutRuntime.participantPayoutsEnabled) {
+    return { executionState: "not_applicable", blockReason: "PARTICIPANT_PAYOUTS_DISABLED" };
+  }
+  if (!payoutRuntime.participantPayoutExecutionEnabled) {
+    return { executionState: "provider_pending", blockReason: "PARTICIPANT_PAYOUT_EXECUTION_DISABLED" };
+  }
+  // Provider-side participant remittance must be gated by provider node send capability,
+  // not by creator-facing paymentsMode posture.
+  const lndStatus = await getLightningNodeConfigStatus(prisma as any).catch(() => null);
+  const lndReadiness = await getLightningReadiness(prisma as any).catch(() => null);
+  const stored = await getStoredLndConfig(prisma as any).catch(() => null);
+  const envRest = String(process.env.LND_REST_URL || "").trim().replace(/\/+$/, "") || null;
+  const envMac = normalizeLndMacaroonHex();
+  const lndRestUrl = stored?.restUrl || envRest || null;
+  const lndMacaroonHex = stored?.macaroonHex || envMac || null;
+  const hasTransport = Boolean(lndRestUrl && lndMacaroonHex);
+  const connected = Boolean(lndReadiness?.nodeReachable);
+  const channelCount = Math.max(0, Number(lndReadiness?.channels?.count || 0));
+  const canSend = Boolean(hasTransport && connected && channelCount > 0);
+  if (!canSend) {
+    let reason: string = "LND_SEND_NOT_CONFIGURED";
+    if (!hasTransport) reason = "LND_SEND_NOT_CONFIGURED";
+    else if (lndStatus && !lndStatus.decryptOk) reason = "LND_SEND_KEY_MISMATCH";
+    else if (!connected) reason = "LND_SEND_NODE_UNREACHABLE";
+    else if (channelCount <= 0) reason = "LND_SEND_NO_CHANNELS";
+    return { executionState: "blocked", blockReason: reason };
+  }
+  return { executionState: "ready", blockReason: null };
+}
+
+type LndSendContext = {
+  entrypoint: "participant_payout" | "creator_remittance";
+  providerPaymentIntentId?: string | null;
+  paymentIntentId?: string | null;
+  participantPayoutId?: string | null;
+  payoutKey?: string | null;
+  expectedAmountSats?: number | null;
+};
+
+async function payBolt11ViaLnd(
+  bolt11: string,
+  context: LndSendContext
+): Promise<{ paymentHash: string | null; status: string }> {
+  const entrypoint = String(context?.entrypoint || "").trim() || "unknown";
+  app.log.info(
+    {
+      entrypoint,
+      providerPaymentIntentId: context?.providerPaymentIntentId || null,
+      paymentIntentId: context?.paymentIntentId || null,
+      participantPayoutId: context?.participantPayoutId || null
+    },
+    "payoutExecution.send_entrypoint"
+  );
+  if (
+    entrypoint === "participant_payout" &&
+    (!context?.participantPayoutId || !context?.payoutKey || !context?.providerPaymentIntentId || !context?.paymentIntentId)
+  ) {
     app.log.warn(
-      { lndRest, paymentRequestTag, statusCode: res.status, response: String(json?.error || text || "send_failed") },
-      "providerRemittance.lnd_send_http_failed"
+      {
+        entrypoint,
+        providerPaymentIntentId: context?.providerPaymentIntentId || null,
+        paymentIntentId: context?.paymentIntentId || null,
+        participantPayoutId: context?.participantPayoutId || null
+      },
+      "payoutExecution.send_blocked_untracked"
     );
-    throw new Error(`LND_SEND_HTTP_${res.status}:${String(json?.error || text || "send_failed")}`);
+    throw new Error("UNTRACKED_PARTICIPANT_SEND_BLOCKED");
   }
-  const status = String(json?.status || "").trim().toUpperCase();
-  const paymentHash = String(json?.payment_hash || "").trim() || null;
-  if (status === "SUCCEEDED" || status === "SUCCESS") {
+  if (entrypoint === "participant_payout") {
     app.log.info(
-      { lndRest, paymentRequestTag, paymentHash, status },
-      "providerRemittance.lnd_send_success"
+      {
+        entrypoint,
+        providerPaymentIntentId: context.providerPaymentIntentId || null,
+        paymentIntentId: context.paymentIntentId || null,
+        participantPayoutId: context.participantPayoutId || null,
+        payoutKey: context.payoutKey || null
+      },
+      "payoutExecution.send_tracked"
     );
-    return { paymentHash, status: "paid" };
   }
-  app.log.warn(
-    { lndRest, paymentRequestTag, status, paymentHash },
-    "providerRemittance.lnd_send_not_paid"
+  const runtime = await resolveLightningCapabilityRuntime(null);
+  const lndRest = String(runtime.lndRestUrl || "").trim().replace(/\/+$/, "");
+  const hasMacaroon = Boolean(String(runtime.lndMacaroonHex || "").trim());
+  if (!runtime.canSend || !lndRest || !hasMacaroon) {
+    throw new Error(runtime.sendFailureReason || "LND_SEND_NOT_CONFIGURED");
+  }
+  const paymentRequestTag = crypto.createHash("sha256").update(String(bolt11 || "")).digest("hex").slice(0, 12);
+  const target = `${lndRest}/v2/router/send`;
+  app.log.info(
+    { paymentRequestTag, source: runtime.source, capabilityState: runtime.capabilityState },
+    "payoutExecution.lnd_send_start"
   );
-  throw new Error(`LND_SEND_NOT_PAID:${status || "UNKNOWN"}`);
+  app.log.info(
+    { paymentRequestTag, targetHost: (() => { try { return new URL(target).host; } catch { return null; } })(), targetPath: "/v2/router/send" },
+    "payoutExecution.lnd_send_request_target"
+  );
+  try {
+    const send = await sendBolt11Payment(prisma as any, {
+      paymentRequest: bolt11,
+      timeoutSeconds: 60,
+      feeLimitSat: 50,
+      expectedAmountSats: context?.expectedAmountSats ?? null
+    });
+    app.log.info(
+      { paymentRequestTag, sendStatus: String(send.status || "unknown"), paymentHashPresent: Boolean(send.paymentHash) },
+      "payoutExecution.lnd_send_result_raw"
+    );
+    app.log.info(
+      { paymentRequestTag, paymentHash: send.paymentHash, status: send.status },
+      "payoutExecution.lnd_send_result"
+    );
+    app.log.info(
+      { paymentRequestTag, classifiedStatus: "paid", paymentHashPresent: Boolean(send.paymentHash) },
+      "payoutExecution.lnd_send_classified"
+    );
+    app.log.info(
+      {
+        entrypoint,
+        providerPaymentIntentId: context?.providerPaymentIntentId || null,
+        paymentIntentId: context?.paymentIntentId || null,
+        participantPayoutId: context?.participantPayoutId || null,
+        paymentHash: send.paymentHash || null
+      },
+      "payoutExecution.send_payment_hash"
+    );
+    return send;
+  } catch (error: any) {
+    const reasonRaw = String(error?.message || error || "").trim();
+    app.log.info(
+      { paymentRequestTag, rawReason: reasonRaw || null },
+      "payoutExecution.lnd_send_result_raw"
+    );
+    const mappedReason = (() => {
+      const code = reasonRaw.toLowerCase();
+      if (code.includes("request_timeout")) return "request_timeout";
+      if (code.includes("tls_handshake_failed")) return "tls_handshake_failed";
+      if (code.includes("lnd_rest_unreachable")) return "lnd_rest_unreachable";
+      if (code.includes("invalid_response")) return "invalid_response";
+      if (code.startsWith("lnd_send_not_paid:")) return reasonRaw;
+      if (code.startsWith("lnd_send_result_unknown:")) return reasonRaw;
+      if (code.includes("transport_connect_failed")) return "transport_connect_failed";
+      return reasonRaw || "transport_connect_failed";
+    })();
+    app.log.warn(
+      { paymentRequestTag, reason: mappedReason },
+      "payoutExecution.lnd_send_transport_error"
+    );
+    app.log.info(
+      { paymentRequestTag, classifiedStatus: "failed_or_unknown", reason: mappedReason },
+      "payoutExecution.lnd_send_classified"
+    );
+    throw new Error(mappedReason);
+  }
+}
+
+function parseUnknownLndSendReason(input: string): { immediateStatus: string | null; paymentHash: string | null } {
+  const reason = String(input || "").trim();
+  if (!reason.startsWith("LND_SEND_RESULT_UNKNOWN:")) {
+    return { immediateStatus: null, paymentHash: null };
+  }
+  const parts = reason.split(":");
+  const immediateStatus = String(parts[1] || "").trim() || null;
+  const paymentHashRaw = String(parts[2] || "").trim().toLowerCase();
+  const paymentHash = /^[0-9a-f]{64}$/.test(paymentHashRaw) ? paymentHashRaw : null;
+  return { immediateStatus, paymentHash };
 }
 
 function isStaleForwardingRemittance(intent: ProviderPaymentIntentRecord, nowMs = Date.now()): boolean {
@@ -4114,11 +5120,19 @@ async function acquireParticipantPayoutLock(id: string): Promise<{
     const paid = await prisma.participantPayout.findFirst({
       where: {
         payoutKey: row.payoutKey,
-        OR: [{ status: "paid" }, { payoutReference: { not: null } }, { remittedAt: { not: null } }]
+        OR: [
+          { status: "paid" },
+          { payoutReference: { not: null } },
+          { remittedAt: { not: null } },
+          { status: "forwarding" }
+        ]
       },
       select: { id: true }
     });
     if (paid) return { ok: false, row, reason: "ALREADY_EXECUTED" };
+  }
+  if (row.status === "pending" && row.payoutReference) {
+    return { ok: false, row, reason: "PENDING_WITH_REFERENCE" };
   }
   if (row.status === "paid" || row.status === "blocked") return { ok: false, row, reason: "TERMINAL_STATUS" };
   if (row.status === "forwarding") return { ok: false, row, reason: "ALREADY_FORWARDING" };
@@ -4208,6 +5222,47 @@ async function forceMarkParticipantPayoutPaidAfterExternalSuccess(id: string, pa
   }
 }
 
+async function forceReconcileSuccessfulParticipantPayoutRows(providerPaymentIntentId: string): Promise<number> {
+  const now = new Date();
+  const withRemitted = await prisma.participantPayout.updateMany({
+    where: {
+      providerPaymentIntentId,
+      status: { in: ["pending", "ready", "forwarding"] },
+      remittedAt: { not: null }
+    },
+    data: {
+      status: "paid",
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: now,
+      readinessReason: null,
+      lastError: null,
+      blockedReason: null,
+      nextRetryAt: null
+    }
+  });
+  const withReferenceOnly = await prisma.participantPayout.updateMany({
+    where: {
+      providerPaymentIntentId,
+      status: { in: ["pending", "ready", "forwarding"] },
+      remittedAt: null,
+      payoutReference: { not: null }
+    },
+    data: {
+      status: "paid",
+      remittedAt: now,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: now,
+      readinessReason: null,
+      lastError: null,
+      blockedReason: null,
+      nextRetryAt: null
+    }
+  });
+  return (withRemitted.count || 0) + (withReferenceOnly.count || 0);
+}
+
 async function markParticipantPayoutFailed(id: string, attemptId: string, message: string) {
   const current = await prisma.participantPayout.findUnique({ where: { id }, select: { attemptCount: true } });
   const attempts = Math.max(0, Number(current?.attemptCount) || 0);
@@ -4224,7 +5279,121 @@ async function markParticipantPayoutFailed(id: string, attemptId: string, messag
   });
 }
 
+async function markParticipantPayoutPendingVerification(
+  id: string,
+  attemptId: string,
+  message: string,
+  payoutReference: string | null
+) {
+  await prisma.participantPayout.updateMany({
+    where: { id, attemptId },
+    data: {
+      status: "pending",
+      payoutReference: payoutReference || null,
+      readinessReason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED",
+      blockedReason: null,
+      lastError: message,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      nextRetryAt: null
+    }
+  });
+}
+
+async function markParticipantPayoutExecutionMismatch(
+  id: string,
+  attemptId: string,
+  message: string,
+  payoutReference: string | null
+) {
+  await prisma.participantPayout.updateMany({
+    where: { id, attemptId },
+    data: {
+      status: "blocked",
+      payoutReference: payoutReference || null,
+      remittedAt: null,
+      readinessReason: null,
+      blockedReason: "EXECUTION_AMOUNT_MISMATCH",
+      lastError: message,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      nextRetryAt: null
+    }
+  });
+}
+
+async function markParticipantPayoutFailedAfterVerification(
+  id: string,
+  message: string,
+  payoutReference: string | null
+) {
+  await prisma.participantPayout.updateMany({
+    where: { id, status: "pending", readinessReason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED" },
+    data: {
+      status: "failed",
+      payoutReference: payoutReference || null,
+      readinessReason: null,
+      blockedReason: null,
+      lastError: message,
+      lockedAt: null,
+      attemptId: null,
+      lastCheckedAt: new Date(),
+      nextRetryAt: nextParticipantRetryAt(1)
+    }
+  });
+}
+
 async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentIntentRecord, reason: string) {
+  const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode().catch(() => null);
+  const localNodeId = String(providerAuthority?.localNodeId || "").trim() || null;
+  const intentProviderNodeId = String(intent.providerNodeId || "").trim() || null;
+  if (intentProviderNodeId && localNodeId && intentProviderNodeId !== localNodeId) {
+    app.log.warn(
+      {
+        route: reason,
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        intentProviderNodeId,
+        localNodeId,
+        reason: "PROVIDER_EXECUTION_NODE_MISMATCH"
+      },
+      "payoutExecution.blocked_reason"
+    );
+    return;
+  }
+  const payoutRuntime = await resolvePayoutExecutionRuntime(null);
+  app.log.info(
+    {
+      providerPaymentIntentId: intent.id,
+      paymentIntentId: intent.paymentIntentId,
+      executionState: payoutRuntime.executionState,
+      blockReason: payoutRuntime.blockReason
+    },
+    "payoutExecution.runtime_state"
+  );
+  if (payoutRuntime.executionState === "not_applicable") {
+    app.log.warn(
+      {
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        reason: payoutRuntime.blockReason || "PAYOUT_EXECUTION_NOT_APPLICABLE"
+      },
+      "payoutExecution.blocked_reason"
+    );
+    return;
+  }
+  if (payoutRuntime.executionState !== "ready") {
+    app.log.warn(
+      {
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        reason: payoutRuntime.blockReason || "PAYOUT_EXECUTION_NOT_READY"
+      },
+      "payoutExecution.blocked_reason"
+    );
+  }
   const rows = await prisma.participantPayout
     .findMany({
       where: {
@@ -4287,6 +5456,70 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
       logParticipantPayoutAttempt(intent.id, row, "executed", "ALREADY_EXECUTED");
       continue;
     }
+    if (row.status === "pending" && row.readinessReason === "LND_RESULT_UNKNOWN_VERIFY_REQUIRED") {
+      const payoutRef = String(row.payoutReference || "").trim().toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(payoutRef)) {
+        try {
+          const verified = await lookupOutgoingPaymentStatusByHash(prisma as any, payoutRef);
+          if (verified === "SUCCEEDED") {
+            await forceMarkParticipantPayoutPaidAfterExternalSuccess(row.id, payoutRef);
+            app.log.info(
+              {
+                providerPaymentIntentId: intent.id,
+                participantPayoutId: row.id,
+                participantRef: participantExecutionRef(row),
+                persistedStatus: "paid",
+                reason: "LND_RESULT_UNKNOWN_RECONCILED_SUCCEEDED",
+                payoutReference: payoutRef
+              },
+              "payoutExecution.persisted_status"
+            );
+            continue;
+          }
+          if (verified === "FAILED") {
+            await markParticipantPayoutFailedAfterVerification(
+              row.id,
+              "LND_SEND_NOT_PAID:FAILED_VERIFIED",
+              payoutRef
+            );
+            app.log.info(
+              {
+                providerPaymentIntentId: intent.id,
+                participantPayoutId: row.id,
+                participantRef: participantExecutionRef(row),
+                persistedStatus: "failed",
+                reason: "LND_RESULT_UNKNOWN_RECONCILED_FAILED",
+                payoutReference: payoutRef
+              },
+              "payoutExecution.persisted_status"
+            );
+            continue;
+          }
+        } catch (verifyErr: any) {
+          app.log.warn(
+            {
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: row.id,
+              participantRef: participantExecutionRef(row),
+              reason: String(verifyErr?.message || "UNKNOWN_VERIFY_CHECK_FAILED"),
+              payoutReference: payoutRef
+            },
+            "payoutExecution.auto_remit_blocked"
+          );
+        }
+      }
+      logParticipantPayoutAttempt(intent.id, row, "pending", String(row.readinessReason || "VERIFY_PENDING"));
+      app.log.info(
+        {
+          providerPaymentIntentId: intent.id,
+          participantPayoutId: row.id,
+          participantRef: participantExecutionRef(row),
+          reason: String(row.readinessReason || "VERIFY_PENDING")
+        },
+        "splitAccounting.payout_row_skipped"
+      );
+      continue;
+    }
     if (row.status !== "ready" && row.status !== "failed") {
       logParticipantPayoutAttempt(intent.id, row, "pending", String(row.readinessReason || "NOT_READY"));
       app.log.info(
@@ -4321,7 +5554,7 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
       const payout = lock.row;
       try {
         const destinationType = String(payout.destinationType || "").trim().toLowerCase();
-        const destinationSummary = String(payout.destinationSummary || "").trim();
+        const destinationSummary = canonicalizeLightningAddress(String(payout.destinationSummary || "").trim());
         if (destinationType !== "lightning_address" || !destinationSummary || !destinationSummary.includes("@")) {
           app.log.info(
             {
@@ -4351,6 +5584,16 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         app.log.info(
           {
             providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            plannedAmountSats: String(payout.amountSats || "0")
+          },
+          "payoutExecution.amount_planned"
+        );
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
             participantPayoutId: payout.id,
             participantRef: participantExecutionRef(row),
             destinationType,
@@ -4362,7 +5605,11 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         const invoice = await requestLightningAddressInvoice(
           destinationSummary,
           String(payout.amountSats || "0"),
-          `Certifyd participant remittance ${String(intent.paymentIntentId || "").slice(-8)}`
+          await buildRemittanceMemo({
+            prefix: "Certifyd participant remittance",
+            paymentIntentId: intent.paymentIntentId,
+            contentId: intent.contentId
+          })
         );
         app.log.info(
           {
@@ -4375,7 +5622,70 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
           },
           "payoutDestination.invoice_received"
         );
-        const send = await payBolt11ViaLnd(invoice);
+        const send = await payBolt11ViaLnd(invoice, {
+          entrypoint: "participant_payout",
+          providerPaymentIntentId: intent.id,
+          paymentIntentId: intent.paymentIntentId,
+          participantPayoutId: payout.id,
+          payoutKey: payout.payoutKey || null,
+          expectedAmountSats: Number(String(payout.amountSats || "0"))
+        });
+        const intendedAmountSats = Number(String(payout.amountSats || "0")) || 0;
+        const executed = send.paymentHash
+          ? await lookupOutgoingPaymentByHash(prisma as any, send.paymentHash).catch(() => null)
+          : null;
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            paymentIntentId: intent.paymentIntentId,
+            participantPayoutId: payout.id,
+            participantRef: participantExecutionRef(row),
+            plannedAmountSats: intendedAmountSats,
+            actualSentSats: executed?.valueSats ?? null,
+            actualFeeSats: executed?.feeSats ?? null,
+            actualStatus: executed?.status ?? null,
+            payoutReference: send.paymentHash || null
+          },
+          "payoutExecution.amount_audit"
+        );
+        if (!executed || executed.valueSats === null || executed.status !== "SUCCEEDED") {
+          const message = `EXECUTION_AMOUNT_UNVERIFIED:planned_${intendedAmountSats}:status_${String(executed?.status || "unknown")}`;
+          await markParticipantPayoutExecutionMismatch(payout.id, lock.attemptId, message, send.paymentHash || null);
+          logParticipantPayoutAttempt(intent.id, row, "blocked", message);
+          app.log.error(
+            {
+              route: reason,
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              participantRef: participantExecutionRef(row),
+              plannedAmountSats: intendedAmountSats,
+              actualSentSats: executed?.valueSats ?? null,
+              actualStatus: executed?.status ?? null,
+              payoutReference: send.paymentHash || null
+            },
+            "providerParticipantRemittance.execution_amount_unverified"
+          );
+          continue;
+        }
+        if (executed.valueSats !== intendedAmountSats) {
+          const message = `EXECUTION_AMOUNT_MISMATCH:planned_${intendedAmountSats}:actual_${executed.valueSats}`;
+          await markParticipantPayoutExecutionMismatch(payout.id, lock.attemptId, message, send.paymentHash || null);
+          logParticipantPayoutAttempt(intent.id, row, "blocked", message);
+          app.log.error(
+            {
+              route: reason,
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              participantRef: participantExecutionRef(row),
+              plannedAmountSats: intendedAmountSats,
+              actualSentSats: executed.valueSats,
+              actualFeeSats: executed.feeSats ?? null,
+              payoutReference: send.paymentHash || null
+            },
+            "providerParticipantRemittance.execution_amount_mismatch"
+          );
+          continue;
+        }
         const marked = await markParticipantPayoutPaid(payout.id, lock.attemptId, send.paymentHash || null);
         if (!marked) {
           const reconciled = await forceMarkParticipantPayoutPaidAfterExternalSuccess(payout.id, send.paymentHash || null);
@@ -4418,6 +5728,15 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         );
         app.log.info(
           {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            persistedStatus: "paid",
+            payoutReference: send.paymentHash || null
+          },
+          "payoutExecution.persisted_status"
+        );
+        app.log.info(
+          {
             route: reason,
             providerPaymentIntentId: intent.id,
             participantPayoutId: payout.id,
@@ -4429,6 +5748,39 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
         );
       } catch (e: any) {
         const message = String(e?.message || "participant_remit_failed");
+        if (message.startsWith("LND_SEND_RESULT_UNKNOWN:")) {
+          const unknown = parseUnknownLndSendReason(message);
+          await markParticipantPayoutPendingVerification(
+            payout.id,
+            lock.attemptId,
+            message,
+            unknown.paymentHash || null
+          );
+          logParticipantPayoutAttempt(intent.id, row, "pending", message);
+          app.log.warn(
+            {
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              participantRef: participantExecutionRef(row),
+              destinationType: String(payout.destinationType || "").trim().toLowerCase() || null,
+              amountSats: String(payout.amountSats || "0"),
+              immediateStatus: unknown.immediateStatus,
+              payoutReference: unknown.paymentHash || null,
+              reason: message
+            },
+            "payoutExecution.auto_remit_blocked"
+          );
+          app.log.info(
+            {
+              providerPaymentIntentId: intent.id,
+              participantPayoutId: payout.id,
+              persistedStatus: "pending",
+              reason: "LND_RESULT_UNKNOWN_VERIFY_REQUIRED"
+            },
+            "payoutExecution.persisted_status"
+          );
+          continue;
+        }
         await markParticipantPayoutFailed(payout.id, lock.attemptId, message);
         logParticipantPayoutAttempt(intent.id, row, "pending", message);
         app.log.warn(
@@ -4441,6 +5793,15 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
             reason: message
           },
           "payoutExecution.auto_remit_failed"
+        );
+        app.log.info(
+          {
+            providerPaymentIntentId: intent.id,
+            participantPayoutId: payout.id,
+            persistedStatus: "failed",
+            reason: message
+          },
+          "payoutExecution.persisted_status"
         );
         app.log.warn(
           {
@@ -4457,6 +5818,18 @@ async function executeParticipantPayoutRowsForIntent(intent: ProviderPaymentInte
     } finally {
       PARTICIPANT_REMITTANCE_FLIGHTS.delete(row.id);
     }
+  }
+  const reconciledCount = await forceReconcileSuccessfulParticipantPayoutRows(intent.id).catch(() => 0);
+  if (reconciledCount > 0) {
+    app.log.warn(
+      {
+        providerPaymentIntentId: intent.id,
+        paymentIntentId: intent.paymentIntentId,
+        reconciledRows: reconciledCount,
+        reason: "EXECUTION_SUCCESS_FORCE_RECONCILE"
+      },
+      "participantPayout.reconcile_force_paid"
+    );
   }
 }
 
@@ -4501,9 +5874,17 @@ async function executeCreatorRemittance(intent: ProviderPaymentIntentRecord, rea
       const invoice = await requestLightningAddressInvoice(
         lightningAddress,
         forwarding.creatorNetSats || "0",
-        `Certifyd remittance ${forwarding.paymentIntentId.slice(-8)}`
+        await buildRemittanceMemo({
+          prefix: "Certifyd remittance",
+          paymentIntentId: forwarding.paymentIntentId,
+          contentId: forwarding.contentId
+        })
       );
-      const send = await payBolt11ViaLnd(invoice);
+      const send = await payBolt11ViaLnd(invoice, {
+        entrypoint: "creator_remittance",
+        providerPaymentIntentId: forwarding.id,
+        paymentIntentId: forwarding.paymentIntentId
+      });
       const paidAt = new Date().toISOString();
       const paid =
         markRemittancePaid(forwarding.id, lock.attemptId, {
@@ -4587,6 +5968,22 @@ async function requestDelegatedProviderPaymentIntent(input: {
   payoutDestinationType?: CreatorPayoutDestinationType;
   payoutDestinationSummary?: string | null;
   providerRemitMode?: ProviderRemitMode;
+  splitVersionId?: string | null;
+  participantAllocations?: Array<{
+    participantRef: string;
+    participantId?: string | null;
+    splitParticipantId?: string | null;
+    participantUserId?: string | null;
+    participantEmail?: string | null;
+    role?: string | null;
+    roleKey: string;
+    bps: number;
+    destinationType?: string | null;
+    destinationSummary?: string | null;
+    destinationValue?: string | null;
+    destinationVerified?: boolean;
+    destinationVerificationError?: string | null;
+  }>;
 }): Promise<{
   paymentIntentId: string;
   bolt11: string;
@@ -4614,6 +6011,35 @@ async function requestDelegatedProviderPaymentIntent(input: {
     err.code = "PROVIDER_NOT_READY";
     throw err;
   }
+  const expectedProviderNodeId = String(providerCfg.providerNodeId || "").trim();
+  if (expectedProviderNodeId) {
+    try {
+      const descriptorRes = await fetch(`${providerUrl}/.well-known/certifyd-node`, {
+        method: "GET"
+      } as any);
+      const descriptorJson: any = await descriptorRes.json().catch(() => null);
+      const observedProviderNodeId = String(descriptorJson?.nodeId || "").trim();
+      if (!descriptorRes.ok || !observedProviderNodeId || observedProviderNodeId !== expectedProviderNodeId) {
+        const err: any = new Error("provider_node_mismatch");
+        err.code = "PROVIDER_NODE_MISMATCH";
+        err.status = descriptorRes.status || 0;
+        err.body = {
+          expectedProviderNodeId,
+          observedProviderNodeId: observedProviderNodeId || null
+        };
+        throw err;
+      }
+    } catch (e: any) {
+      if (String(e?.code || "").trim().toUpperCase() === "PROVIDER_NODE_MISMATCH") throw e;
+      const err: any = new Error("provider_descriptor_unavailable");
+      err.code = "PROVIDER_DESCRIPTOR_UNAVAILABLE";
+      err.status = Number(e?.status || 0) || 0;
+      err.body = {
+        expectedProviderNodeId
+      };
+      throw err;
+    }
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8000);
   try {
@@ -4630,7 +6056,11 @@ async function requestDelegatedProviderPaymentIntent(input: {
         needsDurablePublicHosting: Boolean(input.needsDurablePublicHosting),
         payoutDestinationType: input.payoutDestinationType || null,
         payoutDestinationSummary: input.payoutDestinationSummary || null,
-        providerRemitMode: input.providerRemitMode || "manual_payout"
+        providerRemitMode: input.providerRemitMode || "auto_forward",
+        splitVersionId: input.splitVersionId || null,
+        participantAllocations: Array.isArray(input.participantAllocations)
+          ? input.participantAllocations
+          : []
       }),
       signal: controller.signal
     } as any);
@@ -4711,9 +6141,21 @@ async function fetchDelegatedProviderPaymentIntentStatus(paymentIntentId: string
     const json: any = await res.json().catch(() => null);
     if (!res.ok) return { paid: false, paidAt: null, status: "unavailable" };
     const status = String(json?.status || "unknown").trim().toLowerCase();
-    const paid = Boolean(json?.paid) || status === "paid";
+    const payoutStatus = String(json?.payoutStatus || "").trim().toLowerCase();
+    const payoutSummaryStatus = String(json?.payoutSummaryStatus || "").trim().toLowerCase();
+    const payoutReference = String(json?.payoutReference || "").trim();
+    const remittedAtRaw = String(json?.remittedAt || "").trim();
     const paidAtRaw = String(json?.paidAt || "").trim();
+    const remittedAt =
+      remittedAtRaw && !Number.isNaN(new Date(remittedAtRaw).getTime()) ? new Date(remittedAtRaw).toISOString() : null;
     const paidAt = paidAtRaw && !Number.isNaN(new Date(paidAtRaw).getTime()) ? new Date(paidAtRaw).toISOString() : null;
+    const paid =
+      Boolean(json?.paid) ||
+      status === "paid" ||
+      payoutStatus === "paid" ||
+      payoutSummaryStatus === "paid" ||
+      Boolean(remittedAt) ||
+      Boolean(payoutReference);
     return { paid, paidAt, status: status || "unknown" };
   } catch {
     return { paid: false, paidAt: null, status: "unavailable" };
@@ -5039,6 +6481,62 @@ function hasProviderPaymentTarget(cfg: NetworkProviderConfig): boolean {
   // Payment delegation requires an enabled provider URL. providerNodeId/providerPubKey can be
   // optional during bootstrap and are validated when present.
   return Boolean(cfg.enabled && cfg.providerUrl);
+}
+
+async function resolveProviderExecutionAuthorityOnCurrentNode(): Promise<{
+  ok: boolean;
+  code?: string;
+  message?: string;
+  configuredProviderNodeId: string | null;
+  localNodeId: string | null;
+}> {
+  const cfg = getNetworkProviderConfig();
+  const configuredProviderNodeId = asString(cfg.providerNodeId || "").trim() || null;
+  const localIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
+  const localNodeId = asString(localIdentity?.nodeId || "").trim() || null;
+  const hasLocalProviderRole = Boolean(localIdentity?.serviceRoles?.invoiceProvider);
+  if (!hasProviderPaymentTarget(cfg)) {
+    // Provider-side public delegated routes may run on a dedicated provider node
+    // without local networkProvider client config. Allow when local node advertises
+    // invoice-provider role.
+    if (hasLocalProviderRole) {
+      return {
+        ok: true,
+        configuredProviderNodeId,
+        localNodeId
+      };
+    }
+    return {
+      ok: false,
+      code: "PROVIDER_NOT_READY",
+      message: "Provider payments are not configured on this node.",
+      configuredProviderNodeId,
+      localNodeId
+    };
+  }
+  if (configuredProviderNodeId && !localNodeId) {
+    return {
+      ok: false,
+      code: "LOCAL_NODE_ID_UNAVAILABLE",
+      message: "Local node identity is unavailable for provider authority check.",
+      configuredProviderNodeId,
+      localNodeId
+    };
+  }
+  if (configuredProviderNodeId && localNodeId && configuredProviderNodeId !== localNodeId) {
+    return {
+      ok: false,
+      code: "PROVIDER_NODE_MISMATCH",
+      message: "Delegated provider payment request reached a non-provider node.",
+      configuredProviderNodeId,
+      localNodeId
+    };
+  }
+  return {
+    ok: true,
+    configuredProviderNodeId,
+    localNodeId
+  };
 }
 
 function isNetworkProviderConfigEmpty(cfg: NetworkProviderConfig): boolean {
@@ -6314,7 +7812,6 @@ function evaluateProviderExecutionChainReadiness(): ProviderExecutionChainReadin
 
 async function deriveUserNetworkStatus(): Promise<UserNetworkStatus> {
   const runtime = getRuntimeHealthStatus();
-  const ctx = getCapabilityContext();
   const modeStatus = getNodeModeStatus();
   const providerConnection = deriveProviderCommerceConnectionState();
   const sovereignReadiness = await getLocalSovereignReadiness();
@@ -6322,112 +7819,26 @@ async function deriveUserNetworkStatus(): Promise<UserNetworkStatus> {
     hasLocalInvoiceMinting: sovereignReadiness.localCommerceReady,
     localSovereignReady: sovereignReadiness.ready,
     providerConnected: providerConnection.providerConnected,
-    ctx
+    ctx: getCapabilityContext()
   });
   const chain = evaluateProviderExecutionChainReadiness();
-  const trust = chain.trustReadiness.readiness;
-  const ack = chain.ackReadiness.readiness;
-  const permit = chain.permitReadiness.readiness;
-
-  // User-facing abstraction over richer protocol state. Keep this compact and non-jargony.
-  if (runtime.runtime.status !== "running" || !runtime.runtime.apiReady) {
-    return {
-      status: "offline",
-      title: "Offline",
-      message: "Node runtime is not ready.",
-      actionLabel: "Restart node"
-    };
-  }
-  if (serviceProfile.participationMode === "sovereign_node" || (modeStatus.nodeMode === "lan" && sovereignReadiness.ready)) {
-    return {
-      status: "ready",
-      title: "Ready",
-      message: "Local Sovereign Node posture is active and ready.",
-      actionLabel: null
-    };
-  }
-  if (modeStatus.nodeMode === "lan" && !sovereignReadiness.ready) {
-    if (!sovereignReadiness.namedTunnelDetected) {
-      return {
-        status: "action_required",
-        title: "Action Required",
-        message: "Sovereign Node requires a named tunnel / stable public host.",
-        actionLabel: "Configure named tunnel"
-      };
-    }
-    const blockers: string[] = [];
-    if (!sovereignReadiness.localBitcoinReady) blockers.push("local Bitcoin");
-    if (!sovereignReadiness.localLndReady) blockers.push("local LND");
-    if (!sovereignReadiness.localCommerceReady) blockers.push("local commerce service");
-    return {
-      status: "action_required",
-      title: "Action Required",
-      message: `Sovereign Node is missing readiness: ${blockers.join(", ")}.`,
-      actionLabel: "Fix local node stack"
-    };
-  }
-  if (serviceProfile.participationMode === "sovereign_creator") {
-    return {
-      status: "ready",
-      title: "Ready",
-      message: "Sovereign Creator storefront is active. Provider commerce is optional.",
-      actionLabel: providerConnection.providerConnected ? null : "Connect provider (optional)"
-    };
-  }
-  if (serviceProfile.participationMode === "basic_creator") {
-    return {
-      status: "ready",
-      title: "Ready",
-      message: "Basic creator posture is active for publishing and tipping.",
-      actionLabel: "Add named tunnel to upgrade"
-    };
-  }
-  if (trust === "unreachable") {
-    return {
-      status: "offline",
-      title: "Offline",
-      message: "Configured provider is currently unreachable.",
-      actionLabel: "Check provider reachability"
-    };
-  }
-  if (chain.ready) {
-    return {
-      status: "ready",
-      title: "Ready",
-      message: "Connected to provider and ready to use.",
-      actionLabel: null
-    };
-  }
-  if (trust === "not_configured" || ack === "not_configured" || permit === "not_configured") {
-    return {
-      status: "connecting",
-      title: "Connecting",
-      message: "Provider relationship setup is still in progress.",
-      actionLabel: "Configure provider"
-    };
-  }
-  if (ack === "not_current" || permit === "not_current" || permit === "expired" || trust === "blocked" || ack === "blocked" || permit === "blocked") {
-    const detail =
-      permit === "expired"
-        ? chain.permitReadiness.message
-        : permit === "not_current"
-          ? chain.permitReadiness.message
-          : ack === "not_current"
-            ? chain.ackReadiness.message
-            : chain.message;
-    return {
-      status: "action_required",
-      title: "Action Required",
-      message: detail,
-      actionLabel: "Refresh provider connection"
-    };
-  }
-  return {
-    status: "connecting",
-    title: "Connecting",
-    message: "Establishing provider relationship prerequisites.",
-    actionLabel: "Refresh connection"
-  };
+  return deriveUserNetworkStatusFromState({
+    runtimeReady: runtime.runtime.status === "running" && Boolean(runtime.runtime.apiReady),
+    participationMode: serviceProfile.participationMode,
+    nodeMode: modeStatus.nodeMode,
+    sovereignReady: sovereignReadiness.ready,
+    namedTunnelDetected: sovereignReadiness.namedTunnelDetected,
+    localBitcoinReady: sovereignReadiness.localBitcoinReady,
+    localLndReady: sovereignReadiness.localLndReady,
+    localCommerceReady: sovereignReadiness.localCommerceReady,
+    trustReadiness: chain.trustReadiness.readiness,
+    ackReadiness: chain.ackReadiness.readiness,
+    permitReadiness: chain.permitReadiness.readiness,
+    chainReady: chain.ready,
+    chainMessage: chain.message,
+    ackMessage: chain.ackReadiness.message,
+    permitMessage: chain.permitReadiness.message
+  });
 }
 
 async function evaluatePublishReadiness(): Promise<PublishReadiness> {
@@ -7086,7 +8497,7 @@ function normalizeRemoteOrigin(raw: string): string | null {
   }
 }
 
-function getPublicBindHost(mode: PublicMode): string {
+function getPublicBindHost(mode: PublicMode | "direct"): string {
   if (mode === "direct" && String(process.env.CONTENTBOX_BIND || "").trim() === "public") return "0.0.0.0";
   return "127.0.0.1";
 }
@@ -7260,11 +8671,21 @@ function getPublicStatus() {
         ? quickState.lastError || "Public link error"
         : tunnelManager.status().lastError || "Public link error"
       : null;
+  const canonicalOriginConfigured = Boolean(state.canonicalOrigin);
+  const canonicalOriginReachable = state.status === "online";
+  const canonicalOriginReason = !canonicalOriginConfigured
+    ? "CANONICAL_ORIGIN_NOT_CONFIGURED"
+    : canonicalOriginReachable
+      ? null
+      : "CANONICAL_ORIGIN_UNREACHABLE_OR_OFFLINE";
 
   return {
     mode: state.mode,
     status: state.status,
     canonicalOrigin: state.canonicalOrigin,
+    canonicalOriginConfigured,
+    canonicalOriginReachable,
+    canonicalOriginReason,
     publicOrigin: state.canonicalOrigin,
     isCanonical: state.isCanonical,
     message: state.message,
@@ -7321,7 +8742,7 @@ async function triggerPublicStartBestEffort() {
     tunnelManager
       .startNamed({
         publicOrigin: cfg.publicOrigin,
-        tunnelName: cfg.tunnelName,
+        tunnelName: String(cfg.tunnelName || "").trim(),
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
         token: namedToken
       })
@@ -7354,7 +8775,14 @@ async function checkNamedTunnelConnected(): Promise<boolean> {
       const id = String(t?.id || "").trim().toLowerCase();
       return name === tunnelName || id === tunnelName;
     });
-    return Boolean(match && Array.isArray(match.connections) && match.connections.length > 0);
+    if (Boolean(match && Array.isArray(match.connections) && match.connections.length > 0)) return true;
+
+    // Machine-local fallback: if the configured tunnel name drifts, but exactly one
+    // tunnel is actually connected on this host, avoid false "offline" posture.
+    // We do not apply this when multiple tunnels are connected to prevent ambiguity.
+    const connected = tunnels.filter((t: any) => Array.isArray(t?.connections) && t.connections.length > 0);
+    if (!match && connected.length === 1) return true;
+    return false;
   } catch {
     return false;
   }
@@ -8388,6 +9816,10 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/u/:handle", handlePublicNodeProfilePage);
   appPublic.get("/u/:handle/proofs.json", handlePublicProofBundle);
   appPublic.get("/profile", handlePublicProfileRedirect);
+  appPublic.get("/certifyd-tab-icon.png", handleTabIcon);
+  appPublic.get("/favicon.ico", handleTabIcon);
+  appPublic.get("/favicon.png", handleTabIcon);
+  appPublic.get("/apple-touch-icon.png", handleTabIcon);
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
@@ -8401,28 +9833,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
   appPublic.get("/public/users/:id", handlePublicUser);
-  appPublic.get("/public/users/:userId/payout-destination", async (req: any, reply: any) => {
-    const userId = asString((req.params as any)?.userId || "").trim();
-    if (!userId) return badRequest(reply, "userId is required");
-    const destination = await resolvePublicParticipantPayoutDestination(userId).catch(() => null);
-    if (!destination || !destination.destinationType || !destination.destinationValue) {
-      return reply.send({ ok: true, destination: null });
-    }
-    return reply.send({
-      ok: true,
-      destination: {
-        source: destination.destinationSource,
-        destinationType: destination.destinationType,
-        destinationValue: destination.destinationValue,
-        destinationSummary: destination.destinationSummary,
-        isVerified: destination.isVerified,
-        verifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
-        lastVerifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
-        verificationStatus: destination.verificationStatus,
-        verificationError: destination.verificationError
-      }
-    });
-  });
+  appPublic.get("/public/users/:userId/payout-destination", handlePublicPayoutDestination);
   // Buyer session + entitlement routes used by public buy pages.
   appPublic.post("/api/buyer/bootstrap", async (req: any, reply: any) => {
     const session = await getOrCreateBuyerSession(req, reply);
@@ -8481,17 +9892,40 @@ function registerPublicRoutes(appPublic: any) {
       paymentIntentId?: string | null;
       buyerSessionId?: string | null;
       needsProviderInvoicing?: boolean;
-      needsDurablePublicHosting?: boolean;
-      payoutDestinationType?: CreatorPayoutDestinationType;
-      payoutDestinationSummary?: string | null;
-      providerRemitMode?: ProviderRemitMode;
-    };
+    needsDurablePublicHosting?: boolean;
+    payoutDestinationType?: CreatorPayoutDestinationType;
+    payoutDestinationSummary?: string | null;
+    providerRemitMode?: ProviderRemitMode;
+    splitVersionId?: string | null;
+    participantAllocations?: Array<{
+      participantRef?: string | null;
+      participantId?: string | null;
+      splitParticipantId?: string | null;
+      participantUserId?: string | null;
+      participantEmail?: string | null;
+      role?: string | null;
+      roleKey?: string | null;
+      bps?: number | string | null;
+      destinationType?: string | null;
+      destinationSummary?: string | null;
+      destinationValue?: string | null;
+      destinationVerified?: boolean | null;
+      destinationVerificationError?: string | null;
+    }>;
+  };
     const creatorNodeId = String(body.creatorNodeId || "").trim();
     const contentId = String(body.contentId || "").trim();
     const amountSats = String(body.amountSats ?? "").trim();
     const paymentIntentId = String(body.paymentIntentId || "").trim();
     if (!creatorNodeId || !contentId || !paymentIntentId) return badRequest(reply, "creatorNodeId, contentId, paymentIntentId required");
     if (!/^\d+$/.test(amountSats) || Number(amountSats) <= 0) return badRequest(reply, "amountSats must be a positive integer");
+    const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+    if (!providerAuthority.ok) {
+      return reply.code(409).send({
+        error: providerAuthority.code || "PROVIDER_NOT_READY",
+        message: providerAuthority.message || "Provider execution is not ready on this node."
+      });
+    }
 
     const link = getProviderCreatorLink(creatorNodeId);
     if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
@@ -8522,7 +9956,11 @@ function registerPublicRoutes(appPublic: any) {
 
     const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
     const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
-    const memo = `Certifyd delegated ${contentId.slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+    const memo = await buildRemittanceMemo({
+      prefix: "Certifyd delegated",
+      paymentIntentId,
+      contentId
+    });
     let bolt11: string | null = null;
     let providerInvoiceRef: string | null = null;
     try {
@@ -8534,7 +9972,7 @@ function registerPublicRoutes(appPublic: any) {
       bolt11 = invoice?.bolt11 || null;
       providerInvoiceRef = invoice?.providerId || null;
     } catch {}
-    const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+    const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
     const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
     const fee = computeProviderFeeBreakdown(amountSats, {
       providerInvoicing: body.needsProviderInvoicing !== false,
@@ -8571,6 +10009,32 @@ function registerPublicRoutes(appPublic: any) {
       buyerSessionId: String(body.buyerSessionId || "").trim() || null,
       paidAt: null
     });
+    const participantAllocations = Array.isArray(body.participantAllocations)
+      ? body.participantAllocations
+      : [];
+    if (participantAllocations.length > 0) {
+      upsertProviderDelegatedAllocationBlueprintByPaymentIntentId(paymentIntentId, {
+        creatorNodeId,
+        contentId,
+        splitVersionId: String(body.splitVersionId || "").trim() || null,
+        allocationVersion: 1,
+        participants: participantAllocations.map((row) => ({
+          participantRef: String(row?.participantRef || "").trim(),
+          participantId: String(row?.participantId || "").trim() || null,
+          splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
+          participantUserId: String(row?.participantUserId || "").trim() || null,
+          participantEmail: String(row?.participantEmail || "").trim() || null,
+          role: String(row?.role || "").trim() || null,
+          roleKey: String(row?.roleKey || "").trim(),
+          bps: Math.max(0, Math.round(Number(row?.bps || 0))),
+          destinationType: String(row?.destinationType || "").trim() || null,
+          destinationSummary: String(row?.destinationSummary || "").trim() || null,
+          destinationValue: String(row?.destinationValue || "").trim() || null,
+          destinationVerified: Boolean(row?.destinationVerified),
+          destinationVerificationError: String(row?.destinationVerificationError || "").trim() || null
+        }))
+      });
+    }
     return reply.send({
       ok: true,
       paymentIntentId: created.paymentIntentId,
@@ -8589,6 +10053,13 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: any, reply: any) => {
     const paymentIntentId = String((req.params as any)?.paymentIntentId || "").trim();
     if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+    const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+    if (!providerAuthority.ok) {
+      return reply.code(409).send({
+        error: providerAuthority.code || "PROVIDER_NOT_READY",
+        message: providerAuthority.message || "Provider execution is not ready on this node."
+      });
+    }
     let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
     if (!current) return notFound(reply, "Provider payment intent not found");
     if (current.status !== "paid" && current.providerInvoiceRef) {
@@ -8601,13 +10072,43 @@ function registerPublicRoutes(appPublic: any) {
         current = await ensureProviderPaymentSettlement(patched || current);
       }
     }
+    if (current.status === "paid") {
+      current = await ensureProviderPaymentSettlement(current);
+      if (current.payoutExecutionMode === "participant" && current.providerRemitMode === "auto_forward") {
+        try {
+          await executeParticipantPayoutRowsForIntent(current, "provider_status_participant_reconcile");
+          current = await syncProviderIntentPayoutTruthFromParticipantRows(current);
+        } catch (error: any) {
+          app.log.warn(
+            {
+              paymentIntentId: current.paymentIntentId,
+              providerPaymentIntentId: current.id,
+              error: String(error?.message || error || "participant_reconcile_failed")
+            },
+            "providerRemittance.participant_reconcile_failed"
+          );
+        }
+      }
+    }
     return reply.send({
       ok: true,
       paymentIntentId: current.paymentIntentId,
       status: current.status,
       paid: current.status === "paid",
       paidAt: current.paidAt || null,
-      paymentReceiptId: current.paymentReceiptId || null
+      paymentReceiptId: current.paymentReceiptId || null,
+      payoutStatus: current.payoutStatus || null,
+      payoutSummaryStatus: current.payoutSummaryStatus || null,
+      payoutRail: current.payoutRail || null,
+      payoutExecutionMode: current.payoutExecutionMode || null,
+      payoutDestinationType: current.payoutDestinationType || null,
+      payoutDestinationSummary: current.payoutDestinationSummary || null,
+      providerRemitMode: current.providerRemitMode || null,
+      payoutReference: current.payoutReference || null,
+      remittedAt: current.remittedAt || null,
+      payoutLastError: current.payoutLastError || null,
+      remittanceAttempts: Number(current.remittanceAttempts || 0),
+      remittanceLastCheckedAt: current.remittanceLastCheckedAt || null
     });
   });
   appPublic.post("/api/buyer/entitlements/claim", async (req: any, reply: any) => {
@@ -8812,11 +10313,13 @@ async function buildWellKnownContentboxPayload(req: any): Promise<{ nodeUrl: str
   const xfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
   const proto = xfProto === "http" || xfProto === "https" ? xfProto : "https";
   const host = getPublicHostnameFromReq(req);
-  const fallbackPublicOrigin =
+  const configuredPublicOrigin =
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
     normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
-    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN);
-  const nodeUrl = host ? `${proto}://${host}` : (fallbackPublicOrigin || "https://contentbox.local");
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN) ||
+    normalizeOrigin(getActivePublicOrigin() || "");
+  const requestDerivedOrigin = host ? `${proto}://${host}` : null;
+  const nodeUrl = configuredPublicOrigin || requestDerivedOrigin || "https://contentbox.local";
 
   try {
     const pubPath = path.join(CONTENTBOX_ROOT, ".node", "node_public.pem");
@@ -8862,7 +10365,41 @@ async function handlePublicUser(req: any, reply: any) {
   return reply.send({ id: u.id, displayName: u.displayName, createdAt: u.createdAt });
 }
 
+async function handlePublicPayoutDestination(req: any, reply: any) {
+  reply.type("application/json; charset=utf-8");
+  const userId = asString((req.params as any)?.userId || "").trim();
+  app.log.info(
+    {
+      userId,
+      route: "/public/users/:userId/payout-destination",
+      host: String(req.headers?.host || ""),
+      accept: String(req.headers?.accept || "")
+    },
+    "publicPayoutDestination.handler_reached"
+  );
+  if (!userId) return badRequest(reply, "userId is required");
+  const destination = await resolvePublicParticipantPayoutDestination(userId).catch(() => null);
+  if (!destination || !destination.destinationType || !destination.destinationValue) {
+    return reply.send({ ok: true, destination: null });
+  }
+  return reply.send({
+    ok: true,
+    destination: {
+      source: destination.destinationSource,
+      destinationType: destination.destinationType,
+      destinationValue: destination.destinationValue,
+      destinationSummary: destination.destinationSummary,
+      isVerified: destination.isVerified,
+      verifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
+      lastVerifiedAt: destination.destinationResolvedAt ? destination.destinationResolvedAt.toISOString() : null,
+      verificationStatus: destination.verificationStatus,
+      verificationError: destination.verificationError
+    }
+  });
+}
+
 app.get("/public/users/:id", handlePublicUser);
+app.get("/public/users/:userId/payout-destination", handlePublicPayoutDestination);
 
 type RemoteDiscoveryCacheEntry = {
   origin: string;
@@ -9553,6 +11090,160 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         details: e.payloadJson || null
       });
     });
+
+    // Commerce evidence enrichment (read-only, owner-only):
+    // Adds sale/payment/settlement/payout snapshots so content-scoped audit can explain money flow
+    // without changing settlement logic or payout execution behavior.
+    if (content.ownerUserId === userId) {
+      const [salesRows, paymentIntentRows, settlementRows, participantPayoutRows] = await Promise.all([
+        prisma.sale.findMany({
+          where: { contentId: content.id },
+          orderBy: { recognizedAt: "desc" },
+          take: 50,
+          select: {
+            id: true,
+            intentId: true,
+            amountSats: true,
+            currency: true,
+            rail: true,
+            memo: true,
+            recognizedAt: true
+          }
+        }),
+        prisma.paymentIntent.findMany({
+          where: { contentId: content.id, purpose: "CONTENT_PURCHASE" as any },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+          select: {
+            id: true,
+            status: true,
+            amountSats: true,
+            providerId: true,
+            paidAt: true,
+            createdAt: true,
+            updatedAt: true
+          }
+        }),
+        prisma.settlement.findMany({
+          where: { contentId: content.id },
+          orderBy: { createdAt: "desc" },
+          take: 50,
+          select: {
+            id: true,
+            paymentIntentId: true,
+            netAmountSats: true,
+            createdAt: true
+          }
+        }),
+        prisma.participantPayout
+          .findMany({
+            where: {
+              allocation: {
+                contentId: content.id
+              }
+            },
+            orderBy: { updatedAt: "desc" },
+            take: 100,
+            select: {
+              id: true,
+              paymentIntentId: true,
+              providerPaymentIntentId: true,
+              amountSats: true,
+              status: true,
+              payoutRail: true,
+              destinationType: true,
+              destinationSummary: true,
+              payoutReference: true,
+              remittedAt: true,
+              updatedAt: true,
+              allocation: {
+                select: {
+                  role: true,
+                  participantEmail: true,
+                  participantUserId: true
+                }
+              }
+            }
+          })
+          .catch((err: any) => {
+            if (isMissingParticipantPayoutTableError(err)) return [];
+            throw err;
+          })
+      ]);
+
+      salesRows.forEach((row) => {
+        events.push({
+          id: `sale:${row.id}`,
+          ts: row.recognizedAt.toISOString(),
+          type: "sale.recognized",
+          summary: content.title,
+          details: {
+            saleId: row.id,
+            paymentIntentId: row.intentId,
+            amountSats: String(row.amountSats || "0"),
+            currency: row.currency,
+            rail: row.rail,
+            memo: row.memo || null
+          }
+        });
+      });
+
+      paymentIntentRows.forEach((row) => {
+        events.push({
+          id: `payment.intent:${row.id}`,
+          ts: (row.paidAt || row.updatedAt || row.createdAt).toISOString(),
+          type: "payment.intent",
+          summary: content.title,
+          details: {
+            paymentIntentId: row.id,
+            status: String(row.status || "").toLowerCase(),
+            amountSats: String(row.amountSats || "0"),
+            providerId: row.providerId || null,
+            paidAt: row.paidAt ? row.paidAt.toISOString() : null
+          }
+        });
+      });
+
+      settlementRows.forEach((row) => {
+        events.push({
+          id: `settlement:${row.id}`,
+          ts: row.createdAt.toISOString(),
+          type: "settlement.created",
+          summary: content.title,
+          details: {
+            settlementId: row.id,
+            paymentIntentId: row.paymentIntentId,
+            netAmountSats: String(row.netAmountSats || "0")
+          }
+        });
+      });
+
+      participantPayoutRows.forEach((row) => {
+        events.push({
+          id: `participant_payout:${row.id}`,
+          ts: (row.remittedAt || row.updatedAt).toISOString(),
+          type: "payout.participant",
+          summary: content.title,
+          details: {
+            participantPayoutId: row.id,
+            paymentIntentId: row.paymentIntentId,
+            providerPaymentIntentId: row.providerPaymentIntentId || null,
+            amountSats: String(row.amountSats || "0"),
+            status: parseParticipantPayoutStatus(row.status),
+            payoutRail: row.payoutRail || null,
+            destinationType: row.destinationType || null,
+            destinationSummary: row.destinationSummary || null,
+            payoutReference: row.payoutReference || null,
+            remittedAt: row.remittedAt ? row.remittedAt.toISOString() : null,
+            participant: {
+              role: row.allocation?.role || null,
+              participantEmail: row.allocation?.participantEmail || null,
+              participantUserId: row.allocation?.participantUserId || null
+            }
+          }
+        });
+      });
+    }
   } else if (scopeType === "split") {
     if (!scopeId) {
       const splitVersions = await prisma.splitVersion.findMany({
@@ -9695,6 +11386,27 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         }
       });
     });
+
+    // Invite evidence enrichment (read-only):
+    // Include persisted invitation audit trail rows when present.
+    const inviteIds = Array.from(new Set(invites.map((inv) => String(inv.id || "").trim()).filter(Boolean)));
+    if (inviteIds.length) {
+      const inviteAudits = await prisma.auditEvent.findMany({
+        where: { entityType: "Invitation", entityId: { in: inviteIds } as any },
+        orderBy: { createdAt: "desc" },
+        take: 200,
+        include: { user: { select: { id: true, email: true, displayName: true } } }
+      });
+      inviteAudits.forEach((e) => {
+        events.push({
+          id: `invite.audit:${e.id}`,
+          ts: e.createdAt.toISOString(),
+          type: e.action,
+          actor: actorFromUser(e.user),
+          details: e.payloadJson || null
+        });
+      });
+    }
   } else if (scopeType === "royalty") {
     const me = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, displayName: true } });
     const participantRows = await prisma.splitParticipant.findMany({
@@ -9742,6 +11454,69 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         }
       });
     }
+
+    // Royalty evidence enrichment (read-only):
+    // Append participant payout execution rows for this account so payable/paid state is auditable.
+    const payoutRows = await prisma.participantPayout
+      .findMany({
+        where: {
+          allocation: {
+            ...participantPayoutUserAllocationWhere(userId, me?.email || "")
+          }
+        },
+        orderBy: [{ remittedAt: "desc" }, { updatedAt: "desc" }],
+        take: 200,
+        select: {
+          id: true,
+          paymentIntentId: true,
+          providerPaymentIntentId: true,
+          amountSats: true,
+          status: true,
+          payoutRail: true,
+          destinationType: true,
+          destinationSummary: true,
+          payoutReference: true,
+          remittedAt: true,
+          updatedAt: true,
+          allocation: {
+            select: {
+              contentId: true,
+              role: true,
+              participantEmail: true,
+              participantUserId: true
+            }
+          }
+        }
+      })
+      .catch((err: any) => {
+        if (isMissingParticipantPayoutTableError(err)) return [];
+        throw err;
+      });
+    payoutRows.forEach((row) => {
+      events.push({
+        id: `royalty.payout:${row.id}`,
+        ts: (row.remittedAt || row.updatedAt).toISOString(),
+        type: "payout.participant",
+        summary: row.allocation?.contentId || null,
+        details: {
+          participantPayoutId: row.id,
+          paymentIntentId: row.paymentIntentId,
+          providerPaymentIntentId: row.providerPaymentIntentId || null,
+          amountSats: String(row.amountSats || "0"),
+          status: parseParticipantPayoutStatus(row.status),
+          payoutRail: row.payoutRail || null,
+          destinationType: row.destinationType || null,
+          destinationSummary: row.destinationSummary || null,
+          payoutReference: row.payoutReference || null,
+          remittedAt: row.remittedAt ? row.remittedAt.toISOString() : null,
+          participant: {
+            role: row.allocation?.role || null,
+            participantEmail: row.allocation?.participantEmail || null,
+            participantUserId: row.allocation?.participantUserId || null
+          }
+        }
+      });
+    });
   } else if (scopeType === "clearance" && scopeId) {
     const link = await prisma.contentLink.findUnique({
       where: { id: scopeId },
@@ -9796,6 +11571,24 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         avatarUrl: user.avatarUrl || null
       }
     });
+
+    // Identity evidence enrichment (read-only):
+    // Include payout destination/config changes already captured as Identity audit rows.
+    const identityAudits = await prisma.auditEvent.findMany({
+      where: { entityType: "Identity", entityId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+      include: { user: { select: { id: true, email: true, displayName: true } } }
+    });
+    identityAudits.forEach((e) => {
+      events.push({
+        id: `identity.audit:${e.id}`,
+        ts: e.createdAt.toISOString(),
+        type: e.action,
+        actor: actorFromUser(e.user),
+        details: e.payloadJson || null
+      });
+    });
   } else if (scopeType === "library") {
     const content = await prisma.contentItem.findMany({
       where: { ownerUserId: userId, deletedAt: null },
@@ -9811,12 +11604,37 @@ app.get("/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
         details: { id: c.id, type: c.type, status: c.status, storefrontStatus: c.storefrontStatus }
       });
     });
+
+    // Library evidence enrichment (read-only):
+    // Include latest content-level audit actions across the current owner's catalog.
+    const contentIds = content.map((c) => c.id);
+    if (contentIds.length) {
+      const contentAudits = await prisma.auditEvent.findMany({
+        where: { entityType: "ContentItem", entityId: { in: contentIds } as any },
+        orderBy: { createdAt: "desc" },
+        take: 250,
+        include: { user: { select: { id: true, email: true, displayName: true } } }
+      });
+      contentAudits.forEach((e) => {
+        events.push({
+          id: `library.audit:${e.id}`,
+          ts: e.createdAt.toISOString(),
+          type: e.action,
+          actor: actorFromUser(e.user),
+          details: e.payloadJson || null
+        });
+      });
+    }
   } else {
     return badRequest(reply, "Unsupported scopeType");
   }
 
   events.sort((a, b) => (a.ts < b.ts ? 1 : -1));
-  return reply.send(jsonSafe({ ok: true, scopeType, scopeId, audit: events }));
+  const typedEvents = events.map((event) => ({
+    ...event,
+    archetype: resolveAuditArchetype(scopeType, event.type)
+  }));
+  return reply.send(jsonSafe({ ok: true, scopeType, scopeId, audit: typedEvents }));
 });
 
 // Invite audit history (owner only)
@@ -10860,7 +12678,7 @@ async function listLockedParticipationsForUser(userId: string): Promise<Particip
         participantUserId: lockedParticipant.participantUserId || null,
         acceptedAt: lockedParticipant.acceptedAt || null,
         verifiedAt: lockedParticipant.verifiedAt || null,
-        invitationStatus: lockedParticipant.invitation?.status || null
+        invitationStatus: (lockedParticipant as any)?.invitationStatus || null
       })
     ) {
       continue;
@@ -10959,6 +12777,14 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
         inviteToken && inviteStatus === "accepted"
           ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken)
           : null;
+      const normalizedContentStatus = (() => {
+        const v = asString(contentStatus || "").trim().toLowerCase();
+        if (v === "published" || v === "draft") return v;
+        // Older mirror rows may contain non-content statuses (for example "remote").
+        // Treat accepted remote participations as published for library eligibility.
+        if (inviteStatus === "accepted") return "published";
+        return null;
+      })();
       app.log.info(
         {
           userId,
@@ -10981,7 +12807,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       contentId,
       contentTitle,
       contentType,
-      contentStatus,
+      contentStatus: normalizedContentStatus,
       contentDeletedAt,
       splitVersionNum,
       role,
@@ -11499,6 +13325,27 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
 
   if (!latest) return notFound(reply, "No split version found");
 
+  const participantUserIds = Array.from(
+    new Set(
+      latest.participants
+        .map((p) => asString((p as any).participantUserId || ""))
+        .filter(Boolean)
+    )
+  );
+  const participantUsersById = new Map<string, { displayName: string | null; email: string | null }>();
+  if (participantUserIds.length > 0) {
+    const participantUsers = await prisma.user.findMany({
+      where: { id: { in: participantUserIds } },
+      select: { id: true, displayName: true, email: true }
+    });
+    for (const user of participantUsers) {
+      participantUsersById.set(user.id, {
+        displayName: user.displayName || null,
+        email: user.email || null
+      });
+    }
+  }
+
   return reply.send({
     content: {
       id: content.id,
@@ -11513,7 +13360,9 @@ app.get("/royalties/:contentId/terms", { preHandler: requireAuth }, async (req: 
       lockedAt: latest.lockedAt ? latest.lockedAt.toISOString() : null
     },
     participants: latest.participants.map((p) => ({
-      participantEmail: p.participantEmail || null,
+      participantUserId: p.participantUserId || null,
+      participantDisplayName: participantUsersById.get(p.participantUserId || "")?.displayName || null,
+      participantEmail: p.participantEmail || participantUsersById.get(p.participantUserId || "")?.email || null,
       role: p.role || null,
       percent: percentToPrimitive(p.percent ?? null),
       acceptedAt: p.acceptedAt ? p.acceptedAt.toISOString() : null
@@ -11781,13 +13630,27 @@ async function handleBuyerBuys(req: any, reply: any) {
   const manifest = await ensureManifestForContent(content);
   if (!manifest?.sha256) return notFound(reply, "Manifest not found");
 
-  if (content.priceSats == null || content.priceSats < 1n) {
-    return reply.code(409).send({ code: "PRICE_NOT_SET", error: "Creator has not set a price yet." });
+  // Guardrail: priced releases must be unlocked by real payment flow.
+  // Self-claim is only allowed for free/tip-style content.
+  const listedPriceSats = content.priceSats == null ? 0n : BigInt(content.priceSats);
+  if (listedPriceSats > 0n) {
+    app.log.info(
+      {
+        route: "/api/buyer/buys",
+        buyerId: session.buyer.id,
+        contentId,
+        productTier,
+        listedPriceSats: listedPriceSats.toString(),
+        mappedCode: "PAYMENT_REQUIRED"
+      },
+      "buyerBuys.self_claim_blocked_priced_content"
+    );
+    return reply.code(409).send({ code: "PAYMENT_REQUIRED", error: "Payment required for priced content." });
   }
 
-  const amountSats = parseSats(body.amountSats ?? content.priceSats);
-  if (amountSats <= 0n) return badRequest(reply, "amountSats must be > 0");
-  if (amountSats !== content.priceSats) {
+  const amountSats = parseSats(body.amountSats ?? listedPriceSats);
+  if (amountSats < 0n) return badRequest(reply, "amountSats must be >= 0");
+  if (amountSats !== listedPriceSats) {
     return reply.code(409).send({ code: "AMOUNT_MISMATCH", error: "Amount must match creator price." });
   }
 
@@ -11892,6 +13755,22 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     providerRemitMode?: ProviderRemitMode;
     payoutPolicy?: ProviderPayoutPolicy;
     allowProviderFallback?: boolean;
+    splitVersionId?: string | null;
+    participantAllocations?: Array<{
+      participantRef?: string | null;
+      participantId?: string | null;
+      splitParticipantId?: string | null;
+      participantUserId?: string | null;
+      participantEmail?: string | null;
+      role?: string | null;
+      roleKey?: string | null;
+      bps?: number | string | null;
+      destinationType?: string | null;
+      destinationSummary?: string | null;
+      destinationValue?: string | null;
+      destinationVerified?: boolean | null;
+      destinationVerificationError?: string | null;
+    }>;
   };
   const creatorNodeId = String(body.creatorNodeId || "").trim();
   const contentId = String(body.contentId || "").trim();
@@ -11899,6 +13778,13 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
   const paymentIntentId = String(body.paymentIntentId || "").trim();
   if (!creatorNodeId || !contentId || !paymentIntentId) return badRequest(reply, "creatorNodeId, contentId, paymentIntentId required");
   if (!/^\d+$/.test(amountSats) || Number(amountSats) <= 0) return badRequest(reply, "amountSats must be a positive integer");
+  const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+  if (!providerAuthority.ok) {
+    return reply.code(409).send({
+      error: providerAuthority.code || "PROVIDER_NOT_READY",
+      message: providerAuthority.message || "Provider execution is not ready on this node."
+    });
+  }
 
   const link = getProviderCreatorLink(creatorNodeId);
   if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
@@ -11929,7 +13815,11 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
 
   const providerIdentity = await buildLocalNodeIdentityDoc().catch(() => null);
   const providerNodeId = providerIdentity?.nodeId || "node:provider-unavailable";
-  const memo = `Certifyd delegated ${contentId.slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  const memo = await buildRemittanceMemo({
+    prefix: "Certifyd delegated",
+    paymentIntentId,
+    contentId
+  });
   let bolt11: string | null = null;
   let providerInvoiceRef: string | null = null;
   try {
@@ -11945,7 +13835,7 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     providerInvoicing: body.needsProviderInvoicing !== false,
     durablePublicHosting: Boolean(body.needsDurablePublicHosting)
   });
-  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
@@ -11978,6 +13868,32 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
     buyerSessionId: String(body.buyerSessionId || "").trim() || null,
     paidAt: null
   });
+  const participantAllocations = Array.isArray(body.participantAllocations)
+    ? body.participantAllocations
+    : [];
+  if (participantAllocations.length > 0) {
+    upsertProviderDelegatedAllocationBlueprintByPaymentIntentId(paymentIntentId, {
+      creatorNodeId,
+      contentId,
+      splitVersionId: String(body.splitVersionId || "").trim() || null,
+      allocationVersion: 1,
+      participants: participantAllocations.map((row) => ({
+        participantRef: String(row?.participantRef || "").trim(),
+        participantId: String(row?.participantId || "").trim() || null,
+        splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
+        participantUserId: String(row?.participantUserId || "").trim() || null,
+        participantEmail: String(row?.participantEmail || "").trim() || null,
+        role: String(row?.role || "").trim() || null,
+        roleKey: String(row?.roleKey || "").trim(),
+        bps: Math.max(0, Math.round(Number(row?.bps || 0))),
+        destinationType: String(row?.destinationType || "").trim() || null,
+        destinationSummary: String(row?.destinationSummary || "").trim() || null,
+        destinationValue: String(row?.destinationValue || "").trim() || null,
+        destinationVerified: Boolean(row?.destinationVerified),
+        destinationVerificationError: String(row?.destinationVerificationError || "").trim() || null
+      }))
+    });
+  }
   return reply.send({
     ok: true,
     paymentIntentId: created.paymentIntentId,
@@ -11997,6 +13913,13 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
 app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: any, reply: any) => {
   const paymentIntentId = String((req.params as any)?.paymentIntentId || "").trim();
   if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+  const providerAuthority = await resolveProviderExecutionAuthorityOnCurrentNode();
+  if (!providerAuthority.ok) {
+    return reply.code(409).send({
+      error: providerAuthority.code || "PROVIDER_NOT_READY",
+      message: providerAuthority.message || "Provider execution is not ready on this node."
+    });
+  }
   let current = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
   if (!current) return notFound(reply, "Provider payment intent not found");
   if (current.status !== "paid" && current.providerInvoiceRef) {
@@ -12009,13 +13932,43 @@ app.get("/public/provider/payment-intents/:paymentIntentId/status", async (req: 
       current = await ensureProviderPaymentSettlement(patched || current);
     }
   }
+  if (current.status === "paid") {
+    current = await ensureProviderPaymentSettlement(current);
+    if (current.payoutExecutionMode === "participant" && current.providerRemitMode === "auto_forward") {
+      try {
+        await executeParticipantPayoutRowsForIntent(current, "provider_status_participant_reconcile");
+        current = await syncProviderIntentPayoutTruthFromParticipantRows(current);
+      } catch (error: any) {
+        app.log.warn(
+          {
+            paymentIntentId: current.paymentIntentId,
+            providerPaymentIntentId: current.id,
+            error: String(error?.message || error || "participant_reconcile_failed")
+          },
+          "providerRemittance.participant_reconcile_failed"
+        );
+      }
+    }
+  }
   return reply.send({
     ok: true,
     paymentIntentId: current.paymentIntentId,
     status: current.status,
     paid: current.status === "paid",
     paidAt: current.paidAt || null,
-    paymentReceiptId: current.paymentReceiptId || null
+    paymentReceiptId: current.paymentReceiptId || null,
+    payoutStatus: current.payoutStatus || null,
+    payoutSummaryStatus: current.payoutSummaryStatus || null,
+    payoutRail: current.payoutRail || null,
+    payoutExecutionMode: current.payoutExecutionMode || null,
+    payoutDestinationType: current.payoutDestinationType || null,
+    payoutDestinationSummary: current.payoutDestinationSummary || null,
+    providerRemitMode: current.providerRemitMode || null,
+    payoutReference: current.payoutReference || null,
+    remittedAt: current.remittedAt || null,
+    payoutLastError: current.payoutLastError || null,
+    remittanceAttempts: Number(current.remittanceAttempts || 0),
+    remittanceLastCheckedAt: current.remittanceLastCheckedAt || null
   });
 });
 
@@ -12553,7 +14506,7 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   if ((next === "advanced" || next === "lan") && !readiness.namedTunnelDetected) {
     return reply.code(409).send({
       error: "NAMED_TUNNEL_REQUIRED",
-      message: "Sovereign modes require a detected named tunnel / stable public host."
+      message: "Sovereign modes require a reachable canonical public origin (stable host route)."
     });
   }
   if (next === "lan" && !readiness.ready) {
@@ -12561,7 +14514,7 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
       error: "LOCAL_SOVEREIGN_STACK_REQUIRED",
       blockers: readiness.blockers,
       message:
-        "Sovereign Node requires a named tunnel plus local Bitcoin, local LND, and local commerce service readiness."
+        "Sovereign Node requires a reachable canonical public origin plus local Bitcoin, local LND, and local commerce service readiness."
     });
   }
   try {
@@ -13323,6 +15276,8 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
   const ctx = getCapabilityContext();
   const userId = (req.user as JwtUser).sub;
   const paymentsReadiness = await getPaymentsReadiness(userId);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const payoutExecutionRuntime = await resolvePayoutExecutionRuntime(userId).catch(() => null);
   return reply.send({
     bootId: BOOT_ID,
     startedAt: STARTED_AT,
@@ -13339,6 +15294,8 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
     },
     paymentsMode: ctx.paymentsMode,
     paymentsReadiness,
+    lightningRuntime,
+    payoutExecutionRuntime,
     storage: runtime.storage
   });
 });
@@ -13358,12 +15315,14 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const providerConfig = getNetworkProviderConfig();
   const providerConnection = deriveProviderCommerceConnectionState(providerConfig);
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const payoutExecutionRuntime = await resolvePayoutExecutionRuntime(userId).catch(() => null);
   const sovereignReadiness = await getLocalSovereignReadiness();
 
   const localInvoiceMinting =
     ctx.paymentsMode === "node" &&
     ctx.nodeMode === "lan" &&
-    Boolean(paymentsReadiness?.lightning?.ready);
+    Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready);
 
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: localInvoiceMinting,
@@ -13446,6 +15405,8 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       effectiveDestinationSummary: payoutDestination.effectiveDestinationSummary,
       effectivePayoutRail: payoutDestination.effectivePayoutRail
     },
+    lightningRuntime,
+    payoutExecutionRuntime,
     providerBinding: {
       configured: providerConfigured,
       providerNodeId: providerConfigured ? providerConfig.providerNodeId : null
@@ -13466,7 +15427,8 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 app.get("/api/network/payout-destination", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
-  const localLndReady = Boolean(paymentsReadiness?.lightning?.ready);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const localLndReady = Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready);
   const destination = await resolveEffectivePayoutDestination(userId, {
     localLndReady,
     paymentsReadiness
@@ -13485,7 +15447,7 @@ app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (
 
   const type = parsePayoutDestinationType(body?.payoutDestinationType || null);
   if (!type) return badRequest(reply, "payoutDestinationType must be lightning_address, local_lnd, or onchain_address");
-  const providerRemitMode = parseProviderRemitMode(body?.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body?.providerRemitMode || null) || "auto_forward";
   const record = upsertCreatorPayoutDestinationRecord(userId, {
     payoutDestinationType: type,
     lightningAddress: body?.lightningAddress || null,
@@ -13494,8 +15456,9 @@ app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (
   });
 
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
   const destination = await resolveEffectivePayoutDestination(userId, {
-    localLndReady: Boolean(paymentsReadiness?.lightning?.ready),
+    localLndReady: Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     paymentsReadiness
   });
   if (!destination.valid) {
@@ -13928,17 +15891,18 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
   const ctx = getCapabilityContext();
   const userId = (req.user as JwtUser).sub;
   const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting:
       ctx.paymentsMode === "node" &&
-      Boolean(paymentsReadiness?.lightning?.ready),
+      Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     providerCfg: providerTarget,
     ctx
   });
   const payoutDestination = await resolveEffectivePayoutDestination(userId, {
     localLndReady:
       ctx.paymentsMode === "node" &&
-      Boolean(paymentsReadiness?.lightning?.ready),
+      Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     paymentsReadiness
   });
 
@@ -13952,6 +15916,7 @@ app.get("/api/network/debug/relationship", { preHandler: requireAuth }, async (r
     verification,
     acknowledgment,
     permit,
+    lightningRuntime,
     serviceProfile,
     payoutDestination,
     userStatus,
@@ -14045,7 +16010,20 @@ app.post("/api/publish/profile", { preHandler: requireAuth }, async (req: any, r
 
 app.get("/api/network/activate-profile/status", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const cfg = getNetworkProviderConfig();
-  return reply.send(getProfileNetworkActivationStatus(cfg));
+  const current = getProfileNetworkActivationStatus(cfg);
+  if (current.activation.status === "activated") return reply.send(current);
+  const network = await deriveUserNetworkStatus();
+  const nextMessage = deriveActivationStatusMessageFromNetwork(network);
+  if (String(current.activation.message || "") === nextMessage) return reply.send(current);
+  const updated = persistProfileNetworkActivationState(
+    buildProfileNetworkActivationState(cfg, {
+      status: "not_ready",
+      message: nextMessage,
+      checkedAt: new Date().toISOString(),
+      activatedAt: null
+    })
+  );
+  return reply.send(updated);
 });
 
 app.post("/api/network/activate-profile", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -14356,6 +16334,59 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
   const intents = listProviderPaymentIntents();
   const activePaymentIntents = intents.filter((intent) => intent.status === "created" || intent.status === "issued").length;
   const settledPayments = intents.filter((intent) => intent.status === "paid").length;
+  const payoutRows = await prisma.participantPayout
+    .findMany({
+      select: {
+        providerPaymentIntentId: true,
+        status: true,
+        amountSats: true,
+        lastError: true,
+        payoutReference: true,
+        remittedAt: true,
+        updatedAt: true
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const payoutByIntent = new Map<
+    string,
+    {
+      counts: Record<ParticipantPayoutStatus, number>;
+      amounts: Record<ParticipantPayoutStatus, bigint>;
+      latestError: string | null;
+      latestReference: string | null;
+      latestRemittedAt: string | null;
+      latestUpdatedAtMs: number;
+    }
+  >();
+  for (const row of payoutRows) {
+    const key = String(row.providerPaymentIntentId || "").trim();
+    if (!key) continue;
+    const status = parseParticipantPayoutStatus(row.status);
+    const amount = BigInt(String(row.amountSats || "0"));
+    const updatedAtMs = row.updatedAt ? row.updatedAt.getTime() : 0;
+    const current =
+      payoutByIntent.get(key) ||
+      {
+        counts: { pending: 0, ready: 0, forwarding: 0, paid: 0, failed: 0, blocked: 0 },
+        amounts: { pending: 0n, ready: 0n, forwarding: 0n, paid: 0n, failed: 0n, blocked: 0n },
+        latestError: null,
+        latestReference: null,
+        latestRemittedAt: null,
+        latestUpdatedAtMs: 0
+      };
+    current.counts[status] += 1;
+    current.amounts[status] += amount;
+    if (updatedAtMs >= current.latestUpdatedAtMs) {
+      current.latestUpdatedAtMs = updatedAtMs;
+      current.latestError = String(row.lastError || "").trim() || null;
+      current.latestReference = String(row.payoutReference || "").trim() || null;
+      current.latestRemittedAt = row.remittedAt ? row.remittedAt.toISOString() : null;
+    }
+    payoutByIntent.set(key, current);
+  }
   const totals = intents.reduce(
     (acc, intent) => {
       const gross = BigInt(String(intent.grossAmountSats || intent.amountSats || "0"));
@@ -14363,15 +16394,27 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
       const durableHostingFee = BigInt(String(intent.providerDurableHostingFeeSats || "0"));
       const fee = BigInt(String(intent.providerFeeSats || "0"));
       const net = BigInt(String(intent.creatorNetSats || intent.amountSats || "0"));
+      const payoutTruth = payoutByIntent.get(intent.id) || null;
+      const paidAmount = payoutTruth ? payoutTruth.amounts.paid : 0n;
+      const pendingAmount = payoutTruth
+        ? payoutTruth.amounts.pending + payoutTruth.amounts.ready + payoutTruth.amounts.forwarding
+        : 0n;
+      const failedAmount = payoutTruth ? payoutTruth.amounts.failed + payoutTruth.amounts.blocked : 0n;
+      const accounted = paidAmount + pendingAmount + failedAmount;
+      const residualPending = net > accounted ? net - accounted : 0n;
       acc.grossCollectedSats += gross;
       acc.providerInvoicingFeeEarnedSats += invoicingFee;
       acc.providerDurableHostingFeeEarnedSats += durableHostingFee;
       acc.providerFeeEarnedSats += fee;
       acc.creatorNetOwedSats += net;
-      if (intent.payoutStatus === "paid") acc.creatorNetPaidSats += net;
-      if (intent.payoutStatus === "pending") acc.creatorNetPendingSats += net;
-      if (intent.payoutStatus === "forwarding") acc.creatorNetPendingSats += net;
-      if (intent.payoutStatus === "failed") acc.creatorNetFailedSats += net;
+      if (payoutTruth) {
+        acc.creatorNetPaidSats += paidAmount;
+        acc.creatorNetPendingSats += pendingAmount + residualPending;
+        acc.creatorNetFailedSats += failedAmount;
+      } else if (intent.status === "paid") {
+        // No participant rows yet: keep owed amount visible as pending.
+        acc.creatorNetPendingSats += net;
+      }
       return acc;
     },
     {
@@ -14385,14 +16428,10 @@ app.get("/api/provider/summary", { preHandler: requireAuth }, async (_req: any, 
       creatorNetFailedSats: 0n
     }
   );
-  const participantPayouts = await prisma.participantPayout.groupBy({
-    by: ["status"],
-    _count: { _all: true }
-  }).catch(() => []);
-  const participantPayoutSummary = participantPayouts.reduce(
+  const participantPayoutSummary = payoutRows.reduce(
     (acc, row) => {
-      const status = parseParticipantPayoutStatus((row as any).status);
-      acc[status] = Number((row as any)?._count?._all || 0);
+      const status = parseParticipantPayoutStatus((row as any)?.status);
+      acc[status] = Number(acc[status] || 0) + 1;
       return acc;
     },
     {
@@ -14432,10 +16471,107 @@ app.get("/api/provider/delegated-publishes", { preHandler: requireAuth }, async 
 });
 
 app.get("/api/provider/payment-intents", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send({ items: listProviderPaymentIntents() });
+  const intents = listProviderPaymentIntents();
+  const payoutRows = await prisma.participantPayout
+    .findMany({
+      select: {
+        providerPaymentIntentId: true,
+        status: true,
+        amountSats: true,
+        lastError: true,
+        payoutReference: true,
+        remittedAt: true,
+        updatedAt: true
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const payoutByIntent = new Map<
+    string,
+    {
+      counts: Record<ParticipantPayoutStatus, number>;
+      amounts: Record<ParticipantPayoutStatus, bigint>;
+      latestError: string | null;
+      latestReference: string | null;
+      latestRemittedAt: string | null;
+      latestUpdatedAtMs: number;
+    }
+  >();
+  for (const row of payoutRows) {
+    const key = String(row.providerPaymentIntentId || "").trim();
+    if (!key) continue;
+    const status = parseParticipantPayoutStatus(row.status);
+    const amount = BigInt(String(row.amountSats || "0"));
+    const updatedAtMs = row.updatedAt ? row.updatedAt.getTime() : 0;
+    const current =
+      payoutByIntent.get(key) ||
+      {
+        counts: { pending: 0, ready: 0, forwarding: 0, paid: 0, failed: 0, blocked: 0 },
+        amounts: { pending: 0n, ready: 0n, forwarding: 0n, paid: 0n, failed: 0n, blocked: 0n },
+        latestError: null,
+        latestReference: null,
+        latestRemittedAt: null,
+        latestUpdatedAtMs: 0
+      };
+    current.counts[status] += 1;
+    current.amounts[status] += amount;
+    if (updatedAtMs >= current.latestUpdatedAtMs) {
+      current.latestUpdatedAtMs = updatedAtMs;
+      current.latestError = String(row.lastError || "").trim() || null;
+      current.latestReference = String(row.payoutReference || "").trim() || null;
+      current.latestRemittedAt = row.remittedAt ? row.remittedAt.toISOString() : null;
+    }
+    payoutByIntent.set(key, current);
+  }
+  const items = intents.map((intent) => {
+    const payoutTruth = payoutByIntent.get(intent.id) || null;
+    if (!payoutTruth) return intent;
+    const net = BigInt(String(intent.creatorNetSats || intent.amountSats || "0"));
+    const paidAmount = payoutTruth.amounts.paid;
+    const pendingAmount = payoutTruth.amounts.pending + payoutTruth.amounts.ready + payoutTruth.amounts.forwarding;
+    const failedAmount = payoutTruth.amounts.failed + payoutTruth.amounts.blocked;
+    const accounted = paidAmount + pendingAmount + failedAmount;
+    const residualPending = net > accounted ? net - accounted : 0n;
+    const effectivePayoutStatus: ProviderPayoutStatus =
+      paidAmount >= net && net > 0n
+        ? "paid"
+        : pendingAmount > 0n || residualPending > 0n || paidAmount > 0n
+          ? "pending"
+          : failedAmount > 0n
+            ? "failed"
+            : intent.payoutStatus;
+    return {
+      ...intent,
+      payoutStatus: effectivePayoutStatus,
+      payoutSummaryStatus:
+        paidAmount >= net && net > 0n
+          ? "paid"
+          : pendingAmount > 0n || residualPending > 0n
+            ? paidAmount > 0n
+              ? "partial"
+              : "pending"
+            : failedAmount > 0n
+              ? paidAmount > 0n
+                ? "partial"
+                : "failed"
+              : intent.payoutSummaryStatus,
+      payoutReference: payoutTruth.latestReference || intent.payoutReference || null,
+      remittedAt: payoutTruth.latestRemittedAt || intent.remittedAt || null,
+      payoutLastError:
+        effectivePayoutStatus === "paid" ? null : payoutTruth.latestError || intent.payoutLastError || null
+    };
+  });
+  return reply.send({ items });
 });
 app.get("/api/provider/payments/intents", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  return reply.send({ items: listProviderPaymentIntents() });
+  const intents = await app.inject({
+    method: "GET",
+    url: "/api/provider/payment-intents",
+    headers: { authorization: (_req.headers as any)?.authorization || "" }
+  });
+  return reply.code(intents.statusCode).type("application/json").send(intents.json());
 });
 
 app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
@@ -14528,7 +16664,11 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
       });
     }
   }
-  const memo = `Certifyd delegated ${String(contentId || "").slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  const memo = await buildRemittanceMemo({
+    prefix: "Certifyd delegated",
+    paymentIntentId,
+    contentId
+  });
   let bolt11: string | null = null;
   let providerInvoiceRef: string | null = null;
   try {
@@ -14540,7 +16680,7 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
   } catch {}
-  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
@@ -14614,7 +16754,11 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
       });
     }
   }
-  const memo = `Certifyd delegated ${String(contentId || "").slice(0, 8)} ${paymentIntentId.slice(-6)}`;
+  const memo = await buildRemittanceMemo({
+    prefix: "Certifyd delegated",
+    paymentIntentId,
+    contentId
+  });
   let bolt11: string | null = null;
   let providerInvoiceRef: string | null = null;
   try {
@@ -14626,7 +16770,7 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     bolt11 = invoice?.bolt11 || null;
     providerInvoiceRef = invoice?.providerId || null;
   } catch {}
-  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "manual_payout";
+  const providerRemitMode = parseProviderRemitMode(body.providerRemitMode || null) || "auto_forward";
   const payoutRail: ProviderPayoutRail = providerRemitMode === "auto_forward" ? "forwarded" : "provider_custody";
   const payoutPolicy = normalizeProviderFallbackPolicy(body.payoutPolicy, body.allowProviderFallback);
   const created = createProviderPaymentIntent({
@@ -14740,25 +16884,37 @@ app.post("/api/provider/payment-intents/:id/retry-remittance", { preHandler: req
     return reply.code(409).send({ error: "PAYMENT_NOT_SETTLED", message: "Remittance can only run after payment settlement." });
   }
   if (current.payoutExecutionMode === "participant") {
-    return reply.code(409).send({
-      error: "PARTICIPANT_PAYOUT_AUTHORITY",
-      message: "Creator-level remittance is disabled while participant payout authority is active."
-    });
+    const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+    if (!payoutRuntime.participantPayoutsEnabled || !payoutRuntime.participantPayoutExecutionEnabled) {
+      return reply.code(409).send({
+        error: "PARTICIPANT_PAYOUT_EXECUTION_DISABLED",
+        message: "Participant payout execution is currently disabled."
+      });
+    }
+    await executeParticipantPayoutRowsForIntent(current, "provider_retry_participant_remittance");
+    const refreshed = await syncProviderIntentPayoutTruthFromParticipantRows(current);
+    return reply.send({ ok: true, item: refreshed });
   }
   const result = await executeCreatorRemittance(current, "provider_retry_remittance");
   return reply.send({ ok: true, item: result });
 });
 
 app.post("/api/provider/remittances/reprocess", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const candidates = listProviderPaymentIntents().filter((row) => {
-    if (row.status !== "paid") return false;
-    if (row.payoutStatus === "paid") return false;
-    if (row.payoutExecutionMode === "participant") return false;
-    if (row.providerRemitMode !== "auto_forward") return false;
-    return row.payoutDestinationType === "lightning_address";
-  });
+  const candidates = listProviderPaymentIntents().filter((row) => row.status === "paid" && row.payoutStatus !== "paid");
   const items: ProviderPaymentIntentRecord[] = [];
   for (const row of candidates) {
+    if (row.payoutExecutionMode === "participant") {
+      const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+      if (!payoutRuntime.participantPayoutsEnabled || !payoutRuntime.participantPayoutExecutionEnabled) {
+        continue;
+      }
+      await executeParticipantPayoutRowsForIntent(row, "provider_bulk_reprocess_participant_remittance");
+      const refreshed = await syncProviderIntentPayoutTruthFromParticipantRows(row);
+      items.push(refreshed);
+      continue;
+    }
+    if (row.providerRemitMode !== "auto_forward") continue;
+    if (row.payoutDestinationType !== "lightning_address") continue;
     const forwarded = await executeCreatorRemittance(row, "provider_bulk_reprocess_remittance");
     items.push(forwarded);
   }
@@ -15644,7 +17800,7 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
   if (wantsProviderConfig && !hasDetectedNamedTunnel()) {
     return reply.code(409).send({
       error: "NAMED_TUNNEL_REQUIRED",
-      message: "Connect a named tunnel first. Provider commerce services unlock after stable host detection."
+      message: "Configure a canonical public origin first. Provider commerce services unlock after stable host detection."
     });
   }
 
@@ -15745,7 +17901,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     await tunnelManager.stop();
     const status = await tunnelManager.startNamed({
       publicOrigin: cfg.publicOrigin,
-      tunnelName: cfg.tunnelName,
+      tunnelName: String(cfg.tunnelName || "").trim(),
       configPath,
       token: namedToken
     });
@@ -15899,7 +18055,19 @@ app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
   const entitlements = await prisma.entitlement.findMany({
     where: { buyerUserId: userId },
-    include: { content: true },
+    include: {
+      content: true,
+      payment: {
+        select: {
+          id: true,
+          status: true,
+          paidAt: true,
+          amountSats: true,
+          receiptToken: true,
+          createdAt: true
+        }
+      }
+    },
     orderBy: { grantedAt: "desc" }
   });
 
@@ -15913,14 +18081,35 @@ app.get("/me/entitlements", { preHandler: requireAuth }, async (req: any) => {
   }
 
   return entitlements.map((e) => ({
+    paymentIntentId: e.paymentIntentId || null,
     id: e.id,
     contentId: e.contentId,
     manifestSha256: e.manifestSha256,
     grantedAt: e.grantedAt.toISOString(),
+    unlockedAt: e.grantedAt.toISOString(),
+    purchaseCreatedAt: e.payment?.createdAt?.toISOString?.() || null,
+    purchasePaidAt: e.payment?.paidAt?.toISOString?.() || null,
+    purchaseStatus: e.payment?.status || null,
+    purchaseAmountSats: e.payment?.amountSats != null ? String(e.payment.amountSats) : null,
+    accessMode:
+      e.content?.deliveryMode === "stream_and_download"
+        ? "stream_and_download"
+        : e.content?.deliveryMode === "download_only"
+          ? "download_only"
+          : "stream_only",
+    canStream:
+      e.content?.deliveryMode === "download_only"
+        ? false
+        : true,
+    canDownload:
+      e.content?.deliveryMode === "download_only" || e.content?.deliveryMode === "stream_and_download",
     content: e.content
       ? { id: e.content.id, title: e.content.title, type: e.content.type, status: e.content.status }
       : null,
-    receiptToken: tokenByKey.get(`${e.contentId}:${e.manifestSha256}`) || null
+    receiptToken:
+      e.payment?.receiptToken ||
+      tokenByKey.get(`${e.contentId}:${e.manifestSha256}`) ||
+      null
   }));
 });
 
@@ -15929,7 +18118,20 @@ app.get("/me/purchases/payment-intents", { preHandler: requireAuth }, async (req
   const userId = (req.user as JwtUser).sub;
   const intents = await prisma.paymentIntent.findMany({
     where: { buyerUserId: userId },
-    include: { content: true },
+    include: {
+      content: {
+        include: {
+          owner: { select: { id: true, displayName: true, email: true } }
+        }
+      },
+      entitlements: {
+        where: { buyerUserId: userId },
+        select: {
+          id: true,
+          grantedAt: true
+        }
+      }
+    },
     orderBy: { createdAt: "desc" }
   });
   return intents.map((i) => ({
@@ -15940,8 +18142,35 @@ app.get("/me/purchases/payment-intents", { preHandler: requireAuth }, async (req
     status: i.status,
     paidVia: i.paidVia,
     createdAt: i.createdAt.toISOString(),
+    paidAt: i.paidAt?.toISOString?.() || null,
     receiptToken: i.receiptToken || null,
-    content: i.content ? { id: i.content.id, title: i.content.title, type: i.content.type } : null
+    unlockedAt: i.entitlements?.[0]?.grantedAt?.toISOString?.() || null,
+    accessMode:
+      i.content?.deliveryMode === "stream_and_download"
+        ? "stream_and_download"
+        : i.content?.deliveryMode === "download_only"
+          ? "download_only"
+          : "stream_only",
+    canStream:
+      i.content?.deliveryMode === "download_only"
+        ? false
+        : true,
+    canDownload:
+      i.content?.deliveryMode === "download_only" || i.content?.deliveryMode === "stream_and_download",
+    content: i.content
+      ? {
+          id: i.content.id,
+          title: i.content.title,
+          type: i.content.type,
+          owner: i.content.owner
+            ? {
+                id: i.content.owner.id,
+                displayName: i.content.owner.displayName || null,
+                email: i.content.owner.email || null
+              }
+            : null
+        }
+      : null
   }));
 });
 
@@ -16689,7 +18918,7 @@ app.post("/api/me/payout", { preHandler: requireAuth }, async (req: any, reply) 
     payoutDestinationType: inferredType,
     lightningAddress: lightningAddress || null,
     onchainAddress: normalizedBtc,
-    providerRemitMode: inferredType ? "manual_payout" : null
+    providerRemitMode: inferredType ? "auto_forward" : null
   });
 
   return reply.send({ ok: true });
@@ -17587,11 +19816,12 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
 
     if (needsBasicSplit) {
       const now = new Date();
+      const currentVersionNumber = sv.versionNumber;
       const created = await prisma.$transaction(async (tx) => {
         const newSv = await tx.splitVersion.create({
           data: {
             contentId,
-            versionNumber: sv.versionNumber + 1,
+            versionNumber: currentVersionNumber + 1,
             createdByUserId: content.ownerUserId,
             status: "locked",
             lockedAt: now
@@ -17661,6 +19891,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
       }
     | null = null;
   let delegatedPublishRecord: ProviderDelegatedPublishRecord | null = null;
+  let delegatedPublishWarning: string | null = null;
   const shouldDelegatePublish =
     isNetworkProviderConfigured(providerCfg) &&
     evaluateProviderExecutionTrustReadiness().allowed &&
@@ -17693,10 +19924,50 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
         signal: controller.signal
       } as any);
       if (!providerResponse.ok) {
-        return reply.code(502).send({
-          code: "delegated_publish_failed",
-          message: `Provider delegated publish failed (${providerResponse.status}).`
+        const providerError: any = await providerResponse.json().catch(() => null);
+        const providerCode = String(providerError?.error || providerError?.code || "").trim() || null;
+        const providerMessage =
+          String(providerError?.message || providerError?.reason || "").trim() ||
+          `Provider delegated publish failed (${providerResponse.status}).`;
+        app.log.warn(
+          {
+            contentId,
+            target,
+            providerStatus: providerResponse.status,
+            providerCode,
+            providerMessage
+          },
+          "publish.delegated_provider_failed"
+        );
+        const failureAction = classifyDelegatedPublishFailure({
+          providerStatus: providerResponse.status,
+          providerCode
         });
+        if (failureAction === "skip_relationship_required") {
+          delegatedPublishWarning = providerMessage;
+          app.log.warn(
+            {
+              contentId,
+              target,
+              providerStatus: providerResponse.status,
+              providerCode,
+              providerMessage
+            },
+            "publish.delegated_provider_skipped_relationship_required"
+          );
+        } else if (failureAction === "conflict") {
+          return reply.code(409).send({
+            code: providerCode || "delegated_publish_conflict",
+            message: providerMessage,
+            providerStatus: providerResponse.status
+          });
+        } else {
+          return reply.code(502).send({
+            code: providerCode || "delegated_publish_failed",
+            message: providerMessage,
+            providerStatus: providerResponse.status
+          });
+        }
       }
       const providerJson: any = await providerResponse.json().catch(() => null);
       delegatedPublishRecord = providerJson?.delegatedPublish || null;
@@ -17782,6 +20053,7 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     publishedAt: now.toISOString(),
     manifestSha256: canonicalManifestHash,
     publicOrigin,
+    delegatedPublishWarning,
     delegatedPublish: delegatedPublishRecord
       ? {
           id: delegatedPublishRecord.id,
@@ -17871,7 +20143,7 @@ app.get("/api/content/:id/links", { preHandler: requireAuth }, async (req: any, 
 
   const links = await prisma.contentLink.findMany({
     where: { childContentId: contentId, relation: { in: ["derivative", "remix", "mashup"] as any } },
-    orderBy: { createdAt: "asc" }
+    orderBy: { id: "asc" }
   });
 
   const parentLink = links[0] || null;
@@ -18487,7 +20759,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         }),
         signal: ctrl.signal as any
       });
-      const data = await res.json().catch(() => null);
+      const data: any = await res.json().catch(() => null);
       clearTimeout(timeout);
       if (res.ok && Array.isArray(data?.approvalUrls)) {
         remoteApprovalUrls = data.approvalUrls;
@@ -18804,7 +21076,7 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   }
 
   let status: string = "PENDING";
-  if (approveBps >= auth.approvalBpsTarget) status = "APPROVED";
+  if (approveBps >= (auth.approvalBpsTarget ?? 6667)) status = "APPROVED";
   // v1: keep rejections as PENDING
 
   await prisma.derivativeAuthorization.update({
@@ -20020,6 +22292,27 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
+  const brandLogoDataUri = (() => {
+    const candidates = [
+      path.resolve(path.dirname(SERVER_FILE), "assets/certifyd-profile-logo.png"),
+      path.resolve(process.cwd(), "apps/api/src/assets/certifyd-profile-logo.png"),
+      path.resolve(process.cwd(), "src/assets/certifyd-profile-logo.png"),
+      path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd-creator-logo.png"),
+      path.resolve(process.cwd(), "../dashboard/src/assets/certifyd-creator-logo.png")
+    ];
+    for (const candidate of candidates) {
+      try {
+        if (!fsSync.existsSync(candidate)) continue;
+        const bytes = fsSync.readFileSync(candidate);
+        if (!bytes || bytes.length === 0) continue;
+        return `data:image/png;base64,${bytes.toString("base64")}`;
+      } catch {
+        // try next path
+      }
+    }
+    return null;
+  })();
+  const safeBrandLogoDataUri = brandLogoDataUri ? escHtml(brandLogoDataUri) : "";
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -20275,13 +22568,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
           .join("")
       : "";
-  const creatorSignalHtml = `<div class="line"><strong>Creator Signal:</strong> ${escHtml(String(creatorSignal.score))} <span class="muted">(${escHtml(creatorSignal.tier)})</span></div>
-      <div class="signal-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
+  const creatorSignalCompactHtml = `<div class="signal-compact-title">Trust Score</div>
+      <div class="signal-compact-score"><strong>${escHtml(String(creatorSignal.score))}</strong> <span class="muted">· ${escHtml(creatorSignal.tier)}</span></div>
+      <div class="signal-meter signal-compact-meter" role="img" aria-label="Creator Signal ${escHtml(String(creatorSignal.score))}">
         <div class="signal-meter-fill" style="width:${creatorSignalPercent}%"></div>
       </div>
-      <div class="muted">Signal meter: ${escHtml(String(creatorSignalPercent))}%</div>
-      <div class="line muted">Identity Proofs +${escHtml(String(creatorSignal.identityScore))} • Presence +${escHtml(String(creatorSignal.presenceBonus))} • Node Operator +${escHtml(String(creatorSignal.nodeScore))}</div>
-      <div class="line muted">Public Tunnel ${creatorSignal.nodeDetails.hasPublicTunnel ? "✓" : "—"} • Lightning ${creatorSignal.nodeDetails.hasLightningConfigured ? "✓" : "—"} • Receive ${creatorSignal.nodeDetails.canReceivePayments ? "✓" : "—"} • Channels ${escHtml(String(creatorSignal.nodeDetails.channelCount))}</div>`;
+      <div class="signal-compact-meta muted">Confidence ${escHtml(String(creatorSignalPercent))}%</div>
+      <div class="signal-chip-row">
+        <span class="signal-chip">Identity +${escHtml(String(creatorSignal.identityScore))}</span>
+        <span class="signal-chip">Presence +${escHtml(String(creatorSignal.presenceBonus))}</span>
+        <span class="signal-chip">Node +${escHtml(String(creatorSignal.nodeScore))}</span>
+      </div>`;
   const profilePostureBadgeHtml = `<div class="line"><span class="${escHtml(profilePostureBadgeClass)}">${escHtml(profilePostureBadgeLabel)}</span></div>`;
   const featuredContentHtml =
     featuredContent.length > 0
@@ -20531,6 +22828,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
         ].join("")
       : "";
+  const creatorProfileFaviconDataUri = (() => {
+    const iconPath = resolveTabIconPath();
+    if (!iconPath) return null;
+    try {
+      const bytes = fsSync.readFileSync(iconPath);
+      if (!bytes || bytes.length === 0) return null;
+      return `data:image/png;base64,${bytes.toString("base64")}`;
+    } catch {
+      return null;
+    }
+  })();
+  const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
+  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404g";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -20538,11 +22848,47 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Certifyd Creator Profile</title>
+  <link rel="icon" type="image/png" href="${creatorProfileFaviconHref}" />
+  <link rel="shortcut icon" type="image/png" href="${creatorProfileFaviconHref}" />
+  <link rel="apple-touch-icon" href="${creatorProfileFaviconHref}" />
   <style>
+    :root {
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --profile-brand-col: 148px;
+      --profile-gap-x: var(--space-3);
+      --profile-gap-y: var(--space-3);
+      --profile-logo-size: 148px;
+      --profile-id-offset: 26px;
+      --profile-id-gap: 14px;
+      --profile-avatar-size: 124px;
+    }
     * { box-sizing: border-box; }
     body { margin:0; font-family: system-ui, -apple-system, Segoe UI, sans-serif; background:#0b0b0b; color:#eee; padding:24px; }
     .card { width:min(860px, 100%); margin:0 auto; background:#111; border:1px solid #222; border-radius:16px; padding:22px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.22); }
-    .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; }
+    .brand-row { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+    .brand-logo-image { display:block; width:var(--profile-logo-size); height:auto; object-fit:contain; }
+    .brand-mark {
+      width:22px;
+      height:22px;
+      border-radius:999px;
+      border:1px solid #2e3b4d;
+      background:linear-gradient(180deg, #152132 0%, #0f1724 100%);
+      color:#b8dbff;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      font-size:12px;
+      font-weight:700;
+      line-height:1;
+      text-transform:lowercase;
+    }
+    .brand-word { font-size:12px; letter-spacing:0.18em; text-transform:uppercase; color:#a5b7ca; }
+    .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
     .muted { color:#9aa0a6; font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
@@ -20551,16 +22897,66 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     a:hover { text-decoration:underline; }
     .section { margin-top:18px; border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:14px; }
     .section h3 { margin:0; font-size:16px; letter-spacing:-0.01em; }
-    .hero { display:flex; gap:14px; align-items:center; margin-top:14px; }
-    .avatar { width:84px; height:84px; border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
+    .profile-header-grid {
+      display:grid;
+      grid-template-columns:var(--profile-brand-col) minmax(260px, 320px) minmax(280px, 1fr);
+      gap:var(--profile-gap-y) var(--profile-gap-x);
+      align-items:center;
+      margin-top:14px;
+    }
+    .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding-top:0; padding-right:2px; min-width:0; }
+    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; margin-left:var(--profile-id-offset); }
+    .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; }
     .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
     .hero-handle { margin-top:4px; }
+    .signal-rail { border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:12px; }
+    .signal-compact-title { font-size:13px; font-weight:600; letter-spacing:-0.01em; }
+    .signal-compact-score { margin-top:6px; font-size:16px; }
+    .signal-compact-meter { margin-top:6px; height:6px; }
+    .signal-compact-meta { margin-top:6px; font-size:12px; line-height:1.35; }
+    .signal-chip-row { margin-top:8px; display:flex; flex-wrap:wrap; gap:6px; }
+    .signal-chip {
+      display:inline-flex;
+      align-items:center;
+      border:1px solid #2c3440;
+      border-radius:999px;
+      padding:2px 8px;
+      font-size:11px;
+      color:#b7c2d0;
+      background:#131922;
+      line-height:1.25;
+    }
     .meta-grid { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
     .meta-item { border:1px solid #1f1f1f; border-radius:10px; background:#101113; padding:10px; }
     .meta-label { color:#9aa0a6; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:4px; }
+    .details-toggle { margin-top:0; }
+    .details-toggle > summary {
+      list-style:none;
+      cursor:pointer;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:10px;
+      font-size:16px;
+      font-weight:600;
+      letter-spacing:-0.01em;
+    }
+    .details-toggle > summary::-webkit-details-marker { display:none; }
+    .details-toggle > summary::after {
+      content:"Show";
+      font-size:12px;
+      font-weight:500;
+      color:#9aa0a6;
+      border:1px solid #2a2a2a;
+      border-radius:999px;
+      padding:2px 10px;
+    }
+    .details-toggle[open] > summary::after { content:"Hide"; }
+    .stack-tight { margin-top:10px; }
     .proof-group { margin-top:12px; }
-    .proof-group-title { color:#a5adb8; font-size:12px; text-transform:uppercase; letter-spacing:0.08em; margin-bottom:6px; }
+    .proof-group-title { color:#bcc5d2; font-size:13px; font-weight:600; letter-spacing:0.01em; margin-bottom:6px; }
+    .proof-group .line { margin-top:6px; line-height:1.35; }
     .proof-badge {
       display:inline-flex;
       width:20px;
@@ -20618,72 +23014,203 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-title { font-weight:700; font-size:19px; line-height:1.25; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
+    body.iframe-embedded .profile-header-grid {
+      grid-template-columns:88px minmax(220px, 1.1fr) minmax(240px, 1fr);
+      grid-template-areas:"brand identity signal";
+      align-items:center;
+      gap:10px 14px;
+      margin-top:4px;
+    }
+    body.iframe-embedded { padding:10px; }
+    body.iframe-embedded .card {
+      width:100%;
+      max-width:none;
+      padding:14px 16px;
+    }
+    body.iframe-embedded .brand-row { margin-bottom:0; }
+    body.iframe-embedded .brand-rail {
+      grid-area:brand;
+      justify-content:flex-start;
+      align-self:center;
+      padding-top:0;
+      padding-right:0;
+      align-items:center;
+    }
+    body.iframe-embedded .identity-rail {
+      grid-area:identity;
+      flex-direction:row;
+      align-items:center;
+      gap:12px;
+      margin-left:0;
+      margin-top:0;
+    }
+    body.iframe-embedded .signal-rail {
+      grid-area:signal;
+      width:100%;
+      padding:10px 12px;
+    }
+    body.iframe-embedded .hero-meta {
+      width:100%;
+      min-width:0;
+      display:flex;
+      flex-direction:column;
+      align-items:flex-start;
+      text-align:left;
+    }
+    body.iframe-embedded .hero-handle { text-align:left; }
+    body.iframe-embedded .hero-meta .line { text-align:left; }
+    body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
+    body.iframe-embedded .avatar { width:96px; height:96px; }
+    body.iframe-embedded .brand-logo-image { width:68px; }
+    body.iframe-embedded .hero-name { font-size:30px; line-height:1.04; }
+    body.iframe-embedded .hero-handle { font-size:16px; margin-top:5px; }
+    @media (max-width: 820px) {
+      body.iframe-embedded .profile-header-grid {
+        grid-template-columns:100px minmax(0, 1fr);
+        grid-template-areas:
+          "brand identity"
+          "signal signal";
+      }
+      body.iframe-embedded .brand-logo-image { width:62px; }
+      body.iframe-embedded .avatar { width:92px; height:92px; }
+      body.iframe-embedded .hero-name { font-size:27px; }
+      body.iframe-embedded .hero-handle { font-size:16px; }
+    }
     @media (min-width: 720px) {
+      .identity-rail { align-items:flex-start; }
       .featured-grid { grid-template-columns:1fr 1fr; }
       .featured-item { grid-template-columns:200px 1fr; align-items:start; gap:12px; }
       .featured-media { width:200px; min-width:200px; }
       .featured-meta { flex:1; }
       .meta-grid { grid-template-columns:1fr 1fr; }
     }
+    @media (max-width: 960px) {
+      .profile-header-grid {
+        --profile-logo-size: 58px;
+        --profile-avatar-size: 90px;
+        --profile-id-offset: 0;
+      }
+      .profile-header-grid {
+        grid-template-columns:auto 1fr;
+        grid-template-areas:
+          "brand identity"
+          "signal signal";
+        gap:10px 12px;
+      }
+      .brand-rail { grid-area:brand; padding-top:0; }
+      .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
+      .signal-rail { grid-area:signal; width:100%; }
+      .hero-name { font-size:18px; }
+      .signal-rail { width:100%; }
+    }
     @media (max-width: 640px) {
-      body { padding:14px; }
-      .card { padding:16px; }
+      .profile-header-grid {
+        --profile-brand-col: 96px;
+        --profile-gap-x: var(--space-5);
+        --profile-id-offset: 10px;
+        --profile-id-gap: var(--space-4);
+        --profile-logo-size: 92px;
+        --profile-avatar-size: 78px;
+      }
+      body { padding:10px; }
+      .card { padding:14px; }
+      .section { margin-top:14px; padding:12px; }
+      .profile-header-grid {
+        grid-template-columns:var(--profile-brand-col) minmax(0, 1fr);
+        grid-template-areas:
+          "brand identity"
+          "signal signal";
+        gap:10px var(--profile-gap-x);
+        padding-inline:0;
+      }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:18px; align-self:center; justify-content:flex-start; }
+      .identity-rail { grid-area:identity; margin-left:var(--profile-id-offset); align-items:center; gap:var(--profile-id-gap); }
+      .signal-rail { grid-area:signal; width:100%; padding:10px; }
+      .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:20px; }
+      .hero-name { font-size:22px; line-height:1.08; }
+      .hero-handle { font-size:14px; }
+      .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
+      .signal-compact-meter { height:4px; }
+      .signal-compact-meta { margin-top:4px; }
+      .signal-chip-row { margin-top:6px; gap:5px; }
+      .proof-group-title { font-size:12px; }
+    }
+    @media (max-width: 640px) {
+      body.iframe-embedded .profile-header-grid {
+        grid-template-columns:84px minmax(0, 1fr);
+        grid-template-areas:
+          "brand identity"
+          "signal";
+        gap:10px 14px;
+      }
+      body.iframe-embedded .brand-rail { justify-content:flex-start; padding-left:8px; }
+      body.iframe-embedded .identity-rail { gap:10px; margin-left:6px; }
+      body.iframe-embedded .hero-meta { min-width:0; flex:1; }
+      body.iframe-embedded .brand-logo-image { width:76px; }
+      body.iframe-embedded .avatar { width:74px; height:74px; }
+      body.iframe-embedded .hero-name {
+        font-size:clamp(19px, 5.2vw, 22px);
+        line-height:1.08;
+        overflow-wrap:anywhere;
+        word-break:break-word;
+      }
+      body.iframe-embedded .hero-handle { font-size:14px; }
     }
   </style>
 </head>
 <body>
+  <script>
+    (function () {
+      try {
+        if (window.self !== window.top) document.body.classList.add("iframe-embedded");
+      } catch (_) {
+        document.body.classList.add("iframe-embedded");
+      }
+    })();
+  </script>
   <div class="card">
     <h2 class="page-title">Certifyd Creator Profile</h2>
-    <section class="hero">
-      ${safeAvatarUrl
-        ? `<img src="${safeAvatarUrl}" alt="avatar" class="avatar" />`
-        : `<div aria-label="avatar fallback" class="avatar">No image</div>`}
-      <div class="hero-meta">
+    <section class="profile-header-grid">
+      <div class="brand-rail">
+        <div class="brand-row" aria-label="Certifyd">
+          ${
+            safeBrandLogoDataUri
+              ? `<img src="${safeBrandLogoDataUri}" alt="Certifyd Creator" class="brand-logo-image" />`
+              : `<span class="brand-mark">c</span><span class="brand-word">Certifyd</span>`
+          }
+        </div>
+      </div>
+      <div class="identity-rail">
+        ${safeAvatarUrl
+          ? `<img src="${safeAvatarUrl}" alt="avatar" class="avatar" />`
+          : `<div aria-label="avatar fallback" class="avatar">No image</div>`}
+        <div class="hero-meta">
         <div class="hero-name">${safeDisplayName}</div>
         <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
         ${profilePostureBadgeHtml}
         ${safeBio ? `<div class="line">${safeBio}</div>` : ""}
-      </div>
-    </section>
-
-    <section class="section">
-      <h3>Profile details</h3>
-      <div class="meta-grid">
-        <div class="meta-item">
-          <div class="meta-label">Node URL</div>
-          <div class="mono">${safeNodeUrl}</div>
-        </div>
-        <div class="meta-item">
-          <div class="meta-label">Creator key hash</div>
-          <div class="mono">${safeNodeSha}</div>
-          <div class="muted" style="margin-top:4px;">Short: <span class="mono">${safeShortSha}</span></div>
         </div>
       </div>
-    </section>
-
-    <section class="section">
-      <h3>Creator Signal</h3>
-      ${creatorSignalHtml}
+      <aside class="signal-rail">${creatorSignalCompactHtml}</aside>
     </section>
 
     <section class="section">
       <h3>Verification</h3>
       <div class="line muted">Creator Identity: ${creatorIdentityActive ? "active" : "not available yet"}</div>
       <div class="proof-group">
-        <div class="proof-group-title">Verified domains</div>
+        <div class="proof-group-title">Domains</div>
         ${domainProofsHtml}
       </div>
       <div class="proof-group">
-        <div class="proof-group-title">Social proofs</div>
+        <div class="proof-group-title">Social</div>
         ${socialProofsHtml}
       </div>
       <div class="proof-group">
-        <div class="proof-group-title">Nostr proofs</div>
+        <div class="proof-group-title">Nostr</div>
         ${nostrProofsHtml}
       </div>
-      ${otherProofsHtml ? `<div class="proof-group"><div class="proof-group-title">Other proofs</div>${otherProofsHtml}</div>` : ""}
+      ${otherProofsHtml ? `<div class="proof-group"><div class="proof-group-title">Other</div>${otherProofsHtml}</div>` : ""}
     </section>
     ${
       featuredContentHtml
@@ -20703,6 +23230,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   </section>`
         : ""
     }
+    <section class="section">
+      <details class="details-toggle">
+        <summary>Profile details</summary>
+        <div class="meta-grid">
+          <div class="meta-item">
+            <div class="meta-label">Node URL</div>
+            <div class="mono">${safeNodeUrl}</div>
+          </div>
+          <div class="meta-item">
+            <div class="meta-label">Creator key hash</div>
+            <div class="mono">${safeNodeSha}</div>
+            <div class="muted" style="margin-top:4px;">Short: <span class="mono">${safeShortSha}</span></div>
+          </div>
+        </div>
+      </details>
+    </section>
     <section class="section">
       <h3>Proof bundle</h3>
       <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(requested)}/proofs.json">proofs.json</a></div>
@@ -21081,6 +23624,40 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
   return reply.send("Thanks — your clearance response has been recorded.");
 });
 
+function resolveTabIconPath(): string | null {
+  const candidates = [
+    path.resolve(process.cwd(), "apps/dashboard/public/certifyd-tab-icon.png"),
+    path.resolve(process.cwd(), "apps/dashboard/public/certifyd-icon.png"),
+    path.resolve(process.cwd(), "../dashboard/public/certifyd-tab-icon.png"),
+    path.resolve(process.cwd(), "../dashboard/public/certifyd-icon.png"),
+    path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd-creator-logo.png"),
+    path.resolve(process.cwd(), "../dashboard/src/assets/certifyd-creator-logo.png")
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fsSync.existsSync(candidate)) return candidate;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+async function handleTabIcon(req: any, reply: any) {
+  const iconPath = resolveTabIconPath();
+  if (!iconPath) return notFound(reply, "Not found");
+  try {
+    const bytes = await fs.readFile(iconPath);
+    reply.header("content-type", "image/png");
+    const url = asString(req?.url || "").toLowerCase();
+    const isFaviconAlias = url.includes("/favicon.ico") || url.includes("/favicon.png") || url.includes("/apple-touch-icon.png");
+    reply.header("cache-control", isFaviconAlias ? "no-store" : "public, max-age=86400");
+    return reply.send(bytes);
+  } catch {
+    return notFound(reply, "Not found");
+  }
+}
+
 async function handleBuyPage(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   if (!contentId) return notFound(reply, "Not found");
@@ -21105,12 +23682,28 @@ async function handleBuyPage(req: any, reply: any) {
   } catch {
     sellerLightningAddress = null;
   }
+  const buyFaviconDataUri = (() => {
+    const iconPath = resolveTabIconPath();
+    if (!iconPath) return null;
+    try {
+      const bytes = fsSync.readFileSync(iconPath);
+      if (!bytes || bytes.length === 0) return null;
+      return `data:image/png;base64,${bytes.toString("base64")}`;
+    } catch {
+      return null;
+    }
+  })();
+  const safeBuyFaviconDataUri = buyFaviconDataUri ? escHtml(buyFaviconDataUri) : "";
 
   const html = `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260404g" />
+  <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
+  <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
+  ${safeBuyFaviconDataUri ? `<link rel="alternate icon" type="image/png" href="${safeBuyFaviconDataUri}" />` : ""}
   <title>Buy</title>
   <style>
     :root { color-scheme: light dark; }
@@ -21190,7 +23783,7 @@ async function handleBuyPage(req: any, reply: any) {
     <div class="card">
       <div id="app">Loading…</div>
       <div class="footer">
-        <a href="https://beatifyaudio.github.io/contentbox/index.html#mission" target="_blank" rel="noreferrer">Mission</a>
+        <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
     </div>
   </div>
@@ -21310,17 +23903,18 @@ async function handleBuyPage(req: any, reply: any) {
             normalizedContributorHandle &&
             !looksInternalId(normalizedContributorHandle) &&
             contributorLabel.toLowerCase() !== ("@" + normalizedContributorHandle).toLowerCase()
-              ? (" @" + esc(normalizedContributorHandle))
+              ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
           const roleRaw = String(c?.role || "").trim();
           const role = roleRaw ? (" • " + esc(roleRaw)) : "";
           const profilePathRaw = resolveSafeProfilePath(String(c?.profilePath || "").trim());
-          const profileLink = profilePathRaw
-            ? (" <a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(profilePathRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">profile</a>")
-            : "";
+          const nameLabel = ch ? (cn + " " + ch) : cn;
+          const contributorNameHtml = profilePathRaw
+            ? ("<a href=\\"" + esc(profilePathRaw) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\" " + (/^https?:\\/\\//i.test(profilePathRaw) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + nameLabel + "</a>")
+            : nameLabel;
           const bps = Number(c?.bps);
           const pct = Number.isFinite(bps) ? (bps / 100).toFixed(2) + "%" : "";
-          return "<li>" + cn + ch + role + (pct ? (" — " + pct) : "") + profileLink + "</li>";
+          return "<li>" + contributorNameHtml + role + (pct ? (" • " + pct) : "") + "</li>";
         }).join("") +
       "</ul>";
     } else if (split?.state === "draft") {
@@ -21556,7 +24150,15 @@ async function handleBuyPage(req: any, reply: any) {
   async function fetchJson(path, opts){
     const res = await fetch(apiBase + path, { method: opts?.method || "GET", credentials: "include", headers: { "Content-Type":"application/json" }, body: opts?.body ? JSON.stringify(opts.body) : undefined });
     const data = await res.json().catch(()=>null);
-    if (!res.ok) throw new Error((data && (data.error || data.message)) || "Request failed");
+    if (!res.ok) {
+      const err = new Error((data && (data.error || data.message)) || "Request failed");
+      try {
+        err.code = data?.code || data?.error || null;
+        err.status = res.status;
+        err.details = data?.details || null;
+      } catch {}
+      throw err;
+    }
     return data;
   }
 
@@ -22108,7 +24710,23 @@ async function handleBuyPage(req: any, reply: any) {
     }
     document.getElementById("status").textContent = "Creating payment…";
     const amount = offer.priceSats != null ? offer.priceSats : 1000;
-    const intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    let intent = null;
+    try {
+      intent = await fetchJson("/buy/payments/intents", { method:"POST", body:{ contentId, manifestSha256: offer.manifestSha256, amountSats: amount } });
+    } catch (e) {
+      const code = String(e?.code || "").trim();
+      const msg = String(e?.message || "").trim();
+      if (statusEl) {
+        statusEl.textContent = code === "DELEGATED_PUBLISH_REQUIRED"
+          ? "Payment is not ready yet. Provider must publish this content first."
+          : code === "PROVIDER_RELATIONSHIP_REQUIRED"
+            ? "Payment is blocked until provider relationship is established."
+            : code === "PROVIDER_NOT_READY"
+              ? "Provider is configured but not ready to issue invoices."
+              : msg || "Unable to create payment right now.";
+      }
+      return;
+    }
     if (intent?.status === "manual_required") {
       const manualId = intent.intentId || null;
       receiptToken = manualId;
@@ -22184,6 +24802,10 @@ async function handleBuyPage(req: any, reply: any) {
   return reply.send(html);
 }
 
+app.get("/certifyd-tab-icon.png", handleTabIcon);
+app.get("/favicon.ico", handleTabIcon);
+app.get("/favicon.png", handleTabIcon);
+app.get("/apple-touch-icon.png", handleTabIcon);
 app.get("/buy/:contentId", handleBuyPage);
 
 async function handleBuyerLibraryPage(_req: any, reply: any) {
@@ -22222,7 +24844,7 @@ async function handleBuyerLibraryPage(_req: any, reply: any) {
     <div class="card">
       <div id="app">Loading…</div>
       <div class="footer">
-        <a href="https://beatifyaudio.github.io/contentbox/index.html#mission" target="_blank" rel="noreferrer">Mission</a>
+        <a href="https://certifyd.me/#mission" target="_blank" rel="noreferrer">Mission</a>
       </div>
     </div>
   </div>
@@ -22356,7 +24978,7 @@ app.get("/embed.js", async (req: any, reply) => {
   if (getIdentityLevel() !== IdentityLevel.PERSISTENT) {
     reply.code(403);
     reply.type("application/javascript; charset=utf-8");
-    return reply.send("console.error('Certifyd Creator embed requires persistent identity (named tunnel).');");
+    return reply.send("console.error('Certifyd Creator embed requires persistent identity (canonical public origin).');");
   }
   const publicOrigin = getPublicOrigin(req).replace(/\/+$/, "");
   const js = `(function(){
@@ -22716,6 +25338,13 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
 
     const buyerSession = await resolveBuyerSession(req, reply);
     const buyerId = buyerSession?.buyer?.id || null;
+    const requestIpHash = hashIp(getRequestIp(req));
+    const buyerScopeHash =
+      buyerId
+        ? crypto.createHash("sha256").update(`buyer:${buyerId}`).digest("hex")
+        : requestIpHash
+          ? crypto.createHash("sha256").update(`ip:${requestIpHash}`).digest("hex")
+          : null;
     const { productTier } = resolveProductTier();
     const capabilityCtx = getCapabilityContext();
     const sellerPaymentsReadiness = await getPaymentsReadiness(content.ownerUserId).catch(() => null);
@@ -22790,6 +25419,73 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     }
 
+    if (buyerScopeHash) {
+      const existingPending = await prisma.paymentIntent.findFirst({
+        where: {
+          contentId,
+          manifestSha256,
+          amountSats,
+          status: "pending" as any,
+          ipHash: buyerScopeHash,
+          receiptTokenExpiresAt: { gt: new Date() }
+        },
+        orderBy: { createdAt: "desc" }
+      });
+      if (existingPending && (existingPending.bolt11 || existingPending.providerId || existingPending.onchainAddress)) {
+        app.log.info(
+          {
+            ...intentLog,
+            mappedCategory: "reuse_pending_intent",
+            mappedCode: "OK",
+            paymentIntentId: existingPending.id
+          },
+          "publicPaymentsIntents.reused"
+        );
+        return reply.send({
+          ok: true,
+          buyerId,
+          paymentIntentId: existingPending.id,
+          status: existingPending.status,
+          amountSats: existingPending.amountSats.toString(),
+          bolt11: existingPending.bolt11 || null,
+          lightningExpiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null,
+          onchainAddress: existingPending.onchainAddress || null,
+          onchainReason: existingPending.onchainAddress ? null : "NOT_AVAILABLE",
+          lightningReason: existingPending.bolt11 ? null : "NOT_AVAILABLE",
+          onchain: existingPending.onchainAddress ? { address: existingPending.onchainAddress } : null,
+          lightning: existingPending.bolt11
+            ? { bolt11: existingPending.bolt11, expiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null }
+            : null,
+          paymentOptions: {
+            lightning: {
+              available: Boolean(existingPending.bolt11),
+              bolt11: existingPending.bolt11 || null,
+              expiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null,
+              reason: existingPending.bolt11 ? null : "NOT_AVAILABLE"
+            },
+            onchain: {
+              available: Boolean(existingPending.onchainAddress),
+              address: existingPending.onchainAddress || null,
+              minConfirmations: ONCHAIN_MIN_CONFS,
+              reason: existingPending.onchainAddress ? null : "NOT_AVAILABLE"
+            }
+          },
+          creatorPayout: {
+            configured: payoutDestination.valid,
+            destinationType: payoutDestination.effectiveDestinationType,
+            destinationSummary: payoutDestination.effectiveDestinationSummary,
+            payoutRail: payoutDestination.effectivePayoutRail,
+            providerRemitMode: payoutDestination.providerRemitMode,
+            message: "Reusing existing pending payment intent."
+          },
+          receiptToken: existingPending.receiptToken || null,
+          receiptTokenExpiresAt: existingPending.receiptTokenExpiresAt
+            ? existingPending.receiptTokenExpiresAt.toISOString()
+            : null
+        });
+      }
+    }
+
     const ttlSeconds = RECEIPT_TOKEN_TTL_SECONDS;
     const receiptToken = crypto.randomBytes(24).toString("hex");
     const receiptTokenExpiresAt = new Date(Date.now() + ttlSeconds * 1000);
@@ -22805,7 +25501,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         subjectType: "CONTENT" as any,
         subjectId: contentId,
         receiptToken,
-        receiptTokenExpiresAt
+        receiptTokenExpiresAt,
+        ipHash: buyerScopeHash
       }
     });
 
@@ -22830,8 +25527,12 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       payoutRail: payoutDestination.effectivePayoutRail
     };
 
+    const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === contentId);
+    const forceDelegatedProviderInvoicing = Boolean(delegatedPublish);
+
     let onchain: { address: string; derivationIndex?: number | null } | null = null;
     let lightning: null | { bolt11: string; providerId: string; expiresAt: string | null } = null;
+    let delegatedProviderInvoiceRef: string | null = null;
     let onchainReason: string | null = null;
     let lightningReason: string | null = null;
 
@@ -22882,32 +25583,36 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       connectivity: "not_checked",
       reason: null
     };
-    try {
-      const invoice = await createLightningInvoiceWithRetry(
-        amountSats,
-        `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`,
-        {
-          route: "/buy/payments/intents",
-          paymentIntentId: intent.id,
-          contentId
-        }
-      );
-      if (invoice) lightning = invoice;
-      intentLog.invoiceCreation = lightning ? "created" : "not_configured";
-    } catch (e: any) {
-      lightningReason = "INVOICE_GENERATION_FAILED";
-      lndProbe = await diagnoseLightning();
-      intentLog.invoiceCreation = "failed";
-      app.log.warn(
-        {
-          ...intentLog,
-          lightningConfigured: lndProbe.configured,
-          lndConnectivity: lndProbe.connectivity,
-          lndReason: lndProbe.reason,
-          err: e
-        },
-        "publicPaymentsIntents.invoice_create_failed"
-      );
+    if (!forceDelegatedProviderInvoicing) {
+      try {
+        const invoice = await createLightningInvoiceWithRetry(
+          amountSats,
+          `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`,
+          {
+            route: "/buy/payments/intents",
+            paymentIntentId: intent.id,
+            contentId
+          }
+        );
+        if (invoice) lightning = invoice;
+        intentLog.invoiceCreation = lightning ? "created" : "not_configured";
+      } catch (e: any) {
+        lightningReason = "INVOICE_GENERATION_FAILED";
+        lndProbe = await diagnoseLightning();
+        intentLog.invoiceCreation = "failed";
+        app.log.warn(
+          {
+            ...intentLog,
+            lightningConfigured: lndProbe.configured,
+            lndConnectivity: lndProbe.connectivity,
+            lndReason: lndProbe.reason,
+            err: e
+          },
+          "publicPaymentsIntents.invoice_create_failed"
+        );
+      }
+    } else {
+      intentLog.invoiceCreation = "delegated_provider_required";
     }
     if (!lightning?.bolt11) {
       const providerCfg = getNetworkProviderConfig();
@@ -22931,6 +25636,32 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         } else {
         try {
           const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
+          let delegatedAllocationBlueprint:
+            | {
+                splitVersionId: string;
+                allocationVersion: number;
+                participants: ProviderDelegatedAllocationBlueprintParticipant[];
+              }
+            | null = null;
+          try {
+            const feeBreakdown = computeProviderFeeBreakdown(amountSats.toString(), {
+              providerInvoicing: serviceProfile.needsProviderInvoicing,
+              durablePublicHosting: serviceProfile.needsDurablePublicHosting
+            });
+            delegatedAllocationBlueprint = await buildDelegatedAllocationBlueprint({
+              contentId,
+              distributableSats: BigInt(String(feeBreakdown.creatorNetSats || "0"))
+            });
+          } catch (allocationErr: any) {
+            app.log.warn(
+              {
+                paymentIntentId: intent.id,
+                contentId,
+                reason: String(allocationErr?.message || allocationErr || "allocation_blueprint_failed")
+              },
+              "delegatedProviderPaymentIntent.allocation_blueprint_failed"
+            );
+          }
           const delegated = await requestDelegatedProviderPaymentIntent({
             creatorNodeId: creatorIdentity.nodeId,
             contentId,
@@ -22941,13 +25672,16 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             needsDurablePublicHosting: serviceProfile.needsDurablePublicHosting,
             payoutDestinationType: payoutDestination.effectiveDestinationType,
             payoutDestinationSummary: payoutDestination.effectiveDestinationSummary,
-            providerRemitMode: payoutDestination.providerRemitMode
+            providerRemitMode: payoutDestination.providerRemitMode,
+            splitVersionId: delegatedAllocationBlueprint?.splitVersionId || null,
+            participantAllocations: delegatedAllocationBlueprint?.participants || []
           });
           lightning = {
             bolt11: delegated.bolt11,
             providerId: `providerpi:${delegated.paymentIntentId}`,
             expiresAt: null
           };
+          delegatedProviderInvoiceRef = String(delegated.providerInvoiceRef || "").trim() || null;
           lightningReason = null;
           intentLog.delegatedLightning = "provider_invoice_issued";
         } catch (e: any) {
@@ -22959,6 +25693,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             lightningReason = "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED";
           } else if (providerCode === "PROVIDER_NOT_READY") {
             lightningReason = "PROVIDER_NOT_READY";
+          } else if (providerCode === "PROVIDER_NODE_MISMATCH") {
+            lightningReason = "PROVIDER_NODE_MISMATCH";
+          } else if (providerCode === "PROVIDER_DESCRIPTOR_UNAVAILABLE") {
+            lightningReason = "PROVIDER_DESCRIPTOR_UNAVAILABLE";
           } else if (providerCode === "PROVIDER_ROUTE_MISMATCH" || providerCode === "PROVIDER_HTTP_404" || providerCode === "PROVIDER_HTTP_405") {
             lightningReason = "PROVIDER_ROUTE_MISMATCH";
           } else if (providerCode === "PROVIDER_INVALID_RESPONSE") {
@@ -23010,6 +25748,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         lightningReason === "PROVIDER_DELEGATED_PUBLISH_REQUIRED" ||
         lightningReason === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED" ||
         lightningReason === "PROVIDER_NOT_READY" ||
+        lightningReason === "PROVIDER_NODE_MISMATCH" ||
+        lightningReason === "PROVIDER_DESCRIPTOR_UNAVAILABLE" ||
         lightningReason === "PROVIDER_ROUTE_MISMATCH" ||
         lightningReason === "PROVIDER_INVALID_RESPONSE"
       ) {
@@ -23022,6 +25762,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               ? "PROVIDER_RELATIONSHIP_REQUIRED"
               : lightningReason === "PROVIDER_NOT_READY"
                 ? "PROVIDER_NOT_READY"
+              : lightningReason === "PROVIDER_NODE_MISMATCH"
+                ? "PROVIDER_NODE_MISMATCH"
+              : lightningReason === "PROVIDER_DESCRIPTOR_UNAVAILABLE"
+                ? "PROVIDER_DESCRIPTOR_UNAVAILABLE"
                 : lightningReason === "PROVIDER_ROUTE_MISMATCH"
                   ? "PROVIDER_ROUTE_MISMATCH"
                 : "PROVIDER_INVALID_RESPONSE";
@@ -23045,9 +25789,13 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
               ? "Provider relationship is not ready for delegated payments."
               : mappedCode === "PROVIDER_NOT_READY"
                 ? "Provider is configured but not ready to issue delegated invoices."
-                : mappedCode === "PROVIDER_ROUTE_MISMATCH"
-                  ? "Provider delegated invoice route is unavailable or mismatched."
-                : "Provider returned an invalid payment response.",
+              : mappedCode === "PROVIDER_NODE_MISMATCH"
+                ? "Provider URL does not match the configured provider node."
+              : mappedCode === "PROVIDER_DESCRIPTOR_UNAVAILABLE"
+                ? "Provider identity descriptor is unavailable."
+              : mappedCode === "PROVIDER_ROUTE_MISMATCH"
+                ? "Provider delegated invoice route is unavailable or mismatched."
+              : "Provider returned an invalid payment response.",
           details: { lightningReason }
         });
       }
@@ -23090,8 +25838,8 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       }
     });
 
-    const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === contentId);
-    if (delegatedPublish) {
+    const providerBackedInvoice = Boolean(lightning?.providerId && String(lightning.providerId).startsWith("providerpi:"));
+    if (delegatedPublish || providerBackedInvoice) {
       const fee = computeProviderFeeBreakdown(amountSats.toString(), {
         providerInvoicing: serviceProfile.needsProviderInvoicing,
         durablePublicHosting: serviceProfile.needsDurablePublicHosting
@@ -23101,13 +25849,20 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         providerIntent?.payoutPolicy,
         providerIntent?.allowProviderFallback
       );
+      const providerCfg = getNetworkProviderConfig();
+      const configuredProviderNodeId = String(providerCfg.providerNodeId || "").trim() || null;
+      const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId).catch(() => null);
       upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
-        providerNodeId: delegatedPublish.providerNodeId,
-        creatorNodeId: delegatedPublish.creatorNodeId,
+        providerNodeId:
+          configuredProviderNodeId ||
+          delegatedPublish?.providerNodeId ||
+          providerIntent?.providerNodeId ||
+          resolveNodeIdForRuntimeStatus(),
+        creatorNodeId: creatorIdentity?.nodeId || delegatedPublish?.creatorNodeId || providerIntent?.creatorNodeId || resolveNodeIdForRuntimeStatus(),
         contentId,
         paymentIntentId: intent.id,
         bolt11: lightning?.bolt11 || null,
-        providerInvoiceRef: lightning?.providerId || null,
+        providerInvoiceRef: delegatedProviderInvoiceRef || providerIntent?.providerInvoiceRef || null,
         amountSats: amountSats.toString(),
         grossAmountSats: providerIntent?.grossAmountSats || fee.grossAmountSats,
         providerInvoicingFeeSats: providerIntent?.providerInvoicingFeeSats || fee.providerInvoicingFeeSats,
@@ -23289,7 +26044,7 @@ async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: s
   return reconcileMissingEntitlementsForBuyer(
     {
       listPaidIntents: async (bid: string, contentFilter?: string) =>
-        prisma.paymentIntent.findMany({
+        (prisma.paymentIntent as any).findMany({
           where: {
             buyerId: bid,
             status: "paid",
@@ -23299,7 +26054,10 @@ async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: s
           orderBy: { paidAt: "desc" }
         }) as any,
       getEntitlement: async (bid: string, cid: string) =>
-        prisma.entitlement.findFirst({ where: { buyerId: bid, contentId: cid }, select: { id: true, buyerId: true, contentId: true } }),
+        ((await prisma.entitlement.findFirst({
+          where: { buyerId: bid, contentId: cid },
+          select: { id: true, buyerId: true, contentId: true }
+        })) as any) || null,
       upsertEntitlement: async ({ buyerId: bid, contentId, manifestSha256, paymentIntentId }) => {
         await prisma.entitlement.upsert({
           where: { buyerId_contentId: { buyerId: bid, contentId } },
@@ -23802,9 +26560,15 @@ app.post("/content/:id/files", { preHandler: requireAuth }, async (req: any, rep
       err.statusCode = 415;
       throw err;
     }
+    const repoPath = asString(content.repoPath || "").trim();
+    if (!repoPath) {
+      const err: any = new Error("content repository missing");
+      err.statusCode = 400;
+      throw err;
+    }
 
     const fileEntry = await addFileToContentRepo({
-      repoPath: content.repoPath,
+      repoPath,
       contentTitle: content.title,
       originalName,
       mime,
@@ -24894,17 +27658,6 @@ app.patch("/content/:id/price", { preHandler: requireAuth }, async (req: any, re
   const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  if (sats > 0n) {
-    const authority = await resolveCommerceAuthorityForUser(userId);
-    if (!authority.authority) {
-      return reply.code(409).send({
-        error: "COMMERCE_AUTHORITY_REQUIRED",
-        message:
-          "Paid unlocks require connected provider commerce services or a verified local Sovereign Node stack.",
-        blockers: authority.sovereignReadiness.blockers
-      });
-    }
-  }
 
   const updated = await prisma.contentItem.update({
     where: { id: contentId },
@@ -25273,7 +28026,7 @@ app.post("/content/:id/splits", { preHandler: [requireAuth, requireFeature("spli
               ? boundUserId
               : null,
           acceptedIdentityRef: bindNow && boundUserId ? `user:${boundUserId}` : null
-        }
+        } as any
       });
 
       await tx.splitParticipant.update({
@@ -25401,7 +28154,7 @@ app.post("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatu
             acceptedAt: accepted ? (p.acceptedAt || new Date()) : null,
             acceptedByUserId: accepted ? (p.participantUserId || null) : null,
             acceptedIdentityRef: accepted && p.participantUserId ? `user:${p.participantUserId}` : null
-          }
+          } as any
         });
         await tx.splitParticipant.update({
           where: { id: createdParticipant.id },
@@ -25766,7 +28519,7 @@ async function buildLockedParticipantSnapshotsForSplitVersion(input: {
     new Set(
       participants
         .map((participant: any) => asString(participant?.participantUserId || "").trim())
-        .filter((id) => Boolean(id))
+        .filter((id: string) => Boolean(id))
     )
   );
   const users = participantUserIds.length
@@ -26200,17 +28953,41 @@ async function computeContentParticipantAllocations(input: {
   splitVersionId: string;
   allocations: ContentParticipantAllocation[];
 }> {
-  const content = await prisma.contentItem.findUnique({ where: { id: input.contentId } });
-  if (!content) throw new Error("Content not found");
+  const contentId = String(input.contentId || "").trim();
+  if (!contentId) throw new Error("Content not found");
 
-  const childSplit = await getLockedSplitForContent(content.id);
+  const content = await prisma.contentItem.findUnique({ where: { id: contentId } });
+  let childSplit = content ? await getLockedSplitForContent(content.id) : null;
+  if (!childSplit) {
+    const snapshotRows = listLockedParticipantSnapshotRows().filter((row) => row.contentId === contentId);
+    const candidateSplitId =
+      snapshotRows
+        .slice()
+        .sort((a, b) => {
+          const aTime = String(a.lockedAt || a.updatedAt || a.createdAt || "");
+          const bTime = String(b.lockedAt || b.updatedAt || b.createdAt || "");
+          return bTime.localeCompare(aTime);
+        })
+        .map((row) => String(row.splitVersionId || "").trim())
+        .find(Boolean) || null;
+    if (candidateSplitId) {
+      childSplit = { id: candidateSplitId } as any;
+      app.log.info(
+        {
+          contentId,
+          splitVersionId: candidateSplitId
+        },
+        "splitAuthority.compute_allocations_snapshot_fallback"
+      );
+    }
+  }
   if (!childSplit) throw new Error("Locked child split not found");
   const childSnapshots = (await getLockedParticipantSnapshotsForSplitVersion(childSplit.id)).filter((snapshot) =>
     isTopologyNeutralLockedSnapshotEligible(snapshot)
   );
 
   const parents = await prisma.contentLink.findMany({
-    where: { childContentId: content.id },
+    where: { childContentId: contentId },
     orderBy: { id: "asc" }
   });
   if (parents.length > 1) {
@@ -26280,7 +29057,7 @@ async function computeContentParticipantAllocations(input: {
     const accountingState = resolveLockedSnapshotAccountingState(snapshot || {});
     app.log.info(
       {
-        contentId: content.id,
+        contentId,
         splitVersionId: childSplit.id,
         splitParticipantId: snapshot?.splitParticipantId || null,
         participantUserId: snapshot?.participantUserId || null,
@@ -26337,7 +29114,7 @@ async function computeContentParticipantAllocations(input: {
       const accountingState = resolveLockedSnapshotAccountingState(snapshot || {});
       app.log.info(
         {
-          contentId: content.id,
+          contentId,
           splitVersionId: parentSplit.id,
           splitParticipantId: snapshot?.splitParticipantId || null,
           participantUserId: snapshot?.participantUserId || null,
@@ -26356,7 +29133,7 @@ async function computeContentParticipantAllocations(input: {
 
   app.log.info(
     {
-      contentId: content.id,
+      contentId,
       splitVersionId: childSplit.id,
       parentSplitVersionIds: upstreamAlloc.map((row) => row.parentSplitVersionId).filter(Boolean),
       participantCount: allocations.length
@@ -26366,7 +29143,7 @@ async function computeContentParticipantAllocations(input: {
   const allocatedTotal = allocations.reduce((acc, row) => acc + row.amountSats, 0n);
   app.log.info(
     {
-      contentId: content.id,
+      contentId,
       splitVersionId: childSplit.id,
       distributableSats: input.poolSats.toString(),
       participantCount: allocations.length,
@@ -26378,6 +29155,69 @@ async function computeContentParticipantAllocations(input: {
   return {
     splitVersionId: childSplit.id,
     allocations
+  };
+}
+
+async function buildDelegatedAllocationBlueprint(input: {
+  contentId: string;
+  distributableSats: bigint;
+}): Promise<{
+  splitVersionId: string;
+  allocationVersion: number;
+  participants: ProviderDelegatedAllocationBlueprintParticipant[];
+} | null> {
+  if (input.distributableSats <= 0n) return null;
+  const computed = await computeContentParticipantAllocations({
+    contentId: input.contentId,
+    poolSats: input.distributableSats
+  });
+  const participantsRaw = await Promise.all(
+    computed.allocations.map(async (row) => {
+      const resolved = await resolveParticipantDestinationHandshake({
+        participantUserId: String(row.participantUserId || "").trim() || null,
+        splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+        participantRef: String(row.participantRef || "").trim() || null
+      });
+      const normalized = normalizeParticipantDestinationForPayout(resolved);
+      return {
+        participantRef: String(row.participantRef || "").trim(),
+        participantId: String(row.participantId || "").trim() || null,
+        splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+        participantUserId: String(row.participantUserId || "").trim() || null,
+        participantEmail: String(row.participantEmail || "").trim() || null,
+        role: String(row.role || "").trim() || null,
+        roleKey: String(row.roleKey || "").trim(),
+        bps: Math.max(0, Math.round(Number(row.bps || 0))),
+        destinationType: normalized.destinationType || null,
+        destinationSummary: normalized.destinationSummary || null,
+        destinationValue: normalized.destinationValue || null,
+        destinationVerified: Boolean(resolved?.isVerified),
+        destinationVerificationError: resolved?.verificationError || null
+      };
+    })
+  );
+  const participants = participantsRaw
+    .map((row) => ({
+      participantRef: String(row.participantRef || "").trim(),
+      participantId: String(row.participantId || "").trim() || null,
+      splitParticipantId: String(row.splitParticipantId || "").trim() || null,
+      participantUserId: String(row.participantUserId || "").trim() || null,
+      participantEmail: String(row.participantEmail || "").trim() || null,
+      role: String(row.role || "").trim() || null,
+      roleKey: String(row.roleKey || "").trim(),
+      bps: Math.max(0, Math.round(Number(row.bps || 0))),
+      destinationType: parseParticipantDestinationType(row.destinationType || null),
+      destinationSummary: String(row.destinationSummary || "").trim() || null,
+      destinationValue: String(row.destinationValue || "").trim() || null,
+      destinationVerified: Boolean(row.destinationVerified),
+      destinationVerificationError: String(row.destinationVerificationError || "").trim() || null
+    }))
+    .filter((row) => row.participantRef && row.roleKey && row.bps > 0);
+  if (!participants.length) return null;
+  return {
+    splitVersionId: computed.splitVersionId,
+    allocationVersion: 1,
+    participants
   };
 }
 
@@ -26398,13 +29238,24 @@ async function settlePaymentIntent(paymentIntentId: string) {
     return null;
   }
 
-  const net = BigInt(intent.amountSats);
+  const gross = BigInt(intent.amountSats);
+  const providerRecord = String(intent.providerId || "").startsWith("providerpi:")
+    ? findProviderPaymentIntentByPaymentIntentId(intent.id)
+    : null;
+  const providerNetCandidate = providerRecord ? BigInt(String(providerRecord.creatorNetSats || "0")) : 0n;
+  const providerFeeCandidate = providerRecord ? BigInt(String(providerRecord.providerFeeSats || "0")) : 0n;
+  const net = providerRecord
+    ? (providerNetCandidate > 0n && providerNetCandidate <= gross
+      ? providerNetCandidate
+      : (gross > providerFeeCandidate ? gross - providerFeeCandidate : 0n))
+    : gross;
+  const operatorFee = gross > net ? gross - net : 0n;
   app.log.info(
     {
       paymentIntentId: intent.id,
       contentId: intent.contentId,
-      grossSats: net.toString(),
-      operatorFeeSats: "0",
+      grossSats: gross.toString(),
+      operatorFeeSats: operatorFee.toString(),
       distributableSats: net.toString()
     },
     "splitAccounting.payment_base"
@@ -26448,14 +29299,15 @@ async function settlePaymentIntent(paymentIntentId: string) {
     }
   });
 
+  const manifestSha = asString(intent.manifestSha256 || "").trim();
   if (intent.buyerUserId) {
     await prisma.entitlement.upsert({
-      where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId: content.id, manifestSha256: intent.manifestSha256 } },
+      where: { buyerUserId_contentId_manifestSha256: { buyerUserId: intent.buyerUserId, contentId: content.id, manifestSha256: manifestSha } },
       update: { paymentIntentId: intent.id },
       create: {
         buyerUserId: intent.buyerUserId,
         contentId: content.id,
-        manifestSha256: intent.manifestSha256,
+        manifestSha256: manifestSha,
         paymentIntentId: intent.id
       }
     }).catch(() => {});
@@ -26464,7 +29316,7 @@ async function settlePaymentIntent(paymentIntentId: string) {
       data: {
         buyerUserId: null,
         contentId: content.id,
-        manifestSha256: intent.manifestSha256,
+        manifestSha256: manifestSha,
         paymentIntentId: intent.id
       }
     }).catch(() => {});
@@ -26478,6 +29330,136 @@ type FinalizePaymentIntentOptions = {
   confirmedByUserId?: string | null;
 };
 
+async function bridgeDirectSaleToParticipantPayouts(
+  paymentIntentId: string,
+  trigger: "finalize_existing_sale" | "finalize_basic_skip_settlement" | "finalize_sale_upsert"
+) {
+  app.log.info(
+    {
+      paymentIntentId,
+      trigger
+    },
+    "payments.finalize.payout_bridge_invoked"
+  );
+
+  try {
+    const intent = await prisma.paymentIntent.findUnique({ where: { id: paymentIntentId } });
+    if (!intent) {
+      app.log.info({ paymentIntentId, trigger, bridged: false, reason: "PAYMENT_INTENT_NOT_FOUND" }, "payments.finalize.payout_bridge_result");
+      return;
+    }
+    if (intent.status !== "paid") {
+      app.log.info(
+        { paymentIntentId, trigger, bridged: false, reason: "PAYMENT_INTENT_NOT_PAID", status: intent.status },
+        "payments.finalize.payout_bridge_result"
+      );
+      return;
+    }
+
+    const existing = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+    let providerIntent: ProviderPaymentIntentRecord;
+    if (existing) {
+      providerIntent =
+        updateProviderPaymentIntent(existing.id, {
+          status: "paid",
+          paidAt: existing.paidAt || intent.paidAt?.toISOString() || new Date().toISOString()
+        }) || existing;
+    } else {
+      const content = await prisma.contentItem.findUnique({
+        where: { id: intent.contentId },
+        select: { id: true, ownerUserId: true }
+      });
+      if (!content?.ownerUserId) {
+        app.log.info(
+          { paymentIntentId, trigger, bridged: false, reason: "CONTENT_OR_OWNER_MISSING", contentId: intent.contentId },
+          "payments.finalize.payout_bridge_result"
+        );
+        return;
+      }
+
+      const creatorNodeId = resolveNodeIdForRuntimeStatus();
+      const payoutPolicy = resolveNewIntentPayoutPolicy();
+      const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId).catch(() => null);
+      const amountSats = BigInt(String(intent.amountSats || "0"));
+      const grossAmountSats = amountSats > 0n ? amountSats.toString() : "0";
+      const creatorNetSats = grossAmountSats;
+
+      providerIntent = upsertProviderPaymentIntentByPaymentIntentId(paymentIntentId, {
+        providerNodeId: creatorNodeId,
+        creatorNodeId,
+        contentId: content.id,
+        paymentIntentId,
+        bolt11: intent.bolt11 || null,
+        providerInvoiceRef: intent.providerId || null,
+        amountSats: grossAmountSats,
+        grossAmountSats,
+        providerInvoicingFeeSats: "0",
+        providerDurableHostingFeeSats: "0",
+        providerFeeSats: "0",
+        creatorNetSats,
+        status: "paid",
+        payoutStatus: "pending",
+        payoutRail: payoutDestination?.effectivePayoutRail || "provider_custody",
+        payoutDestinationType: payoutDestination?.effectiveDestinationType || null,
+        payoutDestinationSummary: payoutDestination?.effectiveDestinationSummary || null,
+        // Direct sovereign sale bridge should attempt participant forwarding when destinations are ready.
+        providerRemitMode: "auto_forward",
+        payoutExecutionMode: "participant",
+        payoutPolicy: payoutPolicy.payoutPolicy,
+        allowProviderFallback: payoutPolicy.allowProviderFallback,
+        payoutSummaryStatus: "pending",
+        payoutReference: null,
+        remittedAt: null,
+        payoutLastError: null,
+        remittanceAttemptId: null,
+        remittanceLockedAt: null,
+        remittanceLastCheckedAt: null,
+        remittanceAttempts: 0,
+        paymentReceiptId: null,
+        buyerSessionId: null,
+        paidAt: intent.paidAt?.toISOString() || new Date().toISOString()
+      });
+    }
+
+    const settled = await ensureProviderPaymentSettlement(providerIntent);
+    let allocationCount = 0;
+    let payoutRowCount = 0;
+    try {
+      allocationCount = await prisma.providerPaymentParticipantAllocation.count({
+        where: { providerPaymentIntentId: settled.id }
+      });
+      payoutRowCount = await prisma.participantPayout.count({
+        where: { providerPaymentIntentId: settled.id }
+      });
+    } catch (err: any) {
+      if (!isMissingParticipantPayoutTableError(err)) throw err;
+    }
+
+    app.log.info(
+      {
+        paymentIntentId,
+        trigger,
+        bridged: true,
+        providerPaymentIntentId: settled.id,
+        allocationCount,
+        payoutRowCount,
+        payoutExecutionMode: settled.payoutExecutionMode,
+        providerRemitMode: settled.providerRemitMode
+      },
+      "payments.finalize.payout_bridge_result"
+    );
+  } catch (err: any) {
+    app.log.error(
+      {
+        paymentIntentId,
+        trigger,
+        error: String(err?.message || err || "payout_bridge_failed")
+      },
+      "payments.finalize.payout_bridge_failed"
+    );
+  }
+}
+
 async function finalizePaymentIntent(intentId: string, options: FinalizePaymentIntentOptions) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
   if (!intent) throw new Error("PaymentIntent not found");
@@ -26489,6 +29471,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   const existingSale = await prisma.sale.findUnique({ where: { intentId } });
   if (intent.status === "paid" && existingSale && !skipSettlement) {
     const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_existing_sale");
     return { sale: existingSale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
 
@@ -26514,6 +29497,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
     }
 
     const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+    await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_basic_skip_settlement");
     return { sale: null, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
   }
 
@@ -26572,6 +29556,7 @@ async function finalizePaymentIntent(intentId: string, options: FinalizePaymentI
   });
 
   const finalized = await finalizePurchase(intentId, prisma).catch(() => null);
+  await bridgeDirectSaleToParticipantPayouts(intentId, "finalize_sale_upsert");
   // TODO(certifyd-entitlement-boundary): delegated/provider invoice execution must not become entitlement truth ownership.
   return { sale, receiptToken: finalized?.receiptToken || intent.receiptToken || null };
 }
@@ -27011,30 +29996,9 @@ async function getPaymentsReadiness(userId: string) {
   }
 
   if (paymentsMode === "node") {
-    const lndStatus = await getLightningNodeConfigStatus(prisma as any);
-    let lightningReady = false;
-    let lightningReason: string | null = "NODE_NOT_CONFIGURED";
-    if (!lndStatus.endpoint) {
-      lightningReason = "NODE_ENDPOINT_MISSING";
-    } else if (!lndStatus.hasMacaroon) {
-      lightningReason = "NODE_NOT_CONFIGURED";
-    } else if (!lndStatus.decryptOk) {
-      lightningReason = "NODE_KEY_MISMATCH";
-    } else {
-      try {
-        const lndReadiness = await getLightningReadiness(prisma as any);
-        if (lndReadiness.nodeReachable) {
-          lightningReady = true;
-          lightningReason = null;
-        } else {
-          lightningReady = false;
-          lightningReason = "NODE_UNREACHABLE";
-        }
-      } catch {
-        lightningReady = false;
-        lightningReason = "NODE_UNREACHABLE";
-      }
-    }
+    const runtime = await resolveLightningCapabilityRuntime(userId);
+    const lightningReady = runtime.canReceive;
+    const lightningReason = lightningReady ? null : runtime.sendFailureReason || "NODE_NOT_CONFIGURED";
 
     let onchainReady = false;
     let onchainReason: string | null = "NOT_CONFIGURED";
@@ -27052,7 +30016,15 @@ async function getPaymentsReadiness(userId: string) {
     return {
       mode: "node",
       ready: lightningReady || onchainReady,
-      lightning: { ready: lightningReady, reason: lightningReason },
+      lightning: {
+        ready: lightningReady,
+        reason: lightningReason,
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason
+      },
       onchain: { ready: onchainReady, reason: onchainReason }
     };
   }
@@ -27207,7 +30179,20 @@ function lightningDiscoveryTargets(): string[] {
 
 app.get("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
-    return reply.send(await getLightningNodeConfigMeta(prisma as any));
+    const userId = (_req.user as JwtUser).sub;
+    const meta = await getLightningNodeConfigMeta(prisma as any);
+    const runtime = await resolveLightningCapabilityRuntime(userId);
+    return reply.send({
+      ...meta,
+      runtime: {
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason,
+        source: runtime.source
+      }
+    });
   } catch (e: any) {
     return reply.code(500).send({ error: String(e?.message || e) });
   }
@@ -27370,7 +30355,9 @@ app.post("/api/admin/external-claims/beatify/revoke", { preHandler: requireAuth 
 
 app.get("/api/admin/lightning/config/status", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
+    const userId = (_req.user as JwtUser).sub;
     const status = await getLightningNodeConfigStatus(prisma as any);
+    const runtime = await resolveLightningCapabilityRuntime(userId);
     return reply.send({
       configured: status.configured,
       hasTlsCert: status.hasTlsCert,
@@ -27382,7 +30369,15 @@ app.get("/api/admin/lightning/config/status", { preHandler: [requireAuth, requir
       lastTestedAt: status.lastTestedAt,
       lastStatus: status.lastStatus,
       lastError: status.lastError,
-      warnings: status.warnings
+      warnings: status.warnings,
+      runtime: {
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason,
+        source: runtime.source
+      }
     });
   } catch (e: any) {
     return reply.code(500).send({ error: String(e?.message || e) });
@@ -27407,8 +30402,20 @@ app.post("/api/admin/lightning/discover", { preHandler: [requireAuth, requireAdv
 
 app.get("/api/admin/lightning/readiness", { preHandler: [requireAuth, requireAdvancedTier("lightning")] }, async (_req: any, reply: any) => {
   try {
+    const userId = (_req.user as JwtUser).sub;
     const readiness = await getLightningReadiness(prisma as any);
-    return reply.send(readiness);
+    const runtime = await resolveLightningCapabilityRuntime(userId);
+    return reply.send({
+      ...readiness,
+      runtime: {
+        connected: runtime.connected,
+        canReceive: runtime.canReceive,
+        canSend: runtime.canSend,
+        capabilityState: runtime.capabilityState,
+        sendFailureReason: runtime.sendFailureReason,
+        source: runtime.source
+      }
+    });
   } catch (e: any) {
     return reply.code(500).send({ ok: false, error: String(e?.message || e) });
   }
@@ -27426,7 +30433,13 @@ app.get("/api/admin/lightning/peers/suggestions", { preHandler: [requireAuth, re
   try {
     const limitRaw = Number((req.query || {}).limit ?? 20);
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
-    const out = await getPeerSuggestions(prisma as any, { limit, probeTop: 12 });
+    const probeTopRaw = Number((req.query || {}).probeTop ?? 6);
+    const probeTop = Number.isFinite(probeTopRaw) ? Math.max(0, Math.min(12, Math.floor(probeTopRaw))) : 6;
+    const graphTimeoutRaw = Number((req.query || {}).graphTimeoutMs ?? "");
+    const graphTimeoutMs = Number.isFinite(graphTimeoutRaw) && graphTimeoutRaw > 0 ? graphTimeoutRaw : undefined;
+    const forceRaw = String((req.query || {}).forceRefresh ?? "").toLowerCase();
+    const forceRefresh = forceRaw === "1" || forceRaw === "true" || forceRaw === "yes";
+    const out = await getPeerSuggestions(prisma as any, { limit, probeTop, graphTimeoutMs, forceRefresh });
     return reply.send({ status: "ok", peers: out.peers, meta: out.meta });
   } catch (e: any) {
     const message = String(e?.message || e || "");
@@ -27725,17 +30738,74 @@ app.get("/api/revenue/pending-manual", { preHandler: [requireAuth, requireAdvanc
 
 app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("revenue")] }, async (req: any) => {
   const userId = (req.user as JwtUser).sub;
-  await reconcileSellerPendingIntentsForDashboard(userId, "revenue_sales");
+  const periodRaw = String((req.query as any)?.period || "all").trim().toLowerCase();
+  const compact = String((req.query as any)?.compact || "0").trim().toLowerCase() === "1";
+  const periodDays =
+    periodRaw === "1d" ? 1
+      : periodRaw === "7d" ? 7
+        : periodRaw === "30d" ? 30
+          : periodRaw === "90d" ? 90
+            : null;
+  const recognizedSince = periodDays ? new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000) : null;
+  queueSellerPendingIntentsReconcile(userId, "revenue_sales", req.log);
+  if (compact) {
+    const rows = await prisma.sale.findMany({
+      where: {
+        sellerUserId: userId,
+        ...(recognizedSince ? { recognizedAt: { gte: recognizedSince } } : {})
+      },
+      select: {
+        id: true,
+        intentId: true,
+        contentId: true,
+        amountSats: true,
+        currency: true,
+        rail: true,
+        memo: true,
+        recognizedAt: true
+      },
+      orderBy: { recognizedAt: "desc" }
+    });
+    return rows.map((s) => ({
+      id: s.id,
+      intentId: s.intentId,
+      contentId: s.contentId,
+      amountSats: s.amountSats.toString(),
+      currency: s.currency,
+      rail: s.rail,
+      memo: s.memo,
+      recognizedAt: s.recognizedAt.toISOString(),
+      grossAmountSats: s.amountSats.toString()
+    }));
+  }
   const sales = await prisma.sale.findMany({
-    where: { sellerUserId: userId },
+    where: {
+      sellerUserId: userId,
+      ...(recognizedSince ? { recognizedAt: { gte: recognizedSince } } : {})
+    },
     include: { content: true },
     orderBy: { recognizedAt: "desc" }
   });
+  const saleIntentIds = Array.from(new Set(sales.map((s) => String(s.intentId || "").trim()).filter(Boolean)));
   const intents = await prisma.paymentIntent.findMany({
-    where: { id: { in: sales.map((s) => s.intentId) } },
+    where: { id: { in: saleIntentIds } },
     select: { id: true, providerId: true }
   });
   const intentById = new Map(intents.map((i) => [i.id, i]));
+  const providerBackedIntentIds = new Set(
+    intents
+      .filter((i) => String(i.providerId || "").startsWith("providerpi:"))
+      .map((i) => String(i.id || "").trim())
+      .filter(Boolean)
+  );
+  const providerIntentRows = providerBackedIntentIds.size
+    ? readJsonArrayState<ProviderPaymentIntentRecord>(PROVIDER_PAYMENT_INTENTS_FILE)
+    : [];
+  const providerIntentByPaymentIntentId = new Map(
+    providerIntentRows
+      .map((row) => [String(row.paymentIntentId || "").trim(), row] as const)
+      .filter(([id]) => id && providerBackedIntentIds.has(id))
+  );
   const creatorIdentity = await buildLocalNodeIdentityDoc(userId).catch(() => null);
   const creatorNodeId = creatorIdentity?.nodeId || null;
   const providerCfg = getNetworkProviderConfig();
@@ -27745,19 +30815,32 @@ app.get("/api/revenue/sales", { preHandler: [requireAuth, requireAdvancedTier("r
       const gross = BigInt(s.amountSats as any);
       const providerIntent = intentById.get(s.intentId);
       const providerBacked = String(providerIntent?.providerId || "").startsWith("providerpi:");
-      const providerRecord = providerBacked ? findProviderPaymentIntentByPaymentIntentId(s.intentId) : null;
+      const providerRecord = providerBacked
+        ? (providerIntentByPaymentIntentId.get(String(s.intentId || "").trim()) || null)
+        : null;
       const fallbackFee = computeProviderFeeBreakdown(gross, {
         providerInvoicing: providerBacked,
         durablePublicHosting: false
       });
       const providerInvoicingFeeSats = providerBacked
-        ? BigInt(String(providerRecord?.providerInvoicingFeeSats || providerRecord?.providerFeeSats || fallbackFee.providerInvoicingFeeSats))
+        ? BigInt(String(providerRecord?.providerInvoicingFeeSats || fallbackFee.providerInvoicingFeeSats))
         : 0n;
       const providerDurableHostingFeeSats = providerBacked
         ? BigInt(String(providerRecord?.providerDurableHostingFeeSats || fallbackFee.providerDurableHostingFeeSats))
         : 0n;
-      const providerFeeSats = providerInvoicingFeeSats + providerDurableHostingFeeSats;
-      const creatorNetSats = gross > providerFeeSats ? gross - providerFeeSats : 0n;
+      const providerFeeFromRecord = providerBacked ? BigInt(String(providerRecord?.providerFeeSats || "0")) : 0n;
+      const creatorNetFromRecord = providerBacked ? BigInt(String(providerRecord?.creatorNetSats || "0")) : 0n;
+      const providerFeeFromComponents = providerInvoicingFeeSats + providerDurableHostingFeeSats;
+      const providerFeeSats = providerBacked
+        ? (providerFeeFromRecord > 0n
+          ? providerFeeFromRecord
+          : providerFeeFromComponents)
+        : 0n;
+      const creatorNetSats = providerBacked
+        ? (creatorNetFromRecord > 0n
+          ? creatorNetFromRecord
+          : (gross > providerFeeSats ? gross - providerFeeSats : 0n))
+        : gross;
       return {
         grossAmountSats: gross.toString(),
         providerInvoicingFeeSats: providerInvoicingFeeSats.toString(),
@@ -27801,9 +30884,626 @@ function buildHealthFromReadiness(readiness: { lightning: { ready: boolean; reas
   return { lightning, onchain };
 }
 
+function isProviderIntentRemittanceSettled(paymentIntentId: string): boolean {
+  const id = String(paymentIntentId || "").trim();
+  if (!id) return false;
+  const intent = findProviderPaymentIntentByPaymentIntentId(id);
+  if (!intent) return false;
+  const payoutStatus = String(intent.payoutStatus || "").trim().toLowerCase();
+  const payoutSummaryStatus = String(intent.payoutSummaryStatus || "").trim().toLowerCase();
+  return Boolean(intent.remittedAt) || payoutStatus === "paid" || payoutSummaryStatus === "paid";
+}
+
+function allocateFeeByGrossEntitlement(
+  feePoolSats: bigint,
+  grossEntitlements: Array<{ id: string; grossShareSats: bigint }>
+): Map<string, bigint> {
+  const out = new Map<string, bigint>();
+  if (feePoolSats <= 0n || grossEntitlements.length === 0) {
+    for (const row of grossEntitlements) out.set(row.id, 0n);
+    return out;
+  }
+  const grossTotal = grossEntitlements.reduce((sum, row) => sum + row.grossShareSats, 0n);
+  if (grossTotal <= 0n) {
+    for (const row of grossEntitlements) out.set(row.id, 0n);
+    return out;
+  }
+
+  const base = grossEntitlements.map((row) => {
+    const numerator = feePoolSats * row.grossShareSats;
+    const floor = numerator / grossTotal;
+    const remainder = numerator % grossTotal;
+    return { id: row.id, floor, remainder };
+  });
+
+  let allocated = base.reduce((sum, row) => sum + row.floor, 0n);
+  let residue = feePoolSats - allocated;
+  for (const row of base) out.set(row.id, row.floor);
+
+  if (residue > 0n) {
+    // Deterministic residue rule: highest fractional remainder first; ties by stable id lexical order.
+    const ranked = base
+      .slice()
+      .sort((a, b) => {
+        if (a.remainder === b.remainder) return a.id.localeCompare(b.id);
+        return a.remainder > b.remainder ? -1 : 1;
+      });
+    for (let i = 0; residue > 0n; i = (i + 1) % ranked.length) {
+      const row = ranked[i];
+      out.set(row.id, (out.get(row.id) || 0n) + 1n);
+      residue -= 1n;
+    }
+  }
+  return out;
+}
+
+function allocateParticipantGrossFeeNetByBps(input: {
+  grossPoolSats: bigint;
+  feePoolSats: bigint;
+  items: Array<{ id: string; bps: number }>;
+}): Map<string, { grossShareSats: bigint; feeWithheldSats: bigint; netShareSats: bigint }> {
+  const result = new Map<string, { grossShareSats: bigint; feeWithheldSats: bigint; netShareSats: bigint }>();
+  if (!input.items.length) return result;
+  const grossPool = input.grossPoolSats > 0n ? input.grossPoolSats : 0n;
+  const feePool = input.feePoolSats > 0n ? input.feePoolSats : 0n;
+
+  // Basis: gross entitlements are split by locked BPS first, then fee pool is withheld proportionally.
+  // This keeps split math stable while making fee impact explicit per participant.
+  const grossAlloc = allocateByBps(
+    grossPool,
+    input.items.map((row) => ({ id: row.id, bps: Math.max(0, Math.floor(row.bps)) }))
+  );
+  const feeAlloc = allocateFeeByGrossEntitlement(
+    feePool,
+    grossAlloc.map((row) => ({ id: row.id, grossShareSats: row.amountSats }))
+  );
+  for (const row of grossAlloc) {
+    const fee = feeAlloc.get(row.id) || 0n;
+    const boundedFee = fee > row.amountSats ? row.amountSats : fee;
+    result.set(row.id, {
+      grossShareSats: row.amountSats,
+      feeWithheldSats: boundedFee,
+      netShareSats: row.amountSats - boundedFee
+    });
+  }
+  return result;
+}
+
+async function buildIntentParticipantAccountingMap(paymentIntentIds: string[]): Promise<
+  Map<string, Map<string, { grossShareSats: bigint; feeWithheldSats: bigint; netShareSats: bigint }>>
+> {
+  const ids = Array.from(new Set(paymentIntentIds.map((id) => String(id || "").trim()).filter(Boolean)));
+  const out = new Map<string, Map<string, { grossShareSats: bigint; feeWithheldSats: bigint; netShareSats: bigint }>>();
+  if (!ids.length) return out;
+
+  const [allocations, sales, paymentIntents, payoutRows] = await Promise.all([
+    prisma.providerPaymentParticipantAllocation.findMany({
+      where: { paymentIntentId: { in: ids } },
+      select: { id: true, paymentIntentId: true, bps: true, amountSats: true }
+    }),
+    prisma.sale.findMany({
+      where: { intentId: { in: ids } },
+      select: { intentId: true, amountSats: true }
+    }),
+    prisma.paymentIntent.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, amountSats: true }
+    }),
+    prisma.participantPayout.findMany({
+      where: { paymentIntentId: { in: ids } },
+      select: { paymentIntentId: true, allocationId: true, amountSats: true }
+    }).catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    })
+  ]);
+
+  const grossByIntentId = new Map<string, bigint>();
+  for (const row of paymentIntents) {
+    grossByIntentId.set(String(row.id || "").trim(), BigInt(String(row.amountSats || "0")));
+  }
+  for (const row of sales) {
+    grossByIntentId.set(String(row.intentId || "").trim(), BigInt(String(row.amountSats || "0")));
+  }
+  for (const id of ids) {
+    if ((grossByIntentId.get(id) || 0n) > 0n) continue;
+    const providerIntent = findProviderPaymentIntentByPaymentIntentId(id);
+    if (!providerIntent) continue;
+    const providerGross = BigInt(String(providerIntent.grossAmountSats || providerIntent.amountSats || "0"));
+    if (providerGross > 0n) grossByIntentId.set(id, providerGross);
+  }
+  const allocationsByIntentId = new Map<string, Array<{ id: string; bps: number; amountSats: bigint }>>();
+  for (const row of allocations) {
+    const paymentIntentId = String(row.paymentIntentId || "").trim();
+    if (!paymentIntentId) continue;
+    const current = allocationsByIntentId.get(paymentIntentId) || [];
+    current.push({
+      id: String(row.id || "").trim(),
+      bps: Math.max(0, Math.floor(Number(row.bps || 0))),
+      amountSats: BigInt(String(row.amountSats || "0"))
+    });
+    allocationsByIntentId.set(paymentIntentId, current);
+  }
+
+  for (const [paymentIntentId, rows] of allocationsByIntentId.entries()) {
+    const netTotal = rows.reduce((sum, row) => sum + row.amountSats, 0n);
+    const saleGross = grossByIntentId.get(paymentIntentId) || 0n;
+    const grossPool = saleGross > 0n ? saleGross : netTotal;
+    const feePool = grossPool > netTotal ? grossPool - netTotal : 0n;
+    const perAllocation = allocateParticipantGrossFeeNetByBps({
+      grossPoolSats: grossPool,
+      feePoolSats: feePool,
+      items: rows.map((row) => ({ id: row.id, bps: row.bps }))
+    });
+
+    const rowMap = new Map<string, { grossShareSats: bigint; feeWithheldSats: bigint; netShareSats: bigint }>();
+    for (const row of rows) {
+      const policy = perAllocation.get(row.id);
+      rowMap.set(row.id, {
+        grossShareSats: policy?.grossShareSats || row.amountSats,
+        feeWithheldSats: policy?.feeWithheldSats || 0n,
+        // Net payout truth remains sourced from persisted participant payout allocation amount.
+        netShareSats: row.amountSats
+      });
+    }
+    out.set(paymentIntentId, rowMap);
+  }
+
+  // Fallback path for nodes that have participant payout rows but not allocation rows yet.
+  // We preserve payout-net truth, then allocate any gross->net fee delta proportionally
+  // across known payout rows using stable deterministic residue ordering.
+  const payoutRowsByIntentId = new Map<string, Array<{ allocationId: string; amountSats: bigint }>>();
+  for (const row of payoutRows) {
+    const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
+    const allocationId = String((row as any)?.allocationId || "").trim();
+    if (!paymentIntentId || !allocationId) continue;
+    const current = payoutRowsByIntentId.get(paymentIntentId) || [];
+    current.push({ allocationId, amountSats: BigInt(String((row as any)?.amountSats || "0")) });
+    payoutRowsByIntentId.set(paymentIntentId, current);
+  }
+  for (const [paymentIntentId, rows] of payoutRowsByIntentId.entries()) {
+    if (out.has(paymentIntentId)) continue;
+    const netTotal = rows.reduce((sum, row) => sum + row.amountSats, 0n);
+    const grossPool = grossByIntentId.get(paymentIntentId) || netTotal;
+    const feePool = grossPool > netTotal ? grossPool - netTotal : 0n;
+    const feeByAllocation = allocateFeeByGrossEntitlement(
+      feePool,
+      rows.map((row) => ({ id: row.allocationId, grossShareSats: row.amountSats }))
+    );
+    const rowMap = new Map<string, { grossShareSats: bigint; feeWithheldSats: bigint; netShareSats: bigint }>();
+    for (const row of rows) {
+      const fee = feeByAllocation.get(row.allocationId) || 0n;
+      rowMap.set(row.allocationId, {
+        grossShareSats: row.amountSats + fee,
+        feeWithheldSats: fee,
+        netShareSats: row.amountSats
+      });
+    }
+    out.set(paymentIntentId, rowMap);
+  }
+
+  return out;
+}
+
+async function computeRemoteRoyaltyAccrualSummary(userId: string): Promise<{
+  accruedSats: string;
+  itemCount: number;
+  checkedCount: number;
+}> {
+  const invites = await prisma.remoteInvite.findMany({
+    where: {
+      userId,
+      acceptedAt: { not: null },
+      revokedAt: null,
+      tombstonedAt: null
+    },
+    orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
+    take: 50,
+    select: {
+      inviteUrl: true,
+      remoteOrigin: true
+    }
+  });
+  if (!invites.length) {
+    return { accruedSats: "0", itemCount: 0, checkedCount: 0 };
+  }
+  let accrued = 0n;
+  let itemCount = 0;
+  let checkedCount = 0;
+  const rows = await Promise.allSettled(
+    invites.map(async (inv) => {
+      const token = extractInviteTokenFromUrl(inv.inviteUrl || null);
+      if (!token) return null;
+      const accounting = await fetchRemoteInviteAccounting(inv.remoteOrigin, token);
+      return accounting;
+    })
+  );
+  for (const row of rows) {
+    if (row.status !== "fulfilled") continue;
+    checkedCount += 1;
+    const accounting = row.value;
+    if (!accounting) continue;
+    itemCount += 1;
+    const earned = BigInt(String(accounting.earnedSatsToDate || "0"));
+    accrued += earned;
+  }
+  return {
+    accruedSats: accrued.toString(),
+    itemCount,
+    checkedCount
+  };
+}
+
+function participantPayoutUserAllocationWhere(userId: string, email: string) {
+  return {
+    OR: [
+      { participantUserId: userId },
+      email ? { participantEmail: emailEquals(email) } : undefined,
+      { participantRef: `user:${userId}` },
+      { participantRef: userId }
+    ].filter(Boolean) as any
+  } as any;
+}
+
+function payoutStatusPriorityForTruth(status: ParticipantPayoutStatus): number {
+  if (status === "paid") return 100;
+  if (status === "forwarding") return 80;
+  if (status === "ready") return 70;
+  if (status === "pending") return 60;
+  if (status === "failed") return 40;
+  if (status === "blocked") return 30;
+  return 0;
+}
+
+function payoutTruthRowKey(row: { paymentIntentId?: string | null; allocationId?: string | null; id?: string | null }): string {
+  const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
+  const allocationId = String((row as any)?.allocationId || "").trim();
+  if (paymentIntentId && allocationId) return `${paymentIntentId}::${allocationId}`;
+  if (paymentIntentId) return `intent::${paymentIntentId}`;
+  if (allocationId) return `alloc::${allocationId}`;
+  return `row::${String((row as any)?.id || "").trim()}`;
+}
+
+function pickCanonicalPayoutTruthRow<T extends { status?: any; remittedAt?: Date | null; updatedAt?: Date | null }>(a: T, b: T): T {
+  const aStatus = parseParticipantPayoutStatus((a as any)?.status);
+  const bStatus = parseParticipantPayoutStatus((b as any)?.status);
+  const aPaidSignal = aStatus === "paid" || Boolean((a as any)?.remittedAt);
+  const bPaidSignal = bStatus === "paid" || Boolean((b as any)?.remittedAt);
+  if (aPaidSignal !== bPaidSignal) return bPaidSignal ? b : a;
+  const aPriority = payoutStatusPriorityForTruth(aStatus);
+  const bPriority = payoutStatusPriorityForTruth(bStatus);
+  if (aPriority !== bPriority) return bPriority > aPriority ? b : a;
+  const aTs = new Date((a as any)?.updatedAt || 0).getTime();
+  const bTs = new Date((b as any)?.updatedAt || 0).getTime();
+  return bTs >= aTs ? b : a;
+}
+
+function canonicalizeParticipantPayoutTruthRows<T extends { id?: string | null; paymentIntentId?: string | null; allocationId?: string | null; status?: any; remittedAt?: Date | null; updatedAt?: Date | null }>(
+  rows: T[]
+): T[] {
+  const byKey = new Map<string, T>();
+  for (const row of rows) {
+    const key = payoutTruthRowKey(row);
+    const existing = byKey.get(key);
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+    byKey.set(key, pickCanonicalPayoutTruthRow(existing, row));
+  }
+  return Array.from(byKey.values());
+}
+
+async function mapSettledWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const safeConcurrency = Math.max(1, Math.min(items.length || 1, Math.floor(Number(concurrency) || 1)));
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+
+  async function worker() {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      try {
+        const value = await mapper(items[index] as T);
+        results[index] = { status: "fulfilled", value };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: safeConcurrency }, () => worker()));
+  return results;
+}
+
+const participantPayoutStatusReconcileInflight = new Map<string, Promise<number>>();
+const participantPayoutStatusReconcileLastRunMs = new Map<string, number>();
+
+async function reconcileParticipantPayoutStatusTruthForUser(
+  userId: string,
+  email: string,
+  context: string,
+  log: { debug: (obj: any, msg?: string) => void } | null | undefined
+): Promise<number> {
+  const allocationWhere = participantPayoutUserAllocationWhere(userId, email);
+  const now = new Date();
+  await prisma.participantPayout
+    .updateMany({
+      where: {
+        status: { in: ["pending", "ready", "forwarding"] },
+        remittedAt: { not: null },
+        allocation: allocationWhere
+      },
+      data: {
+        status: "paid",
+        lockedAt: null,
+        attemptId: null,
+        readinessReason: null,
+        blockedReason: null,
+        lastError: null,
+        nextRetryAt: null,
+        lastCheckedAt: now
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return null;
+      throw err;
+    });
+  await prisma.participantPayout
+    .updateMany({
+      where: {
+        status: { in: ["pending", "ready", "forwarding"] },
+        remittedAt: null,
+        payoutReference: { not: null },
+        allocation: allocationWhere
+      },
+      data: {
+        status: "paid",
+        remittedAt: now,
+        lockedAt: null,
+        attemptId: null,
+        readinessReason: null,
+        blockedReason: null,
+        lastError: null,
+        nextRetryAt: null,
+        lastCheckedAt: now
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return null;
+      throw err;
+    });
+
+  const unresolvedRows = await prisma.participantPayout
+    .findMany({
+      where: {
+        status: { in: ["pending", "ready", "forwarding"] },
+        allocation: allocationWhere
+      },
+      select: { paymentIntentId: true }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const unresolvedIntentIds = Array.from(
+    new Set(unresolvedRows.map((row: any) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean))
+  );
+  if (!unresolvedIntentIds.length) return 0;
+
+  let remoteForcedPaidCount = 0;
+  const remoteResults = await mapSettledWithConcurrency(
+    unresolvedIntentIds,
+    6,
+    async (paymentIntentId) => ({
+      paymentIntentId,
+      remote: await fetchDelegatedProviderPaymentIntentStatus(paymentIntentId).catch(() => ({
+        paid: false,
+        paidAt: null,
+        status: "unavailable"
+      }))
+    })
+  );
+  for (const result of remoteResults) {
+    if (result.status !== "fulfilled") continue;
+    const { paymentIntentId, remote } = result.value;
+    if (!remote.paid) continue;
+    const remittedAt =
+      remote.paidAt && !Number.isNaN(new Date(remote.paidAt).getTime()) ? new Date(remote.paidAt) : new Date();
+    const updated = await prisma.participantPayout
+      .updateMany({
+        where: {
+          paymentIntentId,
+          status: { in: ["pending", "ready", "forwarding"] },
+          allocation: allocationWhere
+        },
+        data: {
+          status: "paid",
+          remittedAt,
+          lockedAt: null,
+          attemptId: null,
+          readinessReason: null,
+          blockedReason: null,
+          lastError: null,
+          nextRetryAt: null,
+          lastCheckedAt: new Date()
+        }
+      })
+      .catch((err: any) => {
+        if (isMissingParticipantPayoutTableError(err)) return { count: 0 };
+        throw err;
+      });
+    remoteForcedPaidCount += Number(updated?.count || 0);
+  }
+  if (remoteForcedPaidCount > 0) {
+    log?.debug?.({ userId, context, remoteForcedPaidCount }, "participant_payout.reconcile_remote_paid");
+  }
+  return remoteForcedPaidCount;
+}
+
+function queueParticipantPayoutStatusTruthReconcileForUser(
+  userId: string,
+  email: string,
+  context: string,
+  log: { debug: (obj: any, msg?: string) => void } | null | undefined
+): Promise<number> {
+  const key = String(userId || "").trim();
+  if (!key) return Promise.resolve(0);
+  const existing = participantPayoutStatusReconcileInflight.get(key);
+  if (existing) return existing;
+  const nowMs = Date.now();
+  const last = participantPayoutStatusReconcileLastRunMs.get(key) || 0;
+  if (nowMs - last < 5000) return Promise.resolve(0);
+
+  const run = reconcileParticipantPayoutStatusTruthForUser(key, email, context, log)
+    .catch((err: any) => {
+      log?.debug?.({ userId: key, context, err }, "participant_payout.reconcile_failed");
+      return 0;
+    })
+    .finally(() => {
+      participantPayoutStatusReconcileInflight.delete(key);
+      participantPayoutStatusReconcileLastRunMs.set(key, Date.now());
+    });
+  participantPayoutStatusReconcileInflight.set(key, run);
+  return run;
+}
+
+async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
+  accruedSats: string;
+  payableSats: string;
+  paidSats: string;
+  feeWithheldSats: string;
+  failedSats: string;
+}> {
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const email = String(me?.email || "").trim().toLowerCase();
+  const allocationWhere = participantPayoutUserAllocationWhere(userId, email);
+  // Keep overview requests fast: kick reconciliation off in the background and
+  // compute summary from current canonical payout rows.
+  void queueParticipantPayoutStatusTruthReconcileForUser(
+    userId,
+    email,
+    "finance_overview",
+    app.log
+  );
+  const remoteForcedPaidCount = 0;
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: {
+        allocation: allocationWhere
+      },
+      select: {
+        allocationId: true,
+        amountSats: true,
+        status: true,
+        remittedAt: true,
+        paymentIntentId: true,
+        allocation: { select: { bps: true, participantRef: true, participantUserId: true, participantEmail: true } }
+      }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const filteredRows = rows.filter((row: any) => {
+    const participantUserId = String(row?.allocation?.participantUserId || "").trim();
+    if (participantUserId && participantUserId === userId) return true;
+    const participantRef = String(row?.allocation?.participantRef || "").trim();
+    if (participantRef === `user:${userId}` || participantRef === userId) return true;
+    const refUserId = parseUserIdFromParticipantRef(participantRef);
+    if (refUserId && refUserId === userId) return true;
+    const participantEmail = String(row?.allocation?.participantEmail || "").trim().toLowerCase();
+    if (email && participantEmail && participantEmail === email) return true;
+    return false;
+  });
+
+  const paymentIntentIds = Array.from(
+    new Set(
+      filteredRows
+        .map((row) => String((row as any)?.paymentIntentId || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const accountingByIntent = await buildIntentParticipantAccountingMap(paymentIntentIds);
+
+  let grossAccrued = 0n;
+  let paid = 0n;
+  let payable = 0n;
+  let failed = 0n;
+  let feesWithheld = 0n;
+  const statusCounts: Record<ParticipantPayoutStatus, number> = {
+    pending: 0,
+    ready: 0,
+    forwarding: 0,
+    paid: 0,
+    failed: 0,
+    blocked: 0
+  };
+  const statusSats: Record<ParticipantPayoutStatus, bigint> = {
+    pending: 0n,
+    ready: 0n,
+    forwarding: 0n,
+    paid: 0n,
+    failed: 0n,
+    blocked: 0n
+  };
+  for (const row of filteredRows) {
+    const amount = BigInt(String((row as any)?.amountSats || "0"));
+    const status = parseParticipantPayoutStatus((row as any)?.status);
+    statusCounts[status] += 1;
+    statusSats[status] += amount;
+    const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
+    const allocationId = String((row as any)?.allocationId || "").trim();
+    const accounting = paymentIntentId
+      ? accountingByIntent.get(paymentIntentId)?.get(allocationId)
+      : undefined;
+    const grossShare = accounting?.grossShareSats || amount;
+    const feeWithheld = accounting?.feeWithheldSats || 0n;
+
+    grossAccrued += grossShare;
+    feesWithheld += feeWithheld;
+
+    if (status === "paid") {
+      paid += amount;
+    } else if (status === "failed" || status === "blocked") {
+      failed += amount;
+    } else if (status === "pending" || status === "ready" || status === "forwarding") {
+      payable += amount;
+    }
+  }
+  app.log.info(
+    {
+      userId,
+      remoteForcedPaidCount,
+      totalRows: filteredRows.length,
+      statusCounts,
+      statusSats: {
+        pending: statusSats.pending.toString(),
+        ready: statusSats.ready.toString(),
+        forwarding: statusSats.forwarding.toString(),
+        paid: statusSats.paid.toString(),
+        failed: statusSats.failed.toString(),
+        blocked: statusSats.blocked.toString()
+      }
+    },
+    "finance.overview.participant_payout_rows"
+  );
+  return {
+    accruedSats: grossAccrued.toString(),
+    payableSats: payable.toString(),
+    paidSats: paid.toString(),
+    feeWithheldSats: feesWithheld.toString(),
+    failedSats: failed.toString()
+  };
+}
+
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  await reconcileSellerPendingIntentsForDashboard(userId, "finance_overview");
+  queueSellerPendingIntentsReconcile(userId, "finance_overview", req.log);
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const intents = await prisma.paymentIntent.findMany({
@@ -27832,8 +31532,19 @@ app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("fi
     }))
   });
 
-  // Reuse readiness logic
-  const [lnd, onchain] = await Promise.all([lndHealthCheck(), bitcoindHealthCheck()]);
+  // Reuse readiness logic + remote royalty summary for participant nodes.
+  const [lnd, onchain, remoteRoyaltySummary, participantPayoutSummary] = await Promise.all([
+    lndHealthCheck(),
+    bitcoindHealthCheck(),
+    computeRemoteRoyaltyAccrualSummary(userId).catch(() => ({ accruedSats: "0", itemCount: 0, checkedCount: 0 })),
+    computeParticipantPayoutSummaryForUser(userId).catch(() => ({
+      accruedSats: "0",
+      payableSats: "0",
+      paidSats: "0",
+      feeWithheldSats: "0",
+      failedSats: "0"
+    }))
+  ]);
   const health = { lightning: lnd, onchain };
   req.log.info(
     {
@@ -27843,13 +31554,30 @@ app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("fi
       matchedPaymentIntents: intents.length,
       paidCount: computed.totals.invoicesPaid,
       pendingCount: computed.totals.invoicesPending,
-      salesSats: computed.totals.salesSats
+      salesSats: computed.totals.salesSats,
+      remoteRoyaltyAccruedSats: remoteRoyaltySummary.accruedSats,
+      remoteRoyaltyItems: remoteRoyaltySummary.itemCount,
+      remoteRoyaltyChecked: remoteRoyaltySummary.checkedCount,
+      participantRoyaltyAccruedSats: participantPayoutSummary.accruedSats,
+      participantRoyaltyPayableSats: participantPayoutSummary.payableSats,
+      participantRoyaltyPaidSats: participantPayoutSummary.paidSats,
+      participantRoyaltyFeeWithheldSats: participantPayoutSummary.feeWithheldSats,
+      participantRoyaltyFailedSats: participantPayoutSummary.failedSats
     },
     "finance.overview computed"
   );
 
   return reply.send({
-    totals: computed.totals,
+    totals: {
+      ...computed.totals,
+      remoteRoyaltyAccruedSats: remoteRoyaltySummary.accruedSats,
+      remoteRoyaltyItems: remoteRoyaltySummary.itemCount,
+      participantRoyaltyAccruedSats: participantPayoutSummary.accruedSats,
+      participantRoyaltyPayableSats: participantPayoutSummary.payableSats,
+      participantRoyaltyPaidSats: participantPayoutSummary.paidSats,
+      participantRoyaltyFeeWithheldSats: participantPayoutSummary.feeWithheldSats,
+      participantRoyaltyFailedSats: participantPayoutSummary.failedSats
+    },
     revenueSeries: computed.revenueSeries,
     health,
     lastUpdatedAt: new Date().toISOString()
@@ -27860,6 +31588,8 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const email = (me?.email || "").toLowerCase();
+  // Avoid blocking first render on delegated-provider reconciliation calls.
+  void queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_royalties", app.log);
 
   const contents = await prisma.contentItem.findMany({
     where: { ownerUserId: userId },
@@ -27895,9 +31625,62 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     include: { settlement: true }
   });
 
-  const rows = new Map<string, { contentId: string; title: string; total: bigint; yourShare: bigint }>();
+  const payoutRows = await prisma.participantPayout.findMany({
+    where: {
+      allocation: {
+        contentId: { in: contentIds },
+        ...participantPayoutUserAllocationWhere(userId, email)
+      }
+    },
+    select: {
+      paymentIntentId: true,
+      allocationId: true,
+      status: true,
+      amountSats: true,
+      remittedAt: true,
+      allocation: {
+        select: {
+          contentId: true
+        }
+      }
+    }
+  }).catch((err: any) => {
+    if (isMissingParticipantPayoutTableError(err)) return [];
+    throw err;
+  });
+  const canonicalPayoutRows = canonicalizeParticipantPayoutTruthRows(
+    payoutRows.map((row: any) => ({ ...row, updatedAt: row.updatedAt || null }))
+  );
+
+  const payoutIntentIds = Array.from(
+    new Set(canonicalPayoutRows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean))
+  );
+  const accountingByIntent = await buildIntentParticipantAccountingMap(payoutIntentIds);
+
+  const rows = new Map<
+    string,
+    {
+      contentId: string;
+      title: string;
+      total: bigint;
+      yourShare: bigint;
+      grossEarned: bigint;
+      feeWithheld: bigint;
+      withdrawn: bigint;
+      pending: bigint;
+    }
+  >();
   for (const c of contents) {
-    rows.set(c.id, { contentId: c.id, title: c.title, total: 0n, yourShare: 0n });
+    rows.set(c.id, {
+      contentId: c.id,
+      title: c.title,
+      total: 0n,
+      yourShare: 0n,
+      grossEarned: 0n,
+      feeWithheld: 0n,
+      withdrawn: 0n,
+      pending: 0n
+    });
   }
 
   for (const s of settlements) {
@@ -27913,31 +31696,431 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     row.yourShare += BigInt(l.amountSats as any);
   }
 
+  for (const payout of canonicalPayoutRows) {
+    const contentId = String(payout.allocation?.contentId || "").trim();
+    if (!contentId) continue;
+    const row = rows.get(contentId);
+    if (!row) continue;
+    const paymentIntentId = String((payout as any)?.paymentIntentId || "").trim();
+    const allocationId = String((payout as any)?.allocationId || "").trim();
+    const accounting = paymentIntentId ? accountingByIntent.get(paymentIntentId)?.get(allocationId) : undefined;
+    if (accounting) {
+      row.grossEarned += accounting.grossShareSats;
+      row.feeWithheld += accounting.feeWithheldSats;
+    }
+    const amount = BigInt(String(payout.amountSats || "0"));
+    const status = parseParticipantPayoutStatus(payout.status);
+    if (status === "paid") {
+      row.withdrawn += amount;
+    } else if (status === "pending" || status === "ready" || status === "forwarding") {
+      row.pending += amount;
+    }
+  }
+
   let earnedTotal = 0n;
+  let feeTotal = 0n;
   let pendingTotal = 0n;
   const items = Array.from(rows.values()).map((r) => {
-    earnedTotal += r.yourShare;
+    const grossEarned = r.grossEarned > 0n ? r.grossEarned : r.yourShare;
+    earnedTotal += grossEarned;
+    feeTotal += r.feeWithheld;
+    pendingTotal += r.pending;
     return {
       contentId: r.contentId,
       title: r.title,
       totalSalesSats: r.total.toString(),
       grossRevenueSats: r.total.toString(),
+      grossEarnedSats: grossEarned.toString(),
+      feeWithheldSats: r.feeWithheld.toString(),
+      netEarnedSats: r.yourShare.toString(),
       allocationSats: r.yourShare.toString(),
       settledSats: r.yourShare.toString(),
-      withdrawnSats: "0",
-      pendingSats: "0"
+      withdrawnSats: r.withdrawn.toString(),
+      pendingSats: r.pending.toString()
     };
   });
 
   return reply.send({
     items,
-    totals: { earnedSats: earnedTotal.toString(), pendingSats: pendingTotal.toString() },
+    totals: { earnedSats: earnedTotal.toString(), feeWithheldSats: feeTotal.toString(), pendingSats: pendingTotal.toString() },
     cursor: null
   });
 });
 
-app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
-  return reply.send({ items: [], totals: { pendingSats: "0", paidSats: "0" }, cursor: null });
+app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const email = String(me?.email || "").trim().toLowerCase();
+  // Avoid blocking first render on delegated-provider reconciliation calls.
+  void queueParticipantPayoutStatusTruthReconcileForUser(userId, email, "finance_payouts", app.log);
+  const periodRaw = String((req.query as any)?.period || "all").trim().toLowerCase();
+  const basisRaw = String((req.query as any)?.basis || "paid").trim().toLowerCase();
+  const periodDays =
+    periodRaw === "1d" ? 1
+      : periodRaw === "7d" ? 7
+        : periodRaw === "30d" ? 30
+          : periodRaw === "90d" ? 90
+            : null;
+  const scopedSince = periodDays ? new Date(Date.now() - periodDays * 24 * 60 * 60 * 1000) : null;
+  const scopedBasis: "sale" | "earned" | "paid" = basisRaw === "sale" ? "sale" : basisRaw === "earned" ? "earned" : "paid";
+  let scopedIntentIds: string[] | null = null;
+  if (scopedSince && scopedBasis === "sale") {
+    const salesForScope = await prisma.sale.findMany({
+      where: { sellerUserId: userId, recognizedAt: { gte: scopedSince } },
+      select: { intentId: true }
+    });
+    scopedIntentIds = Array.from(
+      new Set(
+        salesForScope.map((row) => String((row as any)?.intentId || "").trim()).filter(Boolean)
+      )
+    );
+  }
+
+  const rows = await prisma.participantPayout
+    .findMany({
+      where: {
+        allocation: {
+          ...participantPayoutUserAllocationWhere(userId, email)
+        },
+        ...(scopedSince
+          ? scopedBasis === "sale"
+            ? {
+                paymentIntentId: {
+                  in: scopedIntentIds && scopedIntentIds.length > 0 ? scopedIntentIds : ["__none__"]
+                }
+              }
+            : scopedBasis === "earned"
+              ? {
+                  OR: [{ createdAt: { gte: scopedSince } }, { updatedAt: { gte: scopedSince } }]
+                }
+              : {
+                  OR: [{ remittedAt: { gte: scopedSince } }, { remittedAt: null, updatedAt: { gte: scopedSince } }]
+                }
+          : {})
+      },
+      select: {
+        id: true,
+        paymentIntentId: true,
+        providerPaymentIntentId: true,
+        allocationId: true,
+        amountSats: true,
+        status: true,
+        destinationSummary: true,
+        destinationType: true,
+        payoutReference: true,
+        attemptCount: true,
+        lastError: true,
+        blockedReason: true,
+        remittedAt: true,
+        createdAt: true,
+        updatedAt: true,
+        allocation: {
+          select: {
+            contentId: true
+          }
+        }
+      },
+      orderBy: [{ updatedAt: "desc" }]
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const canonicalRows = canonicalizeParticipantPayoutTruthRows(rows as any[]);
+
+  const contentIds = Array.from(
+    new Set(canonicalRows.map((row) => String((row as any)?.allocation?.contentId || "").trim()).filter(Boolean))
+  );
+  const contents = contentIds.length
+    ? await prisma.contentItem.findMany({
+        where: { id: { in: contentIds } },
+        select: { id: true, title: true, type: true }
+      })
+    : [];
+  const contentById = new Map(contents.map((c) => [c.id, c]));
+  const accountingByIntent = await buildIntentParticipantAccountingMap(
+    Array.from(new Set(canonicalRows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean)))
+  );
+
+  let paidSats = 0n;
+  let pendingSats = 0n;
+  let failedSats = 0n;
+
+  const items = canonicalRows.map((row) => {
+    const amount = BigInt(String((row as any)?.amountSats || "0"));
+    const status = parseParticipantPayoutStatus((row as any)?.status);
+    const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
+    if (status === "paid") paidSats += amount;
+    else if (status === "failed" || status === "blocked") failedSats += amount;
+    else if (status === "pending" || status === "ready" || status === "forwarding")
+      pendingSats += amount;
+
+    const contentId = String((row as any)?.allocation?.contentId || "").trim() || null;
+    const content = contentId ? contentById.get(contentId) : null;
+    const allocationId = String((row as any)?.allocationId || "").trim();
+    const accounting = paymentIntentId ? accountingByIntent.get(paymentIntentId)?.get(allocationId) : undefined;
+
+    return {
+      id: row.id,
+      paymentIntentId: row.paymentIntentId,
+      providerPaymentIntentId: row.providerPaymentIntentId,
+      allocationId: row.allocationId,
+      contentId,
+      content: content
+        ? {
+            id: content.id,
+            title: content.title,
+            type: content.type
+          }
+        : null,
+      amountSats: String((row as any)?.amountSats || "0"),
+      grossShareSats: accounting ? accounting.grossShareSats.toString() : String((row as any)?.amountSats || "0"),
+      feeWithheldSats: accounting ? accounting.feeWithheldSats.toString() : "0",
+      netAmountSats: String((row as any)?.amountSats || "0"),
+      status,
+      payoutDestinationSummary: row.destinationSummary || null,
+      payoutDestinationType: row.destinationType || null,
+      payoutReference: row.payoutReference || null,
+      attemptCount: row.attemptCount,
+      lastError: row.lastError || null,
+      blockedReason: row.blockedReason || null,
+      remittedAt: row.remittedAt ? row.remittedAt.toISOString() : null,
+      createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+      updatedAt: row.updatedAt ? row.updatedAt.toISOString() : null
+    };
+  });
+
+  return reply.send({
+    items,
+    totals: {
+      pendingSats: pendingSats.toString(),
+      paidSats: paidSats.toString(),
+      failedSats: failedSats.toString()
+    },
+    cursor: null
+  });
+});
+
+app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const paymentIntentId = String((req.params as any)?.id || "").trim();
+  if (!paymentIntentId) return badRequest(reply, "paymentIntentId required");
+
+  const paymentIntent = await prisma.paymentIntent.findUnique({
+    where: { id: paymentIntentId },
+    select: {
+      id: true,
+      contentId: true,
+      amountSats: true,
+      providerId: true,
+      status: true,
+      paidAt: true
+    }
+  });
+  if (!paymentIntent) return notFound(reply, "payment intent not found");
+
+  const providerIntent = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+  const sale = await prisma.sale.findFirst({
+    where: { intentId: paymentIntentId },
+    select: { id: true, intentId: true, sellerUserId: true, amountSats: true, rail: true }
+  });
+  const settlement = await prisma.settlement.findUnique({
+    where: { paymentIntentId },
+    select: { id: true, paymentIntentId: true, contentId: true, netAmountSats: true }
+  });
+  const settlementLines = settlement
+    ? await prisma.settlementLine.findMany({
+        where: { settlementId: settlement.id },
+        select: { id: true, participantId: true, participantEmail: true, role: true, amountSats: true },
+        orderBy: { id: "asc" }
+      })
+    : [];
+  const allocations = await prisma.providerPaymentParticipantAllocation
+    .findMany({
+      where: { paymentIntentId },
+      select: {
+        id: true,
+        providerPaymentIntentId: true,
+        participantRef: true,
+        participantUserId: true,
+        splitParticipantId: true,
+        amountSats: true
+      },
+      orderBy: { createdAt: "asc" }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+  const allocationById = new Map(allocations.map((row) => [row.id, row]));
+  const payoutRows = await prisma.participantPayout
+    .findMany({
+      where: { paymentIntentId },
+      select: {
+        id: true,
+        providerPaymentIntentId: true,
+        paymentIntentId: true,
+        allocationId: true,
+        amountSats: true,
+        status: true,
+        payoutKey: true,
+        payoutReference: true,
+        attemptCount: true,
+        remittedAt: true,
+        createdAt: true,
+        updatedAt: true
+      },
+      orderBy: { createdAt: "asc" }
+    })
+    .catch((err: any) => {
+      if (isMissingParticipantPayoutTableError(err)) return [];
+      throw err;
+    });
+
+  const gross = BigInt(String(paymentIntent.amountSats || "0"));
+  const providerFee = BigInt(String(providerIntent?.providerFeeSats || "0"));
+  const netSplitPool = providerIntent
+    ? BigInt(String(providerIntent.creatorNetSats || "0"))
+    : (gross > providerFee ? gross - providerFee : 0n);
+  const settlementLineTotal = settlementLines.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const allocationTotal = allocations.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const payoutTotal = payoutRows.reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const paidTotal = payoutRows
+    .filter((row) => String(row.status || "").toLowerCase() === "paid" || Boolean(row.remittedAt))
+    .reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const pendingTotal = payoutRows
+    .filter((row) => {
+      const status = String(row.status || "").toLowerCase();
+      return (status === "pending" || status === "ready" || status === "forwarding") && !row.remittedAt;
+    })
+    .reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const failedTotal = payoutRows
+    .filter((row) => {
+      const status = String(row.status || "").toLowerCase();
+      return status === "failed" || status === "blocked";
+    })
+    .reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+
+  const duplicatePayoutKeys = Array.from(
+    payoutRows.reduce((acc, row) => {
+      const key = String(row.payoutKey || "").trim();
+      if (!key) return acc;
+      acc.set(key, (acc.get(key) || 0) + 1);
+      return acc;
+    }, new Map<string, number>()).entries()
+  )
+    .filter(([, count]) => count > 1)
+    .map(([payoutKey, count]) => ({ payoutKey, count }));
+
+  const duplicateByParticipantRef = Array.from(
+    payoutRows.reduce((acc, row) => {
+      const alloc = allocationById.get(String(row.allocationId || "").trim());
+      const participantRef = String(alloc?.participantRef || alloc?.participantUserId || "unknown");
+      const key = `${paymentIntentId}:${participantRef}`;
+      acc.set(key, (acc.get(key) || 0) + 1);
+      return acc;
+    }, new Map<string, number>()).entries()
+  )
+    .filter(([, count]) => count > 1)
+    .map(([key, count]) => ({ key, count }));
+
+  return reply.send({
+    paymentIntent: {
+      id: paymentIntent.id,
+      amountSats: String(paymentIntent.amountSats),
+      providerId: paymentIntent.providerId || null,
+      status: paymentIntent.status,
+      paidAt: paymentIntent.paidAt?.toISOString?.() || null,
+      contentId: paymentIntent.contentId
+    },
+    providerPaymentIntent: providerIntent
+      ? {
+          id: providerIntent.id,
+          payoutExecutionMode: providerIntent.payoutExecutionMode,
+          providerRemitMode: providerIntent.providerRemitMode,
+          payoutStatus: providerIntent.payoutStatus,
+          payoutSummaryStatus: providerIntent.payoutSummaryStatus,
+          payoutLastError: providerIntent.payoutLastError || null,
+          providerFeeSats: providerIntent.providerFeeSats || "0",
+          providerInvoicingFeeSats: providerIntent.providerInvoicingFeeSats || "0",
+          providerDurableHostingFeeSats: providerIntent.providerDurableHostingFeeSats || "0",
+          creatorNetSats: providerIntent.creatorNetSats || "0"
+        }
+      : null,
+    sale: sale
+      ? {
+          id: sale.id,
+          sellerUserId: sale.sellerUserId,
+          amountSats: String(sale.amountSats),
+          rail: sale.rail
+        }
+      : null,
+    settlement: settlement
+      ? {
+          id: settlement.id,
+          netAmountSats: String(settlement.netAmountSats)
+        }
+      : null,
+    settlementLines: settlementLines.map((row) => ({
+      id: row.id,
+      participantId: row.participantId || null,
+      participantEmail: row.participantEmail || null,
+      role: row.role || null,
+      amountSats: String(row.amountSats)
+    })),
+    allocations: allocations.map((row) => ({
+      id: row.id,
+      providerPaymentIntentId: row.providerPaymentIntentId,
+      participantRef: row.participantRef,
+      participantUserId: row.participantUserId || null,
+      splitParticipantId: row.splitParticipantId || null,
+      amountSats: String(row.amountSats)
+    })),
+    participantPayoutRows: payoutRows.map((row) => {
+      const allocation = allocationById.get(String(row.allocationId || "").trim());
+      return {
+        id: row.id,
+        providerPaymentIntentId: row.providerPaymentIntentId,
+        paymentIntentId: row.paymentIntentId,
+        allocationId: row.allocationId,
+        participantRef: allocation?.participantRef || null,
+        participantUserId: allocation?.participantUserId || null,
+        amountSats: String(row.amountSats),
+        status: row.status,
+        payoutKey: row.payoutKey || null,
+        payoutReference: row.payoutReference || null,
+        attemptCount: row.attemptCount,
+        remittedAt: row.remittedAt?.toISOString?.() || null,
+        createdAt: row.createdAt?.toISOString?.() || null,
+        updatedAt: row.updatedAt?.toISOString?.() || null
+      };
+    }),
+    sums: {
+      grossSats: gross.toString(),
+      providerFeeSats: providerFee.toString(),
+      netSplitPoolSats: netSplitPool.toString(),
+      settlementLineTotalSats: settlementLineTotal.toString(),
+      allocationTotalSats: allocationTotal.toString(),
+      payoutTotalSats: payoutTotal.toString(),
+      payoutPaidSats: paidTotal.toString(),
+      payoutPendingSats: pendingTotal.toString(),
+      payoutFailedSats: failedTotal.toString()
+    },
+    duplicateChecks: {
+      duplicatePayoutKeys,
+      duplicateByParticipantRef
+    },
+    dashboardContributionForIntent: {
+      sellerOfRecordSalesGrossSats: gross.toString(),
+      royaltyEarnedSats: allocationTotal.toString(),
+      totalEarnedSats: allocationTotal.toString(),
+      providerFeeSats: providerFee.toString(),
+      invoicingFeeSats: String(providerIntent?.providerInvoicingFeeSats || "0"),
+      creatorNetOwedSats: netSplitPool.toString(),
+      creatorNetPaidSats: paidTotal.toString(),
+      creatorNetPendingSats: pendingTotal.toString(),
+      creatorNetFailedSats: failedTotal.toString()
+    }
+  });
 });
 
 app.get("/finance/transactions", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (_req: any, reply: any) => {
@@ -28082,6 +32265,162 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
       }
     } else if (hasExisting) {
       return intent;
+    }
+
+    const content = await prisma.contentItem.findUnique({
+      where: { id: intent.contentId },
+      select: { ownerUserId: true }
+    });
+    const delegatedPublish = listProviderDelegatedPublishes().find((row) => row.contentId === intent.contentId);
+    const providerCfg = getNetworkProviderConfig();
+    const providerTrust = evaluateProviderExecutionTrustReadiness();
+    let shouldDelegate = Boolean(delegatedPublish);
+    let delegatedProviderNodeId = String(delegatedPublish?.providerNodeId || "").trim() || null;
+
+    // Fallback delegated detection for /api/payments/intents refresh flow:
+    // if delegated-publish state is missing locally, still route through provider
+    // when capability truth says provider invoicing is required.
+    if (!shouldDelegate && content?.ownerUserId) {
+      const providerTargetReady =
+        providerCfg.enabled &&
+        hasProviderPaymentTarget(providerCfg) &&
+        Boolean(String(providerCfg.providerUrl || "").trim());
+      if (providerTargetReady && providerTrust.allowed) {
+        const capabilityCtx = getCapabilityContext();
+        const sellerPaymentsReadiness = await getPaymentsReadiness(content.ownerUserId).catch(() => null);
+        const localLndReady =
+          capabilityCtx.paymentsMode === "node" &&
+          capabilityCtx.nodeMode === "lan" &&
+          Boolean(sellerPaymentsReadiness?.lightning?.ready);
+        const serviceProfile = resolveProviderServiceProfile({
+          hasLocalInvoiceMinting: Boolean(sellerPaymentsReadiness?.lightning?.ready),
+          localSovereignReady: localLndReady,
+          providerConnected: isNetworkProviderConfigured(providerCfg),
+          providerCfg,
+          ctx: capabilityCtx
+        });
+        shouldDelegate = Boolean(serviceProfile.needsProviderInvoicing);
+        delegatedProviderNodeId = String(providerCfg.providerNodeId || "").trim() || null;
+      }
+    }
+
+    if (shouldDelegate) {
+      try {
+        if (content?.ownerUserId) {
+          const creatorIdentity = await buildLocalNodeIdentityDoc(content.ownerUserId);
+          const payoutDestination = await resolveEffectivePayoutDestination(content.ownerUserId).catch(() => null);
+          let delegatedAllocationBlueprint:
+            | {
+                splitVersionId: string;
+                allocationVersion: number;
+                participants: ProviderDelegatedAllocationBlueprintParticipant[];
+              }
+            | null = null;
+          try {
+            const feeBreakdown = computeProviderFeeBreakdown(String(intent.amountSats || "0"), {
+              providerInvoicing: true,
+              durablePublicHosting: false
+            });
+            delegatedAllocationBlueprint = await buildDelegatedAllocationBlueprint({
+              contentId: intent.contentId,
+              distributableSats: BigInt(String(feeBreakdown.creatorNetSats || "0"))
+            });
+          } catch (allocationErr: any) {
+            app.log.warn(
+              {
+                paymentIntentId: intent.id,
+                contentId: intent.contentId,
+                reason: String(allocationErr?.message || allocationErr || "allocation_blueprint_refresh_failed")
+              },
+              "payments.intent_refresh.delegated_allocation_blueprint_failed"
+            );
+          }
+          const delegated = await requestDelegatedProviderPaymentIntent({
+            creatorNodeId: creatorIdentity.nodeId,
+            contentId: intent.contentId,
+            amountSats: String(intent.amountSats || "0"),
+            paymentIntentId: intent.id,
+            buyerSessionId: null,
+            needsProviderInvoicing: true,
+            needsDurablePublicHosting: false,
+            payoutDestinationType: payoutDestination?.effectiveDestinationType || null,
+            payoutDestinationSummary: payoutDestination?.effectiveDestinationSummary || null,
+            providerRemitMode: payoutDestination?.providerRemitMode || null,
+            splitVersionId: delegatedAllocationBlueprint?.splitVersionId || null,
+            participantAllocations: delegatedAllocationBlueprint?.participants || []
+          });
+          const minExpiryMs = Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000;
+          const existingExpiryMs = intent.receiptTokenExpiresAt ? new Date(intent.receiptTokenExpiresAt).getTime() : 0;
+          const nextExpiry = existingExpiryMs >= minExpiryMs ? new Date(existingExpiryMs) : new Date(minExpiryMs);
+          const delegatedProviderId = `providerpi:${delegated.paymentIntentId}`;
+          await prisma.paymentIntent.update({
+            where: { id: intent.id },
+            data: {
+              bolt11: delegated.bolt11,
+              providerId: delegatedProviderId,
+              lightningExpiresAt: null,
+              receiptToken: intent.receiptToken || crypto.randomBytes(24).toString("hex"),
+              receiptTokenExpiresAt: nextExpiry
+            }
+          });
+
+          const existingProviderIntent = findProviderPaymentIntentByPaymentIntentId(intent.id);
+          const fallbackFee = computeProviderFeeBreakdown(String(intent.amountSats || "0"), {
+            providerInvoicing: true,
+            durablePublicHosting: false
+          });
+          const payoutPolicy = normalizeProviderFallbackPolicy(
+            existingProviderIntent?.payoutPolicy,
+            existingProviderIntent?.allowProviderFallback
+          );
+          upsertProviderPaymentIntentByPaymentIntentId(intent.id, {
+            providerNodeId: delegatedProviderNodeId || delegatedPublish?.providerNodeId || existingProviderIntent?.providerNodeId || "node:provider-unresolved",
+            creatorNodeId: creatorIdentity.nodeId,
+            contentId: intent.contentId,
+            paymentIntentId: intent.id,
+            bolt11: delegated.bolt11,
+            providerInvoiceRef: delegated.providerInvoiceRef || existingProviderIntent?.providerInvoiceRef || null,
+            amountSats: String(intent.amountSats || "0"),
+            grossAmountSats: existingProviderIntent?.grossAmountSats || fallbackFee.grossAmountSats,
+            providerInvoicingFeeSats: existingProviderIntent?.providerInvoicingFeeSats || delegated.providerInvoicingFeeSats || fallbackFee.providerInvoicingFeeSats,
+            providerDurableHostingFeeSats:
+              existingProviderIntent?.providerDurableHostingFeeSats || delegated.providerDurableHostingFeeSats || fallbackFee.providerDurableHostingFeeSats,
+            providerFeeSats: existingProviderIntent?.providerFeeSats || delegated.providerFeeSats || fallbackFee.providerFeeSats,
+            creatorNetSats: existingProviderIntent?.creatorNetSats || delegated.creatorNetSats || fallbackFee.creatorNetSats,
+            status: "issued",
+            payoutStatus: existingProviderIntent?.payoutStatus || "pending",
+            payoutRail: payoutDestination?.effectivePayoutRail || "provider_custody",
+            payoutDestinationType: payoutDestination?.effectiveDestinationType || null,
+            payoutDestinationSummary: payoutDestination?.effectiveDestinationSummary || null,
+            providerRemitMode: payoutDestination?.providerRemitMode || null,
+            payoutExecutionMode: resolveNewIntentPayoutExecutionMode(),
+            payoutPolicy: payoutPolicy.payoutPolicy,
+            allowProviderFallback: payoutPolicy.allowProviderFallback,
+            payoutSummaryStatus: existingProviderIntent?.payoutSummaryStatus || "pending",
+            payoutReference: existingProviderIntent?.payoutReference || null,
+            remittedAt: existingProviderIntent?.remittedAt || null,
+            payoutLastError: null,
+            remittanceAttemptId: existingProviderIntent?.remittanceAttemptId || null,
+            remittanceLockedAt: existingProviderIntent?.remittanceLockedAt || null,
+            remittanceLastCheckedAt: existingProviderIntent?.remittanceLastCheckedAt || null,
+            remittanceAttempts: existingProviderIntent?.remittanceAttempts || 0,
+            paymentReceiptId: existingProviderIntent?.paymentReceiptId || null,
+            buyerSessionId: existingProviderIntent?.buyerSessionId || null,
+            paidAt: existingProviderIntent?.paidAt || null
+          });
+          return (await prisma.paymentIntent.findUnique({ where: { id: intent.id } })) || intent;
+        }
+      } catch (e: any) {
+        app.log.warn(
+          {
+            paymentIntentId: intent.id,
+            contentId: intent.contentId,
+            reason: String(e?.code || e?.message || "delegated_invoice_refresh_failed")
+          },
+          "payments.intent_refresh.delegated_invoice_failed"
+        );
+        return intent;
+      }
     }
 
     const created = await createLightningInvoiceWithRetry(intent.amountSats, memo, {
@@ -28298,6 +32637,35 @@ async function reconcileSellerPendingIntentsForDashboard(userId: string, context
       );
     }
   }
+}
+
+const sellerPendingReconcileInflight = new Map<string, Promise<void>>();
+const sellerPendingReconcileLastRunMs = new Map<string, number>();
+
+function queueSellerPendingIntentsReconcile(
+  userId: string,
+  context: "finance_overview" | "revenue_sales",
+  log: { debug: (obj: any, msg?: string) => void } | null | undefined
+) {
+  const key = String(userId || "").trim();
+  if (!key) return;
+  if (sellerPendingReconcileInflight.has(key)) return;
+  const nowMs = Date.now();
+  const last = sellerPendingReconcileLastRunMs.get(key) || 0;
+  if (nowMs - last < 5000) return;
+
+  const run = reconcileSellerPendingIntentsForDashboard(key, context)
+    .catch((err: any) => {
+      log?.debug?.({ userId: key, err }, `${context}.pending_reconcile_failed`);
+    })
+    .finally(() => {
+      if (sellerPendingReconcileInflight.get(key) === run) {
+        sellerPendingReconcileInflight.delete(key);
+      }
+      sellerPendingReconcileLastRunMs.set(key, Date.now());
+    });
+
+  sellerPendingReconcileInflight.set(key, run);
 }
 
 app.get("/api/payments/intents/:id", { preHandler: optionalAuth }, async (req: any, reply) => {
@@ -28747,7 +33115,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
       const namedToken = getNamedTunnelToken();
       tunnelManager.startNamed({
         publicOrigin: cfg.publicOrigin,
-        tunnelName: cfg.tunnelName,
+        tunnelName: String(cfg.tunnelName || "").trim(),
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
         token: namedToken
       }).catch((e) => app.log.warn(String(e?.message || e)));
@@ -28940,7 +33308,7 @@ async function handlePublicInviteLookup(req: any, reply: any) {
 
   const tokenHash = hashInviteToken(token);
 
-  const inv = await prisma.invitation.findFirst({
+  const inv: any = await prisma.invitation.findFirst({
     where: {
       OR: [{ token }, { tokenHash }]
     },
@@ -29110,7 +33478,7 @@ async function handlePublicInviteLookup(req: any, reply: any) {
     lockedFileObjectKey: sv.lockedFileObjectKey || null,
     lockedFileSha256: sv.lockedFileSha256 || null,
     createdAt: sv.createdAt.toISOString(),
-    participants: (sv.participants || []).map((p) => ({
+    participants: (sv.participants || []).map((p: any) => ({
       ...p,
       percent: percentToPrimitive(p.percent)
     }))
@@ -29233,7 +33601,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
   const token = asString((req.params as any).token).trim();
   if (!token) return notFound(reply, "Invite not found");
   const tokenHash = hashInviteToken(token);
-  const inv = await prisma.invitation.findFirst({
+  const inv: any = await prisma.invitation.findFirst({
     where: { OR: [{ token }, { tokenHash }] },
     include: { splitParticipant: true }
   });
@@ -29411,7 +33779,7 @@ async function handlePublicInvitePage(req: any, reply: any) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 1200);
     try {
-      await fetch(base + "/healthz", { method: "GET", mode: "no-cors", cache: "no-store", signal: controller.signal });
+      await fetch(base + "/api/health", { method: "GET", mode: "no-cors", cache: "no-store", signal: controller.signal });
       return true;
     } catch {
       return false;
@@ -29833,7 +34201,7 @@ async function handlePublicInviteAccept(req: any, reply: any) {
 
   const tokenHash = hashInviteToken(token);
 
-  const inv = await prisma.invitation.findFirst({
+  const inv: any = await prisma.invitation.findFirst({
     where: { OR: [{ token }, { tokenHash }] },
     include: { splitParticipant: { include: { splitVersion: { include: { content: true } } } } }
   });
@@ -30272,11 +34640,13 @@ async function handlePublicInviteAccept(req: any, reply: any) {
     },
     "invite.participant_bound"
   );
+  const canonicalBindingSource: "local_auth" | "remote_signature" =
+    acceptanceAuthMode === "remote_signature" ? "remote_signature" : "local_auth";
   const canonical = buildCanonicalInviteAcceptResult({
     invitation: inv,
     acceptedAt: now,
     boundIdentityRef,
-    bindingSource: acceptanceAuthMode
+    bindingSource: canonicalBindingSource
   });
   return reply.send(canonical);
 }

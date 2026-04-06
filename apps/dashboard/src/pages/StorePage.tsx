@@ -284,6 +284,18 @@ type UserNetworkStatus = {
   title: "Ready" | "Connecting" | "Action Required" | "Offline";
   message: string;
   actionLabel: string | null;
+  reason?:
+    | "runtime_not_ready"
+    | "sovereign_node_ready"
+    | "sovereign_public_origin_missing"
+    | "sovereign_local_stack_missing"
+    | "sovereign_creator_ready"
+    | "basic_creator_ready"
+    | "provider_unreachable"
+    | "provider_ready"
+    | "provider_setup_in_progress"
+    | "provider_setup_blocked"
+    | "provider_setup_connecting";
 };
 
 type CreatorPayoutDestinationStatus = {
@@ -960,6 +972,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     try {
       const result = await api<ProviderHandshakeResult>("/api/network/provider/handshake", "POST", {});
       setProviderHandshake(result || null);
+      await refreshUserNetworkStatus();
+      await refreshProfileActivationStatus();
     } catch (e: any) {
       setProviderHandshake(null);
       setProviderHandshakeErr(e?.message || "Provider handshake failed.");
@@ -1121,12 +1135,12 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       }
       if (finalStatus?.status === "offline") {
         setGuidedSetupPhase("error");
-        setGuidedSetupMessage("We couldn’t reach your provider.");
+        setGuidedSetupMessage(finalStatus.message || "Provider connectivity is currently unavailable.");
         return;
       }
       if (finalStatus?.status === "action_required") {
         setGuidedSetupPhase("error");
-        setGuidedSetupMessage("Your provider connection needs to be refreshed.");
+        setGuidedSetupMessage(finalStatus.message || "Your provider connection needs to be refreshed.");
         return;
       }
       setGuidedSetupPhase("error");
@@ -1385,7 +1399,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             : summaryNodeModeLabel;
   const summaryStorefrontAuthority =
     (networkSummary?.modeProfile?.hasStablePublicRoute || summaryCanonicalCommerceKind === "self_hosted_stable")
-      ? "Creator-hosted (stable named tunnel)"
+      ? "Creator-hosted (stable canonical origin)"
       : "Creator-hosted (temporary tunnel)";
   const providerCommerceActive = participationModeFromSummary === "sovereign_creator_with_provider";
   const summaryCommerceAuthority = networkSummary?.modeProfile?.localSovereignReady
@@ -1545,7 +1559,34 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       ? "Refresh setup"
       : userNetworkStatus?.status === "connecting" || userNetworkStatus?.status === "action_required"
         ? "Finish setup"
-        : "Connect provider";
+      : "Connect provider";
+  const providerBindingMessage = !networkSummary?.providerBinding?.configured
+    ? "No provider configured."
+    : networkSummary?.modeProfile?.providerConnected
+      ? "Provider configured and delegated invoice support is active."
+      : networkSummary?.modeProfile?.providerConnectionReason === "provider_not_trusted"
+        ? "Provider configured, but trust verification is required."
+        : networkSummary?.modeProfile?.providerConnectionReason === "provider_acknowledgment_required"
+          ? "Provider configured. Request provider acknowledgment to continue."
+          : networkSummary?.modeProfile?.providerConnectionReason === "provider_execution_permit_required"
+            ? "Provider configured. Request provider execution permit to continue."
+            : networkSummary?.paymentCapability?.providerBackedCommerceMessage ||
+              "Provider configured, but delegated invoice support is not active yet.";
+  React.useEffect(() => {
+    if (guidedSetupBusy || !userNetworkStatus) return;
+    if (userNetworkStatus.status === "ready") {
+      setGuidedSetupPhase("ready");
+      setGuidedSetupMessage(userNetworkStatus.message || "Connected and ready to use.");
+      return;
+    }
+    if (userNetworkStatus.status === "offline" || userNetworkStatus.status === "action_required") {
+      setGuidedSetupPhase("error");
+      setGuidedSetupMessage(userNetworkStatus.message || "Your provider connection needs attention.");
+      return;
+    }
+    setGuidedSetupPhase("idle");
+    setGuidedSetupMessage(userNetworkStatus.message || "Provider relationship setup is still in progress.");
+  }, [guidedSetupBusy, userNetworkStatus?.status, userNetworkStatus?.message, userNetworkStatus?.reason]);
   const profileActivationLabel =
     profileActivationStatus?.activation?.status === "activated"
       ? "Activated"
@@ -1607,7 +1648,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           ? "Next step: connect a commerce provider or run local node stack."
           : networkSummary?.modeProfile?.providerConnected
             ? "Provider is connected. Next step: switch to Sovereign Creator to activate provider commerce."
-          : "Next step: bring named tunnel online to unlock Sovereign Creator.";
+          : "Next step: bring canonical public origin online to unlock Sovereign Creator.";
   const guardPillClass =
     commerceGuardLevel === "ready"
       ? "border-emerald-800/70 bg-emerald-900/20 text-emerald-300"
@@ -1775,13 +1816,16 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
         <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
           <div className="text-[11px] uppercase tracking-wide text-neutral-500">Creator Payout Destination</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Commerce uses the local node wallet. This destination is only where creator remittance is sent.
+          </div>
           <div className="mt-2 grid gap-2 text-xs">
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
               <span className="text-neutral-500">Configured</span>
               <span className="text-neutral-200 text-right">{payoutConfigured ? "yes" : "no"}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
-              <span className="text-neutral-500">Payout destination</span>
+              <span className="text-neutral-500">Creator payout destination</span>
               <span className="text-neutral-200 text-right break-all">{payoutDestinationLabel}</span>
             </div>
             <div className="flex items-start justify-between gap-3 border-b border-neutral-900 pb-2">
@@ -1795,7 +1839,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               </span>
             </div>
             <div className="text-neutral-400">{providerBackedCommerceMessage}</div>
-            <div className="text-neutral-400">{payoutState?.message || "Set where creator net should be remitted when provider collects payment."}</div>
+            <div className="text-neutral-400">{payoutState?.message || "Set where creator net remittance should be sent when provider collects payment."}</div>
             <div className="text-neutral-500">
               Payout state wording: {payoutStatusVocabulary.pending} / {payoutStatusVocabulary.forwarding} / {payoutStatusVocabulary.paid} / {payoutStatusVocabulary.failed}
             </div>
@@ -1803,13 +1847,13 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
           <div className="mt-3 grid gap-2 md:grid-cols-2">
             <label className="text-xs text-neutral-400">
-              Payout destination
+              Creator payout destination type
               <select
                 className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
                 value={payoutDestinationTypeInput}
                 onChange={(e) => setPayoutDestinationTypeInput(e.target.value as any)}
               >
-                <option value="lightning_address">Lightning Address</option>
+                <option value="lightning_address">Creator Lightning Address</option>
                 <option value="onchain_address">On-chain address</option>
                 <option value="local_lnd">Local Lightning node</option>
               </select>
@@ -1821,13 +1865,20 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
                 value={payoutRemitModeInput}
                 onChange={(e) => setPayoutRemitModeInput(e.target.value as any)}
               >
-                <option value="manual_payout">Manual payout</option>
+                <option value="manual_payout" disabled>
+                  Manual payout (disabled)
+                </option>
                 <option value="auto_forward">Auto-forward</option>
-                <option value="provider_custody">Provider custody</option>
+                <option value="provider_custody" disabled>
+                  Provider custody (disabled)
+                </option>
               </select>
+              <div className="mt-1 text-[11px] text-neutral-500">
+                Auto-forward is the active remittance policy in this posture. Manual and custody modes are visible but disabled.
+              </div>
             </label>
             <label className="text-xs text-neutral-400 md:col-span-2">
-              Lightning Address
+              Creator Lightning payout address
               <input
                 className="mt-1 w-full rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm text-neutral-200"
                 value={payoutLightningInput}
@@ -1960,7 +2011,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Configuration</div>
             <div className="mt-1 text-xs text-neutral-400">
-              Basic mode keeps provider configuration hidden. Add a named tunnel and switch out of Basic to enable provider commerce services.
+              Basic mode keeps provider configuration hidden. Add a canonical public origin and switch out of Basic to enable provider commerce services.
             </div>
           </div>
         ) : isSovereignNodeMode ? (
@@ -1983,7 +2034,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </div>
           {providerConfigLocked ? (
             <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-              Named tunnel required before provider configuration. Bring a named tunnel online first.
+              Canonical public origin required before provider configuration. Bring your canonical origin online first.
             </div>
           ) : null}
           {isSovereignCreatorMode ? (
@@ -2007,6 +2058,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
             <div className="text-xs text-neutral-400 mt-1">{guidedSetupMessage}</div>
             <div className="text-xs text-neutral-400 mt-1">
               Network Status: <span className="text-neutral-300">{userNetworkStatusLabel}</span>
+            </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Status reason: <span className="text-neutral-400">{userNetworkStatus?.reason || "unknown"}</span>
             </div>
             <div className="mt-3 flex items-center gap-3">
               <button
@@ -2307,9 +2361,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </>
           ) : null}
           <div className="mt-2 text-xs">
-            {networkSummary?.providerBinding?.configured
-              ? "Provider configured, but delegated invoice support is not active yet."
-              : "No provider configured."}
+            {providerBindingMessage}
           </div>
           <div className="mt-3 grid gap-2 md:grid-cols-2">
             <div>

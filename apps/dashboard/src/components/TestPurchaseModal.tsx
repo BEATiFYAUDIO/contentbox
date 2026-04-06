@@ -87,9 +87,9 @@ export default function TestPurchaseModal({
   React.useEffect(() => {
     if (!intentId || manualPayment) return;
 
-    let statusTimer: number | null = null;
-    let refreshTimer: number | null = null;
+    let tickTimer: number | null = null;
     let stopped = false;
+    let tickCount = 0;
 
     const pollStatus = async () => {
       try {
@@ -117,14 +117,26 @@ export default function TestPurchaseModal({
       }
     };
 
-    pollStatus();
-    statusTimer = window.setInterval(pollStatus, 3000);
-    refreshTimer = window.setInterval(refresh, 10000);
+    const runTick = async () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      tickCount += 1;
+      await pollStatus();
+      // Keep periodic reconciliation but less often than status checks.
+      if (tickCount % 4 === 0) {
+        await refresh();
+      }
+    };
+
+    // Immediate status + one early refresh to preserve initial behavior.
+    pollStatus().catch(() => {});
+    refresh().catch(() => {});
+    tickTimer = window.setInterval(() => {
+      runTick().catch(() => {});
+    }, 3000);
 
     return () => {
       stopped = true;
-      if (statusTimer) window.clearInterval(statusTimer);
-      if (refreshTimer) window.clearInterval(refreshTimer);
+      if (tickTimer) window.clearInterval(tickTimer);
     };
   }, [intentId, receiptToken, manualPayment]);
 
