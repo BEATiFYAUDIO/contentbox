@@ -671,6 +671,20 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       return creatorId === creatorScopeId;
     });
   }, [creatorScopeId, scopedParticipantPayouts, creatorByIntentKey]);
+  const creatorAllPaymentIntents = useMemo(
+    () =>
+      creatorScopeId === "all"
+        ? paymentIntents
+        : paymentIntents.filter((row) => String(row.creatorNodeId || "").trim() === creatorScopeId),
+    [creatorScopeId, paymentIntents]
+  );
+  const creatorAllParticipantPayouts = useMemo(() => {
+    if (creatorScopeId === "all") return participantPayouts;
+    return participantPayouts.filter((row) => {
+      const creatorId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      return creatorId === creatorScopeId;
+    });
+  }, [creatorScopeId, participantPayouts, creatorByIntentKey]);
 
   const nodeSummary = useMemo(() => {
     const settledIntents = scopedPaymentIntents.filter((row) => row.status === "paid");
@@ -835,9 +849,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     { label: "Creator Net (Settlement)", value: `${sats(creatorSummary.creatorNet.toString())} sats`, tone: "text-cyan-200" },
     { label: "Provider Fees (Settlement)", value: `${sats(creatorSummary.providerFees.toString())} sats`, tone: "text-neutral-200" },
     { label: "Settled Invoices", value: `${creatorScopedPaymentReceipts.length.toLocaleString()}`, tone: "text-neutral-100" },
-    { label: "Paid", value: `${sats(creatorSummary.paid.toString())} sats`, tone: "text-emerald-300" },
-    { label: "Payable", value: `${sats(creatorSummary.payable.toString())} sats`, tone: "text-amber-300" },
-    { label: "Needs Attention", value: `${sats(creatorSummary.attention.toString())} sats`, tone: "text-rose-300" }
+    { label: "Paid (Scope)", value: `${sats(creatorSummary.paid.toString())} sats`, tone: "text-emerald-300" },
+    { label: "Payable (Scope)", value: `${sats(creatorSummary.payable.toString())} sats`, tone: "text-amber-300" },
+    { label: "Needs Attention (Scope)", value: `${sats(creatorSummary.attention.toString())} sats`, tone: "text-rose-300" }
   ];
 
   const visiblePaymentIntents =
@@ -897,7 +911,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       paid: bigint;
       payable: bigint;
       attention: bigint;
-      status: "attention" | "payable" | "paid" | "no_execution_rows";
+      status: "attention" | "payable" | "paid" | "outside_scope" | "no_execution_rows";
     }>;
     type Row = {
       contentId: string;
@@ -910,6 +924,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       paid: bigint;
       payable: bigint;
       attention: bigint;
+      hasPayoutHistory: boolean;
     };
     const rows = new Map<string, Row>();
     const intentToContent = new Map<string, string>();
@@ -928,7 +943,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         net: 0n,
         paid: 0n,
         payable: 0n,
-        attention: 0n
+        attention: 0n,
+        hasPayoutHistory: false
       };
       rows.set(id, next);
       return next;
@@ -943,19 +959,31 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       current.delegationState = row.visibility === "DISABLED" ? "disabled" : "enabled";
     });
 
+    const scopedIntentKeys = new Set<string>();
     creatorScopedPaymentIntents.forEach((row) => {
+      if (row.id) scopedIntentKeys.add(row.id);
+      if (row.paymentIntentId) scopedIntentKeys.add(row.paymentIntentId);
+    });
+    creatorAllPaymentIntents.forEach((row) => {
       const cid = String(row.contentId || "").trim() || "unscoped";
       const current = ensure(cid, null);
       const fallbackMeta = contentMetaById.get(cid);
       if (fallbackMeta?.publishedAt) current.publishedAt = maxIsoTimestamp(current.publishedAt, fallbackMeta.publishedAt);
       if (!current.publishState && fallbackMeta?.publishState) current.publishState = fallbackMeta.publishState;
       if (!current.delegationState && fallbackMeta?.delegationState) current.delegationState = fallbackMeta.delegationState;
-      if (row.status === "paid") {
+      const inScope = Boolean((row.id && scopedIntentKeys.has(row.id)) || (row.paymentIntentId && scopedIntentKeys.has(row.paymentIntentId)));
+      if (inScope && row.status === "paid") {
         current.gross += toBigIntSats(row.grossAmountSats || row.amountSats);
         current.net += toBigIntSats(row.creatorNetSats);
       }
       if (row.id) intentToContent.set(row.id, cid);
       if (row.paymentIntentId) intentToContent.set(row.paymentIntentId, cid);
+    });
+
+    creatorAllParticipantPayouts.forEach((row) => {
+      const cid = intentToContent.get(row.providerPaymentIntentId) || intentToContent.get(row.paymentIntentId) || "unscoped";
+      const current = ensure(cid, null);
+      current.hasPayoutHistory = true;
     });
 
     creatorScopedParticipantPayouts.forEach((row) => {
@@ -979,10 +1007,27 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         attention: row.attention,
         publishState: row.publishState,
         delegationState: row.delegationState,
-        status: row.attention > 0n ? "attention" : row.payable > 0n ? "payable" : row.paid > 0n ? "paid" : "no_execution_rows"
+        status:
+          row.attention > 0n
+            ? "attention"
+            : row.payable > 0n
+              ? "payable"
+              : row.paid > 0n
+                ? "paid"
+                : row.hasPayoutHistory
+                  ? "outside_scope"
+                  : "no_execution_rows"
       }))
       .sort((a, b) => Number(b.gross - a.gross));
-  }, [creatorScopeId, creatorScopedDelegatedPublishes, creatorScopedPaymentIntents, creatorScopedParticipantPayouts, contentMetaById]);
+  }, [
+    creatorScopeId,
+    creatorScopedDelegatedPublishes,
+    creatorScopedPaymentIntents,
+    creatorAllPaymentIntents,
+    creatorAllParticipantPayouts,
+    creatorScopedParticipantPayouts,
+    contentMetaById
+  ]);
 
   const visibleCreatorScopedContentRows = useMemo(() => {
     if (showZeroContentRows) return creatorScopedContentRows;
@@ -1381,6 +1426,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           <div className="mt-1 text-xs text-neutral-500">
             Catalog state and provider delegation are independent. A work can be published while delegation is currently disabled.
           </div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Paid/Payable columns are scoped to the selected time window.
+          </div>
           <div className="mt-2">
             <button
               type="button"
@@ -1400,8 +1448,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                     <th className="py-2 pr-3 font-medium">Content</th>
                     <th className="py-2 pr-3 font-medium">Gross Sales</th>
                     <th className="py-2 pr-3 font-medium">Creator Net</th>
-                    <th className="py-2 pr-3 font-medium">Paid</th>
-                    <th className="py-2 pr-3 font-medium">Payable</th>
+                    <th className="py-2 pr-3 font-medium">Paid (Scope)</th>
+                    <th className="py-2 pr-3 font-medium">Payable (Scope)</th>
                     <th className="py-2 pr-3 font-medium">Payout State</th>
                     <th className="py-2 pr-3 font-medium">Catalog State</th>
                     <th className="py-2 pr-3 font-medium">Provider Delegation</th>
@@ -1423,7 +1471,15 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                       <td className="py-2 pr-3 align-top text-amber-300">{sats(row.payable.toString())} sats</td>
                       <td className="py-2 pr-3 align-top">
                         <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status === "attention" ? "failed" : row.status === "payable" ? "forwarding" : row.status === "paid" ? "paid" : "unknown")}`}>
-                          {row.status === "attention" ? "needs attention" : row.status === "payable" ? "payable" : row.status === "paid" ? "paid" : "no payout rows yet"}
+                          {row.status === "attention"
+                            ? "needs attention"
+                            : row.status === "payable"
+                              ? "payable"
+                              : row.status === "paid"
+                                ? "paid"
+                                : row.status === "outside_scope"
+                                  ? "payout history outside scope"
+                                  : "no payouts yet"}
                         </span>
                       </td>
                       <td className="py-2 pr-3 align-top">
