@@ -37,6 +37,12 @@ type NodeModeStatus = {
   };
 };
 
+type ProgressStep = {
+  title: string;
+  detail: string;
+  state: "done" | "current" | "pending";
+};
+
 type LightningRuntimeSnapshot = {
   connected: boolean;
   canReceive: boolean;
@@ -503,6 +509,40 @@ export default function ConfigPage({
     : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
+  const creatorProgressionSteps = useMemo<ProgressStep[]>(() => {
+    const selected = modeInfo?.selectedMode || modeInfo?.nodeMode;
+    const localCommerceReady = Boolean(modeInfo?.modeReadiness?.localCommerceReady);
+    if (selected === "basic") {
+      return [
+        { title: "Advanced Posture", detail: "Switch from Basic to Advanced.", state: "current" },
+        { title: "Commerce Route", detail: "Choose provider-backed or local sovereign route.", state: "pending" },
+        { title: "Rails Readiness", detail: "If local route: configure Lightning + rails.", state: "pending" },
+        { title: "Operate", detail: "Use Revenue stages for daily operations.", state: "pending" }
+      ];
+    }
+    if (selected === "lan" && localCommerceReady) {
+      return [
+        { title: "Advanced Posture", detail: "Sovereign posture enabled.", state: "done" },
+        { title: "Commerce Route", detail: "Local sovereign route selected.", state: "done" },
+        { title: "Rails Readiness", detail: "Lightning + rails are commerce-ready.", state: "done" },
+        { title: "Operate", detail: "Use Revenue stages for daily operations.", state: "current" }
+      ];
+    }
+    if (selected === "lan" && !localCommerceReady) {
+      return [
+        { title: "Advanced Posture", detail: "Sovereign posture enabled.", state: "done" },
+        { title: "Commerce Route", detail: "Local sovereign route selected.", state: "done" },
+        { title: "Rails Readiness", detail: "Finish local Lightning + rails setup.", state: "current" },
+        { title: "Operate", detail: "Run Revenue stages once rails are ready.", state: "pending" }
+      ];
+    }
+    return [
+      { title: "Advanced Posture", detail: "Sovereign creator posture active.", state: "done" },
+      { title: "Commerce Route", detail: "Connect provider commerce or move to local sovereign route.", state: "current" },
+      { title: "Rails Readiness", detail: "Optional: local Lightning + rails for full sovereignty.", state: "pending" },
+      { title: "Operate", detail: "Use Revenue stages for accounting + execution.", state: "pending" }
+    ];
+  }, [modeInfo?.modeReadiness?.localCommerceReady, modeInfo?.nodeMode, modeInfo?.selectedMode]);
   const lightningRuntime = (lightningReadiness?.runtime || lightningAdmin?.runtime || null) as Partial<LightningRuntimeSnapshot> | null;
   const lightningConfigured = Boolean(lightningAdmin?.configured || lightningReadiness?.configured);
   const localLndDetected = Boolean(lightningRuntime?.connected || lightningConfigured);
@@ -1082,6 +1122,27 @@ export default function ConfigPage({
           <div>
             <b>3. Sovereign Node</b> → Canonical public origin + local stack, then use advanced infra panels.
           </div>
+        </div>
+        <div style={{ marginTop: 12, display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {creatorProgressionSteps.map((step) => {
+            const tone =
+              step.state === "done"
+                ? { border: "1px solid rgba(16,185,129,0.45)", background: "rgba(6,78,59,0.28)" }
+                : step.state === "current"
+                  ? { border: "1px solid rgba(56,189,248,0.55)", background: "rgba(8,47,73,0.35)" }
+                  : { border: "1px solid rgba(255,255,255,0.12)", background: "rgba(10,10,10,0.35)" };
+            return (
+              <div key={step.title} style={{ borderRadius: 10, padding: "9px 10px", ...tone }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "#e5e7eb" }}>{step.title}</div>
+                  <span style={{ fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.85 }}>
+                    {step.state}
+                  </span>
+                </div>
+                <div style={{ marginTop: 5, fontSize: 11, opacity: 0.78 }}>{step.detail}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
 

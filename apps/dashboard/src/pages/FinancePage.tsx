@@ -22,9 +22,10 @@ type FinancePageProps = {
     providerCommerceConnected?: boolean;
     localSovereignReady?: boolean;
   } | null;
+  onOpenLightningConfig?: () => void;
 };
 
-export default function FinancePage({ initialTab = "overview", nodeMode, postureSnapshot }: FinancePageProps) {
+export default function FinancePage({ initialTab = "overview", nodeMode, postureSnapshot, onOpenLightningConfig }: FinancePageProps) {
   const isBasic = nodeMode === "basic";
   const [tab, setTab] = useState<FinanceTab>(initialTab);
   const [tabRefresh, setTabRefresh] = useState<Record<FinanceTab, number>>({
@@ -100,7 +101,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
       { key: "earnings-v2", label: "Content" },
       { key: "royalties", label: "Earnings" },
       { key: "payouts", label: "Payouts" },
-      { key: "rails", label: "Node & Wallet" },
+      { key: "rails", label: "Lightning & Rails" },
       { key: "transactions", label: "Transactions" }
     ],
     []
@@ -137,7 +138,24 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
             Refresh now
           </button>
         </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-4 flex gap-2 overflow-x-auto pb-1 sm:hidden">
+          {allTabs.slice(0, 5).map((t) => (
+            <button
+              key={`mobile-${t.key}`}
+              type="button"
+              onClick={() => setTab(t.key as FinanceTab)}
+              className={[
+                "shrink-0 rounded-full border px-3 py-1.5 text-xs",
+                tab === t.key
+                  ? "border-white/30 bg-white/10 text-neutral-100"
+                  : "border-neutral-800 bg-neutral-950/40 text-neutral-300"
+              ].join(" ")}
+            >
+              {t.label.replace("Revenue ", "")}
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 hidden gap-3 sm:grid sm:grid-cols-2 xl:grid-cols-5">
           <button
             type="button"
             onClick={() => setTab("overview")}
@@ -256,7 +274,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
           <FinanceOverviewPage
             refreshSignal={tabRefresh.overview}
             onOpenRoyalties={() => setTab("royalties")}
-            showNodeWalletContext={financePosture === "sovereign_node"}
+            showNodeWalletContext={false}
           />
         </Suspense>
       )}
@@ -302,7 +320,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
       )}
       {tab === "rails" && (
         <Suspense fallback={tabFallback}>
-          <PaymentRailsPage refreshSignal={tabRefresh.rails} />
+          <PaymentRailsPage refreshSignal={tabRefresh.rails} onOpenLightningConfig={onOpenLightningConfig} />
         </Suspense>
       )}
       {tab === "transactions" && (

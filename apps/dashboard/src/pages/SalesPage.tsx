@@ -315,6 +315,17 @@ export default function SalesPage({
         <div className="text-xs text-neutral-500 mt-1">
           Share and participation for those earnings are defined in Royalties.
         </div>
+        <div className="mt-3">
+          <TimeScopeControls
+            basis={timeBasis}
+            onBasisChange={setTimeBasis}
+            period={timePeriod}
+            onPeriodChange={setTimePeriod}
+            basisOptions={["sale"]}
+            periodOptions={["1d", "7d", "30d", "90d", "all"]}
+            helperText="Sales are scoped by buyer payment date (recognized sale time)."
+          />
+        </div>
       </div>
 
       {error ? <div className="text-sm text-red-300">{error}</div> : null}
@@ -417,18 +428,6 @@ export default function SalesPage({
           <div className="mt-1 text-xs text-neutral-500">
             Where relationships go, money flows: Royalties defines participation and share for these works.
           </div>
-          <div className="mt-3">
-            <TimeScopeControls
-              basis={timeBasis}
-              onBasisChange={setTimeBasis}
-              period={timePeriod}
-              onPeriodChange={setTimePeriod}
-              basisOptions={["sale"]}
-              periodOptions={["1d", "7d", "30d", "90d", "all"]}
-              helperText="Sales are scoped by buyer payment date (recognized sale time)."
-            />
-          </div>
-
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs">
             <span className="text-neutral-500">Scope:</span>
             {selectedSale?.content?.id ? (

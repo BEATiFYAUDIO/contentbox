@@ -603,13 +603,21 @@ async function withTimeout<T>(p: Promise<T>, ms: number, code: string): Promise<
   });
 }
 
+function resolveGraphTimeoutMs(input?: number): number {
+  const envValue = Number(process.env.LND_GRAPH_TIMEOUT_MS || "");
+  const baseline = Number.isFinite(envValue) && envValue > 0 ? envValue : 15000;
+  const requested = Number(input);
+  const effective = Number.isFinite(requested) && requested > 0 ? requested : baseline;
+  return Math.max(2000, Math.min(60000, Math.floor(effective)));
+}
+
 function graphCacheSet(key: string, candidates: GraphCandidate[]) {
   graphFreshCache.set(key, candidates, GRAPH_CACHE_TTL_MS);
   graphStaleCache.set(key, candidates, GRAPH_STALE_TTL_MS);
 }
 
-async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig, graphTimeoutMs = 5000): Promise<GraphCandidate[]> {
-  const timeoutMs = Math.max(1000, Math.min(10000, Math.floor(Number(graphTimeoutMs) || 5000)));
+async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig, graphTimeoutMs?: number): Promise<GraphCandidate[]> {
+  const timeoutMs = resolveGraphTimeoutMs(graphTimeoutMs);
   const graph = await withTimeout(lndFetchJson(lnd, "/v1/graph", { method: "GET" }), timeoutMs, "GRAPH_FETCH_TIMEOUT");
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
@@ -681,7 +689,7 @@ async function fetchAndScoreGraphCandidates(lnd: RuntimeLndConfig, graphTimeoutM
 
 async function buildGraphCandidates(
   lnd: RuntimeLndConfig,
-  graphTimeoutMs = 5000
+  graphTimeoutMs?: number
 ): Promise<{ candidates: GraphCandidate[]; fromCache: boolean }> {
   const key = lndCacheKey(lnd);
   const fresh = graphFreshCache.get(key);
@@ -856,7 +864,7 @@ export async function ensurePeerConnected(
 
 export async function getPeerSuggestions(
   prisma: PrismaLike,
-  input?: { limit?: number; probeTop?: number; graphTimeoutMs?: number }
+  input?: { limit?: number; probeTop?: number; graphTimeoutMs?: number; forceRefresh?: boolean }
 ): Promise<SuggestionResult> {
   const lnd = await getLndConfig(prisma);
   if (!lnd) throw new Error("NODE_NOT_CONFIGURED");
@@ -865,8 +873,26 @@ export async function getPeerSuggestions(
   const probeTop = Math.max(0, Math.min(12, Math.floor(Number(input?.probeTop ?? 12))));
 
   try {
-    const graphTimeoutMs = Math.max(1000, Math.min(10000, Math.floor(Number(input?.graphTimeoutMs ?? 5000))));
-    const graphRes = await buildGraphCandidates(lnd, graphTimeoutMs);
+    const graphTimeoutMs = resolveGraphTimeoutMs(input?.graphTimeoutMs);
+    const forceRefresh = Boolean(input?.forceRefresh);
+    const key = lndCacheKey(lnd);
+    const graphRes = forceRefresh
+      ? await (async () => {
+          try {
+            // Prevent refresh stampedes when multiple clients hit "Refresh" together.
+            const next = await graphSingleFlight.do(`graph-refresh:${key}`, async () => {
+              const fetched = await fetchAndScoreGraphCandidates(lnd, graphTimeoutMs);
+              graphCacheSet(key, fetched);
+              return fetched;
+            });
+            return { candidates: next, fromCache: false as const };
+          } catch (refreshErr) {
+            const stale = graphStaleCache.get(key);
+            if (stale) return { candidates: stale, fromCache: true as const };
+            throw refreshErr;
+          }
+        })()
+      : await buildGraphCandidates(lnd, graphTimeoutMs);
     const top = graphRes.candidates.slice(0, 50);
     const toProbe = top.slice(0, probeTop);
     const probeMap = new Map<string, { reachableNow: boolean; reason?: string }>();
@@ -1221,6 +1247,12 @@ function mapOpenChannelErrorCode(error: unknown): string {
   if (lower.includes("not synced") || lower.includes("syncing")) return "NOT_SYNCED";
   if (lower.includes("wallet locked") || lower.includes("unlock")) return "WALLET_LOCKED";
   if (lower.includes("insufficient") && (lower.includes("fund") || lower.includes("balance"))) return "INSUFFICIENT_FUNDS";
+  if (
+    (lower.includes("not enough witness outputs") && lower.includes("available")) ||
+    (lower.includes("need") && lower.includes("only have") && lower.includes("available"))
+  ) {
+    return "INSUFFICIENT_FUNDS";
+  }
   if (lower.includes("minimum") && lower.includes("channel")) return "MIN_CHAN_SIZE";
   if (lower.includes("rejected") || lower.includes("rejecting channel")) return "PEER_REJECTED";
   if (lower.includes("not online") || lower.includes("connection refused") || lower.includes("unreachable")) return "PEER_OFFLINE";

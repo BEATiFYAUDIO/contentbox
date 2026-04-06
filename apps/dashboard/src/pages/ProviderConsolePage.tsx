@@ -62,6 +62,27 @@ type NodeModeSnapshot = {
   commerceAuthorityAvailable?: boolean;
 };
 
+type CurrentMe = {
+  id: string;
+  email?: string | null;
+  displayName?: string | null;
+};
+
+type QaTotals = {
+  gross: bigint;
+  providerFee: bigint;
+  creatorNet: bigint;
+  settledCount: number;
+};
+
+type QaResult = {
+  creatorNodeId: string;
+  local: QaTotals;
+  publicSnapshot: QaTotals & { asOf: string | null };
+  delta: QaTotals;
+  checkedAt: string;
+};
+
 type ProviderCreatorLink = {
   id: string;
   providerNodeId: string;
@@ -136,6 +157,15 @@ type ProviderPaymentReceipt = {
   updatedAt: string;
 };
 
+type LocalContentIndexItem = {
+  id: string;
+  title?: string | null;
+  status?: string | null;
+  storefrontStatus?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 type ParticipantPayoutRow = {
   id: string;
   allocationId: string;
@@ -195,6 +225,49 @@ function shortId(value: string | null | undefined, left = 12, right = 10) {
   return `${v.slice(0, left)}…${v.slice(-right)}`;
 }
 
+function toBigIntSats(raw: string | number | null | undefined) {
+  return BigInt(String(raw || "0"));
+}
+
+function maxIsoTimestamp(current: string | null, candidate: string | null | undefined) {
+  if (!candidate) return current;
+  const nextTs = Date.parse(candidate);
+  if (!Number.isFinite(nextTs)) return current;
+  if (!current) return candidate;
+  const curTs = Date.parse(current);
+  if (!Number.isFinite(curTs) || nextTs > curTs) return candidate;
+  return current;
+}
+
+function percentOf(part: bigint, total: bigint) {
+  if (total <= 0n) return "0.0%";
+  const tenths = (part * 1000n) / total;
+  const whole = tenths / 10n;
+  const frac = tenths % 10n;
+  return `${whole.toString()}.${frac.toString()}%`;
+}
+
+function isSyntheticCreatorLabel(labelHint: string, creatorNodeId?: string | null) {
+  const hinted = String(labelHint || "").trim().toLowerCase();
+  if (!hinted) return false;
+  if (/^creator-[a-z0-9]{6,}$/.test(hinted)) return true;
+  const raw = String(creatorNodeId || "").trim();
+  const compact = raw.replace(/^node:/i, "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  if (!compact) return false;
+  const suffix = compact.slice(0, 10);
+  return Boolean(suffix) && hinted === `creator-${suffix}`;
+}
+
+function creatorLabel(creatorNodeId: string | null | undefined, labelHint?: string | null) {
+  const rawHint = String(labelHint || "").trim();
+  const hinted = isSyntheticCreatorLabel(rawHint, creatorNodeId) ? "" : rawHint;
+  if (hinted) return hinted;
+  const raw = String(creatorNodeId || "").trim();
+  const compact = raw.replace(/^node:/i, "").replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  const suffix = compact.slice(0, 10) || "profile";
+  return `creator-${suffix}`;
+}
+
 function ExecutionPill({ allowed }: { allowed: boolean }) {
   return (
     <span
@@ -217,6 +290,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const [paymentIntents, setPaymentIntents] = useState<ProviderPaymentIntent[]>([]);
   const [paymentReceipts, setPaymentReceipts] = useState<ProviderPaymentReceipt[]>([]);
   const [participantPayouts, setParticipantPayouts] = useState<ParticipantPayoutRow[]>([]);
+  const [localContentIndex, setLocalContentIndex] = useState<LocalContentIndexItem[]>([]);
   const [remitBusyId, setRemitBusyId] = useState<string | null>(null);
   const [paymentStatusFilter, setPaymentStatusFilter] = useState<
     "all" | "created" | "issued" | "paid" | "cancelled" | "expired"
@@ -225,8 +299,51 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const [payoutTableScope, setPayoutTableScope] = useState<"latest" | "all">("latest");
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("paid");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("30d");
+  const [creatorScopeId, setCreatorScopeId] = useState<string>("all");
+  const [creatorLabelOverrides, setCreatorLabelOverrides] = useState<Record<string, string>>({});
+  const [me, setMe] = useState<CurrentMe | null>(null);
+  const [qaLoading, setQaLoading] = useState(false);
+  const [qaError, setQaError] = useState<string | null>(null);
+  const [qaResult, setQaResult] = useState<QaResult | null>(null);
+  const [opsExpanded, setOpsExpanded] = useState({
+    execution: false,
+    ledger: false,
+    operational: false
+  });
+  const [showZeroContentRows, setShowZeroContentRows] = useState(false);
   const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("providerCreatorLabelOverrides");
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+      const normalized: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        const id = String(k || "").trim();
+        const label = String(v || "").trim();
+        if (id && label) normalized[id] = label;
+      }
+      setCreatorLabelOverrides(normalized);
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("providerCreatorLabelOverrides", JSON.stringify(creatorLabelOverrides));
+    } catch {}
+  }, [creatorLabelOverrides]);
+
+  const labelForCreator = useCallback(
+    (creatorNodeId: string | null | undefined, labelHint?: string | null) => {
+      const id = String(creatorNodeId || "").trim();
+      if (id && creatorLabelOverrides[id]) return creatorLabelOverrides[id];
+      return creatorLabel(creatorNodeId, labelHint);
+    },
+    [creatorLabelOverrides]
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -245,7 +362,10 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         api<{ items: ProviderDelegatedPublish[] }>("/api/provider/delegated-publishes", "GET"),
         api<{ items: ProviderPaymentIntent[] }>("/api/provider/payment-intents", "GET"),
         api<{ items: ProviderPaymentReceipt[] }>("/api/provider/payment-receipts", "GET"),
-        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET")
+        api<{ items: ParticipantPayoutRow[] }>("/api/provider/participant-payouts", "GET"),
+        api<CurrentMe>("/me", "GET"),
+        api<LocalContentIndexItem[]>("/content?scope=library", "GET").catch(() => [] as LocalContentIndexItem[]),
+        api<LocalContentIndexItem[]>("/content?scope=mine", "GET").catch(() => [] as LocalContentIndexItem[])
       ]);
       let lightningAdminRes: LightningAdminSnapshot | null = null;
       let lightningBalancesRes: LightningBalancesSnapshot | null = null;
@@ -257,13 +377,31 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         lightningAdminRes = adminRes || null;
         lightningBalancesRes = balancesRes || null;
       }
-      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes] = baseCalls;
+      const [summaryRes, creatorLinksRes, delegatedPublishesRes, paymentIntentsRes, paymentReceiptsRes, participantPayoutsRes, meRes, libraryRes, mineRes] = baseCalls;
       setSummary(summaryRes || null);
       setCreatorLinks(Array.isArray(creatorLinksRes?.items) ? creatorLinksRes.items : []);
       setDelegatedPublishes(Array.isArray(delegatedPublishesRes?.items) ? delegatedPublishesRes.items : []);
       setPaymentIntents(Array.isArray(paymentIntentsRes?.items) ? paymentIntentsRes.items : []);
       setPaymentReceipts(Array.isArray(paymentReceiptsRes?.items) ? paymentReceiptsRes.items : []);
       setParticipantPayouts(Array.isArray(participantPayoutsRes?.items) ? participantPayoutsRes.items : []);
+      setMe(meRes || null);
+      const byId = new Map<string, LocalContentIndexItem>();
+      [...(Array.isArray(libraryRes) ? libraryRes : []), ...(Array.isArray(mineRes) ? mineRes : [])].forEach((row) => {
+        const id = String(row?.id || "").trim();
+        if (!id) return;
+        const existing = byId.get(id);
+        if (!existing) {
+          byId.set(id, row);
+          return;
+        }
+        const nextTitle = String(row?.title || "").trim() || String(existing?.title || "").trim();
+        byId.set(id, {
+          ...existing,
+          ...row,
+          title: nextTitle || null
+        });
+      });
+      setLocalContentIndex(Array.from(byId.values()));
       setLightningAdmin(lightningAdminRes);
       setLightningBalances(lightningBalancesRes);
     } catch (e: any) {
@@ -317,27 +455,239 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const scopedPaymentReceipts = useMemo(() => {
     if (timePeriod === "all") return paymentReceipts;
     return paymentReceipts.filter((row) => {
-      const ts = timeBasis === "sale" ? row.paidAt : row.paidAt;
+      const ts = row.paidAt;
       return isWithinPeriod(ts, timePeriod);
     });
-  }, [paymentReceipts, timeBasis, timePeriod]);
-  const scopedSummary = useMemo(() => {
+  }, [paymentReceipts, timePeriod]);
+
+  const creatorByIntentKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const row of paymentIntents) {
+      const creatorId = String(row.creatorNodeId || "").trim();
+      if (!creatorId) continue;
+      if (row.id) map.set(row.id, creatorId);
+      if (row.paymentIntentId) map.set(row.paymentIntentId, creatorId);
+    }
+    return map;
+  }, [paymentIntents]);
+
+  const buildLocalQaTotals = useCallback(
+    (creatorId: string): QaTotals => {
+      const settled = paymentIntents.filter(
+        (row) => String(row.creatorNodeId || "").trim() === creatorId && row.status === "paid" && Boolean(row.contentId)
+      );
+      return {
+        gross: settled.reduce((acc, row) => acc + toBigIntSats(row.grossAmountSats || row.amountSats), 0n),
+        providerFee: settled.reduce((acc, row) => acc + toBigIntSats(row.providerFeeSats), 0n),
+        creatorNet: settled.reduce((acc, row) => acc + toBigIntSats(row.creatorNetSats), 0n),
+        settledCount: settled.length
+      };
+    },
+    [paymentIntents]
+  );
+
+  const runQaCheck = useCallback(async () => {
+    if (creatorScopeId === "all") {
+      setQaError("Select a delegated creator scope first.");
+      return;
+    }
+    setQaLoading(true);
+    setQaError(null);
+    try {
+      const local = buildLocalQaTotals(creatorScopeId);
+      const res = await fetch(`/public/provider/revenue/${encodeURIComponent(creatorScopeId)}`);
+      const text = await res.text();
+      let payload: any = null;
+      try {
+        payload = text ? JSON.parse(text) : null;
+      } catch {
+        payload = null;
+      }
+      if (!res.ok) {
+        throw new Error(String(payload?.message || payload?.error || `public_revenue_http_${res.status}`));
+      }
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      const publicSnapshot: QaTotals & { asOf: string | null } = {
+        gross: items.reduce((acc: bigint, row: any) => acc + toBigIntSats(row?.gross_sats), 0n),
+        providerFee: items.reduce((acc: bigint, row: any) => acc + toBigIntSats(row?.provider_fee_sats), 0n),
+        creatorNet: items.reduce((acc: bigint, row: any) => acc + toBigIntSats(row?.creator_net_sats), 0n),
+        settledCount: items.length,
+        asOf: String(payload?.asOf || "").trim() || null
+      };
+      const delta: QaTotals = {
+        gross: publicSnapshot.gross - local.gross,
+        providerFee: publicSnapshot.providerFee - local.providerFee,
+        creatorNet: publicSnapshot.creatorNet - local.creatorNet,
+        settledCount: publicSnapshot.settledCount - local.settledCount
+      };
+      setQaResult({
+        creatorNodeId: creatorScopeId,
+        local,
+        publicSnapshot,
+        delta,
+        checkedAt: new Date().toISOString()
+      });
+    } catch (e: any) {
+      setQaError(e?.message || "QA reconciliation failed.");
+    } finally {
+      setQaLoading(false);
+    }
+  }, [creatorScopeId, buildLocalQaTotals]);
+
+  const providerNodeId = useMemo(() => {
+    const fromLinks = creatorLinks.find((row) => String(row.providerNodeId || "").trim())?.providerNodeId;
+    if (fromLinks) return String(fromLinks).trim();
+    const fromIntents = paymentIntents.find((row) => String(row.providerNodeId || "").trim())?.providerNodeId;
+    if (fromIntents) return String(fromIntents).trim();
+    const fromReceipts = paymentReceipts.find((row) => String(row.providerNodeId || "").trim())?.providerNodeId;
+    if (fromReceipts) return String(fromReceipts).trim();
+    const fromPublishes = delegatedPublishes.find((row) => String(row.providerNodeId || "").trim())?.providerNodeId;
+    if (fromPublishes) return String(fromPublishes).trim();
+    return "";
+  }, [creatorLinks, paymentIntents, paymentReceipts, delegatedPublishes]);
+
+  const creatorOptions = useMemo(() => {
+    const map = new Map<string, { id: string; label: string }>();
+    const activity = new Map<string, { hasLink: boolean; hasPublish: boolean; hasPayout: boolean; hasIntent: boolean; hasReceipt: boolean }>();
+    const mark = (creatorId: string, key: "hasLink" | "hasPublish" | "hasPayout" | "hasIntent" | "hasReceipt") => {
+      const id = String(creatorId || "").trim();
+      if (!id) return;
+      const current = activity.get(id) || { hasLink: false, hasPublish: false, hasPayout: false, hasIntent: false, hasReceipt: false };
+      current[key] = true;
+      activity.set(id, current);
+    };
+    const ensure = (creatorId: string, labelHint?: string | null) => {
+      const id = String(creatorId || "").trim();
+      if (!id) return;
+      const sanitizedHint = isSyntheticCreatorLabel(String(labelHint || ""), id) ? "" : String(labelHint || "").trim();
+      const selfLabel =
+        providerNodeId && id === providerNodeId
+          ? String(me?.displayName || me?.email || "").trim() || null
+          : null;
+      const effectiveLabelHint = sanitizedHint || selfLabel;
+      if (map.has(id)) {
+        if (effectiveLabelHint) {
+          map.set(id, { id, label: labelForCreator(id, effectiveLabelHint) });
+        }
+        return;
+      }
+      const label = labelForCreator(id, effectiveLabelHint);
+      map.set(id, { id, label });
+    };
+    creatorLinks.forEach((row) => {
+      ensure(row.creatorNodeId, row.creatorDisplayName);
+      mark(row.creatorNodeId, "hasLink");
+    });
+    delegatedPublishes.forEach((row) => {
+      ensure(row.creatorNodeId, null);
+      mark(row.creatorNodeId, "hasPublish");
+    });
+    paymentIntents.forEach((row) => {
+      ensure(row.creatorNodeId, null);
+      mark(row.creatorNodeId, "hasIntent");
+    });
+    paymentReceipts.forEach((row) => {
+      ensure(row.creatorNodeId, null);
+      mark(row.creatorNodeId, "hasReceipt");
+    });
+    scopedParticipantPayouts.forEach((row) => {
+      const creatorId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      if (creatorId) {
+        ensure(creatorId, null);
+        mark(creatorId, "hasPayout");
+      }
+    });
+    return Array.from(map.values())
+      .filter((opt) => {
+        if (!providerNodeId || opt.id !== providerNodeId) return true;
+        const flags = activity.get(opt.id);
+        // Only include provider-node-as-creator when there is explicit creator activity.
+        return Boolean(flags?.hasLink || flags?.hasPublish || flags?.hasPayout || flags?.hasIntent || flags?.hasReceipt);
+      })
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [creatorLinks, paymentIntents, paymentReceipts, delegatedPublishes, scopedParticipantPayouts, creatorByIntentKey, providerNodeId, labelForCreator, me]);
+
+  const creatorOptionLabelById = useMemo(() => {
+    const map = new Map<string, string>();
+    creatorOptions.forEach((opt) => map.set(opt.id, opt.label));
+    return map;
+  }, [creatorOptions]);
+
+  const displayLabelForCreator = useCallback(
+    (creatorNodeId: string | null | undefined, labelHint?: string | null) => {
+      const id = String(creatorNodeId || "").trim();
+      if (!id) return "Unknown creator";
+      const sanitizedHint = isSyntheticCreatorLabel(String(labelHint || ""), id) ? "" : String(labelHint || "").trim();
+      const optionLabel = creatorOptionLabelById.get(id) || "";
+      const selfLabel =
+        providerNodeId && id === providerNodeId
+          ? String(me?.displayName || me?.email || "").trim()
+          : "";
+      return labelForCreator(id, sanitizedHint || optionLabel || selfLabel || null);
+    },
+    [creatorOptionLabelById, providerNodeId, me, labelForCreator]
+  );
+
+  useEffect(() => {
+    if (creatorScopeId === "all") return;
+    if (!creatorOptions.some((opt) => opt.id === creatorScopeId)) {
+      setCreatorScopeId("all");
+    }
+  }, [creatorOptions, creatorScopeId]);
+
+  const creatorScopedPaymentIntents = useMemo(
+    () =>
+      creatorScopeId === "all"
+        ? scopedPaymentIntents
+        : scopedPaymentIntents.filter((row) => String(row.creatorNodeId || "").trim() === creatorScopeId),
+    [creatorScopeId, scopedPaymentIntents]
+  );
+  const creatorScopedDelegatedPublishes = useMemo(
+    () =>
+      creatorScopeId === "all"
+        ? delegatedPublishes
+        : delegatedPublishes.filter((row) => String(row.creatorNodeId || "").trim() === creatorScopeId),
+    [creatorScopeId, delegatedPublishes]
+  );
+  const creatorScopedPaymentReceipts = useMemo(
+    () =>
+      creatorScopeId === "all"
+        ? scopedPaymentReceipts
+        : scopedPaymentReceipts.filter((row) => String(row.creatorNodeId || "").trim() === creatorScopeId),
+    [creatorScopeId, scopedPaymentReceipts]
+  );
+  const creatorScopedCreatorLinks = useMemo(
+    () =>
+      creatorScopeId === "all"
+        ? creatorLinks
+        : creatorLinks.filter((row) => String(row.creatorNodeId || "").trim() === creatorScopeId),
+    [creatorScopeId, creatorLinks]
+  );
+  // Payout rows do not carry creator id directly; resolve through provider/payment intent links.
+  const creatorScopedParticipantPayouts = useMemo(() => {
+    if (creatorScopeId === "all") return scopedParticipantPayouts;
+    return scopedParticipantPayouts.filter((row) => {
+      const creatorId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      return creatorId === creatorScopeId;
+    });
+  }, [creatorScopeId, scopedParticipantPayouts, creatorByIntentKey]);
+
+  const nodeSummary = useMemo(() => {
     const settledIntents = scopedPaymentIntents.filter((row) => row.status === "paid");
-    const add = (a: bigint, b: string | number | null | undefined) => a + BigInt(String(b || "0"));
-    const gross = settledIntents.reduce((acc, row) => add(acc, row.grossAmountSats || row.amountSats), 0n);
-    const invoicingFee = settledIntents.reduce((acc, row) => add(acc, row.providerInvoicingFeeSats), 0n);
-    const hostingFee = settledIntents.reduce((acc, row) => add(acc, row.providerDurableHostingFeeSats), 0n);
-    const providerFee = settledIntents.reduce((acc, row) => add(acc, row.providerFeeSats), 0n);
-    const distributable = settledIntents.reduce((acc, row) => add(acc, row.creatorNetSats), 0n);
+    const gross = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.grossAmountSats || row.amountSats), 0n);
+    const invoicingFee = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.providerInvoicingFeeSats), 0n);
+    const hostingFee = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.providerDurableHostingFeeSats), 0n);
+    const providerFee = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.providerFeeSats), 0n);
+    const distributable = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.creatorNetSats), 0n);
     const payoutsPaid = scopedParticipantPayouts
       .filter((row) => row.status === "paid")
-      .reduce((acc, row) => add(acc, row.amountSats), 0n);
+      .reduce((acc, row) => acc + toBigIntSats(row.amountSats), 0n);
     const payoutsPending = scopedParticipantPayouts
       .filter((row) => row.status === "pending" || row.status === "ready" || row.status === "forwarding")
-      .reduce((acc, row) => add(acc, row.amountSats), 0n);
+      .reduce((acc, row) => acc + toBigIntSats(row.amountSats), 0n);
     const payoutsFailed = scopedParticipantPayouts
       .filter((row) => row.status === "failed" || row.status === "blocked")
-      .reduce((acc, row) => add(acc, row.amountSats), 0n);
+      .reduce((acc, row) => acc + toBigIntSats(row.amountSats), 0n);
     return {
       activePaymentIntents: scopedPaymentIntents.filter((p) => p.status === "created" || p.status === "issued").length,
       settledPayments: settledIntents.length,
@@ -353,41 +703,304 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       }
     };
   }, [scopedPaymentIntents, scopedParticipantPayouts]);
+
+  const creatorSummary = useMemo(() => {
+    const settledIntents = creatorScopedPaymentIntents.filter((row) => row.status === "paid");
+    const gross = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.grossAmountSats || row.amountSats), 0n);
+    const providerFees = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.providerFeeSats), 0n);
+    const providerInvoicingFees = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.providerInvoicingFeeSats), 0n);
+    const providerHostingFees = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.providerDurableHostingFeeSats), 0n);
+    const creatorNet = settledIntents.reduce((acc, row) => acc + toBigIntSats(row.creatorNetSats), 0n);
+    const paid = creatorScopedParticipantPayouts
+      .filter((row) => row.status === "paid")
+      .reduce((acc, row) => acc + toBigIntSats(row.amountSats), 0n);
+    const payable = creatorScopedParticipantPayouts
+      .filter((row) => row.status === "pending" || row.status === "ready" || row.status === "forwarding")
+      .reduce((acc, row) => acc + toBigIntSats(row.amountSats), 0n);
+    const attention = creatorScopedParticipantPayouts
+      .filter((row) => row.status === "failed" || row.status === "blocked")
+      .reduce((acc, row) => acc + toBigIntSats(row.amountSats), 0n);
+    return {
+      gross,
+      providerFees,
+      providerInvoicingFees,
+      providerHostingFees,
+      creatorNet,
+      paid,
+      payable,
+      attention,
+      settledCount: settledIntents.length
+    };
+  }, [creatorScopedPaymentIntents, creatorScopedParticipantPayouts]);
+
+  const creatorSummaryRows = useMemo(() => {
+    type Row = {
+      creatorNodeId: string;
+      creatorLabel: string;
+      publishedItems: number;
+      gross: bigint;
+      net: bigint;
+      providerFees: bigint;
+      invoicingFees: bigint;
+      hostingFees: bigint;
+      paid: bigint;
+      payable: bigint;
+      attention: bigint;
+      lastActivity: string | null;
+    };
+    const rows = new Map<string, Row>();
+    const ensure = (creatorNodeId: string, labelHint?: string | null) => {
+      const id = String(creatorNodeId || "").trim();
+      if (!id) return null;
+      const existing = rows.get(id);
+      if (existing) return existing;
+      const label = displayLabelForCreator(id, labelHint || null);
+      const next: Row = {
+        creatorNodeId: id,
+        creatorLabel: label,
+        publishedItems: 0,
+        gross: 0n,
+        net: 0n,
+        providerFees: 0n,
+        invoicingFees: 0n,
+        hostingFees: 0n,
+        paid: 0n,
+        payable: 0n,
+        attention: 0n,
+        lastActivity: null
+      };
+      rows.set(id, next);
+      return next;
+    };
+
+    creatorLinks.forEach((row) => {
+      ensure(row.creatorNodeId, row.creatorDisplayName);
+    });
+
+    delegatedPublishes.forEach((row) => {
+      const current = ensure(row.creatorNodeId, null);
+      if (!current) return;
+      current.publishedItems += 1;
+      current.lastActivity = maxIsoTimestamp(current.lastActivity, row.publishedAt || row.updatedAt);
+    });
+
+    scopedPaymentIntents.forEach((row) => {
+      const current = ensure(row.creatorNodeId, null);
+      if (!current) return;
+      if (row.status === "paid") {
+        current.gross += toBigIntSats(row.grossAmountSats || row.amountSats);
+        current.net += toBigIntSats(row.creatorNetSats);
+        current.providerFees += toBigIntSats(row.providerFeeSats);
+        current.invoicingFees += toBigIntSats(row.providerInvoicingFeeSats);
+        current.hostingFees += toBigIntSats(row.providerDurableHostingFeeSats);
+      }
+      current.lastActivity = maxIsoTimestamp(current.lastActivity, row.remittedAt || row.paidAt || row.updatedAt || row.createdAt);
+    });
+
+    scopedParticipantPayouts.forEach((row) => {
+      const creatorNodeId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      if (!creatorNodeId) return;
+      const current = ensure(creatorNodeId, null);
+      if (!current) return;
+      const amount = toBigIntSats(row.amountSats);
+      if (row.status === "paid") current.paid += amount;
+      else if (row.status === "pending" || row.status === "ready" || row.status === "forwarding") current.payable += amount;
+      else if (row.status === "failed" || row.status === "blocked") current.attention += amount;
+      current.lastActivity = maxIsoTimestamp(current.lastActivity, row.remittedAt || row.updatedAt || row.lastCheckedAt);
+    });
+
+    return Array.from(rows.values()).sort((a, b) => {
+      const grossDelta = Number(b.gross - a.gross);
+      if (grossDelta !== 0) return grossDelta;
+      return a.creatorLabel.localeCompare(b.creatorLabel);
+    });
+  }, [creatorLinks, delegatedPublishes, scopedPaymentIntents, scopedParticipantPayouts, creatorByIntentKey, displayLabelForCreator]);
+
+  const nodeProviderFeeTotal = toBigIntSats(nodeSummary.totals.providerFeeEarnedSats);
+
+  const selectedCreatorLabel =
+    creatorScopeId === "all"
+      ? "All Delegated Creators"
+      : displayLabelForCreator(creatorScopeId, null);
+
   const summaryCards = [
     { label: "Delegated Creators", value: summary?.delegatedCreators ?? creatorLinks.length },
     { label: "Published Items", value: summary?.publishedItems ?? delegatedPublishes.length },
-    { label: "Active Payment Intents", value: scopedSummary.activePaymentIntents },
-    { label: "Settled Invoices", value: scopedSummary.settledPayments || scopedPaymentReceipts.length }
+    { label: "Active Payment Intents", value: nodeSummary.activePaymentIntents },
+    { label: "Settled Invoices", value: nodeSummary.settledPayments || scopedPaymentReceipts.length }
   ];
-  const economicsCards = [
-    { label: "Buyer Gross", value: `${sats(scopedSummary.totals.grossCollectedSats)} sats` },
-    { label: "Invoicing Fee Earned", value: `${sats(scopedSummary.totals.providerInvoicingFeeEarnedSats)} sats` },
-    { label: "Durable Hosting Fee Earned", value: `${sats(scopedSummary.totals.providerDurableHostingFeeEarnedSats)} sats` },
-    { label: "Total Provider Fees", value: `${sats(scopedSummary.totals.providerFeeEarnedSats)} sats` },
-    { label: "Distributable to Participants", value: `${sats(scopedSummary.totals.creatorNetOwedSats)} sats` },
-    { label: "Participant Payouts Paid", value: `${sats(scopedSummary.totals.creatorNetPaidSats)} sats` },
-    { label: "Participant Payouts Pending", value: `${sats(scopedSummary.totals.creatorNetPendingSats)} sats` },
-    { label: "Participant Payouts Failed", value: `${sats(scopedSummary.totals.creatorNetFailedSats)} sats` }
+
+  const creatorEconomicsCards = [
+    { label: "Settled Gross Sales", value: `${sats(creatorSummary.gross.toString())} sats`, tone: "text-neutral-100" },
+    { label: "Creator Net (Settlement)", value: `${sats(creatorSummary.creatorNet.toString())} sats`, tone: "text-cyan-200" },
+    { label: "Provider Fees (Settlement)", value: `${sats(creatorSummary.providerFees.toString())} sats`, tone: "text-neutral-200" },
+    { label: "Settled Invoices", value: `${creatorScopedPaymentReceipts.length.toLocaleString()}`, tone: "text-neutral-100" },
+    { label: "Paid", value: `${sats(creatorSummary.paid.toString())} sats`, tone: "text-emerald-300" },
+    { label: "Payable", value: `${sats(creatorSummary.payable.toString())} sats`, tone: "text-amber-300" },
+    { label: "Needs Attention", value: `${sats(creatorSummary.attention.toString())} sats`, tone: "text-rose-300" }
   ];
+
   const visiblePaymentIntents =
-    paymentStatusFilter === "all" ? scopedPaymentIntents : scopedPaymentIntents.filter((intent) => intent.status === paymentStatusFilter);
-  const contentTitleById = delegatedPublishes.reduce<Record<string, string>>((acc, row) => {
-    const id = String(row.contentId || "").trim();
-    const title = String(row.title || "").trim();
-    if (!id || !title) return acc;
-    if (!acc[id]) acc[id] = title;
-    return acc;
-  }, {});
+    paymentStatusFilter === "all"
+      ? creatorScopedPaymentIntents
+      : creatorScopedPaymentIntents.filter((intent) => intent.status === paymentStatusFilter);
+
+  const contentMetaById = useMemo(() => {
+    const map = new Map<
+      string,
+      { title: string; publishedAt: string | null; publishState: string | null; delegationState: "enabled" | "disabled" | null }
+    >();
+    const ensure = (
+      id: string,
+      titleHint?: string | null,
+      publishedHint?: string | null,
+      publishStateHint?: string | null,
+      delegationStateHint?: "enabled" | "disabled" | null
+    ) => {
+      const contentId = String(id || "").trim();
+      if (!contentId) return;
+      const current = map.get(contentId) || { title: "", publishedAt: null, publishState: null, delegationState: null };
+      const title = String(titleHint || "").trim() || current.title;
+      const publishedAt = maxIsoTimestamp(current.publishedAt, publishedHint || null);
+      const publishState = String(publishStateHint || "").trim() || current.publishState;
+      const delegationState = delegationStateHint ?? current.delegationState;
+      map.set(contentId, { title, publishedAt, publishState: publishState || null, delegationState });
+    };
+    delegatedPublishes.forEach((row) => {
+      const publishState = row.status === "published" ? "published" : "publish failed";
+      const delegationState = row.visibility === "DISABLED" ? "disabled" : "enabled";
+      ensure(row.contentId, row.title, row.publishedAt || row.updatedAt, publishState, delegationState);
+    });
+    localContentIndex.forEach((row) => {
+      const status = String(row.status || "").trim().toLowerCase();
+      const storefront = String(row.storefrontStatus || "").trim().toLowerCase();
+      const publishState =
+        status === "published"
+          ? "published"
+          : status === "disabled"
+            ? "disabled"
+          : status || (storefront ? `storefront/${storefront}` : null);
+      ensure(row.id, row.title, row.createdAt || row.updatedAt || null, publishState, null);
+    });
+    return map;
+  }, [delegatedPublishes, localContentIndex]);
+
+  const creatorScopedContentRows = useMemo(() => {
+    if (creatorScopeId === "all") return [] as Array<{
+      contentId: string;
+      title: string;
+      publishedAt: string | null;
+      publishState: string | null;
+      delegationState: "enabled" | "disabled" | null;
+      gross: bigint;
+      net: bigint;
+      paid: bigint;
+      payable: bigint;
+      attention: bigint;
+      status: "attention" | "payable" | "paid" | "no_execution_rows";
+    }>;
+    type Row = {
+      contentId: string;
+      title: string;
+      publishedAt: string | null;
+      publishState: string | null;
+      delegationState: "enabled" | "disabled" | null;
+      gross: bigint;
+      net: bigint;
+      paid: bigint;
+      payable: bigint;
+      attention: bigint;
+    };
+    const rows = new Map<string, Row>();
+    const intentToContent = new Map<string, string>();
+    const ensure = (contentId: string, titleHint?: string | null) => {
+      const id = String(contentId || "").trim() || "unscoped";
+      const existing = rows.get(id);
+      if (existing) return existing;
+      const fallbackMeta = contentMetaById.get(id);
+      const next: Row = {
+        contentId: id,
+        title: String(titleHint || "").trim() || fallbackMeta?.title || "Untitled content",
+        publishedAt: fallbackMeta?.publishedAt || null,
+        publishState: fallbackMeta?.publishState || null,
+        delegationState: fallbackMeta?.delegationState ?? null,
+        gross: 0n,
+        net: 0n,
+        paid: 0n,
+        payable: 0n,
+        attention: 0n
+      };
+      rows.set(id, next);
+      return next;
+    };
+
+    creatorScopedDelegatedPublishes.forEach((row) => {
+      const current = ensure(row.contentId, row.title);
+      current.publishedAt = maxIsoTimestamp(current.publishedAt, row.publishedAt || row.updatedAt);
+      current.publishState = row.status === "published"
+        ? "published"
+        : "publish failed";
+      current.delegationState = row.visibility === "DISABLED" ? "disabled" : "enabled";
+    });
+
+    creatorScopedPaymentIntents.forEach((row) => {
+      const cid = String(row.contentId || "").trim() || "unscoped";
+      const current = ensure(cid, null);
+      const fallbackMeta = contentMetaById.get(cid);
+      if (fallbackMeta?.publishedAt) current.publishedAt = maxIsoTimestamp(current.publishedAt, fallbackMeta.publishedAt);
+      if (!current.publishState && fallbackMeta?.publishState) current.publishState = fallbackMeta.publishState;
+      if (!current.delegationState && fallbackMeta?.delegationState) current.delegationState = fallbackMeta.delegationState;
+      if (row.status === "paid") {
+        current.gross += toBigIntSats(row.grossAmountSats || row.amountSats);
+        current.net += toBigIntSats(row.creatorNetSats);
+      }
+      if (row.id) intentToContent.set(row.id, cid);
+      if (row.paymentIntentId) intentToContent.set(row.paymentIntentId, cid);
+    });
+
+    creatorScopedParticipantPayouts.forEach((row) => {
+      const cid = intentToContent.get(row.providerPaymentIntentId) || intentToContent.get(row.paymentIntentId) || "unscoped";
+      const current = ensure(cid, null);
+      const amount = toBigIntSats(row.amountSats);
+      if (row.status === "paid") current.paid += amount;
+      else if (row.status === "pending" || row.status === "ready" || row.status === "forwarding") current.payable += amount;
+      else if (row.status === "failed" || row.status === "blocked") current.attention += amount;
+    });
+
+    return Array.from(rows.values())
+      .map((row) => ({
+        contentId: row.contentId,
+        title: row.title,
+        publishedAt: row.publishedAt,
+        gross: row.gross,
+        net: row.net,
+        paid: row.paid,
+        payable: row.payable,
+        attention: row.attention,
+        publishState: row.publishState,
+        delegationState: row.delegationState,
+        status: row.attention > 0n ? "attention" : row.payable > 0n ? "payable" : row.paid > 0n ? "paid" : "no_execution_rows"
+      }))
+      .sort((a, b) => Number(b.gross - a.gross));
+  }, [creatorScopeId, creatorScopedDelegatedPublishes, creatorScopedPaymentIntents, creatorScopedParticipantPayouts, contentMetaById]);
+
+  const visibleCreatorScopedContentRows = useMemo(() => {
+    if (showZeroContentRows) return creatorScopedContentRows;
+    return creatorScopedContentRows.filter(
+      (row) => row.gross > 0n || row.net > 0n || row.paid > 0n || row.payable > 0n || row.attention > 0n
+    );
+  }, [creatorScopedContentRows, showZeroContentRows]);
+
   const toggleIntentDetails = (id: string) => {
     setExpandedIntentIds((prev) => ({ ...prev, [id]: !prev[id] }));
   };
   const runtime = lightningAdmin?.runtime || null;
   const formatLightningSats = (value: number | null | undefined) => `${Math.round(Number(value || 0)).toLocaleString()} sats`;
-  const latestPayoutIntentId = scopedParticipantPayouts[0]?.providerPaymentIntentId || null;
+  const latestPayoutIntentId = creatorScopedParticipantPayouts[0]?.providerPaymentIntentId || null;
   const visibleParticipantPayouts =
     payoutTableScope === "latest" && latestPayoutIntentId
-      ? scopedParticipantPayouts.filter((row) => row.providerPaymentIntentId === latestPayoutIntentId)
-      : scopedParticipantPayouts;
+      ? creatorScopedParticipantPayouts.filter((row) => row.providerPaymentIntentId === latestPayoutIntentId)
+      : creatorScopedParticipantPayouts;
   const visiblePayoutCounts = visibleParticipantPayouts.reduce(
     (acc, row) => {
       const key = row.status;
@@ -403,8 +1016,24 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       blocked: 0
     }
   );
-  const scopedSettledSalesCount = scopedSummary.settledPayments;
-  const scopedPayoutPaidCount = scopedParticipantPayouts.filter((row) => row.status === "paid").length;
+  const showExecutionSection =
+    creatorScopeId === "all" ||
+    creatorScopedParticipantPayouts.length > 0 ||
+    creatorSummary.payable > 0n ||
+    creatorSummary.attention > 0n;
+  const creatorHasExecutionReview =
+    creatorScopeId !== "all" &&
+    (creatorSummary.payable > 0n ||
+      creatorSummary.attention > 0n ||
+      creatorScopedParticipantPayouts.some(
+        (row) =>
+          row.status === "pending" ||
+          row.status === "ready" ||
+          row.status === "forwarding" ||
+          row.status === "failed" ||
+          row.status === "blocked"
+      ));
+  const showWalletContext = creatorScopeId === "all" || creatorHasExecutionReview || Boolean(runtime?.sendFailureReason);
 
   return (
     <div className="space-y-5">
@@ -431,90 +1060,427 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           </button>
         </div>
         {error ? <div className="mt-3 text-xs text-rose-300">{error}</div> : null}
-        <div className="mt-3">
-          <TimeScopeControls
-            basis={timeBasis}
-            onBasisChange={setTimeBasis}
-            period={timePeriod}
-            onPeriodChange={setTimePeriod}
-            basisOptions={["sale", "paid"]}
-            periodOptions={["1d", "7d", "30d", "90d", "all"]}
-            helperText={
-              timeBasis === "sale"
-                ? "Scoped by provider-side sale/payment recognition timestamps."
-                : "Scoped by payout remittance timestamps where available; falls back to last update timestamp."
-            }
-          />
+        <div className="mt-3 rounded-xl border border-cyan-800/40 bg-cyan-950/20 p-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="uppercase tracking-wide text-cyan-200/80">Delegated Creator Scope</span>
+            {providerNodeId ? (
+              <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5 text-neutral-300">
+                Provider Node: {shortId(providerNodeId, 10, 8)}
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCreatorScopeId("all")}
+              className={[
+                "rounded-lg border px-3 py-1.5 text-xs",
+                creatorScopeId === "all"
+                  ? "border-cyan-400/70 bg-cyan-500/20 text-cyan-100"
+                  : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/60"
+              ].join(" ")}
+            >
+              All Delegated Creators
+            </button>
+            <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
+              <span className="text-neutral-400">Delegated Creator</span>
+              <select
+                value={creatorScopeId}
+                onChange={(e) => setCreatorScopeId(e.target.value)}
+                className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+              >
+                <option value="all">All Delegated Creators</option>
+                {creatorOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="text-xs text-neutral-400">Active creator scope: <span className="text-neutral-200">{selectedCreatorLabel}</span></div>
+          </div>
+          <div className="mt-3">
+            <TimeScopeControls
+              basis={timeBasis}
+              onBasisChange={setTimeBasis}
+              period={timePeriod}
+              onPeriodChange={setTimePeriod}
+              basisOptions={["sale", "paid"]}
+              periodOptions={["1d", "7d", "30d", "all"]}
+              helperText={
+                timeBasis === "sale"
+                  ? "Scoped by provider-side sale/payment recognition timestamps."
+                  : "Scoped by payout remittance timestamps where available; falls back to last update timestamp."
+              }
+            />
+          </div>
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {summaryCards.map((card) => (
-          <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
-            <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
-          </div>
-        ))}
-      </div>
-
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-        <div className="flex items-start justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold">Settlement Wallet Source</div>
+            <div className="text-sm font-semibold">QA Reconciliation (Temporary)</div>
             <div className="mt-1 text-xs text-neutral-500">
-              This node wallet executes settlement and remittance. Creator/participant payout destinations are downstream recipients.
+              Compares local settled provider intents vs public provider revenue snapshot (all-time, creator-scoped).
             </div>
           </div>
           <button
-            onClick={() => onOpenLightningConfig?.()}
-            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-800/60"
             type="button"
+            onClick={() => void runQaCheck()}
+            disabled={qaLoading || creatorScopeId === "all"}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60 disabled:opacity-60"
           >
-            Open Lightning Config
+            {qaLoading ? "Checking..." : "Run QA Check"}
           </button>
         </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">canReceive</div>
-            <div className="text-neutral-100">{runtime?.canReceive ? "yes" : "no"}</div>
+        {creatorScopeId === "all" ? (
+          <div className="mt-3 text-xs text-neutral-500">Select a delegated creator to run reconciliation.</div>
+        ) : null}
+        {qaError ? <div className="mt-3 text-xs text-rose-300">{qaError}</div> : null}
+        {qaResult ? (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                <tr>
+                  <th className="py-2 pr-3 font-medium">Metric</th>
+                  <th className="py-2 pr-3 font-medium">Local Provider Console</th>
+                  <th className="py-2 pr-3 font-medium">Public Revenue Snapshot</th>
+                  <th className="py-2 pr-3 font-medium">Delta (Public - Local)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="border-t border-neutral-800/70">
+                  <td className="py-2 pr-3">Gross Sales</td>
+                  <td className="py-2 pr-3">{sats(qaResult.local.gross.toString())} sats</td>
+                  <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.gross.toString())} sats</td>
+                  <td className={["py-2 pr-3", qaResult.delta.gross === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                    {sats(qaResult.delta.gross.toString())} sats
+                  </td>
+                </tr>
+                <tr className="border-t border-neutral-800/70">
+                  <td className="py-2 pr-3">Provider Fees</td>
+                  <td className="py-2 pr-3">{sats(qaResult.local.providerFee.toString())} sats</td>
+                  <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.providerFee.toString())} sats</td>
+                  <td className={["py-2 pr-3", qaResult.delta.providerFee === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                    {sats(qaResult.delta.providerFee.toString())} sats
+                  </td>
+                </tr>
+                <tr className="border-t border-neutral-800/70">
+                  <td className="py-2 pr-3">Creator Net</td>
+                  <td className="py-2 pr-3">{sats(qaResult.local.creatorNet.toString())} sats</td>
+                  <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.creatorNet.toString())} sats</td>
+                  <td className={["py-2 pr-3", qaResult.delta.creatorNet === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                    {sats(qaResult.delta.creatorNet.toString())} sats
+                  </td>
+                </tr>
+                <tr className="border-t border-neutral-800/70">
+                  <td className="py-2 pr-3">Settled Rows</td>
+                  <td className="py-2 pr-3">{qaResult.local.settledCount.toLocaleString()}</td>
+                  <td className="py-2 pr-3">{qaResult.publicSnapshot.settledCount.toLocaleString()}</td>
+                  <td className={["py-2 pr-3", qaResult.delta.settledCount === 0 ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                    {qaResult.delta.settledCount.toLocaleString()}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div className="mt-2 text-[11px] text-neutral-500">
+              Creator: <span className="text-neutral-300">{shortId(qaResult.creatorNodeId, 12, 10)}</span>
+              <span className="mx-2">|</span>
+              Public asOf: <span className="text-neutral-300">{formatDate(qaResult.publicSnapshot.asOf)}</span>
+              <span className="mx-2">|</span>
+              Checked: <span className="text-neutral-300">{formatDate(qaResult.checkedAt)}</span>
+            </div>
           </div>
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">canSend</div>
-            <div className="text-neutral-100">{runtime?.canSend ? "yes" : "no"}</div>
-          </div>
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">capability</div>
-            <div className="text-neutral-100">{runtime?.capabilityState || "disconnected"}</div>
-          </div>
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">wallet total</div>
-            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.wallet?.totalSats)}</div>
-          </div>
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">outbound liquidity</div>
-            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.outboundSats)}</div>
-          </div>
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">inbound liquidity</div>
-            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.inboundSats)}</div>
-          </div>
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">settled sales (count)</div>
-            <div className="text-neutral-100">{Number(scopedSettledSalesCount || 0).toLocaleString()}</div>
-          </div>
-          <div className="rounded border border-neutral-800 px-3 py-2">
-            <div className="text-neutral-500">participant payouts paid</div>
-            <div className="text-neutral-100">{Number(scopedPayoutPaidCount || 0).toLocaleString()}</div>
-          </div>
-        </div>
-        {runtime?.sendFailureReason ? (
-          <div className="mt-2 text-xs text-amber-300">send readiness reason: {runtime.sendFailureReason}</div>
         ) : null}
       </div>
 
+      {creatorScopeId === "all" ? (
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+          <div className="text-sm font-semibold">Delegated Creator Overview</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Compare delegated creators on this node. Select a row to scope the full console.
+          </div>
+          {creatorSummaryRows.length === 0 ? (
+            <div className="mt-3 text-sm text-neutral-400">No delegated creator activity in the selected time scope.</div>
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[900px] text-sm">
+                <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">Delegated Creator</th>
+                    <th className="py-2 pr-3 font-medium">Published</th>
+                    <th className="py-2 pr-3 font-medium">Gross Sales</th>
+                    <th className="py-2 pr-3 font-medium">Earnings / Net</th>
+                    <th className="py-2 pr-3 font-medium">Paid</th>
+                    <th className="py-2 pr-3 font-medium">Payable</th>
+                    <th className="py-2 pr-3 font-medium">Health</th>
+                    <th className="py-2 pr-3 font-medium">Last Activity</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {creatorSummaryRows.map((row) => {
+                    const health =
+                      row.attention > 0n ? "Needs attention" : row.payable > 0n ? "Payable" : row.paid > 0n ? "Healthy" : "Quiet";
+                    const healthTone =
+                      row.attention > 0n
+                        ? "border-rose-800/70 bg-rose-900/20 text-rose-300"
+                        : row.payable > 0n
+                          ? "border-amber-800/70 bg-amber-900/20 text-amber-300"
+                          : "border-emerald-800/70 bg-emerald-900/20 text-emerald-300";
+                    return (
+                      <tr
+                        key={row.creatorNodeId}
+                        className="border-t border-neutral-800/70 cursor-pointer hover:bg-neutral-800/30"
+                        onClick={() => setCreatorScopeId(row.creatorNodeId)}
+                      >
+                        <td className="py-2 pr-3 align-top">
+                          <div className="text-neutral-100">{row.creatorLabel}</div>
+                          <div className="max-w-[240px] truncate font-mono text-[11px] text-neutral-500" title={row.creatorNodeId}>
+                            {shortId(row.creatorNodeId, 16, 10)}
+                          </div>
+                        </td>
+                        <td className="py-2 pr-3 align-top text-neutral-200">{row.publishedItems.toLocaleString()}</td>
+                        <td className="py-2 pr-3 align-top text-neutral-200">{sats(row.gross.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-cyan-200">{sats(row.net.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-emerald-300">{sats(row.paid.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-amber-300">{sats(row.payable.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top">
+                          <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${healthTone}`}>
+                            {health}
+                          </span>
+                        </td>
+                        <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.lastActivity)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {creatorScopeId === "all" ? (
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+          <div className="text-sm font-semibold">Node Fee Attribution</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Provider fee collection by delegated creator using settled intent data.
+          </div>
+          {creatorSummaryRows.length === 0 ? (
+            <div className="mt-3 text-sm text-neutral-400">No fee attribution rows in the selected time scope.</div>
+          ) : (
+            <>
+            <div className="mt-3 grid gap-2 lg:hidden">
+              {creatorSummaryRows.map((row) => {
+                const feeShare = percentOf(row.providerFees, nodeProviderFeeTotal);
+                return (
+                  <button
+                    key={`fee-card-${row.creatorNodeId}`}
+                    type="button"
+                    className="rounded-lg border border-neutral-800 bg-neutral-950/30 p-3 text-left hover:bg-neutral-800/30"
+                    onClick={() => setCreatorScopeId(row.creatorNodeId)}
+                  >
+                    <div className="text-sm text-neutral-100">{row.creatorLabel}</div>
+                    <div className="mt-1 truncate font-mono text-[11px] text-neutral-500" title={row.creatorNodeId}>
+                      {shortId(row.creatorNodeId, 16, 10)}
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <div><span className="text-neutral-500">Gross</span><div className="text-neutral-200">{sats(row.gross.toString())} sats</div></div>
+                      <div><span className="text-neutral-500">Provider</span><div className="text-neutral-100">{sats(row.providerFees.toString())} sats</div></div>
+                      <div><span className="text-neutral-500">Invoicing</span><div className="text-neutral-300">{sats(row.invoicingFees.toString())} sats</div></div>
+                      <div><span className="text-neutral-500">Hosting</span><div className="text-neutral-300">{sats(row.hostingFees.toString())} sats</div></div>
+                      <div><span className="text-neutral-500">Paid</span><div className="text-emerald-300">{sats(row.paid.toString())} sats</div></div>
+                      <div><span className="text-neutral-500">Payable</span><div className="text-amber-300">{sats(row.payable.toString())} sats</div></div>
+                    </div>
+                    <div className="mt-2 text-xs text-neutral-300">Fee share: {feeShare}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 hidden lg:block">
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">Delegated Creator</th>
+                    <th className="py-2 pr-3 font-medium">Gross Sales</th>
+                    <th className="py-2 pr-3 font-medium">Provider Fees</th>
+                    <th className="py-2 pr-3 font-medium">Invoicing Fee</th>
+                    <th className="py-2 pr-3 font-medium">Hosting Fee</th>
+                    <th className="py-2 pr-3 font-medium">Paid</th>
+                    <th className="py-2 pr-3 font-medium">Payable</th>
+                    <th className="py-2 pr-3 font-medium">Fee Share</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {creatorSummaryRows.map((row) => {
+                    const feeShare = percentOf(row.providerFees, nodeProviderFeeTotal);
+                    return (
+                      <tr
+                        key={`fee-${row.creatorNodeId}`}
+                        className="border-t border-neutral-800/70 cursor-pointer hover:bg-neutral-800/30"
+                        onClick={() => setCreatorScopeId(row.creatorNodeId)}
+                      >
+                        <td className="py-2 pr-3 align-top">
+                          <div className="text-neutral-100">{row.creatorLabel}</div>
+                          <div className="max-w-[240px] truncate font-mono text-[11px] text-neutral-500" title={row.creatorNodeId}>
+                            {shortId(row.creatorNodeId, 16, 10)}
+                          </div>
+                        </td>
+                        <td className="py-2 pr-3 align-top text-neutral-200">{sats(row.gross.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-neutral-100">{sats(row.providerFees.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-neutral-300">{sats(row.invoicingFees.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-neutral-300">{sats(row.hostingFees.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-emerald-300">{sats(row.paid.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-amber-300">{sats(row.payable.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-neutral-200">{feeShare}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            </>
+          )}
+        </div>
+      ) : null}
+
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-        <div className="text-sm font-semibold">Participant Payout Execution</div>
-        <div className="mt-1 text-xs text-neutral-500">Row-level participant payout execution truth for settled provider intents.</div>
+        <div className="text-sm font-semibold">Money State</div>
+        <div className="mt-1 text-xs text-neutral-500">{creatorScopeId === "all" ? "All delegated creators." : selectedCreatorLabel}</div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="inline-flex items-center rounded-full border border-cyan-800/50 bg-cyan-950/20 px-2 py-0.5 text-cyan-200/90">
+            Lens: Provider settlement
+          </span>
+          <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5 text-neutral-300">
+            Basis: {timeBasis === "sale" ? "Sale time" : "Paid/remitted time"}
+          </span>
+          <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5 text-neutral-300">
+            Period: {timePeriod === "all" ? "All time" : timePeriod}
+          </span>
+        </div>
+        <div className="mt-2 text-xs text-neutral-500">
+          These values are creator-scoped provider settlement metrics; they are not a 1:1 match to creator accounting snapshots across all works.
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {creatorEconomicsCards.map((card) => (
+            <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
+              <div className={["mt-2 text-2xl font-semibold", card.tone].join(" ")}>{card.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {creatorScopeId !== "all" ? (
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+          <div className="text-sm font-semibold">Creator Content Breakdown</div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Per-content financial and payout execution view for the selected delegated creator.
+          </div>
+          <div className="mt-1 text-xs text-neutral-500">
+            Catalog state and provider delegation are independent. A work can be published while delegation is currently disabled.
+          </div>
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setShowZeroContentRows((v) => !v)}
+              className="rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800/60"
+            >
+              {showZeroContentRows ? "Hide zero rows" : "Show zero rows"}
+            </button>
+          </div>
+          {visibleCreatorScopedContentRows.length === 0 ? (
+            <div className="mt-3 text-sm text-neutral-400">No content activity for this creator in the selected time scope.</div>
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full min-w-[860px] text-sm">
+                <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">Content</th>
+                    <th className="py-2 pr-3 font-medium">Gross Sales</th>
+                    <th className="py-2 pr-3 font-medium">Creator Net</th>
+                    <th className="py-2 pr-3 font-medium">Paid</th>
+                    <th className="py-2 pr-3 font-medium">Payable</th>
+                    <th className="py-2 pr-3 font-medium">Payout State</th>
+                    <th className="py-2 pr-3 font-medium">Catalog State</th>
+                    <th className="py-2 pr-3 font-medium">Provider Delegation</th>
+                    <th className="py-2 pr-3 font-medium">Published</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleCreatorScopedContentRows.map((row) => (
+                    <tr key={row.contentId} className="border-t border-neutral-800/70">
+                      <td className="py-2 pr-3 align-top">
+                        <div className="text-neutral-100">{row.title}</div>
+                        <div className="max-w-[260px] truncate font-mono text-[11px] text-neutral-500" title={row.contentId}>
+                          {shortId(row.contentId, 14, 8)}
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 align-top text-neutral-200">{sats(row.gross.toString())} sats</td>
+                      <td className="py-2 pr-3 align-top text-cyan-200">{sats(row.net.toString())} sats</td>
+                      <td className="py-2 pr-3 align-top text-emerald-300">{sats(row.paid.toString())} sats</td>
+                      <td className="py-2 pr-3 align-top text-amber-300">{sats(row.payable.toString())} sats</td>
+                      <td className="py-2 pr-3 align-top">
+                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status === "attention" ? "failed" : row.status === "payable" ? "forwarding" : row.status === "paid" ? "paid" : "unknown")}`}>
+                          {row.status === "attention" ? "needs attention" : row.status === "payable" ? "payable" : row.status === "paid" ? "paid" : "no payout rows yet"}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 align-top">
+                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(
+                          row.publishState === "published" ? "published" : "unknown"
+                        )}`}>
+                          {row.publishState || "unknown"}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 align-top">
+                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${
+                          row.delegationState === "enabled"
+                            ? "border-emerald-800/70 bg-emerald-900/20 text-emerald-300"
+                            : row.delegationState === "disabled"
+                              ? "border-amber-800/70 bg-amber-900/20 text-amber-300"
+                              : "border-neutral-700 bg-neutral-900/50 text-neutral-300"
+                        }`}>
+                          {row.delegationState || "unknown"}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.publishedAt)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {showExecutionSection ? (
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Execution State</div>
+            <div className="mt-1 text-xs text-neutral-500">Paid vs payable vs failed/blocked payout rows.</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOpsExpanded((prev) => ({ ...prev, execution: !prev.execution }))}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+          >
+            {opsExpanded.execution ? "Hide details" : "Show details"}
+          </button>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
+          {(["pending", "ready", "forwarding", "paid", "failed", "blocked"] as const).map((k) => (
+            <div key={k} className="rounded border border-neutral-800 px-3 py-2">
+              <div className="text-[11px] uppercase tracking-wide text-neutral-500">{k}</div>
+              <div className="text-lg font-semibold text-neutral-100">
+                {Number(visiblePayoutCounts[k] || 0).toLocaleString()}
+              </div>
+            </div>
+          ))}
+        </div>
+        {opsExpanded.execution ? (
+        <>
         <div className="mt-2 flex items-center gap-2">
           <button
             type="button"
@@ -545,16 +1511,6 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
               Latest intent: <span className="text-neutral-300">{shortId(latestPayoutIntentId, 8, 6)}</span>
             </div>
           ) : null}
-        </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
-          {(["pending", "ready", "forwarding", "paid", "failed", "blocked"] as const).map((k) => (
-            <div key={k} className="rounded border border-neutral-800 px-3 py-2">
-              <div className="text-[11px] uppercase tracking-wide text-neutral-500">{k}</div>
-              <div className="text-lg font-semibold text-neutral-100">
-                {Number(visiblePayoutCounts[k] || 0).toLocaleString()}
-              </div>
-            </div>
-          ))}
         </div>
         {visibleParticipantPayouts.length === 0 ? (
           <div className="mt-3 text-sm text-neutral-400">No participant payout rows yet.</div>
@@ -599,134 +1555,101 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             </table>
           </div>
         )}
+        </>
+        ) : null}
       </div>
+      ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="sm:col-span-2 xl:col-span-4 text-xs text-neutral-500 px-1">
-          Fee semantics: invoicing + durable hosting are fee components; total provider fees is the combined amount. Distributable to participants is tracked separately.
-        </div>
-        {economicsCards.map((card) => (
-          <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-            <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
-            <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-        <div className="text-sm font-semibold">Delegated Creators</div>
-        <div className="mt-1 text-xs text-neutral-500">Relationship records between this provider node and delegated creator nodes.</div>
-        {creatorLinks.length === 0 ? (
-          <div className="mt-3 text-sm text-neutral-400">No delegated creator links yet.</div>
-        ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[760px] text-sm">
-              <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
-                <tr>
-                  <th className="py-2 pr-3 font-medium">Creator</th>
-                  <th className="py-2 pr-3 font-medium">Trust</th>
-                  <th className="py-2 pr-3 font-medium">Handshake</th>
-                  <th className="py-2 pr-3 font-medium">Execution</th>
-                  <th className="py-2 pr-3 font-medium">Last Seen</th>
-                  <th className="hidden xl:table-cell py-2 pr-3 font-medium">Endpoint</th>
-                </tr>
-              </thead>
-              <tbody>
-                {creatorLinks.map((row) => (
-                  <tr key={row.id} className="border-t border-neutral-800/70">
-                    <td className="py-2 pr-3 align-top">
-                      <div className="text-neutral-100">{row.creatorDisplayName || "Delegated creator"}</div>
-                      <div className="max-w-[260px] truncate font-mono text-[11px] text-neutral-500" title={row.creatorNodeId}>
-                        {shortId(row.creatorNodeId, 16, 10)}
-                      </div>
-                    </td>
-                    <td className="py-2 pr-3 align-top">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.trustStatus)}`}>
-                        {row.trustStatus}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-3 align-top">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.handshakeStatus)}`}>
-                        {row.handshakeStatus}
-                      </span>
-                    </td>
-                    <td className="py-2 pr-3 align-top">
-                      <ExecutionPill allowed={row.executionAllowed} />
-                    </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.lastSeenAt)}</td>
-                    <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
-                      <div className="max-w-[320px] truncate font-mono text-[11px]" title={row.providerEndpoint || ""}>
-                        {row.providerEndpoint || "—"}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-        <div className="text-sm font-semibold">Delegated Publishes</div>
-        <div className="mt-1 text-xs text-neutral-500">Content publish events executed through this provider node.</div>
-        {delegatedPublishes.length === 0 ? (
-          <div className="mt-3 text-sm text-neutral-400">No delegated publish records yet.</div>
-        ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[780px] text-sm">
-              <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
-                <tr>
-                  <th className="py-2 pr-3 font-medium">Title</th>
-                  <th className="py-2 pr-3 font-medium">Creator Node</th>
-                  <th className="py-2 pr-3 font-medium">Visibility</th>
-                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Receipt</th>
-                  <th className="hidden xl:table-cell py-2 pr-3 font-medium">Manifest Hash</th>
-                  <th className="py-2 pr-3 font-medium">Published</th>
-                </tr>
-              </thead>
-              <tbody>
-                {delegatedPublishes.map((row) => (
-                  <tr key={row.id} className="border-t border-neutral-800/70">
-                    <td className="py-2 pr-3 align-top">
-                      <div className="text-neutral-100">{row.title || row.contentId}</div>
-                      <div className="text-xs text-neutral-500">{row.contentType || "unknown type"}</div>
-                    </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">
-                      <div className="max-w-[240px] truncate font-mono text-[12px]" title={row.creatorNodeId}>
-                        {shortId(row.creatorNodeId, 16, 10)}
-                      </div>
-                    </td>
-                    <td className="py-2 pr-3 align-top">
-                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>
-                        {row.visibility.toLowerCase()} / {row.status}
-                      </span>
-                    </td>
-                    <td className="hidden lg:table-cell py-2 pr-3 align-top text-neutral-300">
-                      <div className="max-w-[180px] truncate font-mono text-[11px]" title={row.publishReceiptId || ""}>
-                        {row.publishReceiptId ? shortId(row.publishReceiptId, 14, 8) : "—"}
-                      </div>
-                    </td>
-                    <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
-                      <div className="max-w-[260px] truncate font-mono text-[11px]" title={row.manifestHash}>
-                        {shortId(row.manifestHash, 16, 12)}
-                      </div>
-                    </td>
-                    <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.publishedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      {showWalletContext ? (
+      <div className={["rounded-xl border border-neutral-800 bg-neutral-900/30 p-4", creatorScopeId !== "all" ? "opacity-80" : ""].join(" ")}>
+        <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold">Settlement Ledger</div>
-            <div className="mt-1 text-xs text-neutral-500">Provider-side payment intents with buyer gross, fee accounting, distributable net, and payout execution state.</div>
+            <div className="text-sm font-semibold">Treasury Wallet</div>
+            <div className="mt-1 text-xs text-neutral-500">Execution readiness context for provider settlement and payout rails.</div>
           </div>
+          <button
+            onClick={() => onOpenLightningConfig?.()}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-800/60"
+            type="button"
+          >
+            Open Lightning Config
+          </button>
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">canReceive</div>
+            <div className="text-neutral-100">{runtime?.canReceive ? "yes" : "no"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">canSend</div>
+            <div className="text-neutral-100">{runtime?.canSend ? "yes" : "no"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">capability</div>
+            <div className="text-neutral-100">{runtime?.capabilityState || "disconnected"}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">wallet total</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.wallet?.totalSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">outbound liquidity</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.outboundSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">inbound liquidity</div>
+            <div className="text-neutral-100">{formatLightningSats(lightningBalances?.liquidity?.inboundSats)}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">open channels</div>
+            <div className="text-neutral-100">{Number(lightningBalances?.channels?.openCount || 0).toLocaleString()}</div>
+          </div>
+          <div className="rounded border border-neutral-800 px-3 py-2">
+            <div className="text-neutral-500">pending channels</div>
+            <div className="text-neutral-100">
+              {Number((lightningBalances?.channels?.pendingOpenCount || 0) + (lightningBalances?.channels?.pendingCloseCount || 0)).toLocaleString()}
+            </div>
+          </div>
+        </div>
+        {runtime?.sendFailureReason ? (
+          <div className="mt-2 text-xs text-amber-300">send readiness reason: {runtime.sendFailureReason}</div>
+        ) : null}
+      </div>
+      ) : null}
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Operational Details</div>
+            <div className="mt-1 text-xs text-neutral-500">Inspection surfaces for row-level review and troubleshooting.</div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setOpsExpanded((prev) => ({ ...prev, operational: !prev.operational }))}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+          >
+            {opsExpanded.operational ? "Hide details" : "Show details"}
+          </button>
+        </div>
+        {opsExpanded.operational ? (
+        <>
+      <div className="mt-3 rounded-lg border border-neutral-800/70 bg-neutral-950/25 p-3">
+        <div className="text-xs uppercase tracking-wide text-neutral-500">Settlement Ledger</div>
+        <div className="mt-1 text-xs text-neutral-500">Inspect settlement rows when review is needed.</div>
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setOpsExpanded((prev) => ({ ...prev, ledger: !prev.ledger }))}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+          >
+            {opsExpanded.ledger ? "Hide ledger rows" : "Show ledger rows"}
+          </button>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+        </div>
+        {opsExpanded.ledger ? (
+        <>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
           <label className="inline-flex items-center gap-2 text-xs text-neutral-400">
             <span>Status</span>
             <select
@@ -751,7 +1674,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           </button>
         </div>
         {visiblePaymentIntents.length === 0 ? (
-          <div className="mt-3 text-sm text-neutral-400">No payment intents yet.</div>
+          <div className="mt-3 rounded-md border border-emerald-900/40 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-200">
+            No settlement rows in this scope/time window. Nothing to review right now.
+          </div>
         ) : (
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
@@ -784,8 +1709,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                       </div>
                     </td>
                     <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
-                      <div className="max-w-[220px] truncate text-neutral-100" title={contentTitleById[row.contentId || ""] || ""}>
-                        {contentTitleById[row.contentId || ""] || "—"}
+                      <div className="max-w-[220px] truncate text-neutral-100" title={contentMetaById.get(String(row.contentId || "").trim())?.title || ""}>
+                        {contentMetaById.get(String(row.contentId || "").trim())?.title || "—"}
                       </div>
                       <div className="max-w-[220px] truncate font-mono text-[11px] text-neutral-500" title={row.contentId || ""}>
                         {row.contentId ? shortId(row.contentId, 10, 8) : "—"}
@@ -884,7 +1809,129 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             </table>
           </div>
         )}
+        </>
+        ) : (
+          <div className="mt-3 text-xs text-neutral-500">Hidden to reduce noise. Expand for operational detail.</div>
+        )}
       </div>
+
+      {creatorScopeId === "all" ? (
+      <div className="mt-3 rounded-lg border border-neutral-800/70 bg-neutral-950/25 p-3">
+        <div className="text-xs uppercase tracking-wide text-neutral-500">Delegated Creator Links</div>
+        {creatorScopedCreatorLinks.length === 0 ? (
+          <div className="mt-2 text-xs text-neutral-400">No delegated creator links yet.</div>
+        ) : (
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full min-w-[760px] text-sm">
+              <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                <tr>
+                  <th className="py-2 pr-3 font-medium">Delegated Creator</th>
+                  <th className="py-2 pr-3 font-medium">Trust</th>
+                  <th className="py-2 pr-3 font-medium">Handshake</th>
+                  <th className="py-2 pr-3 font-medium">Execution</th>
+                  <th className="py-2 pr-3 font-medium">Last Seen</th>
+                  <th className="hidden xl:table-cell py-2 pr-3 font-medium">Endpoint</th>
+                </tr>
+              </thead>
+              <tbody>
+                {creatorScopedCreatorLinks.map((row) => (
+                  <tr key={row.id} className="border-t border-neutral-800/70">
+                    <td className="py-2 pr-3 align-top">
+                      <div className="text-neutral-100">{displayLabelForCreator(row.creatorNodeId, row.creatorDisplayName)}</div>
+                      <div className="max-w-[260px] truncate font-mono text-[11px] text-neutral-500" title={row.creatorNodeId}>
+                        {shortId(row.creatorNodeId, 16, 10)}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3 align-top">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.trustStatus)}`}>{row.trustStatus}</span>
+                    </td>
+                    <td className="py-2 pr-3 align-top">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.handshakeStatus)}`}>{row.handshakeStatus}</span>
+                    </td>
+                    <td className="py-2 pr-3 align-top"><ExecutionPill allowed={row.executionAllowed} /></td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.lastSeenAt)}</td>
+                    <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[320px] truncate font-mono text-[11px]" title={row.providerEndpoint || ""}>{row.providerEndpoint || "—"}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      ) : null}
+
+      {creatorScopeId === "all" ? (
+      <div className="mt-3 rounded-lg border border-neutral-800/70 bg-neutral-950/25 p-3">
+        <div className="text-xs uppercase tracking-wide text-neutral-500">Delegated Publishes</div>
+        {creatorScopedDelegatedPublishes.length === 0 ? (
+          <div className="mt-2 text-xs text-neutral-400">No delegated publish records yet.</div>
+        ) : (
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full min-w-[780px] text-sm">
+              <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                <tr>
+                  <th className="py-2 pr-3 font-medium">Title</th>
+                  <th className="py-2 pr-3 font-medium">Creator Node</th>
+                  <th className="py-2 pr-3 font-medium">Visibility</th>
+                  <th className="hidden lg:table-cell py-2 pr-3 font-medium">Receipt</th>
+                  <th className="hidden xl:table-cell py-2 pr-3 font-medium">Manifest Hash</th>
+                  <th className="py-2 pr-3 font-medium">Published</th>
+                </tr>
+              </thead>
+              <tbody>
+                {creatorScopedDelegatedPublishes.map((row) => (
+                  <tr key={row.id} className="border-t border-neutral-800/70">
+                    <td className="py-2 pr-3 align-top">
+                      <div className="text-neutral-100">{row.title || row.contentId}</div>
+                      <div className="text-xs text-neutral-500">{row.contentType || "unknown type"}</div>
+                    </td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[240px] truncate font-mono text-[12px]" title={row.creatorNodeId}>{shortId(row.creatorNodeId, 16, 10)}</div>
+                    </td>
+                    <td className="py-2 pr-3 align-top">
+                      <div className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/50 px-2 py-0.5 text-[11px] text-neutral-300">
+                        Storefront: {row.visibility.toLowerCase()}
+                      </div>
+                      <div className={`mt-1 inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>
+                        Publish: {row.status}
+                      </div>
+                    </td>
+                    <td className="hidden lg:table-cell py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[180px] truncate font-mono text-[11px]" title={row.publishReceiptId || ""}>{row.publishReceiptId ? shortId(row.publishReceiptId, 14, 8) : "—"}</div>
+                    </td>
+                    <td className="hidden xl:table-cell py-2 pr-3 align-top text-neutral-300">
+                      <div className="max-w-[260px] truncate font-mono text-[11px]" title={row.manifestHash}>{shortId(row.manifestHash, 16, 12)}</div>
+                    </td>
+                    <td className="py-2 pr-3 align-top text-neutral-300">{formatDate(row.publishedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+      ) : null}
+        </>
+        ) : (
+          <div className="mt-3 text-xs text-neutral-500">Hidden by default. Expand only when you need row-level inspection.</div>
+        )}
+      </div>
+
+      {creatorScopeId === "all" ? (
+      <div className="space-y-2 opacity-70">
+        <div className="text-sm font-semibold text-neutral-200">Provider Node Overview</div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {summaryCards.map((card) => (
+            <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+              <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
+              <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      ) : null}
     </div>
   );
 }

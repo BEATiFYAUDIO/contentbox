@@ -30435,7 +30435,11 @@ app.get("/api/admin/lightning/peers/suggestions", { preHandler: [requireAuth, re
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 20;
     const probeTopRaw = Number((req.query || {}).probeTop ?? 6);
     const probeTop = Number.isFinite(probeTopRaw) ? Math.max(0, Math.min(12, Math.floor(probeTopRaw))) : 6;
-    const out = await getPeerSuggestions(prisma as any, { limit, probeTop, graphTimeoutMs: 2000 });
+    const graphTimeoutRaw = Number((req.query || {}).graphTimeoutMs ?? "");
+    const graphTimeoutMs = Number.isFinite(graphTimeoutRaw) && graphTimeoutRaw > 0 ? graphTimeoutRaw : undefined;
+    const forceRaw = String((req.query || {}).forceRefresh ?? "").toLowerCase();
+    const forceRefresh = forceRaw === "1" || forceRaw === "true" || forceRaw === "yes";
+    const out = await getPeerSuggestions(prisma as any, { limit, probeTop, graphTimeoutMs, forceRefresh });
     return reply.send({ status: "ok", peers: out.peers, meta: out.meta });
   } catch (e: any) {
     const message = String(e?.message || e || "");

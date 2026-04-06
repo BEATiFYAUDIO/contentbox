@@ -719,6 +719,17 @@ export default function EarningsV2Page({
         <div className="text-xs text-neutral-500 mt-1">
           Where relationships go, money flows: these earnings come from works you own or collaborate on.
         </div>
+        <div className="mt-3">
+          <TimeScopeControls
+            basis={timeBasis}
+            onBasisChange={setTimeBasis}
+            period={timePeriod}
+            onPeriodChange={setTimePeriod}
+            basisOptions={["earned"]}
+            periodOptions={["1d", "7d", "30d", "90d", "all"]}
+            helperText="Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
+          />
+        </div>
       </div>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -759,17 +770,6 @@ export default function EarningsV2Page({
         </div>
         <div className="text-xs text-neutral-500 mt-1">
           Role/share context is shown from existing Royalties context when available.
-        </div>
-        <div className="mt-3">
-          <TimeScopeControls
-            basis={timeBasis}
-            onBasisChange={setTimeBasis}
-            period={timePeriod}
-            onPeriodChange={setTimePeriod}
-            basisOptions={["earned"]}
-            periodOptions={["1d", "7d", "30d", "90d", "all"]}
-            helperText="Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
-          />
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <span className="text-xs text-neutral-500">View:</span>

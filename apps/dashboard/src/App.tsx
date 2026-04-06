@@ -992,21 +992,14 @@ export default function App() {
                     </button>
                   </>
                 ) : null}
-                {requireLocalLightning ? (
-                  <button
-                    onClick={goToNodeLightning}
-                    className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
-                  >
-                    Configure Lightning
-                  </button>
-                ) : (
+                {!requireLocalLightning ? (
                   <button
                     onClick={() => setPage("store")}
                     className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"
                   >
                     Provider commerce ready
                   </button>
-                )}
+                ) : null}
                 {!publicStatusOnline && publicStatus?.url ? (
                   <div className="text-xs rounded-full border border-amber-900/70 bg-amber-950/30 px-3 py-1 text-amber-200">
                     Public profile link is offline. Bring tunnel online first.
@@ -1134,7 +1127,7 @@ export default function App() {
                 />
               )}
               {page === "diagnostics" && <DiagnosticsPage whoamiInfo={whoamiInfo} whoamiStatus={whoamiStatus} />}
-              {page === "provider-console" && <ProviderConsolePage onOpenLightningConfig={() => setPage("config")} />}
+              {page === "provider-console" && <ProviderConsolePage onOpenLightningConfig={() => setPage("node-lightning")} />}
 
               {page === "finance" && !isCommerceLockedPage && (
                 <ErrorBoundary>
@@ -1148,6 +1141,7 @@ export default function App() {
                     <FinancePage
                       initialTab={financeTab}
                       nodeMode={nodeMode}
+                      onOpenLightningConfig={() => setPage("node-lightning")}
                       postureSnapshot={
                         nodeModeSnapshot
                           ? ({
@@ -1166,7 +1160,6 @@ export default function App() {
                   tunnelActive={publicStatus ? tunnelActive : null}
                   identityVerified={identityDetail ? identityVerified : null}
                   lightningConfigured={lightningConfigured}
-                  onOpenPrimaryRoute={goToNodeLightning}
                 />
               )}
 
@@ -1176,7 +1169,6 @@ export default function App() {
                   tunnelActive={publicStatus ? tunnelActive : null}
                   identityVerified={identityDetail ? identityVerified : null}
                   lightningConfigured={lightningConfigured}
-                  onOpenPrimaryRoute={goToNodeLightning}
                 />
               )}
 

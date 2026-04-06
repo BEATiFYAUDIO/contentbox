@@ -267,6 +267,7 @@ export default function FinanceOverviewPage({
   const [openedChannelStatus, setOpenedChannelStatus] = useState<ChannelStatusResponse | null>(null);
   const [channelStatusBusy, setChannelStatusBusy] = useState(false);
   const [showPayoutDetails, setShowPayoutDetails] = useState(false);
+  const [showPageHelp, setShowPageHelp] = useState(false);
   const [overviewTimeBasis, setOverviewTimeBasis] = useState<TimeBasis>("sale");
   const [overviewTimePeriod, setOverviewTimePeriod] = useState<TimePeriod>("30d");
   const hasLoadedOverviewRef = useRef(false);
@@ -910,6 +911,24 @@ export default function FinanceOverviewPage({
         {auxError ? (
           <div className="mt-2 text-xs text-amber-300">{auxError}</div>
         ) : null}
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setShowPageHelp((v) => !v)}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
+          >
+            {showPageHelp ? "Hide how this works" : "How this works"}
+          </button>
+        </div>
+        {showPageHelp ? (
+          <div className="mt-2 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 text-xs text-neutral-400 space-y-1">
+            <div>Sales = seller-of-record buyer payments on this node.</div>
+            <div>Content = multi-view intelligence over that content universe.</div>
+            <div>Earnings = your share statement from settled content sales.</div>
+            <div>Payouts = remittance execution status (paid/pending/failed/blocked).</div>
+            <div className="text-neutral-500">State model: Gross Earned (pre-fee) → Fees Withheld → Net Payable → Net Paid.</div>
+          </div>
+        ) : null}
         {showNodeWalletContext && lightningAdmin?.configured && lightningAdmin.lastTestedAt ? (
           <div className="mt-1 text-xs text-neutral-500">
             Lightning node last tested: {new Date(lightningAdmin.lastTestedAt).toLocaleString()}
@@ -948,6 +967,20 @@ export default function FinanceOverviewPage({
         <div className="mt-1 text-xs text-neutral-400">Core numbers for accounting review.</div>
         <div className="mt-1 text-xs text-neutral-500">
           Earnings may exceed sales because they include your share from collaborations and other works.
+        </div>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="inline-flex items-center rounded-full border border-cyan-800/50 bg-cyan-950/20 px-2 py-0.5 text-cyan-200/90">
+            Lens: Creator accounting
+          </span>
+          <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5 text-neutral-300">
+            Basis: Sale + Earned + Paid
+          </span>
+          <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5 text-neutral-300">
+            Period: {overviewTimePeriod === "all" ? "All time" : overviewTimePeriod}
+          </span>
+        </div>
+        <div className="mt-2 text-xs text-neutral-500">
+          This section is not directly comparable 1:1 with Provider Console creator settlement cards.
         </div>
         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
@@ -1103,34 +1136,6 @@ export default function FinanceOverviewPage({
             </div>
           ) : null}
         </div>
-      </section>
-
-      <div className="px-1 text-[11px] uppercase tracking-wide text-neutral-500">Details</div>
-
-      <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm font-semibold">How to read this page</div>
-        <div className="mt-2 grid gap-2 md:grid-cols-2">
-          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
-            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Sales</div>
-            <div className="mt-1 text-xs text-neutral-300">Seller-of-record input with settlement and scoped work detail.</div>
-          </div>
-          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
-            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Content</div>
-            <div className="mt-1 text-xs text-neutral-300">Multi-view intelligence over the same content dataset.</div>
-          </div>
-          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
-            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Earnings</div>
-            <div className="mt-1 text-xs text-neutral-300">Your share statement from settled content sales.</div>
-          </div>
-          <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-2">
-            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalties</div>
-            <div className="mt-1 text-xs text-neutral-300">Participation, role, and share source truth.</div>
-          </div>
-        </div>
-        <div className="mt-2 text-xs text-neutral-400">
-          State model: Gross Earned (pre-fee) → Fees Withheld → Net Payable (remittance pending) → Net Paid (remitted); Failed/Blocked indicates remittance could not complete.
-        </div>
-        <div className="mt-1 text-xs text-neutral-500">Reconciliation (coming soon)</div>
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">

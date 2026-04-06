@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
 import TimeScopeControls from "../components/TimeScopeControls";
-import type { TimeBasis, TimePeriod } from "../lib/timeScope";
+import { isWithinPeriod, type TimeBasis, type TimePeriod } from "../lib/timeScope";
 
 type RoyaltyRow = {
   contentId: string;
@@ -31,6 +31,11 @@ type RemoteRoyaltyContextRow = {
   payoutState?: string | null;
   payoutSummary?: Record<string, number> | null;
   acceptedAt?: string | null;
+};
+
+type RevenueSaleCompactRow = {
+  contentId?: string | null;
+  recognizedAt?: string | null;
 };
 
 type FinanceRoyaltiesPageProps = {
@@ -65,6 +70,7 @@ type EarningsLedgerRow = {
   status: EarningsLedgerStatus;
   amountSats: number;
   dateLabel: string;
+  dateSortTs: number;
   remittanceDetail?: string | null;
   remittanceActionable?: boolean;
 };
@@ -78,19 +84,28 @@ function normalizeRoleLabel(raw: string | null | undefined): string {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
+function statusTone(status: EarningsLedgerStatus): string {
+  if (status === "Paid") return "border-emerald-800/70 bg-emerald-900/20 text-emerald-300";
+  if (status === "Pending" || status === "Processing" || status === "Partial") return "border-amber-800/70 bg-amber-900/20 text-amber-300";
+  if (status === "Failed" || status === "Blocked") return "border-red-800/70 bg-red-900/20 text-red-300";
+  return "border-neutral-700 bg-neutral-900/50 text-neutral-300";
+}
+
 export default function FinanceRoyaltiesPage({
   refreshSignal,
   bridgeFilter = null,
   onOpenPayouts
 }: FinanceRoyaltiesPageProps) {
   const [rows, setRows] = useState<RoyaltyRow[]>([]);
+  const [salesRows, setSalesRows] = useState<RevenueSaleCompactRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
   const [ledgerContentFilter, setLedgerContentFilter] = useState<{ contentId: string; title: string } | null>(null);
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
-  const [originFilter, setOriginFilter] = useState<string>("all");
+  const [contentQuery, setContentQuery] = useState("");
   const [localRoleByContent, setLocalRoleByContent] = useState<Record<string, string>>({});
   const [remoteRoleByContent, setRemoteRoleByContent] = useState<Record<string, string>>({});
   const [remoteRows, setRemoteRows] = useState<RemoteRoyaltyContextRow[]>([]);
@@ -122,6 +137,23 @@ export default function FinanceRoyaltiesPage({
         setError(e.message || "Failed to load royalties.");
       } finally {
         if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [refreshSignal, retryTick]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api<RevenueSaleCompactRow[]>("/api/revenue/sales?period=all&compact=1", "GET");
+        if (!active) return;
+        setSalesRows(Array.isArray(res) ? res : []);
+      } catch {
+        if (!active) return;
+        setSalesRows([]);
       }
     })();
     return () => {
@@ -240,19 +272,19 @@ export default function FinanceRoyaltiesPage({
     return ordered.join(" ");
   };
 
-  const totals = rows.reduce(
-    (acc, r) => {
-      acc.earned += Number(r.settledSats || 0) || 0;
-      acc.paid += Number(r.withdrawnSats || 0) || 0;
-      acc.pending += Number(r.pendingSats || 0) || 0;
-      return acc;
-    },
-    { earned: 0, paid: 0, pending: 0 }
-  );
-  const grossEarned = Number(overviewSummary?.totals?.participantRoyaltyAccruedSats || 0) || totals.earned;
   const feeWithheld = Number(overviewSummary?.totals?.participantRoyaltyFeeWithheldSats || 0);
-  const netPaid = Number(overviewSummary?.totals?.participantRoyaltyPaidSats || 0) || totals.paid;
-  const netPayable = Number(overviewSummary?.totals?.participantRoyaltyPayableSats || 0) || totals.pending;
+
+  const localRecognizedAtByContent = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const sale of salesRows) {
+      const contentId = String(sale?.contentId || "").trim();
+      const recognizedAt = String(sale?.recognizedAt || "").trim();
+      if (!contentId || !recognizedAt) continue;
+      const prev = map.get(contentId);
+      if (!prev || recognizedAt > prev) map.set(contentId, recognizedAt);
+    }
+    return map;
+  }, [salesRows]);
 
   const earningsLedgerRows = useMemo<EarningsLedgerRow[]>(() => {
     const out: EarningsLedgerRow[] = [];
@@ -270,7 +302,9 @@ export default function FinanceRoyaltiesPage({
       const roleLabel = localRole || remoteRole || "Participant";
       const originLabel = remoteRole ? "Remote" : localRole ? "Local" : "—";
       const shareLabel = formatShareLabel(row.allocationSats, row.totalSalesSats);
-      const dateLabel = "—";
+      const localRecognizedAt = localRecognizedAtByContent.get(contentId) || "";
+      const dateSortTs = localRecognizedAt ? new Date(localRecognizedAt).getTime() : 0;
+      const dateLabel = dateSortTs > 0 ? new Date(dateSortTs).toLocaleDateString() : "—";
 
       if (paid > 0) {
         out.push({
@@ -284,6 +318,7 @@ export default function FinanceRoyaltiesPage({
           status: "Paid",
           amountSats: paid,
           dateLabel,
+          dateSortTs,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -301,6 +336,7 @@ export default function FinanceRoyaltiesPage({
           status: "Pending",
           amountSats: pending,
           dateLabel,
+          dateSortTs,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -319,6 +355,7 @@ export default function FinanceRoyaltiesPage({
           status: "Earned",
           amountSats: earnedOnly,
           dateLabel,
+          dateSortTs,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -338,7 +375,8 @@ export default function FinanceRoyaltiesPage({
       const roleLabel = normalizeRoleLabel(row?.role) || "Participant";
       const shareLabel = formatPercentLabel(row?.percent);
       const status = mapRemotePayoutStateToLedgerStatus(row?.payoutState, row?.payoutSummary || null);
-      const dateLabel = row?.acceptedAt ? new Date(String(row.acceptedAt)).toLocaleDateString() : "—";
+      const dateSortTs = row?.acceptedAt ? new Date(String(row.acceptedAt)).getTime() : 0;
+      const dateLabel = dateSortTs > 0 ? new Date(dateSortTs).toLocaleDateString() : "—";
       const payoutSummary = formatRemotePayoutSummary(row?.payoutSummary || null);
       const remittanceDetail = payoutSummary ? `Remote payout rows: ${payoutSummary}` : `Remote payout state: ${String(row?.payoutState || "none")}`;
       const remittanceActionable = status !== "Paid" && status !== "Earned";
@@ -354,12 +392,15 @@ export default function FinanceRoyaltiesPage({
         status,
         amountSats: earned,
         dateLabel,
+        dateSortTs,
         remittanceDetail,
         remittanceActionable
       });
     }
 
     return out.sort((a, b) => {
+      const dateDelta = (b.dateSortTs || 0) - (a.dateSortTs || 0);
+      if (dateDelta !== 0) return dateDelta;
       const order: Record<EarningsLedgerStatus, number> = {
         Failed: 7,
         Blocked: 6,
@@ -369,19 +410,54 @@ export default function FinanceRoyaltiesPage({
         Earned: 2,
         Paid: 1
       };
-      return order[b.status] - order[a.status];
+      const statusDelta = order[b.status] - order[a.status];
+      if (statusDelta !== 0) return statusDelta;
+      return b.amountSats - a.amountSats;
     });
-  }, [rows, remoteRows, localRoleByContent, remoteRoleByContent]);
+  }, [rows, remoteRows, localRoleByContent, remoteRoleByContent, localRecognizedAtByContent]);
+
+  const timeScopedEarningsLedgerRows = useMemo(() => {
+    return earningsLedgerRows.filter((row) => {
+      if (timePeriod === "all") return true;
+      if (!Number.isFinite(row.dateSortTs) || row.dateSortTs <= 0) return false;
+      const tsIso = new Date(row.dateSortTs).toISOString();
+      return isWithinPeriod(tsIso, timePeriod);
+    });
+  }, [earningsLedgerRows, timePeriod]);
+
+  const scopedTopline = useMemo(() => {
+    return timeScopedEarningsLedgerRows.reduce(
+      (acc, row) => {
+        const amt = Math.max(0, Number(row.amountSats || 0) || 0);
+        acc.grossEarned += amt;
+        if (row.status === "Paid") acc.netPaid += amt;
+        if (row.status === "Pending" || row.status === "Processing" || row.status === "Partial") acc.netPayable += amt;
+        return acc;
+      },
+      { grossEarned: 0, netPaid: 0, netPayable: 0 }
+    );
+  }, [timeScopedEarningsLedgerRows]);
 
   const visibleEarningsLedgerRows = useMemo(() => {
-    return earningsLedgerRows.filter((row) => {
+    return timeScopedEarningsLedgerRows.filter((row) => {
       if (ledgerContentFilter?.contentId && row.contentId !== ledgerContentFilter.contentId) return false;
+      if (contentQuery.trim()) {
+        const q = contentQuery.trim().toLowerCase();
+        const title = String(row.contentTitle || "").toLowerCase();
+        if (!title.includes(q)) return false;
+      }
+      if (statusFilter !== "all" && row.status !== statusFilter) return false;
       if (sourceFilter !== "all" && row.sourceLabel !== sourceFilter) return false;
       if (roleFilter !== "all" && row.roleLabel !== roleFilter) return false;
-      if (originFilter !== "all" && row.originLabel !== originFilter) return false;
       return true;
     });
-  }, [earningsLedgerRows, ledgerContentFilter, sourceFilter, roleFilter, originFilter]);
+  }, [timeScopedEarningsLedgerRows, ledgerContentFilter, contentQuery, roleFilter, sourceFilter, statusFilter]);
+
+  const availableStatuses = useMemo(() => {
+    const values = new Set<string>();
+    for (const row of earningsLedgerRows) values.add(row.status);
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [earningsLedgerRows]);
 
   const availableSources = useMemo(() => {
     const values = new Set<string>();
@@ -392,12 +468,6 @@ export default function FinanceRoyaltiesPage({
   const availableRoles = useMemo(() => {
     const values = new Set<string>();
     for (const row of earningsLedgerRows) values.add(row.roleLabel);
-    return Array.from(values).sort((a, b) => a.localeCompare(b));
-  }, [earningsLedgerRows]);
-
-  const availableOrigins = useMemo(() => {
-    const values = new Set<string>();
-    for (const row of earningsLedgerRows) values.add(row.originLabel);
     return Array.from(values).sort((a, b) => a.localeCompare(b));
   }, [earningsLedgerRows]);
 
@@ -432,9 +502,8 @@ export default function FinanceRoyaltiesPage({
             period={timePeriod}
             onPeriodChange={setTimePeriod}
             basisOptions={["earned"]}
-            periodOptions={["all"]}
-            periodDisabled
-            helperText="Earnings use earned time. Time scoping will expand as row-level earned timestamps become available."
+            periodOptions={["1d", "7d", "30d", "90d", "all"]}
+            helperText="Earnings are scoped by earned time using available row timestamps."
           />
         </div>
       </div>
@@ -442,19 +511,20 @@ export default function FinanceRoyaltiesPage({
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Gross earned</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(String(grossEarned))}</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.grossEarned))}</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Fees</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(String(feeWithheld))}</div>
+          {timePeriod !== "all" ? <div className="mt-1 text-[11px] text-neutral-500">All-time fee view</div> : null}
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net paid</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(String(netPaid))}</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.netPaid))}</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net payable</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(String(netPayable))}</div>
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.netPayable))}</div>
         </div>
       </section>
 
@@ -462,7 +532,7 @@ export default function FinanceRoyaltiesPage({
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-base font-semibold">Earnings Ledger</div>
-            <div className="text-xs text-neutral-500 mt-1">Scope this statement by source, status, role, and origin.</div>
+            <div className="text-xs text-neutral-500 mt-1">Scope this statement by content, status, source, and role.</div>
           </div>
           <button
             type="button"
@@ -484,6 +554,30 @@ export default function FinanceRoyaltiesPage({
           Filter rows:
         </div>
         <div className="mb-2 flex flex-wrap gap-2 rounded-lg border border-neutral-800 bg-neutral-900/30 p-2">
+          <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
+            <span>Content</span>
+            <input
+              value={contentQuery}
+              onChange={(e) => setContentQuery(e.target.value)}
+              placeholder="Search title..."
+              className="w-44 rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+            />
+          </label>
+          <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
+            <span>Status</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+            >
+              <option value="all">All</option>
+              {availableStatuses.map((status) => (
+                <option key={status} value={status}>
+                  {status}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
             <span>Source</span>
             <select
@@ -514,21 +608,6 @@ export default function FinanceRoyaltiesPage({
               ))}
             </select>
           </label>
-          <label className="text-xs text-neutral-400 inline-flex items-center gap-2">
-            <span>Origin</span>
-            <select
-              value={originFilter}
-              onChange={(e) => setOriginFilter(e.target.value)}
-              className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
-            >
-              <option value="all">All</option>
-              {availableOrigins.map((origin) => (
-                <option key={origin} value={origin}>
-                  {origin}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
         {ledgerContentFilter ? (
           <div className="mb-2 flex items-center gap-2 text-xs text-neutral-400">
@@ -544,6 +623,20 @@ export default function FinanceRoyaltiesPage({
             </button>
           </div>
         ) : null}
+        {contentQuery.trim() ? (
+          <div className="mb-2 flex items-center gap-2 text-xs text-neutral-400">
+            <span>
+              Search: <span className="text-neutral-200">{contentQuery.trim()}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setContentQuery("")}
+              className="rounded-md border border-neutral-700 px-2 py-1 hover:bg-neutral-900"
+            >
+              Clear search
+            </button>
+          </div>
+        ) : null}
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="text-neutral-400">
@@ -554,8 +647,8 @@ export default function FinanceRoyaltiesPage({
                 <th className="text-left font-medium py-2">Role</th>
                 <th className="text-left font-medium py-2">Origin</th>
                 <th className="text-left font-medium py-2">Share</th>
+                <th className="text-left font-medium py-2">Status</th>
                 <th className="text-left font-medium py-2">Amount</th>
-                <th className="text-left font-medium py-2">Remittance detail</th>
               </tr>
             </thead>
             <tbody>
@@ -564,14 +657,14 @@ export default function FinanceRoyaltiesPage({
                   <td colSpan={8} className="py-3 text-neutral-500">
                     {ledgerContentFilter
                       ? "No earnings rows found for this work."
-                      : sourceFilter !== "all" || roleFilter !== "all" || originFilter !== "all"
+                      : sourceFilter !== "all" || roleFilter !== "all" || statusFilter !== "all" || contentQuery.trim().length > 0
                         ? "No earnings rows match the current filters."
                         : "No earnings rows yet."}
                   </td>
                 </tr>
               ) : (
                 visibleEarningsLedgerRows.map((row) => (
-                  <tr key={row.id} className="border-t border-neutral-900">
+                  <tr key={row.id} className="border-t border-neutral-900 hover:bg-neutral-900/30">
                     <td className="py-2 text-neutral-400">{row.dateLabel}</td>
                     <td className="py-2">
                       <button
@@ -586,25 +679,21 @@ export default function FinanceRoyaltiesPage({
                     <td className="py-2 text-neutral-300">{row.roleLabel}</td>
                     <td className="py-2 text-neutral-300">{row.originLabel}</td>
                     <td className="py-2 text-neutral-300">{row.shareLabel}</td>
-                    <td className="py-2">{formatSats(String(row.amountSats))}</td>
-                    <td className="py-2 text-neutral-400">
-                      {row.remittanceDetail ? (
-                        <div className="max-w-[20rem] truncate text-xs" title={row.remittanceDetail}>
-                          {row.remittanceDetail}
-                        </div>
-                      ) : (
-                        <div className="text-xs text-neutral-600">—</div>
-                      )}
+                    <td className="py-2">
+                      <span className={["inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]", statusTone(row.status)].join(" ")}>
+                        {row.status}
+                      </span>
                       {row.remittanceActionable && onOpenPayouts ? (
                         <button
                           type="button"
                           onClick={() => onOpenPayouts({ contentId: String(row.contentId || "").trim(), title: row.contentTitle })}
-                          className="mt-1 rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
+                          className="mt-1 block rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
                         >
                           Open payouts
                         </button>
                       ) : null}
                     </td>
+                    <td className="py-2">{formatSats(String(row.amountSats))}</td>
                   </tr>
                 ))
               )}

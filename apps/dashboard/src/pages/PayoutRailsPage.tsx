@@ -101,11 +101,6 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
   const [error, setError] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [payoutRows, setPayoutRows] = React.useState<PayoutRow[]>([]);
-  const [payoutTotals, setPayoutTotals] = React.useState<{ pendingSats: string; paidSats: string; failedSats: string }>({
-    pendingSats: "0",
-    paidSats: "0",
-    failedSats: "0"
-  });
   const [expandedPayouts, setExpandedPayouts] = React.useState<Record<string, boolean>>({});
   const [roleByContent, setRoleByContent] = React.useState<Record<string, string>>({});
   const [shareByContent, setShareByContent] = React.useState<Record<string, string>>({});
@@ -135,11 +130,6 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
       setMethods(m || []);
       setIdentities(ids || []);
       setPayoutRows(Array.isArray(payoutsRes?.items) ? payoutsRes.items : []);
-      setPayoutTotals({
-        pendingSats: String(payoutsRes?.totals?.pendingSats || "0"),
-        paidSats: String(payoutsRes?.totals?.paidSats || "0"),
-        failedSats: String(payoutsRes?.totals?.failedSats || "0")
-      });
     } catch (e: any) {
       setError(e.message || "Failed to load");
     } finally {
@@ -308,6 +298,23 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
     return scopedByContent.filter((row) => isWithinPeriod(row.remittedAt, timePeriod));
   }, [payoutRows, timePeriod, contentScopeFilter, titleByContent]);
 
+  const scopedPayoutTotals = React.useMemo(() => {
+    return visiblePayoutRows.reduce(
+      (acc, row) => {
+        const amount = Math.max(0, Number(row.netAmountSats ?? row.amountSats ?? 0) || 0);
+        if (row.status === "paid") {
+          acc.paid += amount;
+        } else if (row.status === "failed" || row.status === "blocked") {
+          acc.failed += amount;
+        } else {
+          acc.payable += amount;
+        }
+        return acc;
+      },
+      { paid: 0, payable: 0, failed: 0 }
+    );
+  }, [visiblePayoutRows]);
+
   const payoutContentId = React.useCallback((row: PayoutRow) => {
     return String(row.content?.id || row.contentId || "").trim();
   }, []);
@@ -426,15 +433,15 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
         <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Paid</div>
-            <div className="mt-1 text-lg font-semibold">{formatSats(payoutTotals.paidSats)}</div>
+            <div className="mt-1 text-lg font-semibold">{formatSats(scopedPayoutTotals.paid)}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Net payable</div>
-            <div className="mt-1 text-lg font-semibold">{formatSats(payoutTotals.pendingSats)}</div>
+            <div className="mt-1 text-lg font-semibold">{formatSats(scopedPayoutTotals.payable)}</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Failed</div>
-            <div className="mt-1 text-lg font-semibold">{formatSats(payoutTotals.failedSats)}</div>
+            <div className="mt-1 text-lg font-semibold">{formatSats(scopedPayoutTotals.failed)}</div>
           </div>
         </div>
         <div className="mt-3 overflow-x-auto">
