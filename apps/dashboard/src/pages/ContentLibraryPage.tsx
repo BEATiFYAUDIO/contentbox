@@ -1577,9 +1577,47 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     if (!derivativesAllowed) return;
     setApprovalsLoading(true);
     try {
-      const data = await api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET");
-      setApprovals(data || []);
-      if (scope === "pending") setPendingClearanceCount(Array.isArray(data) ? data.length : 0);
+      const [localData, remoteRows] = await Promise.all([
+        api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET").catch(() => []),
+        api<any[]>("/my/royalties/remote", "GET").catch(() => [])
+      ]);
+      const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
+        .flatMap((row) => {
+          const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
+          const inviteId = String(row?.id || "").trim();
+          const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
+          return inbox.map((entry: any) => ({
+            authorizationId: `remote:${remoteOrigin}:${String(entry?.authorizationId || "")}`,
+            remoteAuthorizationId: String(entry?.authorizationId || ""),
+            linkId: "",
+            parentContentId: String(entry?.parentContentId || ""),
+            parentTitle: entry?.parentTitle || null,
+            childContentId: String(entry?.childContentId || ""),
+            childTitle: entry?.childTitle || null,
+            relation: entry?.relation || "derivative",
+            status: String(entry?.status || "PENDING"),
+            viewerVote: entry?.viewerVote || null,
+            remoteOrigin,
+            remoteInviteId: inviteId,
+            remoteClearanceUrl: entry?.clearanceUrl || null,
+            approveWeightBps: Number(entry?.approveWeightBps || 0),
+            approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
+            approvedApprovers: Number(entry?.approvedApprovers || 0),
+            approverCount: Number(entry?.approverCount || 0)
+          }));
+        })
+        .filter((entry) => {
+          const status = String(entry.status || "").toUpperCase();
+          const voted = Boolean(String(entry.viewerVote || "").trim());
+          if (scope === "pending") return status === "PENDING" && !voted;
+          if (scope === "voted") return voted;
+          if (scope === "cleared") return status === "APPROVED";
+          return true;
+        });
+
+      const merged = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
+      setApprovals(merged);
+      if (scope === "pending") setPendingClearanceCount(merged.length);
     } catch {
       setApprovals([]);
       if (scope === "pending") setPendingClearanceCount(0);
@@ -1591,8 +1629,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   async function loadPendingClearanceCount() {
     if (!derivativesAllowed) return;
     try {
-      const data = await api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET");
-      setPendingClearanceCount(Array.isArray(data) ? data.length : 0);
+      const [localData, remoteRows] = await Promise.all([
+        api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET").catch(() => []),
+        api<any[]>("/my/royalties/remote", "GET").catch(() => [])
+      ]);
+      const remotePending = (Array.isArray(remoteRows) ? remoteRows : []).reduce((sum, row) => {
+        const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
+        const mine = inbox.filter((entry: any) => {
+          const status = String(entry?.status || "").toUpperCase();
+          const voted = Boolean(String(entry?.viewerVote || "").trim());
+          return status === "PENDING" && !voted;
+        }).length;
+        return sum + mine;
+      }, 0);
+      setPendingClearanceCount((Array.isArray(localData) ? localData.length : 0) + remotePending);
     } catch {
       setPendingClearanceCount(0);
     }
@@ -2504,9 +2554,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             <div className="space-y-2">
               {approvals.map((a) => {
                 const linkId = String(a?.linkId || "");
+                const isRemoteApproval = Boolean(String(a?.remoteOrigin || "").trim());
                 const clearance = linkId ? clearanceByLink[linkId] : null;
-                const progressBps = clearance?.progressBps || 0;
-                const thresholdBps = clearance?.thresholdBps || 6667;
+                const progressBps = isRemoteApproval ? Number(a?.approveWeightBps || 0) : (clearance?.progressBps || 0);
+                const thresholdBps = isRemoteApproval ? Number(a?.approvalBpsTarget || 6667) : (clearance?.thresholdBps || 6667);
                 const approvedApprovers = Array.isArray(clearance?.votes)
                   ? clearance.votes.filter((v: any) => {
                       if (String(v.decision).toLowerCase() !== "approve") return false;
@@ -2516,8 +2567,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       }
                       return Number(v.upstreamRatePercent) === Number(approvedRatePercent);
                     }).length
-                  : 0;
-                const approverCount = Array.isArray(clearance?.approvers) ? clearance.approvers.length : 0;
+                  : Number(a?.approvedApprovers || 0);
+                const approverCount = Array.isArray(clearance?.approvers) ? clearance.approvers.length : Number(a?.approverCount || 0);
                 const pct = thresholdBps > 0 ? Math.min(100, Math.round((progressBps / thresholdBps) * 100)) : 0;
                 const relation = titleCase(a?.relation || "Derivative");
                 const parentTitle = a?.parentTitle || a?.parentContentId || "Original work";
@@ -2525,10 +2576,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const isLoading = linkId ? clearanceLoadingByLink[linkId] : false;
                 const isCleared = a?.status === "APPROVED";
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
-                const canVote = Boolean(clearance?.viewer?.canVote);
+                const canVote = isRemoteApproval ? Boolean(a?.remoteClearanceUrl) : Boolean(clearance?.viewer?.canVote);
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
+                const remoteParentHref =
+                  isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
+                    ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
+                    : "";
 
                 return (
                   <div key={a.authorizationId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
@@ -2537,30 +2592,36 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-sm font-medium">{childTitle}</div>
                         <div className="text-xs text-neutral-400">
                           {relation} of{" "}
-                          <a className="underline text-neutral-200" href={`/content/${a.parentContentId}/splits`}>
+                          <a
+                            className="underline text-neutral-200"
+                            href={remoteParentHref || `/content/${a.parentContentId}/splits`}
+                            target={remoteParentHref ? "_blank" : undefined}
+                            rel={remoteParentHref ? "noreferrer noopener" : undefined}
+                          >
                             {parentTitle}
                           </a>
+                          {isRemoteApproval ? <span className="text-neutral-500"> • Remote node</span> : null}
                         </div>
                         <div className="text-[11px] text-neutral-500 mt-1">
                           Clearance: {isCleared ? "Cleared" : "Pending"} • Rights holders approved: {approvedApprovers} of{" "}
                           {approverCount || "?"}
                           {viewerVote ? ` • You ${viewerVote}` : ""}
                         </div>
-                        {requestStatus ? (
+                        {!isRemoteApproval && requestStatus ? (
                           <div className="text-[11px] text-neutral-400 mt-1">
                             Request: {titleCase(requestStatus.toLowerCase())}
                             {requestedAt ? ` • ${new Date(requestedAt).toLocaleString()}` : ""}
                           </div>
-                        ) : (
+                        ) : !isRemoteApproval ? (
                           <div className="text-[11px] text-neutral-500 mt-1">Request: not found</div>
-                        )}
-                        {previewGrantedAt ? (
+                        ) : null}
+                        {!isRemoteApproval && previewGrantedAt ? (
                           <div className="text-[11px] text-sky-300 mt-1">
                             Preview access: granted • {new Date(previewGrantedAt).toLocaleString()}
                           </div>
-                        ) : (
+                        ) : !isRemoteApproval ? (
                           <div className="text-[11px] text-neutral-500 mt-1">Preview access: not granted</div>
-                        )}
+                        ) : null}
                         {linkId ? (
                           <div className="text-[10px] text-neutral-600 mt-1">
                             Link ID: {linkId}
@@ -2569,15 +2630,34 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                          onClick={() => (linkId ? loadClearanceSummary(linkId) : null)}
-                          disabled={!linkId}
-                        >
-                          {isLoading ? "Loading…" : "Refresh"}
-                        </button>
-                        {!isCleared && canVote ? (
+                        {isRemoteApproval ? (
+                          <button
+                            type="button"
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                            onClick={() => loadApprovals(clearanceScope)}
+                          >
+                            Refresh
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                            onClick={() => (linkId ? loadClearanceSummary(linkId) : null)}
+                            disabled={!linkId}
+                          >
+                            {isLoading ? "Loading…" : "Refresh"}
+                          </button>
+                        )}
+                        {!isCleared && isRemoteApproval && canVote ? (
+                          <button
+                            type="button"
+                            className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
+                            onClick={() => window.open(String(a?.remoteClearanceUrl || ""), "_blank", "noopener,noreferrer")}
+                          >
+                            Open vote link
+                          </button>
+                        ) : null}
+                        {!isCleared && canVote && !isRemoteApproval ? (
                           <>
                             <button
                               type="button"
@@ -2598,7 +2678,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
                               }}
-                              disabled={!linkId || !crossNodeAllowed}
+                              disabled={!linkId || !crossNodeAllowed || isRemoteApproval}
                               title={!crossNodeAllowed ? clearanceReason : "Grant permission"}
                             >
                               Grant permission
@@ -2613,7 +2693,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
                               }}
-                              disabled={!linkId || !crossNodeAllowed}
+                              disabled={!linkId || !crossNodeAllowed || isRemoteApproval}
                               title={!crossNodeAllowed ? clearanceReason : "Reject"}
                             >
                               Reject
@@ -2622,7 +2702,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         ) : null}
                       </div>
                     </div>
-                    {!crossNodeAllowed ? (
+                    {!isRemoteApproval && !crossNodeAllowed ? (
                       <div className="mt-2 text-[11px] text-amber-300">
                         {clearanceReason}{" "}
                         <button

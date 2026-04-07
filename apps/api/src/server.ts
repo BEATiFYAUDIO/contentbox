@@ -12222,6 +12222,7 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
   payoutSummary: Record<string, number>;
   payoutState: "none" | "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked" | "mixed";
   destinationState: "unknown" | "resolved" | "unresolved";
+  clearanceInbox: any[];
 } | null> {
   const origin = normalizeRemoteOrigin(remoteOrigin);
   if (!origin || !token) return null;
@@ -12241,7 +12242,8 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
       payoutRows: Number(payload?.totals?.payoutRows || 0),
       payoutSummary: (payload?.totals?.payoutSummary || {}) as Record<string, number>,
       payoutState: (payload?.totals?.payoutState || "none") as any,
-      destinationState: (payload?.totals?.destinationState || "unknown") as any
+      destinationState: (payload?.totals?.destinationState || "unknown") as any,
+      clearanceInbox: Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : []
     };
   } catch {
     return null;
@@ -12824,6 +12826,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       payoutSummary: accounting?.payoutSummary || {},
       payoutState: accounting?.payoutState || "none",
       destinationState: accounting?.destinationState || "unknown",
+      clearanceInbox: accounting?.clearanceInbox || [],
       highlightedOnProfile: remoteHighlights.has(inv.id),
       createdAt: inv.createdAt.toISOString()
       };
@@ -33660,7 +33663,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
   const tokenHash = hashInviteToken(token);
   const inv: any = await prisma.invitation.findFirst({
     where: { OR: [{ token }, { tokenHash }] },
-    include: { splitParticipant: true }
+    include: { splitParticipant: { include: { splitVersion: true } } }
   });
   if (!inv || !inv.splitParticipantId) return notFound(reply, "Invite not found");
   const splitParticipantId = String(inv.splitParticipantId || "").trim();
@@ -33719,6 +33722,87 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         ? "resolved"
         : "unresolved";
 
+  const parentContentId = asString(inv?.splitParticipant?.splitVersion?.contentId || "").trim();
+  const inviteUserId = asString(inv?.acceptedByUserId || inv?.splitParticipant?.participantUserId || "").trim();
+  const inviteTargetType = normalizeInviteTargetType(inv?.targetType);
+  const inviteEmail = normalizeEmail(
+    inv?.splitParticipant?.participantEmail ||
+      (inviteTargetType === "email" ? asString(inv?.targetValue || "") : "") ||
+      ""
+  );
+  const inviteUser = inviteUserId
+    ? await prisma.user.findUnique({ where: { id: inviteUserId }, select: { email: true } }).catch(() => null)
+    : null;
+  const inviteUserEmail = normalizeEmail(inviteUser?.email || "");
+  const approverEmailForToken = inviteEmail || inviteUserEmail;
+  let clearanceInbox: any[] = [];
+  if (parentContentId) {
+    const { eligible } = await getEligibleApproversForParent(parentContentId);
+    const inviteIsEligible = eligible.some((a) => {
+      const byUserId = Boolean(inviteUserId && a.participantUserId === inviteUserId);
+      const byEmail = Boolean(
+        approverEmailForToken &&
+          normalizeEmail(a.participantEmail || "") &&
+          normalizeEmail(a.participantEmail || "") === approverEmailForToken
+      );
+      return byUserId || byEmail;
+    });
+    if (inviteIsEligible) {
+      const auths = await prisma.derivativeAuthorization.findMany({
+        where: { parentContentId },
+        include: {
+          derivativeLink: {
+            include: {
+              childContent: { select: { id: true, title: true } },
+              parentContent: { select: { id: true, title: true } }
+            }
+          },
+          votes: true
+        },
+        orderBy: { createdAt: "desc" }
+      });
+      const approverCount = eligible.length;
+      const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
+      const approvalTokenModel = (prisma as any).derivativeApprovalToken;
+      clearanceInbox = await Promise.all(
+        auths.map(async (auth) => {
+          const viewerVote = inviteUserId
+            ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
+            : null;
+          const clearanceToken =
+            approverEmailForToken && approvalTokenModel
+              ? await approvalTokenModel.findFirst({
+                  where: {
+                    authorizationId: auth.id,
+                    approverEmail: emailEquals(approverEmailForToken),
+                    usedAt: null,
+                    expiresAt: { gt: new Date() }
+                  },
+                  orderBy: { createdAt: "desc" },
+                  select: { token: true }
+                })
+              : null;
+          return {
+            authorizationId: auth.id,
+            linkId: auth.derivativeLinkId,
+            parentContentId: auth.parentContentId,
+            parentTitle: auth.derivativeLink?.parentContent?.title || null,
+            childContentId: auth.derivativeLink?.childContentId || null,
+            childTitle: auth.derivativeLink?.childContent?.title || null,
+            relation: auth.derivativeLink?.relation || "derivative",
+            status: auth.status,
+            viewerVote: viewerVote ? String(viewerVote).toLowerCase() : null,
+            approveWeightBps: auth.approveWeightBps ?? 0,
+            approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
+            approvedApprovers: auth.approvedApprovers ?? 0,
+            approverCount,
+            clearanceUrl: clearanceToken?.token ? `${clearanceBase}/clearance/${clearanceToken.token}` : null
+          };
+        })
+      );
+    }
+  }
+
   return reply.send({
     ok: true,
     invitationId: inv.id,
@@ -33731,6 +33815,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       payoutState,
       destinationState
     },
+    clearanceInbox,
     payouts: payoutRows.map((row) => ({
       status: parseParticipantPayoutStatus(row.status),
       amountSats: String(row.amountSats || "0"),
