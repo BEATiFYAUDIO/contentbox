@@ -2742,7 +2742,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             Preview submission
                           </button>
                         ) : null}
-                        {!isCleared && isRemoteApproval && canVote ? (
+                        {!isCleared && isRemoteApproval && canVote && !viewerVote ? (
                           <>
                             <button
                               type="button"
@@ -2800,7 +2800,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             </button>
                           </>
                         ) : null}
-                        {!isCleared && canVote && !isRemoteApproval ? (
+                        {!isCleared && canVote && !isRemoteApproval && !viewerVote ? (
                           <>
                             <button
                               type="button"
