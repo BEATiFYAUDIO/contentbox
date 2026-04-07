@@ -253,6 +253,7 @@ export default function SplitEditorPage(props: {
     requiresApproval: boolean;
     approvedAt?: string | null;
     parent: { id: string; title: string } | null;
+    parentSplit?: { splitVersionId: string; status?: string; lockedAt?: string | null } | null;
     canRequestApproval?: boolean;
     canVote?: boolean;
   } | null>(null);
@@ -480,7 +481,10 @@ export default function SplitEditorPage(props: {
             upstreamBps: fallback.upstreamBps,
             requiresApproval: fallback.requiresApproval,
             approvedAt: fallback.approvedAt,
-            parent: fallback.parentContentId ? { id: fallback.parentContentId, title: "Original work" } : null
+            parent: fallback.parentContentId ? { id: fallback.parentContentId, title: "Original work" } : null,
+            parentSplit: fallback.parentSplitVersionId
+              ? { splitVersionId: fallback.parentSplitVersionId, status: "locked", lockedAt: null }
+              : null
           } as any);
           setUpstreamError("Lineage details limited (clearance info unavailable).");
           setUpstreamMultiParent(false);
@@ -972,6 +976,17 @@ export default function SplitEditorPage(props: {
                     {upstreamInfo.parent?.title || "Original work"}
                   </a>
                 </div>
+                {upstreamInfo.parent?.id ? (
+                  <div>
+                    Parent content ID: <span className="font-mono text-neutral-300">{upstreamInfo.parent.id}</span>
+                  </div>
+                ) : null}
+                {upstreamInfo.parentSplit?.splitVersionId ? (
+                  <div>
+                    Parent split snapshot:{" "}
+                    <span className="font-mono text-neutral-300">{upstreamInfo.parentSplit.splitVersionId}</span>
+                  </div>
+                ) : null}
                 <div>Relationship: {titleCase(upstreamInfo.relation)}</div>
                 <div>
                   Upstream rate:{" "}

@@ -3244,6 +3244,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div className="mt-1 text-xs text-neutral-400">
                                 Public release is locked until clearance by original rights holders.
                               </div>
+                              <div className="mt-1 text-[11px] text-neutral-500">
+                                Parent content:{" "}
+                                <span className="font-mono text-neutral-300">
+                                  {parentLink.parent?.id || "—"}
+                                </span>
+                                {" "}• Parent split snapshot:{" "}
+                                <span className="font-mono text-neutral-300">
+                                  {parentLink.parentSplit?.splitVersionId || "—"}
+                                </span>
+                              </div>
                               <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="text-[11px] font-medium text-neutral-200">Clearance / License for release</div>

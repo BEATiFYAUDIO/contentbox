@@ -268,6 +268,14 @@ function creatorLabel(creatorNodeId: string | null | undefined, labelHint?: stri
   return `creator-${suffix}`;
 }
 
+function normalizeNodeRef(raw: string | null | undefined) {
+  return String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^node:/, "")
+    .replace(/[^a-z0-9]/g, "");
+}
+
 function ExecutionPill({ allowed }: { allowed: boolean }) {
   return (
     <span
@@ -441,21 +449,24 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const scopedPaymentIntents = useMemo(() => {
     if (timePeriod === "all") return paymentIntents;
     return paymentIntents.filter((row) => {
-      const ts = timeBasis === "sale" ? (row.paidAt || row.createdAt) : (row.remittedAt || row.paidAt || row.updatedAt);
+      const ts =
+        timeBasis === "sale"
+          ? (row.paidAt || row.createdAt)
+          : (row.remittedAt || row.paidAt || row.updatedAt || row.createdAt);
       return isWithinPeriod(ts, timePeriod);
     });
   }, [paymentIntents, timeBasis, timePeriod]);
   const scopedParticipantPayouts = useMemo(() => {
     if (timePeriod === "all") return participantPayouts;
     return participantPayouts.filter((row) => {
-      const ts = timeBasis === "sale" ? row.updatedAt : (row.remittedAt || row.updatedAt);
+      const ts = timeBasis === "sale" ? row.updatedAt : (row.remittedAt || row.lastCheckedAt || row.updatedAt);
       return isWithinPeriod(ts, timePeriod);
     });
   }, [participantPayouts, timeBasis, timePeriod]);
   const scopedPaymentReceipts = useMemo(() => {
     if (timePeriod === "all") return paymentReceipts;
     return paymentReceipts.filter((row) => {
-      const ts = row.paidAt;
+      const ts = row.paidAt || row.updatedAt || row.createdAt;
       return isWithinPeriod(ts, timePeriod);
     });
   }, [paymentReceipts, timePeriod]);
@@ -470,6 +481,31 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     }
     return map;
   }, [paymentIntents]);
+
+  const creatorByParticipantRefKey = useMemo(() => {
+    const map = new Map<string, string>();
+    const add = (keyRaw: string | null | undefined, creatorNodeId: string | null | undefined) => {
+      const key = normalizeNodeRef(keyRaw);
+      const creatorId = String(creatorNodeId || "").trim();
+      if (!key || !creatorId) return;
+      map.set(key, creatorId);
+    };
+    creatorLinks.forEach((row) => add(row.creatorNodeId, row.creatorNodeId));
+    paymentIntents.forEach((row) => add(row.creatorNodeId, row.creatorNodeId));
+    return map;
+  }, [creatorLinks, paymentIntents]);
+
+  const resolveCreatorIdForPayout = useCallback(
+    (row: ParticipantPayoutRow): string | null => {
+      const byIntent = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      if (byIntent) return byIntent;
+      const participantRef = String(row.allocation?.participantRef || "").trim();
+      const byParticipantRef = creatorByParticipantRefKey.get(normalizeNodeRef(participantRef));
+      if (byParticipantRef) return byParticipantRef;
+      return null;
+    },
+    [creatorByIntentKey, creatorByParticipantRefKey]
+  );
 
   const buildLocalQaTotals = useCallback(
     (creatorId: string): QaTotals => {
@@ -591,7 +627,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       mark(row.creatorNodeId, "hasReceipt");
     });
     scopedParticipantPayouts.forEach((row) => {
-      const creatorId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      const creatorId = resolveCreatorIdForPayout(row);
       if (creatorId) {
         ensure(creatorId, null);
         mark(creatorId, "hasPayout");
@@ -605,7 +641,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         return Boolean(flags?.hasLink || flags?.hasPublish || flags?.hasPayout || flags?.hasIntent || flags?.hasReceipt);
       })
       .sort((a, b) => a.label.localeCompare(b.label));
-  }, [creatorLinks, paymentIntents, paymentReceipts, delegatedPublishes, scopedParticipantPayouts, creatorByIntentKey, providerNodeId, labelForCreator, me]);
+  }, [creatorLinks, paymentIntents, paymentReceipts, delegatedPublishes, scopedParticipantPayouts, resolveCreatorIdForPayout, providerNodeId, labelForCreator, me]);
 
   const creatorOptionLabelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -667,10 +703,10 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const creatorScopedParticipantPayouts = useMemo(() => {
     if (creatorScopeId === "all") return scopedParticipantPayouts;
     return scopedParticipantPayouts.filter((row) => {
-      const creatorId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      const creatorId = resolveCreatorIdForPayout(row);
       return creatorId === creatorScopeId;
     });
-  }, [creatorScopeId, scopedParticipantPayouts, creatorByIntentKey]);
+  }, [creatorScopeId, scopedParticipantPayouts, resolveCreatorIdForPayout]);
   const creatorAllPaymentIntents = useMemo(
     () =>
       creatorScopeId === "all"
@@ -681,10 +717,10 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const creatorAllParticipantPayouts = useMemo(() => {
     if (creatorScopeId === "all") return participantPayouts;
     return participantPayouts.filter((row) => {
-      const creatorId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      const creatorId = resolveCreatorIdForPayout(row);
       return creatorId === creatorScopeId;
     });
-  }, [creatorScopeId, participantPayouts, creatorByIntentKey]);
+  }, [creatorScopeId, participantPayouts, resolveCreatorIdForPayout]);
 
   const nodeSummary = useMemo(() => {
     const settledIntents = scopedPaymentIntents.filter((row) => row.status === "paid");
@@ -812,7 +848,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     });
 
     scopedParticipantPayouts.forEach((row) => {
-      const creatorNodeId = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
+      const creatorNodeId = resolveCreatorIdForPayout(row);
       if (!creatorNodeId) return;
       const current = ensure(creatorNodeId, null);
       if (!current) return;
@@ -828,7 +864,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       if (grossDelta !== 0) return grossDelta;
       return a.creatorLabel.localeCompare(b.creatorLabel);
     });
-  }, [creatorLinks, delegatedPublishes, scopedPaymentIntents, scopedParticipantPayouts, creatorByIntentKey, displayLabelForCreator]);
+  }, [creatorLinks, delegatedPublishes, scopedPaymentIntents, scopedParticipantPayouts, resolveCreatorIdForPayout, displayLabelForCreator]);
 
   const nodeProviderFeeTotal = toBigIntSats(nodeSummary.totals.providerFeeEarnedSats);
 

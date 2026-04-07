@@ -259,7 +259,7 @@ export default function EarningsV2Page({
     (async () => {
       try {
         const res = await api<{ items?: FinancePayoutItem[] }>(
-          `/finance/payouts?basis=earned&period=${encodeURIComponent(timePeriod)}`
+          `/finance/payouts?basis=${encodeURIComponent(timeBasis)}&period=${encodeURIComponent(timePeriod)}`
         );
         if (!active) return;
         setPayoutItems(Array.isArray(res?.items) ? res.items : []);
@@ -271,7 +271,7 @@ export default function EarningsV2Page({
     return () => {
       active = false;
     };
-  }, [refreshSignal, timePeriod]);
+  }, [refreshSignal, timeBasis, timePeriod]);
 
   useEffect(() => {
     let active = true;
@@ -313,8 +313,11 @@ export default function EarningsV2Page({
 
   const scopedSales = useMemo(() => {
     if (timePeriod === "all") return sales;
-    return sales.filter((row) => isWithinPeriod(row.recognizedAt, timePeriod));
-  }, [sales, timePeriod]);
+    return sales.filter((row) => {
+      const scopeTs = timeBasis === "paid" ? row.remittedAt || row.recognizedAt : row.recognizedAt;
+      return isWithinPeriod(scopeTs, timePeriod);
+    });
+  }, [sales, timeBasis, timePeriod]);
 
   const summary = useMemo(() => {
     return scopedSales.reduce(
@@ -725,9 +728,13 @@ export default function EarningsV2Page({
             onBasisChange={setTimeBasis}
             period={timePeriod}
             onPeriodChange={setTimePeriod}
-            basisOptions={["earned"]}
+            basisOptions={["earned", "paid"]}
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
-            helperText="Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
+            helperText={
+              timeBasis === "paid"
+                ? "Earnings are scoped by paid/remitted time where available, with recognized-time fallback."
+                : "Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
+            }
           />
         </div>
       </div>

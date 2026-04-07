@@ -71,6 +71,8 @@ type EarningsLedgerRow = {
   amountSats: number;
   dateLabel: string;
   dateSortTs: number;
+  earnedTsIso: string | null;
+  paidTsIso: string | null;
   remittanceDetail?: string | null;
   remittanceActionable?: boolean;
 };
@@ -319,6 +321,8 @@ export default function FinanceRoyaltiesPage({
           amountSats: paid,
           dateLabel,
           dateSortTs,
+          earnedTsIso: localRecognizedAt || null,
+          paidTsIso: localRecognizedAt || null,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -337,6 +341,8 @@ export default function FinanceRoyaltiesPage({
           amountSats: pending,
           dateLabel,
           dateSortTs,
+          earnedTsIso: localRecognizedAt || null,
+          paidTsIso: localRecognizedAt || null,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -356,6 +362,8 @@ export default function FinanceRoyaltiesPage({
           amountSats: earnedOnly,
           dateLabel,
           dateSortTs,
+          earnedTsIso: localRecognizedAt || null,
+          paidTsIso: localRecognizedAt || null,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -393,6 +401,8 @@ export default function FinanceRoyaltiesPage({
         amountSats: earned,
         dateLabel,
         dateSortTs,
+        earnedTsIso: row?.acceptedAt || null,
+        paidTsIso: row?.acceptedAt || null,
         remittanceDetail,
         remittanceActionable
       });
@@ -419,11 +429,10 @@ export default function FinanceRoyaltiesPage({
   const timeScopedEarningsLedgerRows = useMemo(() => {
     return earningsLedgerRows.filter((row) => {
       if (timePeriod === "all") return true;
-      if (!Number.isFinite(row.dateSortTs) || row.dateSortTs <= 0) return false;
-      const tsIso = new Date(row.dateSortTs).toISOString();
+      const tsIso = timeBasis === "paid" ? row.paidTsIso || row.earnedTsIso : row.earnedTsIso || row.paidTsIso;
       return isWithinPeriod(tsIso, timePeriod);
     });
-  }, [earningsLedgerRows, timePeriod]);
+  }, [earningsLedgerRows, timeBasis, timePeriod]);
 
   const scopedTopline = useMemo(() => {
     return timeScopedEarningsLedgerRows.reduce(
@@ -501,9 +510,13 @@ export default function FinanceRoyaltiesPage({
             onBasisChange={setTimeBasis}
             period={timePeriod}
             onPeriodChange={setTimePeriod}
-            basisOptions={["earned"]}
+            basisOptions={["earned", "paid"]}
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
-            helperText="Earnings are scoped by earned time using available row timestamps."
+            helperText={
+              timeBasis === "paid"
+                ? "Earnings are scoped by paid/remitted timestamps where available, with earned-time fallback."
+                : "Earnings are scoped by earned time using available row timestamps."
+            }
           />
         </div>
       </div>

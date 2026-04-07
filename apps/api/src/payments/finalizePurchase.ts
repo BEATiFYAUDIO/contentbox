@@ -2,6 +2,10 @@ import { PrismaClient } from "@prisma/client";
 import crypto from "node:crypto";
 import { allocateByBps } from "../lib/settlement.js";
 import { resolveProductTier } from "../lib/productTier.js";
+import {
+  pickDerivativeParentSplitSnapshotForAuthority,
+  requireDerivativeParentSplitSnapshotId
+} from "../lib/splitAuthority.js";
 
 function toBps(p: any): number {
   if (typeof p?.bps === "number" && Number.isFinite(p.bps) && p.bps > 0) return Math.floor(p.bps);
@@ -29,10 +33,47 @@ async function getLockedSplitForContent(prisma: PrismaClient, contentId: string)
   return sv;
 }
 
-async function getStrictLockedSplitForContent(prisma: PrismaClient, contentId: string) {
-  const sv = await getLockedSplitForContent(prisma, contentId);
-  if (!sv || sv.status !== "locked") return null;
-  return sv;
+function derivativeAuthorityError(
+  code: "DERIVATIVE_PARENT_SPLIT_AUTHORITY_MISSING" | "DERIVATIVE_PARENT_SPLIT_AUTHORITY_INVALID",
+  details: Record<string, unknown>
+) {
+  const err: any = new Error(code);
+  err.code = code;
+  err.statusCode = 409;
+  err.details = details;
+  return err;
+}
+
+export async function resolveDerivativeParentLockedSplitForFinalize(
+  prisma: PrismaClient,
+  link: { id?: string | null; parentContentId: string; parentSplitVersionId?: string | null }
+) {
+  let parentSplitVersionId = "";
+  try {
+    parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  } catch {
+    throw derivativeAuthorityError("DERIVATIVE_PARENT_SPLIT_AUTHORITY_MISSING", {
+      contentLinkId: String(link.id || "").trim() || null,
+      parentContentId: link.parentContentId
+    });
+  }
+  const parentSplit = await prisma.splitVersion.findUnique({
+    where: { id: parentSplitVersionId },
+    include: { participants: true }
+  });
+  try {
+    pickDerivativeParentSplitSnapshotForAuthority(
+      { ...link, parentSplitVersionId },
+      parentSplit ? [parentSplit] : []
+    );
+  } catch {
+    throw derivativeAuthorityError("DERIVATIVE_PARENT_SPLIT_AUTHORITY_INVALID", {
+      contentLinkId: String(link.id || "").trim() || null,
+      parentContentId: link.parentContentId,
+      parentSplitVersionId
+    });
+  }
+  return parentSplit as NonNullable<typeof parentSplit>;
 }
 
 export async function finalizePurchase(paymentIntentId: string, client?: PrismaClient) {
@@ -66,14 +107,33 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
     const primaryParent = parents[0] || null;
     const upstreamRaw =
       primaryParent && primaryParent.upstreamBps > 0
-        ? [{ parentContentId: primaryParent.parentContentId, upstreamBps: Math.max(0, primaryParent.upstreamBps) }]
+        ? [
+            {
+              parentContentId: primaryParent.parentContentId,
+              parentSplitVersionId: primaryParent.parentSplitVersionId || null,
+              contentLinkId: primaryParent.id,
+              upstreamBps: Math.max(0, primaryParent.upstreamBps)
+            }
+          ]
         : [];
 
     let upstreamTotal = 0n;
-    const upstreamAlloc: Array<{ parentContentId: string; amountSats: bigint; upstreamBps: number }> = upstreamRaw.map((p) => {
+    const upstreamAlloc: Array<{
+      parentContentId: string;
+      parentSplitVersionId: string | null;
+      contentLinkId: string;
+      amountSats: bigint;
+      upstreamBps: number;
+    }> = upstreamRaw.map((p) => {
       const amt = (net * BigInt(p.upstreamBps)) / 10000n;
       upstreamTotal += amt;
-      return { parentContentId: p.parentContentId, amountSats: amt, upstreamBps: p.upstreamBps };
+      return {
+        parentContentId: p.parentContentId,
+        parentSplitVersionId: p.parentSplitVersionId,
+        contentLinkId: p.contentLinkId,
+        amountSats: amt,
+        upstreamBps: p.upstreamBps
+      };
     });
 
     const childRemainder = net - upstreamAlloc.reduce((s, a) => s + a.amountSats, 0n);
@@ -117,13 +177,11 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
 
     if (!skipSettlement) {
       for (const up of upstreamAlloc) {
-        const parentSplit = await getStrictLockedSplitForContent(prisma, up.parentContentId);
-        if (!parentSplit) {
-          const err: any = new Error("Parent split not locked");
-          err.statusCode = 409;
-          err.code = "PARENT_SPLIT_NOT_LOCKED";
-          throw err;
-        }
+        const parentSplit = await resolveDerivativeParentLockedSplitForFinalize(prisma, {
+          id: up.contentLinkId,
+          parentContentId: up.parentContentId,
+          parentSplitVersionId: up.parentSplitVersionId
+        });
 
         const parentItems = parentSplit.participants.map((p) => ({ id: p.id, bps: toBps(p), p }));
         const parentAlloc = allocateByBps(up.amountSats, parentItems.map((i) => ({ id: i.id, bps: i.bps })));

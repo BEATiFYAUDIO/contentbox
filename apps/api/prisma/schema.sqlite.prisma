@@ -289,6 +289,7 @@ model ContentLink {
   id               String              @id @default(cuid())
   parentContentId  String
   childContentId   String
+  parentSplitVersionId String?
   relation         ContentLinkRelation
   upstreamBps      Int
   requiresApproval Boolean             @default(false)
@@ -304,6 +305,7 @@ model ContentLink {
 
   @@index([parentContentId])
   @@index([childContentId])
+  @@index([parentSplitVersionId])
 }
 
 model ClearanceRequest {

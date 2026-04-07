@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   filterCommerceEligibleParticipants,
   isCommerceEligibleLockedParticipant,
+  pickDerivativeParentSplitSnapshotForAuthority,
   pickLatestDraftSplitVersion,
   pickLockedSplitVersionForCommerce,
   requireDerivativeParentSplitSnapshotId
@@ -93,5 +94,35 @@ test("derivative allocation requires explicit parent split snapshot id", () => {
         parentSplitVersionId: null
       }),
     (err: any) => err?.code === "PARENT_SPLIT_SNAPSHOT_REQUIRED"
+  );
+});
+
+test("derivative authority picks explicit parent snapshot, not latest/current preference", () => {
+  const picked = pickDerivativeParentSplitSnapshotForAuthority(
+    {
+      id: "link_1",
+      parentContentId: "parent_1",
+      parentSplitVersionId: "split_2"
+    },
+    [
+      { id: "split_1", contentId: "parent_1", versionNumber: 10, status: "locked" },
+      { id: "split_2", contentId: "parent_1", versionNumber: 2, status: "locked" }
+    ]
+  );
+  assert.equal(picked.id, "split_2");
+});
+
+test("derivative authority rejects parent snapshot mismatch", () => {
+  assert.throws(
+    () =>
+      pickDerivativeParentSplitSnapshotForAuthority(
+        {
+          id: "link_2",
+          parentContentId: "parent_1",
+          parentSplitVersionId: "split_2"
+        },
+        [{ id: "split_2", contentId: "parent_2", versionNumber: 2, status: "locked" }]
+      ),
+    (err: any) => err?.code === "PARENT_SPLIT_SNAPSHOT_CONTENT_MISMATCH"
   );
 });

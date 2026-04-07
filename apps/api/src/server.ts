@@ -103,6 +103,7 @@ import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.j
 import {
   filterCommerceEligibleParticipants,
   isCommerceEligibleLockedParticipant,
+  pickDerivativeParentSplitSnapshotForAuthority,
   pickLatestDraftSplitVersion,
   pickLockedSplitVersionForCommerce,
   requireDerivativeParentSplitSnapshotId
@@ -9772,10 +9773,7 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
   const parent = link.parentContent;
   const manifest = parent.manifest;
   if (!manifest) return undefined;
-  const split =
-    parent.splitVersions.find((s: any) => s.id === parent.currentSplitId) ||
-    parent.splitVersions.sort((a: any, b: any) => b.versionNumber - a.versionNumber)[0];
-  if (!split) return undefined;
+  const split = pickDerivativeParentSplitSnapshotForAuthority(link, parent.splitVersions as any[]);
   const parentSplit = await buildSplitAnchorFromVersion(split);
   return {
     parentContentId: String(parent.id),
@@ -20608,47 +20606,6 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   }
 
   return reply.send(out);
-});
-
-// TODO(legacy): remove this alias after UI migrates to /content-links/:linkId/vote (target: 2026-06).
-app.post("/api/derivatives/:childId/approve", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
-  if (process.env.ENABLE_LEGACY_DERIVATIVE_APPROVE === "false") {
-    return reply.code(410).send({ error: "Legacy derivative approval route disabled." });
-  }
-  reply.header("Deprecation", "true");
-  if (process.env.NODE_ENV !== "production") {
-    app.log.warn({ path: "/api/derivatives/:childId/approve" }, "deprecated.route");
-  }
-
-  const userId = (req.user as JwtUser).sub;
-  const childId = asString((req.params as any).childId);
-  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number };
-  const decision = asString(body.decision || "").trim().toLowerCase();
-
-  const links = await prisma.contentLink.findMany({ where: { childContentId: childId } });
-  if (links.length === 0) return notFound(reply, "No parent link found");
-  if (links.length > 1) {
-    return reply.code(409).send({ code: "MULTIPLE_PARENTS_NOT_SUPPORTED", message: "Multiple parent links exist." });
-  }
-
-  return app.inject({
-    method: "POST",
-    url: `/content-links/${encodeURIComponent(links[0].id)}/vote`,
-    headers: { authorization: (req.headers?.authorization as any) || "" },
-    payload: { decision, upstreamRatePercent: body.upstreamRatePercent }
-  }).then((res) => {
-    reply.status(res.statusCode).headers(res.headers as any);
-    reply.header("Deprecation", "true");
-    let out: any = {};
-    if (res.body) {
-      try {
-        out = JSON.parse(res.body as any);
-      } catch {
-        out = { message: String(res.body) };
-      }
-    }
-    return reply.send(out);
-  });
 });
 
 app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth }, async (req: any, reply) => {

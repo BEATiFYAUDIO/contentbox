@@ -20,6 +20,12 @@ type DerivativeParentLinkLike = {
   parentSplitVersionId?: string | null;
 };
 
+type DerivativeParentSplitLike = {
+  id: string;
+  contentId: string;
+  status: SplitStatusLike;
+};
+
 const ACCEPTED_INVITE_STATUS = "accepted";
 
 function normalizeSplitStatus(status: SplitStatusLike): string {
@@ -75,4 +81,47 @@ export function requireDerivativeParentSplitSnapshotId(link: DerivativeParentLin
     contentLinkId: String(link.id || "").trim() || null
   };
   throw err;
+}
+
+export function pickDerivativeParentSplitSnapshotForAuthority<T extends DerivativeParentSplitLike>(
+  link: DerivativeParentLinkLike,
+  versions: T[]
+): T {
+  const parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  const split = versions.find((version) => String(version.id) === parentSplitVersionId);
+  if (!split) {
+    const err: any = new Error("PARENT_SPLIT_SNAPSHOT_NOT_FOUND");
+    err.code = "PARENT_SPLIT_SNAPSHOT_NOT_FOUND";
+    err.statusCode = 409;
+    err.details = {
+      parentContentId: String(link.parentContentId || "").trim(),
+      parentSplitVersionId,
+      contentLinkId: String(link.id || "").trim() || null
+    };
+    throw err;
+  }
+  if (String(split.contentId) !== String(link.parentContentId || "").trim()) {
+    const err: any = new Error("PARENT_SPLIT_SNAPSHOT_CONTENT_MISMATCH");
+    err.code = "PARENT_SPLIT_SNAPSHOT_CONTENT_MISMATCH";
+    err.statusCode = 409;
+    err.details = {
+      parentContentId: String(link.parentContentId || "").trim(),
+      parentSplitVersionId,
+      splitContentId: String(split.contentId || ""),
+      contentLinkId: String(link.id || "").trim() || null
+    };
+    throw err;
+  }
+  if (normalizeSplitStatus(split.status) !== "locked") {
+    const err: any = new Error("PARENT_SPLIT_SNAPSHOT_NOT_LOCKED");
+    err.code = "PARENT_SPLIT_SNAPSHOT_NOT_LOCKED";
+    err.statusCode = 409;
+    err.details = {
+      parentContentId: String(link.parentContentId || "").trim(),
+      parentSplitVersionId,
+      contentLinkId: String(link.id || "").trim() || null
+    };
+    throw err;
+  }
+  return split;
 }
