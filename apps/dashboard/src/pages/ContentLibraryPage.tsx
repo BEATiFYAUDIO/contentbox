@@ -128,6 +128,19 @@ function isLoopbackUrl(u?: string | null): boolean {
   }
 }
 
+function extractInviteTokenFromUrl(url: string | null | undefined): string | null {
+  const raw = String(url || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    const m = parsed.pathname.match(/\/invite\/([^/?#]+)/i);
+    return m?.[1] ? decodeURIComponent(m[1]) : null;
+  } catch {
+    const m = raw.match(/\/invite\/([^/?#]+)/i);
+    return m?.[1] ? decodeURIComponent(m[1]) : null;
+  }
+}
+
 type SplitVersion = {
   id: string;
   contentId: string;
@@ -1599,11 +1612,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             viewerVote: entry?.viewerVote || null,
             remoteOrigin,
             remoteInviteId: inviteId,
+            remoteInviteToken: extractInviteTokenFromUrl(String(row?.inviteUrl || "")),
             remoteClearanceUrl: entry?.clearanceUrl || null,
             approveWeightBps: Number(entry?.approveWeightBps || 0),
             approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
             approvedApprovers: Number(entry?.approvedApprovers || 0),
-            approverCount: Number(entry?.approverCount || 0)
+            approverCount: Number(entry?.approverCount || 0),
+            upstreamRatePercent:
+              Number.isFinite(Number(entry?.upstreamRatePercent))
+                ? Number(entry.upstreamRatePercent)
+                : null
           }));
         })
         .filter((entry) => {
@@ -2678,13 +2696,62 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           </button>
                         ) : null}
                         {!isCleared && isRemoteApproval && canVote ? (
-                          <button
-                            type="button"
-                            className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
-                            onClick={() => window.open(String(a?.remoteClearanceUrl || ""), "_blank", "noopener,noreferrer")}
-                          >
-                            Open vote link
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
+                              onClick={async () => {
+                                const inviteToken = String(a?.remoteInviteToken || "").trim();
+                                const remoteOrigin = String(a?.remoteOrigin || "").trim();
+                                const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                                if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
+                                  setError("Missing remote vote routing context.");
+                                  return;
+                                }
+                                await api(
+                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+                                    remoteAuthorizationId
+                                  )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
+                                  "POST",
+                                  {
+                                    decision: "approve",
+                                    upstreamRatePercent:
+                                      Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
+                                        ? Number(a.upstreamRatePercent)
+                                        : 0
+                                  }
+                                );
+                                await loadApprovals(clearanceScope);
+                                await loadPendingClearanceCount();
+                              }}
+                            >
+                              Grant permission
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                              onClick={async () => {
+                                const inviteToken = String(a?.remoteInviteToken || "").trim();
+                                const remoteOrigin = String(a?.remoteOrigin || "").trim();
+                                const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                                if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
+                                  setError("Missing remote vote routing context.");
+                                  return;
+                                }
+                                await api(
+                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+                                    remoteAuthorizationId
+                                  )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
+                                  "POST",
+                                  { decision: "reject" }
+                                );
+                                await loadApprovals(clearanceScope);
+                                await loadPendingClearanceCount();
+                              }}
+                            >
+                              Reject
+                            </button>
+                          </>
                         ) : null}
                         {!isCleared && canVote && !isRemoteApproval ? (
                           <>

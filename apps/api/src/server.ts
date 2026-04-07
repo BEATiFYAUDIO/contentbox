@@ -14822,6 +14822,54 @@ app.get("/api/remote/invites/:token/accounting", { preHandler: requireAuth }, as
   }
 });
 
+app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
+  const token = asString((req.params as any).token);
+  const authorizationId = asString((req.params as any).authorizationId);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!authorizationId) return badRequest(reply, "authorizationId required");
+  if (!origin) return badRequest(reply, "invalid origin");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote invite host unreachable", origin });
+  }
+
+  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number | string | null };
+  const decision = asString(body.decision || "").trim().toLowerCase();
+  if (!decision || !["approve", "reject"].includes(decision)) {
+    return badRequest(reply, "decision must be approve|reject");
+  }
+  const payload: any = { decision };
+  if (decision === "approve" && body.upstreamRatePercent !== undefined && body.upstreamRatePercent !== null) {
+    payload.upstreamRatePercent = body.upstreamRatePercent;
+  }
+
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/vote`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/plain,application/json" } as any,
+        body: JSON.stringify(payload)
+      } as any,
+      10000
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
+    }
+    return reply.send({ ok: true, message: text || "Recorded." });
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote clearance vote failed", details: String(e?.message || e) });
+  }
+});
+
 // Proxy remote invite accept to avoid browser CORS (auth required)
 app.get("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.code(405).send({
@@ -34052,6 +34100,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
             approvedApprovers: auth.approvedApprovers ?? 0,
             approverCount,
+            upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
             clearanceUrl:
               clearanceToken?.token
                 ? `${clearanceBase}/clearance/${clearanceToken.token}`
