@@ -7822,6 +7822,20 @@ async function deriveUserNetworkStatus(): Promise<UserNetworkStatus> {
     providerConnected: providerConnection.providerConnected,
     ctx: getCapabilityContext()
   });
+  const providerCfg = getNetworkProviderConfig();
+  const providerUrl = String(providerCfg.providerUrl || "").trim();
+  const localProviderTarget =
+    providerUrl.startsWith("http://127.0.0.1:") ||
+    providerUrl.startsWith("http://localhost:") ||
+    providerUrl === "http://127.0.0.1" ||
+    providerUrl === "http://localhost";
+  if (localProviderTarget) {
+    const posture = getProviderVerificationStatus(providerCfg);
+    if (posture.verification.status === "unreachable") {
+      const refreshed = await verifyConfiguredProvider(providerCfg);
+      persistProviderVerificationPosture(refreshed);
+    }
+  }
   const chain = evaluateProviderExecutionChainReadiness();
   return deriveUserNetworkStatusFromState({
     runtimeReady: runtime.runtime.status === "running" && Boolean(runtime.runtime.apiReady),
@@ -17094,8 +17108,9 @@ app.get("/api/network/provider/execution/readiness", { preHandler: requireAuth }
 
 app.post("/api/network/provider/handshake", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const checkedAt = new Date().toISOString();
-  if (!requireTrustedProviderExecution(reply, "provider_handshake")) return;
   const cfg = getNetworkProviderConfig();
+  const verification = await verifyConfiguredProvider(cfg);
+  persistProviderVerificationPosture(verification);
   const configured = {
     providerUrl: cfg.providerUrl,
     providerNodeId: cfg.providerNodeId
@@ -17115,6 +17130,18 @@ app.post("/api/network/provider/handshake", { preHandler: requireAuth }, async (
         status: "provider_not_trusted",
         checkedAt,
         message: "Configured provider target is missing."
+      }
+    });
+  }
+
+  if (verification.verification.status !== "verified") {
+    return reply.send({
+      configured,
+      observed: emptyObserved,
+      handshake: {
+        status: verification.verification.status === "unreachable" ? "unreachable" : "provider_not_trusted",
+        checkedAt,
+        message: verification.verification.message || "Provider trust verification failed."
       }
     });
   }
