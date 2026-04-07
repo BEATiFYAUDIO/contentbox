@@ -20241,6 +20241,14 @@ app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requireFeatu
   const out = await Promise.all(
     links.map(async (l) => {
       const childOrigin = getRemoteOriginFromDescription(l.childContent?.description || null);
+      const localClearanceReq = await prisma.clearanceRequest
+        .findFirst({
+          where: { contentLinkId: l.id },
+          orderBy: { createdAt: "desc" },
+          select: { reviewGrantedAt: true }
+        })
+        .catch(() => null);
+      let remoteStatus: any = null;
       let childDeletedAt: Date | null = childOrigin ? null : l.childContent?.deletedAt || null;
       if (childOrigin) {
         try {
@@ -20253,6 +20261,17 @@ app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requireFeatu
             childDeletedAt = new Date();
           }
         } catch {}
+        try {
+          const ctrl = new AbortController();
+          const timeout = setTimeout(() => ctrl.abort(), 3500);
+          const url = `${childOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+            l.parentContentId
+          )}&childContentId=${encodeURIComponent(l.childContentId)}`;
+          const res = await fetch(url, { signal: ctrl.signal as any });
+          const data = await res.json().catch(() => null);
+          clearTimeout(timeout);
+          if (res.ok && data) remoteStatus = data;
+        } catch {}
       }
       return {
         linkId: l.id,
@@ -20261,18 +20280,30 @@ app.get("/api/content/:id/derivatives", { preHandler: [requireAuth, requireFeatu
         childDeletedAt: childDeletedAt ? childDeletedAt.toISOString() : null,
         childOrigin: childOrigin || null,
         relation: l.relation,
-        upstreamBps: l.upstreamBps,
+        upstreamBps: remoteStatus?.upstreamBps ?? l.upstreamBps,
         requiresApproval: l.requiresApproval,
-        approvedAt: l.approvedAt ? l.approvedAt.toISOString() : null,
+        approvedAt: remoteStatus?.approvedAt || (l.approvedAt ? l.approvedAt.toISOString() : null),
         clearance: authByLink.get(l.id)
           ? {
               status: authByLink.get(l.id)!.status,
               approveWeightBps: authByLink.get(l.id)!.approveWeightBps,
               rejectWeightBps: authByLink.get(l.id)!.rejectWeightBps,
               approvalBpsTarget: authByLink.get(l.id)!.approvalBpsTarget ?? 6667,
-              approvedApprovers: authByLink.get(l.id)!.approvedApprovers
+              approvedApprovers: authByLink.get(l.id)!.approvedApprovers,
+              reviewGrantedAt:
+                remoteStatus?.reviewGrantedAt ||
+                (localClearanceReq?.reviewGrantedAt ? localClearanceReq.reviewGrantedAt.toISOString() : null)
             }
-          : null
+          : {
+              status: "PENDING",
+              approveWeightBps: 0,
+              rejectWeightBps: 0,
+              approvalBpsTarget: 6667,
+              approvedApprovers: 0,
+              reviewGrantedAt:
+                remoteStatus?.reviewGrantedAt ||
+                (localClearanceReq?.reviewGrantedAt ? localClearanceReq.reviewGrantedAt.toISOString() : null)
+            }
       };
     })
   );
@@ -20623,21 +20654,28 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const existingVote = await prisma.derivativeApprovalVote.findUnique({
       where: { authorizationId_approverUserId: { authorizationId: a.id, approverUserId: userId } }
     });
+    const latestClearanceRequest = await prisma.clearanceRequest
+      .findFirst({
+        where: { contentLinkId: a.derivativeLink.id },
+        orderBy: { createdAt: "desc" },
+        select: { reviewGrantedAt: true, createdAt: true, status: true }
+      })
+      .catch(() => null);
+    const isRequester = String(a.derivativeLink?.childContent?.ownerUserId || "").trim() === userId;
     const isEligible =
       eligible.some((p) => matchApproverToUser(p, userId, meEmail)) ||
       (parent?.ownerUserId === userId && !isShadowRemote);
 
     if (scope === "pending") {
-      if (!isEligible) continue;
+      if (!isEligible && !isRequester) continue;
       if (a.status !== "PENDING") continue;
-      if (existingVote) continue;
     } else if (scope === "voted") {
       if (!existingVote) continue;
     } else if (scope === "cleared") {
       if (a.status !== "APPROVED") continue;
-      if (!isEligible && !existingVote) continue;
+      if (!isEligible && !existingVote && !isRequester) continue;
     } else if (scope === "all") {
-      if (!isEligible && !existingVote) continue;
+      if (!isEligible && !existingVote && !isRequester) continue;
     }
     out.push({
       authorizationId: a.id,
@@ -20649,7 +20687,16 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       childTitle: a.derivativeLink.childContent?.title || null,
       relation: a.derivativeLink.relation,
       status: a.status,
-      viewerVote: existingVote?.decision || null
+      viewerVote: existingVote?.decision || null,
+      clearanceRequest: latestClearanceRequest
+        ? {
+            status: String(latestClearanceRequest.status || "PENDING"),
+            requestedAt: latestClearanceRequest.createdAt ? latestClearanceRequest.createdAt.toISOString() : null,
+            reviewGrantedAt: latestClearanceRequest.reviewGrantedAt
+              ? latestClearanceRequest.reviewGrantedAt.toISOString()
+              : null
+          }
+        : null
     });
   }
 
@@ -20950,6 +20997,10 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
   if (!link) return notFound(reply, "link not found");
 
   const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  const clearanceReq = await prisma.clearanceRequest.findFirst({
+    where: { contentLinkId: link.id },
+    orderBy: { createdAt: "desc" }
+  }).catch(() => null);
   return reply.send({
     linkId: link.id,
     parentContentId,
@@ -20957,6 +21008,7 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
     childContentId,
     upstreamBps: link.upstreamBps,
     approvedAt: link.approvedAt || null,
+    reviewGrantedAt: clearanceReq?.reviewGrantedAt || null,
     clearance: auth
       ? {
           status: auth.status,

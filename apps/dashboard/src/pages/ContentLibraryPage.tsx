@@ -1081,6 +1081,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   }, []);
 
   React.useEffect(() => {
+    if (!derivativesAllowed || items.length === 0) return;
+    for (const item of items) {
+      if (item.ownerUserId !== meId) continue;
+      const derivativeType = ["derivative", "remix", "mashup"].includes(String(item.type || ""));
+      if (!derivativeType) continue;
+      if (parentLinkByContent[item.id] !== undefined) continue;
+      void loadParentLink(item.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, derivativesAllowed, meId, parentLinkByContent]);
+
+  React.useEffect(() => {
     if (!showClearance || approvals.length === 0) return;
     approvals.forEach((a) => {
       const linkId = String(a?.linkId || "");
@@ -1303,6 +1315,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     if (publishBusy[contentId]) return;
     const currentItem = items.find((it) => it.id === contentId);
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(currentItem?.type || ""));
+    const parentLink = parentLinkByContent[contentId];
+    if (isDerivativeType) {
+      if (parentLink === undefined) {
+        void loadParentLink(contentId);
+        setPublishMsg((m) => ({ ...m, [contentId]: "Checking clearance status..." }));
+        return;
+      }
+      if (parentLink?.requiresApproval && !parentLink?.approvedAt) {
+        setPublishMsg((m) => ({ ...m, [contentId]: "Clearance is pending. Publish unlocks after rights-holder approval." }));
+        return;
+      }
+    }
     if (!networkPublishAllowed) {
       setPublishMsg((m) => ({ ...m, [contentId]: networkPublishReason }));
       return;
@@ -2502,6 +2526,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const isCleared = a?.status === "APPROVED";
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
                 const canVote = Boolean(clearance?.viewer?.canVote);
+                const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
+                const requestStatus = String(a?.clearanceRequest?.status || "").trim();
+                const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
 
                 return (
                   <div key={a.authorizationId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
@@ -2519,6 +2546,21 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           {approverCount || "?"}
                           {viewerVote ? ` • You ${viewerVote}` : ""}
                         </div>
+                        {requestStatus ? (
+                          <div className="text-[11px] text-neutral-400 mt-1">
+                            Request: {titleCase(requestStatus.toLowerCase())}
+                            {requestedAt ? ` • ${new Date(requestedAt).toLocaleString()}` : ""}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-neutral-500 mt-1">Request: not found</div>
+                        )}
+                        {previewGrantedAt ? (
+                          <div className="text-[11px] text-sky-300 mt-1">
+                            Preview access: granted • {new Date(previewGrantedAt).toLocaleString()}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-neutral-500 mt-1">Preview access: not granted</div>
+                        )}
                         {linkId ? (
                           <div className="text-[10px] text-neutral-600 mt-1">
                             Link ID: {linkId}
@@ -2666,6 +2708,22 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 : lightningAvailable
                   ? "Free access with tips enabled"
                   : "Free access";
+              const parentLink = parentLinkByContent[it.id] || null;
+              const derivativeClearanceUnknown = isDerivativeType && parentLinkByContent[it.id] === undefined;
+              const derivativeClearancePending =
+                isDerivativeType && Boolean(parentLink?.requiresApproval && !parentLink?.approvedAt);
+              const derivativePublishBlocked = derivativeClearanceUnknown || derivativeClearancePending;
+              const publishTitle = isBasicTier && isDerivativeType
+                ? "Derivatives require Advanced mode and clearance before publishing."
+                : derivativeClearancePending
+                  ? "Clearance is pending. Publish unlocks after rights-holder approval."
+                  : derivativeClearanceUnknown
+                    ? "Checking clearance status..."
+                    : !allowPublish
+                      ? "Already published"
+                      : !networkPublishAllowed
+                        ? networkPublishReason
+                        : "Publish this content";
 
               return (
                 <div key={it.id} className="rounded-lg border border-neutral-800 bg-neutral-950/40">
@@ -2803,17 +2861,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   publishBusy[it.id] ||
                                   !networkPublishAllowed ||
                                   !allowPublish ||
+                                  derivativePublishBlocked ||
                                   (isBasicTier && isDerivativeType)
                                 }
-                                title={
-                                  isBasicTier && isDerivativeType
-                                    ? "Derivatives require Advanced mode and clearance before publishing."
-                                    : !allowPublish
-                                      ? "Already published"
-                                      : !networkPublishAllowed
-                                        ? networkPublishReason
-                                        : "Publish this content"
-                                }
+                                title={publishTitle}
                               >
                                 {!allowPublish
                                   ? "Published"

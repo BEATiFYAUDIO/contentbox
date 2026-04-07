@@ -198,6 +198,14 @@ function titleCase(s?: string | null) {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+function formatOptionalDateTime(raw?: string | null) {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return null;
+  return new Date(ts).toLocaleString();
+}
+
 async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -254,6 +262,7 @@ export default function SplitEditorPage(props: {
     approvedAt?: string | null;
     parent: { id: string; title: string } | null;
     parentSplit?: { splitVersionId: string; status?: string; lockedAt?: string | null } | null;
+    clearanceRequest?: { status?: string; requestedAt?: string; reviewGrantedAt?: string | null } | null;
     canRequestApproval?: boolean;
     canVote?: boolean;
   } | null>(null);
@@ -1000,6 +1009,17 @@ export default function SplitEditorPage(props: {
                       : "Pending clearance"
                     : "Not required"}
                 </div>
+                {upstreamInfo.clearanceRequest?.status ? (
+                  <div>
+                    Request:{" "}
+                    <span className="text-neutral-300">
+                      {String(upstreamInfo.clearanceRequest.status).toLowerCase()}
+                    </span>
+                    {upstreamInfo.clearanceRequest.requestedAt
+                      ? ` · ${formatOptionalDateTime(upstreamInfo.clearanceRequest.requestedAt) || "timestamp unavailable"}`
+                      : ""}
+                  </div>
+                ) : null}
                 {typeof upstreamExampleSats === "number" ? (
                   <div className="text-neutral-500">
                     Example: At 10,000 sats sale, {upstreamExampleSats.toLocaleString()} sats goes upstream.
@@ -1008,7 +1028,7 @@ export default function SplitEditorPage(props: {
                 {upstreamInfo.requiresApproval && !upstreamInfo.approvedAt ? (
                   <>
                     <div className="mt-2 flex flex-wrap gap-2">
-                      {upstreamInfo.canRequestApproval ? (
+                      {upstreamInfo.canRequestApproval && !upstreamInfo.canVote ? (
                         <button
                           onClick={async () => {
                             try {
@@ -1148,10 +1168,10 @@ export default function SplitEditorPage(props: {
               <div className="text-sm">
                 <div className="text-neutral-200 font-medium">
                   Version v{selectedVersion.versionNumber} • {selectedVersion.status}
-                  {selectedVersion.lockedAt ? (
+                  {formatOptionalDateTime(selectedVersion.lockedAt) ? (
                     <span className="text-neutral-400 font-normal">
                       {" "}
-                      • locked {new Date(selectedVersion.lockedAt).toLocaleString()}
+                      • locked {formatOptionalDateTime(selectedVersion.lockedAt)}
                     </span>
                   ) : null}
                 </div>
