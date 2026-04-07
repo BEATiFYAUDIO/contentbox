@@ -57,6 +57,18 @@ type OverviewSummary = {
   };
 };
 
+type FinancePayoutItem = {
+  id: string;
+  paymentIntentId?: string | null;
+  contentId?: string | null;
+  amountSats?: string | number | null;
+  netAmountSats?: string | number | null;
+  status?: string | null;
+  remittedAt?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 type EarningsLedgerStatus = "Earned" | "Pending" | "Processing" | "Partial" | "Paid" | "Failed" | "Blocked";
 
 type EarningsLedgerRow = {
@@ -100,6 +112,7 @@ export default function FinanceRoyaltiesPage({
 }: FinanceRoyaltiesPageProps) {
   const [rows, setRows] = useState<RoyaltyRow[]>([]);
   const [salesRows, setSalesRows] = useState<RevenueSaleCompactRow[]>([]);
+  const [payoutItems, setPayoutItems] = useState<FinancePayoutItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retryTick, setRetryTick] = useState(0);
@@ -139,6 +152,23 @@ export default function FinanceRoyaltiesPage({
         setError(e.message || "Failed to load royalties.");
       } finally {
         if (active) setLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [refreshSignal, retryTick]);
+
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const res = await api<{ items?: FinancePayoutItem[] }>(`/finance/payouts?basis=paid&period=all`, "GET");
+        if (!active) return;
+        setPayoutItems(Array.isArray(res?.items) ? res.items : []);
+      } catch {
+        if (!active) return;
+        setPayoutItems([]);
       }
     })();
     return () => {
@@ -289,6 +319,35 @@ export default function FinanceRoyaltiesPage({
   }, [salesRows]);
 
   const earningsLedgerRows = useMemo<EarningsLedgerRow[]>(() => {
+    const payoutByContent = new Map<
+      string,
+      { paid: number; pending: number; failed: number; latestPaidTs: string | null; latestActivityTs: string | null }
+    >();
+    for (const payout of payoutItems) {
+      const contentId = String(payout.contentId || "").trim();
+      if (!contentId) continue;
+      const amount = Math.max(0, Number(payout.netAmountSats ?? payout.amountSats ?? 0) || 0);
+      const status = String(payout.status || "").trim().toLowerCase();
+      const tsCandidate = String(payout.remittedAt || payout.updatedAt || payout.createdAt || "").trim() || null;
+      const current = payoutByContent.get(contentId) || {
+        paid: 0,
+        pending: 0,
+        failed: 0,
+        latestPaidTs: null,
+        latestActivityTs: null
+      };
+      if (status === "paid") {
+        current.paid += amount;
+        if (tsCandidate && (!current.latestPaidTs || tsCandidate > current.latestPaidTs)) current.latestPaidTs = tsCandidate;
+      } else if (status === "pending" || status === "ready" || status === "forwarding") {
+        current.pending += amount;
+      } else if (status === "failed" || status === "blocked") {
+        current.failed += amount;
+      }
+      if (tsCandidate && (!current.latestActivityTs || tsCandidate > current.latestActivityTs)) current.latestActivityTs = tsCandidate;
+      payoutByContent.set(contentId, current);
+    }
+
     const out: EarningsLedgerRow[] = [];
     const baseContentIds = new Set<string>();
     for (const row of rows) {
@@ -296,15 +355,16 @@ export default function FinanceRoyaltiesPage({
       if (contentId) baseContentIds.add(contentId);
       const contentTitle = String(row.title || "Untitled").trim() || "Untitled";
       const earned = Math.max(0, Number(row.settledSats || 0) || 0);
-      const paid = Math.max(0, Number(row.withdrawnSats || 0) || 0);
-      const pending = Math.max(0, Number(row.pendingSats || 0) || 0);
+      const payoutSummary = payoutByContent.get(contentId);
+      const paid = payoutSummary ? payoutSummary.paid : Math.max(0, Number(row.withdrawnSats || 0) || 0);
+      const pending = payoutSummary ? payoutSummary.pending : Math.max(0, Number(row.pendingSats || 0) || 0);
       const sourceLabel = "Catalog earning";
       const localRole = localRoleByContent[contentId] || "";
       const remoteRole = remoteRoleByContent[contentId] || "";
       const roleLabel = localRole || remoteRole || "Participant";
       const originLabel = remoteRole ? "Remote" : localRole ? "Local" : "—";
       const shareLabel = formatShareLabel(row.allocationSats, row.totalSalesSats);
-      const localRecognizedAt = localRecognizedAtByContent.get(contentId) || "";
+      const localRecognizedAt = localRecognizedAtByContent.get(contentId) || payoutSummary?.latestActivityTs || "";
       const dateSortTs = localRecognizedAt ? new Date(localRecognizedAt).getTime() : 0;
       const dateLabel = dateSortTs > 0 ? new Date(dateSortTs).toLocaleDateString() : "—";
 
@@ -322,7 +382,7 @@ export default function FinanceRoyaltiesPage({
           dateLabel,
           dateSortTs,
           earnedTsIso: localRecognizedAt || null,
-          paidTsIso: localRecognizedAt || null,
+          paidTsIso: payoutSummary?.latestPaidTs || localRecognizedAt || null,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -342,7 +402,7 @@ export default function FinanceRoyaltiesPage({
           dateLabel,
           dateSortTs,
           earnedTsIso: localRecognizedAt || null,
-          paidTsIso: localRecognizedAt || null,
+          paidTsIso: payoutSummary?.latestActivityTs || localRecognizedAt || null,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -363,7 +423,7 @@ export default function FinanceRoyaltiesPage({
           dateLabel,
           dateSortTs,
           earnedTsIso: localRecognizedAt || null,
-          paidTsIso: localRecognizedAt || null,
+          paidTsIso: payoutSummary?.latestActivityTs || localRecognizedAt || null,
           remittanceDetail: null,
           remittanceActionable: false
         });
@@ -424,7 +484,7 @@ export default function FinanceRoyaltiesPage({
       if (statusDelta !== 0) return statusDelta;
       return b.amountSats - a.amountSats;
     });
-  }, [rows, remoteRows, localRoleByContent, remoteRoleByContent, localRecognizedAtByContent]);
+  }, [rows, remoteRows, localRoleByContent, remoteRoleByContent, localRecognizedAtByContent, payoutItems]);
 
   const timeScopedEarningsLedgerRows = useMemo(() => {
     return earningsLedgerRows.filter((row) => {

@@ -16469,7 +16469,22 @@ app.get("/api/provider/delegated-publishes", { preHandler: requireAuth }, async 
 });
 
 app.get("/api/provider/payment-intents", { preHandler: requireAuth }, async (_req: any, reply: any) => {
-  const intents = listProviderPaymentIntents();
+  let intents = listProviderPaymentIntents();
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  if (payoutRuntime.participantPayoutsEnabled && payoutRuntime.participantPayoutSummaryEnabled) {
+    const refreshed = await Promise.all(
+      intents.map(async (intent) => {
+        if (intent.status !== "paid") return intent;
+        if (intent.payoutExecutionMode !== "participant") return intent;
+        try {
+          return await syncProviderIntentPayoutTruthFromParticipantRows(intent);
+        } catch {
+          return intent;
+        }
+      })
+    );
+    intents = refreshed;
+  }
   const payoutRows = await prisma.participantPayout
     .findMany({
       select: {
@@ -16573,6 +16588,13 @@ app.get("/api/provider/payments/intents", { preHandler: requireAuth }, async (_r
 });
 
 app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const intentCreatorById = new Map<string, string>();
+  for (const intent of listProviderPaymentIntents()) {
+    const intentId = String(intent.id || "").trim();
+    const creatorNodeId = String(intent.creatorNodeId || "").trim();
+    if (!intentId || !creatorNodeId) continue;
+    intentCreatorById.set(intentId, creatorNodeId);
+  }
   const rows = await prisma.participantPayout
     .findMany({
       include: {
@@ -16593,7 +16615,11 @@ app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async 
       if (isMissingParticipantPayoutTableError(err)) return [];
       throw err;
     });
-  return reply.send({ items: rows });
+  const items = rows.map((row) => ({
+    ...row,
+    creatorNodeId: intentCreatorById.get(String(row.providerPaymentIntentId || "").trim()) || null
+  }));
+  return reply.send({ items });
 });
 
 app.get("/api/provider/payment-intents/:id/participant-payouts", { preHandler: requireAuth }, async (req: any, reply: any) => {
@@ -16915,6 +16941,28 @@ app.post("/api/provider/remittances/reprocess", { preHandler: requireAuth }, asy
     if (row.payoutDestinationType !== "lightning_address") continue;
     const forwarded = await executeCreatorRemittance(row, "provider_bulk_reprocess_remittance");
     items.push(forwarded);
+  }
+  return reply.send({
+    ok: true,
+    processed: items.length,
+    items
+  });
+});
+
+app.post("/api/provider/remittances/reconcile", { preHandler: requireAuth }, async (_req: any, reply: any) => {
+  const payoutRuntime = await resolveParticipantPayoutRuntimeConfig();
+  if (!payoutRuntime.participantPayoutsEnabled || !payoutRuntime.participantPayoutSummaryEnabled) {
+    return reply.code(409).send({
+      error: "PARTICIPANT_PAYOUT_SUMMARY_DISABLED",
+      message: "Participant payout summary reconciliation is currently disabled."
+    });
+  }
+  const candidates = listProviderPaymentIntents().filter((row) => row.status === "paid");
+  const items: ProviderPaymentIntentRecord[] = [];
+  for (const row of candidates) {
+    if (row.payoutExecutionMode !== "participant") continue;
+    const refreshed = await syncProviderIntentPayoutTruthFromParticipantRows(row);
+    items.push(refreshed);
   }
   return reply.send({
     ok: true,

@@ -185,6 +185,7 @@ type ParticipantPayoutRow = {
   remittedAt: string | null;
   lastCheckedAt: string | null;
   updatedAt: string;
+  creatorNodeId?: string | null;
   allocation?: {
     participantRef: string;
     participantUserId: string | null;
@@ -290,7 +291,6 @@ function ExecutionPill({ allowed }: { allowed: boolean }) {
 }
 
 export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenLightningConfig?: () => void }) {
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<ProviderSummary | null>(null);
   const [creatorLinks, setCreatorLinks] = useState<ProviderCreatorLink[]>([]);
@@ -354,7 +354,6 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   );
 
   const load = useCallback(async () => {
-    setLoading(true);
     setError(null);
     try {
       let canUseLightningAdmin = false;
@@ -415,7 +414,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     } catch (e: any) {
       setError(e?.message || "Failed to load provider console.");
     } finally {
-      setLoading(false);
+      // no-op: page auto-sync is background-driven
     }
   }, []);
 
@@ -497,6 +496,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
 
   const resolveCreatorIdForPayout = useCallback(
     (row: ParticipantPayoutRow): string | null => {
+      const explicitCreator = String(row.creatorNodeId || "").trim();
+      if (explicitCreator) return explicitCreator;
       const byIntent = creatorByIntentKey.get(row.providerPaymentIntentId) || creatorByIntentKey.get(row.paymentIntentId);
       if (byIntent) return byIntent;
       const participantRef = String(row.allocation?.participantRef || "").trim();
@@ -871,7 +872,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const selectedCreatorLabel =
     creatorScopeId === "all"
       ? "All Delegated Creators"
-      : displayLabelForCreator(creatorScopeId, null);
+      : `${displayLabelForCreator(creatorScopeId, null)} (${shortId(creatorScopeId, 12, 8)})`;
 
   const summaryCards = [
     { label: "Delegated Creators", value: summary?.delegatedCreators ?? creatorLinks.length },
@@ -1132,13 +1133,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
               Time basis: {timeBasis === "sale" ? "Sale (buyer payment)" : "Paid (remitted execution)"}.
             </div>
           </div>
-          <button
-            onClick={load}
-            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs hover:bg-neutral-800/60"
-            disabled={loading}
-          >
-            {loading ? "Refreshing..." : "Refresh"}
-          </button>
+          <div className="text-[11px] text-neutral-500">
+            Auto-sync active (every 30s and on tab focus).
+          </div>
         </div>
         {error ? <div className="mt-3 text-xs text-rose-300">{error}</div> : null}
         <div className="mt-3 rounded-xl border border-cyan-800/40 bg-cyan-950/20 p-3">
@@ -1173,7 +1170,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                 <option value="all">All Delegated Creators</option>
                 {creatorOptions.map((opt) => (
                   <option key={opt.id} value={opt.id}>
-                    {opt.label}
+                    {`${opt.label} (${shortId(opt.id, 10, 6)})`}
                   </option>
                 ))}
               </select>
@@ -1757,13 +1754,6 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
               <option value="expired">Expired</option>
             </select>
           </label>
-          <button
-            onClick={() => void api("/api/provider/remittances/reprocess", "POST", {}).then(load).catch((e: any) => setError(e?.message || "Failed to reprocess remittances."))}
-            className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
-            disabled={loading}
-          >
-            Reprocess pending/failed
-          </button>
         </div>
         {visiblePaymentIntents.length === 0 ? (
           <div className="mt-3 rounded-md border border-emerald-900/40 bg-emerald-950/20 px-3 py-2 text-xs text-emerald-200">
