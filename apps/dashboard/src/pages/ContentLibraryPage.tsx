@@ -1616,6 +1616,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         });
 
       const merged = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
+      if (import.meta.env.DEV) {
+        console.debug("clearance.loadApprovals.remote_merge", {
+          scope,
+          localCount: Array.isArray(localData) ? localData.length : 0,
+          remoteRowsCount: Array.isArray(remoteRows) ? remoteRows.length : 0,
+          remoteApprovalsCount: remoteApprovals.length,
+          mergedCount: merged.length,
+          firstRemoteApproval: remoteApprovals[0]
+            ? {
+                authorizationId: remoteApprovals[0].authorizationId,
+                parentContentId: remoteApprovals[0].parentContentId,
+                childContentId: remoteApprovals[0].childContentId,
+                status: remoteApprovals[0].status,
+                viewerVote: remoteApprovals[0].viewerVote,
+                remoteOrigin: remoteApprovals[0].remoteOrigin,
+                hasClearanceUrl: Boolean(remoteApprovals[0].remoteClearanceUrl)
+              }
+            : null
+        });
+      }
       setApprovals(merged);
       if (scope === "pending") setPendingClearanceCount(merged.length);
     } catch {

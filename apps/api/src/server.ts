@@ -12236,6 +12236,19 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
     if (!res.ok) return null;
     const payload: any = await res.json().catch(() => null);
     if (!payload || payload.ok !== true) return null;
+    if (process.env.NODE_ENV !== "production") {
+      const inbox = Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : [];
+      app.log.info(
+        {
+          origin,
+          tokenId: token.slice(0, 8),
+          hasClearanceInbox: Array.isArray(payload?.clearanceInbox),
+          clearanceInboxCount: inbox.length,
+          payloadKeys: Object.keys(payload || {}).slice(0, 8)
+        },
+        "remoteInvite.accounting_shaping"
+      );
+    }
     return {
       earnedSatsToDate: String(payload?.totals?.earnedSats || "0"),
       settlementLineCount: Number(payload?.totals?.settlementLineCount || 0),
@@ -33723,7 +33736,11 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         : "unresolved";
 
   const parentContentId = asString(inv?.splitParticipant?.splitVersion?.contentId || "").trim();
-  const inviteUserId = asString(inv?.acceptedByUserId || inv?.splitParticipant?.participantUserId || "").trim();
+  const acceptedIdentityRef = asString(inv?.acceptedIdentityRef || "").trim();
+  const acceptedIdentityUserId = parseUserIdFromParticipantRef(acceptedIdentityRef);
+  const inviteUserId = asString(
+    inv?.acceptedByUserId || acceptedIdentityUserId || inv?.splitParticipant?.participantUserId || ""
+  ).trim();
   const inviteTargetType = normalizeInviteTargetType(inv?.targetType);
   const inviteEmail = normalizeEmail(
     inv?.splitParticipant?.participantEmail ||
@@ -33763,7 +33780,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       });
       const approverCount = eligible.length;
       const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
-      const approvalTokenModel = (prisma as any).derivativeApprovalToken;
+      const approvalTokenModel = (prisma as any).approvalToken;
       clearanceInbox = await Promise.all(
         auths.map(async (auth) => {
           const viewerVote = inviteUserId
@@ -33799,6 +33816,44 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             clearanceUrl: clearanceToken?.token ? `${clearanceBase}/clearance/${clearanceToken.token}` : null
           };
         })
+      );
+      if (process.env.NODE_ENV !== "production") {
+        const first = clearanceInbox[0] || null;
+        app.log.info(
+          {
+            tokenId: token.slice(0, 8),
+            parentContentId,
+            inviteUserId: inviteUserId || null,
+            approverEmailForToken: approverEmailForToken || null,
+            eligibleCount: eligible.length,
+            inviteIsEligible,
+            authCount: auths.length,
+            approvalTokenModelPresent: Boolean(approvalTokenModel),
+            clearanceInboxCount: clearanceInbox.length,
+            firstAuthorizationId: first?.authorizationId || null,
+            firstStatus: first?.status || null,
+            firstClearanceUrl: first?.clearanceUrl || null
+          },
+          "invite.accounting.clearance_inbox_built"
+        );
+      }
+    } else if (process.env.NODE_ENV !== "production") {
+      app.log.info(
+        {
+          tokenId: token.slice(0, 8),
+          parentContentId,
+          inviteUserId: inviteUserId || null,
+          approverEmailForToken: approverEmailForToken || null,
+          eligibleCount: eligible.length,
+          inviteIsEligible,
+          authCount: 0,
+          approvalTokenModelPresent: Boolean((prisma as any).approvalToken),
+          clearanceInboxCount: 0,
+          firstAuthorizationId: null,
+          firstStatus: null,
+          firstClearanceUrl: null
+        },
+        "invite.accounting.clearance_inbox_built"
       );
     }
   }
