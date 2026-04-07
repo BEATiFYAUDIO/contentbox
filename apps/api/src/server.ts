@@ -23729,6 +23729,79 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
   return reply.type("text/html").send(html);
 });
 
+app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token).trim();
+  const authorizationId = asString((req.params as any).authorizationId).trim();
+  if (!token || !authorizationId) return notFound(reply, "Not found");
+  const ctx = await resolveInviteClearanceContext(token, authorizationId);
+  if (!ctx) return forbidden(reply);
+
+  const link = ctx.auth.derivativeLink;
+  if (!link?.childContentId) return notFound(reply, "Not found");
+
+  const latestReview = await prisma.clearanceRequest.findFirst({
+    where: { contentLinkId: link.id },
+    orderBy: { createdAt: "desc" },
+    select: { reviewGrantedAt: true }
+  });
+  if (!latestReview?.reviewGrantedAt) {
+    return reply.code(409).type("text/plain").send("Preview not granted yet.");
+  }
+
+  const child = await prisma.contentItem.findUnique({
+    where: { id: link.childContentId },
+    select: { id: true, repoPath: true }
+  });
+  if (!child?.repoPath) return notFound(reply, "Not found");
+
+  const manifest = await prisma.manifest.findUnique({ where: { contentId: child.id } });
+  const manifestJson = (manifest?.json || {}) as any;
+  const primaryFileId =
+    (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+    (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
+    null;
+  let objectKey =
+    (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+    (typeof primaryFileId === "string" && primaryFileId) ||
+    "";
+  if (!objectKey) {
+    const latestFile = await prisma.contentFile.findFirst({
+      where: { contentId: child.id },
+      orderBy: { createdAt: "desc" }
+    });
+    objectKey = asString(latestFile?.objectKey || "").trim();
+  }
+  if (!objectKey) return notFound(reply, "Preview not available");
+
+  const repoRoot = path.resolve(child.repoPath);
+  const absPath = path.resolve(repoRoot, objectKey);
+  if (!absPath.startsWith(repoRoot)) return forbidden(reply);
+  if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
+
+  const file = await prisma.contentFile.findFirst({ where: { contentId: child.id, objectKey } });
+  const mime = file?.mime || "application/octet-stream";
+  const stat = fsSync.statSync(absPath);
+  const range = req.headers.range;
+  if (range) {
+    const m = /bytes=(\d+)-(\d+)?/.exec(range);
+    if (m) {
+      const start = Number(m[1]);
+      const end = m[2] ? Number(m[2]) : stat.size - 1;
+      if (start >= stat.size) return reply.code(416).send();
+      reply.code(206);
+      reply.header("Content-Range", `bytes ${start}-${end}/${stat.size}`);
+      reply.header("Accept-Ranges", "bytes");
+      reply.header("Content-Length", end - start + 1);
+      reply.type(mime);
+      return reply.send(fsSync.createReadStream(absPath, { start, end }));
+    }
+  }
+
+  reply.header("Content-Length", stat.size);
+  reply.type(mime);
+  return reply.send(fsSync.createReadStream(absPath));
+});
+
 app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, reply: any) => {
   const token = asString((req.params as any).token).trim();
   const authorizationId = asString((req.params as any).authorizationId).trim();

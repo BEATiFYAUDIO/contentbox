@@ -1574,6 +1574,33 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
+  async function openRemoteInviteClearancePreview(
+    origin: string,
+    inviteToken: string,
+    remoteAuthorizationId: string,
+    childContentId: string
+  ) {
+    const base = String(origin || "").replace(/\/+$/, "");
+    const token = String(inviteToken || "").trim();
+    const authorizationId = String(remoteAuthorizationId || "").trim();
+    if (!base || !token || !authorizationId) {
+      setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Missing preview routing context." }));
+      return;
+    }
+    setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
+    setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
+    try {
+      const url = `${base}/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(
+        authorizationId
+      )}/preview`;
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e: any) {
+      setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
+    } finally {
+      setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
+    }
+  }
+
   async function loadCredits(contentId: string) {
     setCreditsLoading((m) => ({ ...m, [contentId]: true }));
     try {
@@ -2692,9 +2719,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                             onClick={() =>
-                              openRemoteDerivativePreview(
-                                String(a?.remoteChildOrigin || a?.remoteOrigin || ""),
-                                String(a.childContentId)
+                              openRemoteInviteClearancePreview(
+                                String(a?.remoteOrigin || ""),
+                                String(a?.remoteInviteToken || ""),
+                                String(a?.remoteAuthorizationId || ""),
+                                String(a?.childContentId || "")
                               )
                             }
                           >
