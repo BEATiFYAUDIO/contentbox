@@ -2807,12 +2807,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
                               onClick={async () => {
                                 if (!linkId) return;
-                                const input = window.prompt("Set upstream royalty rate (%) for clearance", "10");
-                                const pct = Number((input || "").trim());
-                                if (!Number.isFinite(pct)) {
-                                  setError("Upstream rate required to grant clearance.");
-                                  return;
-                                }
+                                const pct = Number.isFinite(Number(a?.upstreamRatePercent))
+                                  ? Number(a.upstreamRatePercent)
+                                  : Number.isFinite(Number(clearance?.upstreamBps))
+                                  ? Number(clearance.upstreamBps) / 100
+                                  : 0;
                                 await api(`/content-links/${linkId}/vote`, "POST", {
                                   decision: "approve",
                                   upstreamRatePercent: pct
@@ -3938,12 +3937,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                             type="button"
                                             className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                             onClick={async () => {
-                                              const input = window.prompt("Set upstream royalty rate (%) for clearance", "10");
-                                              const pct = Number((input || "").trim());
-                                              if (!Number.isFinite(pct)) {
-                                                setError("Upstream rate required to grant clearance.");
-                                                return;
-                                              }
+                                              const pct = Number.isFinite(Number(d?.upstreamBps))
+                                                ? Number(d.upstreamBps) / 100
+                                                : 0;
                                               await api(`/content-links/${d.linkId}/vote`, "POST", {
                                                 decision: "approve",
                                                 upstreamRatePercent: pct
