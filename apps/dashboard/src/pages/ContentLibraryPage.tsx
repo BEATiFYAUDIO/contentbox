@@ -1611,6 +1611,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             status: String(entry?.status || "PENDING"),
             viewerVote: entry?.viewerVote || null,
             remoteOrigin,
+            remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
             remoteInviteId: inviteId,
             remoteInviteToken: extractInviteTokenFromUrl(String(row?.inviteUrl || "")),
             remoteClearanceUrl: entry?.clearanceUrl || null,
@@ -2690,7 +2691,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           <button
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            onClick={() => openRemoteDerivativePreview(String(a.remoteOrigin), String(a.childContentId))}
+                            onClick={() =>
+                              openRemoteDerivativePreview(
+                                String(a?.remoteChildOrigin || a?.remoteOrigin || ""),
+                                String(a.childContentId)
+                              )
+                            }
                           >
                             Preview submission
                           </button>

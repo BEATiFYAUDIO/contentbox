@@ -34056,7 +34056,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         include: {
           derivativeLink: {
             include: {
-              childContent: { select: { id: true, title: true } },
+              childContent: { select: { id: true, title: true, description: true } },
               parentContent: { select: { id: true, title: true } }
             }
           },
@@ -34093,6 +34093,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             parentTitle: auth.derivativeLink?.parentContent?.title || null,
             childContentId: auth.derivativeLink?.childContentId || null,
             childTitle: auth.derivativeLink?.childContent?.title || null,
+            childOrigin: getRemoteOriginFromDescription(auth.derivativeLink?.childContent?.description || null),
             relation: auth.derivativeLink?.relation || "derivative",
             status: auth.status,
             viewerVote: viewerVote ? String(viewerVote).toLowerCase() : null,
