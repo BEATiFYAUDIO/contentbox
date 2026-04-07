@@ -487,6 +487,7 @@ export default function ContentLibraryPage({
   const [parentLinkErrorByContent, setParentLinkErrorByContent] = React.useState<Record<string, string>>({});
   const [approvals, setApprovals] = React.useState<any[]>([]);
   const [approvalsLoading, setApprovalsLoading] = React.useState(false);
+  const [clearanceLoadError, setClearanceLoadError] = React.useState<string | null>(null);
   const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
   >({});
@@ -1616,10 +1617,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   async function loadApprovals(scope: "pending" | "voted" | "cleared" = clearanceScope) {
     if (!derivativesAllowed) return;
     setApprovalsLoading(true);
+    setClearanceLoadError(null);
     try {
       const [localData, remoteRows] = await Promise.all([
-        api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET").catch(() => []),
-        api<any[]>("/my/royalties/remote", "GET").catch(() => [])
+        api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET"),
+        api<any[]>("/my/royalties/remote", "GET")
       ]);
       const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
         .flatMap((row) => {
@@ -1684,7 +1686,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       }
       setApprovals(merged);
       if (scope === "pending") setPendingClearanceCount(merged.length);
-    } catch {
+    } catch (e: any) {
+      const raw = String(e?.message || "Failed to load clearance approvals.");
+      const isAuth = raw.includes(" 401 ") || raw.toLowerCase().includes("unauthorized");
+      const hint = isAuth
+        ? "Clearance data could not load (401). Sign in again on this dashboard instance."
+        : "Clearance data could not load. Check API base/runtime binding and retry.";
+      setClearanceLoadError(`${hint} ${raw}`);
       setApprovals([]);
       if (scope === "pending") setPendingClearanceCount(0);
     } finally {
@@ -2605,6 +2613,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         {showClearance ? (
           approvalsLoading ? (
             <div className="text-sm text-neutral-400">Loading clearance…</div>
+          ) : clearanceLoadError ? (
+            <div className="text-sm text-amber-300">
+              {clearanceLoadError}
+            </div>
           ) : approvals.length === 0 ? (
             <div className="text-sm text-neutral-400">
               {clearanceScope === "pending"
