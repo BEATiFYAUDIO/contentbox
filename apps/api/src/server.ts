@@ -20733,6 +20733,9 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
 
   const out: any[] = [];
   for (const a of auths) {
+    const childDeleted = Boolean(a.derivativeLink?.childContent?.deletedAt);
+    if (childDeleted) continue;
+
     const { eligible } = await getEligibleApproversForParent(a.parentContentId);
     const parent = await prisma.contentItem.findUnique({
       where: { id: a.parentContentId },
@@ -34129,7 +34132,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         include: {
           derivativeLink: {
             include: {
-              childContent: { select: { id: true, title: true, description: true } },
+              childContent: { select: { id: true, title: true, description: true, deletedAt: true } },
               parentContent: { select: { id: true, title: true } }
             }
           },
@@ -34137,12 +34140,13 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         },
         orderBy: { createdAt: "desc" }
       });
+      const actionableAuths = auths.filter((auth) => !auth.derivativeLink?.childContent?.deletedAt);
       const approverCount = eligible.length;
       const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
       const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
       const approvalTokenModel = (prisma as any).approvalToken;
       clearanceInbox = await Promise.all(
-        auths.map(async (auth) => {
+        actionableAuths.map(async (auth) => {
           const viewerVote = inviteUserId
             ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
             : null;
@@ -34192,7 +34196,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             approverEmailForToken: approverEmailForToken || null,
             eligibleCount: eligible.length,
             inviteIsEligible,
-            authCount: auths.length,
+            authCount: actionableAuths.length,
             approvalTokenModelPresent: Boolean(approvalTokenModel),
             clearanceInboxCount: clearanceInbox.length,
             firstAuthorizationId: first?.authorizationId || null,
