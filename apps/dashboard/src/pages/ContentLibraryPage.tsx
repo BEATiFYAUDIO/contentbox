@@ -2668,6 +2668,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             {isLoading ? "Loading…" : "Refresh"}
                           </button>
                         )}
+                        {isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.childContentId || "").trim() ? (
+                          <button
+                            type="button"
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                            onClick={() => openRemoteDerivativePreview(String(a.remoteOrigin), String(a.childContentId))}
+                          >
+                            Preview submission
+                          </button>
+                        ) : null}
                         {!isCleared && isRemoteApproval && canVote ? (
                           <button
                             type="button"
@@ -2735,6 +2744,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         >
                           Set up named link
                         </button>
+                      </div>
+                    ) : null}
+                    {isRemoteApproval && !canVote ? (
+                      <div className="mt-2 text-[11px] text-amber-300">
+                        Vote link not issued yet. Click Refresh to sync latest clearance routing.
                       </div>
                     ) : null}
 

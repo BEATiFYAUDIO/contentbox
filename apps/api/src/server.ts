@@ -23546,6 +23546,217 @@ async function handlePublicProfileRedirect(req: any, reply: any) {
 
 app.get("/profile", handlePublicProfileRedirect);
 
+async function resolveInviteClearanceContext(token: string, authorizationId: string) {
+  const tokenHash = hashInviteToken(token);
+  const inv: any = await prisma.invitation.findFirst({
+    where: { OR: [{ token }, { tokenHash }] },
+    include: { splitParticipant: { include: { splitVersion: true } } }
+  });
+  if (!inv || !inv.splitParticipantId) return null;
+  const parentContentId = asString(inv?.splitParticipant?.splitVersion?.contentId || "").trim();
+  if (!parentContentId) return null;
+  const auth = await prisma.derivativeAuthorization.findUnique({
+    where: { id: authorizationId },
+    include: {
+      derivativeLink: {
+        include: {
+          parentContent: { select: { id: true, title: true } },
+          childContent: { select: { id: true, title: true } }
+        }
+      },
+      votes: true
+    }
+  });
+  if (!auth || String(auth.parentContentId || "") !== parentContentId) return null;
+
+  const acceptedIdentityRef = asString(inv?.acceptedIdentityRef || "").trim();
+  const acceptedIdentityUserId = parseUserIdFromParticipantRef(acceptedIdentityRef);
+  const inviteUserId = asString(
+    inv?.acceptedByUserId || acceptedIdentityUserId || inv?.splitParticipant?.participantUserId || ""
+  ).trim();
+  if (!inviteUserId) return null;
+
+  const inviteTargetType = normalizeInviteTargetType(inv?.targetType);
+  const inviteEmail = normalizeEmail(
+    inv?.splitParticipant?.participantEmail ||
+      (inviteTargetType === "email" ? asString(inv?.targetValue || "") : "") ||
+      ""
+  );
+  const inviteUser = await prisma.user
+    .findUnique({ where: { id: inviteUserId }, select: { email: true } })
+    .catch(() => null);
+  const inviteUserEmail = normalizeEmail(inviteUser?.email || "");
+  const approverEmailForToken = inviteEmail || inviteUserEmail;
+
+  const { eligible } = await getEligibleApproversForParent(parentContentId);
+  const inviteApprover = eligible.find((a) => {
+    const byUserId = Boolean(inviteUserId && a.participantUserId === inviteUserId);
+    const byEmail = Boolean(
+      approverEmailForToken &&
+        normalizeEmail(a.participantEmail || "") &&
+        normalizeEmail(a.participantEmail || "") === approverEmailForToken
+    );
+    return byUserId || byEmail;
+  });
+  if (!inviteApprover) return null;
+
+  return {
+    inv,
+    auth,
+    parentContentId,
+    inviteUserId,
+    inviteApprover,
+    approverEmailForToken
+  };
+}
+
+app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token).trim();
+  const authorizationId = asString((req.params as any).authorizationId).trim();
+  if (!token || !authorizationId) return notFound(reply, "Not found");
+  const ctx = await resolveInviteClearanceContext(token, authorizationId);
+  if (!ctx) return forbidden(reply);
+
+  const parentTitle = ctx.auth.derivativeLink?.parentContent?.title || "Original work";
+  const childTitle = ctx.auth.derivativeLink?.childContent?.title || "Derivative";
+  const progress = `${ctx.auth.approveWeightBps ?? 0}/${ctx.auth.approvalBpsTarget ?? 6667}`;
+  const upstreamDefault = Number(ctx.auth.derivativeLink?.upstreamBps || 0) / 100;
+  const safeParentTitle = escHtml(parentTitle);
+  const safeChildTitle = escHtml(childTitle);
+
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clearance / License for Release</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #0b0b0b; color: #eee; padding: 24px; }
+    .card { max-width: 680px; margin: 0 auto; background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; }
+    .muted { color: #9aa0a6; font-size: 13px; }
+    input { padding: 8px 10px; border-radius: 8px; border: 1px solid #333; background: #0e0e0e; color: #fff; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #333; background: #141414; color: #fff; cursor: pointer; }
+    button.primary { border-color: #1b4d2b; background: #0f2a1a; }
+    button.danger { border-color: #5b1a1a; background: #2a0f0f; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Clearance / License for Release</h2>
+    <div class="muted">Original: <strong>${safeParentTitle}</strong></div>
+    <div class="muted">Derivative: <strong>${safeChildTitle}</strong></div>
+    <div class="muted">Progress: ${escHtml(progress)} bps</div>
+    <p class="muted">Set upstream royalty % and grant clearance to unlock public release.</p>
+    <label class="muted">Upstream % (required for clearance)</label><br/>
+    <input id="upstreamRatePercent" type="number" min="0" max="100" step="0.01" value="${upstreamDefault}" required />
+    <div style="margin-top: 12px; display:flex; gap:10px;">
+      <button class="primary" id="grantBtn" type="button">Grant clearance</button>
+      <button class="danger" id="rejectBtn" type="button">Reject</button>
+    </div>
+    <div id="msg" class="muted" style="margin-top:10px;"></div>
+  </div>
+  <script>
+    const msg = document.getElementById("msg");
+    async function submit(decision) {
+      const pct = document.getElementById("upstreamRatePercent").value;
+      const body = decision === "approve" ? { decision, upstreamRatePercent: pct } : { decision };
+      try {
+        const r = await fetch("/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/vote", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const text = await r.text();
+        msg.textContent = text || (r.ok ? "Recorded." : "Failed.");
+      } catch (e) {
+        msg.textContent = "Failed to submit.";
+      }
+    }
+    document.getElementById("grantBtn").addEventListener("click", () => submit("approve"));
+    document.getElementById("rejectBtn").addEventListener("click", () => submit("reject"));
+  </script>
+</body>
+</html>`;
+
+  return reply.type("text/html").send(html);
+});
+
+app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token).trim();
+  const authorizationId = asString((req.params as any).authorizationId).trim();
+  if (!token || !authorizationId) return notFound(reply, "Not found");
+  const ctx = await resolveInviteClearanceContext(token, authorizationId);
+  if (!ctx) return forbidden(reply);
+
+  const link = ctx.auth.derivativeLink;
+  if (!link) return notFound(reply, "Not found");
+  const decision = asString((req.body as any)?.decision || "").toLowerCase();
+  if (!["approve", "reject"].includes(decision)) return badRequest(reply, "decision must be approve|reject");
+
+  const fixedUpstreamRatePercent = Math.max(0, Number(link.upstreamBps || 0) / 100);
+  if (decision === "approve") {
+    const raw = (req.body as any)?.upstreamRatePercent;
+    const pct = Number(String(raw ?? "").trim());
+    if (!Number.isFinite(pct)) return badRequest(reply, "upstreamRatePercent must be numeric");
+    if (pct < 0 || pct > 100) return badRequest(reply, "upstreamRatePercent must be 0-100");
+    if (Math.abs(pct - fixedUpstreamRatePercent) > 0.0001) {
+      return reply.code(409).send("Upstream rate is fixed at derivative creation time.");
+    }
+  }
+
+  await prisma.derivativeApprovalVote.upsert({
+    where: { authorizationId_approverUserId: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId } },
+    update: { decision },
+    create: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId, decision }
+  });
+
+  const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: ctx.auth.id } });
+  const voteUserIds = votes.map((v) => v.approverUserId);
+  const voteUsers = voteUserIds.length
+    ? await prisma.user.findMany({ where: { id: { in: voteUserIds } }, select: { id: true, email: true } })
+    : [];
+  const voteUserEmailById = new Map(voteUsers.map((u) => [u.id, normalizeEmail(u.email || "")]));
+
+  const { eligible } = await getEligibleApproversForParent(ctx.parentContentId);
+  let approveBps = 0;
+  let rejectBps = 0;
+  for (const v of votes) {
+    const vEmail = voteUserEmailById.get(v.approverUserId) || "";
+    const p = eligible.find((candidate) => {
+      const byUserId = Boolean(candidate.participantUserId && candidate.participantUserId === v.approverUserId);
+      const byEmail = Boolean(vEmail && normalizeEmail(candidate.participantEmail || "") === vEmail);
+      return byUserId || byEmail;
+    });
+    const bps = p ? p.weightBps : 0;
+    if (String(v.decision).toLowerCase() === "approve") approveBps += bps;
+    if (String(v.decision).toLowerCase() === "reject") rejectBps += bps;
+  }
+
+  const status = approveBps >= (ctx.auth.approvalBpsTarget ?? 6667) ? "APPROVED" : "PENDING";
+  await prisma.derivativeAuthorization.update({
+    where: { id: ctx.auth.id },
+    data: {
+      approvedApprovers: votes.filter((v) => String(v.decision).toLowerCase() === "approve").length,
+      approveWeightBps: approveBps,
+      rejectWeightBps: rejectBps,
+      status
+    }
+  });
+
+  if (status === "APPROVED" && !link.approvedAt) {
+    await prisma.contentLink.update({
+      where: { id: link.id },
+      data: { approvedAt: new Date(), approvedByUserId: ctx.inviteUserId, requiresApproval: true }
+    });
+    await prisma.clearanceRequest.updateMany({
+      where: { contentLinkId: link.id, status: "PENDING" },
+      data: { status: "CLEARED" }
+    });
+  }
+
+  return reply.type("text/plain").send("Thanks — your clearance response has been recorded.");
+});
+
 // External clearance page (no login required)
 app.get("/clearance/:token", async (req: any, reply) => {
   const token = asString((req.params as any).token);
@@ -33807,6 +34018,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       });
       const approverCount = eligible.length;
       const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
+      const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
       const approvalTokenModel = (prisma as any).approvalToken;
       clearanceInbox = await Promise.all(
         auths.map(async (auth) => {
@@ -33840,7 +34052,10 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
             approvedApprovers: auth.approvedApprovers ?? 0,
             approverCount,
-            clearanceUrl: clearanceToken?.token ? `${clearanceBase}/clearance/${clearanceToken.token}` : null
+            clearanceUrl:
+              clearanceToken?.token
+                ? `${clearanceBase}/clearance/${clearanceToken.token}`
+                : `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
           };
         })
       );
