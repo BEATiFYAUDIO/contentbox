@@ -8612,8 +8612,12 @@ function detectTunnelControlMode() {
     } catch {}
   }
 
+  const hasServiceOwnedActiveToken =
+    activeServiceTokenProcess ||
+    (serviceScriptHasToken && activeProcessToken && !activeAppManagedTokenProcess);
+
   const mode: "service_token" | "local_config" | "unknown" =
-    activeProcessToken || serviceScriptHasToken
+    hasServiceOwnedActiveToken
       ? "service_token"
       : activeProcessConfig || localConfigPresent
         ? "local_config"
@@ -8642,6 +8646,9 @@ function detectTunnelControlMode() {
 
 function shouldDeferNamedTunnelToServiceControl() {
   const tc = detectTunnelControlMode();
+  if (process.platform !== "win32") {
+    return { shouldDefer: false, tunnelControl: tc };
+  }
   const shouldDefer =
     tc.mode === "service_token" &&
     Boolean(tc.activeServiceTokenProcess) &&
@@ -8692,7 +8699,6 @@ async function refreshNamedHealth(origin: string) {
   namedHealthCache.inflight = true;
   try {
     const defer = shouldDeferNamedTunnelToServiceControl();
-    if (defer.shouldDefer) reconcileNamedTunnelOwnership();
     const localOk = defer.shouldDefer ? true : await checkLocalPublicHealth();
     const publicOk = await checkPublicPing(origin);
     const namedConnectedOk = publicOk ? true : await checkNamedTunnelConnected().catch(() => false);
@@ -8740,7 +8746,6 @@ function getPublicLinkState(): PublicLinkState {
 }
 
 function getPublicStatus() {
-  reconcileNamedTunnelOwnership();
   const state = getPublicLinkState();
   const cloudflared = getCloudflaredStatus();
   const tunnelControl = detectTunnelControlMode();
