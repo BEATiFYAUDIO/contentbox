@@ -22012,6 +22012,56 @@ async function getCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDetails> 
   };
 }
 
+const PROFILE_RUNTIME_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.PROFILE_RUNTIME_CACHE_TTL_MS || "15000")
+);
+let creatorSignalNodeDetailsCache:
+  | { expiresAt: number; value: CreatorSignalNodeDetails }
+  | null = null;
+let profileServiceModeCache:
+  | {
+      expiresAt: number;
+      value: "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+    }
+  | null = null;
+
+async function getCachedCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDetails> {
+  const now = Date.now();
+  if (creatorSignalNodeDetailsCache && creatorSignalNodeDetailsCache.expiresAt > now) {
+    return creatorSignalNodeDetailsCache.value;
+  }
+  const value = await getCreatorSignalNodeDetails();
+  creatorSignalNodeDetailsCache = {
+    expiresAt: now + PROFILE_RUNTIME_CACHE_TTL_MS,
+    value
+  };
+  return value;
+}
+
+async function getCachedProfileServiceMode(): Promise<
+  "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node"
+> {
+  const now = Date.now();
+  if (profileServiceModeCache && profileServiceModeCache.expiresAt > now) {
+    return profileServiceModeCache.value;
+  }
+  const profileCapabilityCtx = getCapabilityContext();
+  const profileProviderConnection = deriveProviderCommerceConnectionState();
+  const profileSovereignReadiness = await getLocalSovereignReadiness();
+  const value = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
+    localSovereignReady: profileSovereignReadiness.ready,
+    providerConnected: profileProviderConnection.providerConnected,
+    ctx: profileCapabilityCtx
+  }).participationMode as "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+  profileServiceModeCache = {
+    expiresAt: now + PROFILE_RUNTIME_CACHE_TTL_MS,
+    value
+  };
+  return value;
+}
+
 function computeCreatorSignal(
   proofs: Array<{ proofType?: string | null; subject?: string | null; claimJson?: unknown }>,
   nodeDetails?: CreatorSignalNodeDetails | null
@@ -22487,6 +22537,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       featureOnProfile: true
     },
     orderBy: { createdAt: "desc" },
+    take: 12,
     select: {
       id: true,
       title: true,
@@ -22592,18 +22643,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     if (subjectRaw.startsWith("nostr:")) return false;
     return true;
   });
-  const creatorSignalNodeDetails = await getCreatorSignalNodeDetails();
+  const creatorSignalNodeDetails = await getCachedCreatorSignalNodeDetails();
   const creatorSignal = computeCreatorSignal(verifiedProofs as any, creatorSignalNodeDetails);
   const creatorSignalPercent = creatorSignal.percent;
-  const profileCapabilityCtx = getCapabilityContext();
-  const profileProviderConnection = deriveProviderCommerceConnectionState();
-  const profileSovereignReadiness = await getLocalSovereignReadiness();
-  const profileServiceMode = resolveProviderServiceProfile({
-    hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
-    localSovereignReady: profileSovereignReadiness.ready,
-    providerConnected: profileProviderConnection.providerConnected,
-    ctx: profileCapabilityCtx
-  }).participationMode;
+  const profileServiceMode = await getCachedProfileServiceMode();
   const profilePostureBadgeLabel =
     profileServiceMode === "sovereign_node"
       ? "Sovereign Node"
