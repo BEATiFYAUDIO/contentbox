@@ -12701,7 +12701,10 @@ function setRemoteParticipationProfileHighlight(input: {
   }
   const rows = listRemoteParticipationProfileHighlightRows();
   const now = new Date().toISOString();
-  const idx = rows.findIndex((row) => row.userId === userId && row.remoteInviteId === remoteInviteId);
+  const idx = rows.findIndex((row) => {
+    if (row.userId !== userId || row.remoteInviteId !== remoteInviteId) return false;
+    return asString(row.contentId || "").trim() === asString(contentId || "").trim();
+  });
   if (idx >= 0) {
     rows[idx] = { ...rows[idx], enabled, contentId, updatedAt: now };
     writeRemoteParticipationProfileHighlightRows(rows);
@@ -12906,9 +12909,7 @@ async function listLockedParticipationsForUser(userId: string): Promise<Particip
 // Remote royalties summary (for invited remote splits)
 app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const remoteHighlights = new Set(
-    listProfileHighlightedRemoteParticipationsForUser(userId).map((row) => row.remoteInviteId)
-  );
+  const remoteHighlights = listProfileHighlightedRemoteParticipationsForUser(userId);
   const list = await prisma.remoteInvite.findMany({
     where: { userId },
     orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
@@ -13018,7 +13019,12 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       payoutState: accounting?.payoutState || "none",
       destinationState: accounting?.destinationState || "unknown",
       clearanceInbox: accounting?.clearanceInbox || [],
-      highlightedOnProfile: remoteHighlights.has(inv.id),
+      highlightedOnProfile: remoteHighlights.some((row) => {
+        if (row.remoteInviteId !== inv.id) return false;
+        const highlightedContentId = asString(row.contentId || "").trim();
+        if (!highlightedContentId) return true;
+        return highlightedContentId === asString(contentId || "").trim();
+      }),
       createdAt: inv.createdAt.toISOString()
       };
     })
@@ -23111,39 +23117,73 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       byInviteId.set(String(row.id), row);
     }
     const rows = Array.from(byInviteId.values());
-    const recordByInviteId = new Map(highlightedRemoteParticipationRecords.map((row) => [row.remoteInviteId, row]));
+    const highlightedRecordsByInviteId = new Map<string, RemoteParticipationProfileHighlightRecord[]>();
+    for (const row of highlightedRemoteParticipationRecords) {
+      const key = asString(row.remoteInviteId || "").trim();
+      if (!key) continue;
+      const prev = highlightedRecordsByInviteId.get(key) || [];
+      prev.push(row);
+      highlightedRecordsByInviteId.set(key, prev);
+    }
     const resolved = await Promise.all(
       rows.map(async (row) => {
         if (normalizeRemoteInviteStatusForList(row as any) !== "accepted") return [] as any[];
-        const requestedContentId = asString(recordByInviteId.get(row.id)?.contentId || "").trim();
+        const selectedRecords = highlightedRecordsByInviteId.get(String(row.id)) || [];
+        const selectedContentIds = Array.from(
+          new Set(
+            selectedRecords
+              .map((entry) => asString(entry.contentId || "").trim())
+              .filter(Boolean)
+          )
+        );
+        const hasUnscopedHighlight = selectedRecords.some((entry) => !asString(entry.contentId || "").trim());
         const token = extractInviteTokenFromUrl(row.inviteUrl || null);
         const accounting = token ? await fetchRemoteInviteAccounting(row.remoteOrigin, token) : null;
         const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
 
-        const highlightedMatch = requestedContentId
-          ? inbox.find((entry: any) => asString(entry?.childContentId || "").trim() === requestedContentId)
-          : null;
-        if (requestedContentId) {
-          const contentId = asString(highlightedMatch?.childContentId || requestedContentId || row.contentId || "").trim();
-          if (!contentId) return [] as any[];
-          const contentStatus = asString(row.contentStatus || "").trim().toLowerCase();
-          const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
-          if (!highlightedMatch && (contentStatus !== "published" || contentDeletedAt)) return [] as any[];
-          return [
-            {
-              ...row,
-              parentContentId: asString(row.contentId || "").trim() || null,
-              contentId,
-              contentTitle: asString(highlightedMatch?.childTitle || row.contentTitle || "").trim() || "Untitled",
-              contentType: asString(highlightedMatch?.relation || row.contentType || "").trim() || "derivative",
-              derivativeParentTitle: asString(highlightedMatch?.parentTitle || row.contentTitle || "").trim() || null,
-              derivativeRelation: asString(highlightedMatch?.relation || "").trim().toLowerCase() || null
-            }
-          ] as any[];
+        if (selectedContentIds.length > 0) {
+          const selectedRows = selectedContentIds
+            .map((selectedContentId) => {
+              const highlightedMatch = inbox.find((entry: any) => asString(entry?.childContentId || "").trim() === selectedContentId);
+              const contentId = asString(highlightedMatch?.childContentId || selectedContentId || "").trim();
+              if (!contentId) return null;
+              const contentStatus = asString(row.contentStatus || "").trim().toLowerCase();
+              const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
+              if (!highlightedMatch && (contentStatus !== "published" || contentDeletedAt)) return null;
+              return {
+                ...row,
+                parentContentId: asString(highlightedMatch?.parentContentId || row.contentId || "").trim() || null,
+                contentId,
+                contentTitle: asString(highlightedMatch?.childTitle || row.contentTitle || "").trim() || "Untitled",
+                contentType: asString(highlightedMatch?.relation || row.contentType || "").trim() || "derivative",
+                derivativeParentTitle: asString(highlightedMatch?.parentTitle || row.contentTitle || "").trim() || null,
+                derivativeRelation: asString(highlightedMatch?.relation || "").trim().toLowerCase() || null
+              };
+            })
+            .filter(Boolean);
+          if (selectedRows.length > 0) return selectedRows as any[];
         }
 
-        // Auto-surface approved remote derivatives as collaboration items for shareholders.
-        return inbox
+        // Auto-surface invite content plus approved remote derivatives when invite-level highlighting is enabled.
+        if (!hasUnscopedHighlight) return [] as any[];
+        const baseContentId = asString(row.contentId || "").trim();
+        const baseStatus = asString(row.contentStatus || "").trim().toLowerCase();
+        const baseDeletedAt = asString(row.contentDeletedAt || "").trim();
+        const baseRows =
+          baseContentId && baseStatus === "published" && !baseDeletedAt
+            ? [
+                {
+                  ...row,
+                  parentContentId: null,
+                  contentId: baseContentId,
+                  contentTitle: asString(row.contentTitle || "").trim() || "Untitled",
+                  contentType: asString(row.contentType || "").trim() || "participation",
+                  derivativeParentTitle: null,
+                  derivativeRelation: null
+                }
+              ]
+            : [];
+        const derivativeRows = inbox
           .filter((entry: any) => {
             const childContentId = asString(entry?.childContentId || "").trim();
             if (!childContentId) return false;
@@ -23159,6 +23199,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             derivativeParentTitle: asString(entry?.parentTitle || row.contentTitle || "").trim() || null,
             derivativeRelation: asString(entry?.relation || "").trim().toLowerCase() || null
           })) as any[];
+        return [...baseRows, ...derivativeRows] as any[];
       })
     );
     const merged = resolved.flat().filter(Boolean);
