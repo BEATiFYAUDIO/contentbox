@@ -392,7 +392,7 @@ export default function App() {
     const t = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
       refresh();
-    }, 30000);
+    }, 60000);
     return () => {
       alive = false;
       window.clearInterval(t);

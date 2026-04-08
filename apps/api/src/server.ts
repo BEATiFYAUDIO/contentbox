@@ -646,6 +646,7 @@ function isShareablePublicOrigin(value: string | null | undefined): boolean {
 }
 
 const originReachabilityCache = new Map<string, { reachable: boolean; checkedAt: number }>();
+const originReachabilityInflight = new Map<string, Promise<boolean>>();
 
 async function isOriginReachable(origin: string | null | undefined): Promise<boolean> {
   const normalized = normalizeOrigin(origin);
@@ -653,20 +654,30 @@ async function isOriginReachable(origin: string | null | undefined): Promise<boo
   const now = Date.now();
   const cached = originReachabilityCache.get(normalized);
   if (cached && now - cached.checkedAt < 15000) return cached.reachable;
+  const inflight = originReachabilityInflight.get(normalized);
+  if (inflight) return inflight;
 
-  const endpoints = [`${normalized}/api/health`, `${normalized}/health`, `${normalized}/public/ping`];
-  let reachable = false;
-  for (const url of endpoints) {
-    try {
-      const res = await fetchWithTimeout(url, { method: "GET" } as any, 2500);
-      if (res.ok) {
-        reachable = true;
-        break;
-      }
-    } catch {}
+  const work = (async () => {
+    const endpoints = [`${normalized}/api/health`, `${normalized}/health`, `${normalized}/public/ping`];
+    let reachable = false;
+    for (const url of endpoints) {
+      try {
+        const res = await fetchWithTimeout(url, { method: "GET" } as any, 2500);
+        if (res.ok) {
+          reachable = true;
+          break;
+        }
+      } catch {}
+    }
+    originReachabilityCache.set(normalized, { reachable, checkedAt: Date.now() });
+    return reachable;
+  })();
+  originReachabilityInflight.set(normalized, work);
+  try {
+    return await work;
+  } finally {
+    originReachabilityInflight.delete(normalized);
   }
-  originReachabilityCache.set(normalized, { reachable, checkedAt: now });
-  return reachable;
 }
 
 async function resolveShareableInviteOrigin(req: any): Promise<string | null> {
@@ -12341,6 +12352,16 @@ const remoteInviteAccountingCache = new Map<string, { expiresAt: number; value: 
   clearanceInbox: any[];
 } | null }>();
 const remoteInviteSnapshotCache = new Map<string, { expiresAt: number; value: any | null }>();
+const remoteInviteAccountingInflight = new Map<string, Promise<{
+  earnedSatsToDate: string;
+  settlementLineCount: number;
+  payoutRows: number;
+  payoutSummary: Record<string, number>;
+  payoutState: "none" | "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked" | "mixed";
+  destinationState: "unknown" | "resolved" | "unresolved";
+  clearanceInbox: any[];
+} | null>>();
+const remoteInviteSnapshotInflight = new Map<string, Promise<any | null>>();
 
 async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string): Promise<{
   earnedSatsToDate: string;
@@ -12357,51 +12378,61 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
   if (cached && cached.expiresAt > now) {
     return cached.value;
   }
+  const inflight = remoteInviteAccountingInflight.get(cacheKey);
+  if (inflight) return inflight;
   const origin = normalizeRemoteOrigin(remoteOrigin);
   if (!origin || !token) return null;
-  if (!(await isOriginReachable(origin))) return null;
-  try {
-    const res = await fetchWithTimeout(
-      `${origin}/invites/${encodeURIComponent(token)}/accounting`,
-      { method: "GET", headers: { Accept: "application/json" } as any } as any,
-      8000
-    );
-    if (!res.ok) return null;
-    const payload: any = await res.json().catch(() => null);
-    if (!payload || payload.ok !== true) return null;
-    if (process.env.NODE_ENV !== "production") {
-      const inbox = Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : [];
-      app.log.info(
-        {
-          origin,
-          tokenId: token.slice(0, 8),
-          hasClearanceInbox: Array.isArray(payload?.clearanceInbox),
-          clearanceInboxCount: inbox.length,
-          payloadKeys: Object.keys(payload || {}).slice(0, 8)
-        },
-        "remoteInvite.accounting_shaping"
+  const work = (async () => {
+    if (!(await isOriginReachable(origin))) return null;
+    try {
+      const res = await fetchWithTimeout(
+        `${origin}/invites/${encodeURIComponent(token)}/accounting`,
+        { method: "GET", headers: { Accept: "application/json" } as any } as any,
+        8000
       );
+      if (!res.ok) return null;
+      const payload: any = await res.json().catch(() => null);
+      if (!payload || payload.ok !== true) return null;
+      if (process.env.NODE_ENV !== "production") {
+        const inbox = Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : [];
+        app.log.info(
+          {
+            origin,
+            tokenId: token.slice(0, 8),
+            hasClearanceInbox: Array.isArray(payload?.clearanceInbox),
+            clearanceInboxCount: inbox.length,
+            payloadKeys: Object.keys(payload || {}).slice(0, 8)
+          },
+          "remoteInvite.accounting_shaping"
+        );
+      }
+      const value = {
+        earnedSatsToDate: String(payload?.totals?.earnedSats || "0"),
+        settlementLineCount: Number(payload?.totals?.settlementLineCount || 0),
+        payoutRows: Number(payload?.totals?.payoutRows || 0),
+        payoutSummary: (payload?.totals?.payoutSummary || {}) as Record<string, number>,
+        payoutState: (payload?.totals?.payoutState || "none") as any,
+        destinationState: (payload?.totals?.destinationState || "unknown") as any,
+        clearanceInbox: Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : []
+      };
+      remoteInviteAccountingCache.set(cacheKey, {
+        expiresAt: Date.now() + REMOTE_INVITE_FETCH_CACHE_TTL_MS,
+        value
+      });
+      return value;
+    } catch {
+      remoteInviteAccountingCache.set(cacheKey, {
+        expiresAt: Date.now() + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
+        value: null
+      });
+      return null;
     }
-    const value = {
-      earnedSatsToDate: String(payload?.totals?.earnedSats || "0"),
-      settlementLineCount: Number(payload?.totals?.settlementLineCount || 0),
-      payoutRows: Number(payload?.totals?.payoutRows || 0),
-      payoutSummary: (payload?.totals?.payoutSummary || {}) as Record<string, number>,
-      payoutState: (payload?.totals?.payoutState || "none") as any,
-      destinationState: (payload?.totals?.destinationState || "unknown") as any,
-      clearanceInbox: Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : []
-    };
-    remoteInviteAccountingCache.set(cacheKey, {
-      expiresAt: now + REMOTE_INVITE_FETCH_CACHE_TTL_MS,
-      value
-    });
-    return value;
-  } catch {
-    remoteInviteAccountingCache.set(cacheKey, {
-      expiresAt: now + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
-      value: null
-    });
-    return null;
+  })();
+  remoteInviteAccountingInflight.set(cacheKey, work);
+  try {
+    return await work;
+  } finally {
+    remoteInviteAccountingInflight.delete(cacheKey);
   }
 }
 
@@ -12412,29 +12443,39 @@ async function fetchRemoteInviteSnapshot(remoteOrigin: string, token: string): P
   if (cached && cached.expiresAt > now) {
     return cached.value;
   }
+  const inflight = remoteInviteSnapshotInflight.get(cacheKey);
+  if (inflight) return inflight;
   const origin = normalizeRemoteOrigin(remoteOrigin);
   if (!origin || !token) return null;
-  if (!(await isOriginReachable(origin))) return null;
+  const work = (async () => {
+    if (!(await isOriginReachable(origin))) return null;
+    try {
+      const res = await fetchWithTimeout(
+        `${origin}/invites/${encodeURIComponent(token)}`,
+        { method: "GET", headers: { Accept: "application/json" } as any } as any,
+        8000
+      );
+      if (!res.ok) return null;
+      const payload: any = await res.json().catch(() => null);
+      if (!payload || typeof payload !== "object") return null;
+      remoteInviteSnapshotCache.set(cacheKey, {
+        expiresAt: Date.now() + REMOTE_INVITE_FETCH_CACHE_TTL_MS,
+        value: payload
+      });
+      return payload;
+    } catch {
+      remoteInviteSnapshotCache.set(cacheKey, {
+        expiresAt: Date.now() + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
+        value: null
+      });
+      return null;
+    }
+  })();
+  remoteInviteSnapshotInflight.set(cacheKey, work);
   try {
-    const res = await fetchWithTimeout(
-      `${origin}/invites/${encodeURIComponent(token)}`,
-      { method: "GET", headers: { Accept: "application/json" } as any } as any,
-      8000
-    );
-    if (!res.ok) return null;
-    const payload: any = await res.json().catch(() => null);
-    if (!payload || typeof payload !== "object") return null;
-    remoteInviteSnapshotCache.set(cacheKey, {
-      expiresAt: now + REMOTE_INVITE_FETCH_CACHE_TTL_MS,
-      value: payload
-    });
-    return payload;
-  } catch {
-    remoteInviteSnapshotCache.set(cacheKey, {
-      expiresAt: now + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
-      value: null
-    });
-    return null;
+    return await work;
+  } finally {
+    remoteInviteSnapshotInflight.delete(cacheKey);
   }
 }
 

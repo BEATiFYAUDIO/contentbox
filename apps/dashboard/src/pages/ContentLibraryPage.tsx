@@ -1024,7 +1024,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     const timer = setInterval(() => {
       if (document.visibilityState !== "visible") return;
       refreshPublicStatus();
-    }, 30000);
+    }, 60000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -1084,7 +1084,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           loadParentLink(id);
         }
       });
-    }, 20000);
+    }, 45000);
 
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps

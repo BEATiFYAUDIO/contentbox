@@ -441,7 +441,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       if (document.visibilityState === "visible") {
         void load();
       }
-    }, 30000);
+    }, 45000);
     return () => window.clearInterval(tick);
   }, [load]);
 
