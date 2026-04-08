@@ -8640,12 +8640,46 @@ const namedHealthCache: { ok: boolean | null; checkedAt: number | null; inflight
   checkedAt: null,
   inflight: false
 };
+let lastNamedOwnershipReconcileAt = 0;
+
+function reconcileNamedTunnelOwnership(force = false) {
+  const now = Date.now();
+  if (!force && now - lastNamedOwnershipReconcileAt < 15_000) return;
+  lastNamedOwnershipReconcileAt = now;
+
+  const defer = shouldDeferNamedTunnelToServiceControl();
+  if (!defer.shouldDefer) return;
+
+  const st = tunnelManager.status();
+  if (st.status === "ACTIVE" || st.status === "STARTING") {
+    tunnelManager.stop().catch((e) => app.log.warn(String(e?.message || e)));
+  }
+
+  if (process.platform === "win32") {
+    try {
+      const escapedPort = String(PUBLIC_HTTP_PORT).replace(/[^\d]/g, "");
+      const cmd = [
+        "$procs = Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object {",
+        "  $_.CommandLine -and",
+        "  ($_.CommandLine -match 'contentbox-data\\\\\\\\.bin\\\\\\\\cloudflared\\\\.exe') -and",
+        "  ($_.CommandLine -match 'tunnel\\\\s+run') -and",
+        "  ($_.CommandLine -match '--token') -and",
+        `  ($_.CommandLine -match '--url\\\\s+http://127\\\\.0\\\\.0\\\\.1:${escapedPort}')`,
+        "};",
+        "foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }"
+      ].join(" ");
+      spawnSync("powershell", ["-NoProfile", "-Command", cmd], { stdio: "ignore" });
+    } catch {}
+  }
+}
 
 async function refreshNamedHealth(origin: string) {
   if (namedHealthCache.inflight) return;
   namedHealthCache.inflight = true;
   try {
-    const localOk = await checkLocalPublicHealth();
+    const defer = shouldDeferNamedTunnelToServiceControl();
+    if (defer.shouldDefer) reconcileNamedTunnelOwnership();
+    const localOk = defer.shouldDefer ? true : await checkLocalPublicHealth();
     const publicOk = await checkPublicPing(origin);
     const namedConnectedOk = publicOk ? true : await checkNamedTunnelConnected().catch(() => false);
     const ok = Boolean(localOk && (publicOk || namedConnectedOk));
@@ -8692,6 +8726,7 @@ function getPublicLinkState(): PublicLinkState {
 }
 
 function getPublicStatus() {
+  reconcileNamedTunnelOwnership();
   const state = getPublicLinkState();
   const cloudflared = getCloudflaredStatus();
   const tunnelControl = detectTunnelControlMode();
@@ -8787,6 +8822,7 @@ async function triggerPublicStartBestEffort() {
     if (!cfg) return;
     const defer = shouldDeferNamedTunnelToServiceControl();
     if (defer.shouldDefer) {
+      reconcileNamedTunnelOwnership(true);
       app.log.info(
         { mode: defer.tunnelControl.mode, activeProcessToken: defer.tunnelControl.activeProcessToken },
         "public.named.defer_to_service_control"
@@ -18148,6 +18184,7 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
     }
     const defer = shouldDeferNamedTunnelToServiceControl();
     if (defer.shouldDefer) {
+      reconcileNamedTunnelOwnership(true);
       return reply.send({
         ...getPublicStatus(),
         message: "Service-managed cloudflared tunnel is active; app-managed named tunnel start skipped."
@@ -23032,48 +23069,88 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .slice(0, 12);
   const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
   const highlightedRemoteParticipationIds = new Set(highlightedRemoteParticipationRecords.map((row) => row.remoteInviteId));
-  const highlightedRemoteParticipations = highlightedRemoteParticipationIds.size
-    ? await (async () => {
-        const inviteRows = await prisma.remoteInvite.findMany({
+  const highlightedRemoteParticipations = await (async () => {
+    const highlightedRows = highlightedRemoteParticipationIds.size
+      ? await prisma.remoteInvite.findMany({
           where: {
             userId: user.id,
             id: { in: Array.from(highlightedRemoteParticipationIds) }
           },
           orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
-        });
-        const recordByInviteId = new Map(highlightedRemoteParticipationRecords.map((row) => [row.remoteInviteId, row]));
-        const resolved = await Promise.all(
-          inviteRows.map(async (row) => {
-            if (normalizeRemoteInviteStatusForList(row as any) !== "accepted") return null;
-            const requestedContentId = asString(recordByInviteId.get(row.id)?.contentId || "").trim();
-            const token = extractInviteTokenFromUrl(row.inviteUrl || null);
-            const accounting =
-              token && requestedContentId
-                ? await fetchRemoteInviteAccounting(row.remoteOrigin, token)
-                : null;
-            const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
-            const childMatch = requestedContentId
-              ? inbox.find((entry: any) => asString(entry?.childContentId || "").trim() === requestedContentId)
-              : null;
-            const contentId = asString(childMatch?.childContentId || requestedContentId || row.contentId || "").trim();
-            const contentStatus = asString(row.contentStatus || "").trim().toLowerCase();
-            const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
-            if (!contentId) return null;
-            if (!childMatch && !requestedContentId && (contentStatus !== "published" || contentDeletedAt)) return null;
-            return {
+        })
+      : [];
+    const autoRows = await prisma.remoteInvite.findMany({
+      where: {
+        userId: user.id,
+        acceptedAt: { not: null }
+      },
+      orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
+      take: 16
+    });
+    const byInviteId = new Map<string, any>();
+    for (const row of [...highlightedRows, ...autoRows]) {
+      byInviteId.set(String(row.id), row);
+    }
+    const rows = Array.from(byInviteId.values());
+    const recordByInviteId = new Map(highlightedRemoteParticipationRecords.map((row) => [row.remoteInviteId, row]));
+    const resolved = await Promise.all(
+      rows.map(async (row) => {
+        if (normalizeRemoteInviteStatusForList(row as any) !== "accepted") return [] as any[];
+        const requestedContentId = asString(recordByInviteId.get(row.id)?.contentId || "").trim();
+        const token = extractInviteTokenFromUrl(row.inviteUrl || null);
+        const accounting = token ? await fetchRemoteInviteAccounting(row.remoteOrigin, token) : null;
+        const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
+
+        const highlightedMatch = requestedContentId
+          ? inbox.find((entry: any) => asString(entry?.childContentId || "").trim() === requestedContentId)
+          : null;
+        if (requestedContentId) {
+          const contentId = asString(highlightedMatch?.childContentId || requestedContentId || row.contentId || "").trim();
+          if (!contentId) return [] as any[];
+          const contentStatus = asString(row.contentStatus || "").trim().toLowerCase();
+          const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
+          if (!highlightedMatch && (contentStatus !== "published" || contentDeletedAt)) return [] as any[];
+          return [
+            {
               ...row,
               parentContentId: asString(row.contentId || "").trim() || null,
               contentId,
-              contentTitle: asString(childMatch?.childTitle || row.contentTitle || "").trim() || "Untitled",
-              contentType: asString(childMatch?.relation || row.contentType || "").trim() || "derivative",
-              derivativeParentTitle: asString(childMatch?.parentTitle || row.contentTitle || "").trim() || null,
-              derivativeRelation: asString(childMatch?.relation || "").trim().toLowerCase() || null
-            };
+              contentTitle: asString(highlightedMatch?.childTitle || row.contentTitle || "").trim() || "Untitled",
+              contentType: asString(highlightedMatch?.relation || row.contentType || "").trim() || "derivative",
+              derivativeParentTitle: asString(highlightedMatch?.parentTitle || row.contentTitle || "").trim() || null,
+              derivativeRelation: asString(highlightedMatch?.relation || "").trim().toLowerCase() || null
+            }
+          ] as any[];
+        }
+
+        // Auto-surface approved remote derivatives as collaboration items for shareholders.
+        return inbox
+          .filter((entry: any) => {
+            const childContentId = asString(entry?.childContentId || "").trim();
+            if (!childContentId) return false;
+            const status = asString(entry?.status || "").trim().toUpperCase();
+            return status === "APPROVED";
           })
-        );
-        return resolved.filter(Boolean).slice(0, 12) as any[];
-      })()
-    : [];
+          .map((entry: any) => ({
+            ...row,
+            parentContentId: asString(entry?.parentContentId || row.contentId || "").trim() || null,
+            contentId: asString(entry?.childContentId || "").trim(),
+            contentTitle: asString(entry?.childTitle || "").trim() || "Untitled",
+            contentType: asString(entry?.relation || "derivative").trim() || "derivative",
+            derivativeParentTitle: asString(entry?.parentTitle || row.contentTitle || "").trim() || null,
+            derivativeRelation: asString(entry?.relation || "").trim().toLowerCase() || null
+          })) as any[];
+      })
+    );
+    const merged = resolved.flat().filter(Boolean);
+    const unique = new Map<string, any>();
+    for (const item of merged) {
+      const key = `${asString(item?.remoteOrigin || "").trim()}::${asString(item?.contentId || "").trim()}`;
+      if (!key || unique.has(key)) continue;
+      unique.set(key, item);
+    }
+    return Array.from(unique.values()).slice(0, 12) as any[];
+  })();
   app.log.info(
     {
       userId: user.id,
@@ -23604,7 +23681,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       highlightedParticipationsHtml
         ? `<section class="section">
     <h3>Collaborations</h3>
-    <div class="line muted">Profile-highlighted participation credits from locked split snapshots.</div>
+    <div class="line muted">Profile-highlighted participation credits and approved derivative collaborations.</div>
     <div class="line featured-grid">${highlightedParticipationsHtml}</div>
   </section>`
         : ""
@@ -33826,6 +33903,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
     if (cfg) {
       const defer = shouldDeferNamedTunnelToServiceControl();
       if (defer.shouldDefer) {
+        reconcileNamedTunnelOwnership(true);
         app.log.info(
           { mode: defer.tunnelControl.mode, activeProcessToken: defer.tunnelControl.activeProcessToken },
           "invite.named.defer_to_service_control"
