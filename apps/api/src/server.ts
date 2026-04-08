@@ -8547,7 +8547,9 @@ function toEpochMs(value: string | null | undefined): number | null {
 
 function detectTunnelControlMode() {
   const serviceScriptPath = "/etc/init.d/cloudflared";
-  const localConfigPath = String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || path.join(os.homedir(), ".cloudflared", "config.yml");
+  const localConfigPath =
+    String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() ||
+    path.join(os.homedir(), ".cloudflared", "config.yml");
   const localConfigPresent = fsSync.existsSync(localConfigPath);
 
   let serviceScriptHasToken = false;
@@ -8562,18 +8564,41 @@ function detectTunnelControlMode() {
 
   let activeProcessToken = false;
   let activeProcessConfig = false;
-  try {
-    const ps = spawnSync("ps", ["-eo", "args"], { encoding: "utf8" });
-    const output = String(ps?.stdout || "");
-    for (const line of output.split("\n")) {
-      const lower = line.toLowerCase();
-      if (!lower.includes("cloudflared")) continue;
-      if (!lower.includes("tunnel")) continue;
-      if (!lower.includes("run")) continue;
-      if (lower.includes("--token")) activeProcessToken = true;
-      if (lower.includes("--config")) activeProcessConfig = true;
-    }
-  } catch {}
+  if (process.platform === "win32") {
+    try {
+      const ps = spawnSync(
+        "powershell",
+        [
+          "-NoProfile",
+          "-Command",
+          "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Select-Object -ExpandProperty CommandLine"
+        ],
+        { encoding: "utf8" }
+      );
+      const output = String(ps?.stdout || "");
+      for (const line of output.split("\n")) {
+        const lower = line.toLowerCase();
+        if (!lower.includes("cloudflared")) continue;
+        if (!lower.includes("tunnel")) continue;
+        if (!lower.includes("run")) continue;
+        if (lower.includes("--token")) activeProcessToken = true;
+        if (lower.includes("--config")) activeProcessConfig = true;
+      }
+    } catch {}
+  } else {
+    try {
+      const ps = spawnSync("ps", ["-eo", "args"], { encoding: "utf8" });
+      const output = String(ps?.stdout || "");
+      for (const line of output.split("\n")) {
+        const lower = line.toLowerCase();
+        if (!lower.includes("cloudflared")) continue;
+        if (!lower.includes("tunnel")) continue;
+        if (!lower.includes("run")) continue;
+        if (lower.includes("--token")) activeProcessToken = true;
+        if (lower.includes("--config")) activeProcessConfig = true;
+      }
+    } catch {}
+  }
 
   const mode: "service_token" | "local_config" | "unknown" =
     activeProcessToken || serviceScriptHasToken
@@ -8599,6 +8624,15 @@ function detectTunnelControlMode() {
     activeProcessToken,
     activeProcessConfig
   };
+}
+
+function shouldDeferNamedTunnelToServiceControl() {
+  const tc = detectTunnelControlMode();
+  const shouldDefer =
+    tc.mode === "service_token" &&
+    Boolean(tc.activeProcessToken) &&
+    !Boolean(tc.activeProcessConfig);
+  return { shouldDefer, tunnelControl: tc };
 }
 
 const namedHealthCache: { ok: boolean | null; checkedAt: number | null; inflight: boolean } = {
@@ -8751,6 +8785,14 @@ async function triggerPublicStartBestEffort() {
   if (state.mode === "named") {
     const cfg = getNamedTunnelConfig();
     if (!cfg) return;
+    const defer = shouldDeferNamedTunnelToServiceControl();
+    if (defer.shouldDefer) {
+      app.log.info(
+        { mode: defer.tunnelControl.mode, activeProcessToken: defer.tunnelControl.activeProcessToken },
+        "public.named.defer_to_service_control"
+      );
+      return;
+    }
     const cur = tunnelManager.status();
     if ((cur.status === "ACTIVE" || cur.status === "STARTING") && cur.publicOrigin === cfg.publicOrigin) return;
     const namedToken = getNamedTunnelToken();
@@ -18102,6 +18144,13 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
         ...getPublicStatus(),
         lastError: "named_token_missing",
         message: "Named tunnel requires a connector token. Add it in Config → Tunnel & routing."
+      });
+    }
+    const defer = shouldDeferNamedTunnelToServiceControl();
+    if (defer.shouldDefer) {
+      return reply.send({
+        ...getPublicStatus(),
+        message: "Service-managed cloudflared tunnel is active; app-managed named tunnel start skipped."
       });
     }
     const cur = tunnelManager.status();
@@ -33775,6 +33824,13 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
   } else if (state.mode === "named") {
     const cfg = getNamedTunnelConfig();
     if (cfg) {
+      const defer = shouldDeferNamedTunnelToServiceControl();
+      if (defer.shouldDefer) {
+        app.log.info(
+          { mode: defer.tunnelControl.mode, activeProcessToken: defer.tunnelControl.activeProcessToken },
+          "invite.named.defer_to_service_control"
+        );
+      } else {
       const namedToken = getNamedTunnelToken();
       tunnelManager.startNamed({
         publicOrigin: cfg.publicOrigin,
@@ -33782,6 +33838,7 @@ app.post("/split-versions/:id/invite", { preHandler: requireAuth }, async (req: 
         configPath: String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() || null,
         token: namedToken
       }).catch((e) => app.log.warn(String(e?.message || e)));
+      }
     }
   }
 
