@@ -34169,87 +34169,67 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       );
       return byUserId || byEmail;
     });
-    if (inviteIsEligible) {
-      const auths = await prisma.derivativeAuthorization.findMany({
-        where: { parentContentId },
-        include: {
-          derivativeLink: {
-            include: {
-              childContent: { select: { id: true, title: true, description: true, deletedAt: true } },
-              parentContent: { select: { id: true, title: true } }
-            }
-          },
-          votes: true
+    const auths = await prisma.derivativeAuthorization.findMany({
+      where: { parentContentId },
+      include: {
+        derivativeLink: {
+          include: {
+            childContent: { select: { id: true, title: true, description: true, deletedAt: true } },
+            parentContent: { select: { id: true, title: true } }
+          }
         },
-        orderBy: { createdAt: "desc" }
-      });
-      const actionableAuths = auths.filter((auth) => !auth.derivativeLink?.childContent?.deletedAt);
-      const approverCount = eligible.length;
-      const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
-      const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
-      const approvalTokenModel = (prisma as any).approvalToken;
-      clearanceInbox = await Promise.all(
-        actionableAuths.map(async (auth) => {
-          const viewerVote = inviteUserId
-            ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
+        votes: true
+      },
+      orderBy: { createdAt: "desc" }
+    });
+    const actionableAuths = auths.filter((auth) => !auth.derivativeLink?.childContent?.deletedAt);
+    const approverCount = eligible.length;
+    const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
+    const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
+    const approvalTokenModel = (prisma as any).approvalToken;
+    clearanceInbox = await Promise.all(
+      actionableAuths.map(async (auth) => {
+        const viewerVote = inviteUserId
+          ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
+          : null;
+        const clearanceToken =
+          approverEmailForToken && approvalTokenModel
+            ? await approvalTokenModel.findFirst({
+                where: {
+                  authorizationId: auth.id,
+                  approverEmail: emailEquals(approverEmailForToken),
+                  usedAt: null,
+                  expiresAt: { gt: new Date() }
+                },
+                orderBy: { createdAt: "desc" },
+                select: { token: true }
+              })
             : null;
-          const clearanceToken =
-            approverEmailForToken && approvalTokenModel
-              ? await approvalTokenModel.findFirst({
-                  where: {
-                    authorizationId: auth.id,
-                    approverEmail: emailEquals(approverEmailForToken),
-                    usedAt: null,
-                    expiresAt: { gt: new Date() }
-                  },
-                  orderBy: { createdAt: "desc" },
-                  select: { token: true }
-                })
-              : null;
-          return {
-            authorizationId: auth.id,
-            linkId: auth.derivativeLinkId,
-            parentContentId: auth.parentContentId,
-            parentTitle: auth.derivativeLink?.parentContent?.title || null,
-            childContentId: auth.derivativeLink?.childContentId || null,
-            childTitle: auth.derivativeLink?.childContent?.title || null,
-            childOrigin: getRemoteOriginFromDescription(auth.derivativeLink?.childContent?.description || null),
-            relation: auth.derivativeLink?.relation || "derivative",
-            status: auth.status,
-            viewerVote: viewerVote ? String(viewerVote).toLowerCase() : null,
-            approveWeightBps: auth.approveWeightBps ?? 0,
-            approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
-            approvedApprovers: auth.approvedApprovers ?? 0,
-            approverCount,
-            upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
-            clearanceUrl:
-              clearanceToken?.token
-                ? `${clearanceBase}/clearance/${clearanceToken.token}`
-                : `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
-          };
-        })
-      );
-      if (process.env.NODE_ENV !== "production") {
-        const first = clearanceInbox[0] || null;
-        app.log.info(
-          {
-            tokenId: token.slice(0, 8),
-            parentContentId,
-            inviteUserId: inviteUserId || null,
-            approverEmailForToken: approverEmailForToken || null,
-            eligibleCount: eligible.length,
-            inviteIsEligible,
-            authCount: actionableAuths.length,
-            approvalTokenModelPresent: Boolean(approvalTokenModel),
-            clearanceInboxCount: clearanceInbox.length,
-            firstAuthorizationId: first?.authorizationId || null,
-            firstStatus: first?.status || null,
-            firstClearanceUrl: first?.clearanceUrl || null
-          },
-          "invite.accounting.clearance_inbox_built"
-        );
-      }
-    } else if (process.env.NODE_ENV !== "production") {
+        return {
+          authorizationId: auth.id,
+          linkId: auth.derivativeLinkId,
+          parentContentId: auth.parentContentId,
+          parentTitle: auth.derivativeLink?.parentContent?.title || null,
+          childContentId: auth.derivativeLink?.childContentId || null,
+          childTitle: auth.derivativeLink?.childContent?.title || null,
+          childOrigin: getRemoteOriginFromDescription(auth.derivativeLink?.childContent?.description || null),
+          relation: auth.derivativeLink?.relation || "derivative",
+          status: auth.status,
+          viewerVote: viewerVote ? String(viewerVote).toLowerCase() : null,
+          approveWeightBps: auth.approveWeightBps ?? 0,
+          approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
+          approvedApprovers: auth.approvedApprovers ?? 0,
+          approverCount,
+          upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
+          clearanceUrl:
+            clearanceToken?.token
+              ? `${clearanceBase}/clearance/${clearanceToken.token}`
+              : `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
+        };
+      })
+    );
+    if (process.env.NODE_ENV !== "production") {
+      const first = clearanceInbox[0] || null;
       app.log.info(
         {
           tokenId: token.slice(0, 8),
@@ -34258,12 +34238,12 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approverEmailForToken: approverEmailForToken || null,
           eligibleCount: eligible.length,
           inviteIsEligible,
-          authCount: 0,
-          approvalTokenModelPresent: Boolean((prisma as any).approvalToken),
-          clearanceInboxCount: 0,
-          firstAuthorizationId: null,
-          firstStatus: null,
-          firstClearanceUrl: null
+          authCount: actionableAuths.length,
+          approvalTokenModelPresent: Boolean(approvalTokenModel),
+          clearanceInboxCount: clearanceInbox.length,
+          firstAuthorizationId: first?.authorizationId || null,
+          firstStatus: first?.status || null,
+          firstClearanceUrl: first?.clearanceUrl || null
         },
         "invite.accounting.clearance_inbox_built"
       );
