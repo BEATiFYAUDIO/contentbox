@@ -23155,7 +23155,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 parentContentId: asString(highlightedMatch?.parentContentId || row.contentId || "").trim() || null,
                 contentId,
                 contentTitle: asString(highlightedMatch?.childTitle || row.contentTitle || "").trim() || "Untitled",
-                contentType: asString(highlightedMatch?.relation || row.contentType || "").trim() || "derivative",
+                contentType: asString(row.contentType || highlightedMatch?.childType || highlightedMatch?.relation || "").trim() || "derivative",
                 derivativeParentTitle: asString(highlightedMatch?.parentTitle || row.contentTitle || "").trim() || null,
                 derivativeRelation: asString(highlightedMatch?.relation || "").trim().toLowerCase() || null
               };
@@ -23195,7 +23195,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             parentContentId: asString(entry?.parentContentId || row.contentId || "").trim() || null,
             contentId: asString(entry?.childContentId || "").trim(),
             contentTitle: asString(entry?.childTitle || "").trim() || "Untitled",
-            contentType: asString(entry?.relation || "derivative").trim() || "derivative",
+            contentType: asString(row.contentType || entry?.childType || entry?.relation || "").trim() || "derivative",
             derivativeParentTitle: asString(entry?.parentTitle || row.contentTitle || "").trim() || null,
             derivativeRelation: asString(entry?.relation || "").trim().toLowerCase() || null
           })) as any[];
@@ -23223,7 +23223,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     if (t === "video") return "Watch";
     if (t === "song") return "Listen";
     if (t === "book") return "Read";
-    return "Open";
+    return "View";
   };
   const participationMediaHtml = (params: {
     contentId: string;
@@ -23334,7 +23334,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               <div class="featured-meta" style="min-width:0;">
                 <div class="featured-topline">
                   <span class="featured-type-badge">${safeType || "Participation"}</span>
-                  ${isDerivative ? `<span class="featured-type-badge">Derivative</span>` : ""}
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
@@ -23741,7 +23740,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       highlightedParticipationsHtml
         ? `<section class="section">
     <h3>Collaborations</h3>
-    <div class="line muted">Profile-highlighted participation credits and approved derivative collaborations.</div>
+    <div class="line muted">Profile-highlighted participation credits and approved derivative collaborations. Action labels follow media type: Watch (video), Listen (song), Read (book), View (other).</div>
     <div class="line featured-grid">${highlightedParticipationsHtml}</div>
   </section>`
         : ""
