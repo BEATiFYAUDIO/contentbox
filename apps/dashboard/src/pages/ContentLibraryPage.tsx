@@ -1419,7 +1419,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   approvedApprovers: Array.isArray(cs.votes)
                     ? cs.votes.filter((v: any) => String(v.decision).toLowerCase() === "approve").length
                     : 0,
-                  approverCount: Array.isArray(cs.approvers) ? cs.approvers.length : 0
+                  approverCount: Array.isArray(cs.approvers) ? cs.approvers.length : 0,
+                  approvers: Array.isArray(cs.approvers) ? cs.approvers : [],
+                  votes: Array.isArray(cs.votes) ? cs.votes : []
                 }
               : (data as ParentLinkInfo).clearance
           };
@@ -2692,6 +2694,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           {approverCount || "?"}
                           {viewerVote ? ` • You ${viewerVote}` : ""}
                         </div>
+                        {Array.isArray(clearance?.approvers) && clearance.approvers.length > 0 ? (
+                          <div className="text-[11px] text-neutral-400 mt-1">
+                            Shareholders:{" "}
+                            <span className="text-neutral-200">
+                              {clearance.approvers
+                                .map((p: any) => p.displayName || p.participantEmail || p.participantUserId || "Unknown")
+                                .join(", ")}
+                            </span>
+                          </div>
+                        ) : null}
                         {!isRemoteApproval && requestStatus ? (
                           <div className="text-[11px] text-neutral-400 mt-1">
                             Request: {titleCase(requestStatus.toLowerCase())}
@@ -3539,6 +3551,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   {parentLink.parentSplit?.splitVersionId || "—"}
                                 </span>
                               </div>
+                              {Array.isArray(parentLink.clearance?.approvers) && parentLink.clearance.approvers.length > 0 ? (
+                                <div className="mt-1 text-[11px] text-neutral-400">
+                                  Parent shareholders:{" "}
+                                  <span className="text-neutral-200">
+                                    {parentLink.clearance.approvers
+                                      .map((a: any) => a.displayName || a.participantEmail || a.participantUserId || "Unknown")
+                                      .join(", ")}
+                                  </span>
+                                </div>
+                              ) : null}
                               <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
                                 <div className="flex items-center justify-between gap-2">
                                   <div className="text-[11px] font-medium text-neutral-200">Clearance / License for release</div>

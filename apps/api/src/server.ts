@@ -22153,20 +22153,56 @@ async function handlePublicAttribution(req: any, reply: any) {
 
   let upstream: {
     kind: "derivative";
-    items: Array<{ title: string | null; primaryCreator: { displayName: string; handle: string | null; verification: { badge: string | null } } }>;
+    items: Array<{
+      parentContentId: string | null;
+      title: string | null;
+      primaryCreator: { displayName: string; handle: string | null; verification: { badge: string | null } };
+      shareholders: Array<{ displayName: string; handle: string | null; profilePath: string | null; bps: number }>;
+    }>;
     truncated: boolean;
   } | null = null;
   if (parentLinks.length > 0) {
     const maxItems = 5;
-    const items = parentLinks.slice(0, maxItems).map((l) => ({
-      title: l.parentContent?.title || null,
-      primaryCreator:
-        toPublicCreator(l.parentContent?.owner) || {
-          displayName: "Creator",
-          handle: null,
-          verification: { badge: null as string | null }
-        }
-    }));
+    const items = await Promise.all(
+      parentLinks.slice(0, maxItems).map(async (l) => {
+        const parentContentId = asString(l.parentContent?.id || "").trim() || null;
+        const parentSplit = parentContentId ? await getLockedSplitForContent(parentContentId) : null;
+        const parentSnapshots = parentSplit ? await getLockedParticipantSnapshotsForSplitVersion(parentSplit.id) : [];
+        const shareholders = parentSnapshots
+          .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
+          .map((snapshot) => {
+            const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
+            const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
+            const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
+            const safeProfilePath =
+              normalizePublicProfileHref(snapshot.profilePathSnapshot || "") ||
+              (normalizedHandle && !looksLikeInternalUserId(normalizedHandle)
+                ? (snapshot.participantOrigin
+                    ? `${snapshot.participantOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
+                    : `/u/${encodeURIComponent(normalizedHandle)}`)
+                : null);
+            return {
+              displayName,
+              handle: safeHandle,
+              profilePath: safeProfilePath,
+              bps: Math.max(0, Math.round(Number(snapshot.bps || 0)))
+            };
+          })
+          .filter((s) => s.bps > 0)
+          .sort((a, b) => b.bps - a.bps);
+        return {
+          parentContentId,
+          title: l.parentContent?.title || null,
+          primaryCreator:
+            toPublicCreator(l.parentContent?.owner) || {
+              displayName: "Creator",
+              handle: null,
+              verification: { badge: null as string | null }
+            },
+          shareholders
+        };
+      })
+    );
     upstream = {
       kind: "derivative",
       items,
@@ -24463,8 +24499,39 @@ async function handleBuyPage(req: any, reply: any) {
             const pc = it?.primaryCreator || {};
             const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
             const phRaw = String(pc.handle || "").trim();
-            const ph = phRaw ? (" @" + esc(phRaw.replace(/^@/, ""))) : "";
-            return "<li>" + t + pn + ph + "</li>";
+            const normalizedHandle = normalizeHandleText(phRaw);
+            const ph = normalizedHandle ? (" @" + esc(normalizedHandle)) : "";
+            const creatorProfileHref = normalizedHandle ? "/u/" + encodeURIComponent(normalizedHandle) : "";
+            const creatorHtml = creatorProfileHref
+              ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\">" + pn + ph + "</a>")
+              : (pn + ph);
+            const parentAttributionUrl = it?.parentContentId
+              ? "/public/content/" + encodeURIComponent(String(it.parentContentId)) + "/attribution"
+              : "";
+            const shareholders = Array.isArray(it?.shareholders) ? it.shareholders : [];
+            const shareholdersHtml = shareholders.length > 0
+              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\">Shareholders: " + shareholders
+                  .slice(0, 6)
+                  .map((s) => {
+                    const sn = esc(String(s?.displayName || "Shareholder"));
+                    const shRaw = String(s?.handle || "").trim();
+                    const shNorm = normalizeHandleText(shRaw);
+                    const shLabel = shNorm ? (sn + " @" + esc(shNorm)) : sn;
+                    const pct = Number.isFinite(Number(s?.bps)) ? (Number(s.bps) / 100).toFixed(2) + "%" : "";
+                    const profileHref = String(s?.profilePath || "").trim();
+                    const linked = profileHref
+                      ? "<a href=\\"" + esc(profileHref) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(profileHref) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + shLabel + "</a>"
+                      : shLabel;
+                    return linked + (pct ? " (" + esc(pct) + ")" : "");
+                  })
+                  .join(" • ") +
+                (shareholders.length > 6 ? " • …" : "") +
+                "</div>"
+              : "";
+            const attributionLinkHtml = parentAttributionUrl
+              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(parentAttributionUrl) + "\\" style=\\"text-decoration:underline;\\">Original work attribution</a></div>"
+              : "";
+            return "<li>" + t + creatorHtml + shareholdersHtml + attributionLinkHtml + "</li>";
           }).join("") +
         "</ul>" +
         (upstream?.truncated ? "<div class=\\"muted\\" style=\\"margin-top:4px;\\">…and more</div>" : "");
