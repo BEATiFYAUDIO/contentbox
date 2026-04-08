@@ -17985,7 +17985,40 @@ app.post("/api/network/provider/execute-test", async (req: any, reply: any) => {
 });
 
 app.post("/api/network/provider/request-execute-test", { preHandler: requireAuth }, async (req: any, reply: any) => {
-  if (!requireProviderExecutionReady(reply, "provider_execute_test")) return;
+  let chain = evaluateProviderExecutionChainReadiness();
+  if (!chain.ready && chain.trustReadiness.allowed) {
+    const authHeader = String(req.headers?.authorization || "").trim();
+    const injectHeaders: Record<string, string> = { "content-type": "application/json" };
+    if (authHeader) injectHeaders.authorization = authHeader;
+    if (!chain.ackReadiness.allowed) {
+      await app.inject({
+        method: "POST",
+        url: "/api/network/provider/request-acknowledgment",
+        headers: injectHeaders,
+        payload: {}
+      });
+    }
+    chain = evaluateProviderExecutionChainReadiness();
+    if (!chain.ready && chain.trustReadiness.allowed && chain.ackReadiness.allowed && !chain.permitReadiness.allowed) {
+      await app.inject({
+        method: "POST",
+        url: "/api/network/provider/request-operation-intent",
+        headers: injectHeaders,
+        payload: {}
+      });
+      chain = evaluateProviderExecutionChainReadiness();
+    }
+  }
+  if (!chain.ready) {
+    return reply.code(409).send({
+      error: "PROVIDER_EXECUTION_NOT_READY",
+      action: "provider_execute_test",
+      trustReadiness: chain.trustReadiness.readiness,
+      ackReadiness: chain.ackReadiness.readiness,
+      permitReadiness: chain.permitReadiness.readiness,
+      message: chain.message
+    });
+  }
   const cfg = getNetworkProviderConfig();
   const providerUrl = String(cfg.providerUrl || "").trim();
   const permitState = getProviderOperationIntentStatus(cfg);
@@ -22729,8 +22762,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
-  const brandLogoHref = resolveProfileLogoPath() ? "/certifyd-profile-logo.png?v=20260408a" : "";
-  const safeBrandLogoHref = brandLogoHref ? escHtml(brandLogoHref) : "";
+  const brandLogoDataUri = (() => {
+    const logoPath = resolveProfileLogoPath();
+    if (!logoPath) return null;
+    try {
+      const bytes = fsSync.readFileSync(logoPath);
+      if (!bytes || bytes.length === 0) return null;
+      return `data:image/png;base64,${bytes.toString("base64")}`;
+    } catch {
+      return null;
+    }
+  })();
+  const safeBrandLogoDataUri = brandLogoDataUri ? escHtml(brandLogoDataUri) : "";
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -23355,7 +23398,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
         ].join("")
       : "";
-  const creatorProfileFaviconHref = "/certifyd-tab-icon.png?v=20260404g";
+  const creatorProfileFaviconDataUri = (() => {
+    const iconPath = resolveTabIconPath();
+    if (!iconPath) return null;
+    try {
+      const bytes = fsSync.readFileSync(iconPath);
+      if (!bytes || bytes.length === 0) return null;
+      return `data:image/png;base64,${bytes.toString("base64")}`;
+    } catch {
+      return null;
+    }
+  })();
+  const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
+  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404g";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -23419,8 +23474,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       align-items:center;
       margin-top:14px;
     }
-    .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding-top:0; padding-right:2px; min-width:0; }
-    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; margin-left:var(--profile-id-offset); }
+    .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding:0; min-width:0; }
+    .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; margin-left:0; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
     .hero-meta { min-width:0; }
     .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
@@ -23530,10 +23585,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
     body.iframe-embedded .profile-header-grid {
-      grid-template-columns:88px minmax(220px, 1.1fr) minmax(240px, 1fr);
+      grid-template-columns:108px minmax(220px, 1.1fr) minmax(240px, 1fr);
       grid-template-areas:"brand identity signal";
       align-items:center;
-      gap:10px 14px;
+      gap:10px 18px;
       margin-top:4px;
     }
     body.iframe-embedded { padding:10px; }
@@ -23547,8 +23602,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       grid-area:brand;
       justify-content:flex-start;
       align-self:center;
-      padding-top:0;
-      padding-right:0;
+      padding:0;
       align-items:center;
     }
     body.iframe-embedded .identity-rail {
@@ -23576,17 +23630,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     body.iframe-embedded .hero-meta .line { text-align:left; }
     body.iframe-embedded .hero-name { overflow-wrap:anywhere; }
     body.iframe-embedded .avatar { width:96px; height:96px; }
-    body.iframe-embedded .brand-logo-image { width:68px; }
+    body.iframe-embedded .brand-logo-image { width:82px; }
     body.iframe-embedded .hero-name { font-size:30px; line-height:1.04; }
     body.iframe-embedded .hero-handle { font-size:16px; margin-top:5px; }
     @media (max-width: 820px) {
       body.iframe-embedded .profile-header-grid {
-        grid-template-columns:100px minmax(0, 1fr);
+        grid-template-columns:112px minmax(0, 1fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
       }
-      body.iframe-embedded .brand-logo-image { width:62px; }
+      body.iframe-embedded .brand-logo-image { width:72px; }
       body.iframe-embedded .avatar { width:92px; height:92px; }
       body.iframe-embedded .hero-name { font-size:27px; }
       body.iframe-embedded .hero-handle { font-size:16px; }
@@ -23603,7 +23657,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .profile-header-grid {
         --profile-logo-size: 58px;
         --profile-avatar-size: 90px;
-        --profile-id-offset: 0;
       }
       .profile-header-grid {
         grid-template-columns:auto 1fr;
@@ -23613,19 +23666,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         gap:10px 12px;
       }
       .brand-rail { grid-area:brand; padding-top:0; }
-      .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
+      .identity-rail { grid-area:identity; align-items:center; }
       .signal-rail { grid-area:signal; width:100%; }
       .hero-name { font-size:18px; }
       .signal-rail { width:100%; }
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 96px;
-        --profile-gap-x: var(--space-5);
-        --profile-id-offset: 10px;
-        --profile-id-gap: var(--space-4);
-        --profile-logo-size: 92px;
-        --profile-avatar-size: 78px;
+        --profile-brand-col: 90px;
+        --profile-gap-x: 12px;
+        --profile-id-offset: 4px;
+        --profile-id-gap: 10px;
+        --profile-logo-size: 78px;
+        --profile-avatar-size: 74px;
       }
       body { padding:10px; }
       .card { padding:14px; }
@@ -23638,13 +23691,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         gap:10px var(--profile-gap-x);
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:18px; align-self:center; justify-content:flex-start; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:12px; align-self:center; justify-content:flex-start; }
       .identity-rail { grid-area:identity; margin-left:var(--profile-id-offset); align-items:center; gap:var(--profile-id-gap); }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
       .page-title { font-size:30px; }
-      .hero-name { font-size:22px; line-height:1.08; }
-      .hero-handle { font-size:14px; }
+      .hero-name { font-size:20px; line-height:1.08; }
+      .hero-handle { font-size:13px; }
       .hero-handle .mono { word-break:normal; overflow-wrap:anywhere; }
       .signal-compact-meter { height:4px; }
       .signal-compact-meta { margin-top:4px; }
@@ -23653,17 +23706,17 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       body.iframe-embedded .profile-header-grid {
-        grid-template-columns:84px minmax(0, 1fr);
+        grid-template-columns:98px minmax(0, 1fr);
         grid-template-areas:
           "brand identity"
           "signal";
-        gap:10px 14px;
+        gap:10px 16px;
       }
-      body.iframe-embedded .brand-rail { justify-content:flex-start; padding-left:8px; }
-      body.iframe-embedded .identity-rail { gap:10px; margin-left:6px; }
+      body.iframe-embedded .brand-rail { justify-content:flex-start; padding-left:12px; }
+      body.iframe-embedded .identity-rail { gap:10px; margin-left:10px; }
       body.iframe-embedded .hero-meta { min-width:0; flex:1; }
-      body.iframe-embedded .brand-logo-image { width:76px; }
-      body.iframe-embedded .avatar { width:74px; height:74px; }
+      body.iframe-embedded .brand-logo-image { width:84px; }
+      body.iframe-embedded .avatar { width:78px; height:78px; }
       body.iframe-embedded .hero-name {
         font-size:clamp(19px, 5.2vw, 22px);
         line-height:1.08;
@@ -23690,8 +23743,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="brand-rail">
         <div class="brand-row" aria-label="Certifyd">
           ${
-            safeBrandLogoHref
-              ? `<img src="${safeBrandLogoHref}" alt="Certifyd Creator" class="brand-logo-image" />`
+            safeBrandLogoDataUri
+              ? `<img src="${safeBrandLogoDataUri}" alt="Certifyd Creator" class="brand-logo-image" />`
               : `<span class="brand-mark">c</span><span class="brand-word">Certifyd</span>`
           }
         </div>
