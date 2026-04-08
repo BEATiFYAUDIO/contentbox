@@ -289,6 +289,13 @@ export default function LibraryPage() {
           creatorEmail: row?.creatorEmail || null
         }));
         const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
+        const remoteOriginByParentContentId = new Map<string, string>();
+        for (const row of remoteParticipationsRaw) {
+          const parentContentId = String(row?.contentId || "").trim();
+          const origin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
+          if (!parentContentId || !origin || remoteOriginByParentContentId.has(parentContentId)) continue;
+          remoteOriginByParentContentId.set(parentContentId, origin);
+        }
         const remoteParticipations: LibraryParticipation[] = remoteParticipationsRaw
           .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
           .filter((row) => Boolean(String(row?.contentId || "").trim()))
@@ -352,8 +359,42 @@ export default function LibraryPage() {
               })
               .filter(Boolean) as LibraryParticipation[];
           });
+        const upstreamDerivativeParticipations: LibraryParticipation[] = upstreamRows
+          .filter((row) => {
+            const childContentId = String(row?.childContentId || "").trim();
+            if (!childContentId) return false;
+            const status = String((row as any)?.status || "").toLowerCase();
+            const approvedAt = String((row as any)?.approvedAt || "").trim();
+            return status === "approved" || Boolean(approvedAt);
+          })
+          .map((row) => {
+            const parentContentId = String(row?.parentContentId || "").trim();
+            const childContentId = String(row?.childContentId || "").trim();
+            const childTitle = String((row as any)?.childTitle || "").trim() || "Untitled derivative";
+            const origin = remoteOriginByParentContentId.get(parentContentId) || null;
+            return {
+              kind: "remote" as const,
+              contentId: childContentId,
+              contentTitle: childTitle,
+              contentType: "derivative",
+              contentStatus: "published",
+              contentDeletedAt: null,
+              splitParticipantId: null,
+              remoteInviteId: null,
+              remoteOrigin: origin,
+              status: "accepted",
+              acceptedAt: null,
+              verifiedAt: null,
+              revokedAt: null,
+              tombstonedAt: null,
+              highlightedOnProfile: false,
+              creatorUserId: null,
+              creatorDisplayName: null,
+              creatorEmail: null
+            } satisfies LibraryParticipation;
+          });
 
-        for (const p of [...localParticipations, ...remoteParticipations, ...remoteDerivativeParticipations]) {
+        for (const p of [...localParticipations, ...remoteParticipations, ...remoteDerivativeParticipations, ...upstreamDerivativeParticipations]) {
           const contentId = String(p?.contentId || "").trim();
           if (!contentId) continue;
           const existing = participationByContentId.get(contentId);
@@ -364,7 +405,12 @@ export default function LibraryPage() {
           nextParticipationByContentId[contentId] = participation;
         }
 
-        const participationOnlyItems: LibraryItem[] = [...localParticipations, ...remoteParticipations, ...remoteDerivativeParticipations]
+        const participationOnlyItems: LibraryItem[] = [
+          ...localParticipations,
+          ...remoteParticipations,
+          ...remoteDerivativeParticipations,
+          ...upstreamDerivativeParticipations
+        ]
           .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
           .filter((p) => {
             const active = isActiveLibraryVisible(
