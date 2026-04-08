@@ -290,11 +290,19 @@ export default function LibraryPage() {
         }));
         const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
         const remoteOriginByParentContentId = new Map<string, string>();
+        const remoteInviteMetaByParentContentId = new Map<
+          string,
+          { remoteInviteId: string | null; highlightedOnProfile: boolean }
+        >();
         for (const row of remoteParticipationsRaw) {
           const parentContentId = String(row?.contentId || "").trim();
           const origin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
           if (!parentContentId || !origin || remoteOriginByParentContentId.has(parentContentId)) continue;
           remoteOriginByParentContentId.set(parentContentId, origin);
+          remoteInviteMetaByParentContentId.set(parentContentId, {
+            remoteInviteId: String(row?.id || "").trim() || null,
+            highlightedOnProfile: Boolean(row?.highlightedOnProfile)
+          });
         }
         const remoteParticipations: LibraryParticipation[] = remoteParticipationsRaw
           .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
@@ -372,6 +380,7 @@ export default function LibraryPage() {
             const childContentId = String(row?.childContentId || "").trim();
             const childTitle = String((row as any)?.childTitle || "").trim() || "Untitled derivative";
             const origin = remoteOriginByParentContentId.get(parentContentId) || null;
+            const remoteInviteMeta = remoteInviteMetaByParentContentId.get(parentContentId) || null;
             return {
               kind: "remote" as const,
               contentId: childContentId,
@@ -380,14 +389,14 @@ export default function LibraryPage() {
               contentStatus: "published",
               contentDeletedAt: null,
               splitParticipantId: null,
-              remoteInviteId: null,
+              remoteInviteId: remoteInviteMeta?.remoteInviteId || null,
               remoteOrigin: origin,
               status: "accepted",
               acceptedAt: null,
               verifiedAt: null,
               revokedAt: null,
               tombstonedAt: null,
-              highlightedOnProfile: false,
+              highlightedOnProfile: Boolean(remoteInviteMeta?.highlightedOnProfile),
               creatorUserId: null,
               creatorDisplayName: null,
               creatorEmail: null
