@@ -22460,14 +22460,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const nodeSha = wk.publicKeyPemSha256 || null;
   const shortSha = nodeSha ? `${nodeSha.slice(0, 8)}…${nodeSha.slice(-8)}` : null;
 
-  let lightningConfigured = false;
-  try {
-    const lnd = await getLightningNodeConfigStatus(prisma as any);
-    lightningConfigured = Boolean(lnd.endpoint && lnd.hasMacaroon && lnd.decryptOk);
-  } catch {
-    lightningConfigured = false;
-  }
-
   const safeDisplayName = escHtml(asString(user.displayName || "Creator"));
   const safeBio = escHtml(asString(user.bio || ""));
   const safeAvatar = asString(user.avatarUrl || "").trim();
@@ -23533,7 +23525,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <h3>Proof bundle</h3>
       <div class="line muted">Portable proof bundle: <a class="mono" href="/u/${encodeURIComponent(requested)}/proofs.json">proofs.json</a></div>
       <div class="line muted">Public proofs and external ownership checks will appear here.</div>
-      <div class="line"><strong>Lightning:</strong> <span class="muted">${lightningConfigured ? "configured" : "not configured"}</span></div>
       <div class="line muted">Absolute bundle URL: <span class="mono">${safeProofBundleUrl}</span></div>
     </section>
   </div>
