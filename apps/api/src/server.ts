@@ -22939,11 +22939,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const childMatch = requestedContentId
               ? inbox.find((entry: any) => asString(entry?.childContentId || "").trim() === requestedContentId)
               : null;
-            const contentId = asString(childMatch?.childContentId || row.contentId || "").trim();
+            const contentId = asString(childMatch?.childContentId || requestedContentId || row.contentId || "").trim();
             const contentStatus = asString(row.contentStatus || "").trim().toLowerCase();
             const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
             if (!contentId) return null;
-            if (!childMatch && (contentStatus !== "published" || contentDeletedAt)) return null;
+            if (!childMatch && !requestedContentId && (contentStatus !== "published" || contentDeletedAt)) return null;
             return {
               ...row,
               parentContentId: asString(row.contentId || "").trim() || null,
