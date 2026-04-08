@@ -27197,9 +27197,11 @@ app.post("/content/:id/cover", { preHandler: requireAuth }, async (req: any, rep
   if (!uploadGuard.ok) {
     return reply.code(409).send({ error: uploadGuard.message, code: uploadGuard.code });
   }
-  const coverSupportedTypes = new Set(["song", "video", "book", "file"]);
+  const coverSupportedTypes = new Set(["song", "video", "book", "file", "remix", "mashup", "derivative"]);
   if (!coverSupportedTypes.has(String(content.type || "").toLowerCase())) {
-    return reply.code(400).send({ error: "Cover upload is only supported for song, video, book, and file content." });
+    return reply
+      .code(400)
+      .send({ error: "Cover upload is only supported for song, video, book, file, remix, mashup, and derivative content." });
   }
 
   const uploadReqCheck = validateUploadRequest({

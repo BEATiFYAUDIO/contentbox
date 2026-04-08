@@ -78,6 +78,13 @@ type RemoteRoyaltyParticipation = {
   revokedAt?: string | null;
   tombstonedAt?: string | null;
   highlightedOnProfile?: boolean;
+  clearanceInbox?: Array<{
+    childContentId?: string | null;
+    childTitle?: string | null;
+    childOrigin?: string | null;
+    relation?: string | null;
+    status?: string | null;
+  }>;
 };
 
 type LibraryTypeFilter = "all" | "songs" | "videos" | "books" | "files";
@@ -251,9 +258,7 @@ export default function LibraryPage() {
         const derivativeLinkedContentIds = new Set<string>();
         const upstreamRows = Array.isArray(royaltiesRes?.upstreamIncome) ? royaltiesRes.upstreamIncome : [];
         for (const row of upstreamRows) {
-          const parentContentId = String(row?.parentContentId || "").trim();
           const childContentId = String(row?.childContentId || "").trim();
-          if (parentContentId) derivativeLinkedContentIds.add(parentContentId);
           if (childContentId) derivativeLinkedContentIds.add(childContentId);
         }
 
@@ -307,8 +312,44 @@ export default function LibraryPage() {
             creatorDisplayName: null,
             creatorEmail: null
           }));
+        const remoteDerivativeParticipations: LibraryParticipation[] = remoteParticipationsRaw
+          .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
+          .flatMap((row) => {
+            const inviteId = String(row?.id || "").trim() || null;
+            const defaultOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "") || null;
+            const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
+            return inbox
+              .filter((entry) => String(entry?.status || "").toLowerCase() === "approved")
+              .map((entry) => {
+                const childContentId = String(entry?.childContentId || "").trim();
+                if (!childContentId) return null;
+                const relation = String(entry?.relation || "").trim().toLowerCase();
+                const childType = relation === "remix" || relation === "mashup" || relation === "derivative" ? relation : "derivative";
+                return {
+                  kind: "remote" as const,
+                  contentId: childContentId,
+                  contentTitle: entry?.childTitle || "Untitled derivative",
+                  contentType: childType,
+                  contentStatus: "published",
+                  contentDeletedAt: null,
+                  splitParticipantId: null,
+                  remoteInviteId: inviteId,
+                  remoteOrigin: String(entry?.childOrigin || "").replace(/\/+$/, "") || defaultOrigin,
+                  status: row?.status || "accepted",
+                  acceptedAt: row?.acceptedAt || null,
+                  verifiedAt: null,
+                  revokedAt: row?.revokedAt || null,
+                  tombstonedAt: row?.tombstonedAt || null,
+                  highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+                  creatorUserId: null,
+                  creatorDisplayName: null,
+                  creatorEmail: null
+                } as LibraryParticipation;
+              })
+              .filter(Boolean) as LibraryParticipation[];
+          });
 
-        for (const p of [...localParticipations, ...remoteParticipations]) {
+        for (const p of [...localParticipations, ...remoteParticipations, ...remoteDerivativeParticipations]) {
           const contentId = String(p?.contentId || "").trim();
           if (!contentId) continue;
           const existing = participationByContentId.get(contentId);
@@ -319,7 +360,7 @@ export default function LibraryPage() {
           nextParticipationByContentId[contentId] = participation;
         }
 
-        const participationOnlyItems: LibraryItem[] = [...localParticipations, ...remoteParticipations]
+        const participationOnlyItems: LibraryItem[] = [...localParticipations, ...remoteParticipations, ...remoteDerivativeParticipations]
           .filter((p) => p?.contentId && !knownContentIds.has(p.contentId))
           .filter((p) => {
             const active = isActiveLibraryVisible(

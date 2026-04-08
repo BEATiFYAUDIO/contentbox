@@ -25,7 +25,7 @@ const LIBRARY_TYPE_LABEL: Record<LibraryTypeFilter, string> = {
   books: "Books",
   files: "Files"
 };
-const COVER_UPLOAD_TYPES = new Set<ContentType>(["song", "video", "book", "file"]);
+const COVER_UPLOAD_TYPES = new Set<ContentType>(["song", "video", "book", "file", "remix", "mashup", "derivative"]);
 
 function normalizeLibraryTypeFilter(raw: string | null | undefined): LibraryTypeFilter {
   const v = String(raw || "").toLowerCase();
