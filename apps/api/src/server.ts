@@ -8564,6 +8564,8 @@ function detectTunnelControlMode() {
 
   let activeProcessToken = false;
   let activeProcessConfig = false;
+  let activeServiceTokenProcess = false;
+  let activeAppManagedTokenProcess = false;
   if (process.platform === "win32") {
     try {
       const ps = spawnSync(
@@ -8583,6 +8585,11 @@ function detectTunnelControlMode() {
         if (!lower.includes("run")) continue;
         if (lower.includes("--token")) activeProcessToken = true;
         if (lower.includes("--config")) activeProcessConfig = true;
+        const hasToken = lower.includes("--token");
+        const hasAppManagedPath =
+          lower.includes("contentbox-data") || lower.includes(".bin\\cloudflared.exe") || lower.includes(".bin/cloudflared.exe");
+        if (hasToken && hasAppManagedPath) activeAppManagedTokenProcess = true;
+        if (hasToken && !hasAppManagedPath) activeServiceTokenProcess = true;
       }
     } catch {}
   } else {
@@ -8596,6 +8603,11 @@ function detectTunnelControlMode() {
         if (!lower.includes("run")) continue;
         if (lower.includes("--token")) activeProcessToken = true;
         if (lower.includes("--config")) activeProcessConfig = true;
+        const hasToken = lower.includes("--token");
+        const hasAppManagedPath =
+          lower.includes("contentbox-data") || lower.includes("/.bin/cloudflared");
+        if (hasToken && hasAppManagedPath) activeAppManagedTokenProcess = true;
+        if (hasToken && !hasAppManagedPath) activeServiceTokenProcess = true;
       }
     } catch {}
   }
@@ -8622,7 +8634,9 @@ function detectTunnelControlMode() {
     localConfigPath: localConfigPath || null,
     localConfigPresent,
     activeProcessToken,
-    activeProcessConfig
+    activeProcessConfig,
+    activeServiceTokenProcess,
+    activeAppManagedTokenProcess
   };
 }
 
@@ -8630,8 +8644,8 @@ function shouldDeferNamedTunnelToServiceControl() {
   const tc = detectTunnelControlMode();
   const shouldDefer =
     tc.mode === "service_token" &&
-    Boolean(tc.activeProcessToken) &&
-    !Boolean(tc.activeProcessConfig);
+    Boolean(tc.activeServiceTokenProcess) &&
+    !Boolean(tc.activeAppManagedTokenProcess);
   return { shouldDefer, tunnelControl: tc };
 }
 
