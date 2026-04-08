@@ -507,12 +507,12 @@ export default function LibraryPage() {
           if (section === "owned") relationshipTags.push("authored_work");
           if (section === "participant") relationshipTags.push("shared_splits");
           if (derivativeLinked) relationshipTags.push("derivatives");
-          const relationshipType: LibraryRelationshipType = relationshipTags.includes("shared_splits")
-            ? "shared_splits"
-            : relationshipTags.includes("authored_work")
-              ? "authored_work"
-              : relationshipTags.includes("derivatives")
-                ? "derivatives"
+          const relationshipType: LibraryRelationshipType = relationshipTags.includes("derivatives")
+            ? "derivatives"
+            : relationshipTags.includes("shared_splits")
+              ? "shared_splits"
+              : relationshipTags.includes("authored_work")
+                ? "authored_work"
                 : "other";
           normalized.push({
             item: normalizedItem,
@@ -580,11 +580,6 @@ export default function LibraryPage() {
   }
 
   function handlePrimaryPreviewAction(entry: NormalizedLibraryItem) {
-    if (entry.relation === "participant") {
-      const target = entry.publicPageUrl || buildPublicPageUrl(entry.item.id);
-      window.open(target, "_blank", "noopener,noreferrer");
-      return;
-    }
     void loadPreview(entry.item.id);
   }
 
@@ -922,8 +917,18 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                               className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                               onClick={() => handlePrimaryPreviewAction(entry)}
                             >
-                              {entry.relation === "participant" ? "Open public page" : previewLoading[it.id] ? "Loading…" : "Load preview"}
+                              {previewLoading[it.id] ? "Loading…" : "Load preview"}
                             </button>
+                            {entry.relation === "participant" ? (
+                              <a
+                                className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                href={entry.publicPageUrl || buildPublicPageUrl(it.id)}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Open public page
+                              </a>
+                            ) : null}
                             <button
                               type="button"
                               disabled={featureBusyById[it.id] || !featureAllowed}
@@ -968,19 +973,33 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                               ) : null}
                             </div>
                           ) : null}
-                          {entry.relation !== "participant" && preview && isOpen ? (
+                          {isOpen ? (
                             <div className="mt-2">
-                              {previewUrl && isVideo ? (
-                                <video className="w-full rounded-md" controls src={previewUrl} />
-                              ) : previewUrl && isAudio ? (
-                                <audio className="w-full" controls src={previewUrl} />
-                              ) : previewUrl ? (
-                                <a className="text-xs text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                  Open preview
-                                </a>
-                              ) : (
-                                <div className="text-xs text-neutral-500">No preview available.</div>
-                              )}
+                              {(() => {
+                                const participantPreviewFallback =
+                                  entry.relation === "participant"
+                                    ? buildPublicAssetUrl(
+                                        it.id,
+                                        "preview-file",
+                                        participationInfo?.kind === "remote" ? participationInfo.remoteOrigin : null
+                                      )
+                                    : null;
+                                const effectivePreviewUrl = previewUrl || participantPreviewFallback;
+                                if (effectivePreviewUrl && isVideo) {
+                                  return <video className="w-full rounded-md" controls src={effectivePreviewUrl} />;
+                                }
+                                if (effectivePreviewUrl && isAudio) {
+                                  return <audio className="w-full" controls src={effectivePreviewUrl} />;
+                                }
+                                if (effectivePreviewUrl) {
+                                  return (
+                                    <a className="text-xs text-emerald-300 underline" href={effectivePreviewUrl} target="_blank" rel="noreferrer">
+                                      Open preview
+                                    </a>
+                                  );
+                                }
+                                return <div className="text-xs text-neutral-500">No preview available.</div>;
+                              })()}
                             </div>
                           ) : null}
                         </div>
