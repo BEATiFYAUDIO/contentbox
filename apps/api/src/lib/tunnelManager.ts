@@ -216,6 +216,7 @@ export class TunnelManager {
   private healthTimer: NodeJS.Timeout | null = null;
   private healthInFlight = false;
   private healthFailures = 0;
+  private activeMode: "quick" | "named" | null = null;
 
   constructor(opts: TunnelManagerOptions) {
     this.opts = {
@@ -291,6 +292,7 @@ export class TunnelManager {
       } catch {}
     }
     this.proc = null;
+    this.activeMode = null;
     this.state = {
       ...this.state,
       status: "STOPPED",
@@ -340,6 +342,7 @@ export class TunnelManager {
       this.opts.logger?.info?.(`cloudflared args: ${args.join(" ")}`);
       const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
       this.proc = child;
+      this.activeMode = "quick";
       this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
 
       const urlPromise = new Promise<string>((resolve, reject) => {
@@ -393,6 +396,7 @@ export class TunnelManager {
           if (child.pid) process.kill(child.pid);
         } catch {}
         this.proc = null;
+        this.activeMode = null;
         return { ok: false, error: String(e?.message || e) } as const;
       }
 
@@ -404,6 +408,7 @@ export class TunnelManager {
       child.on("exit", () => {
         if (this.stopping) return;
         this.proc = null;
+        this.activeMode = null;
         this.opts.logger?.error?.("cloudflared exited");
         this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
         this.clearHealthTimer();
@@ -504,28 +509,34 @@ export class TunnelManager {
 
     const child = spawn(binPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     this.proc = child;
+    this.activeMode = "named";
     this.state = { ...this.state, pid: child.pid || null, startedAt: new Date().toISOString() };
 
-    const healthOk = await this.verifyWithRetries(input.publicOrigin, 6, 1500);
-    if (!healthOk) {
-      this.state = { ...this.state, status: "ERROR", lastError: "Public link health check failed" };
-      try {
-        if (child.pid) process.kill(child.pid);
-      } catch {}
+    child.on("exit", () => {
+      if (this.stopping) return;
       this.proc = null;
+      this.activeMode = null;
+      this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
+      this.clearHealthTimer();
+    });
+
+    const healthOk = await this.verifyWithRetries(input.publicOrigin, 12, 2000);
+    if (!healthOk) {
+      this.opts.logger?.warn?.("Named tunnel launched but initial public-origin verification is pending");
+      this.healthFailures = 0;
+      this.state = {
+        ...this.state,
+        status: "STARTING",
+        publicOrigin: input.publicOrigin,
+        lastError: "Public link pending verification"
+      };
+      this.startHealthChecks();
       return this.status();
     }
 
     this.healthFailures = 0;
     this.state = { ...this.state, status: "ACTIVE", publicOrigin: input.publicOrigin, lastError: null };
     this.startHealthChecks();
-
-    child.on("exit", () => {
-      if (this.stopping) return;
-      this.proc = null;
-      this.state = { ...this.state, status: "ERROR", publicOrigin: null, lastError: "cloudflared exited" };
-      this.clearHealthTimer();
-    });
 
     return this.status();
   }
@@ -570,12 +581,22 @@ export class TunnelManager {
         } else {
           this.healthFailures += 1;
           if (this.healthFailures >= (this.opts.healthFailureThreshold || 2)) {
-            this.state = { ...this.state, status: "ERROR", lastError: "Public link health check failed" };
-            try {
-              if (this.proc?.pid) process.kill(this.proc.pid);
-            } catch {}
-            this.proc = null;
-            this.clearHealthTimer();
+            if (this.activeMode === "named") {
+              this.state = {
+                ...this.state,
+                status: "STARTING",
+                lastError: "Public link health check failed; retrying"
+              };
+              this.healthFailures = 0;
+            } else {
+              this.state = { ...this.state, status: "ERROR", lastError: "Public link health check failed" };
+              try {
+                if (this.proc?.pid) process.kill(this.proc.pid);
+              } catch {}
+              this.proc = null;
+              this.activeMode = null;
+              this.clearHealthTimer();
+            }
           }
         }
       } finally {

@@ -8752,8 +8752,7 @@ async function triggerPublicStartBestEffort() {
     const cfg = getNamedTunnelConfig();
     if (!cfg) return;
     const cur = tunnelManager.status();
-    if (cur.status === "ACTIVE" && cur.publicOrigin === cfg.publicOrigin) return;
-    await tunnelManager.stop();
+    if ((cur.status === "ACTIVE" || cur.status === "STARTING") && cur.publicOrigin === cfg.publicOrigin) return;
     const namedToken = getNamedTunnelToken();
     tunnelManager
       .startNamed({
@@ -18061,12 +18060,11 @@ app.post("/api/public/go", { preHandler: requireAuth }, async (_req: any, reply:
       });
     }
     const cur = tunnelManager.status();
-    if (cur.status === "ACTIVE" && cur.publicOrigin === cfg.publicOrigin) {
+    if ((cur.status === "ACTIVE" || cur.status === "STARTING") && cur.publicOrigin === cfg.publicOrigin) {
       return reply.send({
         ...getPublicStatus()
       });
     }
-    await tunnelManager.stop();
     const status = await tunnelManager.startNamed({
       publicOrigin: cfg.publicOrigin,
       tunnelName: String(cfg.tunnelName || "").trim(),
