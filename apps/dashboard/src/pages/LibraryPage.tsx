@@ -321,7 +321,8 @@ export default function LibraryPage() {
             return inbox
               .filter((entry) => {
                 const status = String(entry?.status || "").toLowerCase();
-                return status === "approved" || status === "cleared";
+                // Status labels can vary across mirrored nodes; only exclude terminal-denied states.
+                return status !== "rejected" && status !== "revoked";
               })
               .map((entry) => {
                 const childContentId = String(entry?.childContentId || "").trim();
