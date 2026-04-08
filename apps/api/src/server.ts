@@ -1784,6 +1784,7 @@ type RemoteParticipationProfileHighlightRecord = {
   id: string;
   userId: string;
   remoteInviteId: string;
+  contentId?: string | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -12547,10 +12548,12 @@ function writeRemoteParticipationProfileHighlightRows(rows: RemoteParticipationP
 function setRemoteParticipationProfileHighlight(input: {
   userId: string;
   remoteInviteId: string;
+  contentId?: string | null;
   enabled: boolean;
 }): RemoteParticipationProfileHighlightRecord {
   const userId = asString(input.userId || "").trim();
   const remoteInviteId = asString(input.remoteInviteId || "").trim();
+  const contentId = asString(input.contentId || "").trim() || null;
   const enabled = Boolean(input.enabled);
   if (!userId || !remoteInviteId) {
     throw new Error("INVALID_REMOTE_PARTICIPATION_HIGHLIGHT_INPUT");
@@ -12559,7 +12562,7 @@ function setRemoteParticipationProfileHighlight(input: {
   const now = new Date().toISOString();
   const idx = rows.findIndex((row) => row.userId === userId && row.remoteInviteId === remoteInviteId);
   if (idx >= 0) {
-    rows[idx] = { ...rows[idx], enabled, updatedAt: now };
+    rows[idx] = { ...rows[idx], enabled, contentId, updatedAt: now };
     writeRemoteParticipationProfileHighlightRows(rows);
     return rows[idx];
   }
@@ -12567,6 +12570,7 @@ function setRemoteParticipationProfileHighlight(input: {
     id: `remote_part_highlight_${crypto.randomUUID()}`,
     userId,
     remoteInviteId,
+    contentId,
     enabled,
     createdAt: now,
     updatedAt: now
@@ -12921,8 +12925,9 @@ app.patch("/my/royalties/remote/:inviteId/highlight", { preHandler: requireAuth 
   const userId = (req.user as JwtUser).sub;
   const inviteId = asString((req.params as any)?.inviteId || "").trim();
   if (!inviteId) return badRequest(reply, "inviteId required");
-  const raw = (req.body ?? {}) as { enabled?: unknown };
+  const raw = (req.body ?? {}) as { enabled?: unknown; contentId?: unknown };
   if (typeof raw.enabled !== "boolean") return badRequest(reply, "enabled must be boolean");
+  const contentId = asString(raw.contentId || "").trim() || null;
   const invite = await prisma.remoteInvite.findUnique({
     where: { id: inviteId },
     select: { id: true, userId: true, status: true, acceptedAt: true, contentId: true }
@@ -12935,17 +12940,24 @@ app.patch("/my/royalties/remote/:inviteId/highlight", { preHandler: requireAuth 
   const updated = setRemoteParticipationProfileHighlight({
     userId,
     remoteInviteId: inviteId,
+    contentId,
     enabled: raw.enabled
   });
   app.log.info(
     {
       userId,
       remoteInviteId: inviteId,
+      contentId,
       enabled: Boolean(updated.enabled)
     },
     "participationProjection.remote_highlight_set"
   );
-  return reply.send({ ok: true, remoteInviteId: inviteId, highlightedOnProfile: Boolean(updated.enabled) });
+  return reply.send({
+    ok: true,
+    remoteInviteId: inviteId,
+    contentId: updated.contentId || null,
+    highlightedOnProfile: Boolean(updated.enabled)
+  });
 });
 
 // Ingest a remote invite acceptance into local storage (for payments & visibility)
@@ -22874,20 +22886,49 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const highlightedParticipations = (await listLockedParticipationsForUser(user.id))
     .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
     .slice(0, 12);
-  const highlightedRemoteParticipationIds = new Set(
-    listProfileHighlightedRemoteParticipationsForUser(user.id).map((row) => row.remoteInviteId)
-  );
+  const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
+  const highlightedRemoteParticipationIds = new Set(highlightedRemoteParticipationRecords.map((row) => row.remoteInviteId));
   const highlightedRemoteParticipations = highlightedRemoteParticipationIds.size
-    ? (await prisma.remoteInvite.findMany({
-        where: {
-          userId: user.id,
-          id: { in: Array.from(highlightedRemoteParticipationIds) }
-        },
-        orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
-      }))
-        .filter((row) => normalizeRemoteInviteStatusForList(row as any) === "accepted")
-        .filter((row) => row.contentStatus === "published" && !row.contentDeletedAt && row.contentId)
-        .slice(0, 12)
+    ? await (async () => {
+        const inviteRows = await prisma.remoteInvite.findMany({
+          where: {
+            userId: user.id,
+            id: { in: Array.from(highlightedRemoteParticipationIds) }
+          },
+          orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+        });
+        const recordByInviteId = new Map(highlightedRemoteParticipationRecords.map((row) => [row.remoteInviteId, row]));
+        const resolved = await Promise.all(
+          inviteRows.map(async (row) => {
+            if (normalizeRemoteInviteStatusForList(row as any) !== "accepted") return null;
+            const requestedContentId = asString(recordByInviteId.get(row.id)?.contentId || "").trim();
+            const token = extractInviteTokenFromUrl(row.inviteUrl || null);
+            const accounting =
+              token && requestedContentId
+                ? await fetchRemoteInviteAccounting(row.remoteOrigin, token)
+                : null;
+            const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
+            const childMatch = requestedContentId
+              ? inbox.find((entry: any) => asString(entry?.childContentId || "").trim() === requestedContentId)
+              : null;
+            const contentId = asString(childMatch?.childContentId || row.contentId || "").trim();
+            const contentStatus = asString(row.contentStatus || "").trim().toLowerCase();
+            const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
+            if (!contentId) return null;
+            if (!childMatch && (contentStatus !== "published" || contentDeletedAt)) return null;
+            return {
+              ...row,
+              parentContentId: asString(row.contentId || "").trim() || null,
+              contentId,
+              contentTitle: asString(childMatch?.childTitle || row.contentTitle || "").trim() || "Untitled",
+              contentType: asString(childMatch?.relation || row.contentType || "").trim() || "derivative",
+              derivativeParentTitle: asString(childMatch?.parentTitle || row.contentTitle || "").trim() || null,
+              derivativeRelation: asString(childMatch?.relation || "").trim().toLowerCase() || null
+            };
+          })
+        );
+        return resolved.filter(Boolean).slice(0, 12) as any[];
+      })()
     : [];
   app.log.info(
     {
@@ -22981,6 +23022,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           ...highlightedRemoteParticipations.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.role || "participant"));
+            const relation = asString((item as any).derivativeRelation || "").trim().toLowerCase();
+            const isDerivative = relation === "derivative" || relation === "remix" || relation === "mashup";
             const safeType = escHtml(asString(item.contentType || "Participation"));
             const shareLabel = Number.isFinite(Number(percentToPrimitive(item.percent ?? null)))
               ? `${Number(percentToPrimitive(item.percent ?? null)).toFixed(2)}%`
@@ -22989,6 +23032,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const base = normalizeOrigin(item.remoteOrigin || "") || "";
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
             const attributionUrl = item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/attribution` : "";
+            const originalWorkUrl = (item as any).parentContentId
+              ? `${base}/public/content/${encodeURIComponent(String((item as any).parentContentId))}/attribution`
+              : "";
+            const parentTitle = escHtml(asString((item as any).derivativeParentTitle || "").trim() || "Original work");
             const linkHref = buyUrl || attributionUrl;
             const cta = buyUrl
               ? participationCtaLabel(item.contentType)
@@ -23006,10 +23053,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               <div class="featured-meta" style="min-width:0;">
                 <div class="featured-topline">
                   <span class="featured-type-badge">${safeType || "Participation"}</span>
+                  ${isDerivative ? `<span class="featured-type-badge">Derivative</span>` : ""}
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
                 <div class="line muted">Role: ${safeRole} • Share: ${safeShare}</div>
+                ${
+                  isDerivative
+                    ? `<div class="line muted">Derivative of ${
+                        originalWorkUrl ? `<a href="${escHtml(originalWorkUrl)}">${parentTitle}</a>` : parentTitle
+                      }</div>`
+                    : ""
+                }
                 ${
                   linkHref && cta
                     ? `<div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`

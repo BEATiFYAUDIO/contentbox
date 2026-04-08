@@ -616,7 +616,7 @@ export default function LibraryPage() {
             ? await api<{ highlightedOnProfile: boolean }>(
                 `/my/royalties/remote/${encodeURIComponent(String(participation.remoteInviteId))}/highlight`,
                 "PATCH",
-                { enabled: next }
+                { enabled: next, contentId }
               )
             : await api<{ highlightedOnProfile: boolean }>(
                 `/my/participations/${encodeURIComponent(String(participation.splitParticipantId || ""))}/highlight`,
