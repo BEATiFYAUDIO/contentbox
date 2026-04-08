@@ -9828,6 +9828,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/u/:handle", handlePublicNodeProfilePage);
   appPublic.get("/u/:handle/proofs.json", handlePublicProofBundle);
   appPublic.get("/profile", handlePublicProfileRedirect);
+  appPublic.get("/certifyd-profile-logo.png", handleProfileLogo);
   appPublic.get("/certifyd-tab-icon.png", handleTabIcon);
   appPublic.get("/favicon.ico", handleTabIcon);
   appPublic.get("/favicon.png", handleTabIcon);
@@ -12229,6 +12230,21 @@ function extractInviteTokenFromUrl(raw: string | null | undefined): string | nul
   }
 }
 
+const REMOTE_INVITE_FETCH_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.REMOTE_INVITE_FETCH_CACHE_TTL_MS || "10000")
+);
+const remoteInviteAccountingCache = new Map<string, { expiresAt: number; value: {
+  earnedSatsToDate: string;
+  settlementLineCount: number;
+  payoutRows: number;
+  payoutSummary: Record<string, number>;
+  payoutState: "none" | "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked" | "mixed";
+  destinationState: "unknown" | "resolved" | "unresolved";
+  clearanceInbox: any[];
+} | null }>();
+const remoteInviteSnapshotCache = new Map<string, { expiresAt: number; value: any | null }>();
+
 async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string): Promise<{
   earnedSatsToDate: string;
   settlementLineCount: number;
@@ -12238,6 +12254,12 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
   destinationState: "unknown" | "resolved" | "unresolved";
   clearanceInbox: any[];
 } | null> {
+  const cacheKey = `${normalizeRemoteOrigin(remoteOrigin)}::${String(token || "").trim()}`;
+  const now = Date.now();
+  const cached = remoteInviteAccountingCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
   const origin = normalizeRemoteOrigin(remoteOrigin);
   if (!origin || !token) return null;
   if (!(await isOriginReachable(origin))) return null;
@@ -12263,7 +12285,7 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
         "remoteInvite.accounting_shaping"
       );
     }
-    return {
+    const value = {
       earnedSatsToDate: String(payload?.totals?.earnedSats || "0"),
       settlementLineCount: Number(payload?.totals?.settlementLineCount || 0),
       payoutRows: Number(payload?.totals?.payoutRows || 0),
@@ -12272,12 +12294,27 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
       destinationState: (payload?.totals?.destinationState || "unknown") as any,
       clearanceInbox: Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : []
     };
+    remoteInviteAccountingCache.set(cacheKey, {
+      expiresAt: now + REMOTE_INVITE_FETCH_CACHE_TTL_MS,
+      value
+    });
+    return value;
   } catch {
+    remoteInviteAccountingCache.set(cacheKey, {
+      expiresAt: now + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
+      value: null
+    });
     return null;
   }
 }
 
 async function fetchRemoteInviteSnapshot(remoteOrigin: string, token: string): Promise<any | null> {
+  const cacheKey = `${normalizeRemoteOrigin(remoteOrigin)}::${String(token || "").trim()}`;
+  const now = Date.now();
+  const cached = remoteInviteSnapshotCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
   const origin = normalizeRemoteOrigin(remoteOrigin);
   if (!origin || !token) return null;
   if (!(await isOriginReachable(origin))) return null;
@@ -12290,8 +12327,16 @@ async function fetchRemoteInviteSnapshot(remoteOrigin: string, token: string): P
     if (!res.ok) return null;
     const payload: any = await res.json().catch(() => null);
     if (!payload || typeof payload !== "object") return null;
+    remoteInviteSnapshotCache.set(cacheKey, {
+      expiresAt: now + REMOTE_INVITE_FETCH_CACHE_TTL_MS,
+      value: payload
+    });
     return payload;
   } catch {
+    remoteInviteSnapshotCache.set(cacheKey, {
+      expiresAt: now + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
+      value: null
+    });
     return null;
   }
 }
@@ -22522,27 +22567,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
-  const brandLogoDataUri = (() => {
-    const candidates = [
-      path.resolve(path.dirname(SERVER_FILE), "assets/certifyd-profile-logo.png"),
-      path.resolve(process.cwd(), "apps/api/src/assets/certifyd-profile-logo.png"),
-      path.resolve(process.cwd(), "src/assets/certifyd-profile-logo.png"),
-      path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd-creator-logo.png"),
-      path.resolve(process.cwd(), "../dashboard/src/assets/certifyd-creator-logo.png")
-    ];
-    for (const candidate of candidates) {
-      try {
-        if (!fsSync.existsSync(candidate)) continue;
-        const bytes = fsSync.readFileSync(candidate);
-        if (!bytes || bytes.length === 0) continue;
-        return `data:image/png;base64,${bytes.toString("base64")}`;
-      } catch {
-        // try next path
-      }
-    }
-    return null;
-  })();
-  const safeBrandLogoDataUri = brandLogoDataUri ? escHtml(brandLogoDataUri) : "";
+  const brandLogoHref = resolveProfileLogoPath() ? "/certifyd-profile-logo.png?v=20260408a" : "";
+  const safeBrandLogoHref = brandLogoHref ? escHtml(brandLogoHref) : "";
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -23101,19 +23127,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
         ].join("")
       : "";
-  const creatorProfileFaviconDataUri = (() => {
-    const iconPath = resolveTabIconPath();
-    if (!iconPath) return null;
-    try {
-      const bytes = fsSync.readFileSync(iconPath);
-      if (!bytes || bytes.length === 0) return null;
-      return `data:image/png;base64,${bytes.toString("base64")}`;
-    } catch {
-      return null;
-    }
-  })();
-  const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
-  const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404g";
+  const creatorProfileFaviconHref = "/certifyd-tab-icon.png?v=20260404g";
 
   const html = `<!doctype html>
 <html lang="en">
@@ -23448,8 +23462,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="brand-rail">
         <div class="brand-row" aria-label="Certifyd">
           ${
-            safeBrandLogoDataUri
-              ? `<img src="${safeBrandLogoDataUri}" alt="Certifyd Creator" class="brand-logo-image" />`
+            safeBrandLogoHref
+              ? `<img src="${safeBrandLogoHref}" alt="Certifyd Creator" class="brand-logo-image" />`
               : `<span class="brand-mark">c</span><span class="brand-word">Certifyd</span>`
           }
         </div>
@@ -24199,6 +24213,37 @@ function resolveTabIconPath(): string | null {
   return null;
 }
 
+function resolveProfileLogoPath(): string | null {
+  const candidates = [
+    path.resolve(path.dirname(SERVER_FILE), "assets/certifyd-profile-logo.png"),
+    path.resolve(process.cwd(), "apps/api/src/assets/certifyd-profile-logo.png"),
+    path.resolve(process.cwd(), "src/assets/certifyd-profile-logo.png"),
+    path.resolve(process.cwd(), "apps/dashboard/src/assets/certifyd-creator-logo.png"),
+    path.resolve(process.cwd(), "../dashboard/src/assets/certifyd-creator-logo.png")
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fsSync.existsSync(candidate)) return candidate;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+async function handleProfileLogo(_req: any, reply: any) {
+  const logoPath = resolveProfileLogoPath();
+  if (!logoPath) return notFound(reply, "Not found");
+  try {
+    const bytes = await fs.readFile(logoPath);
+    reply.header("content-type", "image/png");
+    reply.header("cache-control", "public, max-age=86400");
+    return reply.send(bytes);
+  } catch {
+    return notFound(reply, "Not found");
+  }
+}
+
 async function handleTabIcon(req: any, reply: any) {
   const iconPath = resolveTabIconPath();
   if (!iconPath) return notFound(reply, "Not found");
@@ -24238,19 +24283,6 @@ async function handleBuyPage(req: any, reply: any) {
   } catch {
     sellerLightningAddress = null;
   }
-  const buyFaviconDataUri = (() => {
-    const iconPath = resolveTabIconPath();
-    if (!iconPath) return null;
-    try {
-      const bytes = fsSync.readFileSync(iconPath);
-      if (!bytes || bytes.length === 0) return null;
-      return `data:image/png;base64,${bytes.toString("base64")}`;
-    } catch {
-      return null;
-    }
-  })();
-  const safeBuyFaviconDataUri = buyFaviconDataUri ? escHtml(buyFaviconDataUri) : "";
-
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -24259,7 +24291,6 @@ async function handleBuyPage(req: any, reply: any) {
   <link rel="icon" type="image/x-icon" href="/favicon.ico?v=20260404g" />
   <link rel="icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
   <link rel="shortcut icon" type="image/png" href="/certifyd-tab-icon.png?v=20260404g" />
-  ${safeBuyFaviconDataUri ? `<link rel="alternate icon" type="image/png" href="${safeBuyFaviconDataUri}" />` : ""}
   <title>Buy</title>
   <style>
     :root { color-scheme: light dark; }
