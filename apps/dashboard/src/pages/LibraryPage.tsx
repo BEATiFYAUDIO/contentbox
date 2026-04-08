@@ -597,23 +597,12 @@ export default function LibraryPage() {
     setFeatureBusyById((m) => ({ ...m, [contentId]: true }));
     setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
     try {
-      if (entry.relation === "owner") {
-        const res = await api<{ featureOnProfile: boolean }>(
-          `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
-          "PATCH",
-          { featureOnProfile: next }
-        );
-        setItems((prev) =>
-          prev.map((row) =>
-            row.item.id === contentId
-              ? { ...row, item: { ...row.item, featureOnProfile: Boolean(res?.featureOnProfile) } }
-              : row
-          )
-        );
-        return;
-      }
-      if (entry.relation === "participant") {
-        const participation = entry.participation || participationByContentId[contentId] || null;
+      const participation = entry.participation || participationByContentId[contentId] || null;
+      const shouldUseParticipationHighlight =
+        Boolean(participation) &&
+        (entry.relation === "participant" || participation?.kind === "remote");
+
+      if (shouldUseParticipationHighlight) {
         if (!participation) throw new Error("Participation info not found.");
         const res =
           participation.kind === "remote" && participation.remoteInviteId
@@ -644,6 +633,22 @@ export default function LibraryPage() {
                     ? { ...row.participation, highlightedOnProfile }
                     : row.participation
                 }
+              : row
+          )
+        );
+        return;
+      }
+
+      if (entry.relation === "owner") {
+        const res = await api<{ featureOnProfile: boolean }>(
+          `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
+          "PATCH",
+          { featureOnProfile: next }
+        );
+        setItems((prev) =>
+          prev.map((row) =>
+            row.item.id === contentId
+              ? { ...row, item: { ...row.item, featureOnProfile: Boolean(res?.featureOnProfile) } }
               : row
           )
         );
@@ -785,11 +790,23 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                     const participationInfo = entry.participation || participationByContentId[it.id] || null;
                     const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
                     const ownerFeatured = Boolean(it.featureOnProfile);
+                    const shouldUseParticipationHighlight =
+                      Boolean(participationInfo) &&
+                      (entry.relation === "participant" || participationInfo?.kind === "remote");
                     const featureAllowed = canFeatureOnProfile({
-                      item: { ...it, libraryAccess: entry.relation === "owner" ? "owned" : entry.relation === "participant" ? "participant" : it.libraryAccess },
+                      item: {
+                        ...it,
+                        libraryAccess: shouldUseParticipationHighlight
+                          ? "participant"
+                          : entry.relation === "owner"
+                            ? "owned"
+                            : entry.relation === "participant"
+                              ? "participant"
+                              : it.libraryAccess
+                      },
                       participation: participationInfo
                     }).allowed;
-                    const currentlyFeatured = entry.relation === "owner" ? ownerFeatured : participationFeatured;
+                    const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
                     const pf = previewFileFor(previewUrl, preview?.files || []);
