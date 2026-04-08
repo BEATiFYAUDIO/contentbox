@@ -319,7 +319,10 @@ export default function LibraryPage() {
             const defaultOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "") || null;
             const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
             return inbox
-              .filter((entry) => String(entry?.status || "").toLowerCase() === "approved")
+              .filter((entry) => {
+                const status = String(entry?.status || "").toLowerCase();
+                return status === "approved" || status === "cleared";
+              })
               .map((entry) => {
                 const childContentId = String(entry?.childContentId || "").trim();
                 if (!childContentId) return null;
