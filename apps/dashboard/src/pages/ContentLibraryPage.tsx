@@ -515,6 +515,7 @@ export default function ContentLibraryPage({
   const [requestParentId, setRequestParentId] = React.useState("");
   const [requestTitle, setRequestTitle] = React.useState("");
   const [requestType, setRequestType] = React.useState<ContentType>("remix");
+  const [requestUpstreamRatePct, setRequestUpstreamRatePct] = React.useState("10");
   const [requestMsg, setRequestMsg] = React.useState<string | null>(null);
   const [requestLinks, setRequestLinks] = React.useState<Array<{ email: string; url: string }> | null>(null);
   const [meId, setMeId] = React.useState<string>("");
@@ -1894,8 +1895,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
     const title = requestTitle.trim();
     const type = (requestType || "remix").trim();
+    const upstreamRatePercent = Number(String(requestUpstreamRatePct || "").trim());
     if (!parentId || !title) {
       setRequestMsg("Original content ID and title are required.");
+      return;
+    }
+    if (!Number.isFinite(upstreamRatePercent) || upstreamRatePercent < 0 || upstreamRatePercent > 100) {
+      setRequestMsg("Upstream royalty % must be a number between 0 and 100.");
       return;
     }
     try {
@@ -1904,12 +1910,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       const res = await api<{ ok: true; childContentId: string }>(`/api/content/${parentId}/derivative`, "POST", {
         type,
         title,
-        parentOrigin
+        parentOrigin,
+        upstreamRatePercent
       });
       if (res?.childContentId) {
         setPendingOpenContentId(res.childContentId);
       }
-      setRequestMsg("Derivative created. Request clearance from the derivative page.");
+      setRequestMsg(`Derivative created (${upstreamRatePercent}% upstream). Request clearance from the derivative page.`);
       setRequestParentId("");
       setRequestTitle("");
       await load(false);
@@ -2444,6 +2451,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 placeholder="e.g. OG Track (DJ Remix)"
                 autoComplete="off"
               />
+            </div>
+
+            <div className="max-w-[220px]">
+              <label className="block text-sm mb-1 text-neutral-300" htmlFor="derivative-upstream-rate">
+                Upstream royalty %
+              </label>
+              <input
+                id="derivative-upstream-rate"
+                name="upstreamRatePercent"
+                type="number"
+                min={0}
+                max={100}
+                step="0.01"
+                className="w-full rounded-lg bg-neutral-950 border border-neutral-800 px-3 py-2 outline-none focus:border-neutral-600"
+                value={requestUpstreamRatePct}
+                onChange={(e) => setRequestUpstreamRatePct(e.target.value)}
+                autoComplete="off"
+              />
+              <div className="mt-1 text-[11px] text-neutral-500">Fixed at derivative creation time.</div>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">

@@ -24154,9 +24154,8 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
     <div class="muted">Original: <strong>${safeParentTitle}</strong></div>
     <div class="muted">Derivative: <strong>${safeChildTitle}</strong></div>
     <div class="muted">Progress: ${escHtml(progress)} bps</div>
-    <p class="muted">Set upstream royalty % and grant clearance to unlock public release.</p>
-    <label class="muted">Upstream % (required for clearance)</label><br/>
-    <input id="upstreamRatePercent" type="number" min="0" max="100" step="0.01" value="${upstreamDefault}" required />
+    <p class="muted">Upstream royalty is fixed at derivative creation. Grant or reject clearance below.</p>
+    <div class="muted">Upstream %: <strong>${upstreamDefault}%</strong></div>
     <div style="margin-top: 12px; display:flex; gap:10px;">
       <button class="primary" id="grantBtn" type="button">Grant clearance</button>
       <button class="danger" id="rejectBtn" type="button">Reject</button>
@@ -24166,8 +24165,7 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
   <script>
     const msg = document.getElementById("msg");
     async function submit(decision) {
-      const pct = document.getElementById("upstreamRatePercent").value;
-      const body = decision === "approve" ? { decision, upstreamRatePercent: pct } : { decision };
+      const body = { decision };
       try {
         const r = await fetch("/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/vote", {
           method: "POST",
@@ -24277,11 +24275,13 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   const fixedUpstreamRatePercent = Math.max(0, Number(link.upstreamBps || 0) / 100);
   if (decision === "approve") {
     const raw = (req.body as any)?.upstreamRatePercent;
-    const pct = Number(String(raw ?? "").trim());
-    if (!Number.isFinite(pct)) return badRequest(reply, "upstreamRatePercent must be numeric");
-    if (pct < 0 || pct > 100) return badRequest(reply, "upstreamRatePercent must be 0-100");
-    if (Math.abs(pct - fixedUpstreamRatePercent) > 0.0001) {
-      return reply.code(409).send("Upstream rate is fixed at derivative creation time.");
+    if (raw !== undefined && raw !== null && String(raw).trim() !== "") {
+      const pct = Number(String(raw).trim());
+      if (!Number.isFinite(pct)) return badRequest(reply, "upstreamRatePercent must be numeric");
+      if (pct < 0 || pct > 100) return badRequest(reply, "upstreamRatePercent must be 0-100");
+      if (Math.abs(pct - fixedUpstreamRatePercent) > 0.0001) {
+        return reply.code(409).send("Upstream rate is fixed at derivative creation time.");
+      }
     }
   }
 
@@ -24375,9 +24375,8 @@ app.get("/clearance/:token", async (req: any, reply) => {
     <h2>Clearance / License for Release</h2>
     <div class="muted">Original: <strong>${parent?.title || "Original work"}</strong></div>
     <div class="muted">Derivative: <strong>${child?.title || "Derivative"}</strong></div>
-    <p class="muted">Set the upstream royalty % and grant clearance to unlock public release.</p>
-    <label class="muted">Upstream % (required for clearance)</label><br/>
-    <input id="upstreamRatePercent" type="number" min="0" max="100" step="0.01" placeholder="10" required />
+    <p class="muted">Upstream royalty is fixed at derivative creation. Grant or reject clearance below.</p>
+    <div class="muted">Upstream %: <strong>${Math.max(0, (link.upstreamBps || 0) / 100)}%</strong></div>
     <div style="margin-top: 12px; display:flex; gap:10px;">
       <button class="primary" id="grantBtn" type="button">Grant clearance</button>
       <button class="danger" id="rejectBtn" type="button">Reject</button>
@@ -24387,8 +24386,7 @@ app.get("/clearance/:token", async (req: any, reply) => {
   <script>
     const msg = document.getElementById("msg");
     async function submit(decision) {
-      const pct = document.getElementById("upstreamRatePercent").value;
-      const body = decision === "approve" ? { decision, upstreamRatePercent: pct } : { decision };
+      const body = { decision };
       try {
         const r = await fetch("/clearance/${encodeURIComponent(token)}/vote", {
           method: "POST",

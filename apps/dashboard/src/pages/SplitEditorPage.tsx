@@ -273,7 +273,6 @@ export default function SplitEditorPage(props: {
   const [linkRelation, setLinkRelation] = React.useState("derivative");
   const [linkSaving, setLinkSaving] = React.useState(false);
   const [linkCandidates, setLinkCandidates] = React.useState<Array<{ id: string; title: string }>>([]);
-  const [upstreamVotePct, setUpstreamVotePct] = React.useState("10");
 
   const selectedVersion = React.useMemo(
     () => versions.find((v) => v.id === selectedVersionId) || null,
@@ -1027,6 +1026,9 @@ export default function SplitEditorPage(props: {
                 ) : null}
                 {upstreamInfo.requiresApproval && !upstreamInfo.approvedAt ? (
                   <>
+                    <div className="mt-2 text-[11px] text-neutral-500">
+                      Clearance decisions (grant/reject) are handled in the Clearance tab, not in split editing.
+                    </div>
                     <div className="mt-2 flex flex-wrap gap-2">
                       {upstreamInfo.canRequestApproval && !upstreamInfo.canVote ? (
                         <button
@@ -1047,63 +1049,9 @@ export default function SplitEditorPage(props: {
                         </button>
                       ) : null}
                       {upstreamInfo.canVote ? (
-                        <>
-                          <div className="flex items-center gap-2">
-                            <label className="text-[11px] text-neutral-500" htmlFor={`upstream-rate-${contentId}`}>
-                              Upstream %
-                            </label>
-                            <input
-                              id={`upstream-rate-${contentId}`}
-                              name={`upstreamRate-${contentId}`}
-                              className="w-20 rounded-md bg-neutral-950 border border-neutral-800 px-2 py-1 text-xs"
-                              value={upstreamVotePct}
-                              onChange={(e) => setUpstreamVotePct(e.target.value.replace(/[^\d.]/g, ""))}
-                              inputMode="decimal"
-                              placeholder="10"
-                              autoComplete="off"
-                            />
-                          </div>
-                          <button
-                            onClick={async () => {
-                              try {
-                                const pct = Number(upstreamVotePct || "0");
-                                if (!Number.isFinite(pct)) {
-                                  setUpstreamError("Enter an upstream rate (0–100).");
-                                  return;
-                                }
-                                await api(`/content-links/${upstreamInfo.linkId}/vote`, "POST", {
-                                  decision: "approve",
-                                  upstreamRatePercent: pct
-                                });
-                                const r: any = await api(`/content/${contentId}/parent-link`, "GET");
-                                setUpstreamInfo(r?.parentLink === null ? null : r);
-                              } catch (e: any) {
-                                setUpstreamError(e?.message || "Vote failed.");
-                              }
-                            }}
-                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                            disabled={!crossNodeAllowed}
-                            title={!crossNodeAllowed ? clearanceReason : "Grant clearance"}
-                          >
-                            Grant clearance
-                          </button>
-                          <button
-                            onClick={async () => {
-                              try {
-                                await api(`/content-links/${upstreamInfo.linkId}/vote`, "POST", { decision: "reject" });
-                                const r: any = await api(`/content/${contentId}/parent-link`, "GET");
-                                setUpstreamInfo(r?.parentLink === null ? null : r);
-                              } catch (e: any) {
-                                setUpstreamError(e?.message || "Vote failed.");
-                              }
-                            }}
-                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                            disabled={!crossNodeAllowed}
-                            title={!crossNodeAllowed ? clearanceReason : "Reject"}
-                          >
-                            Reject
-                          </button>
-                        </>
+                        <span className="text-[11px] text-neutral-500">
+                          You have a pending clearance vote. Open the Clearance tab to approve or reject.
+                        </span>
                       ) : null}
                     </div>
                     {!crossNodeAllowed ? (
