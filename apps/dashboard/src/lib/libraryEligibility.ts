@@ -162,6 +162,10 @@ export function classifyLibraryEligibility(input: {
   if (ownerEligible) return { section: "owned", included: true };
   if (purchasedEligible) return { section: "purchased", included: true };
   if (participantEligible) return { section: "participant", included: true };
+  if (access === "participant" && !input.participation) {
+    // Server-authoritative participant access (for example, parent-shareholder derivative visibility).
+    return { section: "participant", included: true };
+  }
   if (access === "participant" && !participantEligible) {
     return { section: "excluded", included: false, reason: participantCheck.reason || "relation_invalid" };
   }

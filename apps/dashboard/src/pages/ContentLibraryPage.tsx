@@ -603,6 +603,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [clearanceLoadingByLink, setClearanceLoadingByLink] = React.useState<Record<string, boolean>>({});
   const [nodeModeSnapshot, setNodeModeSnapshot] = React.useState<NodeModeSnapshot | null>(null);
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
+  const loadRequestRef = React.useRef(0);
 
   const [testPurchaseFor, setTestPurchaseFor] = React.useState<{
     contentId: string;
@@ -612,6 +613,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   } | null>(null);
 
   async function load(trashMode: boolean = showTrash, tombstoneMode: boolean = showTombstones) {
+    const requestId = ++loadRequestRef.current;
+    const isCurrent = () => requestId === loadRequestRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -642,6 +645,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         return !deleted;
       });
       if (!Array.isArray(data)) {
+        if (!isCurrent()) return;
         setError("Failed to load content (unexpected response)");
       }
       let mergedList: ContentItem[] = list;
@@ -812,6 +816,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         mergedList = eligible;
       }
 
+      if (!isCurrent()) return;
       setParticipationByContentId(nextParticipationByContentId);
       setItems(mergedList);
       const next: Record<string, string> = {};
@@ -827,9 +832,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         setPendingOpenContentId(null);
       }
     } catch (e: any) {
+      if (!isCurrent()) return;
       const msg = String(e?.message || "Failed to load content");
       setError(msg.includes("INVALID_TYPE") ? "Invalid library type filter." : msg);
     } finally {
+      if (!isCurrent()) return;
       setLoading(false);
     }
   }

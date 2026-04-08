@@ -12690,12 +12690,31 @@ async function listLockedParticipationsForUser(userId: string): Promise<Particip
     });
   }
 
+  const splitVersionIds = Array.from(
+    new Set(rows.map((row) => asString(row.splitVersion?.id || "").trim()).filter(Boolean))
+  );
+  const lockedSplits = splitVersionIds.length
+    ? await prisma.splitVersion.findMany({
+        where: { id: { in: splitVersionIds as string[] }, status: "locked" as any },
+        include: { participants: true }
+      })
+    : [];
+  const lockedSplitById = new Map(
+    lockedSplits.map((sv) => [
+      sv.id,
+      {
+        ...sv,
+        participants: filterCommerceEligibleParticipants(sv.participants || [])
+      }
+    ])
+  );
+
   const projections: ParticipationProjection[] = [];
   for (const row of rows) {
     const splitVersion = row.splitVersion;
     const content = splitVersion?.content;
     if (!splitVersion || !content) continue;
-    const lockedSplit = await getLockedSplitVersionById(splitVersion.id);
+    const lockedSplit = lockedSplitById.get(splitVersion.id) || null;
     if (!lockedSplit) continue;
     const lockedParticipant = (lockedSplit.participants || []).find((participant: any) => participant.id === row.id);
     if (!lockedParticipant) continue;
@@ -19275,6 +19294,28 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           select: selectBase
         });
         items.push(...participantContent.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "participant" })));
+
+        const derivativeChildren = await prisma.contentLink.findMany({
+          where: {
+            parentContentId: { in: participantIds },
+            childContent: {
+              is: {
+                status: "published",
+                deletedAt: null,
+                ...contentTypeWhere
+              } as any
+            }
+          },
+          include: {
+            childContent: { select: selectBase }
+          }
+        });
+        items.push(
+          ...derivativeChildren
+            .map((link) => link.childContent)
+            .filter(Boolean)
+            .map((i: any) => ({ ...i, ...toVersionSummary(i), libraryAccess: "participant" }))
+        );
       }
     }
   }
