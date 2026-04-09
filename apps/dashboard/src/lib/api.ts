@@ -129,6 +129,12 @@ function normalizeBase(value: string): string {
 }
 
 export function getApiBase(): string {
+  // Integrated app mode: always use same-origin API and ignore stale stored overrides.
+  try {
+    if (typeof window !== "undefined" && window.location.port === "4000") {
+      return resolveApiBase();
+    }
+  } catch {}
   const stored = normalizeBase(readStoredApiBase());
   const resolved = resolveApiBase();
   const base = stored || resolved;
