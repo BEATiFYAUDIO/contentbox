@@ -15,11 +15,28 @@ function resolveApiBase(): string {
     const hostname = window.location.hostname;
     const port = window.location.port;
     const isDevUi = port === "5173" || port === "5174";
+    const isIntegratedUi = port === "4000";
+    // Integrated UI should always target same-origin API to avoid localhost/127 CORS alias issues.
+    if (isIntegratedUi) return origin.replace(/\/$/, "");
     if (isDevUi && isLocalHost(hostname)) {
       // In local dev, default to local API unless user explicitly overrides.
       return "http://127.0.0.1:4000";
     }
-    if (envBase) return envBase.replace(/\/$/, "");
+    if (envBase) {
+      try {
+        const envUrl = new URL(envBase);
+        // Rewrite local alias to page host when both are loopback and same port.
+        if (isLocalHost(hostname) && isLocalHost(envUrl.hostname)) {
+          const envPort = envUrl.port || (envUrl.protocol === "https:" ? "443" : "80");
+          const pagePort = port || (window.location.protocol === "https:" ? "443" : "80");
+          if (envPort === pagePort && envUrl.hostname !== hostname) {
+            envUrl.hostname = hostname;
+            return envUrl.origin.replace(/\/$/, "");
+          }
+        }
+      } catch {}
+      return envBase.replace(/\/$/, "");
+    }
     return origin.replace(/\/$/, "");
   } catch {
     return envBase ? envBase.replace(/\/$/, "") : "http://127.0.0.1:4000";
