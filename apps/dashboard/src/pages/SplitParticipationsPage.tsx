@@ -105,7 +105,7 @@ export default function SplitParticipationsPage(props: {
   capabilities?: CapabilitySet;
   nodeMode?: NodeMode | null;
 }) {
-  type RoyaltiesScope = "active" | "local" | "remote" | "derivatives" | "history";
+  type RoyaltiesScope = "local" | "remote" | "derivatives" | "history";
   const canAdvancedSplits = props.features?.advancedSplits ?? false;
   const splitsAllowed = props.capabilities?.useSplits ?? canAdvancedSplits;
   const derivativesAllowed = props.capabilities?.useDerivatives ?? canAdvancedSplits;
@@ -122,7 +122,7 @@ export default function SplitParticipationsPage(props: {
   const [showInactive, setShowInactive] = useState(false);
   const [showInactiveWorks, setShowInactiveWorks] = useState(false);
   const [showAllUpstream, setShowAllUpstream] = useState(false);
-  const [scope, setScope] = useState<RoyaltiesScope>("active");
+  const [scope, setScope] = useState<RoyaltiesScope>("local");
   const openSplitEditor = (contentId: string) => {
     const id = String(contentId || "").trim();
     if (!id) return;
@@ -227,38 +227,6 @@ export default function SplitParticipationsPage(props: {
   const collaborativeLocalWorks = visibleOwnedSharedWorks.filter((row) => {
     const pct = toSharePercent(row);
     return pct == null || pct < 100;
-  });
-  const ownedContentIds = new Set(visibleOwnedSharedWorks.map((row) => row.contentId));
-  const visibleActiveCollaborations = participations.filter((row) => {
-    if (ownedContentIds.has(row.contentId)) return false;
-    const decision = isActiveLibraryVisible(
-      {
-        id: row.contentId,
-        status: row.contentStatus || "draft",
-        deletedAt: row.contentDeletedAt || null
-      },
-      "participant",
-      {
-        contentId: row.contentId,
-        status: row.acceptedAt ? "accepted" : "pending",
-        acceptedAt: row.acceptedAt,
-        contentStatus: row.contentStatus || "draft",
-        contentDeletedAt: row.contentDeletedAt || null
-      }
-    );
-    logVisibilityDecision({
-      surface: "royalties.collaborations.active",
-      sourceModelQuery: "GET /my/participations",
-      relation: "participant",
-      content: {
-        id: row.contentId,
-        status: row.contentStatus || "draft",
-        deletedAt: row.contentDeletedAt || null
-      },
-      included: decision.visible,
-      reason: decision.visible ? "active_library_visible" : decision.reason || "excluded"
-    });
-    return decision.visible;
   });
   const visibleUpstream = upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt));
   const collaborationCount = participations.length + remoteRoyalties.length;
@@ -380,16 +348,6 @@ export default function SplitParticipationsPage(props: {
         <div className="mt-2 flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => setScope("active")}
-            className={[
-              "text-xs rounded-full border px-2 py-1",
-              scope === "active" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
-            ].join(" ")}
-          >
-            Active relationships ({visibleActiveCollaborations.length})
-          </button>
-          <button
-            type="button"
             onClick={() => setScope("local")}
             className={[
               "text-xs rounded-full border px-2 py-1",
@@ -438,54 +396,6 @@ export default function SplitParticipationsPage(props: {
 
       {!loading && works.length === 0 ? (
         <div className="text-sm text-neutral-500">No works yet.</div>
-      ) : null}
-
-      {scope === "active" ? (
-      <section id="collab-active" className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-sm text-neutral-300 font-medium">Active Collaborations</div>
-        <div className="text-xs text-neutral-500 mt-1">Content you are part of with defined splits.</div>
-        {visibleActiveCollaborations.length === 0 ? (
-          <div className="text-sm text-neutral-500 mt-3">No locked participations yet.</div>
-        ) : (
-          <div className="space-y-3 mt-3">
-            {visibleActiveCollaborations.map((p) => (
-              <div key={p.splitParticipantId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-medium text-neutral-100">{p.contentTitle || "Untitled"}</div>
-                    <div className="text-xs text-neutral-400 mt-1">
-                      {(p.contentType || "content").toUpperCase()} • Role: {p.participantRole || "participant"} • Share: {p.participantBps != null ? `${(p.participantBps / 100).toFixed(2)}%` : (p.participantPercent != null ? `${Number(p.participantPercent).toFixed(2)}%` : "—")}
-                    </div>
-                    <div className="text-xs text-neutral-500 mt-1">
-                      Split v{p.splitVersionNumber ?? "?"} • Rights status: accepted
-                    </div>
-                    <div className="text-xs text-neutral-500 mt-1">Relationship role: Collaborator</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Badge label={String(p.contentStatus || "unknown").toLowerCase() === "published" ? "Live" : "Inactive"} tone={String(p.contentStatus || "").toLowerCase() === "published" ? "success" : "amber"} />
-                    <Badge label={p.contentStatus || "unknown"} tone={String(p.contentStatus || "").toLowerCase() === "published" ? "cyan" : "amber"} />
-                    {p.highlightedOnProfile ? <Badge label="Featured" tone="cyan" /> : null}
-                    <button
-                      onClick={() => openEarningsView(p.contentId, p.contentTitle)}
-                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                    >
-                      View earnings
-                    </button>
-                    {p.buyUrl ? (
-                      <button
-                        onClick={() => window.open(p.buyUrl as string, "_blank", "noopener,noreferrer")}
-                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                      >
-                        Open
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
       ) : null}
 
       {scope === "local" ? (
