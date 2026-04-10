@@ -126,7 +126,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
             <div className="text-sm text-neutral-400 mt-1">
               Sales input → Content intelligence → Earnings statement → Payout execution.
             </div>
-            <div className="text-xs text-neutral-500 mt-1">Where relationships go, money flows.</div>
+            <div className="text-xs text-neutral-500 mt-1">Sales truth, earnings truth, payout truth.</div>
           </div>
           <button
             onClick={() => {
@@ -138,98 +138,28 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
             Refresh now
           </button>
         </div>
-        <div className="mt-4 flex gap-2 overflow-x-auto pb-1 sm:hidden">
-          {allTabs.slice(0, 5).map((t) => (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {([
+            { key: "overview", label: "Stage 0 · Overview" },
+            { key: "ledger", label: "Stage 1 · Sales" },
+            { key: "earnings-v2", label: "Stage 2 · Earnings by Work" },
+            { key: "royalties", label: "Stage 3 · Earnings Ledger" },
+            { key: "payouts", label: "Stage 4 · Payouts" }
+          ] as Array<{ key: FinanceTab; label: string }>).map((t) => (
             <button
-              key={`mobile-${t.key}`}
+              key={`stage-${t.key}`}
               type="button"
-              onClick={() => setTab(t.key as FinanceTab)}
+              onClick={() => setTab(t.key)}
               className={[
-                "shrink-0 rounded-full border px-3 py-1.5 text-xs",
+                "rounded-full border px-3 py-1.5 text-xs",
                 tab === t.key
                   ? "border-white/30 bg-white/10 text-neutral-100"
-                  : "border-neutral-800 bg-neutral-950/40 text-neutral-300"
+                  : "border-neutral-800 bg-neutral-950/40 text-neutral-300 hover:bg-neutral-900"
               ].join(" ")}
             >
-              {t.label.replace("Revenue ", "")}
+              {t.label}
             </button>
           ))}
-        </div>
-        <div className="mt-4 hidden gap-3 sm:grid sm:grid-cols-2 xl:grid-cols-5">
-          <button
-            type="button"
-            onClick={() => setTab("overview")}
-            className={[
-              "rounded-xl border p-3 text-left transition",
-              tab === "overview"
-                ? "border-white/30 bg-white/10"
-                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
-            ].join(" ")}
-          >
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 0</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Revenue Overview</div>
-            <div className="mt-1 text-xs text-neutral-400">System summary, health, and top-level money posture.</div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("ledger")}
-            className={[
-              "rounded-xl border p-3 text-left transition",
-              tab === "ledger"
-                ? "border-white/30 bg-white/10"
-                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
-            ].join(" ")}
-          >
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 1</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Sales Input</div>
-            <div className="mt-1 text-xs text-neutral-400">Buyer payment truth and settlement node context.</div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("earnings-v2")}
-            className={[
-              "rounded-xl border p-3 text-left transition",
-              tab === "earnings-v2"
-                ? "border-white/30 bg-white/10"
-                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
-            ].join(" ")}
-          >
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 2</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Content Intelligence</div>
-            <div className="mt-1 text-xs text-neutral-400">Multi-view performance, risk, role, and freshness analysis.</div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("royalties")}
-            className={[
-              "rounded-xl border p-3 text-left transition",
-              tab === "royalties"
-                ? "border-white/30 bg-white/10"
-                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
-            ].join(" ")}
-          >
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 3</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Earnings Statement</div>
-            <div className="mt-1 text-xs text-neutral-400">Your personal royalty money statement by status.</div>
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("payouts")}
-            className={[
-              "rounded-xl border p-3 text-left transition",
-              tab === "payouts"
-                ? "border-white/30 bg-white/10"
-                : "border-neutral-800 bg-neutral-950/40 hover:bg-neutral-900"
-            ].join(" ")}
-          >
-            <div className="text-xs uppercase tracking-wide text-neutral-500">Stage 4</div>
-            <div className="mt-1 text-sm font-semibold text-neutral-100">Payout Execution</div>
-            <div className="mt-1 text-xs text-neutral-400">
-              {financePosture === "sovereign_node"
-                ? "Paid, pending, failed, and node execution health."
-                : "Paid and pending execution state."}
-            </div>
-          </button>
         </div>
         {financePosture === "sovereign_node" && tab !== "overview" ? (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/40 p-3 space-y-2">

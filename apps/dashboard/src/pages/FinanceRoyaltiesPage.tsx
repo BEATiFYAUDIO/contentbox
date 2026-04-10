@@ -601,18 +601,24 @@ export default function FinanceRoyaltiesPage({
     });
   }, [earningsLedgerRows, timeBasis, timePeriod]);
 
+  const summaryScopedEarningsLedgerRows = useMemo(() => {
+    if (!ledgerContentFilter?.contentId) return timeScopedEarningsLedgerRows;
+    return timeScopedEarningsLedgerRows.filter((row) => row.contentId === ledgerContentFilter.contentId);
+  }, [timeScopedEarningsLedgerRows, ledgerContentFilter]);
+
   const scopedTopline = useMemo(() => {
-    return timeScopedEarningsLedgerRows.reduce(
+    return summaryScopedEarningsLedgerRows.reduce(
       (acc, row) => {
         const amt = Math.max(0, Number(row.amountSats || 0) || 0);
         acc.grossEarned += amt;
+        acc.fees += Math.max(0, Number(row.feeWithheldSats || 0) || 0);
         if (row.status === "Paid") acc.netPaid += amt;
         if (row.status === "Pending" || row.status === "Processing" || row.status === "Partial") acc.netPayable += amt;
         return acc;
       },
-      { grossEarned: 0, netPaid: 0, netPayable: 0 }
+      { grossEarned: 0, fees: 0, netPaid: 0, netPayable: 0 }
     );
-  }, [timeScopedEarningsLedgerRows]);
+  }, [summaryScopedEarningsLedgerRows]);
 
   const visibleEarningsLedgerRows = useMemo(() => {
     return timeScopedEarningsLedgerRows.filter((row) => {
@@ -698,8 +704,10 @@ export default function FinanceRoyaltiesPage({
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Fees</div>
-          <div className="mt-2 text-xl font-semibold">{formatSats(String(feeWithheld))}</div>
-          {timePeriod !== "all" ? <div className="mt-1 text-[11px] text-neutral-500">All-time fee view</div> : null}
+          <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.fees))}</div>
+          {!ledgerContentFilter?.contentId && timePeriod === "all" && scopedTopline.fees === 0 && feeWithheld > 0 ? (
+            <div className="mt-1 text-[11px] text-neutral-500">Detailed fee rows unavailable for this scope; showing 0 from row detail.</div>
+          ) : null}
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net paid</div>

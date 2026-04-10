@@ -856,20 +856,10 @@ export default function EarningsV2Page({
               {[
                 ["performance", "Performance"],
                 ["top_earners", "Top Earners"],
-                ...(momentumByContent.hasRecentSignal
-                  ? ([
-                      ["momentum", "Momentum"],
-                      ["momentum_delta", "Momentum Delta"]
-                    ] as const)
-                  : []),
                 ["by_role", "By Role"],
                 ["payout_state", "Payout State"],
-                ["cashflow_risk", "Cashflow Risk"],
-                ["settlement_reliability", "Settlement Reliability"],
                 ["fee_efficiency", "Fee Efficiency"],
-                ["realization", "Realization"],
-                ["concentration", "Concentration"],
-                ["freshness", "Freshness"]
+                ...(momentumByContent.hasRecentSignal ? ([["momentum", "Momentum"]] as const) : [])
               ].map(([key, label]) => {
                 const active = contentView === key;
                 return (
