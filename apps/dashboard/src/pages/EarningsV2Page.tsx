@@ -232,6 +232,26 @@ export default function EarningsV2Page({
   const [contentView, setContentView] = useState<ContentView>("performance");
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
+  const [scopeHint, setScopeHint] = useState<string | null>(null);
+  const [scopeTitle, setScopeTitle] = useState<string | null>(null);
+  const [strictRoyaltiesScope, setStrictRoyaltiesScope] = useState(false);
+
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search || "");
+      const contentId = String(params.get("contentId") || "").trim();
+      const title = String(params.get("title") || "").trim();
+      const source = String(params.get("source") || "").trim().toLowerCase();
+      if (contentId) {
+        setScopedContentId(contentId);
+        setScopeTitle(title || null);
+      }
+      if (source === "royalties" && contentId) {
+        setStrictRoyaltiesScope(true);
+        setScopeHint("Scoped from Royalties");
+      }
+    } catch {}
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -319,8 +339,13 @@ export default function EarningsV2Page({
     });
   }, [sales, timeBasis, timePeriod]);
 
+  const earningsViewSales = useMemo(() => {
+    if (!strictRoyaltiesScope || !scopedContentId) return scopedSales;
+    return scopedSales.filter((row) => String(row.contentId || "").trim() === scopedContentId);
+  }, [scopedSales, strictRoyaltiesScope, scopedContentId]);
+
   const summary = useMemo(() => {
-    return scopedSales.reduce(
+    return earningsViewSales.reduce(
       (acc, row) => {
         const fees = feeBreakdownForRow(row);
         acc.gross += fees.gross;
@@ -333,7 +358,7 @@ export default function EarningsV2Page({
       },
       { gross: 0, earnings: 0, fees: 0, paidOut: 0, pending: 0 }
     );
-  }, [scopedSales]);
+  }, [earningsViewSales]);
 
   const byContent = useMemo<ByContentRow[]>(() => {
     const payoutByContent = new Map<string, { earnings: number; paid: number; pending: number; failed: number }>();
@@ -352,7 +377,7 @@ export default function EarningsV2Page({
 
     const map = new Map<string, ByContentRow>();
     const stateMap = new Map<string, PayoutState[]>();
-    for (const row of scopedSales) {
+    for (const row of earningsViewSales) {
       const contentId = row.contentId;
       const fees = feeBreakdownForRow(row);
       const existing = map.get(contentId) || {
@@ -409,7 +434,7 @@ export default function EarningsV2Page({
       }
     }
     return rows.sort((a, b) => b.gross - a.gross);
-  }, [scopedSales, roleByContent, shareByContent, payoutItems]);
+  }, [earningsViewSales, roleByContent, shareByContent, payoutItems]);
 
   const momentumByContent = useMemo(() => {
     const now = Date.now();
@@ -421,7 +446,7 @@ export default function EarningsV2Page({
     >();
     let hasTimestampSignal = false;
     let hasRecentSignal = false;
-    for (const row of scopedSales) {
+    for (const row of earningsViewSales) {
       const contentId = String(row.contentId || "").trim();
       if (!contentId) continue;
       const ts = new Date(row.recognizedAt).getTime();
@@ -448,7 +473,7 @@ export default function EarningsV2Page({
       map.set(contentId, current);
     }
     return { map, hasTimestampSignal, hasRecentSignal };
-  }, [scopedSales]);
+  }, [earningsViewSales]);
 
   const byContentRows = useMemo(() => {
     const rows = [...byContent];
@@ -605,10 +630,11 @@ export default function EarningsV2Page({
       setScopedContentId(null);
       return;
     }
+    if (strictRoyaltiesScope && scopedContentId) return;
     if (!scopedContentId || !byContent.some((row) => row.contentId === scopedContentId)) {
       setScopedContentId(byContent[0].contentId);
     }
-  }, [byContent, scopedContentId]);
+  }, [byContent, scopedContentId, strictRoyaltiesScope]);
 
   useEffect(() => {
     if (contentView !== "momentum" && contentView !== "momentum_delta") return;
@@ -711,6 +737,37 @@ export default function EarningsV2Page({
 
   return (
     <div className="space-y-4">
+      {scopeHint ? (
+        <div className="rounded-lg border border-cyan-800/50 bg-cyan-950/20 px-3 py-2 text-xs text-cyan-200">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="space-y-0.5">
+              <div className="font-medium">{scopeHint}</div>
+              <div className="text-cyan-100/90">Work: {scopeTitle || scopedRow?.contentTitle || scopedContentId || "Unknown"}</div>
+            </div>
+            <button
+              type="button"
+              className="rounded border border-cyan-700 px-2 py-1 text-[11px] text-cyan-100 hover:bg-cyan-900/30"
+              onClick={() => {
+                setStrictRoyaltiesScope(false);
+                setScopeHint(null);
+                setScopeTitle(null);
+                setScopedContentId(null);
+                try {
+                  const params = new URLSearchParams(window.location.search || "");
+                  params.delete("contentId");
+                  params.delete("title");
+                  params.delete("source");
+                  const qs = params.toString();
+                  const next = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+                  window.history.replaceState({}, "", next);
+                } catch {}
+              }}
+            >
+              Clear scope
+            </button>
+          </div>
+        </div>
+      ) : null}
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">Content Performance</div>
         <div className="text-sm text-neutral-400 mt-1">

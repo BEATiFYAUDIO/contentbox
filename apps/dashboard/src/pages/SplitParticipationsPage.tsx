@@ -123,16 +123,6 @@ export default function SplitParticipationsPage(props: {
   const [showInactiveWorks, setShowInactiveWorks] = useState(false);
   const [showAllUpstream, setShowAllUpstream] = useState(false);
   const [scope, setScope] = useState<RoyaltiesScope>("active");
-  const toBigInt = (v: unknown): bigint => {
-    try {
-      const s = String(v ?? "0").trim();
-      if (!s) return 0n;
-      return BigInt(s);
-    } catch {
-      return 0n;
-    }
-  };
-  const fmtSats = (v: bigint): string => `${Number(v).toLocaleString()} sats`;
   const openSplitEditor = (contentId: string) => {
     const id = String(contentId || "").trim();
     if (!id) return;
@@ -223,10 +213,6 @@ export default function SplitParticipationsPage(props: {
     });
     return include;
   });
-  const localRoyaltyAccrued = works.reduce((sum, row) => sum + toBigInt(row.earnedSatsToDate), 0n);
-  const localRoyaltyPayable = works.reduce((sum, row) => sum + toBigInt(row.pendingSats), 0n);
-  const localRoyaltyPaid = works.reduce((sum, row) => sum + toBigInt(row.withdrawnSats), 0n);
-  const remoteRoyaltyAccrued = remoteRoyalties.reduce((sum, row) => sum + toBigInt(row.earnedSatsToDate), 0n);
   const visibleLocalWorks = showInactiveWorks ? [...activeWorks, ...inactiveWorks] : activeWorks;
   const visibleOwnedSharedWorks = visibleLocalWorks.filter((row) => row.myRole === "owner");
   const toSharePercent = (row: WorkRoyaltyRow): number | null => {
@@ -246,6 +232,24 @@ export default function SplitParticipationsPage(props: {
   const visibleActiveCollaborations = participations.filter((row) => !ownedContentIds.has(row.contentId));
   const visibleUpstream = upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt));
   const collaborationCount = participations.length + remoteRoyalties.length;
+  const ownedCount = ownedLocalWorks.length;
+  const collaborationOwnedCount = collaborativeLocalWorks.length;
+  const openEarningsView = (contentId?: string | null, title?: string | null) => {
+    const id = String(contentId || "").trim();
+    const params = new URLSearchParams();
+    if (id) params.set("contentId", id);
+    const t = String(title || "").trim();
+    if (t) params.set("title", t);
+    params.set("source", "royalties");
+    const query = params.toString();
+    window.location.href = query ? `/earnings-v2?${query}` : "/earnings-v2";
+  };
+  const describeRelationshipRole = (row: WorkRoyaltyRow): string => {
+    const pct = toSharePercent(row);
+    if (row.myRole === "owner" && pct != null && Math.abs(pct - 100) < 0.0001) return "Originator";
+    if (row.myRole === "owner") return "Originator + Collaborator";
+    return "Collaborator";
+  };
   const Badge = ({
     label,
     tone = "neutral"
@@ -296,48 +300,47 @@ export default function SplitParticipationsPage(props: {
   }, [isBasic]);
 
   if (isBasic) {
-    return <LockedFeaturePanel title="Collaborations" />;
+    return <LockedFeaturePanel title="Royalties" />;
   }
 
   return (
     <div className="space-y-4">
       <div>
-        <div className="text-lg font-semibold">Collaborations</div>
-        <div className="text-sm text-neutral-400 mt-1">Songs and works you share with others, including split roles and accepted collaborations.</div>
+        <div className="text-lg font-semibold">Royalties</div>
+        <div className="text-sm text-neutral-400 mt-1">Structure view for ownership, participation, and derivative relationships.</div>
         <div className="text-xs text-neutral-500 mt-1">
-          Primary source for participation, roles, and share across works, including accrued and paid amounts.
+          Royalty defines relationship structure (who, role, and share). Revenue and Earnings show money outcomes.
         </div>
         <div className="text-xs text-neutral-500 mt-1">
-          This page shows your participation, roles, and share across works. Earnings are summarized in the Earnings tab.
+          Use “View earnings” on any row to jump to a content-scoped earnings view.
         </div>
-        <div className="text-xs text-neutral-500 mt-1">Where relationships go, money flows.</div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-5">
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Collaborations</div>
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Participation links</div>
           <div className="mt-1 text-lg font-semibold text-neutral-100">{collaborationCount.toLocaleString()}</div>
-          <div className="text-xs text-neutral-500 mt-1">Active + remote collaboration records</div>
+          <div className="text-xs text-neutral-500 mt-1">Active + remote participation records</div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalty accrued</div>
-          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(localRoyaltyAccrued + remoteRoyaltyAccrued)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Local + remote participation accrual</div>
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Owned works</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{ownedCount.toLocaleString()}</div>
+          <div className="text-xs text-neutral-500 mt-1">Originator relationships</div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalty payable</div>
-          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(localRoyaltyPayable)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Allocated but not yet remitted (local rows)</div>
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Shared-split works</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{collaborationOwnedCount.toLocaleString()}</div>
+          <div className="text-xs text-neutral-500 mt-1">Originator + collaborator structure</div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Royalty paid</div>
-          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(localRoyaltyPaid)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Successfully paid/withdrawn (local rows)</div>
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Remote relationships</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{remoteRoyalties.length.toLocaleString()}</div>
+          <div className="text-xs text-neutral-500 mt-1">Accepted remote collaboration links</div>
         </div>
         <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Remote accrued</div>
-          <div className="mt-1 text-lg font-semibold text-neutral-100">{fmtSats(remoteRoyaltyAccrued)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Mirrored remote participation accrual</div>
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Derivative links</div>
+          <div className="mt-1 text-lg font-semibold text-neutral-100">{visibleUpstream.length.toLocaleString()}</div>
+          <div className="text-xs text-neutral-500 mt-1">Parent/child derivative relationships</div>
         </div>
       </div>
 
@@ -353,7 +356,7 @@ export default function SplitParticipationsPage(props: {
               scope === "active" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
             ].join(" ")}
           >
-            Active collaborations ({visibleActiveCollaborations.length})
+            Active relationships ({visibleActiveCollaborations.length})
           </button>
           <button
             type="button"
@@ -373,7 +376,7 @@ export default function SplitParticipationsPage(props: {
               scope === "remote" ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 hover:bg-neutral-900"
             ].join(" ")}
           >
-            Remote collaborations ({remoteRoyalties.length})
+            Remote relationships ({remoteRoyalties.length})
           </button>
           {derivativesAllowed ? (
             <button
@@ -426,11 +429,18 @@ export default function SplitParticipationsPage(props: {
                     <div className="text-xs text-neutral-500 mt-1">
                       Split v{p.splitVersionNumber ?? "?"} • Rights status: accepted
                     </div>
+                    <div className="text-xs text-neutral-500 mt-1">Relationship role: Collaborator</div>
                   </div>
                   <div className="flex items-center gap-2">
                     <Badge label="Active" tone="success" />
                     <Badge label={p.contentStatus || "unknown"} />
                     {p.highlightedOnProfile ? <Badge label="Featured" tone="cyan" /> : null}
+                    <button
+                      onClick={() => openEarningsView(p.contentId, p.contentTitle)}
+                      className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                    >
+                      View earnings
+                    </button>
                     {p.buyUrl ? (
                       <button
                         onClick={() => window.open(p.buyUrl as string, "_blank", "noopener,noreferrer")}
@@ -472,11 +482,7 @@ export default function SplitParticipationsPage(props: {
                 <div className="text-xs text-neutral-400 mt-1">
                   {p.type ? p.type.toUpperCase() : "CONTENT"} • Role: {p.myRole === "owner" ? "owner" : "participant"} • Share: {p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"}
                 </div>
-                <div className="text-xs text-neutral-400 mt-1">
-                  Accrued: <span className="text-neutral-200">{p.earnedSatsToDate} sats</span>
-                  {" "}• Payable: <span className="text-neutral-200">{p.pendingSats || "0"} sats</span>
-                  {" "}• Paid: <span className="text-neutral-200">{p.withdrawnSats || "0"} sats</span>
-                </div>
+                <div className="text-xs text-neutral-500 mt-1">Relationship role: {describeRelationshipRole(p)}</div>
                 {p.ownerDisplayName || p.ownerEmail ? (
                   <div className="text-xs text-neutral-500 mt-1">
                     Original creator: {p.ownerDisplayName || p.ownerEmail}
@@ -507,8 +513,12 @@ export default function SplitParticipationsPage(props: {
               <div className="flex items-center gap-2">
                 <Badge label="Owned • 100%" tone="neutral" />
                 {p.contentDeletedAt ? <Badge label="Inactive" tone="amber" /> : <Badge label="Active" tone="success" />}
-                {toBigInt(p.pendingSats) > 0n ? <Badge label="Pending payout" tone="amber" /> : null}
-                {toBigInt(p.withdrawnSats) > 0n ? <Badge label="Paid" tone="success" /> : null}
+                <button
+                  onClick={() => openEarningsView(p.contentId, p.title)}
+                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                >
+                  View earnings
+                </button>
                 {p.contentId ? (
                   <button
                     onClick={() => openSplitEditor(p.contentId)}
@@ -537,11 +547,7 @@ export default function SplitParticipationsPage(props: {
                 <div className="text-xs text-neutral-400 mt-1">
                   {p.type ? p.type.toUpperCase() : "CONTENT"} • Role: owner • Share: {p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"}
                 </div>
-                <div className="text-xs text-neutral-400 mt-1">
-                  Accrued: <span className="text-neutral-200">{p.earnedSatsToDate} sats</span>
-                  {" "}• Payable: <span className="text-neutral-200">{p.pendingSats || "0"} sats</span>
-                  {" "}• Paid: <span className="text-neutral-200">{p.withdrawnSats || "0"} sats</span>
-                </div>
+                <div className="text-xs text-neutral-500 mt-1">Relationship role: {describeRelationshipRole(p)}</div>
                 {p.ownerDisplayName || p.ownerEmail ? (
                   <div className="text-xs text-neutral-500 mt-1">
                     Original creator: {p.ownerDisplayName || p.ownerEmail}
@@ -572,8 +578,12 @@ export default function SplitParticipationsPage(props: {
               <div className="flex items-center gap-2">
                 <Badge label={`Collaboration • ${p.myBps != null ? `${(p.myBps / 100).toFixed(2)}%` : p.myPercent || "—"} share`} tone="cyan" />
                 {p.contentDeletedAt ? <Badge label="Inactive" tone="amber" /> : <Badge label="Active" tone="success" />}
-                {toBigInt(p.pendingSats) > 0n ? <Badge label="Pending payout" tone="amber" /> : null}
-                {toBigInt(p.withdrawnSats) > 0n ? <Badge label="Paid" tone="success" /> : null}
+                <button
+                  onClick={() => openEarningsView(p.contentId, p.title)}
+                  className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                >
+                  View earnings
+                </button>
                 {p.contentId ? (
                   <button
                     onClick={() => openSplitEditor(p.contentId)}
@@ -612,9 +622,8 @@ export default function SplitParticipationsPage(props: {
                     {r.contentType ? r.contentType.toUpperCase() : "CONTENT"} • Role: {r.role || "participant"} • Share: {r.percent != null ? `${Number(r.percent).toFixed(2)}%` : "—"}
                   </div>
                   <div className="text-xs text-neutral-400 mt-1">
-                    Accrued: <span className="text-neutral-200">{String(r.earnedSatsToDate || "0")} sats</span>
-                    {" "}• Payout state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
-                    {" "}• Destination: <span className="text-neutral-200">{r.destinationState || "unknown"}</span>
+                    Relationship role: <span className="text-neutral-200">Collaborator</span>
+                    {" "}• Execution state: <span className="text-neutral-200">{r.payoutState || "none"}</span>
                   </div>
                   <div className="text-xs text-neutral-500 mt-1">
                     Remote: {r.remoteOrigin}
@@ -625,11 +634,12 @@ export default function SplitParticipationsPage(props: {
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge label="Remote" tone="cyan" />
-                  {String(r.payoutState || "").toLowerCase() === "paid" ? <Badge label="Paid" tone="success" /> : null}
-                  {(String(r.payoutState || "").toLowerCase() === "pending" || String(r.payoutState || "").toLowerCase() === "ready" || String(r.payoutState || "").toLowerCase() === "forwarding") ? (
-                    <Badge label="Pending payout" tone="amber" />
-                  ) : null}
-                  {String(r.payoutState || "").toLowerCase() === "failed" ? <Badge label="Payout failed" tone="warning" /> : null}
+                  <button
+                    onClick={() => openEarningsView(r.contentId, r.contentTitle)}
+                    className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                  >
+                    View earnings
+                  </button>
                   {r.contentId || r.inviteUrl ? (
                     <button
                       onClick={() => openSplitSummary(r.contentId)}
@@ -687,11 +697,19 @@ export default function SplitParticipationsPage(props: {
                       {(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%
                     </div>
                     <div className="text-xs text-neutral-400 mt-1">
-                      Earned: <span className="text-neutral-200">{u.earnedSatsToDate} sats</span>
+                      Relationship role: <span className="text-neutral-200">Upstream stakeholder</span>
                       {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
                       {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
                         <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
                       ) : null}
+                    </div>
+                    <div className="mt-2">
+                      <button
+                        onClick={() => openEarningsView(u.childContentId, u.childTitle)}
+                        className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                      >
+                        View earnings
+                      </button>
                     </div>
                   </div>
                 ))}
