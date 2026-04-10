@@ -229,7 +229,37 @@ export default function SplitParticipationsPage(props: {
     return pct == null || pct < 100;
   });
   const ownedContentIds = new Set(visibleOwnedSharedWorks.map((row) => row.contentId));
-  const visibleActiveCollaborations = participations.filter((row) => !ownedContentIds.has(row.contentId));
+  const visibleActiveCollaborations = participations.filter((row) => {
+    if (ownedContentIds.has(row.contentId)) return false;
+    const decision = isActiveLibraryVisible(
+      {
+        id: row.contentId,
+        status: row.contentStatus || "draft",
+        deletedAt: row.contentDeletedAt || null
+      },
+      "participant",
+      {
+        contentId: row.contentId,
+        status: row.acceptedAt ? "accepted" : "pending",
+        acceptedAt: row.acceptedAt,
+        contentStatus: row.contentStatus || "draft",
+        contentDeletedAt: row.contentDeletedAt || null
+      }
+    );
+    logVisibilityDecision({
+      surface: "royalties.collaborations.active",
+      sourceModelQuery: "GET /my/participations",
+      relation: "participant",
+      content: {
+        id: row.contentId,
+        status: row.contentStatus || "draft",
+        deletedAt: row.contentDeletedAt || null
+      },
+      included: decision.visible,
+      reason: decision.visible ? "active_library_visible" : decision.reason || "excluded"
+    });
+    return decision.visible;
+  });
   const visibleUpstream = upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt));
   const collaborationCount = participations.length + remoteRoyalties.length;
   const ownedCount = ownedLocalWorks.length;
@@ -432,8 +462,8 @@ export default function SplitParticipationsPage(props: {
                     <div className="text-xs text-neutral-500 mt-1">Relationship role: Collaborator</div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge label="Active" tone="success" />
-                    <Badge label={p.contentStatus || "unknown"} />
+                    <Badge label={String(p.contentStatus || "unknown").toLowerCase() === "published" ? "Live" : "Inactive"} tone={String(p.contentStatus || "").toLowerCase() === "published" ? "success" : "amber"} />
+                    <Badge label={p.contentStatus || "unknown"} tone={String(p.contentStatus || "").toLowerCase() === "published" ? "cyan" : "amber"} />
                     {p.highlightedOnProfile ? <Badge label="Featured" tone="cyan" /> : null}
                     <button
                       onClick={() => openEarningsView(p.contentId, p.contentTitle)}
