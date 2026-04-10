@@ -13013,9 +13013,6 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       const normalizedContentStatus = (() => {
         const v = asString(contentStatus || "").trim().toLowerCase();
         if (v === "published" || v === "draft") return v;
-        // Older mirror rows may contain non-content statuses (for example "remote").
-        // Treat accepted remote participations as published for library eligibility.
-        if (inviteStatus === "accepted") return "published";
         return null;
       })();
       app.log.info(
@@ -23233,6 +23230,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               if (!contentId) return null;
               const contentStatus = asString(row.contentStatus || "").trim().toLowerCase();
               const contentDeletedAt = asString(row.contentDeletedAt || "").trim();
+              const highlightedChildStatus = asString(highlightedMatch?.childStatus || "").trim().toLowerCase();
+              if (highlightedMatch && highlightedChildStatus !== "published") return null;
               if (!highlightedMatch && (contentStatus !== "published" || contentDeletedAt)) return null;
               return {
                 ...row,
@@ -23272,7 +23271,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const childContentId = asString(entry?.childContentId || "").trim();
             if (!childContentId) return false;
             const status = asString(entry?.status || "").trim().toUpperCase();
-            return status === "APPROVED";
+            const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
+            return status === "APPROVED" && childStatus === "published";
           })
           .map((entry: any) => ({
             ...row,
@@ -34645,7 +34645,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       include: {
         derivativeLink: {
           include: {
-            childContent: { select: { id: true, title: true, description: true, deletedAt: true } },
+            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true } },
             parentContent: { select: { id: true, title: true } }
           }
         },
@@ -34683,6 +34683,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           parentTitle: auth.derivativeLink?.parentContent?.title || null,
           childContentId: auth.derivativeLink?.childContentId || null,
           childTitle: auth.derivativeLink?.childContent?.title || null,
+          childStatus: asString(auth.derivativeLink?.childContent?.status || "").trim().toLowerCase() || null,
           childOrigin: getRemoteOriginFromDescription(auth.derivativeLink?.childContent?.description || null),
           relation: auth.derivativeLink?.relation || "derivative",
           status: auth.status,

@@ -134,7 +134,7 @@ export function isEligibleSplitParticipation(participation: ParticipationLike | 
   if (!participation) return { eligible: false, reason: "orphaned" };
   if (!hasValue(participation.contentId)) return { eligible: false, reason: "orphaned" };
   if (hasValue(participation.contentDeletedAt)) return { eligible: false, reason: "deleted" };
-  if (!isPublished(participation.contentStatus || "published")) return { eligible: false, reason: "inactive" };
+  if (!isPublished(participation.contentStatus)) return { eligible: false, reason: "inactive" };
   if (hasValue(participation.revokedAt) || hasValue(participation.tombstonedAt)) {
     return { eligible: false, reason: "revoked" };
   }

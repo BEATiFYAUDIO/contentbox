@@ -686,7 +686,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             contentId: String(row?.contentId || "").trim(),
             contentTitle: row?.contentTitle || null,
             contentType: row?.contentType || null,
-            contentStatus: row?.contentStatus || "published",
+            contentStatus: row?.contentStatus || null,
             contentDeletedAt: row?.contentDeletedAt || null,
             splitParticipantId: null,
             remoteInviteId: String(row?.id || "").trim() || null,
@@ -703,7 +703,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             const active = isActiveLibraryVisible(
               {
                 id: p.contentId,
-                status: p.contentStatus || "published",
+                status: p.contentStatus || null,
                 deletedAt: p.contentDeletedAt || null
               },
               "participant",
@@ -715,7 +715,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               relation: "participant",
               content: {
                 id: p.contentId,
-                status: p.contentStatus || "published",
+                status: p.contentStatus || null,
                 deletedAt: p.contentDeletedAt || null
               },
               included: active.visible,
@@ -754,7 +754,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             id: contentId,
             title: p.contentTitle || "Untitled",
             type: ((p.contentType || "file") as ContentType),
-            status: "published",
+            status: (String(p.contentStatus || "").trim().toLowerCase() === "published" ? "published" : "draft"),
             createdAt: "",
             ownerUserId: p.creatorUserId || null,
             owner:
