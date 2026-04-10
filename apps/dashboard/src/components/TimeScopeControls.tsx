@@ -28,7 +28,7 @@ export default function TimeScopeControls({
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className="text-neutral-500">Scope:</span>
         <label className="inline-flex items-center gap-2 text-neutral-400">
-          <span>Time basis</span>
+          <span>Accounting clock</span>
           <select
             value={basis}
             onChange={(e) => onBasisChange(e.target.value as TimeBasis)}

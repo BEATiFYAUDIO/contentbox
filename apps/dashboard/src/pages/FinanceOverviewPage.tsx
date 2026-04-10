@@ -833,9 +833,9 @@ export default function FinanceOverviewPage({
   );
   const overviewScopeHelperText =
     overviewTimeBasis === "sale"
-      ? "All cards scoped by sale date (buyer payment recognized time)."
+      ? "All cards scoped by sale-recognized date (buyer payment recognition time)."
       : overviewTimeBasis === "earned"
-        ? "All cards scoped by earned date (payout row creation/recognition time where available)."
+        ? "All cards scoped by earned/accrual date (payout row recognition time where available)."
         : "All cards scoped by paid/remitted date (remittedAt with update fallback).";
   const grossEarned = Math.max(0, scopedEarnings.grossEarned);
   const hasRoyaltyEconomics =
@@ -941,7 +941,7 @@ export default function FinanceOverviewPage({
         {showNodeWalletContext && lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
         <div className="mt-2 text-xs text-neutral-500">Top-level snapshot for accounting review and reconciliation prep.</div>
         <div className="mt-1 text-xs text-neutral-500">
-          Scope model: Sales uses sale time, Earnings uses earned time, and Payout execution uses paid/remitted time.
+          Scope model: Sales uses sale-recognized time, Earnings uses earned/accrual time, and Payout execution uses paid/remitted time.
         </div>
         <div className="mt-1 text-xs text-neutral-500">
           Sales = gross buyer payments. Gross Earned = pre-fee participation accrual where fee fields exist. Net Paid/Net Payable = post-fee payout truth.
@@ -1033,7 +1033,7 @@ export default function FinanceOverviewPage({
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Sales Breakdown</div>
         <div className="mt-1 text-xs text-neutral-400">Payments from your audience for your content.</div>
-        <div className="mt-1 text-xs text-neutral-500">Time basis: Sale date{overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}.</div>
+        <div className="mt-1 text-xs text-neutral-500">Accounting clock: Sale-recognized date{overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
@@ -1072,7 +1072,7 @@ export default function FinanceOverviewPage({
           ) : null}
         </div>
         <div className="mt-1 text-xs text-neutral-400">Accrual and payout-state breakdown for owned/collaborative works.</div>
-        <div className="mt-1 text-xs text-neutral-500">Time basis: Earned date (when available in the current feed).</div>
+        <div className="mt-1 text-xs text-neutral-500">Accounting clock: Earned/accrual date (when available in the current feed).</div>
         <div className="mt-1 text-xs text-neutral-500">
           Model: Gross Earned (pre-fee) · Fees Withheld · Net Paid · Net Payable. Wallet receipts reflect net outcome after fees.
         </div>
