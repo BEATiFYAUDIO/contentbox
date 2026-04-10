@@ -267,6 +267,20 @@ function parseFixedUpstreamBps(input: any): number {
   return 0;
 }
 
+function hasExplicitUpstreamInput(input: any): boolean {
+  const bpsRaw = input?.upstreamBps;
+  if (bpsRaw !== undefined && bpsRaw !== null && String(bpsRaw).trim() !== "") return true;
+  const pctRaw = input?.upstreamRatePercent;
+  if (pctRaw !== undefined && pctRaw !== null && String(pctRaw).trim() !== "") return true;
+  return false;
+}
+
+function parseRejectReason(input: any): string | null {
+  const raw = asString(input?.reason || "").trim();
+  if (!raw) return null;
+  return raw.slice(0, 240);
+}
+
 function parseSats(x: unknown): bigint {
   if (typeof x === "bigint") return x;
   if (typeof x === "number") return BigInt(Math.floor(x));
@@ -15056,7 +15070,7 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
     return reply.code(409).send({ error: "Remote invite host unreachable", origin });
   }
 
-  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number | string | null };
+  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number | string | null; reason?: string | null };
   const decision = asString(body.decision || "").trim().toLowerCase();
   if (!decision || !["approve", "reject"].includes(decision)) {
     return badRequest(reply, "decision must be approve|reject");
@@ -15064,6 +15078,10 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
   const payload: any = { decision };
   if (decision === "approve" && body.upstreamRatePercent !== undefined && body.upstreamRatePercent !== null) {
     payload.upstreamRatePercent = body.upstreamRatePercent;
+  }
+  if (decision === "reject") {
+    const rejectReason = parseRejectReason(body);
+    if (rejectReason) payload.reason = rejectReason;
   }
 
   try {
@@ -19757,6 +19775,12 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
   const type = (["remix", "mashup", "derivative"] as const).includes(typeRaw as any) ? (typeRaw as any) : "derivative";
   const description = body.description ? asString(body.description).trim() : null;
   if (!title) return badRequest(reply, "title required");
+  if (!hasExplicitUpstreamInput(body)) {
+    return badRequest(
+      reply,
+      "upstreamRatePercent is required at derivative creation time (0-100). This value is fixed for later clearance votes."
+    );
+  }
 
   let parent = await prisma.contentItem.findUnique({ where: { id: parentId } });
   const parentOrigin = body.parentOrigin ? asString(body.parentOrigin).trim() : "";
@@ -21244,6 +21268,12 @@ app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (
   if (!parentContentId || !childContentId || !childOrigin) {
     return badRequest(reply, "parentContentId, childContentId, childOrigin are required");
   }
+  if (!hasExplicitUpstreamInput(body)) {
+    return badRequest(
+      reply,
+      "upstreamRatePercent is required at derivative creation time (0-100). This value is fixed for later clearance votes."
+    );
+  }
 
   const parent = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
   if (!parent) return notFound(reply, "parent content not found");
@@ -21396,8 +21426,9 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
 app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const linkId = asString((req.params as any).linkId);
-  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number };
+  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number; reason?: string | null };
   const decision = asString(body.decision || "").toLowerCase();
+  const rejectReason = decision === "reject" ? parseRejectReason(body) : null;
   if (!["approve", "reject"].includes(decision)) return badRequest(reply, "decision must be approve|reject");
 
   const clearanceCtx = getCapabilityContext();
@@ -21537,6 +21568,20 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
             upstreamBps: updated.upstreamBps,
             approvedAt: updated.approvedAt
           } as any
+        }
+      });
+    } catch {}
+  }
+
+  if (decision === "reject" && rejectReason) {
+    try {
+      await prisma.auditEvent.create({
+        data: {
+          userId,
+          action: "clearance.reject",
+          entityType: "ContentLink",
+          entityId: link.id,
+          payloadJson: { reason: rejectReason } as any
         }
       });
     } catch {}
@@ -24270,6 +24315,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   const link = ctx.auth.derivativeLink;
   if (!link) return notFound(reply, "Not found");
   const decision = asString((req.body as any)?.decision || "").toLowerCase();
+  const rejectReason = decision === "reject" ? parseRejectReason(req.body) : null;
   if (!["approve", "reject"].includes(decision)) return badRequest(reply, "decision must be approve|reject");
 
   const fixedUpstreamRatePercent = Math.max(0, Number(link.upstreamBps || 0) / 100);
@@ -24333,6 +24379,20 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
       where: { contentLinkId: link.id, status: "PENDING" },
       data: { status: "CLEARED" }
     });
+  }
+
+  if (decision === "reject" && rejectReason) {
+    try {
+      await prisma.auditEvent.create({
+        data: {
+          userId: ctx.inviteUserId,
+          action: "clearance.reject",
+          entityType: "ContentLink",
+          entityId: link.id,
+          payloadJson: { reason: rejectReason, via: "invite_clearance" } as any
+        }
+      });
+    } catch {}
   }
 
   return reply.type("text/plain").send("Thanks — your clearance response has been recorded.");
@@ -24423,6 +24483,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
       ? Object.fromEntries(new URLSearchParams(bodyRaw))
       : (bodyRaw as Record<string, unknown>);
   const decision = asString((body as any)?.decision || "").toLowerCase();
+  const rejectReason = decision === "reject" ? parseRejectReason(body) : null;
   if (!["approve", "reject"].includes(decision)) return badRequest(reply, "decision must be approve|reject");
 
   const link = await prisma.contentLink.findUnique({ where: { id: approval.contentLinkId } });
@@ -24506,6 +24567,20 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
             upstreamBps: updated.upstreamBps,
             approvedAt: updated.approvedAt
           } as any
+        }
+      });
+    } catch {}
+  }
+
+  if (decision === "reject" && rejectReason) {
+    try {
+      await prisma.auditEvent.create({
+        data: {
+          userId: "external",
+          action: "clearance.reject",
+          entityType: "ContentLink",
+          entityId: link.id,
+          payloadJson: { reason: rejectReason, via: "public_clearance", approverEmail: approval.approverEmail } as any
         }
       });
     } catch {}

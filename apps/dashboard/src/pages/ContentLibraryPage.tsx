@@ -487,6 +487,7 @@ export default function ContentLibraryPage({
   const [parentLinkErrorByContent, setParentLinkErrorByContent] = React.useState<Record<string, string>>({});
   const [approvals, setApprovals] = React.useState<any[]>([]);
   const [approvalsLoading, setApprovalsLoading] = React.useState(false);
+  const [rejectReasonByApproval, setRejectReasonByApproval] = React.useState<Record<string, string>>({});
   const [clearanceLoadError, setClearanceLoadError] = React.useState<string | null>(null);
   const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
@@ -516,9 +517,16 @@ export default function ContentLibraryPage({
   const [requestTitle, setRequestTitle] = React.useState("");
   const [requestType, setRequestType] = React.useState<ContentType>("remix");
   const [requestUpstreamRatePct, setRequestUpstreamRatePct] = React.useState("10");
+  const [requestZeroUpstreamConfirmed, setRequestZeroUpstreamConfirmed] = React.useState(false);
   const [requestMsg, setRequestMsg] = React.useState<string | null>(null);
   const [requestLinks, setRequestLinks] = React.useState<Array<{ email: string; url: string }> | null>(null);
   const [meId, setMeId] = React.useState<string>("");
+  React.useEffect(() => {
+    const v = Number(String(requestUpstreamRatePct || "").trim());
+    if (Number.isFinite(v) && v > 0 && requestZeroUpstreamConfirmed) {
+      setRequestZeroUpstreamConfirmed(false);
+    }
+  }, [requestUpstreamRatePct, requestZeroUpstreamConfirmed]);
 
   function setManifestPreview(contentId: string, patch: Partial<{ open: boolean; loading: boolean; data?: any; error?: string | null }>) {
     setManifestPreviewByContent((m) => ({
@@ -1904,6 +1912,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setRequestMsg("Upstream royalty % must be a number between 0 and 100.");
       return;
     }
+    if (upstreamRatePercent === 0 && !requestZeroUpstreamConfirmed) {
+      setRequestMsg("Confirm 0% upstream before creating this derivative.");
+      return;
+    }
     try {
       setRequestMsg(null);
       setRequestLinks(null);
@@ -1919,6 +1931,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setRequestMsg(`Derivative created (${upstreamRatePercent}% upstream). Request clearance from the derivative page.`);
       setRequestParentId("");
       setRequestTitle("");
+      setRequestUpstreamRatePct("10");
+      setRequestZeroUpstreamConfirmed(false);
       await load(false);
     } catch (e: any) {
       setRequestMsg(e?.message || "Request failed.");
@@ -2469,14 +2483,27 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 onChange={(e) => setRequestUpstreamRatePct(e.target.value)}
                 autoComplete="off"
               />
-              <div className="mt-1 text-[11px] text-neutral-500">Fixed at derivative creation time.</div>
+              <div className="mt-1 text-[11px] text-neutral-500">Fixed at derivative creation time and used for all clearance votes.</div>
             </div>
+
+            {Number(String(requestUpstreamRatePct || "").trim()) === 0 ? (
+              <label className="flex items-start gap-2 text-xs text-amber-200">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={requestZeroUpstreamConfirmed}
+                  onChange={(e) => setRequestZeroUpstreamConfirmed(e.target.checked)}
+                />
+                <span>I understand 0% means no upstream payout to original parent stakeholders.</span>
+              </label>
+            ) : null}
 
             <div className="flex flex-wrap items-center gap-3">
               <button
                 type="button"
                 className="rounded-lg border border-neutral-800 px-4 py-2 hover:bg-neutral-900"
                 onClick={requestDerivativeFromId}
+                disabled={Number(String(requestUpstreamRatePct || "").trim()) === 0 && !requestZeroUpstreamConfirmed}
               >
                 Create derivative
               </button>
@@ -2668,6 +2695,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               {approvals.map((a) => {
                 const linkId = String(a?.linkId || "");
                 const isRemoteApproval = Boolean(String(a?.remoteOrigin || "").trim());
+                const approvalKey = isRemoteApproval
+                  ? `remote:${String(a?.remoteAuthorizationId || a?.authorizationId || "")}`
+                  : `local:${linkId || String(a?.authorizationId || "")}`;
                 const clearance = linkId ? clearanceByLink[linkId] : null;
                 const progressBps = isRemoteApproval ? Number(a?.approveWeightBps || 0) : (clearance?.progressBps || 0);
                 const thresholdBps = isRemoteApproval ? Number(a?.approvalBpsTarget || 6667) : (clearance?.thresholdBps || 6667);
@@ -2789,6 +2819,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         ) : null}
                         {!isCleared && isRemoteApproval && canVote && !viewerVote ? (
                           <>
+                            <input
+                              type="text"
+                              className="w-40 text-xs rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1"
+                              placeholder="Reject reason (optional)"
+                              value={rejectReasonByApproval[approvalKey] || ""}
+                              onChange={(e) =>
+                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: e.target.value }))
+                              }
+                            />
                             <button
                               type="button"
                               className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
@@ -2835,8 +2874,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     remoteAuthorizationId
                                   )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
                                   "POST",
-                                  { decision: "reject" }
+                                  { decision: "reject", reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined }
                                 );
+                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
                                 await loadApprovals(clearanceScope);
                                 await loadPendingClearanceCount();
                               }}
@@ -2847,6 +2887,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         ) : null}
                         {!isCleared && canVote && !isRemoteApproval && !viewerVote ? (
                           <>
+                            <input
+                              type="text"
+                              className="w-40 text-xs rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1"
+                              placeholder="Reject reason (optional)"
+                              value={rejectReasonByApproval[approvalKey] || ""}
+                              onChange={(e) =>
+                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: e.target.value }))
+                              }
+                            />
                             <button
                               type="button"
                               className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2875,7 +2924,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                               onClick={async () => {
                                 if (!linkId) return;
-                                await api(`/content-links/${linkId}/vote`, "POST", { decision: "reject" });
+                                await api(`/content-links/${linkId}/vote`, "POST", {
+                                  decision: "reject",
+                                  reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
+                                });
+                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
                                 await loadApprovals(clearanceScope);
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
@@ -3603,7 +3656,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 <div className="mt-1 text-[11px] text-neutral-400">
                                   Upstream:{" "}
                                   <span className="text-neutral-200">
-                                    {parentLink.upstreamBps ? `${upstreamRatePct}%` : "Set at clearance"}
+                                    {typeof parentLink.upstreamBps === "number"
+                                      ? `${upstreamRatePct}%${parentLink.upstreamBps === 0 ? " (no upstream payout)" : ""}`
+                                      : "Fixed at derivative creation"}
                                   </span>
                                   {" "}•{" "}
                                   {splitsAllowed ? (
@@ -3829,7 +3884,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 ) : (
                                   <span className="text-neutral-200">{parentLink.parent?.title || "Original work"}</span>
                                 )}
-                                {" "}• Upstream: {parentLink.approvedAt ? `${upstreamRatePct}%` : "Set at clearance"} • Clearance:{" "}
+                                {" "}• Upstream: {typeof parentLink.upstreamBps === "number"
+                                  ? `${upstreamRatePct}%${parentLink.upstreamBps === 0 ? " (no upstream payout)" : ""}`
+                                  : "Fixed at derivative creation"} • Clearance:{" "}
                                 {parentLink.requiresApproval ? (parentLink.approvedAt ? "Cleared" : "Pending clearance") : "Not required"}
                                 {" "}•{" "}
                                 {splitsAllowed ? (
