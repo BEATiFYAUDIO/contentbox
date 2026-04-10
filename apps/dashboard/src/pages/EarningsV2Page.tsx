@@ -219,7 +219,7 @@ function ratio(part: number, total: number): number {
 
 export default function EarningsV2Page({
   refreshSignal,
-  hasInvoiceCommerce = false,
+  hasInvoiceCommerce: _hasInvoiceCommerce = false,
   onOpenEarningsForContent: _onOpenEarningsForContent
 }: EarningsV2PageProps) {
   const [sales, setSales] = useState<SaleRow[]>([]);
@@ -776,20 +776,10 @@ export default function EarningsV2Page({
         </div>
         {strictWorkScopeActive ? (
           <div className="text-sm text-neutral-400 mt-1">
-            Single-work earnings view from Royalties. Buyer gross, fees, net earned, paid, and payable are scoped to this work only.
+            Single-work earnings view.
           </div>
         ) : (
-          <>
-            <div className="text-sm text-neutral-400 mt-1">
-              This shows how each work you participate in performed, fee impact, and net payout outcome.
-            </div>
-            <div className="text-xs text-neutral-500 mt-2">
-              Based on your participation and share (see Royalties).
-            </div>
-            <div className="text-xs text-neutral-500 mt-1">
-              Where relationships go, money flows: these earnings come from works you own or collaborate on.
-            </div>
-          </>
+          <div className="text-sm text-neutral-400 mt-1">Earnings by work, role/share, and payout outcome.</div>
         )}
         <div className="mt-3">
           <TimeScopeControls
@@ -812,29 +802,22 @@ export default function EarningsV2Page({
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Buyer Gross</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.gross)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Seller-of-record gross total</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Fees Withheld</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.fees)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Explicit provider/settlement fee deductions.</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net Earned</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.earnings)}</div>
-          <div className="text-xs text-neutral-500 mt-1">
-            {hasInvoiceCommerce ? "Net after active provider fees" : "Net creator earnings in current posture"}
-          </div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net Paid</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.paidOut)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Based on earnings rows marked paid in existing payout truth.</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net Payable</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(summary.pending)}</div>
-          <div className="text-xs text-neutral-500 mt-1">Earnings rows not yet marked paid (pending/forwarding).</div>
         </div>
       </section>
 
@@ -845,12 +828,6 @@ export default function EarningsV2Page({
         ) : (
           <>
             <div className="text-sm text-neutral-400 mt-1">Content sales context, your share outcome, and payout status by title.</div>
-            <div className="text-xs text-neutral-500 mt-1">
-              Work performance here links to detailed money rows in Earnings.
-            </div>
-            <div className="text-xs text-neutral-500 mt-1">
-              Role/share context is shown from existing Royalties context when available.
-            </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="text-xs text-neutral-500">View:</span>
               {[

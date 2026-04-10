@@ -170,7 +170,6 @@ export default function FinanceRoyaltiesPage({
   const [overviewSummary, setOverviewSummary] = useState<OverviewSummary | null>(null);
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
-  const [showLedgerGuidance, setShowLedgerGuidance] = useState(false);
 
   useEffect(() => {
     if (!bridgeFilter?.contentId) return;
@@ -672,14 +671,7 @@ export default function FinanceRoyaltiesPage({
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-base font-semibold">Earnings</div>
-        <div className="text-sm text-neutral-400 mt-1">
-          Your money across content: gross earned, fee impact, and net payout state.
-        </div>
-        <div className="text-xs text-neutral-500 mt-2">Sales lives in Sales. This page is your participant/share statement.</div>
-        <div className="text-xs text-neutral-500 mt-1">Model: Gross earned (pre-fee) → Fees → Net paid + Net payable.</div>
-        <div className="text-xs text-neutral-500 mt-1">
-          Derivative creator earnings and upstream royalties are earnings source types here. Payouts remain execution truth.
-        </div>
+        <div className="text-sm text-neutral-400 mt-1">Earnings by source, role/share, and payout status.</div>
         <div className="mt-3">
           <TimeScopeControls
             basis={timeBasis}
@@ -720,27 +712,7 @@ export default function FinanceRoyaltiesPage({
       </section>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-base font-semibold">Earnings Ledger</div>
-            <div className="text-xs text-neutral-500 mt-1">Scope this statement by content, status, source, and role.</div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowLedgerGuidance((s) => !s)}
-            className="rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-900"
-          >
-            {showLedgerGuidance ? "Hide guidance" : "Show guidance"}
-          </button>
-        </div>
-        {showLedgerGuidance ? (
-          <div className="mt-2 rounded-lg border border-neutral-800 bg-neutral-900/30 p-3 text-xs text-neutral-500 space-y-1">
-            <div>Status model: Earned = gross accrued, Pending/Processing = unresolved net remittance, Partial = mixed outcomes, Paid = remitted.</div>
-            <div>Role/share/origin come from available royalties context; fallback role is Participant.</div>
-            <div>Date shows “—” when no row timestamp is available. Time scope is all-time until earned timestamps are consistently available.</div>
-            <div>Sales rows stay in Sales. Payout execution details stay in Payouts.</div>
-          </div>
-        ) : null}
+        <div className="text-base font-semibold">Earnings Ledger</div>
         <div className="mt-3 mb-2 text-xs text-neutral-500">
           Filter rows:
         </div>
