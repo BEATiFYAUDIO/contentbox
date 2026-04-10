@@ -1729,6 +1729,7 @@ type RuntimeHealthState = {
 
 const RUNTIME_STATE_DIR = path.join(CONTENTBOX_ROOT, "state");
 const RUNTIME_HEALTH_FILE = path.join(RUNTIME_STATE_DIR, "health.json");
+const API_RUNTIME_LOCK_FILE = path.join(RUNTIME_STATE_DIR, "api-runtime.lock.json");
 const PROVIDER_VERIFICATION_FILE = path.join(RUNTIME_STATE_DIR, "provider-verification.json");
 const PROVIDER_ACK_FILE = path.join(RUNTIME_STATE_DIR, "provider-acknowledgment.json");
 const PROVIDER_OPERATION_FILE = path.join(RUNTIME_STATE_DIR, "provider-execution-permit.json");
@@ -6345,6 +6346,78 @@ function writeRuntimeHealthState(state: RuntimeHealthState) {
     const tmp = `${RUNTIME_HEALTH_FILE}.tmp`;
     fsSync.writeFileSync(tmp, JSON.stringify(state, null, 2));
     fsSync.renameSync(tmp, RUNTIME_HEALTH_FILE);
+  } catch {}
+}
+
+type ApiRuntimeLock = {
+  pid: number;
+  bootId: string;
+  startedAt: string;
+  nodeId: string;
+  cwd: string;
+};
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readApiRuntimeLock(): ApiRuntimeLock | null {
+  try {
+    const raw = fsSync.readFileSync(API_RUNTIME_LOCK_FILE, "utf8");
+    const parsed = JSON.parse(raw || "{}");
+    const pid = Number(parsed?.pid);
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    return {
+      pid,
+      bootId: String(parsed?.bootId || "").trim(),
+      startedAt: String(parsed?.startedAt || "").trim() || null,
+      nodeId: String(parsed?.nodeId || "").trim() || null,
+      cwd: String(parsed?.cwd || "").trim() || null
+    } as ApiRuntimeLock;
+  } catch {
+    return null;
+  }
+}
+
+function acquireApiRuntimeLock() {
+  try {
+    fsSync.mkdirSync(RUNTIME_STATE_DIR, { recursive: true });
+  } catch {}
+  const existing = readApiRuntimeLock();
+  if (existing && existing.pid !== process.pid && isPidAlive(existing.pid)) {
+    throw new Error(
+      `API already running (pid ${existing.pid}${existing.startedAt ? `, started ${existing.startedAt}` : ""}). ` +
+        `Stop the existing API process before starting another instance.`
+    );
+  }
+  const payload: ApiRuntimeLock = {
+    pid: process.pid,
+    bootId: BOOT_ID,
+    startedAt: STARTED_AT,
+    nodeId: NODE_ID,
+    cwd: process.cwd()
+  };
+  try {
+    const tmp = `${API_RUNTIME_LOCK_FILE}.tmp`;
+    fsSync.writeFileSync(tmp, JSON.stringify(payload, null, 2));
+    fsSync.renameSync(tmp, API_RUNTIME_LOCK_FILE);
+  } catch (e: any) {
+    throw new Error(`Unable to acquire API runtime lock: ${String(e?.message || e)}`);
+  }
+}
+
+function releaseApiRuntimeLock() {
+  const existing = readApiRuntimeLock();
+  if (!existing) return;
+  if (existing.pid !== process.pid && existing.bootId && existing.bootId !== BOOT_ID) return;
+  try {
+    fsSync.unlinkSync(API_RUNTIME_LOCK_FILE);
   } catch {}
 }
 
@@ -36012,6 +36085,7 @@ app.setNotFoundHandler(async (req: any, reply: any) => {
 /** ---------- boot ---------- */
 
 async function start() {
+  acquireApiRuntimeLock();
   persistRuntimeHealthFromApi({
     apiReady: false,
     reason: "normal_start",
@@ -36172,6 +36246,7 @@ async function start() {
 }
 
 process.on("SIGTERM", () => {
+  releaseApiRuntimeLock();
   persistRuntimeHealthFromApi({
     apiReady: false,
     reason: "api_exit_code_0",
@@ -36180,6 +36255,7 @@ process.on("SIGTERM", () => {
 });
 
 process.on("SIGINT", () => {
+  releaseApiRuntimeLock();
   persistRuntimeHealthFromApi({
     apiReady: false,
     reason: "api_exit_code_0",
@@ -36204,6 +36280,7 @@ process.on("unhandledRejection", () => {
 });
 
 start().catch((err) => {
+  releaseApiRuntimeLock();
   persistRuntimeHealthFromApi({
     apiReady: false,
     reason: "startup_failure",
@@ -36211,4 +36288,8 @@ start().catch((err) => {
   });
   app.log.error(err);
   process.exit(1);
+});
+
+process.on("exit", () => {
+  releaseApiRuntimeLock();
 });
