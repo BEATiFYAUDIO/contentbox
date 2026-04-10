@@ -235,6 +235,7 @@ export default function EarningsV2Page({
   const [scopeHint, setScopeHint] = useState<string | null>(null);
   const [scopeTitle, setScopeTitle] = useState<string | null>(null);
   const [strictRoyaltiesScope, setStrictRoyaltiesScope] = useState(false);
+  const strictWorkScopeActive = strictRoyaltiesScope && !!scopedContentId;
 
   useEffect(() => {
     try {
@@ -743,6 +744,7 @@ export default function EarningsV2Page({
             <div className="space-y-0.5">
               <div className="font-medium">{scopeHint}</div>
               <div className="text-cyan-100/90">Work: {scopeTitle || scopedRow?.contentTitle || scopedContentId || "Unknown"}</div>
+              <div className="text-cyan-100/90">All values on this page are scoped to this work.</div>
             </div>
             <button
               type="button"
@@ -769,16 +771,26 @@ export default function EarningsV2Page({
         </div>
       ) : null}
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-        <div className="text-lg font-semibold">Content Performance</div>
-        <div className="text-sm text-neutral-400 mt-1">
-          This shows how each work you participate in performed, fee impact, and net payout outcome.
+        <div className="text-lg font-semibold">
+          {strictWorkScopeActive ? `Earnings for ${scopeTitle || scopedRow?.contentTitle || "Selected work"}` : "Content Performance"}
         </div>
-        <div className="text-xs text-neutral-500 mt-2">
-          Based on your participation and share (see Royalties).
-        </div>
-        <div className="text-xs text-neutral-500 mt-1">
-          Where relationships go, money flows: these earnings come from works you own or collaborate on.
-        </div>
+        {strictWorkScopeActive ? (
+          <div className="text-sm text-neutral-400 mt-1">
+            Single-work earnings view from Royalties. Buyer gross, fees, net earned, paid, and payable are scoped to this work only.
+          </div>
+        ) : (
+          <>
+            <div className="text-sm text-neutral-400 mt-1">
+              This shows how each work you participate in performed, fee impact, and net payout outcome.
+            </div>
+            <div className="text-xs text-neutral-500 mt-2">
+              Based on your participation and share (see Royalties).
+            </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Where relationships go, money flows: these earnings come from works you own or collaborate on.
+            </div>
+          </>
+        )}
         <div className="mt-3">
           <TimeScopeControls
             basis={timeBasis}
@@ -827,51 +839,57 @@ export default function EarningsV2Page({
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">Performance by Content</div>
-        <div className="text-sm text-neutral-400 mt-1">Content sales context, your share outcome, and payout status by title.</div>
-        <div className="text-xs text-neutral-500 mt-1">
-          Work performance here links to detailed money rows in Earnings.
-        </div>
-        <div className="text-xs text-neutral-500 mt-1">
-          Role/share context is shown from existing Royalties context when available.
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <span className="text-xs text-neutral-500">View:</span>
-          {[
-            ["performance", "Performance"],
-            ["top_earners", "Top Earners"],
-            ...(momentumByContent.hasRecentSignal
-              ? ([
-                  ["momentum", "Momentum"],
-                  ["momentum_delta", "Momentum Delta"]
-                ] as const)
-              : []),
-            ["by_role", "By Role"],
-            ["payout_state", "Payout State"],
-            ["cashflow_risk", "Cashflow Risk"],
-            ["settlement_reliability", "Settlement Reliability"],
-            ["fee_efficiency", "Fee Efficiency"],
-            ["realization", "Realization"],
-            ["concentration", "Concentration"],
-            ["freshness", "Freshness"]
-          ].map(([key, label]) => {
-            const active = contentView === key;
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => setContentView(key as ContentView)}
-                className={[
-                  "rounded-full border px-3 py-1 text-xs transition",
-                  active ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 text-neutral-300 hover:bg-neutral-900"
-                ].join(" ")}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
-        <div className="mt-2 text-xs text-neutral-500">{viewDescription}</div>
+        <div className="text-base font-semibold">{strictWorkScopeActive ? "Earnings breakdown" : "Performance by Content"}</div>
+        {strictWorkScopeActive ? (
+          <div className="text-sm text-neutral-400 mt-1">Detailed earnings and payout-state rows for the selected work.</div>
+        ) : (
+          <>
+            <div className="text-sm text-neutral-400 mt-1">Content sales context, your share outcome, and payout status by title.</div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Work performance here links to detailed money rows in Earnings.
+            </div>
+            <div className="text-xs text-neutral-500 mt-1">
+              Role/share context is shown from existing Royalties context when available.
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="text-xs text-neutral-500">View:</span>
+              {[
+                ["performance", "Performance"],
+                ["top_earners", "Top Earners"],
+                ...(momentumByContent.hasRecentSignal
+                  ? ([
+                      ["momentum", "Momentum"],
+                      ["momentum_delta", "Momentum Delta"]
+                    ] as const)
+                  : []),
+                ["by_role", "By Role"],
+                ["payout_state", "Payout State"],
+                ["cashflow_risk", "Cashflow Risk"],
+                ["settlement_reliability", "Settlement Reliability"],
+                ["fee_efficiency", "Fee Efficiency"],
+                ["realization", "Realization"],
+                ["concentration", "Concentration"],
+                ["freshness", "Freshness"]
+              ].map(([key, label]) => {
+                const active = contentView === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setContentView(key as ContentView)}
+                    className={[
+                      "rounded-full border px-3 py-1 text-xs transition",
+                      active ? "border-white/40 bg-white/10 text-white" : "border-neutral-800 text-neutral-300 hover:bg-neutral-900"
+                    ].join(" ")}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-2 text-xs text-neutral-500">{viewDescription}</div>
+          </>
+        )}
         <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div>
             <div className="overflow-x-auto">
@@ -910,8 +928,8 @@ export default function EarningsV2Page({
                           {bucketRows.map((row) => (
                             <tr
                               key={row.contentId}
-                              className={`border-t border-neutral-900 cursor-pointer ${scopedRow?.contentId === row.contentId ? "bg-neutral-900/40" : "hover:bg-neutral-900/30"}`}
-                              onClick={() => setScopedContentId(row.contentId)}
+                              className={`border-t border-neutral-900 ${strictWorkScopeActive ? "" : "cursor-pointer"} ${scopedRow?.contentId === row.contentId ? "bg-neutral-900/40" : strictWorkScopeActive ? "" : "hover:bg-neutral-900/30"}`}
+                              onClick={strictWorkScopeActive ? undefined : () => setScopedContentId(row.contentId)}
                             >
                               <td className="py-2 text-neutral-200">{row.contentTitle}</td>
                               <td className="py-2 text-neutral-300">{row.roleLabel}</td>
@@ -940,8 +958,8 @@ export default function EarningsV2Page({
                           {roleRows.map((row) => (
                             <tr
                               key={row.contentId}
-                              className={`border-t border-neutral-900 cursor-pointer ${scopedRow?.contentId === row.contentId ? "bg-neutral-900/40" : "hover:bg-neutral-900/30"}`}
-                              onClick={() => setScopedContentId(row.contentId)}
+                              className={`border-t border-neutral-900 ${strictWorkScopeActive ? "" : "cursor-pointer"} ${scopedRow?.contentId === row.contentId ? "bg-neutral-900/40" : strictWorkScopeActive ? "" : "hover:bg-neutral-900/30"}`}
+                              onClick={strictWorkScopeActive ? undefined : () => setScopedContentId(row.contentId)}
                             >
                               <td className="py-2 text-neutral-200">{row.contentTitle}</td>
                               <td className="py-2 text-neutral-300">{row.roleLabel}</td>
@@ -961,12 +979,13 @@ export default function EarningsV2Page({
                       <tr
                         key={row.contentId}
                         className={[
-                          "border-t border-neutral-900 cursor-pointer",
+                          "border-t border-neutral-900",
+                          strictWorkScopeActive ? "" : "cursor-pointer",
                           scopedRow?.contentId === row.contentId ? "bg-neutral-900/40" : "",
-                          scopedRow?.contentId === row.contentId ? "" : "hover:bg-neutral-900/30",
+                          scopedRow?.contentId === row.contentId ? "" : strictWorkScopeActive ? "" : "hover:bg-neutral-900/30",
                           contentView === "top_earners" ? "text-[13px]" : ""
                         ].join(" ")}
-                        onClick={() => setScopedContentId(row.contentId)}
+                        onClick={strictWorkScopeActive ? undefined : () => setScopedContentId(row.contentId)}
                       >
                         <td className={contentView === "top_earners" ? "py-1.5 text-neutral-200" : "py-2 text-neutral-200"}>
                           <div className="flex items-center gap-2">

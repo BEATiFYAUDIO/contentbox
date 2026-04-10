@@ -2,9 +2,9 @@ export type TimeBasis = "earned" | "sale" | "paid";
 export type TimePeriod = "1d" | "7d" | "30d" | "90d" | "all";
 
 export const TIME_BASIS_LABEL: Record<TimeBasis, string> = {
-  earned: "Earned (accrual)",
-  sale: "Sale (recognized)",
-  paid: "Paid (remitted)"
+  earned: "Earned",
+  sale: "Sale",
+  paid: "Paid"
 };
 
 export const TIME_PERIOD_LABEL: Record<TimePeriod, string> = {

@@ -1033,7 +1033,7 @@ export default function FinanceOverviewPage({
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-sm font-semibold">Sales Breakdown</div>
         <div className="mt-1 text-xs text-neutral-400">Payments from your audience for your content.</div>
-        <div className="mt-1 text-xs text-neutral-500">Accounting clock: Sale-recognized date{overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}.</div>
+        <div className="mt-1 text-xs text-neutral-500">View by: Sale-recognized date{overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}.</div>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
@@ -1072,7 +1072,7 @@ export default function FinanceOverviewPage({
           ) : null}
         </div>
         <div className="mt-1 text-xs text-neutral-400">Accrual and payout-state breakdown for owned/collaborative works.</div>
-        <div className="mt-1 text-xs text-neutral-500">Accounting clock: Earned/accrual date (when available in the current feed).</div>
+        <div className="mt-1 text-xs text-neutral-500">View by: Earned/accrual date (when available in the current feed).</div>
         <div className="mt-1 text-xs text-neutral-500">
           Model: Gross Earned (pre-fee) · Fees Withheld · Net Paid · Net Payable. Wallet receipts reflect net outcome after fees.
         </div>

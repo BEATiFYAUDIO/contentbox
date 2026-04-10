@@ -416,7 +416,7 @@ export default function FinanceRoyaltiesPage({
         0,
         Number(
           payout.netPayableSats ??
-            (status === "Pending" || status === "Processing" || status === "Partial" ? netAmountSats : 0)
+            (status === "Pending" || status === "Processing" ? netAmountSats : 0)
         ) || 0
       );
       const tsIso = String(payout.remittedAt || payout.updatedAt || payout.createdAt || "").trim() || null;
