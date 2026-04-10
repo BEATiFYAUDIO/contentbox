@@ -8674,10 +8674,7 @@ function shouldDeferNamedTunnelToServiceControl() {
   if (process.platform !== "win32") {
     return { shouldDefer: false, tunnelControl: tc };
   }
-  const shouldDefer =
-    tc.mode === "service_token" &&
-    Boolean(tc.activeServiceTokenProcess) &&
-    !Boolean(tc.activeAppManagedTokenProcess);
+  const shouldDefer = tc.mode === "service_token" && Boolean(tc.activeServiceTokenProcess);
   return { shouldDefer, tunnelControl: tc };
 }
 
@@ -8771,14 +8768,21 @@ function getPublicLinkState(): PublicLinkState {
 }
 
 function getPublicStatus() {
+  const defer = shouldDeferNamedTunnelToServiceControl();
+  if (defer.shouldDefer) {
+    reconcileNamedTunnelOwnership();
+  }
   const state = getPublicLinkState();
   const cloudflared = getCloudflaredStatus();
-  const tunnelControl = detectTunnelControlMode();
+  const tunnelControl = defer.tunnelControl;
   const namedCfg = getNamedTunnelConfig();
   const consent = getPublicSharingConsent();
   const consentGranted = consent.granted || consent.dontAskAgain;
   const autoStartEnabled = getPublicSharingAutoStart();
   const quickState = tunnelManager.status();
+  const suppressAppManagedTransport = defer.shouldDefer && state.mode === "named";
+  const transportQuickStatus = suppressAppManagedTransport ? "STOPPED" : quickState.status;
+  const transportQuickOrigin = suppressAppManagedTransport ? null : quickState.publicOrigin || null;
   const consentRequired = state.mode === "quick" && !cloudflared.available && !consentGranted;
   const productTier = resolveProductTier().productTier;
   const advancedNeedsNamed = productTier === "advanced";
@@ -8826,9 +8830,9 @@ function getPublicStatus() {
     transport: {
       activeMode: state.mode,
       quick: {
-        status: quickState.status,
-        online: quickState.status === "ACTIVE",
-        publicOrigin: quickState.publicOrigin || null
+        status: transportQuickStatus,
+        online: transportQuickStatus === "ACTIVE",
+        publicOrigin: transportQuickOrigin
       },
       named: {
         configured: namedConfigured,
