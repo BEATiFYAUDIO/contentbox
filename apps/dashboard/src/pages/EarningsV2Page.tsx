@@ -212,6 +212,16 @@ function payoutBucketForRow(row: ByContentRow): PayoutBucket {
   return "paid";
 }
 
+function remunerationLabelForRow(row: ByContentRow): string {
+  const roleBucket = classifyRoleBucket(row);
+  const roleLabel = roleBucket === "owner" ? "Authored" : "Shared split";
+  if (row.paid > 0 && row.pending > 0) return `${roleLabel} · Paid + payable`;
+  if (row.paid > 0) return `${roleLabel} · Paid`;
+  if (row.pending > 0) return `${roleLabel} · Payable`;
+  if (row.earnings > 0) return `${roleLabel} · Accrued`;
+  return `${roleLabel} · No payout rows`;
+}
+
 function ratio(part: number, total: number): number {
   if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return 0;
   return part / total;
@@ -229,6 +239,7 @@ export default function EarningsV2Page({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [scopedContentId, setScopedContentId] = useState<string | null>(null);
+  const [contentScopeId, setContentScopeId] = useState<string | null>(null);
   const [contentView, setContentView] = useState<ContentView>("performance");
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
@@ -236,6 +247,8 @@ export default function EarningsV2Page({
   const [scopeTitle, setScopeTitle] = useState<string | null>(null);
   const [strictRoyaltiesScope, setStrictRoyaltiesScope] = useState(false);
   const strictWorkScopeActive = strictRoyaltiesScope && !!scopedContentId;
+  const activeContentScopeId = strictWorkScopeActive ? scopedContentId : contentScopeId;
+  const scopedWorkActive = !!activeContentScopeId;
 
   useEffect(() => {
     try {
@@ -345,8 +358,14 @@ export default function EarningsV2Page({
     return scopedSales.filter((row) => String(row.contentId || "").trim() === scopedContentId);
   }, [scopedSales, strictRoyaltiesScope, scopedContentId]);
 
+  const contentScopedEarningsViewSales = useMemo(() => {
+    const scopeId = String(activeContentScopeId || "").trim();
+    if (!scopeId) return earningsViewSales;
+    return earningsViewSales.filter((row) => String(row.contentId || "").trim() === scopeId);
+  }, [earningsViewSales, activeContentScopeId]);
+
   const summary = useMemo(() => {
-    return earningsViewSales.reduce(
+    return contentScopedEarningsViewSales.reduce(
       (acc, row) => {
         const fees = feeBreakdownForRow(row);
         acc.gross += fees.gross;
@@ -359,7 +378,7 @@ export default function EarningsV2Page({
       },
       { gross: 0, earnings: 0, fees: 0, paidOut: 0, pending: 0 }
     );
-  }, [earningsViewSales]);
+  }, [contentScopedEarningsViewSales]);
 
   const byContent = useMemo<ByContentRow[]>(() => {
     const payoutByContent = new Map<string, { earnings: number; paid: number; pending: number; failed: number }>();
@@ -378,7 +397,7 @@ export default function EarningsV2Page({
 
     const map = new Map<string, ByContentRow>();
     const stateMap = new Map<string, PayoutState[]>();
-    for (const row of earningsViewSales) {
+    for (const row of contentScopedEarningsViewSales) {
       const contentId = row.contentId;
       const fees = feeBreakdownForRow(row);
       const existing = map.get(contentId) || {
@@ -435,7 +454,7 @@ export default function EarningsV2Page({
       }
     }
     return rows.sort((a, b) => b.gross - a.gross);
-  }, [earningsViewSales, roleByContent, shareByContent, payoutItems]);
+  }, [contentScopedEarningsViewSales, roleByContent, shareByContent, payoutItems]);
 
   const momentumByContent = useMemo(() => {
     const now = Date.now();
@@ -447,7 +466,7 @@ export default function EarningsV2Page({
     >();
     let hasTimestampSignal = false;
     let hasRecentSignal = false;
-    for (const row of earningsViewSales) {
+    for (const row of contentScopedEarningsViewSales) {
       const contentId = String(row.contentId || "").trim();
       if (!contentId) continue;
       const ts = new Date(row.recognizedAt).getTime();
@@ -474,7 +493,7 @@ export default function EarningsV2Page({
       map.set(contentId, current);
     }
     return { map, hasTimestampSignal, hasRecentSignal };
-  }, [earningsViewSales]);
+  }, [contentScopedEarningsViewSales]);
 
   const byContentRows = useMemo(() => {
     const rows = [...byContent];
@@ -589,12 +608,12 @@ export default function EarningsV2Page({
 
   const scopedRow = useMemo(() => {
     if (!byContent.length) return null;
-    if (scopedContentId) {
-      const match = byContent.find((row) => row.contentId === scopedContentId);
+    if (activeContentScopeId) {
+      const match = byContent.find((row) => row.contentId === activeContentScopeId);
       if (match) return match;
     }
     return byContent[0];
-  }, [byContent, scopedContentId]);
+  }, [byContent, activeContentScopeId]);
 
   const scopedSalesRows = useMemo(() => {
     if (!scopedRow) return [];
@@ -754,6 +773,7 @@ export default function EarningsV2Page({
                 setScopeHint(null);
                 setScopeTitle(null);
                 setScopedContentId(null);
+                setContentScopeId(null);
                 try {
                   const params = new URLSearchParams(window.location.search || "");
                   params.delete("contentId");
@@ -772,14 +792,16 @@ export default function EarningsV2Page({
       ) : null}
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">
-          {strictWorkScopeActive ? `Earnings for ${scopeTitle || scopedRow?.contentTitle || "Selected work"}` : "Content Performance"}
+          {scopedWorkActive
+            ? `Earnings for ${scopeTitle || scopedRow?.contentTitle || "Selected work"}`
+            : "Work Intelligence"}
         </div>
-        {strictWorkScopeActive ? (
+        {scopedWorkActive ? (
           <div className="text-sm text-neutral-400 mt-1">
-            Single-work earnings view.
+            Single-work earnings and remuneration view.
           </div>
         ) : (
-          <div className="text-sm text-neutral-400 mt-1">Earnings by work, role/share, and payout outcome.</div>
+          <div className="text-sm text-neutral-400 mt-1">Earnings by work and remuneration outcome.</div>
         )}
         <div className="mt-3">
           <TimeScopeControls
@@ -822,8 +844,8 @@ export default function EarningsV2Page({
       </section>
 
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-        <div className="text-base font-semibold">{strictWorkScopeActive ? "Earnings breakdown" : "Performance by Content"}</div>
-        {strictWorkScopeActive ? (
+        <div className="text-base font-semibold">{scopedWorkActive ? "Earnings breakdown" : "Performance by Content"}</div>
+        {scopedWorkActive ? (
           <div className="text-sm text-neutral-400 mt-1">Detailed earnings and payout-state rows for the selected work.</div>
         ) : (
           <>
@@ -857,6 +879,27 @@ export default function EarningsV2Page({
             <div className="mt-2 text-xs text-neutral-500">{viewDescription}</div>
           </>
         )}
+        {!strictWorkScopeActive ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs">
+            <span className="text-neutral-500">Scope:</span>
+            {activeContentScopeId ? (
+              <>
+                <span className="rounded-full border border-neutral-700 bg-neutral-900 px-2 py-0.5 text-neutral-200">
+                  {scopedRow?.contentTitle || "Content"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setContentScopeId(null)}
+                  className="rounded-full border border-neutral-700 px-3 py-1 text-neutral-300 hover:bg-neutral-800/60"
+                >
+                  Clear scope
+                </button>
+              </>
+            ) : (
+              <span className="text-neutral-500">All content</span>
+            )}
+          </div>
+        ) : null}
         <div className="mt-3 grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div>
             <div className="overflow-x-auto">
@@ -871,13 +914,13 @@ export default function EarningsV2Page({
                     <th className="text-left font-medium py-2">Payout State</th>
                     <th className="text-left font-medium py-2">Paid</th>
                     <th className="text-left font-medium py-2">Pending</th>
-                    <th className="text-left font-medium py-2">Scope</th>
+                    <th className="text-left font-medium py-2">Remuneration</th>
                   </tr>
                 </thead>
                 <tbody>
                   {byContentRows.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="py-3 text-neutral-500">
+                      <td colSpan={9} className="py-3 text-neutral-500">
                         {sales.length === 0 ? "No earnings rows yet." : "No earnings rows in the selected period."}
                       </td>
                     </tr>
@@ -888,7 +931,7 @@ export default function EarningsV2Page({
                       return (
                         <Fragment key={`bucket-${bucket}`}>
                           <tr className="border-t border-neutral-800 bg-neutral-900/30">
-                            <td colSpan={8} className="py-2 text-xs uppercase tracking-wide text-neutral-400">
+                            <td colSpan={9} className="py-2 text-xs uppercase tracking-wide text-neutral-400">
                               {bucket === "mixed" ? "Mixed" : bucket === "pending" ? "Pending" : "Paid"}
                             </td>
                           </tr>
@@ -896,7 +939,14 @@ export default function EarningsV2Page({
                             <tr
                               key={row.contentId}
                               className={`border-t border-neutral-900 ${strictWorkScopeActive ? "" : "cursor-pointer"} ${scopedRow?.contentId === row.contentId ? "bg-neutral-900/40" : strictWorkScopeActive ? "" : "hover:bg-neutral-900/30"}`}
-                              onClick={strictWorkScopeActive ? undefined : () => setScopedContentId(row.contentId)}
+                              onClick={
+                                strictWorkScopeActive
+                                  ? undefined
+                                  : () => {
+                                      setScopedContentId(row.contentId);
+                                      setContentScopeId(row.contentId);
+                                    }
+                              }
                             >
                               <td className="py-2 text-neutral-200">{row.contentTitle}</td>
                               <td className="py-2 text-neutral-300">{row.roleLabel}</td>
@@ -906,6 +956,7 @@ export default function EarningsV2Page({
                               <td className="py-2 text-neutral-300 capitalize">{row.latestStatus}</td>
                               <td className="py-2 text-emerald-300">{formatSats(row.paid)}</td>
                               <td className="py-2 text-amber-300">{formatSats(row.pending)}</td>
+                              <td className="py-2 text-neutral-400">{remunerationLabelForRow(row)}</td>
                             </tr>
                           ))}
                         </Fragment>
@@ -918,7 +969,7 @@ export default function EarningsV2Page({
                       return (
                         <Fragment key={`role-${roleBucket}`}>
                           <tr className="border-t border-neutral-800 bg-neutral-900/30">
-                            <td colSpan={8} className="py-2 text-xs uppercase tracking-wide text-neutral-400">
+                            <td colSpan={9} className="py-2 text-xs uppercase tracking-wide text-neutral-400">
                               {roleBucket === "owner" ? "Owner" : "Collaborator"}
                             </td>
                           </tr>
@@ -926,7 +977,14 @@ export default function EarningsV2Page({
                             <tr
                               key={row.contentId}
                               className={`border-t border-neutral-900 ${strictWorkScopeActive ? "" : "cursor-pointer"} ${scopedRow?.contentId === row.contentId ? "bg-neutral-900/40" : strictWorkScopeActive ? "" : "hover:bg-neutral-900/30"}`}
-                              onClick={strictWorkScopeActive ? undefined : () => setScopedContentId(row.contentId)}
+                              onClick={
+                                strictWorkScopeActive
+                                  ? undefined
+                                  : () => {
+                                      setScopedContentId(row.contentId);
+                                      setContentScopeId(row.contentId);
+                                    }
+                              }
                             >
                               <td className="py-2 text-neutral-200">{row.contentTitle}</td>
                               <td className="py-2 text-neutral-300">{row.roleLabel}</td>
@@ -936,6 +994,7 @@ export default function EarningsV2Page({
                               <td className="py-2 text-neutral-300 capitalize">{row.latestStatus}</td>
                               <td className="py-2 text-emerald-300">{formatSats(row.paid)}</td>
                               <td className="py-2 text-amber-300">{formatSats(row.pending)}</td>
+                              <td className="py-2 text-neutral-400">{remunerationLabelForRow(row)}</td>
                             </tr>
                           ))}
                         </Fragment>
@@ -952,7 +1011,14 @@ export default function EarningsV2Page({
                           scopedRow?.contentId === row.contentId ? "" : strictWorkScopeActive ? "" : "hover:bg-neutral-900/30",
                           contentView === "top_earners" ? "text-[13px]" : ""
                         ].join(" ")}
-                        onClick={strictWorkScopeActive ? undefined : () => setScopedContentId(row.contentId)}
+                        onClick={
+                          strictWorkScopeActive
+                            ? undefined
+                            : () => {
+                                setScopedContentId(row.contentId);
+                                setContentScopeId(row.contentId);
+                              }
+                        }
                       >
                         <td className={contentView === "top_earners" ? "py-1.5 text-neutral-200" : "py-2 text-neutral-200"}>
                           <div className="flex items-center gap-2">
@@ -979,6 +1045,9 @@ export default function EarningsV2Page({
                         <td className={contentView === "top_earners" ? "py-1.5 text-neutral-300 capitalize" : "py-2 text-neutral-300 capitalize"}>{row.latestStatus}</td>
                         <td className={contentView === "top_earners" ? "py-1.5 text-emerald-300" : "py-2 text-emerald-300"}>{formatSats(row.paid)}</td>
                         <td className={contentView === "top_earners" ? "py-1.5 text-amber-300" : "py-2 text-amber-300"}>{formatSats(row.pending)}</td>
+                        <td className={contentView === "top_earners" ? "py-1.5 text-neutral-400" : "py-2 text-neutral-400"}>
+                          {remunerationLabelForRow(row)}
+                        </td>
                       </tr>
                     ))
                   )}
