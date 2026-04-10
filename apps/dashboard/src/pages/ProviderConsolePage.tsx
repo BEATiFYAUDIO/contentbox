@@ -186,7 +186,17 @@ type ParticipantPayoutRow = {
   lastCheckedAt: string | null;
   updatedAt: string;
   creatorNodeId?: string | null;
+  sourceType?: "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" | string | null;
+  allocationRole?: string | null;
+  allocationBps?: number | null;
+  allocationSource?: string | null;
+  soldWork?: { id?: string | null; title?: string | null; type?: string | null } | null;
+  sourceWork?: { id?: string | null; title?: string | null; type?: string | null } | null;
+  grossShareSats?: string | null;
+  feeWithheldSats?: string | null;
+  netAmountSats?: string | null;
   allocation?: {
+    contentId?: string | null;
     participantRef: string;
     participantUserId: string | null;
     participantEmail: string | null;
@@ -211,6 +221,15 @@ function statusPillClass(status: string) {
     return "border-amber-800/70 bg-amber-900/20 text-amber-300";
   }
   return "border-neutral-700 bg-neutral-900/50 text-neutral-300";
+}
+
+function allocationSourceLabel(sourceType: string | null | undefined) {
+  const key = String(sourceType || "").trim();
+  if (key === "derivative_creator_earning") return "Derivative creator earning";
+  if (key === "upstream_royalty_earning") return "Upstream royalty earning";
+  if (key === "collaboration_earning") return "Collaboration earning";
+  if (key === "catalog_earning") return "Catalog earning";
+  return "Unclassified earning";
 }
 
 function sats(raw: string | number | null | undefined) {
@@ -1130,7 +1149,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
               This node processes payments, applies fees, and executes payouts.
             </div>
             <div className="mt-1 text-xs text-neutral-500">
-              Time basis: {timeBasis === "sale" ? "Sale (buyer payment)" : "Paid (remitted execution)"}.
+              View by: {timeBasis === "sale" ? "Sale (buyer payment)" : "Paid (remitted execution)"}.
             </div>
           </div>
           <div className="text-[11px] text-neutral-500">
@@ -1608,10 +1627,14 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="text-left text-neutral-400">
-                  <th className="py-2 pr-3 font-medium">Participant</th>
+                  <th className="py-2 pr-3 font-medium">Intent</th>
+                  <th className="py-2 pr-3 font-medium">Sold work</th>
+                  <th className="py-2 pr-3 font-medium">Source type</th>
+                  <th className="py-2 pr-3 font-medium">Recipient</th>
+                  <th className="py-2 pr-3 font-medium">Gross</th>
+                  <th className="py-2 pr-3 font-medium">Commerce fee</th>
+                  <th className="py-2 pr-3 font-medium">Net</th>
                   <th className="py-2 pr-3 font-medium">Status</th>
-                  <th className="py-2 pr-3 font-medium">Amount</th>
-                  <th className="py-2 pr-3 font-medium">Destination</th>
                   <th className="py-2 pr-3 font-medium">Reason</th>
                   <th className="py-2 pr-3 font-medium">Updated</th>
                 </tr>
@@ -1620,21 +1643,34 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                 {visibleParticipantPayouts.slice(0, 200).map((row) => (
                   <tr key={row.id} className="border-t border-neutral-800/80 align-top text-neutral-200">
                     <td className="py-2 pr-3">
+                      <div className="font-mono text-[11px] text-neutral-300">{shortId(row.paymentIntentId, 8, 6)}</div>
+                      <div className="font-mono text-[11px] text-neutral-500">{shortId(row.providerPaymentIntentId, 8, 6)}</div>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{String(row.soldWork?.title || "").trim() || "Untitled"}</div>
+                      {row.sourceWork?.title ? (
+                        <div className="text-xs text-neutral-500">Source: {row.sourceWork.title}</div>
+                      ) : null}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{allocationSourceLabel(row.sourceType)}</div>
+                      <div className="text-xs text-neutral-500">{row.allocationSource || "allocation"}</div>
+                    </td>
+                    <td className="py-2 pr-3">
                       <div>{row.allocation?.participantEmail || row.allocation?.participantUserId || row.allocation?.participantRef || "—"}</div>
                       <div className="text-xs text-neutral-500">{row.allocation?.role || "—"}</div>
                     </td>
+                    <td className="py-2 pr-3">{sats(row.grossShareSats || row.amountSats)} sats</td>
+                    <td className="py-2 pr-3">{sats(row.feeWithheldSats || "0")} sats</td>
+                    <td className="py-2 pr-3">{sats(row.netAmountSats || row.amountSats)} sats</td>
                     <td className="py-2 pr-3">
                       <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>
                         {row.status}
                       </span>
                     </td>
-                    <td className="py-2 pr-3">{sats(row.amountSats)} sats</td>
                     <td className="py-2 pr-3">
-                      <div>{row.destinationSummary || row.destinationType || "—"}</div>
+                      <div>{row.readinessReason || row.blockedReason || row.destinationSummary || row.destinationType || "—"}</div>
                       <div className="text-xs text-neutral-500">{row.payoutRail || "—"}</div>
-                    </td>
-                    <td className="py-2 pr-3">
-                      <div>{row.readinessReason || row.blockedReason || "—"}</div>
                       {row.lastError ? <div className="text-xs text-rose-300">{row.lastError}</div> : null}
                     </td>
                     <td className="py-2 pr-3">{formatDate(row.updatedAt)}</td>

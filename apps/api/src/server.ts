@@ -3907,7 +3907,16 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           );
         }
         const settlementFeePool = grossSats > netPool ? grossSats - netPool : 0n;
-        if (grossSats > 0n && allocationRows.length > 0) {
+        const allocationBpsTotal = allocationRows.reduce(
+          (sum, row) => sum + Math.max(0, Math.floor(Number(row.bps || 0))),
+          0
+        );
+        // Derivative allocations can legitimately include child + upstream rows whose
+        // bps values are from different layers and therefore do not sum to 10,000.
+        // In that case, the computed row amounts are already authoritative and must
+        // not be re-distributed by a global bps pass.
+        const applyFeePolicyByBps = grossSats > 0n && allocationRows.length > 0 && allocationBpsTotal === 10000;
+        if (applyFeePolicyByBps) {
           const byId = allocateParticipantGrossFeeNetByBps({
             grossPoolSats: grossSats,
             feePoolSats: settlementFeePool,
@@ -3925,6 +3934,16 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
               amountSats: policy.netShareSats
             };
           });
+        } else if (allocationRows.length > 0) {
+          app.log.info(
+            {
+              providerPaymentIntentId: intent.id,
+              paymentIntentId: intent.paymentIntentId,
+              contentId,
+              allocationBpsTotal
+            },
+            "splitAccounting.fee_policy_bypass_noncanonical_bps_total"
+          );
         }
         app.log.info(
           {
@@ -4130,7 +4149,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
       await prisma.participantPayout.upsert({
         where: { allocationId: allocation.id },
         update: {
-          payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
+          payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef, allocation.id),
           status: reconciledStatus,
           payoutRail: intent.payoutRail,
           destinationType: readiness.destinationType,
@@ -4178,7 +4197,7 @@ async function ensureParticipantPayoutRowsForProviderIntent(intent: ProviderPaym
           allocationId: allocation.id,
           providerPaymentIntentId: intent.id,
           paymentIntentId: intent.paymentIntentId,
-          payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef),
+          payoutKey: buildParticipantPayoutKey(intent.id, executionParticipantRef, allocation.id),
           amountSats: BigInt(String(allocation.amountSats || "0")),
           status: forcePaidStatus ? "paid" : resolvedStatus,
           payoutRail: intent.payoutRail,
@@ -5091,12 +5110,16 @@ function resolveExecutionParticipantRef(input: {
   return "allocation:unknown";
 }
 
-function buildParticipantPayoutKey(intentId: string, executionParticipantRef: string): string {
+function buildParticipantPayoutKey(intentId: string, executionParticipantRef: string, allocationId?: string | null): string {
   const ref = String(executionParticipantRef || "").trim();
   if (!ref || isEmailDerivedParticipantRef(ref)) {
     throw new Error("INVALID_EXECUTION_PARTICIPANT_REF");
   }
-  return `${String(intentId || "").trim()}:${ref}`;
+  const allocation = String(allocationId || "").trim();
+  if (!allocation) {
+    return `${String(intentId || "").trim()}:${ref}`;
+  }
+  return `${String(intentId || "").trim()}:${ref}:${allocation}`;
 }
 
 function participantExecutionResolutionForRow(row: any): ParticipantExecutionResolution {
@@ -16916,12 +16939,14 @@ app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async 
       include: {
         allocation: {
           select: {
+            contentId: true,
             participantRef: true,
             participantUserId: true,
             participantEmail: true,
             role: true,
             bps: true,
-            amountSats: true
+            amountSats: true,
+            allocationSource: true
           }
         }
       },
@@ -16931,10 +16956,80 @@ app.get("/api/provider/participant-payouts", { preHandler: requireAuth }, async 
       if (isMissingParticipantPayoutTableError(err)) return [];
       throw err;
     });
-  const items = rows.map((row) => ({
-    ...row,
-    creatorNodeId: intentCreatorById.get(String(row.providerPaymentIntentId || "").trim()) || null
-  }));
+  const paymentIntentIds = Array.from(
+    new Set(rows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean))
+  );
+  const accountingByIntent = await buildIntentParticipantAccountingMap(paymentIntentIds);
+  const contentIds = Array.from(
+    new Set(rows.map((row) => String((row as any)?.allocation?.contentId || "").trim()).filter(Boolean))
+  );
+  const childLinks = contentIds.length
+    ? await prisma.contentLink.findMany({
+        where: { childContentId: { in: contentIds } },
+        select: { childContentId: true, parentContentId: true }
+      })
+    : [];
+  const parentContentIds = Array.from(new Set(childLinks.map((row) => String(row.parentContentId || "").trim()).filter(Boolean)));
+  const allContentIds = Array.from(new Set([...contentIds, ...parentContentIds]));
+  const contents = allContentIds.length
+    ? await prisma.contentItem.findMany({
+        where: { id: { in: allContentIds } },
+        select: { id: true, title: true, type: true }
+      })
+    : [];
+  const contentById = new Map(contents.map((row) => [row.id, row]));
+  const parentByChild = new Map<string, string>();
+  for (const row of childLinks) {
+    const childId = String(row.childContentId || "").trim();
+    const parentId = String(row.parentContentId || "").trim();
+    if (!childId || !parentId || parentByChild.has(childId)) continue;
+    parentByChild.set(childId, parentId);
+  }
+
+  const inferEarningSourceType = (
+    participantRefRaw: string | null | undefined,
+    roleRaw: string | null | undefined
+  ): "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" => {
+    const participantRef = String(participantRefRaw || "").trim().toLowerCase();
+    const role = String(roleRaw || "").trim().toLowerCase();
+    if (participantRef.startsWith("upstream") || role === "upstream") return "upstream_royalty_earning";
+    if (participantRef.startsWith("derivative:") || role.startsWith("derivative")) return "derivative_creator_earning";
+    if (role === "owner") return "catalog_earning";
+    return "collaboration_earning";
+  };
+
+  const items = rows.map((row) => {
+    const creatorNodeId = intentCreatorById.get(String(row.providerPaymentIntentId || "").trim()) || null;
+    const contentId = String((row as any)?.allocation?.contentId || "").trim() || null;
+    const content = contentId ? contentById.get(contentId) : null;
+    const parentContentId = contentId ? parentByChild.get(contentId) || null : null;
+    const parentContent = parentContentId ? contentById.get(parentContentId) : null;
+    const participantRef = String((row as any)?.allocation?.participantRef || "").trim() || null;
+    const allocationRole = String((row as any)?.allocation?.role || "").trim() || null;
+    const allocationBps = Number((row as any)?.allocation?.bps || 0);
+    const allocationSource = String((row as any)?.allocation?.allocationSource || "").trim() || null;
+    const sourceType = inferEarningSourceType(participantRef, allocationRole);
+    const paymentIntentId = String((row as any)?.paymentIntentId || "").trim();
+    const allocationId = String((row as any)?.allocationId || "").trim();
+    const accounting = paymentIntentId ? accountingByIntent.get(paymentIntentId)?.get(allocationId) : undefined;
+    return {
+      ...row,
+      creatorNodeId,
+      sourceType,
+      allocationRole,
+      allocationBps: Number.isFinite(allocationBps) ? allocationBps : 0,
+      allocationSource,
+      soldWork: content
+        ? { id: content.id, title: content.title, type: content.type }
+        : null,
+      sourceWork: parentContent
+        ? { id: parentContent.id, title: parentContent.title, type: parentContent.type }
+        : null,
+      grossShareSats: accounting ? accounting.grossShareSats.toString() : String((row as any)?.amountSats || "0"),
+      feeWithheldSats: accounting ? accounting.feeWithheldSats.toString() : "0",
+      netAmountSats: String((row as any)?.amountSats || "0")
+    };
+  });
   return reply.send({ items });
 });
 
@@ -32615,6 +32710,14 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     select: { id: true, title: true }
   });
   const contentIds = contents.map((c) => c.id);
+  const derivativeChildIds = new Set<string>(
+    (
+      await prisma.contentLink.findMany({
+        where: { childContentId: { in: contentIds } },
+        select: { childContentId: true }
+      })
+    ).map((link) => String(link.childContentId || "").trim()).filter(Boolean)
+  );
 
   const settlements = await prisma.settlement.findMany({
     where: { contentId: { in: contentIds } }
@@ -32747,6 +32850,7 @@ app.get("/finance/royalties", { preHandler: [requireAuth, requireAdvancedTier("f
     return {
       contentId: r.contentId,
       title: r.title,
+      isDerivative: derivativeChildIds.has(String(r.contentId || "").trim()),
       totalSalesSats: r.total.toString(),
       grossRevenueSats: r.total.toString(),
       grossEarnedSats: grossEarned.toString(),
@@ -32835,7 +32939,11 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
         updatedAt: true,
         allocation: {
           select: {
-            contentId: true
+            contentId: true,
+            participantRef: true,
+            role: true,
+            bps: true,
+            allocationSource: true
           }
         }
       },
@@ -32850,13 +32958,34 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
   const contentIds = Array.from(
     new Set(canonicalRows.map((row) => String((row as any)?.allocation?.contentId || "").trim()).filter(Boolean))
   );
-  const contents = contentIds.length
+  const childLinks = contentIds.length
+    ? await prisma.contentLink.findMany({
+        where: { childContentId: { in: contentIds } },
+        select: { childContentId: true, parentContentId: true }
+      })
+    : [];
+  const parentContentIds = Array.from(
+    new Set(
+      childLinks
+        .map((row) => String(row.parentContentId || "").trim())
+        .filter(Boolean)
+    )
+  );
+  const allContentIds = Array.from(new Set([...contentIds, ...parentContentIds]));
+  const contents = allContentIds.length
     ? await prisma.contentItem.findMany({
-        where: { id: { in: contentIds } },
+        where: { id: { in: allContentIds } },
         select: { id: true, title: true, type: true }
       })
     : [];
   const contentById = new Map(contents.map((c) => [c.id, c]));
+  const parentByChildContentId = new Map<string, string>();
+  for (const link of childLinks) {
+    const childId = String(link.childContentId || "").trim();
+    const parentId = String(link.parentContentId || "").trim();
+    if (!childId || !parentId || parentByChildContentId.has(childId)) continue;
+    parentByChildContentId.set(childId, parentId);
+  }
   const accountingByIntent = await buildIntentParticipantAccountingMap(
     Array.from(new Set(canonicalRows.map((row) => String((row as any)?.paymentIntentId || "").trim()).filter(Boolean)))
   );
@@ -32864,6 +32993,18 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
   let paidSats = 0n;
   let pendingSats = 0n;
   let failedSats = 0n;
+
+  const inferEarningSourceType = (
+    participantRefRaw: string | null | undefined,
+    roleRaw: string | null | undefined
+  ): "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" => {
+    const participantRef = String(participantRefRaw || "").trim().toLowerCase();
+    const role = String(roleRaw || "").trim().toLowerCase();
+    if (participantRef.startsWith("upstream") || role === "upstream") return "upstream_royalty_earning";
+    if (participantRef.startsWith("derivative:") || role.startsWith("derivative")) return "derivative_creator_earning";
+    if (role === "owner") return "catalog_earning";
+    return "collaboration_earning";
+  };
 
   const items = canonicalRows.map((row) => {
     const amount = BigInt(String((row as any)?.amountSats || "0"));
@@ -32876,6 +33017,19 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
 
     const contentId = String((row as any)?.allocation?.contentId || "").trim() || null;
     const content = contentId ? contentById.get(contentId) : null;
+    const parentContentId = contentId ? parentByChildContentId.get(contentId) || null : null;
+    const parentContent = parentContentId ? contentById.get(parentContentId) : null;
+    const allocationRole = String((row as any)?.allocation?.role || "").trim() || null;
+    const allocationParticipantRef = String((row as any)?.allocation?.participantRef || "").trim() || null;
+    const allocationBps = Number((row as any)?.allocation?.bps || 0);
+    const allocationSource = String((row as any)?.allocation?.allocationSource || "").trim() || null;
+    const earningSourceType = inferEarningSourceType(allocationParticipantRef, allocationRole);
+    const netAmountSats = BigInt(String((row as any)?.amountSats || "0"));
+    const netPaidSats = status === "paid" ? netAmountSats : 0n;
+    const netPayableSats =
+      status === "pending" || status === "ready" || status === "forwarding"
+        ? netAmountSats
+        : 0n;
     const allocationId = String((row as any)?.allocationId || "").trim();
     const accounting = paymentIntentId ? accountingByIntent.get(paymentIntentId)?.get(allocationId) : undefined;
 
@@ -32892,10 +33046,31 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
             type: content.type
           }
         : null,
+      soldWork: content
+        ? {
+            id: content.id,
+            title: content.title,
+            type: content.type
+          }
+        : null,
+      sourceWork: parentContent
+        ? {
+            id: parentContent.id,
+            title: parentContent.title,
+            type: parentContent.type
+          }
+        : null,
       amountSats: String((row as any)?.amountSats || "0"),
       grossShareSats: accounting ? accounting.grossShareSats.toString() : String((row as any)?.amountSats || "0"),
       feeWithheldSats: accounting ? accounting.feeWithheldSats.toString() : "0",
       netAmountSats: String((row as any)?.amountSats || "0"),
+      netPaidSats: netPaidSats.toString(),
+      netPayableSats: netPayableSats.toString(),
+      earningSourceType,
+      allocationRole,
+      allocationParticipantRef,
+      allocationBps: Number.isFinite(allocationBps) ? allocationBps : 0,
+      allocationSource,
       status,
       payoutDestinationSummary: row.destinationSummary || null,
       payoutDestinationType: row.destinationType || null,

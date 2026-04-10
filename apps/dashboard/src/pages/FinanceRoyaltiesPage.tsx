@@ -12,12 +12,24 @@ type RoyaltyRow = {
   settledSats: string;
   withdrawnSats: string;
   pendingSats: string;
+  isDerivative?: boolean;
 };
 
 type RoyaltiesContextResponse = {
   works?: Array<{
     contentId?: string | null;
     myRole?: "owner" | "participant" | string | null;
+  }>;
+  upstreamIncome?: Array<{
+    parentContentId?: string | null;
+    parentTitle?: string | null;
+    childContentId?: string | null;
+    childTitle?: string | null;
+    upstreamBps?: number | null;
+    myEffectiveBps?: number | null;
+    earnedSatsToDate?: string | number | null;
+    approvedAt?: string | null;
+    status?: string | null;
   }>;
 };
 
@@ -61,8 +73,19 @@ type FinancePayoutItem = {
   id: string;
   paymentIntentId?: string | null;
   contentId?: string | null;
+  soldWork?: { id?: string | null; title?: string | null; type?: string | null } | null;
+  sourceWork?: { id?: string | null; title?: string | null; type?: string | null } | null;
   amountSats?: string | number | null;
+  grossShareSats?: string | number | null;
+  feeWithheldSats?: string | number | null;
   netAmountSats?: string | number | null;
+  netPaidSats?: string | number | null;
+  netPayableSats?: string | number | null;
+  earningSourceType?: EarningsSourceType | null;
+  allocationRole?: string | null;
+  allocationParticipantRef?: string | null;
+  allocationBps?: number | null;
+  allocationSource?: string | null;
   status?: string | null;
   remittedAt?: string | null;
   createdAt?: string | null;
@@ -70,16 +93,35 @@ type FinancePayoutItem = {
 };
 
 type EarningsLedgerStatus = "Earned" | "Pending" | "Processing" | "Partial" | "Paid" | "Failed" | "Blocked";
+type EarningsSourceType =
+  | "catalog_earning"
+  | "collaboration_earning"
+  | "derivative_creator_earning"
+  | "upstream_royalty_earning";
+
+const EARNINGS_SOURCE_LABEL: Record<EarningsSourceType, string> = {
+  catalog_earning: "Catalog earning",
+  collaboration_earning: "Collaboration earning",
+  derivative_creator_earning: "Derivative creator earning",
+  upstream_royalty_earning: "Upstream royalty earning"
+};
 
 type EarningsLedgerRow = {
   id: string;
   contentId: string;
+  soldWorkTitle: string;
+  sourceWorkTitle: string | null;
+  sourceType: EarningsSourceType;
   contentTitle: string;
   sourceLabel: string;
   roleLabel: string;
   originLabel: string;
   shareLabel: string;
   status: EarningsLedgerStatus;
+  grossShareSats: number;
+  feeWithheldSats: number;
+  netPayableSats: number;
+  netPaidSats: number;
   amountSats: number;
   dateLabel: string;
   dateSortTs: number;
@@ -124,6 +166,7 @@ export default function FinanceRoyaltiesPage({
   const [localRoleByContent, setLocalRoleByContent] = useState<Record<string, string>>({});
   const [remoteRoleByContent, setRemoteRoleByContent] = useState<Record<string, string>>({});
   const [remoteRows, setRemoteRows] = useState<RemoteRoyaltyContextRow[]>([]);
+  const [upstreamRows, setUpstreamRows] = useState<NonNullable<RoyaltiesContextResponse["upstreamIncome"]>>([]);
   const [overviewSummary, setOverviewSummary] = useState<OverviewSummary | null>(null);
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
@@ -207,12 +250,15 @@ export default function FinanceRoyaltiesPage({
 
       if (localCtx.status === "fulfilled") {
         const works = Array.isArray(localCtx.value?.works) ? localCtx.value.works : [];
+        setUpstreamRows(Array.isArray(localCtx.value?.upstreamIncome) ? localCtx.value.upstreamIncome : []);
         for (const work of works) {
           const contentId = String(work?.contentId || "").trim();
           if (!contentId) continue;
           const roleLabel = normalizeRoleLabel(work?.myRole);
           if (roleLabel) localMap[contentId] = roleLabel;
         }
+      } else {
+        setUpstreamRows([]);
       }
 
       if (remoteCtx.status === "fulfilled") {
@@ -319,120 +365,92 @@ export default function FinanceRoyaltiesPage({
   }, [salesRows]);
 
   const earningsLedgerRows = useMemo<EarningsLedgerRow[]>(() => {
-    const payoutByContent = new Map<
-      string,
-      { paid: number; pending: number; failed: number; latestPaidTs: string | null; latestActivityTs: string | null }
-    >();
+    const baseRowByContentId = new Map<string, RoyaltyRow>();
+    rows.forEach((row) => {
+      const id = String(row.contentId || "").trim();
+      if (id) baseRowByContentId.set(id, row);
+    });
+    const out: EarningsLedgerRow[] = [];
     for (const payout of payoutItems) {
       const contentId = String(payout.contentId || "").trim();
-      if (!contentId) continue;
-      const amount = Math.max(0, Number(payout.netAmountSats ?? payout.amountSats ?? 0) || 0);
-      const status = String(payout.status || "").trim().toLowerCase();
-      const tsCandidate = String(payout.remittedAt || payout.updatedAt || payout.createdAt || "").trim() || null;
-      const current = payoutByContent.get(contentId) || {
-        paid: 0,
-        pending: 0,
-        failed: 0,
-        latestPaidTs: null,
-        latestActivityTs: null
-      };
-      if (status === "paid") {
-        current.paid += amount;
-        if (tsCandidate && (!current.latestPaidTs || tsCandidate > current.latestPaidTs)) current.latestPaidTs = tsCandidate;
-      } else if (status === "pending" || status === "ready" || status === "forwarding") {
-        current.pending += amount;
-      } else if (status === "failed" || status === "blocked") {
-        current.failed += amount;
-      }
-      if (tsCandidate && (!current.latestActivityTs || tsCandidate > current.latestActivityTs)) current.latestActivityTs = tsCandidate;
-      payoutByContent.set(contentId, current);
-    }
-
-    const out: EarningsLedgerRow[] = [];
-    const baseContentIds = new Set<string>();
-    for (const row of rows) {
-      const contentId = String(row.contentId || "").trim();
-      if (contentId) baseContentIds.add(contentId);
-      const contentTitle = String(row.title || "Untitled").trim() || "Untitled";
-      const earned = Math.max(0, Number(row.settledSats || 0) || 0);
-      const payoutSummary = payoutByContent.get(contentId);
-      const paid = payoutSummary ? payoutSummary.paid : Math.max(0, Number(row.withdrawnSats || 0) || 0);
-      const pending = payoutSummary ? payoutSummary.pending : Math.max(0, Number(row.pendingSats || 0) || 0);
-      const sourceLabel = "Catalog earning";
-      const localRole = localRoleByContent[contentId] || "";
-      const remoteRole = remoteRoleByContent[contentId] || "";
-      const roleLabel = localRole || remoteRole || "Participant";
-      const originLabel = remoteRole ? "Remote" : localRole ? "Local" : "—";
-      const shareLabel = formatShareLabel(row.allocationSats, row.totalSalesSats);
-      const localRecognizedAt = localRecognizedAtByContent.get(contentId) || payoutSummary?.latestActivityTs || "";
-      const dateSortTs = localRecognizedAt ? new Date(localRecognizedAt).getTime() : 0;
+      const fallbackRow = contentId ? baseRowByContentId.get(contentId) : undefined;
+      const soldWorkTitle =
+        String(payout.soldWork?.title || "").trim() ||
+        String(fallbackRow?.title || "").trim() ||
+        "Untitled";
+      const sourceWorkTitle = String(payout.sourceWork?.title || "").trim() || null;
+      const sourceTypeRaw = String(payout.earningSourceType || "").trim() as EarningsSourceType | "";
+      const sourceType: EarningsSourceType =
+        sourceTypeRaw === "catalog_earning" ||
+        sourceTypeRaw === "collaboration_earning" ||
+        sourceTypeRaw === "derivative_creator_earning" ||
+        sourceTypeRaw === "upstream_royalty_earning"
+          ? sourceTypeRaw
+          : fallbackRow?.isDerivative
+            ? "derivative_creator_earning"
+            : "catalog_earning";
+      const sourceLabel = EARNINGS_SOURCE_LABEL[sourceType];
+      const roleLabel = normalizeRoleLabel(payout.allocationRole) || localRoleByContent[contentId] || "Participant";
+      const shareLabel =
+        Number.isFinite(Number(payout.allocationBps || 0)) && Number(payout.allocationBps || 0) > 0
+          ? `${(Number(payout.allocationBps || 0) / 100).toFixed(2)}%`
+          : formatShareLabel(fallbackRow?.allocationSats, fallbackRow?.totalSalesSats);
+      const statusRaw = String(payout.status || "").trim().toLowerCase();
+      const status: EarningsLedgerStatus =
+        statusRaw === "paid"
+          ? "Paid"
+          : statusRaw === "pending"
+            ? "Pending"
+            : statusRaw === "ready" || statusRaw === "forwarding"
+              ? "Processing"
+              : statusRaw === "failed"
+                ? "Failed"
+                : statusRaw === "blocked"
+                  ? "Blocked"
+                  : "Earned";
+      const grossShareSats = Math.max(0, Number(payout.grossShareSats ?? payout.netAmountSats ?? payout.amountSats ?? 0) || 0);
+      const feeWithheldSats = Math.max(0, Number(payout.feeWithheldSats ?? 0) || 0);
+      const netAmountSats = Math.max(0, Number(payout.netAmountSats ?? payout.amountSats ?? 0) || 0);
+      const netPaidSats = Math.max(0, Number(payout.netPaidSats ?? (status === "Paid" ? netAmountSats : 0)) || 0);
+      const netPayableSats = Math.max(
+        0,
+        Number(
+          payout.netPayableSats ??
+            (status === "Pending" || status === "Processing" || status === "Partial" ? netAmountSats : 0)
+        ) || 0
+      );
+      const tsIso = String(payout.remittedAt || payout.updatedAt || payout.createdAt || "").trim() || null;
+      const dateSortTs = tsIso ? new Date(tsIso).getTime() : 0;
       const dateLabel = dateSortTs > 0 ? new Date(dateSortTs).toLocaleDateString() : "—";
-
-      if (paid > 0) {
-        out.push({
-          id: `${contentId}:paid`,
-          contentId,
-          contentTitle,
-          sourceLabel,
-          roleLabel,
-          originLabel,
-          shareLabel,
-          status: "Paid",
-          amountSats: paid,
-          dateLabel,
-          dateSortTs,
-          earnedTsIso: localRecognizedAt || null,
-          paidTsIso: payoutSummary?.latestPaidTs || localRecognizedAt || null,
-          remittanceDetail: null,
-          remittanceActionable: false
-        });
-      }
-
-      if (pending > 0) {
-        out.push({
-          id: `${contentId}:pending`,
-          contentId,
-          contentTitle,
-          sourceLabel,
-          roleLabel,
-          originLabel,
-          shareLabel,
-          status: "Pending",
-          amountSats: pending,
-          dateLabel,
-          dateSortTs,
-          earnedTsIso: localRecognizedAt || null,
-          paidTsIso: payoutSummary?.latestActivityTs || localRecognizedAt || null,
-          remittanceDetail: null,
-          remittanceActionable: false
-        });
-      }
-
-      const earnedOnly = Math.max(0, earned - paid - pending);
-      if (earnedOnly > 0) {
-        out.push({
-          id: `${contentId}:earned`,
-          contentId,
-          contentTitle,
-          sourceLabel,
-          roleLabel,
-          originLabel,
-          shareLabel,
-          status: "Earned",
-          amountSats: earnedOnly,
-          dateLabel,
-          dateSortTs,
-          earnedTsIso: localRecognizedAt || null,
-          paidTsIso: payoutSummary?.latestActivityTs || localRecognizedAt || null,
-          remittanceDetail: null,
-          remittanceActionable: false
-        });
-      }
+      const rowId = String(payout.id || "").trim() || `${contentId}:${String(payout.paymentIntentId || "").trim()}:${String(payout.allocationParticipantRef || "").trim()}:${sourceType}:${status}`;
+      out.push({
+        id: rowId,
+        contentId: contentId || `unscoped:${rowId}`,
+        soldWorkTitle,
+        sourceWorkTitle,
+        sourceType,
+        contentTitle: soldWorkTitle,
+        sourceLabel,
+        roleLabel,
+        originLabel: "Local",
+        shareLabel,
+        status,
+        grossShareSats,
+        feeWithheldSats,
+        netPayableSats,
+        netPaidSats,
+        amountSats: netAmountSats,
+        dateLabel,
+        dateSortTs,
+        earnedTsIso: String(payout.createdAt || payout.updatedAt || "").trim() || tsIso,
+        paidTsIso: tsIso,
+        remittanceDetail: sourceWorkTitle ? `Source work: ${sourceWorkTitle}` : null,
+        remittanceActionable: status !== "Paid" && status !== "Earned"
+      });
     }
 
     for (const row of remoteRows) {
       const contentId = String(row?.contentId || "").trim();
-      if (contentId && baseContentIds.has(contentId)) continue;
       const earned = Math.max(0, Number(row?.earnedSatsToDate || 0) || 0);
       if (earned <= 0) continue;
       const remoteId = String(row?.id || "").trim();
@@ -452,12 +470,19 @@ export default function FinanceRoyaltiesPage({
       out.push({
         id: `remote:${rowId}:${status.toLowerCase()}`,
         contentId: contentId || `remote:${rowId}`,
+        soldWorkTitle: contentTitle,
+        sourceWorkTitle: null,
+        sourceType: "collaboration_earning",
         contentTitle,
-        sourceLabel: "Collaboration earning",
+        sourceLabel: EARNINGS_SOURCE_LABEL.collaboration_earning,
         roleLabel,
         originLabel: "Remote",
         shareLabel,
         status,
+        grossShareSats: earned,
+        feeWithheldSats: 0,
+        netPayableSats: status === "Pending" || status === "Processing" || status === "Partial" ? earned : 0,
+        netPaidSats: status === "Paid" ? earned : 0,
         amountSats: earned,
         dateLabel,
         dateSortTs,
@@ -465,6 +490,88 @@ export default function FinanceRoyaltiesPage({
         paidTsIso: row?.acceptedAt || null,
         remittanceDetail,
         remittanceActionable
+      });
+    }
+
+    for (const upstream of upstreamRows) {
+      const earned = Math.max(0, Number(upstream?.earnedSatsToDate || 0) || 0);
+      if (earned <= 0) continue;
+      const parentContentId = String(upstream?.parentContentId || "").trim();
+      const childContentId = String(upstream?.childContentId || "").trim();
+      const rowId = parentContentId || childContentId;
+      if (!rowId) continue;
+      const parentTitle = String(upstream?.parentTitle || "Upstream parent").trim() || "Upstream parent";
+      const childTitle = String(upstream?.childTitle || "Derivative").trim() || "Derivative";
+      const approvedAt = String(upstream?.approvedAt || "").trim();
+      const dateSortTs = approvedAt ? new Date(approvedAt).getTime() : 0;
+      const dateLabel = dateSortTs > 0 ? new Date(dateSortTs).toLocaleDateString() : "—";
+      const myEffectiveBps = Number(upstream?.myEffectiveBps || 0);
+      const shareLabel = Number.isFinite(myEffectiveBps) && myEffectiveBps > 0 ? `${(myEffectiveBps / 100).toFixed(2)}%` : "—";
+
+      out.push({
+        id: `upstream:${rowId}`,
+        contentId: parentContentId || `upstream:${rowId}`,
+        soldWorkTitle: childTitle,
+        sourceWorkTitle: parentTitle,
+        sourceType: "upstream_royalty_earning",
+        contentTitle: `${parentTitle} ← ${childTitle}`,
+        sourceLabel: EARNINGS_SOURCE_LABEL.upstream_royalty_earning,
+        roleLabel: "Upstream stakeholder",
+        originLabel: "Local",
+        shareLabel,
+        status: "Earned",
+        grossShareSats: earned,
+        feeWithheldSats: 0,
+        netPayableSats: 0,
+        netPaidSats: 0,
+        amountSats: earned,
+        dateLabel,
+        dateSortTs,
+        earnedTsIso: approvedAt || null,
+        paidTsIso: approvedAt || null,
+        remittanceDetail: "Derivative upstream royalty recognized in earnings.",
+        remittanceActionable: false
+      });
+    }
+
+    // Fallback: keep earned rows visible if payout rows are unavailable for a local work.
+    for (const row of rows) {
+      const contentId = String(row.contentId || "").trim();
+      if (!contentId) continue;
+      const hasDetailedRow = out.some((r) => String(r.contentId || "").trim() === contentId && !String(r.id || "").startsWith("remote:"));
+      if (hasDetailedRow) continue;
+      const earned = Math.max(0, Number(row.settledSats || 0) || 0);
+      if (earned <= 0) continue;
+      const sourceType: EarningsSourceType = row.isDerivative ? "derivative_creator_earning" : "catalog_earning";
+      const sourceLabel = EARNINGS_SOURCE_LABEL[sourceType];
+      const roleLabel = localRoleByContent[contentId] || remoteRoleByContent[contentId] || "Participant";
+      const shareLabel = formatShareLabel(row.allocationSats, row.totalSalesSats);
+      const earnedTs = localRecognizedAtByContent.get(contentId) || "";
+      const dateSortTs = earnedTs ? new Date(earnedTs).getTime() : 0;
+      const dateLabel = dateSortTs > 0 ? new Date(dateSortTs).toLocaleDateString() : "—";
+      out.push({
+        id: `${contentId}:earned-fallback`,
+        contentId,
+        soldWorkTitle: String(row.title || "Untitled").trim() || "Untitled",
+        sourceWorkTitle: null,
+        sourceType,
+        contentTitle: String(row.title || "Untitled").trim() || "Untitled",
+        sourceLabel,
+        roleLabel,
+        originLabel: "Local",
+        shareLabel,
+        status: "Earned",
+        grossShareSats: earned,
+        feeWithheldSats: 0,
+        netPayableSats: 0,
+        netPaidSats: 0,
+        amountSats: earned,
+        dateLabel,
+        dateSortTs,
+        earnedTsIso: earnedTs || null,
+        paidTsIso: null,
+        remittanceDetail: "Payout rows unavailable; showing earned fallback.",
+        remittanceActionable: false
       });
     }
 
@@ -484,7 +591,7 @@ export default function FinanceRoyaltiesPage({
       if (statusDelta !== 0) return statusDelta;
       return b.amountSats - a.amountSats;
     });
-  }, [rows, remoteRows, localRoleByContent, remoteRoleByContent, localRecognizedAtByContent, payoutItems]);
+  }, [rows, remoteRows, upstreamRows, localRoleByContent, remoteRoleByContent, localRecognizedAtByContent, payoutItems]);
 
   const timeScopedEarningsLedgerRows = useMemo(() => {
     return earningsLedgerRows.filter((row) => {
@@ -516,7 +623,7 @@ export default function FinanceRoyaltiesPage({
         if (!title.includes(q)) return false;
       }
       if (statusFilter !== "all" && row.status !== statusFilter) return false;
-      if (sourceFilter !== "all" && row.sourceLabel !== sourceFilter) return false;
+      if (sourceFilter !== "all" && row.sourceType !== sourceFilter) return false;
       if (roleFilter !== "all" && row.roleLabel !== roleFilter) return false;
       return true;
     });
@@ -530,7 +637,7 @@ export default function FinanceRoyaltiesPage({
 
   const availableSources = useMemo(() => {
     const values = new Set<string>();
-    for (const row of earningsLedgerRows) values.add(row.sourceLabel);
+    for (const row of earningsLedgerRows) values.add(row.sourceType);
     return Array.from(values).sort((a, b) => a.localeCompare(b));
   }, [earningsLedgerRows]);
 
@@ -564,6 +671,9 @@ export default function FinanceRoyaltiesPage({
         </div>
         <div className="text-xs text-neutral-500 mt-2">Sales lives in Sales. This page is your participant/share statement.</div>
         <div className="text-xs text-neutral-500 mt-1">Model: Gross earned (pre-fee) → Fees → Net paid + Net payable.</div>
+        <div className="text-xs text-neutral-500 mt-1">
+          Derivative creator earnings and upstream royalties are earnings source types here. Payouts remain execution truth.
+        </div>
         <div className="mt-3">
           <TimeScopeControls
             basis={timeBasis}
@@ -661,7 +771,7 @@ export default function FinanceRoyaltiesPage({
               <option value="all">All</option>
               {availableSources.map((source) => (
                 <option key={source} value={source}>
-                  {source}
+                  {EARNINGS_SOURCE_LABEL[source as EarningsSourceType] || source}
                 </option>
               ))}
             </select>
@@ -715,19 +825,23 @@ export default function FinanceRoyaltiesPage({
             <thead className="text-neutral-400">
               <tr>
                 <th className="text-left font-medium py-2">Date</th>
-                <th className="text-left font-medium py-2">Content</th>
-                <th className="text-left font-medium py-2">Source</th>
+                <th className="text-left font-medium py-2">Sold work</th>
+                <th className="text-left font-medium py-2">Source work</th>
+                <th className="text-left font-medium py-2">Source type</th>
                 <th className="text-left font-medium py-2">Role</th>
-                <th className="text-left font-medium py-2">Origin</th>
                 <th className="text-left font-medium py-2">Share</th>
+                <th className="text-left font-medium py-2">Gross</th>
+                <th className="text-left font-medium py-2">Commerce fee</th>
+                <th className="text-left font-medium py-2">Net payable</th>
+                <th className="text-left font-medium py-2">Net paid</th>
                 <th className="text-left font-medium py-2">Status</th>
-                <th className="text-left font-medium py-2">Amount</th>
+                <th className="text-left font-medium py-2">Net amount</th>
               </tr>
             </thead>
             <tbody>
               {visibleEarningsLedgerRows.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-3 text-neutral-500">
+                  <td colSpan={12} className="py-3 text-neutral-500">
                     {ledgerContentFilter
                       ? "No earnings rows found for this work."
                       : sourceFilter !== "all" || roleFilter !== "all" || statusFilter !== "all" || contentQuery.trim().length > 0
@@ -745,13 +859,17 @@ export default function FinanceRoyaltiesPage({
                         onClick={() => setLedgerContentFilter({ contentId: row.contentId, title: row.contentTitle })}
                         className="text-neutral-200 hover:text-white underline decoration-neutral-700 underline-offset-2"
                       >
-                        {row.contentTitle}
+                        {row.soldWorkTitle}
                       </button>
                     </td>
+                    <td className="py-2 text-neutral-300">{row.sourceWorkTitle || "—"}</td>
                     <td className="py-2 text-neutral-300">{row.sourceLabel}</td>
                     <td className="py-2 text-neutral-300">{row.roleLabel}</td>
-                    <td className="py-2 text-neutral-300">{row.originLabel}</td>
                     <td className="py-2 text-neutral-300">{row.shareLabel}</td>
+                    <td className="py-2 text-neutral-200">{formatSats(String(row.grossShareSats))}</td>
+                    <td className="py-2 text-neutral-300">{formatSats(String(row.feeWithheldSats))}</td>
+                    <td className="py-2 text-amber-300">{formatSats(String(row.netPayableSats))}</td>
+                    <td className="py-2 text-emerald-300">{formatSats(String(row.netPaidSats))}</td>
                     <td className="py-2">
                       <span className={["inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]", statusTone(row.status)].join(" ")}>
                         {row.status}
@@ -766,7 +884,7 @@ export default function FinanceRoyaltiesPage({
                         </button>
                       ) : null}
                     </td>
-                    <td className="py-2">{formatSats(String(row.amountSats))}</td>
+                    <td className="py-2 text-neutral-100">{formatSats(String(row.amountSats))}</td>
                   </tr>
                 ))
               )}
