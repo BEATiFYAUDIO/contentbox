@@ -128,42 +128,11 @@ export default function SplitParticipationsPage(props: {
     if (!id) return;
     window.location.href = `/content/${encodeURIComponent(id)}/splits`;
   };
-  const openSplitSummary = (
-    contentId?: string | null,
-    inviteUrl?: string | null,
-    remoteOrigin?: string | null
-  ) => {
+  const openSplitSummary = (contentId?: string | null) => {
     const id = String(contentId || "").trim();
     if (id) {
       window.location.href = `/royalties/${encodeURIComponent(id)}`;
       return;
-    }
-
-    const origin = String(remoteOrigin || "").trim();
-    if (origin) {
-      try {
-        const parsed = new URL(origin);
-        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-          const remoteRoyaltiesUrl = `${parsed.origin.replace(/\/+$/, "")}/royalties`;
-          window.open(remoteRoyaltiesUrl, "_blank", "noopener,noreferrer");
-          return;
-        }
-      } catch {
-        // Fall back to invite URL when remote origin is malformed.
-      }
-    }
-
-    const remoteInvite = String(inviteUrl || "").trim();
-    if (remoteInvite) {
-      try {
-        const parsed = new URL(remoteInvite);
-        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-          window.open(remoteInvite, "_blank", "noopener,noreferrer");
-          return;
-        }
-      } catch {
-        // Fall back to local routes when invite URL is malformed.
-      }
     }
     window.location.href = "/splits";
   };
@@ -316,8 +285,7 @@ export default function SplitParticipationsPage(props: {
   const openEarningsView = (contentId?: string | null, title?: string | null) => {
     const rawId = String(contentId || "").trim();
     const rawTitle = String(title || "").trim();
-    const titleKey = rawTitle.toLowerCase();
-    const fallbackId = rawTitle ? String(localCanonicalIdByLowerTitle.get(titleKey) || "").trim() : "";
+    const fallbackId = rawTitle ? String(localCanonicalIdByLowerTitle.get(rawTitle.toLowerCase()) || "").trim() : "";
     const id = localKnownIds.has(rawId) ? rawId : fallbackId || rawId;
     const canonicalTitle = (id && canonicalById.get(id)) || rawTitle;
     const params = new URLSearchParams();
@@ -666,9 +634,9 @@ export default function SplitParticipationsPage(props: {
                   >
                     View earnings
                   </button>
-                  {r.contentId || r.inviteUrl ? (
+                  {r.contentId ? (
                     <button
-                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl, r.remoteOrigin)}
+                      onClick={() => openSplitSummary(r.contentId)}
                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                     >
                       Open
