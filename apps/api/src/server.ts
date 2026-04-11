@@ -24905,6 +24905,9 @@ async function handleBuyPage(req: any, reply: any) {
     include: { owner: { select: { displayName: true, email: true } } }
   });
   if (!content) return notFound(reply, "Not found");
+  // Server-side audience logging so Basic posture still records views even if
+  // client-side interaction fetch is skipped/interrupted.
+  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const sellerDisplayName = content.owner?.displayName || content.owner?.email || null;
   let sellerLightningAddress: string | null = null;
   try {
@@ -25100,7 +25103,18 @@ async function handleBuyPage(req: any, reply: any) {
     if (!mounts.length) return;
     const data = attributionData;
     const primary = data && data.primaryCreator ? data.primaryCreator : null;
-    if (!primary) return;
+    if (!primary) {
+      const fallbackName = esc(sellerDisplayName || "Creator");
+      mounts.forEach((mount) => {
+        mount.innerHTML = "<div class=\\"step\\" style=\\"margin-top:10px;\\">" +
+          "<div style=\\"font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:#a1a1aa;\\">Attribution</div>" +
+          "<div style=\\"font-weight:700;margin-top:6px;\\">Creator: " + fallbackName + "</div>" +
+          "<div class=\\"muted\\" style=\\"margin-top:8px;\\">Proceeds follow this creator attribution.</div>" +
+        "</div>";
+        mount.style.display = "";
+      });
+      return;
+    }
     const creatorLabel = resolvePublicPersonLabel(primary.displayName || primary.name || "", primary.handle || "", "Creator");
     const name = esc(creatorLabel);
     const handleRaw = String(primary.handle || "").trim();
@@ -26005,6 +26019,7 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   if (productTier === "basic") {
+    logAudienceView();
     fetchJson("/buy/content/" + contentId + "/offer")
       .then((offer) => renderBasicOffer(offer))
       .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
