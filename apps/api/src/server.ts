@@ -12694,6 +12694,53 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
   }
 }
 
+async function fetchRemoteInviteAccountingFastForProfile(
+  remoteOrigin: string,
+  token: string,
+  timeoutMs = 250
+): Promise<{
+  earnedSatsToDate: string;
+  settlementLineCount: number;
+  payoutRows: number;
+  payoutSummary: Record<string, number>;
+  payoutState: "none" | "pending" | "ready" | "forwarding" | "paid" | "failed" | "blocked" | "mixed";
+  destinationState: "unknown" | "resolved" | "unresolved";
+  clearanceInbox: any[];
+} | null> {
+  const origin = normalizeRemoteOrigin(remoteOrigin);
+  const normalizedToken = asString(token || "").trim();
+  if (!origin || !normalizedToken) return null;
+  const cacheKey = `${origin}::${normalizedToken}`;
+  const cached = remoteInviteAccountingCache.get(cacheKey);
+  const now = Date.now();
+
+  // Fast path: use fresh cache immediately.
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  // Stale-while-revalidate path: return stale cache and refresh in background.
+  if (cached) {
+    void fetchRemoteInviteAccounting(origin, normalizedToken).catch(() => {});
+    return cached.value;
+  }
+
+  // If a fetch is already running, wait briefly; otherwise trigger one in background.
+  const inflight = remoteInviteAccountingInflight.get(cacheKey);
+  if (inflight) {
+    try {
+      const value = await Promise.race([
+        inflight,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), Math.max(50, timeoutMs)))
+      ]);
+      return value ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  void fetchRemoteInviteAccounting(origin, normalizedToken).catch(() => {});
+  return null;
+}
+
 async function fetchRemoteInviteSnapshot(remoteOrigin: string, token: string): Promise<any | null> {
   const cacheKey = `${normalizeRemoteOrigin(remoteOrigin)}::${String(token || "").trim()}`;
   const now = Date.now();
@@ -23631,7 +23678,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         );
         const hasUnscopedHighlight = selectedRecords.some((entry) => !asString(entry.contentId || "").trim());
         const token = extractInviteTokenFromUrl(row.inviteUrl || null);
-        const accounting = token ? await fetchRemoteInviteAccounting(row.remoteOrigin, token) : null;
+        // Public profile should render fast; remote accounting enrichment is best-effort.
+        const accounting = token ? await fetchRemoteInviteAccountingFastForProfile(row.remoteOrigin, token) : null;
         const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
 
         if (selectedContentIds.length > 0) {
