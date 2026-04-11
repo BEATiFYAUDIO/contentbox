@@ -8692,6 +8692,31 @@ function toEpochMs(value: string | null | undefined): number | null {
   return Number.isFinite(t) ? t : null;
 }
 
+function runWindowsCloudflaredProcessQuery(args: string[]): string {
+  const candidates = [
+    "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+    "powershell.exe",
+    "powershell"
+  ];
+  for (const cmd of candidates) {
+    try {
+      const ps = spawnSync(cmd, args, { encoding: "utf8" });
+      if (!ps.error && String(ps.stdout || "").trim()) {
+        return String(ps.stdout || "");
+      }
+    } catch {}
+  }
+  try {
+    const wmic = spawnSync(
+      "wmic",
+      ["process", "where", "name='cloudflared.exe'", "get", "CommandLine", "/format:list"],
+      { encoding: "utf8" }
+    );
+    if (!wmic.error) return String(wmic.stdout || "");
+  } catch {}
+  return "";
+}
+
 function detectTunnelControlMode() {
   const serviceScriptPath = "/etc/init.d/cloudflared";
   const localConfigPath =
@@ -8715,16 +8740,11 @@ function detectTunnelControlMode() {
   let activeAppManagedTokenProcess = false;
   if (process.platform === "win32") {
     try {
-      const ps = spawnSync(
-        "powershell",
-        [
-          "-NoProfile",
-          "-Command",
-          "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Select-Object -ExpandProperty CommandLine"
-        ],
-        { encoding: "utf8" }
-      );
-      const output = String(ps?.stdout || "");
+      const output = runWindowsCloudflaredProcessQuery([
+        "-NoProfile",
+        "-Command",
+        "Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Select-Object -ExpandProperty CommandLine"
+      ]);
       for (const line of output.split("\n")) {
         const lower = line.toLowerCase();
         if (!lower.includes("cloudflared")) continue;
@@ -8833,7 +8853,16 @@ function reconcileNamedTunnelOwnership(force = false) {
         "};",
         "foreach ($p in $procs) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }"
       ].join(" ");
-      spawnSync("powershell", ["-NoProfile", "-Command", cmd], { stdio: "ignore" });
+      for (const shell of [
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "powershell.exe",
+        "powershell"
+      ]) {
+        try {
+          const res = spawnSync(shell, ["-NoProfile", "-Command", cmd], { stdio: "ignore" });
+          if (!res.error) break;
+        } catch {}
+      }
     } catch {}
   }
 }
