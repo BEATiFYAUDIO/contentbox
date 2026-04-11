@@ -252,7 +252,6 @@ export default function SplitParticipationsPage(props: {
     if (parentId && parentTitle && !canonicalById.has(parentId)) canonicalById.set(parentId, parentTitle);
     if (childId && childTitle && !canonicalById.has(childId)) canonicalById.set(childId, childTitle);
   }
-
   const canonicalIdByLowerTitle = new Map<string, string>();
   for (const [id, title] of canonicalById.entries()) {
     const key = title.toLowerCase();
@@ -262,11 +261,8 @@ export default function SplitParticipationsPage(props: {
   const openEarningsView = (contentId?: string | null, title?: string | null) => {
     const rawId = String(contentId || "").trim();
     const rawTitle = String(title || "").trim();
-    const titleKey = rawTitle.toLowerCase();
-    let id = rawId;
-    if (titleKey && canonicalIdByLowerTitle.has(titleKey)) {
-      id = String(canonicalIdByLowerTitle.get(titleKey) || "").trim() || id;
-    }
+    const fallbackId = rawTitle ? String(canonicalIdByLowerTitle.get(rawTitle.toLowerCase()) || "").trim() : "";
+    const id = rawId || fallbackId;
     const canonicalTitle = (id && canonicalById.get(id)) || rawTitle;
     const params = new URLSearchParams();
     if (id) params.set("contentId", id);

@@ -293,6 +293,25 @@ export default function EarningsV2Page({
   }, [refreshSignal]);
 
   useEffect(() => {
+    // Keep Royalties strict scope and scopedContentId consistent.
+    // If strict mode is active but scoped id is missing, rehydrate from URL.
+    if (!strictRoyaltiesScope || scopedContentId) return;
+    try {
+      const params = new URLSearchParams(window.location.search || "");
+      const contentId = String(params.get("contentId") || "").trim();
+      const title = String(params.get("title") || "").trim();
+      if (contentId) {
+        setScopedContentId(contentId);
+        if (!scopeTitle && title) setScopeTitle(title);
+        return;
+      }
+    } catch {}
+    // If no strict content id exists, drop strict hint to avoid misleading scoped UI.
+    setStrictRoyaltiesScope(false);
+    setScopeHint(null);
+  }, [strictRoyaltiesScope, scopedContentId, scopeTitle]);
+
+  useEffect(() => {
     let active = true;
     (async () => {
       try {
@@ -682,10 +701,17 @@ export default function EarningsV2Page({
 
   useEffect(() => {
     if (!filteredByContentRows.length) {
-      setScopedContentId(null);
+      // In strict Royalties scope, never clear or remap to another content row while data is loading.
+      // This prevents accidental fallback to the first unrelated row (e.g., C64).
+      if (!strictRoyaltiesScope) setScopedContentId(null);
       return;
     }
-    if (strictRoyaltiesScope && scopedContentId) return;
+    if (strictRoyaltiesScope) {
+      // Strict scope must remain the explicitly requested work only.
+      // Do not auto-pick a fallback row in Royalties-driven mode.
+      if (scopedContentId && filteredByContentRows.some((row) => row.contentId === scopedContentId)) return;
+      return;
+    }
     if (!scopedContentId || !filteredByContentRows.some((row) => row.contentId === scopedContentId)) {
       setScopedContentId(filteredByContentRows[0].contentId);
     }
@@ -793,6 +819,13 @@ export default function EarningsV2Page({
     );
   }
 
+  const resolvedScopeTitle =
+    (strictWorkScopeActive ? scopedRow?.contentTitle : null) ||
+    scopeTitle ||
+    scopedRow?.contentTitle ||
+    scopedContentId ||
+    "Unknown";
+
   return (
     <div className="space-y-4">
       {scopeHint ? (
@@ -800,7 +833,7 @@ export default function EarningsV2Page({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="space-y-0.5">
               <div className="font-medium">{scopeHint}</div>
-              <div className="text-cyan-100/90">Work: {scopeTitle || scopedRow?.contentTitle || scopedContentId || "Unknown"}</div>
+              <div className="text-cyan-100/90">Work: {resolvedScopeTitle}</div>
               <div className="text-cyan-100/90">All values on this page are scoped to this work.</div>
             </div>
             <button
@@ -828,10 +861,10 @@ export default function EarningsV2Page({
           </div>
         </div>
       ) : null}
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
+        <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="text-lg font-semibold">
           {scopedWorkActive
-            ? `Earnings for ${scopeTitle || scopedRow?.contentTitle || "Selected work"}`
+            ? `Earnings for ${resolvedScopeTitle}`
             : "Work Intelligence"}
         </div>
         {scopedWorkActive ? (
