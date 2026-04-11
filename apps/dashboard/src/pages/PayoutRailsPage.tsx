@@ -483,8 +483,8 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
             helperText={
               timeBasis === "paid"
-                ? "Payouts are scoped by paid/remitted date where available."
-                : "Payouts are scoped by payout row activity time."
+                ? "View uses paid/remitted timestamps in the selected period."
+                : "View uses payout-row activity timestamps in the selected period."
             }
           />
         </div>
@@ -497,14 +497,17 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Paid</div>
             <div className="mt-1 text-lg font-semibold">{formatSats(scopedPayoutTotals.paid)}</div>
+            <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: paid/remitted-time · Truth: payout rows (paid)</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Net payable</div>
             <div className="mt-1 text-lg font-semibold">{formatSats(scopedPayoutTotals.payable)}</div>
+            <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: payout-row activity/paid view · Truth: payout rows (pending/ready/forwarding)</div>
           </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Failed</div>
             <div className="mt-1 text-lg font-semibold">{formatSats(scopedPayoutTotals.failed)}</div>
+            <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: payout-row activity/paid view · Truth: payout rows (failed/blocked)</div>
           </div>
         </div>
         <div className="mt-3 overflow-x-auto">

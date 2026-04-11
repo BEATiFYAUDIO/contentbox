@@ -674,7 +674,7 @@ export default function FinanceRoyaltiesPage({
     <div className="space-y-4">
       <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
         <div className="text-base font-semibold">Earnings</div>
-        <div className="text-sm text-neutral-400 mt-1">Earnings by source, role/share, and payout status.</div>
+        <div className="text-sm text-neutral-400 mt-1">Entitlement and execution by source, role/share, and payout status.</div>
         <div className="mt-3">
           <TimeScopeControls
             basis={timeBasis}
@@ -685,8 +685,8 @@ export default function FinanceRoyaltiesPage({
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
             helperText={
               timeBasis === "paid"
-                ? "Earnings are scoped by paid/remitted timestamps where available, with earned-time fallback."
-                : "Earnings are scoped by earned time using available row timestamps."
+                ? "View uses paid/remitted timestamps in the selected period; rows without remitted timestamps fall back to earned-time."
+                : "View uses earned timestamps in the selected period."
             }
           />
         </div>
@@ -696,21 +696,25 @@ export default function FinanceRoyaltiesPage({
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Gross earned</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.grossEarned))}</div>
+          <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: {timeBasis === "paid" ? "paid/remitted-time" : "earned-time"} · Layer: gross entitlement</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
-          <div className="text-xs uppercase tracking-wide text-neutral-500">Fees</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-500">Fees withheld</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.fees))}</div>
+          <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: {timeBasis === "paid" ? "paid/remitted-time fallback" : "earned-time"} · Layer: fee deductions</div>
           {!ledgerContentFilter?.contentId && timePeriod === "all" && scopedTopline.fees === 0 && feeWithheld > 0 ? (
-            <div className="mt-1 text-[11px] text-neutral-500">Detailed fee rows unavailable for this scope; showing 0 from row detail.</div>
+            <div className="mt-1 text-[11px] text-neutral-500">Fee detail rows are unavailable in this filtered view; card remains row-truth scoped.</div>
           ) : null}
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net paid</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.netPaid))}</div>
+          <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: paid/remitted-time · Truth: payout rows (paid)</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net payable</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(String(scopedTopline.netPayable))}</div>
+          <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: paid/remitted-time · Truth: payout rows (pending/ready/forwarding)</div>
         </div>
       </section>
 

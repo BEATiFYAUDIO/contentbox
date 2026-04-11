@@ -941,10 +941,10 @@ export default function FinanceOverviewPage({
         {showNodeWalletContext && lightningAdminError ? <div className="mt-1 text-xs text-amber-300">{lightningAdminError}</div> : null}
         <div className="mt-2 text-xs text-neutral-500">Top-level snapshot for accounting review and reconciliation prep.</div>
         <div className="mt-1 text-xs text-neutral-500">
-          Scope model: Sales uses sale-recognized time, Earnings uses earned/accrual time, and Payout execution uses paid/remitted time.
+          Scope model: Sales cards use sale-time, Earnings cards use earned-time, and payout execution cards use paid/remitted-time.
         </div>
         <div className="mt-1 text-xs text-neutral-500">
-          Sales = gross buyer payments. Gross Earned = pre-fee participation accrual where fee fields exist. Net Paid/Net Payable = post-fee payout truth.
+          Sales = buyer-payment gross. Gross Earned = pre-fee entitlement accrual. Net Paid/Net Payable = post-fee payout-row execution truth.
         </div>
         <div className="mt-3">
           <TimeScopeControls
@@ -987,29 +987,29 @@ export default function FinanceOverviewPage({
             <div className="text-xs uppercase tracking-wide text-neutral-400">Sales</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedSalesSats))}</div>
             <div className="mt-1 text-xs text-neutral-500">
-              Your direct sales (seller of record) · paid invoices only
+              Time: selected period · Basis: sale-time · Truth: payment intents
               {overviewTimePeriod !== "all" ? ` · scoped ${overviewTimePeriod}` : ""}
             </div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Gross earned</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(grossEarned))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Your total earnings across all works (including collaborations), before fees.</div>
+            <div className="mt-1 text-xs text-neutral-500">Time: selected period · Basis: earned-time · Layer: gross entitlement</div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Fees withheld</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedEarnings.feesWithheld))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Fee impact recognized from existing settlement/payout fee fields.</div>
+            <div className="mt-1 text-xs text-neutral-500">Time: selected period · Basis: earned-time · Layer: fee deductions</div>
           </div>
           <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
             <div className="text-xs uppercase tracking-wide text-neutral-400">Net paid</div>
             <div className="mt-2 text-2xl font-semibold">{formatSats(String(scopedEarnings.netPaid))}</div>
-            <div className="mt-1 text-xs text-neutral-500">Post-fee amount marked paid/remitted in payout tracking.</div>
+            <div className="mt-1 text-xs text-neutral-500">Time: selected period · Basis: paid/remitted-time · Truth: payout rows (paid)</div>
           </div>
           <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-4">
             <div className="text-xs uppercase tracking-wide text-amber-200/80">Net payable</div>
             <div className="mt-2 text-2xl font-semibold text-amber-100">{formatSats(String(scopedEarnings.netPayable))}</div>
-            <div className="mt-1 text-xs text-amber-200/80">Unresolved post-fee payout backlog (pending/ready/forwarding only).</div>
+            <div className="mt-1 text-xs text-amber-200/80">Time: selected period · Basis: paid/remitted-time · Truth: payout rows (pending/ready/forwarding)</div>
           </div>
         </div>
         <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-950/30 p-3 text-xs text-neutral-400">
@@ -1024,7 +1024,7 @@ export default function FinanceOverviewPage({
           </div>
           {earningsReconDelta > 0 ? (
             <div className="mt-1 text-amber-300">
-              Reconciliation delta in this scoped view: {formatSats(String(earningsReconDelta))}.
+              Diagnostic reconciliation delta for this scoped view: {formatSats(String(earningsReconDelta))}.
             </div>
           ) : null}
         </div>
@@ -1038,7 +1038,7 @@ export default function FinanceOverviewPage({
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">Total sales</div>
           <div className="mt-2 text-2xl font-semibold">{formatSats(data?.totals?.salesSats || "0")}</div>
-          <div className="mt-1 text-xs text-neutral-500">Seller of record · paid invoices only</div>
+          <div className="mt-1 text-xs text-neutral-500">Time: all-time · Basis: sale-time · Truth: seller-of-record payment intents</div>
         </div>
         <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-400">
@@ -1052,7 +1052,7 @@ export default function FinanceOverviewPage({
             {formatSats(String(scopedSalesSats))}
           </div>
           <div className="mt-1 text-xs text-neutral-500">
-            Seller invoices: {data?.totals?.invoicesTotal ?? 0} · Settled purchases: {data?.totals?.paymentsLast30d ?? 0}
+            Time: {overviewTimePeriod === "all" ? "all-time" : overviewTimePeriod} · Basis: {overviewTimeBasis === "paid" ? "paid/remitted-time" : overviewTimeBasis === "earned" ? "earned-time" : "sale-time"}
           </div>
         </div>
         </div>

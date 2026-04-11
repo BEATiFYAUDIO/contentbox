@@ -1519,8 +1519,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
               periodOptions={["1d", "7d", "30d", "all"]}
               helperText={
                 timeBasis === "sale"
-                  ? "Scoped by provider-side sale/payment recognition timestamps."
-                  : "Scoped by payout remittance timestamps where available; falls back to last update timestamp."
+                  ? "Scoped by provider-side sale/payment recognition timestamps in the selected period."
+                  : "Scoped by payout remittance timestamps in the selected period (falls back to last update timestamp)."
               }
             />
           </div>
@@ -1613,7 +1613,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             Mixed-status intents: <span className="ml-1 text-neutral-200">{riskSummary.mixedIntentCount.toLocaleString()}</span>
           </span>
           <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5">
-            Provider/local mismatch: <span className="ml-1 text-neutral-200">{sats(riskSummary.mismatch.toString())} sats</span>
+            Diagnostic intake-vs-payout delta: <span className="ml-1 text-neutral-200">{sats(riskSummary.mismatch.toString())} sats</span>
           </span>
         </div>
       </div>
@@ -2422,7 +2422,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                               : row.status === "paid"
                                 ? "paid"
                                 : row.status === "outside_scope"
-                                  ? "payout history outside scope"
+                                  ? `no payout rows in selected period (${timePeriod === "all" ? "all time" : timePeriod}); payout rows exist outside period`
                                   : "no payouts yet"}
                         </span>
                       </td>

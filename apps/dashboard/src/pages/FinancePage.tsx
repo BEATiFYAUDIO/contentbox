@@ -123,7 +123,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
         <div className="flex items-center justify-between gap-3">
           <div>
             <div className="text-lg font-semibold">Revenue</div>
-            <div className="text-xs text-neutral-500 mt-1">Where relationships go, money flows.</div>
+            <div className="text-xs text-neutral-500 mt-1">Sales (payment truth), earnings (entitlement truth), and payouts (execution truth).</div>
           </div>
           <button
             onClick={() => {

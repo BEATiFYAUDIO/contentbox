@@ -403,10 +403,10 @@ export default function SalesPage({
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
             helperText={
               timeBasis === "paid"
-                ? "Sales are scoped by paid/remitted date where available, with recognized-time fallback."
+                ? "View uses paid/remitted timestamps in the selected period, with sale-recognized fallback when remitted time is missing."
                 : timeBasis === "earned"
-                  ? "Sales are scoped by earned time using recognized buyer-payment timestamps."
-                  : "Sales are scoped by buyer payment date (recognized sale time)."
+                  ? "View uses earned/recognized timestamps in the selected period."
+                  : "View uses sale-recognized buyer payment timestamps in the selected period."
             }
           />
         </div>
@@ -473,27 +473,31 @@ export default function SalesPage({
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Buyer Gross</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.gross)} sats</div>
+          <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: {timeBasis === "paid" ? "paid/remitted-time fallback" : timeBasis === "earned" ? "earned-time" : "sale-time"} · Layer: gross sales</div>
         </div>
         {hasInvoiceCommerce ? (
           <>
             <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
               <div className="text-xs uppercase tracking-wide text-neutral-500">Invoicing Fee</div>
               <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerInvoicingFee)} sats</div>
+              <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: sale settlement rows · Layer: commerce fee</div>
             </div>
             <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
               <div className="text-xs uppercase tracking-wide text-neutral-500">Durable Hosting Fee</div>
               <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerDurableHostingFee)} sats</div>
+              <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: sale settlement rows · Layer: commerce fee</div>
             </div>
             <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
               <div className="text-xs uppercase tracking-wide text-neutral-500">Total Fees</div>
               <div className="mt-2 text-xl font-semibold">{formatSats(totals.providerFee)} sats</div>
+              <div className="mt-1 text-[11px] text-neutral-500">Time: selected period · Basis: sale settlement rows · Layer: total commerce fees</div>
             </div>
           </>
         ) : null}
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-4">
           <div className="text-xs uppercase tracking-wide text-neutral-500">Net After Fees</div>
           <div className="mt-2 text-xl font-semibold">{formatSats(totals.creatorNet)} sats</div>
-          <div className="text-xs text-neutral-500 mt-1">Distributable net after settlement fees.</div>
+          <div className="text-xs text-neutral-500 mt-1">Time: selected period · Basis: sale settlement rows · Layer: net entitlement after fees.</div>
         </div>
       </div>
 
