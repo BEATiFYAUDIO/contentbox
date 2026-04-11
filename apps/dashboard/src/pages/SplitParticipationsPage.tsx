@@ -284,17 +284,12 @@ export default function SplitParticipationsPage(props: {
     if (childId && childTitle && !canonicalById.has(childId)) canonicalById.set(childId, childTitle);
   }
   const localCanonicalIdByLowerTitle = new Map<string, string>();
-  const localDuplicateTitleKeys = new Set<string>();
   const rememberLocalTitle = (idRaw?: string | null, titleRaw?: string | null) => {
     const id = String(idRaw || "").trim();
     const title = String(titleRaw || "").trim();
     if (!id || !title) return;
     const key = title.toLowerCase();
-    if (localCanonicalIdByLowerTitle.has(key) && localCanonicalIdByLowerTitle.get(key) !== id) {
-      localDuplicateTitleKeys.add(key);
-      return;
-    }
-    localCanonicalIdByLowerTitle.set(key, id);
+    if (!localCanonicalIdByLowerTitle.has(key)) localCanonicalIdByLowerTitle.set(key, id);
   };
   for (const row of works) rememberLocalTitle(row.contentId, row.title);
   for (const row of participations) rememberLocalTitle(row.contentId, row.contentTitle);
@@ -322,10 +317,7 @@ export default function SplitParticipationsPage(props: {
     const rawId = String(contentId || "").trim();
     const rawTitle = String(title || "").trim();
     const titleKey = rawTitle.toLowerCase();
-    const fallbackId =
-      rawTitle && !localDuplicateTitleKeys.has(titleKey)
-        ? String(localCanonicalIdByLowerTitle.get(titleKey) || "").trim()
-        : "";
+    const fallbackId = rawTitle ? String(localCanonicalIdByLowerTitle.get(titleKey) || "").trim() : "";
     const id = localKnownIds.has(rawId) ? rawId : fallbackId || rawId;
     const canonicalTitle = (id && canonicalById.get(id)) || rawTitle;
     const params = new URLSearchParams();
