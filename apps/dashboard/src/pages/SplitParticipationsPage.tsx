@@ -128,11 +128,13 @@ export default function SplitParticipationsPage(props: {
     if (!id) return;
     window.location.href = `/content/${encodeURIComponent(id)}/splits`;
   };
-  const openSplitSummary = (
-    contentId?: string | null,
-    inviteUrl?: string | null,
-    remoteOrigin?: string | null
-  ) => {
+  const openSplitSummary = (contentId?: string | null, inviteUrl?: string | null) => {
+    const id = String(contentId || "").trim();
+    if (id) {
+      window.location.href = `/royalties/${encodeURIComponent(id)}`;
+      return;
+    }
+
     const remoteInvite = String(inviteUrl || "").trim();
     if (remoteInvite) {
       try {
@@ -144,24 +146,6 @@ export default function SplitParticipationsPage(props: {
       } catch {
         // Fall back to local routes when invite URL is malformed.
       }
-    }
-    const id = String(contentId || "").trim();
-    const origin = String(remoteOrigin || "").trim();
-    if (id && origin) {
-      try {
-        const parsed = new URL(origin);
-        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
-          const remoteRoyaltiesUrl = `${parsed.origin.replace(/\/+$/, "")}/royalties/${encodeURIComponent(id)}`;
-          window.open(remoteRoyaltiesUrl, "_blank", "noopener,noreferrer");
-          return;
-        }
-      } catch {
-        // Fall back to local routes when remote origin is malformed.
-      }
-    }
-    if (id) {
-      window.location.href = `/royalties/${encodeURIComponent(id)}`;
-      return;
     }
     window.location.href = "/splits";
   };
@@ -288,10 +272,8 @@ export default function SplitParticipationsPage(props: {
   }
 
   const openEarningsView = (contentId?: string | null, title?: string | null) => {
-    const rawId = String(contentId || "").trim();
+    const id = String(contentId || "").trim();
     const rawTitle = String(title || "").trim();
-    const fallbackId = rawTitle ? String(canonicalIdByLowerTitle.get(rawTitle.toLowerCase()) || "").trim() : "";
-    const id = rawId || fallbackId;
     const canonicalTitle = (id && canonicalById.get(id)) || rawTitle;
     const params = new URLSearchParams();
     if (id) params.set("contentId", id);
@@ -641,7 +623,7 @@ export default function SplitParticipationsPage(props: {
                   </button>
                   {r.contentId || r.inviteUrl ? (
                     <button
-                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl, r.remoteOrigin)}
+                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl)}
                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                     >
                       Open
