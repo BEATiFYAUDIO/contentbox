@@ -128,11 +128,29 @@ export default function SplitParticipationsPage(props: {
     if (!id) return;
     window.location.href = `/content/${encodeURIComponent(id)}/splits`;
   };
-  const openSplitSummary = (contentId?: string | null, inviteUrl?: string | null) => {
+  const openSplitSummary = (
+    contentId?: string | null,
+    inviteUrl?: string | null,
+    remoteOrigin?: string | null
+  ) => {
     const id = String(contentId || "").trim();
     if (id) {
       window.location.href = `/royalties/${encodeURIComponent(id)}`;
       return;
+    }
+
+    const origin = String(remoteOrigin || "").trim();
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+          const remoteRoyaltiesUrl = `${parsed.origin.replace(/\/+$/, "")}/royalties`;
+          window.open(remoteRoyaltiesUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
+      } catch {
+        // Fall back to invite URL when remote origin is malformed.
+      }
     }
 
     const remoteInvite = String(inviteUrl || "").trim();
@@ -265,15 +283,50 @@ export default function SplitParticipationsPage(props: {
     if (parentId && parentTitle && !canonicalById.has(parentId)) canonicalById.set(parentId, parentTitle);
     if (childId && childTitle && !canonicalById.has(childId)) canonicalById.set(childId, childTitle);
   }
-  const canonicalIdByLowerTitle = new Map<string, string>();
-  for (const [id, title] of canonicalById.entries()) {
+  const localCanonicalIdByLowerTitle = new Map<string, string>();
+  const localDuplicateTitleKeys = new Set<string>();
+  const rememberLocalTitle = (idRaw?: string | null, titleRaw?: string | null) => {
+    const id = String(idRaw || "").trim();
+    const title = String(titleRaw || "").trim();
+    if (!id || !title) return;
     const key = title.toLowerCase();
-    if (!canonicalIdByLowerTitle.has(key)) canonicalIdByLowerTitle.set(key, id);
+    if (localCanonicalIdByLowerTitle.has(key) && localCanonicalIdByLowerTitle.get(key) !== id) {
+      localDuplicateTitleKeys.add(key);
+      return;
+    }
+    localCanonicalIdByLowerTitle.set(key, id);
+  };
+  for (const row of works) rememberLocalTitle(row.contentId, row.title);
+  for (const row of participations) rememberLocalTitle(row.contentId, row.contentTitle);
+  for (const row of upstream) {
+    rememberLocalTitle(row.parentContentId, row.parentTitle);
+    rememberLocalTitle(row.childContentId, row.childTitle);
+  }
+  const localKnownIds = new Set<string>();
+  for (const row of works) {
+    const id = String(row.contentId || "").trim();
+    if (id) localKnownIds.add(id);
+  }
+  for (const row of participations) {
+    const id = String(row.contentId || "").trim();
+    if (id) localKnownIds.add(id);
+  }
+  for (const row of upstream) {
+    const parentId = String(row.parentContentId || "").trim();
+    const childId = String(row.childContentId || "").trim();
+    if (parentId) localKnownIds.add(parentId);
+    if (childId) localKnownIds.add(childId);
   }
 
   const openEarningsView = (contentId?: string | null, title?: string | null) => {
-    const id = String(contentId || "").trim();
+    const rawId = String(contentId || "").trim();
     const rawTitle = String(title || "").trim();
+    const titleKey = rawTitle.toLowerCase();
+    const fallbackId =
+      rawTitle && !localDuplicateTitleKeys.has(titleKey)
+        ? String(localCanonicalIdByLowerTitle.get(titleKey) || "").trim()
+        : "";
+    const id = localKnownIds.has(rawId) ? rawId : fallbackId || rawId;
     const canonicalTitle = (id && canonicalById.get(id)) || rawTitle;
     const params = new URLSearchParams();
     if (id) params.set("contentId", id);
@@ -623,7 +676,7 @@ export default function SplitParticipationsPage(props: {
                   </button>
                   {r.contentId || r.inviteUrl ? (
                     <button
-                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl)}
+                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl, r.remoteOrigin)}
                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                     >
                       Open
