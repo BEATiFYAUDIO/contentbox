@@ -9,6 +9,7 @@ import StorePage from "./pages/StorePage";
 import LibraryPage from "./pages/LibraryPage";
 import SplitParticipationsPage from "./pages/SplitParticipationsPage";
 import RoyaltiesTermsPage from "./pages/RoyaltiesTermsPage";
+import AudiencePage from "./pages/AudiencePage";
 import DownloadsPage from "./pages/DownloadsPage";
 import PurchasesPage from "./pages/PurchasesPage";
 import CreatorToolsPage from "./pages/CreatorToolsPage";
@@ -96,6 +97,7 @@ type PageKey =
   | "diagnostics"
   | "provider-console"
   | "finance"
+  | "audience"
   | "receipt"
   | "invite"
   | "profile"
@@ -542,6 +544,13 @@ export default function App() {
 
   const commerceNav = [
     {
+      key: "audience" as const,
+      label: "Audience",
+      hint: "Views and engagement",
+      requiresCommerce: false,
+      requiresSplits: false
+    },
+    {
       key: "finance" as const,
       label: "Revenue",
       hint: "Sales, royalties, payouts",
@@ -602,6 +611,7 @@ export default function App() {
     page === "purchases" ? "Purchase history" :
     page === "creator" ? "Creator tools" :
     page === "sales" ? "Sales" :
+    page === "audience" ? "Audience" :
     page === "finance" ? "Revenue" :
     page === "splits" ? "Splits" :
     page === "split-editor" ? "Splits" :
@@ -1092,6 +1102,8 @@ export default function App() {
                   nodeMode={nodeMode}
                 />
               )}
+
+              {page === "audience" && <AudiencePage />}
 
               {page === "royalties-terms" && !isCommerceLockedPage && <RoyaltiesTermsPage contentId={selectedContentId} />}
 

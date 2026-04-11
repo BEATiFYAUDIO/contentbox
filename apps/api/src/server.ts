@@ -992,6 +992,8 @@ async function tryServeIntegratedDashboard(req: any, reply: any): Promise<boolea
 
 const BUYER_SESSION_COOKIE = "cb_buyer_session";
 const BUYER_SESSION_DAYS = 30;
+const AUDIENCE_SESSION_COOKIE = "cb_audience_session";
+const AUDIENCE_DEDUPE_WINDOW_MS = 30 * 60 * 1000;
 
 function getCookie(req: any, name: string): string | null {
   try {
@@ -1048,6 +1050,30 @@ function buildBuyerClearCookie(req: any): string {
   ];
   if (secure) parts.push("Secure");
   return parts.join("; ");
+}
+
+function buildAudienceSessionCookie(sessionId: string, req: any, maxAgeSeconds: number): string {
+  const maxAge = Math.max(1, Math.floor(maxAgeSeconds));
+  const secure = isSecureRequest(req) || String(process.env.NODE_ENV || "").trim() === "production";
+  const parts = [
+    `${AUDIENCE_SESSION_COOKIE}=${encodeURIComponent(sessionId)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${maxAge}`
+  ];
+  if (secure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+function getOrCreateAudienceSessionId(req: any, reply: any): string {
+  const existing = asString(getCookie(req, AUDIENCE_SESSION_COOKIE) || "").trim();
+  if (existing) return existing;
+  const sessionId = `aud_${crypto.randomUUID().replace(/-/g, "")}`;
+  // Keep audience session longer than dedupe window; rotate naturally with browser/session hygiene.
+  const cookie = buildAudienceSessionCookie(sessionId, req, 60 * 60 * 24 * 30);
+  reply.header("set-cookie", cookie);
+  return sessionId;
 }
 
 /** ---------- app init ---------- */
@@ -10019,6 +10045,46 @@ async function buildParentPublishAnchor(contentId: string): Promise<ParentPublis
   };
 }
 
+async function handlePublicAudienceInteraction(req: any, reply: any) {
+  const body = (req.body ?? {}) as { contentId?: string; eventType?: string };
+  const contentId = asString(body.contentId || "").trim();
+  const eventTypeRaw = asString(body.eventType || "view").trim().toLowerCase();
+  if (!contentId) return badRequest(reply, "contentId required");
+  if (eventTypeRaw !== "view") return badRequest(reply, "unsupported eventType");
+  const deduped = await recordAudienceViewEvent(contentId, req, reply);
+  return reply.send({ ok: true, deduped });
+}
+
+async function recordAudienceViewEvent(contentId: string, req: any, reply: any): Promise<boolean> {
+  const content = await prisma.contentItem.findUnique({
+    where: { id: contentId },
+    select: { id: true, deletedAt: true }
+  });
+  if (!content || content.deletedAt) return true;
+
+  const sessionId = getOrCreateAudienceSessionId(req, reply);
+  const dedupeSince = new Date(Date.now() - AUDIENCE_DEDUPE_WINDOW_MS);
+  const existing = await prisma.audienceEvent.findFirst({
+    where: {
+      contentId,
+      eventType: "view" as any,
+      sessionId,
+      createdAt: { gte: dedupeSince }
+    },
+    select: { id: true }
+  });
+  if (existing) return true;
+
+  await prisma.audienceEvent.create({
+    data: {
+      contentId,
+      eventType: "view" as any,
+      sessionId
+    }
+  });
+  return false;
+}
+
 /** ---------- routes ---------- */
 
 function registerPublicRoutes(appPublic: any) {
@@ -10067,6 +10133,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/public/content/:id/cover", handlePublicCoverFile);
   appPublic.get("/public/avatars/:userId/:filename", handlePublicAvatar);
   appPublic.get("/public/content/:id/credits", handlePublicCredits);
+  appPublic.post("/public/interactions", handlePublicAudienceInteraction);
   appPublic.get("/public/users/:id", handlePublicUser);
   appPublic.get("/public/users/:userId/payout-destination", handlePublicPayoutDestination);
   // Buyer session + entitlement routes used by public buy pages.
@@ -21954,6 +22021,7 @@ async function handlePublicContentAccess(req: any, reply: any) {
 }
 
 app.get("/public/content/:id/access", handlePublicContentAccess);
+app.post("/public/interactions", handlePublicAudienceInteraction);
 
 // Public storefront content metadata (no auth)
 async function handlePublicContent(req: any, reply: any) {
@@ -21979,6 +22047,8 @@ async function handlePublicContent(req: any, reply: any) {
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest) return notFound(reply, "Manifest not found");
+  // Audience signal: public content-open surface (best-effort, deduped, non-blocking).
+  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   const commerceAuthority = await resolveCommerceAuthorityForUser(content.ownerUserId);
 
   const host = (req.headers["x-forwarded-host"] || req.headers["host"]) as string | undefined;
@@ -24967,6 +25037,15 @@ async function handleBuyPage(req: any, reply: any) {
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
   function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function logAudienceView(){
+    if (!contentId) return;
+    fetch(apiBase + "/public/interactions", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentId, eventType: "view" })
+    }).catch(()=>{});
+  }
   function looksInternalId(v){
     const raw = String(v == null ? "" : v).trim();
     return /^c[a-z0-9]{20,}$/i.test(raw);
@@ -25978,6 +26057,7 @@ async function handleBuyPage(req: any, reply: any) {
         });
     });
   loadAttribution().catch(()=>{});
+  logAudienceView();
 })();
 </script>
 </body>
@@ -32687,6 +32767,87 @@ async function computeParticipantPayoutSummaryForUser(userId: string): Promise<{
     failedSats: failed.toString()
   };
 }
+
+app.get("/audience/summary", { preHandler: [requireAuth] }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const productTier = resolveProductTier().productTier;
+  const isBasicPosture = productTier === "basic";
+  const ownedContent = await prisma.contentItem.findMany({
+    where: { ownerUserId: userId, deletedAt: null },
+    select: { id: true, title: true, status: true, createdAt: true, updatedAt: true },
+    orderBy: { updatedAt: "desc" }
+  });
+  const contentIds = ownedContent.map((row) => String(row.id || "").trim()).filter(Boolean);
+  if (contentIds.length === 0) {
+    return reply.send({
+      posture: isBasicPosture ? "basic" : "sovereign",
+      supportsCommerceMetrics: !isBasicPosture,
+      totalViews: 0,
+      totalPurchases: isBasicPosture ? null : 0,
+      conversionRate: isBasicPosture ? null : 0,
+      items: []
+    });
+  }
+
+  const viewCountsRaw = await prisma.audienceEvent.groupBy({
+    by: ["contentId"],
+    where: {
+      contentId: { in: contentIds },
+      eventType: "view" as any
+    },
+    _count: { _all: true }
+  });
+
+  const purchaseCountsRaw = isBasicPosture
+    ? []
+    : await prisma.paymentIntent.groupBy({
+        by: ["contentId"],
+        where: {
+          contentId: { in: contentIds },
+          purpose: "CONTENT_PURCHASE" as any,
+          status: "paid" as any
+        },
+        _count: { _all: true }
+      });
+
+  const viewCounts = new Map<string, number>();
+  for (const row of viewCountsRaw) viewCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
+
+  const purchaseCounts = new Map<string, number>();
+  for (const row of purchaseCountsRaw) purchaseCounts.set(String((row as any).contentId || ""), Number((row as any)._count?._all || 0));
+
+  const toPct = (purchases: number, views: number): number => {
+    if (!views) return 0;
+    return Number(((purchases / views) * 100).toFixed(2));
+  };
+
+  const items = ownedContent.map((row) => {
+    const contentId = String(row.id || "");
+    const views = viewCounts.get(contentId) || 0;
+    const purchases = purchaseCounts.get(contentId) || 0;
+    return {
+      contentId,
+      title: String(row.title || "Untitled"),
+      status: String(row.status || "").toLowerCase(),
+      views,
+      purchases: isBasicPosture ? null : purchases,
+      conversionRate: isBasicPosture ? null : toPct(purchases, views),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    };
+  });
+
+  const totalViews = items.reduce((sum, row) => sum + row.views, 0);
+  const totalPurchases = items.reduce((sum, row) => sum + Number(row.purchases || 0), 0);
+  return reply.send({
+    posture: isBasicPosture ? "basic" : "sovereign",
+    supportsCommerceMetrics: !isBasicPosture,
+    totalViews,
+    totalPurchases: isBasicPosture ? null : totalPurchases,
+    conversionRate: isBasicPosture ? null : toPct(totalPurchases, totalViews),
+    items
+  });
+});
 
 app.get("/finance/overview", { preHandler: [requireAuth, requireAdvancedTier("finance")] }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;

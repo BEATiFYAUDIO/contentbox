@@ -95,6 +95,10 @@ enum PaymentStatus {
   expired
 }
 
+enum AudienceEventType {
+  view
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -112,6 +116,7 @@ model User {
   approvedContentLinks ContentLink[] @relation("ContentLinkApprovedBy")
   paymentIntents       PaymentIntent[] @relation("PaymentIntentBuyer")
   entitlements         Entitlement[] @relation("EntitlementBuyer")
+  audienceEvents       AudienceEvent[]
   remoteInvites        RemoteInvite[]
   salesAsSeller        Sale[] @relation("SaleSeller")
   salesConfirmed       Sale[] @relation("SaleConfirmer")
@@ -214,6 +219,7 @@ model ContentItem {
   parentLinks   ContentLink[] @relation("ParentContent")
   childLinks    ContentLink[] @relation("ChildContent")
   paymentIntents PaymentIntent[] @relation("PaymentIntentContent")
+  audienceEvents AudienceEvent[]
   sales          Sale[]
   entitlements   Entitlement[] @relation("EntitlementContent")
   settlements    Settlement[] @relation("SettlementContent")
@@ -579,6 +585,22 @@ model PaymentIntent {
   @@index([receiptToken])
   @@index([ipHash])
   @@index([purpose, subjectType, subjectId])
+}
+
+model AudienceEvent {
+  id          String            @id @default(cuid())
+  contentId   String
+  eventType   AudienceEventType
+  sessionId   String?
+  actorUserId String?
+  createdAt   DateTime          @default(now())
+
+  content   ContentItem @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  actorUser User?       @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([contentId, eventType, createdAt])
+  @@index([sessionId, contentId, eventType, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 model Sale {
