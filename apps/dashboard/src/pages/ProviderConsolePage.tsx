@@ -337,6 +337,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     ledger: false,
     operational: false
   });
+  const [showSecondaryPanels, setShowSecondaryPanels] = useState(false);
+  const [expandedInspectorIntentId, setExpandedInspectorIntentId] = useState<string | null>(null);
   const [showZeroContentRows, setShowZeroContentRows] = useState(false);
   const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
@@ -1136,6 +1138,131 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       ));
   const showWalletContext = creatorScopeId === "all" || creatorHasExecutionReview || Boolean(runtime?.sendFailureReason);
 
+  const obligationTruth = useMemo(() => {
+    const totals = {
+      pending: 0n,
+      ready: 0n,
+      forwarding: 0n,
+      paid: 0n,
+      failed: 0n,
+      blocked: 0n
+    };
+    const counts = {
+      pending: 0,
+      ready: 0,
+      forwarding: 0,
+      paid: 0,
+      failed: 0,
+      blocked: 0
+    };
+    for (const row of creatorScopedParticipantPayouts) {
+      const amount = toBigIntSats(row.netAmountSats || row.amountSats);
+      if (row.status in totals) {
+        const k = row.status as keyof typeof totals;
+        totals[k] += amount;
+        counts[k] += 1;
+      }
+    }
+    const netPayable = totals.pending + totals.ready + totals.forwarding;
+    const atRisk = totals.failed + totals.blocked;
+    return { totals, counts, netPayable, atRisk };
+  }, [creatorScopedParticipantPayouts]);
+
+  const intakeTruth = useMemo(() => {
+    const scoped = creatorScopedPaymentIntents;
+    const settled = scoped.filter((row) => row.status === "paid");
+    const gross = settled.reduce((acc, row) => acc + toBigIntSats(row.grossAmountSats || row.amountSats), 0n);
+    return {
+      intents: scoped.length,
+      settledIntents: settled.length,
+      grossSats: gross,
+      receipts: creatorScopedPaymentReceipts.length
+    };
+  }, [creatorScopedPaymentIntents, creatorScopedPaymentReceipts]);
+
+  const intentAllocationInspector = useMemo(() => {
+    const grouped = new Map<
+      string,
+      {
+        providerPaymentIntentId: string;
+        paymentIntentId: string;
+        soldWorkTitle: string;
+        soldWorkId: string | null;
+        latestUpdatedAt: string | null;
+        rowCount: number;
+        rows: ParticipantPayoutRow[];
+        hasMixedStatuses: boolean;
+        blockedCount: number;
+        failedCount: number;
+      }
+    >();
+    for (const row of creatorScopedParticipantPayouts) {
+      const key = String(row.providerPaymentIntentId || "").trim();
+      if (!key) continue;
+      const current = grouped.get(key) || {
+        providerPaymentIntentId: key,
+        paymentIntentId: String(row.paymentIntentId || "").trim(),
+        soldWorkTitle: String(row.soldWork?.title || "").trim() || "Untitled",
+        soldWorkId: String(row.soldWork?.id || "").trim() || null,
+        latestUpdatedAt: null as string | null,
+        rowCount: 0,
+        rows: [] as ParticipantPayoutRow[],
+        hasMixedStatuses: false,
+        blockedCount: 0,
+        failedCount: 0
+      };
+      current.rowCount += 1;
+      current.rows.push(row);
+      current.latestUpdatedAt = maxIsoTimestamp(current.latestUpdatedAt, row.updatedAt || row.lastCheckedAt || row.remittedAt || null);
+      if (row.status === "blocked") current.blockedCount += 1;
+      if (row.status === "failed") current.failedCount += 1;
+      grouped.set(key, current);
+    }
+    const items = Array.from(grouped.values()).map((intent) => {
+      const statuses = new Set(intent.rows.map((row) => row.status));
+      intent.hasMixedStatuses = statuses.size > 1;
+      intent.rows.sort((a, b) => {
+        const au = Date.parse(String(a.updatedAt || a.lastCheckedAt || a.remittedAt || ""));
+        const bu = Date.parse(String(b.updatedAt || b.lastCheckedAt || b.remittedAt || ""));
+        return (Number.isFinite(bu) ? bu : 0) - (Number.isFinite(au) ? au : 0);
+      });
+      return intent;
+    });
+    items.sort((a, b) => {
+      const at = Date.parse(String(a.latestUpdatedAt || ""));
+      const bt = Date.parse(String(b.latestUpdatedAt || ""));
+      return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+    });
+    return items;
+  }, [creatorScopedParticipantPayouts]);
+
+  const riskSummary = useMemo(() => {
+    const now = Date.now();
+    const stuckThresholdMs = 24 * 60 * 60 * 1000;
+    let stuckCount = 0;
+    let stuckSats = 0n;
+    for (const row of creatorScopedParticipantPayouts) {
+      if (!(row.status === "pending" || row.status === "ready" || row.status === "forwarding")) continue;
+      const ts = Date.parse(String(row.updatedAt || row.lastCheckedAt || row.remittedAt || ""));
+      if (Number.isFinite(ts) && now - ts > stuckThresholdMs) {
+        stuckCount += 1;
+        stuckSats += toBigIntSats(row.netAmountSats || row.amountSats);
+      }
+    }
+    const mixedIntentCount = intentAllocationInspector.filter((row) => row.hasMixedStatuses).length;
+    const mismatch = creatorSummary.creatorNet - (obligationTruth.totals.paid + obligationTruth.netPayable + obligationTruth.atRisk);
+    return {
+      stuckCount,
+      stuckSats,
+      mixedIntentCount,
+      blockedCount: obligationTruth.counts.blocked,
+      blockedSats: obligationTruth.totals.blocked,
+      failedCount: obligationTruth.counts.failed,
+      failedSats: obligationTruth.totals.failed,
+      mismatch
+    };
+  }, [creatorScopedParticipantPayouts, intentAllocationInspector, obligationTruth, creatorSummary.creatorNet]);
+
   return (
     <div className="space-y-5">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
@@ -1215,6 +1342,287 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Intake</div>
+            <div className="mt-1 text-xs text-neutral-500">Payment-intent flow through this node in the selected scope.</div>
+          </div>
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Scoped intents</div>
+            <div className="mt-2 text-2xl font-semibold text-neutral-100">{intakeTruth.intents.toLocaleString()}</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Settled intents</div>
+            <div className="mt-2 text-2xl font-semibold text-neutral-100">{intakeTruth.settledIntents.toLocaleString()}</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Gross processed</div>
+            <div className="mt-2 text-2xl font-semibold text-neutral-100">{sats(intakeTruth.grossSats.toString())} sats</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Receipts</div>
+            <div className="mt-2 text-2xl font-semibold text-neutral-100">{intakeTruth.receipts.toLocaleString()}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="text-sm font-semibold">Obligations (ParticipantPayout truth)</div>
+        <div className="mt-1 text-xs text-neutral-500">Row-backed obligations by payout status. No aggregation inference.</div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Net payable</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-300">{sats(obligationTruth.netPayable.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">
+              pending {obligationTruth.counts.pending} • ready {obligationTruth.counts.ready} • forwarding {obligationTruth.counts.forwarding}
+            </div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Pending</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-300">{sats(obligationTruth.totals.pending.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">{obligationTruth.counts.pending.toLocaleString()} rows</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Ready</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-300">{sats(obligationTruth.totals.ready.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">{obligationTruth.counts.ready.toLocaleString()} rows</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Forwarding</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-300">{sats(obligationTruth.totals.forwarding.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">{obligationTruth.counts.forwarding.toLocaleString()} rows</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="text-sm font-semibold">Execution & Exceptions</div>
+        <div className="mt-1 text-xs text-neutral-500">Executed payout truth and operational risk signals.</div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Net paid</div>
+            <div className="mt-2 text-2xl font-semibold text-emerald-300">{sats(obligationTruth.totals.paid.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">{obligationTruth.counts.paid.toLocaleString()} rows</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Blocked</div>
+            <div className="mt-2 text-2xl font-semibold text-rose-300">{sats(riskSummary.blockedSats.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">{riskSummary.blockedCount.toLocaleString()} rows</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Failed</div>
+            <div className="mt-2 text-2xl font-semibold text-rose-300">{sats(riskSummary.failedSats.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">{riskSummary.failedCount.toLocaleString()} rows</div>
+          </div>
+          <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+            <div className="text-xs uppercase tracking-wide text-neutral-500">Stuck {">"}24h</div>
+            <div className="mt-2 text-2xl font-semibold text-amber-300">{sats(riskSummary.stuckSats.toString())} sats</div>
+            <div className="mt-1 text-xs text-neutral-500">{riskSummary.stuckCount.toLocaleString()} rows</div>
+          </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-neutral-400">
+          <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5">
+            Mixed-status intents: <span className="ml-1 text-neutral-200">{riskSummary.mixedIntentCount.toLocaleString()}</span>
+          </span>
+          <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5">
+            Provider/local mismatch: <span className="ml-1 text-neutral-200">{sats(riskSummary.mismatch.toString())} sats</span>
+          </span>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="text-sm font-semibold">Intent Allocation Inspector</div>
+        <div className="mt-1 text-xs text-neutral-500">
+          One row per allocation outcome. Same-user multi-role outcomes remain separate.
+        </div>
+        {intentAllocationInspector.length === 0 ? (
+          <div className="mt-3 text-sm text-neutral-400">No allocation rows for this scope.</div>
+        ) : (
+          <div className="mt-3 space-y-3">
+            {intentAllocationInspector.map((intent) => {
+              const expanded = expandedInspectorIntentId === intent.providerPaymentIntentId;
+              return (
+                <div key={intent.providerPaymentIntentId} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm text-neutral-100">{intent.soldWorkTitle}</div>
+                      <div className="text-xs text-neutral-500">
+                        Intent {shortId(intent.paymentIntentId, 10, 8)} • {intent.rowCount.toLocaleString()} allocation rows • updated {formatDate(intent.latestUpdatedAt)}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {intent.hasMixedStatuses ? (
+                        <span className="inline-flex items-center rounded-full border border-amber-800/70 bg-amber-900/20 px-2 py-0.5 text-[11px] text-amber-300">mixed status</span>
+                      ) : null}
+                      {(intent.failedCount > 0 || intent.blockedCount > 0) ? (
+                        <span className="inline-flex items-center rounded-full border border-rose-800/70 bg-rose-900/20 px-2 py-0.5 text-[11px] text-rose-300">
+                          failed/blocked {intent.failedCount + intent.blockedCount}
+                        </span>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => setExpandedInspectorIntentId(expanded ? null : intent.providerPaymentIntentId)}
+                        className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+                      >
+                        {expanded ? "Hide rows" : "Show rows"}
+                      </button>
+                    </div>
+                  </div>
+                  {expanded ? (
+                    <div className="mt-3 overflow-x-auto">
+                      <table className="w-full min-w-[980px] text-sm">
+                        <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                          <tr>
+                            <th className="py-2 pr-3 font-medium">Allocation</th>
+                            <th className="py-2 pr-3 font-medium">Source type</th>
+                            <th className="py-2 pr-3 font-medium">Recipient</th>
+                            <th className="py-2 pr-3 font-medium">Gross</th>
+                            <th className="py-2 pr-3 font-medium">Fee</th>
+                            <th className="py-2 pr-3 font-medium">Net</th>
+                            <th className="py-2 pr-3 font-medium">Status</th>
+                            <th className="py-2 pr-3 font-medium">Updated</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {intent.rows.map((row) => (
+                            <tr key={row.id} className="border-t border-neutral-800/70">
+                              <td className="py-2 pr-3 font-mono text-[11px] text-neutral-300">{shortId(row.allocationId, 12, 8)}</td>
+                              <td className="py-2 pr-3">
+                                <div className="text-neutral-100">{allocationSourceLabel(row.sourceType)}</div>
+                                <div className="text-xs text-neutral-500">{row.allocationSource || "allocation"}</div>
+                              </td>
+                              <td className="py-2 pr-3">
+                                <div className="text-neutral-100">{row.allocation?.participantEmail || row.allocation?.participantUserId || row.allocation?.participantRef || "—"}</div>
+                                <div className="text-xs text-neutral-500">{row.allocation?.role || "—"}</div>
+                              </td>
+                              <td className="py-2 pr-3 text-neutral-200">{sats(row.grossShareSats || row.amountSats)} sats</td>
+                              <td className="py-2 pr-3 text-neutral-200">{sats(row.feeWithheldSats || "0")} sats</td>
+                              <td className="py-2 pr-3 text-neutral-200">{sats(row.netAmountSats || row.amountSats)} sats</td>
+                              <td className="py-2 pr-3">
+                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>{row.status}</span>
+                              </td>
+                              <td className="py-2 pr-3 text-neutral-300">{formatDate(row.updatedAt)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold">Payout Rows</div>
+            <div className="mt-1 text-xs text-neutral-500">Execution truth rows (ParticipantPayout). No row collapsing.</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPayoutTableScope("latest")}
+              className={[
+                "rounded-lg border px-2 py-1 text-[11px]",
+                payoutTableScope === "latest"
+                  ? "border-neutral-500 bg-neutral-800/80 text-neutral-100"
+                  : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/50"
+              ].join(" ")}
+            >
+              Latest intent
+            </button>
+            <button
+              type="button"
+              onClick={() => setPayoutTableScope("all")}
+              className={[
+                "rounded-lg border px-2 py-1 text-[11px]",
+                payoutTableScope === "all"
+                  ? "border-neutral-500 bg-neutral-800/80 text-neutral-100"
+                  : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/50"
+              ].join(" ")}
+            >
+              All history
+            </button>
+          </div>
+        </div>
+        {visibleParticipantPayouts.length === 0 ? (
+          <div className="mt-3 text-sm text-neutral-400">No participant payout rows yet.</div>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-neutral-400">
+                  <th className="py-2 pr-3 font-medium">Intent</th>
+                  <th className="py-2 pr-3 font-medium">Sold work</th>
+                  <th className="py-2 pr-3 font-medium">Source type</th>
+                  <th className="py-2 pr-3 font-medium">Recipient</th>
+                  <th className="py-2 pr-3 font-medium">Gross</th>
+                  <th className="py-2 pr-3 font-medium">Commerce fee</th>
+                  <th className="py-2 pr-3 font-medium">Net</th>
+                  <th className="py-2 pr-3 font-medium">Status</th>
+                  <th className="py-2 pr-3 font-medium">Reason</th>
+                  <th className="py-2 pr-3 font-medium">Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleParticipantPayouts.slice(0, 400).map((row) => (
+                  <tr key={row.id} className="border-t border-neutral-800/80 align-top text-neutral-200">
+                    <td className="py-2 pr-3">
+                      <div className="font-mono text-[11px] text-neutral-300">{shortId(row.paymentIntentId, 8, 6)}</div>
+                      <div className="font-mono text-[11px] text-neutral-500">{shortId(row.providerPaymentIntentId, 8, 6)}</div>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{String(row.soldWork?.title || "").trim() || "Untitled"}</div>
+                      {row.sourceWork?.title ? <div className="text-xs text-neutral-500">Source: {row.sourceWork.title}</div> : null}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{allocationSourceLabel(row.sourceType)}</div>
+                      <div className="text-xs text-neutral-500">{row.allocationSource || "allocation"}</div>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{row.allocation?.participantEmail || row.allocation?.participantUserId || row.allocation?.participantRef || "—"}</div>
+                      <div className="text-xs text-neutral-500">{row.allocation?.role || "—"}</div>
+                    </td>
+                    <td className="py-2 pr-3">{sats(row.grossShareSats || row.amountSats)} sats</td>
+                    <td className="py-2 pr-3">{sats(row.feeWithheldSats || "0")} sats</td>
+                    <td className="py-2 pr-3">{sats(row.netAmountSats || row.amountSats)} sats</td>
+                    <td className="py-2 pr-3">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>{row.status}</span>
+                    </td>
+                    <td className="py-2 pr-3">
+                      <div>{row.readinessReason || row.blockedReason || row.destinationSummary || row.destinationType || "—"}</div>
+                      <div className="text-xs text-neutral-500">{row.payoutRail || "—"}</div>
+                      {row.lastError ? <div className="text-xs text-rose-300">{row.lastError}</div> : null}
+                    </td>
+                    <td className="py-2 pr-3">{formatDate(row.updatedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs text-neutral-500">Secondary context (creator/reporting + QA + diagnostics)</div>
+          <button
+            type="button"
+            onClick={() => setShowSecondaryPanels((v) => !v)}
+            className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+          >
+            {showSecondaryPanels ? "Hide secondary" : "Show secondary"}
+          </button>
+        </div>
+      </div>
+
+      {showSecondaryPanels && (
+      <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="text-sm font-semibold">QA Reconciliation (Temporary)</div>
@@ -1291,8 +1699,8 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           </div>
         ) : null}
       </div>
-
-      {creatorScopeId === "all" ? (
+      )}
+      {showSecondaryPanels && creatorScopeId === "all" ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
           <div className="text-sm font-semibold">Delegated Creator Overview</div>
           <div className="mt-1 text-xs text-neutral-500">
@@ -1358,7 +1766,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         </div>
       ) : null}
 
-      {creatorScopeId === "all" ? (
+      {showSecondaryPanels && creatorScopeId === "all" ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
           <div className="text-sm font-semibold">Node Fee Attribution</div>
           <div className="mt-1 text-xs text-neutral-500">
@@ -1442,6 +1850,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         </div>
       ) : null}
 
+      {showSecondaryPanels && (
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="text-sm font-semibold">Money State</div>
         <div className="mt-1 text-xs text-neutral-500">{creatorScopeId === "all" ? "All delegated creators." : selectedCreatorLabel}</div>
@@ -1468,8 +1877,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           ))}
         </div>
       </div>
+      )}
 
-      {creatorScopeId !== "all" ? (
+      {showSecondaryPanels && creatorScopeId !== "all" ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
           <div className="text-sm font-semibold">Creator Content Breakdown</div>
           <div className="mt-1 text-xs text-neutral-500">
@@ -1562,7 +1972,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         </div>
       ) : null}
 
-      {showExecutionSection ? (
+      {showSecondaryPanels && showExecutionSection ? (
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -1742,6 +2152,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       </div>
       ) : null}
 
+      {showSecondaryPanels && (
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
@@ -1933,7 +2344,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         )}
       </div>
 
-      {creatorScopeId === "all" ? (
+      {showSecondaryPanels && creatorScopeId === "all" ? (
       <div className="mt-3 rounded-lg border border-neutral-800/70 bg-neutral-950/25 p-3">
         <div className="text-xs uppercase tracking-wide text-neutral-500">Delegated Creator Links</div>
         {creatorScopedCreatorLinks.length === 0 ? (
@@ -1980,7 +2391,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       </div>
       ) : null}
 
-      {creatorScopeId === "all" ? (
+      {showSecondaryPanels && creatorScopeId === "all" ? (
       <div className="mt-3 rounded-lg border border-neutral-800/70 bg-neutral-950/25 p-3">
         <div className="text-xs uppercase tracking-wide text-neutral-500">Delegated Publishes</div>
         {creatorScopedDelegatedPublishes.length === 0 ? (
@@ -2036,8 +2447,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           <div className="mt-3 text-xs text-neutral-500">Hidden by default. Expand only when you need row-level inspection.</div>
         )}
       </div>
+      )}
 
-      {creatorScopeId === "all" ? (
+      {showSecondaryPanels && creatorScopeId === "all" ? (
       <div className="space-y-2 opacity-70">
         <div className="text-sm font-semibold text-neutral-200">Provider Node Overview</div>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
