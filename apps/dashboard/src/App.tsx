@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 import AuthPage from "./pages/AuthPage";
 import PayoutRailsPage from "./pages/PayoutRailsPage";
 import ContentLibraryPage from "./pages/ContentLibraryPage";
@@ -242,6 +242,8 @@ export default function App() {
   );
   const [nodeModeSnapshot, setNodeModeSnapshot] = useState<NodeModeSnapshot | null>(null);
   const [lightningAdminSnapshot, setLightningAdminSnapshot] = useState<LightningAdminSnapshot | null>(null);
+  const appRefreshInFlightRef = useRef(false);
+  const appRefreshLastAtRef = useRef(0);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
     try {
       return window.localStorage.getItem("contentbox.showAdvancedNav") === "1";
@@ -338,62 +340,86 @@ export default function App() {
       return;
     }
     let alive = true;
-    const refresh = async () => {
-      refreshIdentityDetail();
-      let canUseLightningAdmin = false;
-      try {
-        const modeSnapshot = await api<NodeModeSnapshot>("/api/node/mode", "GET");
-        if (!alive) return;
-        setNodeModeSnapshot(modeSnapshot || null);
-        canUseLightningAdmin = Boolean(modeSnapshot?.commerceAuthorityAvailable);
-      } catch {
-        if (!alive) return;
-        setNodeModeSnapshot(null);
-        canUseLightningAdmin = false;
+    const refresh = async (force = false) => {
+      const now = Date.now();
+      if (!force) {
+        if (appRefreshInFlightRef.current) return;
+        if (now - appRefreshLastAtRef.current < 10_000) return;
+      } else if (appRefreshInFlightRef.current) {
+        return;
       }
+      appRefreshInFlightRef.current = true;
+      appRefreshLastAtRef.current = now;
       try {
-        const d: any = await api("/api/diagnostics/status", "GET");
+        const [identityRes, modeRes, diagnosticsRes, runtimePublicRes] = await Promise.allSettled([
+          fetchIdentityDetail(),
+          api<NodeModeSnapshot>("/api/node/mode", "GET"),
+          api<any>("/api/diagnostics/status", "GET"),
+          api<any>("/api/public/status", "GET")
+        ]);
+
         if (!alive) return;
-        setDiagnosticsStatus(d || null);
-        const diagnosticsPublic = d?.publicStatus || null;
-        try {
-          const runtimePublic: any = await api("/api/public/status", "GET");
-          if (!alive) return;
+
+        if (identityRes.status === "fulfilled") {
+          setIdentityDetail(identityRes.value);
+          try {
+            window.localStorage.setItem("contentbox.identityDetail", JSON.stringify(identityRes.value));
+          } catch {}
+        } else {
+          setIdentityDetail(null);
+        }
+
+        let canUseLightningAdmin = false;
+        if (modeRes.status === "fulfilled") {
+          const modeSnapshot = modeRes.value || null;
+          setNodeModeSnapshot(modeSnapshot);
+          canUseLightningAdmin = Boolean(modeSnapshot?.commerceAuthorityAvailable);
+        } else {
+          setNodeModeSnapshot(null);
+        }
+
+        const diagnosticsPayload = diagnosticsRes.status === "fulfilled" ? diagnosticsRes.value || null : null;
+        const runtimePublicPayload = runtimePublicRes.status === "fulfilled" ? runtimePublicRes.value || null : null;
+        setDiagnosticsStatus(diagnosticsPayload);
+        if (diagnosticsPayload || runtimePublicPayload) {
+          const diagnosticsPublic = diagnosticsPayload?.publicStatus || null;
           setPublicStatus({
             ...diagnosticsPublic,
-            ...runtimePublic,
-            url: runtimePublic?.canonicalOrigin || runtimePublic?.publicOrigin || diagnosticsPublic?.url || null
+            ...runtimePublicPayload,
+            url:
+              runtimePublicPayload?.canonicalOrigin ||
+              runtimePublicPayload?.publicOrigin ||
+              diagnosticsPublic?.url ||
+              null
           });
-        } catch {
-          if (!alive) return;
-          setPublicStatus(diagnosticsPublic);
+        } else {
+          setPublicStatus(null);
         }
-      } catch {
-        if (!alive) return;
-        setDiagnosticsStatus(null);
-        setPublicStatus(null);
-      }
-      if (canUseLightningAdmin) {
-        try {
-          const ln = await api<LightningAdminSnapshot>("/api/admin/lightning", "GET");
-          if (!alive) return;
-          setLightningAdminSnapshot(ln || null);
-        } catch {
-          if (!alive) return;
+
+        if (canUseLightningAdmin) {
+          try {
+            const ln = await api<LightningAdminSnapshot>("/api/admin/lightning", "GET");
+            if (!alive) return;
+            setLightningAdminSnapshot(ln || null);
+          } catch {
+            if (!alive) return;
+            setLightningAdminSnapshot(null);
+          }
+        } else if (alive) {
           setLightningAdminSnapshot(null);
         }
-      } else if (alive) {
-        setLightningAdminSnapshot(null);
+      } finally {
+        appRefreshInFlightRef.current = false;
       }
     };
-    refresh();
+    refresh(true);
     const onFocus = () => {
-      refresh();
+      refresh(false);
     };
     window.addEventListener("focus", onFocus);
     const t = window.setInterval(() => {
       if (document.visibilityState !== "visible") return;
-      refresh();
+      refresh(false);
     }, 60000);
     return () => {
       alive = false;
