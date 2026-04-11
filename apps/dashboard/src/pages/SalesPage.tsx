@@ -86,6 +86,10 @@ export default function SalesPage({
   const [showScopedAudit, setShowScopedAudit] = React.useState(false);
   const [timeBasis, setTimeBasis] = React.useState<TimeBasis>("sale");
   const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("all");
+  const [contentFilter, setContentFilter] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const [sourceFilter, setSourceFilter] = React.useState("all");
+  const [roleFilter, setRoleFilter] = React.useState("all");
 
   const syncDelegatedSnapshot = React.useCallback(async () => {
     try {
@@ -220,9 +224,14 @@ export default function SalesPage({
   }, []);
 
   const scopedSales = React.useMemo(() => {
+    const rowTimestampForScope = (row: SaleRow): string => {
+      if (timeBasis === "paid") return String(row.remittedAt || row.recognizedAt || "");
+      // Sales and Earned both map to recognized buyer-payment timestamp for this ledger.
+      return String(row.recognizedAt || "");
+    };
     if (timePeriod === "all") return sales;
-    return sales.filter((row) => isWithinPeriod(row.recognizedAt, timePeriod));
-  }, [sales, timePeriod]);
+    return sales.filter((row) => isWithinPeriod(rowTimestampForScope(row), timePeriod));
+  }, [sales, timeBasis, timePeriod]);
 
   const contentScopedSales = React.useMemo(() => {
     const scopedId = String(contentScopeId || "").trim();
@@ -230,8 +239,76 @@ export default function SalesPage({
     return scopedSales.filter((row) => String(row.content?.id || row.contentId || "").trim() === scopedId);
   }, [scopedSales, contentScopeId]);
 
+  const roleByContentId = React.useMemo(() => {
+    const out = new Map<string, string>();
+    for (const row of royaltyRows) {
+      const contentId = String(row.contentId || "").trim();
+      if (!contentId) continue;
+      const total = Number(row.totalSalesSats || 0) || 0;
+      const allocation = Number(row.allocationSats || 0) || 0;
+      const isOwner = total > 0 && Math.abs(total - allocation) < 0.5;
+      out.set(contentId, isOwner ? "Owner" : "Participant");
+    }
+    return out;
+  }, [royaltyRows]);
+
+  const payoutStatusLabel = React.useCallback((row: SaleRow) => {
+    const raw = String(row.payoutStatus || "").trim().toLowerCase();
+    if (raw === "paid") return "Paid";
+    if (raw === "failed") return "Failed";
+    if (raw === "forwarding") return "Forwarding";
+    return "Pending";
+  }, []);
+
+  const sourceLabelForSale = React.useCallback((row: SaleRow) => {
+    const payoutRail = String(row.payoutRail || "").trim().toLowerCase();
+    const rail = String(row.rail || "").trim().toLowerCase();
+    if (payoutRail === "creator_node" || rail === "node_invoice") return "Creator node";
+    if (payoutRail === "forwarded" || rail === "forwarded") return "Forwarded";
+    if (payoutRail === "provider_custody" || rail === "provider_custody") return "Provider custody";
+    return "Other";
+  }, []);
+
+  const roleLabelForSale = React.useCallback((row: SaleRow) => {
+    const contentId = String(row.content?.id || row.contentId || "").trim();
+    return roleByContentId.get(contentId) || "Participant";
+  }, [roleByContentId]);
+
+  const filteredSales = React.useMemo(() => {
+    const q = contentFilter.trim().toLowerCase();
+    return contentScopedSales.filter((row) => {
+      const title = String(row.content?.title || "").toLowerCase();
+      const matchesContent = !q || title.includes(q);
+      const status = payoutStatusLabel(row).toLowerCase();
+      const source = sourceLabelForSale(row).toLowerCase();
+      const role = roleLabelForSale(row).toLowerCase();
+      const matchesStatus = statusFilter === "all" || status === statusFilter;
+      const matchesSource = sourceFilter === "all" || source === sourceFilter;
+      const matchesRole = roleFilter === "all" || role === roleFilter;
+      return matchesContent && matchesStatus && matchesSource && matchesRole;
+    });
+  }, [contentScopedSales, contentFilter, payoutStatusLabel, roleFilter, roleLabelForSale, sourceFilter, sourceLabelForSale, statusFilter]);
+
+  const availableStatuses = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const row of contentScopedSales) set.add(payoutStatusLabel(row).toLowerCase());
+    return Array.from(set).sort();
+  }, [contentScopedSales, payoutStatusLabel]);
+
+  const availableSources = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const row of contentScopedSales) set.add(sourceLabelForSale(row).toLowerCase());
+    return Array.from(set).sort();
+  }, [contentScopedSales, sourceLabelForSale]);
+
+  const availableRoles = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const row of contentScopedSales) set.add(roleLabelForSale(row).toLowerCase());
+    return Array.from(set).sort();
+  }, [contentScopedSales, roleLabelForSale]);
+
   const totals = React.useMemo(() => {
-    return contentScopedSales.reduce(
+    return filteredSales.reduce(
       (acc, s) => {
         acc.gross += Number(s.grossAmountSats ?? s.amountSats ?? 0) || 0;
         acc.providerInvoicingFee += Number(s.providerInvoicingFeeSats ?? s.providerFeeSats ?? 0) || 0;
@@ -248,16 +325,16 @@ export default function SalesPage({
         creatorNet: 0
       }
     );
-  }, [contentScopedSales]);
+  }, [filteredSales]);
 
   const selectedSale = React.useMemo(() => {
-    if (!contentScopedSales.length) return null;
+    if (!filteredSales.length) return null;
     if (selectedSaleId) {
-      const match = contentScopedSales.find((row) => row.id === selectedSaleId);
+      const match = filteredSales.find((row) => row.id === selectedSaleId);
       if (match) return match;
     }
-    return contentScopedSales[0];
-  }, [contentScopedSales, selectedSaleId]);
+    return filteredSales[0];
+  }, [filteredSales, selectedSaleId]);
 
   const scopedWorkTotals = React.useMemo(() => {
     const contentId = String(selectedSale?.content?.id || "").trim();
@@ -266,7 +343,7 @@ export default function SalesPage({
     let net = 0;
     let events = 0;
     let latestRecognizedAt = "";
-    for (const row of contentScopedSales) {
+    for (const row of filteredSales) {
       if (String(row.content?.id || "").trim() !== contentId) continue;
       gross += Number(row.grossAmountSats ?? row.amountSats ?? 0) || 0;
       net += Number(row.creatorNetSats ?? row.amountSats ?? 0) || 0;
@@ -276,7 +353,7 @@ export default function SalesPage({
       }
     }
     return { gross, net, events, latestRecognizedAt };
-  }, [contentScopedSales, selectedSale?.content?.id]);
+  }, [filteredSales, selectedSale?.content?.id]);
 
   const scopedSplitSnapshot = React.useMemo(() => {
     const contentId = String(selectedSale?.content?.id || selectedSale?.contentId || "").trim();
@@ -298,14 +375,14 @@ export default function SalesPage({
   }, [royaltyRows, selectedSale?.content?.id, selectedSale?.contentId]);
 
   React.useEffect(() => {
-    if (!contentScopedSales.length) {
+    if (!filteredSales.length) {
       setSelectedSaleId(null);
       return;
     }
-    if (!selectedSaleId || !contentScopedSales.some((row) => row.id === selectedSaleId)) {
-      setSelectedSaleId(contentScopedSales[0].id);
+    if (!selectedSaleId || !filteredSales.some((row) => row.id === selectedSaleId)) {
+      setSelectedSaleId(filteredSales[0].id);
     }
-  }, [contentScopedSales, selectedSaleId]);
+  }, [filteredSales, selectedSaleId]);
 
   if (disabled) {
     return <LockedFeaturePanel title="Revenue" />;
@@ -322,9 +399,15 @@ export default function SalesPage({
             onBasisChange={setTimeBasis}
             period={timePeriod}
             onPeriodChange={setTimePeriod}
-            basisOptions={["sale"]}
+            basisOptions={["sale", "earned", "paid"]}
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
-            helperText="Sales are scoped by buyer payment date (recognized sale time)."
+            helperText={
+              timeBasis === "paid"
+                ? "Sales are scoped by paid/remitted date where available, with recognized-time fallback."
+                : timeBasis === "earned"
+                  ? "Sales are scoped by earned time using recognized buyer-payment timestamps."
+                  : "Sales are scoped by buyer payment date (recognized sale time)."
+            }
           />
         </div>
       </div>
@@ -441,6 +524,60 @@ export default function SalesPage({
             )}
           </div>
 
+          <div className="mt-3">
+            <div className="text-xs text-neutral-500">Filter rows:</div>
+            <div className="mt-2 grid gap-2 rounded-lg border border-neutral-800 bg-neutral-900/30 p-2 text-xs md:grid-cols-4">
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Content</span>
+                <input
+                  value={contentFilter}
+                  onChange={(e) => setContentFilter(e.target.value)}
+                  placeholder="Search title..."
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Status</span>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                >
+                  <option value="all">All</option>
+                  {availableStatuses.map((status) => (
+                    <option key={status} value={status}>{status.charAt(0).toUpperCase() + status.slice(1)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Source</span>
+                <select
+                  value={sourceFilter}
+                  onChange={(e) => setSourceFilter(e.target.value)}
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                >
+                  <option value="all">All</option>
+                  {availableSources.map((source) => (
+                    <option key={source} value={source}>{source.charAt(0).toUpperCase() + source.slice(1)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Role</span>
+                <select
+                  value={roleFilter}
+                  onChange={(e) => setRoleFilter(e.target.value)}
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                >
+                  <option value="all">All</option>
+                  {availableRoles.map((role) => (
+                    <option key={role} value={role}>{role.charAt(0).toUpperCase() + role.slice(1)}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
+
           <div className="mt-3 overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -463,15 +600,15 @@ export default function SalesPage({
                     </td>
                   </tr>
                 ) : null}
-                {!loading && contentScopedSales.length === 0 ? (
+                {!loading && filteredSales.length === 0 ? (
                   <tr>
                     <td colSpan={hasInvoiceCommerce ? 8 : 5} className="py-4 px-3 text-sm text-neutral-400">
-                      {sales.length === 0 ? "No sales recorded yet." : contentScopeId ? "No sales rows for this work in the selected period." : "No sales rows in the selected period."}
+                      {sales.length === 0 ? "No sales recorded yet." : contentScopeId ? "No sales rows for this work in the selected scope." : "No sales rows in the selected scope."}
                     </td>
                   </tr>
                 ) : null}
                 {!loading &&
-                  contentScopedSales.map((s) => {
+                  filteredSales.map((s) => {
                     const isScoped = selectedSale?.id === s.id;
                     return (
                       <tr

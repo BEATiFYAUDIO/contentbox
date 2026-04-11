@@ -109,6 +109,10 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
   const [timeBasis, setTimeBasis] = React.useState<TimeBasis>("paid");
   const [timePeriod, setTimePeriod] = React.useState<TimePeriod>("all");
   const [contentScopeFilter, setContentScopeFilter] = React.useState<{ contentId?: string; title: string } | null>(null);
+  const [contentFilter, setContentFilter] = React.useState("");
+  const [statusFilter, setStatusFilter] = React.useState("all");
+  const [sourceFilter, setSourceFilter] = React.useState("all");
+  const [roleFilter, setRoleFilter] = React.useState("all");
 
   React.useEffect(() => {
     if (!bridgeFilter) return;
@@ -294,12 +298,67 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
           return idMatch || titleMatch;
         })
       : rows;
+    const rowTimestampForScope = (row: PayoutRow): string => {
+      if (timeBasis === "paid") return String(row.remittedAt || row.updatedAt || row.createdAt || "");
+      // Payout ledger fallback for sale/earned views where remittedAt may be absent.
+      return String(row.updatedAt || row.createdAt || row.remittedAt || "");
+    };
     if (timePeriod === "all") return scopedByContent;
-    return scopedByContent.filter((row) => isWithinPeriod(row.remittedAt, timePeriod));
-  }, [payoutRows, timePeriod, contentScopeFilter, titleByContent]);
+    return scopedByContent.filter((row) => isWithinPeriod(rowTimestampForScope(row), timePeriod));
+  }, [payoutRows, timePeriod, timeBasis, contentScopeFilter, titleByContent]);
+
+  const payoutRowSource = React.useCallback(
+    (row: PayoutRow): string => {
+      const contentId = String(row.content?.id || row.contentId || "").trim();
+      return originByContent[contentId] || "Local";
+    },
+    [originByContent]
+  );
+
+  const payoutRowRole = React.useCallback(
+    (row: PayoutRow): string => {
+      const contentId = String(row.content?.id || row.contentId || "").trim();
+      return roleByContent[contentId] || "Participant";
+    },
+    [roleByContent]
+  );
+
+  const filteredPayoutRows = React.useMemo(() => {
+    const q = contentFilter.trim().toLowerCase();
+    return visiblePayoutRows.filter((row) => {
+      const contentId = String(row.content?.id || row.contentId || "").trim();
+      const title = String(row.content?.title || titleByContent[contentId] || "Content").trim().toLowerCase();
+      const status = payoutStatusLabel(row.status).toLowerCase();
+      const source = payoutRowSource(row).toLowerCase();
+      const role = payoutRowRole(row).toLowerCase();
+      const matchesContent = !q || title.includes(q);
+      const matchesStatus = statusFilter === "all" || status === statusFilter;
+      const matchesSource = sourceFilter === "all" || source === sourceFilter;
+      const matchesRole = roleFilter === "all" || role === roleFilter;
+      return matchesContent && matchesStatus && matchesSource && matchesRole;
+    });
+  }, [contentFilter, payoutRowRole, payoutRowSource, roleFilter, sourceFilter, statusFilter, titleByContent, visiblePayoutRows]);
+
+  const availableStatuses = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const row of visiblePayoutRows) set.add(payoutStatusLabel(row.status).toLowerCase());
+    return Array.from(set).sort();
+  }, [visiblePayoutRows]);
+
+  const availableSources = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const row of visiblePayoutRows) set.add(payoutRowSource(row).toLowerCase());
+    return Array.from(set).sort();
+  }, [payoutRowSource, visiblePayoutRows]);
+
+  const availableRoles = React.useMemo(() => {
+    const set = new Set<string>();
+    for (const row of visiblePayoutRows) set.add(payoutRowRole(row).toLowerCase());
+    return Array.from(set).sort();
+  }, [payoutRowRole, visiblePayoutRows]);
 
   const scopedPayoutTotals = React.useMemo(() => {
-    return visiblePayoutRows.reduce(
+    return filteredPayoutRows.reduce(
       (acc, row) => {
         const amount = Math.max(0, Number(row.netAmountSats ?? row.amountSats ?? 0) || 0);
         if (row.status === "paid") {
@@ -313,7 +372,7 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
       },
       { paid: 0, payable: 0, failed: 0 }
     );
-  }, [visiblePayoutRows]);
+  }, [filteredPayoutRows]);
 
   const payoutContentId = React.useCallback((row: PayoutRow) => {
     return String(row.content?.id || row.contentId || "").trim();
@@ -420,12 +479,16 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
             onBasisChange={setTimeBasis}
             period={timePeriod}
             onPeriodChange={setTimePeriod}
-            basisOptions={["paid"]}
+            basisOptions={["sale", "earned", "paid"]}
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
-            helperText="Payouts are scoped by paid/remitted date when a remitted timestamp is present."
+            helperText={
+              timeBasis === "paid"
+                ? "Payouts are scoped by paid/remitted date where available."
+                : "Payouts are scoped by payout row activity time."
+            }
           />
         </div>
-        {timePeriod !== "all" && rowsMissingPaidTimestamp > 0 ? (
+        {timeBasis === "paid" && timePeriod !== "all" && rowsMissingPaidTimestamp > 0 ? (
           <div className="mt-2 text-xs text-neutral-500">
             {rowsMissingPaidTimestamp} non-remitted rows are excluded from this paid-time period scope.
           </div>
@@ -445,6 +508,65 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
           </div>
         </div>
         <div className="mt-3 overflow-x-auto">
+          <div className="mb-3">
+            <div className="text-xs text-neutral-500">Filter rows:</div>
+            <div className="mt-2 grid gap-2 rounded-lg border border-neutral-800 bg-neutral-900/30 p-2 text-xs md:grid-cols-4">
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Content</span>
+                <input
+                  value={contentFilter}
+                  onChange={(e) => setContentFilter(e.target.value)}
+                  placeholder="Search title..."
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                />
+              </label>
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Status</span>
+                <select
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                >
+                  <option value="all">All</option>
+                  {availableStatuses.map((status) => (
+                    <option key={status} value={status}>
+                      {status.charAt(0).toUpperCase() + status.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Source</span>
+                <select
+                  value={sourceFilter}
+                  onChange={(e) => setSourceFilter(e.target.value)}
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                >
+                  <option value="all">All</option>
+                  {availableSources.map((source) => (
+                    <option key={source} value={source}>
+                      {source.charAt(0).toUpperCase() + source.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="flex items-center gap-2 text-neutral-400">
+                <span>Role</span>
+                <select
+                  value={roleFilter}
+                  onChange={(e) => setRoleFilter(e.target.value)}
+                  className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+                >
+                  <option value="all">All</option>
+                  {availableRoles.map((role) => (
+                    <option key={role} value={role}>
+                      {role.charAt(0).toUpperCase() + role.slice(1)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </div>
           {contentScopeFilter ? (
             <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs">
               <span className="text-neutral-500">Scope:</span>
@@ -474,18 +596,18 @@ export default function PayoutRailsPage({ bridgeFilter = null }: PayoutRailsPage
               </tr>
             </thead>
             <tbody>
-              {visiblePayoutRows.length === 0 ? (
+              {filteredPayoutRows.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="py-3 px-3 text-neutral-500">
                     {payoutRows.length === 0
                       ? "No payout execution rows yet for this account."
                       : contentScopeFilter
-                        ? "No payout rows for the selected work in this paid-time scope."
-                        : "No payout rows in the selected paid-time period."}
+                        ? "No payout rows for the selected work in this scope."
+                        : "No payout rows in the selected scope."}
                   </td>
                 </tr>
               ) : (
-                visiblePayoutRows.map((row) => (
+                filteredPayoutRows.map((row) => (
                     <React.Fragment key={row.id}>
                       <tr className="border-t border-neutral-800">
                         <td className="py-2 px-3 text-xs text-neutral-400">

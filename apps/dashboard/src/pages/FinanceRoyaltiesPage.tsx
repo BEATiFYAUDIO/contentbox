@@ -608,11 +608,14 @@ export default function FinanceRoyaltiesPage({
   const scopedTopline = useMemo(() => {
     return summaryScopedEarningsLedgerRows.reduce(
       (acc, row) => {
-        const amt = Math.max(0, Number(row.amountSats || 0) || 0);
-        acc.grossEarned += amt;
-        acc.fees += Math.max(0, Number(row.feeWithheldSats || 0) || 0);
-        if (row.status === "Paid") acc.netPaid += amt;
-        if (row.status === "Pending" || row.status === "Processing" || row.status === "Partial") acc.netPayable += amt;
+        const gross = Math.max(0, Number(row.grossShareSats || 0) || 0);
+        const fees = Math.max(0, Number(row.feeWithheldSats || 0) || 0);
+        const netPaid = Math.max(0, Number(row.netPaidSats || 0) || 0);
+        const netPayable = Math.max(0, Number(row.netPayableSats || 0) || 0);
+        acc.grossEarned += gross;
+        acc.fees += fees;
+        acc.netPaid += netPaid;
+        acc.netPayable += netPayable;
         return acc;
       },
       { grossEarned: 0, fees: 0, netPaid: 0, netPayable: 0 }

@@ -232,11 +232,45 @@ export default function SplitParticipationsPage(props: {
   const collaborationCount = participations.length + remoteRoyalties.length;
   const ownedCount = ownedLocalWorks.length;
   const collaborationOwnedCount = collaborativeLocalWorks.length;
+
+  const canonicalById = new Map<string, string>();
+  for (const row of works) {
+    const id = String(row.contentId || "").trim();
+    const title = String(row.title || "").trim();
+    if (id && title) canonicalById.set(id, title);
+  }
+  for (const row of remoteRoyalties) {
+    const id = String(row.contentId || "").trim();
+    const title = String(row.contentTitle || "").trim();
+    if (id && title && !canonicalById.has(id)) canonicalById.set(id, title);
+  }
+  for (const row of upstream) {
+    const parentId = String(row.parentContentId || "").trim();
+    const parentTitle = String(row.parentTitle || "").trim();
+    const childId = String(row.childContentId || "").trim();
+    const childTitle = String(row.childTitle || "").trim();
+    if (parentId && parentTitle && !canonicalById.has(parentId)) canonicalById.set(parentId, parentTitle);
+    if (childId && childTitle && !canonicalById.has(childId)) canonicalById.set(childId, childTitle);
+  }
+
+  const canonicalIdByLowerTitle = new Map<string, string>();
+  for (const [id, title] of canonicalById.entries()) {
+    const key = title.toLowerCase();
+    if (!canonicalIdByLowerTitle.has(key)) canonicalIdByLowerTitle.set(key, id);
+  }
+
   const openEarningsView = (contentId?: string | null, title?: string | null) => {
-    const id = String(contentId || "").trim();
+    const rawId = String(contentId || "").trim();
+    const rawTitle = String(title || "").trim();
+    const titleKey = rawTitle.toLowerCase();
+    let id = rawId;
+    if (titleKey && canonicalIdByLowerTitle.has(titleKey)) {
+      id = String(canonicalIdByLowerTitle.get(titleKey) || "").trim() || id;
+    }
+    const canonicalTitle = (id && canonicalById.get(id)) || rawTitle;
     const params = new URLSearchParams();
     if (id) params.set("contentId", id);
-    const t = String(title || "").trim();
+    const t = String(canonicalTitle || "").trim();
     if (t) params.set("title", t);
     params.set("source", "royalties");
     const query = params.toString();

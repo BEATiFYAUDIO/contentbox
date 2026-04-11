@@ -243,6 +243,10 @@ export default function EarningsV2Page({
   const [contentView, setContentView] = useState<ContentView>("performance");
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("earned");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("all");
+  const [contentFilter, setContentFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [roleFilter, setRoleFilter] = useState("all");
   const [scopeHint, setScopeHint] = useState<string | null>(null);
   const [scopeTitle, setScopeTitle] = useState<string | null>(null);
   const [strictRoyaltiesScope, setStrictRoyaltiesScope] = useState(false);
@@ -363,22 +367,6 @@ export default function EarningsV2Page({
     if (!scopeId) return earningsViewSales;
     return earningsViewSales.filter((row) => String(row.contentId || "").trim() === scopeId);
   }, [earningsViewSales, activeContentScopeId]);
-
-  const summary = useMemo(() => {
-    return contentScopedEarningsViewSales.reduce(
-      (acc, row) => {
-        const fees = feeBreakdownForRow(row);
-        acc.gross += fees.gross;
-        acc.earnings += fees.earnings;
-        acc.fees += Math.max(0, fees.totalProviderFees);
-        const payoutState = normalizePayoutState(row.payoutStatus);
-        if (payoutState === "paid") acc.paidOut += fees.earnings;
-        if (payoutState === "pending" || payoutState === "forwarding") acc.pending += fees.earnings;
-        return acc;
-      },
-      { gross: 0, earnings: 0, fees: 0, paidOut: 0, pending: 0 }
-    );
-  }, [contentScopedEarningsViewSales]);
 
   const byContent = useMemo<ByContentRow[]>(() => {
     const payoutByContent = new Map<string, { earnings: number; paid: number; pending: number; failed: number }>();
@@ -606,14 +594,61 @@ export default function EarningsV2Page({
     return rows;
   }, [byContent, contentView, momentumByContent.map]);
 
+  const availableStatuses = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of byContentRows) set.add(String(row.latestStatus || "unknown").toLowerCase());
+    return Array.from(set).sort();
+  }, [byContentRows]);
+
+  const availableSources = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of byContentRows) set.add(remunerationLabelForRow(row).toLowerCase());
+    return Array.from(set).sort();
+  }, [byContentRows]);
+
+  const availableRoles = useMemo(() => {
+    const set = new Set<string>();
+    for (const row of byContentRows) set.add(String(row.roleLabel || "").toLowerCase());
+    return Array.from(set).sort();
+  }, [byContentRows]);
+
+  const filteredByContentRows = useMemo(() => {
+    const q = contentFilter.trim().toLowerCase();
+    return byContentRows.filter((row) => {
+      const contentTitle = String(row.contentTitle || "").toLowerCase();
+      const status = String(row.latestStatus || "unknown").toLowerCase();
+      const source = remunerationLabelForRow(row).toLowerCase();
+      const role = String(row.roleLabel || "").toLowerCase();
+      const matchesContent = !q || contentTitle.includes(q);
+      const matchesStatus = statusFilter === "all" || status === statusFilter;
+      const matchesSource = sourceFilter === "all" || source === sourceFilter;
+      const matchesRole = roleFilter === "all" || role === roleFilter;
+      return matchesContent && matchesStatus && matchesSource && matchesRole;
+    });
+  }, [byContentRows, contentFilter, roleFilter, sourceFilter, statusFilter]);
+
+  const summary = useMemo(() => {
+    return filteredByContentRows.reduce(
+      (acc, row) => {
+        acc.gross += row.gross;
+        acc.earnings += row.earnings;
+        acc.fees += Math.max(0, row.totalProviderFees);
+        acc.paidOut += Math.max(0, row.paid);
+        acc.pending += Math.max(0, row.pending);
+        return acc;
+      },
+      { gross: 0, earnings: 0, fees: 0, paidOut: 0, pending: 0 }
+    );
+  }, [filteredByContentRows]);
+
   const scopedRow = useMemo(() => {
-    if (!byContent.length) return null;
+    if (!filteredByContentRows.length) return null;
     if (activeContentScopeId) {
-      const match = byContent.find((row) => row.contentId === activeContentScopeId);
+      const match = filteredByContentRows.find((row) => row.contentId === activeContentScopeId);
       if (match) return match;
     }
-    return byContent[0];
-  }, [byContent, activeContentScopeId]);
+    return filteredByContentRows[0];
+  }, [filteredByContentRows, activeContentScopeId]);
 
   const scopedSalesRows = useMemo(() => {
     if (!scopedRow) return [];
@@ -646,15 +681,15 @@ export default function EarningsV2Page({
   }, [payoutItems, scopedRow]);
 
   useEffect(() => {
-    if (!byContent.length) {
+    if (!filteredByContentRows.length) {
       setScopedContentId(null);
       return;
     }
     if (strictRoyaltiesScope && scopedContentId) return;
-    if (!scopedContentId || !byContent.some((row) => row.contentId === scopedContentId)) {
-      setScopedContentId(byContent[0].contentId);
+    if (!scopedContentId || !filteredByContentRows.some((row) => row.contentId === scopedContentId)) {
+      setScopedContentId(filteredByContentRows[0].contentId);
     }
-  }, [byContent, scopedContentId, strictRoyaltiesScope]);
+  }, [filteredByContentRows, scopedContentId, strictRoyaltiesScope]);
 
   useEffect(() => {
     if (contentView !== "momentum" && contentView !== "momentum_delta") return;
@@ -697,7 +732,10 @@ export default function EarningsV2Page({
     return "Grouped by payout state signal (mixed, pending, paid).";
   }, [contentView, momentumByContent.hasRecentSignal]);
 
-  const totalEarningsAll = useMemo(() => byContent.reduce((acc, row) => acc + row.earnings, 0), [byContent]);
+  const totalEarningsAll = useMemo(
+    () => filteredByContentRows.reduce((acc, row) => acc + row.earnings, 0),
+    [filteredByContentRows]
+  );
 
   const contentInsightLabel = (row: ByContentRow, index: number) => {
     if (contentView === "top_earners") return `#${index + 1}`;
@@ -809,12 +847,14 @@ export default function EarningsV2Page({
             onBasisChange={setTimeBasis}
             period={timePeriod}
             onPeriodChange={setTimePeriod}
-            basisOptions={["earned", "paid"]}
+            basisOptions={["sale", "earned", "paid"]}
             periodOptions={["1d", "7d", "30d", "90d", "all"]}
             helperText={
               timeBasis === "paid"
                 ? "Earnings are scoped by paid/remitted time where available, with recognized-time fallback."
-                : "Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
+                : timeBasis === "sale"
+                  ? "Earnings are scoped by sale-recognized time."
+                  : "Earnings are scoped by earned time using recognized timestamps from existing earnings source rows."
             }
           />
         </div>
@@ -879,6 +919,66 @@ export default function EarningsV2Page({
             <div className="mt-2 text-xs text-neutral-500">{viewDescription}</div>
           </>
         )}
+        <div className="mt-3">
+          <div className="text-xs text-neutral-500">Filter rows:</div>
+          <div className="mt-2 grid gap-2 rounded-lg border border-neutral-800 bg-neutral-900/30 p-2 text-xs md:grid-cols-4">
+            <label className="flex items-center gap-2 text-neutral-400">
+              <span>Content</span>
+              <input
+                value={contentFilter}
+                onChange={(e) => setContentFilter(e.target.value)}
+                placeholder="Search title..."
+                disabled={strictWorkScopeActive}
+                className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200 disabled:opacity-60"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-neutral-400">
+              <span>Status</span>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+              >
+                <option value="all">All</option>
+                {availableStatuses.map((status) => (
+                  <option key={status} value={status}>
+                    {status.charAt(0).toUpperCase() + status.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-neutral-400">
+              <span>Source</span>
+              <select
+                value={sourceFilter}
+                onChange={(e) => setSourceFilter(e.target.value)}
+                className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+              >
+                <option value="all">All</option>
+                {availableSources.map((source) => (
+                  <option key={source} value={source}>
+                    {source.charAt(0).toUpperCase() + source.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-neutral-400">
+              <span>Role</span>
+              <select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+                className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
+              >
+                <option value="all">All</option>
+                {availableRoles.map((role) => (
+                  <option key={role} value={role}>
+                    {role.charAt(0).toUpperCase() + role.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        </div>
         {!strictWorkScopeActive ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs">
             <span className="text-neutral-500">Scope:</span>
@@ -918,7 +1018,7 @@ export default function EarningsV2Page({
                   </tr>
                 </thead>
                 <tbody>
-                  {byContentRows.length === 0 ? (
+                  {filteredByContentRows.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="py-3 text-neutral-500">
                         {sales.length === 0 ? "No earnings rows yet." : "No earnings rows in the selected period."}
@@ -926,7 +1026,7 @@ export default function EarningsV2Page({
                     </tr>
                   ) : contentView === "payout_state" ? (
                     (["mixed", "pending", "paid"] as PayoutBucket[]).map((bucket) => {
-                      const bucketRows = byContentRows.filter((row) => payoutBucketForRow(row) === bucket);
+                      const bucketRows = filteredByContentRows.filter((row) => payoutBucketForRow(row) === bucket);
                       if (!bucketRows.length) return null;
                       return (
                         <Fragment key={`bucket-${bucket}`}>
@@ -964,7 +1064,7 @@ export default function EarningsV2Page({
                     })
                   ) : contentView === "by_role" ? (
                     (["owner", "collaborator"] as RoleViewFilter[]).map((roleBucket) => {
-                      const roleRows = byContentRows.filter((row) => classifyRoleBucket(row) === roleBucket);
+                      const roleRows = filteredByContentRows.filter((row) => classifyRoleBucket(row) === roleBucket);
                       if (!roleRows.length) return null;
                       return (
                         <Fragment key={`role-${roleBucket}`}>
@@ -1001,7 +1101,7 @@ export default function EarningsV2Page({
                       );
                     })
                   ) : (
-                    byContentRows.map((row, index) => (
+                    filteredByContentRows.map((row, index) => (
                       <tr
                         key={row.contentId}
                         className={[
