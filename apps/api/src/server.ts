@@ -8239,7 +8239,7 @@ function getRuntimeIdentityDetail() {
 function getCapabilityContext() {
   const productTier = resolveProductTier().productTier;
   const paymentsMode = getPaymentsMode(productTier);
-  const publicStatus = getPublicStatus();
+  const publicStatus = getPublicStatusCached();
   const namedReady = publicStatus.mode === "named" && publicStatus.status === "online";
   const nodeMode = resolveRuntimeConfig().nodeMode;
   const providerConfig = getNetworkProviderConfig();
@@ -8299,7 +8299,7 @@ function resolveProviderServiceProfile(input: {
   providerCfg?: NetworkProviderConfig;
   ctx?: ReturnType<typeof getCapabilityContext>;
 }): ProviderServiceProfile {
-  const ctx = input.ctx || getCapabilityContext();
+  const ctx = input.ctx || getCapabilityContextCached();
   const providerCfg = input.providerCfg || getNetworkProviderConfig();
   const activeLocalOrigin =
     ctx.publicStatus.status === "online"
@@ -8391,7 +8391,7 @@ function sendAdvancedInactive(reply: any, ctx: ReturnType<typeof getCapabilityCo
 
 function requireFeature(featureName: string) {
   return async (_req: any, reply: any) => {
-    const ctx = getCapabilityContext();
+    const ctx = getCapabilityContextCached();
     if (isAdvancedInactive(ctx)) {
       const reason = capabilityReason(ctx, "publish", capabilityReasonContext(ctx));
       return reply.code(403).send({
@@ -8432,7 +8432,7 @@ function requireFeature(featureName: string) {
 
 function requireAdvancedTier(feature: "lightning" | "revenue" | "finance") {
   return async (_req: any, reply: any) => {
-    const ctx = getCapabilityContext();
+    const ctx = getCapabilityContextCached();
     if (ctx.productTier !== "basic") return;
     const reason =
       feature === "lightning"
@@ -22621,7 +22621,7 @@ function computeNodeScore(input: CreatorSignalNodeDetails): number {
 }
 
 async function getCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDetails> {
-  const status = getPublicStatus();
+  const status = getPublicStatusCached();
   const hasPublicTunnel = Boolean(status?.transport?.named?.online && status?.namedConfigured);
   let hasLightningConfigured = false;
   let canReceivePayments = false;
@@ -22687,9 +22687,9 @@ async function getCachedProfileServiceMode(): Promise<
   if (profileServiceModeCache && profileServiceModeCache.expiresAt > now) {
     return profileServiceModeCache.value;
   }
-  const profileCapabilityCtx = getCapabilityContext();
+  const profileCapabilityCtx = getCapabilityContextCached();
   const profileProviderConnection = deriveProviderCommerceConnectionState();
-  const profileSovereignReadiness = await getLocalSovereignReadiness();
+  const profileSovereignReadiness = await getLocalSovereignReadinessCached();
   const value = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
     localSovereignReady: profileSovereignReadiness.ready,
