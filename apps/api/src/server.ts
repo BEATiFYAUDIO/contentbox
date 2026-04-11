@@ -33185,6 +33185,37 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
   });
   if (!paymentIntent) return notFound(reply, "payment intent not found");
 
+  const inferEarningSourceType = (
+    participantRefRaw: string | null | undefined,
+    roleRaw: string | null | undefined
+  ): "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" => {
+    const participantRef = String(participantRefRaw || "").trim().toLowerCase();
+    const role = String(roleRaw || "").trim().toLowerCase();
+    if (participantRef.startsWith("upstream") || role === "upstream") return "upstream_royalty_earning";
+    if (participantRef.startsWith("derivative:") || role.startsWith("derivative")) return "derivative_creator_earning";
+    if (role === "owner") return "catalog_earning";
+    return "collaboration_earning";
+  };
+
+  const soldContent = paymentIntent.contentId
+    ? await prisma.contentItem.findUnique({
+        where: { id: paymentIntent.contentId },
+        select: { id: true, title: true, type: true }
+      })
+    : null;
+  const parentLink = paymentIntent.contentId
+    ? await prisma.contentLink.findFirst({
+        where: { childContentId: paymentIntent.contentId },
+        select: { parentContentId: true }
+      })
+    : null;
+  const sourceContent = parentLink?.parentContentId
+    ? await prisma.contentItem.findUnique({
+        where: { id: parentLink.parentContentId },
+        select: { id: true, title: true, type: true }
+      })
+    : null;
+
   const providerIntent = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
   const sale = await prisma.sale.findFirst({
     where: { intentId: paymentIntentId },
@@ -33207,8 +33238,13 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
       select: {
         id: true,
         providerPaymentIntentId: true,
+        contentId: true,
         participantRef: true,
         participantUserId: true,
+        participantEmail: true,
+        role: true,
+        bps: true,
+        allocationSource: true,
         splitParticipantId: true,
         amountSats: true
       },
@@ -33231,6 +33267,11 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
         status: true,
         payoutKey: true,
         payoutReference: true,
+        destinationType: true,
+        destinationSummary: true,
+        readinessReason: true,
+        lastError: true,
+        blockedReason: true,
         attemptCount: true,
         remittedAt: true,
         createdAt: true,
@@ -33242,6 +33283,8 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
       if (isMissingParticipantPayoutTableError(err)) return [];
       throw err;
     });
+  const accountingByIntent = await buildIntentParticipantAccountingMap([paymentIntentId]);
+  const accountingForIntent = accountingByIntent.get(paymentIntentId) || new Map<string, { grossShareSats: bigint; feeWithheldSats: bigint; netShareSats: bigint }>();
 
   const gross = BigInt(String(paymentIntent.amountSats || "0"));
   const providerFee = BigInt(String(providerIntent?.providerFeeSats || "0"));
@@ -33266,6 +33309,18 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
       return status === "failed" || status === "blocked";
     })
     .reduce((sum, row) => sum + BigInt(String(row.amountSats || "0")), 0n);
+  const allocationGrossShareTotal = allocations.reduce((sum, row) => {
+    const accounting = accountingForIntent.get(String(row.id || "").trim());
+    return sum + (accounting?.grossShareSats || BigInt(String(row.amountSats || "0")));
+  }, 0n);
+  const allocationFeeWithheldTotal = allocations.reduce((sum, row) => {
+    const accounting = accountingForIntent.get(String(row.id || "").trim());
+    return sum + (accounting?.feeWithheldSats || 0n);
+  }, 0n);
+  const allocationNetObligationTotal = allocations.reduce((sum, row) => {
+    const accounting = accountingForIntent.get(String(row.id || "").trim());
+    return sum + (accounting?.netShareSats || BigInt(String(row.amountSats || "0")));
+  }, 0n);
 
   const duplicatePayoutKeys = Array.from(
     payoutRows.reduce((acc, row) => {
@@ -33297,7 +33352,21 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
       providerId: paymentIntent.providerId || null,
       status: paymentIntent.status,
       paidAt: paymentIntent.paidAt?.toISOString?.() || null,
-      contentId: paymentIntent.contentId
+      contentId: paymentIntent.contentId,
+      soldWork: soldContent
+        ? {
+            id: soldContent.id,
+            title: soldContent.title,
+            type: soldContent.type
+          }
+        : null,
+      sourceWork: sourceContent
+        ? {
+            id: sourceContent.id,
+            title: sourceContent.title,
+            type: sourceContent.type
+          }
+        : null
     },
     providerPaymentIntent: providerIntent
       ? {
@@ -33335,10 +33404,27 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
       amountSats: String(row.amountSats)
     })),
     allocations: allocations.map((row) => ({
+      ...(function () {
+        const accounting = accountingForIntent.get(String(row.id || "").trim());
+        const participantRef = String(row.participantRef || "").trim() || null;
+        const role = String(row.role || "").trim() || null;
+        const amount = BigInt(String(row.amountSats || "0"));
+        return {
+          sourceType: inferEarningSourceType(participantRef, role),
+          grossShareSats: (accounting?.grossShareSats || amount).toString(),
+          feeWithheldSats: (accounting?.feeWithheldSats || 0n).toString(),
+          netObligationSats: (accounting?.netShareSats || amount).toString()
+        };
+      })(),
       id: row.id,
       providerPaymentIntentId: row.providerPaymentIntentId,
+      contentId: row.contentId,
       participantRef: row.participantRef,
       participantUserId: row.participantUserId || null,
+      participantEmail: row.participantEmail || null,
+      role: row.role || null,
+      bps: Number(row.bps || 0),
+      allocationSource: row.allocationSource || null,
       splitParticipantId: row.splitParticipantId || null,
       amountSats: String(row.amountSats)
     })),
@@ -33351,10 +33437,28 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
         allocationId: row.allocationId,
         participantRef: allocation?.participantRef || null,
         participantUserId: allocation?.participantUserId || null,
+        participantEmail: allocation?.participantEmail || null,
+        role: allocation?.role || null,
+        sourceType: inferEarningSourceType(allocation?.participantRef, allocation?.role),
+        allocationSource: allocation?.allocationSource || null,
+        grossShareSats: allocation
+          ? (accountingForIntent.get(String(allocation.id || "").trim())?.grossShareSats || BigInt(String(allocation.amountSats || "0"))).toString()
+          : String(row.amountSats || "0"),
+        feeWithheldSats: allocation
+          ? (accountingForIntent.get(String(allocation.id || "").trim())?.feeWithheldSats || 0n).toString()
+          : "0",
+        netAmountSats: allocation
+          ? (accountingForIntent.get(String(allocation.id || "").trim())?.netShareSats || BigInt(String(allocation.amountSats || "0"))).toString()
+          : String(row.amountSats || "0"),
         amountSats: String(row.amountSats),
         status: row.status,
         payoutKey: row.payoutKey || null,
         payoutReference: row.payoutReference || null,
+        destinationType: row.destinationType || null,
+        destinationSummary: row.destinationSummary || null,
+        readinessReason: row.readinessReason || null,
+        lastError: row.lastError || null,
+        blockedReason: row.blockedReason || null,
         attemptCount: row.attemptCount,
         remittedAt: row.remittedAt?.toISOString?.() || null,
         createdAt: row.createdAt?.toISOString?.() || null,
@@ -33370,7 +33474,10 @@ app.get("/api/provider/payment-intents/:id/audit", { preHandler: requireAuth }, 
       payoutTotalSats: payoutTotal.toString(),
       payoutPaidSats: paidTotal.toString(),
       payoutPendingSats: pendingTotal.toString(),
-      payoutFailedSats: failedTotal.toString()
+      payoutFailedSats: failedTotal.toString(),
+      allocationGrossShareSats: allocationGrossShareTotal.toString(),
+      allocationFeeWithheldSats: allocationFeeWithheldTotal.toString(),
+      allocationNetObligationSats: allocationNetObligationTotal.toString()
     },
     duplicateChecks: {
       duplicatePayoutKeys,

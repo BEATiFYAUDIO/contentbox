@@ -206,6 +206,104 @@ type ParticipantPayoutRow = {
   } | null;
 };
 
+type ProviderIntentAuditPayload = {
+  paymentIntent: {
+    id: string;
+    amountSats: string;
+    providerId: string | null;
+    status: string;
+    paidAt: string | null;
+    contentId: string | null;
+    soldWork?: { id?: string | null; title?: string | null; type?: string | null } | null;
+    sourceWork?: { id?: string | null; title?: string | null; type?: string | null } | null;
+  };
+  providerPaymentIntent: {
+    id: string;
+    payoutExecutionMode: string | null;
+    providerRemitMode: string | null;
+    payoutStatus: string | null;
+    payoutSummaryStatus: string | null;
+    payoutLastError: string | null;
+    providerFeeSats: string;
+    providerInvoicingFeeSats: string;
+    providerDurableHostingFeeSats: string;
+    creatorNetSats: string;
+  } | null;
+  sale: {
+    id: string;
+    sellerUserId: string | null;
+    amountSats: string;
+    rail: string | null;
+  } | null;
+  settlement: {
+    id: string;
+    netAmountSats: string;
+  } | null;
+  allocations: Array<{
+    id: string;
+    providerPaymentIntentId: string;
+    contentId: string | null;
+    participantRef: string;
+    participantUserId: string | null;
+    participantEmail: string | null;
+    role: string | null;
+    bps: number;
+    allocationSource: string | null;
+    sourceType: "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" | string;
+    grossShareSats: string;
+    feeWithheldSats: string;
+    netObligationSats: string;
+    splitParticipantId: string | null;
+    amountSats: string;
+  }>;
+  participantPayoutRows: Array<{
+    id: string;
+    providerPaymentIntentId: string;
+    paymentIntentId: string;
+    allocationId: string;
+    participantRef: string | null;
+    participantUserId: string | null;
+    participantEmail: string | null;
+    role: string | null;
+    sourceType: "catalog_earning" | "collaboration_earning" | "derivative_creator_earning" | "upstream_royalty_earning" | string;
+    allocationSource: string | null;
+    grossShareSats: string;
+    feeWithheldSats: string;
+    netAmountSats: string;
+    amountSats: string;
+    status: string;
+    payoutKey: string | null;
+    payoutReference: string | null;
+    destinationType: string | null;
+    destinationSummary: string | null;
+    readinessReason: string | null;
+    lastError: string | null;
+    blockedReason: string | null;
+    attemptCount: number;
+    remittedAt: string | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+  }>;
+  sums: {
+    grossSats: string;
+    providerFeeSats: string;
+    netSplitPoolSats: string;
+    settlementLineTotalSats: string;
+    allocationTotalSats: string;
+    payoutTotalSats: string;
+    payoutPaidSats: string;
+    payoutPendingSats: string;
+    payoutFailedSats: string;
+    allocationGrossShareSats: string;
+    allocationFeeWithheldSats: string;
+    allocationNetObligationSats: string;
+  };
+  duplicateChecks?: {
+    duplicatePayoutKeys?: Array<{ payoutKey: string; count: number }>;
+    duplicateByParticipantRef?: Array<{ key: string; count: number }>;
+  };
+};
+
 function formatDate(value: string | null | undefined) {
   if (!value) return "—";
   const t = Date.parse(value);
@@ -339,6 +437,11 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   });
   const [showSecondaryPanels, setShowSecondaryPanels] = useState(false);
   const [expandedInspectorIntentId, setExpandedInspectorIntentId] = useState<string | null>(null);
+  const [expandedAuditIntentId, setExpandedAuditIntentId] = useState<string | null>(null);
+  const [auditByIntentId, setAuditByIntentId] = useState<Record<string, ProviderIntentAuditPayload>>({});
+  const [auditLoadingIntentId, setAuditLoadingIntentId] = useState<string | null>(null);
+  const [auditErrorByIntentId, setAuditErrorByIntentId] = useState<Record<string, string>>({});
+  const [showAuditDiagnostics, setShowAuditDiagnostics] = useState(false);
   const [showZeroContentRows, setShowZeroContentRows] = useState(false);
   const [lightningAdmin, setLightningAdmin] = useState<LightningAdminSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
@@ -452,6 +555,34 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       setRemitBusyId(null);
     }
   }, [load]);
+
+  const loadIntentAudit = useCallback(async (paymentIntentId: string) => {
+    const id = String(paymentIntentId || "").trim();
+    if (!id) return;
+    setAuditLoadingIntentId(id);
+    setAuditErrorByIntentId((prev) => ({ ...prev, [id]: "" }));
+    try {
+      const payload = await api<ProviderIntentAuditPayload>(`/api/provider/payment-intents/${encodeURIComponent(id)}/audit`, "GET");
+      if (payload) {
+        setAuditByIntentId((prev) => ({ ...prev, [id]: payload }));
+      }
+    } catch (e: any) {
+      setAuditErrorByIntentId((prev) => ({ ...prev, [id]: e?.message || "Failed to load intent audit." }));
+    } finally {
+      setAuditLoadingIntentId((current) => (current === id ? null : current));
+    }
+  }, []);
+
+  const openIntentAudit = useCallback(
+    async (paymentIntentId: string | null | undefined) => {
+      const id = String(paymentIntentId || "").trim();
+      if (!id) return;
+      setExpandedAuditIntentId((current) => (current === id ? null : id));
+      if (auditByIntentId[id]) return;
+      await loadIntentAudit(id);
+    },
+    [auditByIntentId, loadIntentAudit]
+  );
 
   useEffect(() => {
     load();
@@ -1263,6 +1394,46 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     };
   }, [creatorScopedParticipantPayouts, intentAllocationInspector, obligationTruth, creatorSummary.creatorNet]);
 
+  const activeAudit = useMemo(() => {
+    if (!expandedAuditIntentId) return null;
+    return auditByIntentId[expandedAuditIntentId] || null;
+  }, [expandedAuditIntentId, auditByIntentId]);
+
+  const activeAuditTimeline = useMemo(() => {
+    if (!activeAudit) return [] as Array<{ label: string; ts: string | null; detail?: string }>;
+    const rows = Array.isArray(activeAudit.participantPayoutRows) ? activeAudit.participantPayoutRows : [];
+    const firstCreated = rows.reduce<string | null>((acc, row) => {
+      const ts = String(row.createdAt || "").trim();
+      if (!ts) return acc;
+      if (!acc) return ts;
+      return Date.parse(ts) < Date.parse(acc) ? ts : acc;
+    }, null);
+    const firstForwarding = rows.find((row) => String(row.status || "").toLowerCase() === "forwarding")?.updatedAt || null;
+    const firstPaid = rows.find((row) => String(row.status || "").toLowerCase() === "paid")?.remittedAt || rows.find((row) => String(row.status || "").toLowerCase() === "paid")?.updatedAt || null;
+    const firstFailed = rows.find((row) => {
+      const s = String(row.status || "").toLowerCase();
+      return s === "failed" || s === "blocked";
+    })?.updatedAt || null;
+    const timeline = [
+      { label: "Intent created", ts: firstCreated || activeAudit.paymentIntent?.paidAt || null },
+      { label: "Intent paid", ts: activeAudit.paymentIntent?.paidAt || null },
+      { label: "Payout rows created", ts: firstCreated },
+      { label: "Forwarding attempted", ts: firstForwarding },
+      { label: "Paid/remitted", ts: firstPaid },
+      { label: "Failed/blocked", ts: firstFailed }
+    ];
+    return timeline.filter((event) => event.ts);
+  }, [activeAudit]);
+
+  const activeAuditDelta = useMemo(() => {
+    if (!activeAudit) return 0n;
+    const netObligations = toBigIntSats(activeAudit.sums.allocationNetObligationSats);
+    const netPaid = toBigIntSats(activeAudit.sums.payoutPaidSats);
+    const netPayable = toBigIntSats(activeAudit.sums.payoutPendingSats);
+    const atRisk = toBigIntSats(activeAudit.sums.payoutFailedSats);
+    return netObligations - (netPaid + netPayable + atRisk);
+  }, [activeAudit]);
+
   return (
     <div className="space-y-5">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
@@ -1468,6 +1639,13 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                       >
                         {expanded ? "Hide rows" : "Show rows"}
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => void openIntentAudit(intent.paymentIntentId)}
+                        className="rounded-md border border-cyan-700/70 px-2 py-1 text-xs text-cyan-200 hover:bg-cyan-900/30"
+                      >
+                        View audit
+                      </button>
                     </div>
                   </div>
                   {expanded ? (
@@ -1516,6 +1694,285 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           </div>
         )}
       </div>
+
+      {expandedAuditIntentId ? (
+        <div className="rounded-xl border border-cyan-800/40 bg-cyan-950/10 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-cyan-100">Provider Intent Audit</div>
+              <div className="mt-1 text-xs text-cyan-200/80">
+                Forensic drilldown for single-intent traceability.
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void loadIntentAudit(expandedAuditIntentId)}
+                disabled={auditLoadingIntentId === expandedAuditIntentId}
+                className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60 disabled:opacity-60"
+              >
+                {auditLoadingIntentId === expandedAuditIntentId ? "Refreshing..." : "Refresh audit"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setExpandedAuditIntentId(null)}
+                className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+
+          {auditErrorByIntentId[expandedAuditIntentId] ? (
+            <div className="mt-3 rounded-lg border border-rose-900/60 bg-rose-950/20 px-3 py-2 text-xs text-rose-300">
+              {auditErrorByIntentId[expandedAuditIntentId]}
+            </div>
+          ) : null}
+
+          {auditLoadingIntentId === expandedAuditIntentId && !activeAudit ? (
+            <div className="mt-3 text-sm text-neutral-300">Loading intent audit...</div>
+          ) : null}
+
+          {activeAudit ? (
+            <div className="mt-4 space-y-4">
+              <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Intent ID</div>
+                    <div className="mt-1 font-mono text-xs text-neutral-200">{activeAudit.paymentIntent.id}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider intent</div>
+                    <div className="mt-1 font-mono text-xs text-neutral-200">{activeAudit.providerPaymentIntent?.id || "—"}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Sold work</div>
+                    <div className="mt-1 text-xs text-neutral-200">{activeAudit.paymentIntent.soldWork?.title || "Untitled"}</div>
+                    <div className="text-[11px] text-neutral-500">{activeAudit.paymentIntent.soldWork?.id || activeAudit.paymentIntent.contentId || "—"}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Creator scope</div>
+                    <div className="mt-1 text-xs text-neutral-200">{selectedCreatorLabel}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Gross paid</div>
+                    <div className="mt-1 text-sm font-semibold text-neutral-100">{sats(activeAudit.sums.grossSats)} sats</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Paid timestamp</div>
+                    <div className="mt-1 text-xs text-neutral-200">{formatDate(activeAudit.paymentIntent.paidAt)}</div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider status</div>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(activeAudit.paymentIntent.status)}`}>
+                        intent:{activeAudit.paymentIntent.status}
+                      </span>
+                      {activeAudit.providerPaymentIntent?.payoutStatus ? (
+                        <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(activeAudit.providerPaymentIntent.payoutStatus)}`}>
+                          payout:{activeAudit.providerPaymentIntent.payoutStatus}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[11px] uppercase tracking-wide text-neutral-500">Receipt / reference</div>
+                    <div className="mt-1 font-mono text-xs text-neutral-200">{activeAudit.sale?.id || activeAudit.providerPaymentIntent?.id || "—"}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3">
+                <div className="text-xs uppercase tracking-wide text-neutral-500">Reconciliation</div>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    { label: "Gross received", value: `${sats(activeAudit.sums.grossSats)} sats`, tone: "text-neutral-100" },
+                    { label: "Allocated gross", value: `${sats(activeAudit.sums.allocationGrossShareSats)} sats`, tone: "text-neutral-100" },
+                    { label: "Fees withheld", value: `${sats(activeAudit.sums.allocationFeeWithheldSats)} sats`, tone: "text-amber-300" },
+                    { label: "Net obligations", value: `${sats(activeAudit.sums.allocationNetObligationSats)} sats`, tone: "text-cyan-200" },
+                    { label: "Net paid", value: `${sats(activeAudit.sums.payoutPaidSats)} sats`, tone: "text-emerald-300" },
+                    { label: "Net payable", value: `${sats(activeAudit.sums.payoutPendingSats)} sats`, tone: "text-amber-300" },
+                    { label: "At risk", value: `${sats(activeAudit.sums.payoutFailedSats)} sats`, tone: "text-rose-300" },
+                    { label: "Delta", value: `${sats(activeAuditDelta.toString())} sats`, tone: activeAuditDelta === 0n ? "text-emerald-300" : "text-rose-300" }
+                  ].map((metric) => (
+                    <div key={metric.label} className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">{metric.label}</div>
+                      <div className={`mt-1 text-sm font-semibold ${metric.tone}`}>{metric.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3">
+                <div className="text-sm font-semibold text-neutral-100">Allocation snapshot</div>
+                <div className="mt-1 text-xs text-neutral-500">One row per allocation outcome. Same-user rows are never merged.</div>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[1100px] text-sm">
+                    <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                      <tr>
+                        <th className="py-2 pr-3 font-medium">Allocation ID</th>
+                        <th className="py-2 pr-3 font-medium">Recipient</th>
+                        <th className="py-2 pr-3 font-medium">Source type</th>
+                        <th className="py-2 pr-3 font-medium">Gross share</th>
+                        <th className="py-2 pr-3 font-medium">Fee withheld</th>
+                        <th className="py-2 pr-3 font-medium">Net obligation</th>
+                        <th className="py-2 pr-3 font-medium">Source / role</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeAudit.allocations.map((row) => (
+                        <tr key={row.id} className="border-t border-neutral-800/70">
+                          <td className="py-2 pr-3 font-mono text-[11px] text-neutral-300">{shortId(row.id, 12, 8)}</td>
+                          <td className="py-2 pr-3">
+                            <div className="text-neutral-100">{row.participantEmail || row.participantUserId || row.participantRef || "—"}</div>
+                            <div className="text-xs text-neutral-500">{row.participantRef || "—"}</div>
+                          </td>
+                          <td className="py-2 pr-3">
+                            <span className="inline-flex items-center rounded-full border border-cyan-800/70 bg-cyan-900/20 px-2 py-0.5 text-[11px] text-cyan-200">
+                              {allocationSourceLabel(row.sourceType)}
+                            </span>
+                          </td>
+                          <td className="py-2 pr-3 text-neutral-200">{sats(row.grossShareSats)} sats</td>
+                          <td className="py-2 pr-3 text-neutral-200">{sats(row.feeWithheldSats)} sats</td>
+                          <td className="py-2 pr-3 text-neutral-200">{sats(row.netObligationSats)} sats</td>
+                          <td className="py-2 pr-3">
+                            <div className="text-neutral-200">{row.allocationSource || "allocation"}</div>
+                            <div className="text-xs text-neutral-500">{row.role || "—"} • {Number.isFinite(row.bps) ? `${(row.bps / 100).toFixed(2)}%` : "—"}</div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3">
+                <div className="text-sm font-semibold text-neutral-100">Execution rows</div>
+                <div className="mt-1 text-xs text-neutral-500">ParticipantPayout execution rows for this intent.</div>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[1300px] text-sm">
+                    <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                      <tr>
+                        <th className="py-2 pr-3 font-medium">Payout row ID</th>
+                        <th className="py-2 pr-3 font-medium">Allocation ID</th>
+                        <th className="py-2 pr-3 font-medium">Recipient</th>
+                        <th className="py-2 pr-3 font-medium">Source type</th>
+                        <th className="py-2 pr-3 font-medium">Destination</th>
+                        <th className="py-2 pr-3 font-medium">Net amount</th>
+                        <th className="py-2 pr-3 font-medium">Status</th>
+                        <th className="py-2 pr-3 font-medium">Created</th>
+                        <th className="py-2 pr-3 font-medium">Updated</th>
+                        <th className="py-2 pr-3 font-medium">Error / block reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeAudit.participantPayoutRows.map((row) => {
+                        const hasStrictNet = String(row.netAmountSats || "").trim().length > 0;
+                        return (
+                          <tr key={row.id} className="border-t border-neutral-800/70">
+                            <td className="py-2 pr-3 font-mono text-[11px] text-neutral-300">{shortId(row.id, 12, 8)}</td>
+                            <td className="py-2 pr-3 font-mono text-[11px] text-neutral-300">{shortId(row.allocationId, 12, 8)}</td>
+                            <td className="py-2 pr-3">
+                              <div className="text-neutral-100">{row.participantEmail || row.participantUserId || row.participantRef || "—"}</div>
+                              <div className="text-xs text-neutral-500">{row.role || "—"}</div>
+                            </td>
+                            <td className="py-2 pr-3">
+                              <span className="inline-flex items-center rounded-full border border-cyan-800/70 bg-cyan-900/20 px-2 py-0.5 text-[11px] text-cyan-200">
+                                {allocationSourceLabel(row.sourceType)}
+                              </span>
+                            </td>
+                            <td className="py-2 pr-3">
+                              <div>{row.destinationSummary || row.destinationType || "—"}</div>
+                              <div className="text-xs text-neutral-500">{row.payoutReference || "—"}</div>
+                            </td>
+                            <td className="py-2 pr-3">
+                              <div className="text-neutral-100">{sats(row.netAmountSats || row.amountSats)} sats</div>
+                              {!hasStrictNet ? <div className="text-xs text-amber-300">missing-net</div> : null}
+                            </td>
+                            <td className="py-2 pr-3">
+                              <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${statusPillClass(row.status)}`}>{row.status}</span>
+                            </td>
+                            <td className="py-2 pr-3 text-neutral-300">{formatDate(row.createdAt)}</td>
+                            <td className="py-2 pr-3 text-neutral-300">{formatDate(row.updatedAt)}</td>
+                            <td className="py-2 pr-3">
+                              <div>{row.lastError || row.blockedReason || row.readinessReason || "—"}</div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {activeAuditTimeline.length > 0 ? (
+                <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3">
+                  <div className="text-sm font-semibold text-neutral-100">Timeline</div>
+                  <div className="mt-1 text-xs text-neutral-500">Event timestamps derived from intent and payout row payloads.</div>
+                  <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {activeAuditTimeline.map((event) => (
+                      <div key={`${event.label}:${event.ts || ""}`} className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                        <div className="text-xs uppercase tracking-wide text-neutral-500">{event.label}</div>
+                        <div className="mt-1 text-xs text-neutral-200">{formatDate(event.ts)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-neutral-100">Diagnostics</div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAuditDiagnostics((v) => !v)}
+                    className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+                  >
+                    {showAuditDiagnostics ? "Hide diagnostics" : "Show diagnostics"}
+                  </button>
+                </div>
+                {showAuditDiagnostics ? (
+                  <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4 text-xs">
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                      <div className="text-neutral-500">Mixed-status allocations</div>
+                      <div className="mt-1 text-neutral-100">
+                        {new Set(activeAudit.participantPayoutRows.map((row) => String(row.status || "").toLowerCase())).size > 1 ? "yes" : "no"}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                      <div className="text-neutral-500">Intent vs payout delta</div>
+                      <div className={`mt-1 ${activeAuditDelta === 0n ? "text-emerald-300" : "text-rose-300"}`}>{sats(activeAuditDelta.toString())} sats</div>
+                    </div>
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                      <div className="text-neutral-500">Missing net rows</div>
+                      <div className="mt-1 text-neutral-100">
+                        {activeAudit.participantPayoutRows.filter((row) => !String(row.netAmountSats || "").trim()).length.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2">
+                      <div className="text-neutral-500">Unresolved rows</div>
+                      <div className="mt-1 text-neutral-100">
+                        {activeAudit.participantPayoutRows.filter((row) => {
+                          const s = String(row.status || "").toLowerCase();
+                          return s === "pending" || s === "ready" || s === "forwarding";
+                        }).length.toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 px-3 py-2 md:col-span-2 xl:col-span-4">
+                      <div className="text-neutral-500">Provider/local mismatch</div>
+                      <div className="mt-1 text-neutral-100">
+                        {activeAudit.duplicateChecks?.duplicatePayoutKeys?.length || activeAudit.duplicateChecks?.duplicateByParticipantRef?.length
+                          ? "Potential duplicate payout keys/participant refs detected."
+                          : "No duplicate payout key / participant-ref conflicts detected in this intent."}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex items-center justify-between gap-3">
@@ -1567,6 +2024,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                   <th className="py-2 pr-3 font-medium">Status</th>
                   <th className="py-2 pr-3 font-medium">Reason</th>
                   <th className="py-2 pr-3 font-medium">Updated</th>
+                  <th className="py-2 pr-3 font-medium">Audit</th>
                 </tr>
               </thead>
               <tbody>
@@ -1600,6 +2058,15 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                       {row.lastError ? <div className="text-xs text-rose-300">{row.lastError}</div> : null}
                     </td>
                     <td className="py-2 pr-3">{formatDate(row.updatedAt)}</td>
+                    <td className="py-2 pr-3">
+                      <button
+                        type="button"
+                        onClick={() => void openIntentAudit(row.paymentIntentId)}
+                        className="rounded-md border border-cyan-700/70 px-2 py-1 text-xs text-cyan-200 hover:bg-cyan-900/30"
+                      >
+                        View audit
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
