@@ -669,6 +669,10 @@ export default function App() {
   const logoHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : "/";
   const creatorProfileHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : null;
   const publicStatusOnline = publicStatus?.status === "online";
+  const namedTunnelCommerceReady =
+    productTier !== "basic" && publicStatus?.mode === "named" && publicStatusOnline;
+  const providerCommerceReadyUi =
+    Boolean(sovereignCapabilities.canUseProviderBackedCommerce) || namedTunnelCommerceReady;
   const publicCreatorUrl =
     publicStatusOnline && publicStatus?.url
       ? new URL(creatorProfileHref || "/profile", String(publicStatus.url)).toString()
@@ -994,7 +998,7 @@ export default function App() {
                     </button>
                   </>
                 ) : null}
-                {!requireLocalLightning ? (
+                {!requireLocalLightning && providerCommerceReadyUi ? (
                   <button
                     onClick={() => setPage("store")}
                     className="text-xs rounded-full border border-neutral-800 px-3 py-1 hover:bg-neutral-900/30"

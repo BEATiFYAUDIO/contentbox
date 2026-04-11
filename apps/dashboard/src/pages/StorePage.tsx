@@ -1420,12 +1420,21 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const payoutConfigured = Boolean(payoutState?.valid);
   const payoutDestinationLabel = payoutState?.effectiveDestinationSummary || payoutState?.effectiveDestinationType || "Not configured";
   const payoutRemitModeLabel = payoutState?.providerRemitMode || "manual_payout";
-  const providerBackedCommerceReady = Boolean(networkSummary?.paymentCapability?.providerBackedCommerceReady);
+  const namedTunnelCommerceReady =
+    participationModeFromSummary !== "basic_creator" &&
+    summaryCanonicalCommerceKind === "self_hosted_stable";
+  const providerBackedCommerceReady =
+    participationModeFromSummary !== "basic_creator" &&
+    (Boolean(networkSummary?.paymentCapability?.providerBackedCommerceReady) || namedTunnelCommerceReady);
   const providerBackedCommerceMessage =
-    networkSummary?.paymentCapability?.providerBackedCommerceMessage ||
-    (payoutConfigured
-      ? "Provider-backed commerce is payout-ready."
-      : "Configure payout destination for provider-backed commerce.");
+    participationModeFromSummary === "basic_creator"
+      ? "Basic posture does not activate provider-backed commerce. Switch to Sovereign Creator or Sovereign Node."
+      : namedTunnelCommerceReady
+        ? "Named public route is online. Commerce posture is ready."
+      : networkSummary?.paymentCapability?.providerBackedCommerceMessage ||
+        (payoutConfigured
+          ? "Provider-backed commerce is payout-ready."
+          : "Configure payout destination for provider-backed commerce.");
   const runtimeStateLabel =
     runtimeStatus?.runtime?.status === "running"
       ? "Running"
