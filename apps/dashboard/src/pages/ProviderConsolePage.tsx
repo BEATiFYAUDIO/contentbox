@@ -607,13 +607,28 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       return isWithinPeriod(ts, timePeriod);
     });
   }, [paymentIntents, timeBasis, timePeriod]);
+
+  const scopedIntentKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const row of scopedPaymentIntents) {
+      const providerPaymentIntentId = String(row.id || "").trim();
+      const paymentIntentId = String(row.paymentIntentId || "").trim();
+      if (providerPaymentIntentId) keys.add(providerPaymentIntentId);
+      if (paymentIntentId) keys.add(paymentIntentId);
+    }
+    return keys;
+  }, [scopedPaymentIntents]);
+
   const scopedParticipantPayouts = useMemo(() => {
     if (timePeriod === "all") return participantPayouts;
+    // Keep payout rows chained to the currently scoped intents so intake,
+    // obligations, execution, and mismatch all reconcile within one scope.
     return participantPayouts.filter((row) => {
-      const ts = timeBasis === "sale" ? row.updatedAt : (row.remittedAt || row.lastCheckedAt || row.updatedAt);
-      return isWithinPeriod(ts, timePeriod);
+      const providerPaymentIntentId = String(row.providerPaymentIntentId || "").trim();
+      const paymentIntentId = String(row.paymentIntentId || "").trim();
+      return scopedIntentKeys.has(providerPaymentIntentId) || scopedIntentKeys.has(paymentIntentId);
     });
-  }, [participantPayouts, timeBasis, timePeriod]);
+  }, [participantPayouts, scopedIntentKeys, timePeriod]);
   const scopedPaymentReceipts = useMemo(() => {
     if (timePeriod === "all") return paymentReceipts;
     return paymentReceipts.filter((row) => {
