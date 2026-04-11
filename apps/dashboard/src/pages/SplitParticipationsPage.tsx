@@ -128,7 +128,19 @@ export default function SplitParticipationsPage(props: {
     if (!id) return;
     window.location.href = `/content/${encodeURIComponent(id)}/splits`;
   };
-  const openSplitSummary = (contentId?: string | null) => {
+  const openSplitSummary = (contentId?: string | null, inviteUrl?: string | null) => {
+    const remoteInvite = String(inviteUrl || "").trim();
+    if (remoteInvite) {
+      try {
+        const parsed = new URL(remoteInvite);
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+          window.open(remoteInvite, "_blank", "noopener,noreferrer");
+          return;
+        }
+      } catch {
+        // Fall back to local routes when invite URL is malformed.
+      }
+    }
     const id = String(contentId || "").trim();
     if (id) {
       window.location.href = `/royalties/${encodeURIComponent(id)}`;
@@ -612,7 +624,7 @@ export default function SplitParticipationsPage(props: {
                   </button>
                   {r.contentId || r.inviteUrl ? (
                     <button
-                      onClick={() => openSplitSummary(r.contentId)}
+                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl)}
                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                     >
                       Open
