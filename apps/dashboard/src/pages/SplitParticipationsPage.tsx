@@ -128,7 +128,11 @@ export default function SplitParticipationsPage(props: {
     if (!id) return;
     window.location.href = `/content/${encodeURIComponent(id)}/splits`;
   };
-  const openSplitSummary = (contentId?: string | null, inviteUrl?: string | null) => {
+  const openSplitSummary = (
+    contentId?: string | null,
+    inviteUrl?: string | null,
+    remoteOrigin?: string | null
+  ) => {
     const remoteInvite = String(inviteUrl || "").trim();
     if (remoteInvite) {
       try {
@@ -142,6 +146,19 @@ export default function SplitParticipationsPage(props: {
       }
     }
     const id = String(contentId || "").trim();
+    const origin = String(remoteOrigin || "").trim();
+    if (id && origin) {
+      try {
+        const parsed = new URL(origin);
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+          const remoteRoyaltiesUrl = `${parsed.origin.replace(/\/+$/, "")}/royalties/${encodeURIComponent(id)}`;
+          window.open(remoteRoyaltiesUrl, "_blank", "noopener,noreferrer");
+          return;
+        }
+      } catch {
+        // Fall back to local routes when remote origin is malformed.
+      }
+    }
     if (id) {
       window.location.href = `/royalties/${encodeURIComponent(id)}`;
       return;
@@ -624,7 +641,7 @@ export default function SplitParticipationsPage(props: {
                   </button>
                   {r.contentId || r.inviteUrl ? (
                     <button
-                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl)}
+                      onClick={() => openSplitSummary(r.contentId, r.inviteUrl, r.remoteOrigin)}
                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                     >
                       Open
