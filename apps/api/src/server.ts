@@ -26402,6 +26402,9 @@ async function handlePublicOffer(req: any, reply: any) {
   const contentId = asString((req.params as any).contentId || "").trim();
   const manifestShaQuery = asString((req.query || {})?.manifestSha256 || "").trim();
   if (!contentId) return badRequest(reply, "contentId required");
+  // Additional server-side audience logging path for Basic posture reliability.
+  // Deduping is handled in recordAudienceViewEvent by session/content/time window.
+  void recordAudienceViewEvent(contentId, req, reply).catch(() => {});
   if (String(process.env.NODE_ENV || "").trim().toLowerCase() !== "production") {
     const dbg = await prisma.contentItem.findUnique({
       where: { id: contentId },
