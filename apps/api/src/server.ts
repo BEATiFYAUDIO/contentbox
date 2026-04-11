@@ -8248,6 +8248,30 @@ function getCapabilityContext() {
   return { productTier, paymentsMode, namedReady, nodeMode, publicStatus, providerConfigured, providerTrusted };
 }
 
+const CAPABILITY_CONTEXT_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.CAPABILITY_CONTEXT_CACHE_TTL_MS || "10000")
+);
+let capabilityContextCache:
+  | {
+      expiresAt: number;
+      value: ReturnType<typeof getCapabilityContext>;
+    }
+  | null = null;
+
+function getCapabilityContextCached(force = false) {
+  const now = Date.now();
+  if (!force && capabilityContextCache && capabilityContextCache.expiresAt > now) {
+    return capabilityContextCache.value;
+  }
+  const value = getCapabilityContext();
+  capabilityContextCache = {
+    expiresAt: now + CAPABILITY_CONTEXT_CACHE_TTL_MS,
+    value
+  };
+  return value;
+}
+
 type ProviderServiceProfile = {
   participationMode: "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
   hasStablePublicRoute: boolean;
@@ -9006,6 +9030,30 @@ function getPublicStatus() {
     consentRequired,
     autoStartEnabled
   };
+}
+
+const PUBLIC_STATUS_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || "8000")
+);
+let publicStatusCache:
+  | {
+      expiresAt: number;
+      value: ReturnType<typeof getPublicStatus>;
+    }
+  | null = null;
+
+function getPublicStatusCached(force = false) {
+  const now = Date.now();
+  if (!force && publicStatusCache && publicStatusCache.expiresAt > now) {
+    return publicStatusCache.value;
+  }
+  const value = getPublicStatus();
+  publicStatusCache = {
+    expiresAt: now + PUBLIC_STATUS_CACHE_TTL_MS,
+    value
+  };
+  return value;
 }
 
 async function triggerPublicStartBestEffort() {
@@ -10543,7 +10591,7 @@ app.get("/api/capabilities", async (_req: any, reply: any) => {
 app.get("/api/public/diagnostics", async (_req: any, reply: any) => {
   const productTier = resolveProductTier().productTier;
   const paymentsMode = getPaymentsMode(productTier);
-  const publicStatus = getPublicStatus();
+  const publicStatus = getPublicStatusCached();
   const namedReady = publicStatus.mode === "named" && publicStatus.status === "online";
   const url = publicStatus.canonicalOrigin || publicStatus.publicOrigin || null;
   return reply.send({
@@ -14783,7 +14831,7 @@ app.get("/api/public/status", { preHandler: requireAuth }, async (_req: any, rep
       }
     }
   }
-  return reply.send(getPublicStatus());
+  return reply.send(getPublicStatusCached());
 });
 
 function getNodeModeStatus() {
@@ -14808,7 +14856,7 @@ function getNodeModeStatus() {
 }
 
 function hasDetectedNamedTunnel(): boolean {
-  const state = getPublicStatus();
+  const state = getPublicStatusCached();
   if (state.mode !== "named" || state.status !== "online") return false;
   const origin = normalizePublicOriginBase(String(state.canonicalOrigin || state.publicOrigin || "").trim());
   if (!origin) return false;
@@ -14846,7 +14894,47 @@ async function getLocalSovereignReadiness(): Promise<LocalSovereignReadiness> {
   };
 }
 
-async function resolveCommerceAuthorityForUser(userId: string): Promise<{
+const LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS || "10000")
+);
+let localSovereignReadinessCache:
+  | {
+      expiresAt: number;
+      value: LocalSovereignReadiness;
+    }
+  | null = null;
+let localSovereignReadinessInflight: Promise<LocalSovereignReadiness> | null = null;
+
+async function getLocalSovereignReadinessCached(force = false): Promise<LocalSovereignReadiness> {
+  const now = Date.now();
+  if (!force && localSovereignReadinessCache && localSovereignReadinessCache.expiresAt > now) {
+    return localSovereignReadinessCache.value;
+  }
+  if (!force && localSovereignReadinessInflight) {
+    return localSovereignReadinessInflight;
+  }
+  localSovereignReadinessInflight = getLocalSovereignReadiness()
+    .then((value) => {
+      localSovereignReadinessCache = {
+        expiresAt: Date.now() + LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS,
+        value
+      };
+      return value;
+    })
+    .finally(() => {
+      localSovereignReadinessInflight = null;
+    });
+  return localSovereignReadinessInflight;
+}
+
+async function resolveCommerceAuthorityForUser(
+  userId: string,
+  input?: {
+    providerConnection?: ProviderCommerceConnectionState;
+    sovereignReadiness?: LocalSovereignReadiness;
+  }
+): Promise<{
   authority: boolean;
   providerAuthority: boolean;
   localAuthority: boolean;
@@ -14855,10 +14943,10 @@ async function resolveCommerceAuthorityForUser(userId: string): Promise<{
   providerConnectionReason: ProviderCommerceConnectionState["reason"];
   sovereignReadiness: LocalSovereignReadiness;
 }> {
-  const providerConnection = deriveProviderCommerceConnectionState();
+  const providerConnection = input?.providerConnection || deriveProviderCommerceConnectionState();
   const modeStatus = getNodeModeStatus();
   if (modeStatus.nodeMode === "basic") {
-    const sovereignReadiness = await getLocalSovereignReadiness();
+    const sovereignReadiness = input?.sovereignReadiness || (await getLocalSovereignReadinessCached());
     return {
       authority: false,
       providerAuthority: false,
@@ -14869,7 +14957,7 @@ async function resolveCommerceAuthorityForUser(userId: string): Promise<{
       sovereignReadiness
     };
   }
-  const sovereignReadiness = await getLocalSovereignReadiness();
+  const sovereignReadiness = input?.sovereignReadiness || (await getLocalSovereignReadinessCached());
   const namedTunnelDetected = sovereignReadiness.namedTunnelDetected;
   const providerConnected = providerConnection.providerConnected;
   const providerAuthority = namedTunnelDetected && providerConnected;
@@ -14910,8 +14998,12 @@ async function resolveCommerceAuthorityForUser(userId: string): Promise<{
 app.get("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const modeStatus = getNodeModeStatus();
-  const readiness = await getLocalSovereignReadiness();
-  const authority = await resolveCommerceAuthorityForUser(userId);
+  const providerConnection = deriveProviderCommerceConnectionState();
+  const readiness = await getLocalSovereignReadinessCached();
+  const authority = await resolveCommerceAuthorityForUser(userId, {
+    providerConnection,
+    sovereignReadiness: readiness
+  });
   const sovereignCreatorEligible = readiness.namedTunnelDetected;
   const sovereignNodeEligible = readiness.ready;
   const selectedMode = modeStatus.nodeMode;
@@ -14956,7 +15048,8 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
   const body = (req.body ?? {}) as { nodeMode?: string };
   const next = validateNodeMode(body?.nodeMode);
   if (!next) return badRequest(reply, "Invalid node mode");
-  const readiness = await getLocalSovereignReadiness();
+  const providerConnection = deriveProviderCommerceConnectionState();
+  const readiness = await getLocalSovereignReadinessCached();
   if ((next === "advanced" || next === "lan") && !readiness.namedTunnelDetected) {
     return reply.code(409).send({
       error: "NAMED_TUNNEL_REQUIRED",
@@ -14978,7 +15071,10 @@ app.post("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: 
     return reply.code(500).send({ error: "Failed to persist node mode", message: String(e?.message || e) });
   }
   const updatedStatus = getNodeModeStatus();
-  const authority = await resolveCommerceAuthorityForUser(userId);
+  const authority = await resolveCommerceAuthorityForUser(userId, {
+    providerConnection,
+    sovereignReadiness: readiness
+  });
   return reply.send({
     ...updatedStatus,
     selectedMode: updatedStatus.nodeMode,
@@ -15049,7 +15145,7 @@ app.post("/api/node/restart", { preHandler: requireAuth }, async (_req: any, rep
 app.get("/api/identity", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   const runtime = resolveRuntimeConfig();
   const productTierInfo = resolveProductTier();
-  const ctx = getCapabilityContext();
+  const ctx = getCapabilityContextCached();
   const capabilities = buildCapabilitySet(ctx);
   const sovereignCapabilities = buildSovereignCapabilityMatrix(ctx);
   const reasonCtx = { namedMode: ctx.publicStatus.mode, namedStatus: ctx.publicStatus.status };
