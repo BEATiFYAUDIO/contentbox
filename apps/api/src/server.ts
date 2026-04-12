@@ -8207,6 +8207,15 @@ function normalizePublicOriginCandidate(value: string | null | undefined): strin
   return `https://${raw.replace(/\/+$/, "")}`;
 }
 
+const PROFILE_BIO_MAX_CHARS = 20;
+
+function normalizeProfileBio(input: unknown): string | null {
+  if (input === undefined || input === null) return null;
+  const trimmed = String(input).trim();
+  if (!trimmed) return null;
+  return Array.from(trimmed).slice(0, PROFILE_BIO_MAX_CHARS).join("");
+}
+
 function getRuntimeIdentityDetail() {
   const base = getIdentityDetail();
   const override = String(process.env.IDENTITY_LEVEL_OVERRIDE || "").trim();
@@ -19051,7 +19060,7 @@ app.patch("/me", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const body = (req.body ?? {}) as { displayName?: string | null; bio?: string | null; avatarUrl?: string | null };
 
   const displayName = body.displayName === undefined ? undefined : (String(body.displayName).trim() || null);
-  const bio = body.bio === undefined ? undefined : (String(body.bio).trim() || null);
+  const bio = body.bio === undefined ? undefined : normalizeProfileBio(body.bio);
   const avatarUrlRaw = body.avatarUrl === undefined ? undefined : (String(body.avatarUrl).trim() || null);
   const avatarUrl =
     avatarUrlRaw == null
@@ -23963,6 +23972,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .page-title { margin:0; font-size:36px; line-height:1.1; letter-spacing:-0.02em; display:none; }
     .muted { color:#9aa0a6; font-size:13px; }
     .line { margin-top:10px; line-height:1.45; overflow-wrap:anywhere; }
+    .hero-bio { font-size:14px; line-height:1.35; color:#d2d9e2; margin-top:8px; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break:break-all; overflow-wrap:anywhere; }
     pre { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; }
     a { color:#9bdcff; text-decoration:none; }
@@ -24165,10 +24175,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 760px) {
       .profile-header-grid {
-        --profile-brand-col: 112px;
-        --profile-logo-size: 92px;
-        --profile-avatar-size: 96px;
-        --profile-id-gap: 12px;
+        --profile-brand-col: 96px;
+        --profile-logo-size: 84px;
+        --profile-avatar-size: 82px;
+        --profile-id-gap: 10px;
+        --profile-id-offset: 0px;
       }
       .profile-header-grid {
         grid-template-columns:auto 1fr;
@@ -24177,19 +24188,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           "signal signal";
         gap:10px 12px;
       }
-      .brand-rail { grid-area:brand; padding-top:0; }
-      .identity-rail { grid-area:identity; align-items:center; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-left:0; }
+      .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
       .signal-rail { grid-area:signal; width:100%; }
       .hero-name { font-size:22px; line-height:1.12; }
       .signal-rail { width:100%; }
     }
     @media (max-width: 640px) {
       .profile-header-grid {
-        --profile-brand-col: 96px;
-        --profile-gap-x: 12px;
-        --profile-id-offset: 4px;
-        --profile-id-gap: 10px;
-        --profile-logo-size: 82px;
+        --profile-brand-col: 92px;
+        --profile-gap-x: 8px;
+        --profile-id-offset: 0px;
+        --profile-id-gap: 8px;
+        --profile-logo-size: 86px;
         --profile-avatar-size: 78px;
       }
       body { padding:10px; }
@@ -24203,7 +24214,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         gap:10px var(--profile-gap-x);
         padding-inline:0;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:8px; align-self:center; justify-content:flex-start; }
+      .brand-rail { grid-area:brand; padding-top:0; padding-right:0; padding-left:0; align-self:center; justify-content:flex-start; }
       .identity-rail { grid-area:identity; margin-left:var(--profile-id-offset); align-items:center; gap:var(--profile-id-gap); }
       .signal-rail { grid-area:signal; width:100%; padding:10px; }
       .brand-row { margin-bottom:0; }
@@ -24218,16 +24229,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     }
     @media (max-width: 640px) {
       body.iframe-embedded .profile-header-grid {
-        grid-template-columns:88px minmax(0, 1fr);
+        grid-template-columns:84px minmax(0, 1fr);
         grid-template-areas:
           "brand identity"
           "signal signal";
-        gap:10px 10px;
+        gap:10px 8px;
       }
-      body.iframe-embedded .brand-rail { justify-content:flex-start; padding-left:8px; }
-      body.iframe-embedded .identity-rail { gap:8px; margin-left:4px; }
+      body.iframe-embedded .brand-rail { justify-content:flex-start; padding-left:0; }
+      body.iframe-embedded .identity-rail { gap:8px; margin-left:0; }
       body.iframe-embedded .hero-meta { min-width:0; flex:1; }
-      body.iframe-embedded .brand-logo-image { width:72px; }
+      body.iframe-embedded .brand-logo-image { width:74px; }
       body.iframe-embedded .avatar { width:70px; height:70px; }
       body.iframe-embedded .hero-name {
         font-size:clamp(19px, 5vw, 21px);
@@ -24270,7 +24281,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         <div class="hero-name">${safeDisplayName}</div>
         <div class="hero-handle muted"><span class="mono">${safeHandle}</span></div>
         ${profilePostureBadgeHtml}
-        ${safeBio ? `<div class="line">${safeBio}</div>` : ""}
+        ${safeBio ? `<div class="line hero-bio">${safeBio}</div>` : ""}
         </div>
       </div>
       <aside class="signal-rail">${creatorSignalCompactHtml}</aside>
