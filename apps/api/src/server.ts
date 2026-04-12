@@ -23979,7 +23979,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .brand-rail { display:flex; align-items:center; justify-content:flex-start; padding:0; min-width:0; }
     .identity-rail { display:flex; gap:var(--profile-id-gap); align-items:center; min-width:0; width:100%; margin-left:0; }
     .avatar { width:var(--profile-avatar-size); height:var(--profile-avatar-size); border-radius:9999px; object-fit:cover; border:1px solid #222; background:#1a1a1a; display:flex; align-items:center; justify-content:center; color:#9aa0a6; font-size:12px; flex:none; }
-    .hero-meta { min-width:0; }
+    .hero-meta { min-width:0; flex:1 1 auto; }
     .hero-name { font-weight:700; font-size:22px; line-height:1.2; }
     .hero-handle { margin-top:4px; }
     .signal-rail { border:1px solid #222; border-radius:12px; background:#0f0f0f; padding:12px; }
@@ -24156,6 +24156,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       .meta-grid { grid-template-columns:1fr 1fr; }
     }
     @media (max-width: 1200px) {
+      .profile-header-grid {
+        --profile-brand-col: 126px;
+        --profile-logo-size: 96px;
+        --profile-avatar-size: 98px;
+        --profile-signal-col: 286px;
+      }
+    }
+    @media (max-width: 760px) {
       .profile-header-grid {
         --profile-brand-col: 112px;
         --profile-logo-size: 92px;
