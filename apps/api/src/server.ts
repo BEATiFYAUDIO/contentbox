@@ -2042,6 +2042,47 @@ function isMissingParticipantPayoutTableError(err: any): boolean {
   );
 }
 
+let paymentIntentReceiptIdFieldAvailable: boolean | null = null;
+
+function isMissingPaymentIntentReceiptIdFieldError(err: any): boolean {
+  const name = String(err?.name || "").trim();
+  const message = String(err?.message || "");
+  if (!message) return false;
+  return (
+    message.includes("Unknown argument `receiptId`") ||
+    message.includes("Unknown arg `receiptId`") ||
+    ((name === "PrismaClientValidationError" || message.includes("PaymentIntent")) &&
+      message.includes("receiptId"))
+  );
+}
+
+function markPaymentIntentReceiptIdFieldUnavailable(err?: any) {
+  if (paymentIntentReceiptIdFieldAvailable === false) return;
+  paymentIntentReceiptIdFieldAvailable = false;
+  app.log.warn(
+    { err: String(err?.message || err || "receiptId unavailable") },
+    "paymentIntent.receiptId.unsupported_by_client"
+  );
+}
+
+async function createPaymentIntentWithOptionalReceiptId(data: Record<string, any>) {
+  const nextData = { ...data };
+  if (paymentIntentReceiptIdFieldAvailable === false) {
+    delete nextData.receiptId;
+    return await (prisma as any).paymentIntent.create({ data: nextData });
+  }
+  try {
+    const created = await (prisma as any).paymentIntent.create({ data: nextData });
+    if ("receiptId" in nextData) paymentIntentReceiptIdFieldAvailable = true;
+    return created;
+  } catch (err: any) {
+    if (!("receiptId" in nextData) || !isMissingPaymentIntentReceiptIdFieldError(err)) throw err;
+    markPaymentIntentReceiptIdFieldUnavailable(err);
+    delete nextData.receiptId;
+    return await (prisma as any).paymentIntent.create({ data: nextData });
+  }
+}
+
 function parseParticipantDestinationType(value: unknown): ParticipantDestinationType | null {
   const type = String(value || "").trim().toLowerCase();
   if (type === "lightning_address" || type === "lnurl" || type === "lnd") return type as ParticipantDestinationType;
@@ -13606,6 +13647,30 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   const userId = (req.user as JwtUser).sub;
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
   const email = (me?.email || "").toLowerCase();
+  const resolveParentRoyaltyStake = (parentContent: { ownerUserId?: string | null } | null | undefined, parentSplit: any) => {
+    const parentParticipant =
+      parentSplit?.participants.find((p: any) => p.participantUserId === userId) ||
+      (email ? parentSplit?.participants.find((p: any) => (p.participantEmail || "").toLowerCase() === email) : null);
+    if (parentParticipant) {
+      return {
+        visible: true,
+        parentParticipant,
+        parentBps: toBps(parentParticipant)
+      };
+    }
+    if (String(parentContent?.ownerUserId || "").trim() === userId) {
+      return {
+        visible: true,
+        parentParticipant: null,
+        parentBps: 10000
+      };
+    }
+    return {
+      visible: false,
+      parentParticipant: null,
+      parentBps: 0
+    };
+  };
 
   const owned = await prisma.contentItem.findMany({
     where: { ownerUserId: userId, deletedAt: null },
@@ -13739,17 +13804,15 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
     if (!parentContent || !childContent) continue;
 
     const parentSplit = await getLockedSplitForContent(parentContent.id);
-    const parentParticipant =
-      parentSplit?.participants.find((p) => p.participantUserId === userId) ||
-      (email ? parentSplit?.participants.find((p) => (p.participantEmail || "").toLowerCase() === email) : null);
-    const parentBps = parentParticipant ? toBps(parentParticipant) : 0;
+    const parentStake = resolveParentRoyaltyStake(parentContent, parentSplit);
+    if (!parentStake.visible) continue;
 
     const key = `${parentContent.id}:${childContent.id}`;
     const existing = upstreamIncomeMap.get(key);
     const earned = BigInt(l.amountSats as any);
     if (!existing) {
       const upstreamBps = link.upstreamBps || 0;
-      const myEffectiveBps = Math.floor((upstreamBps * parentBps) / 10000);
+      const myEffectiveBps = Math.floor((upstreamBps * parentStake.parentBps) / 10000);
       upstreamIncomeMap.set(key, {
         parentContentId: parentContent.id,
         parentTitle: parentContent.title,
@@ -13789,11 +13852,8 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   }
   for (const link of [...clearedLinks, ...pendingLinks]) {
     const ps = parentSplits.get(link.parentContentId);
-    if (!ps) continue;
-    const parentParticipant =
-      ps.participants.find((p: any) => p.participantUserId === userId) ||
-      (email ? ps.participants.find((p: any) => (p.participantEmail || "").toLowerCase() === email) : null);
-    if (!parentParticipant) continue;
+    const parentStake = resolveParentRoyaltyStake(link.parentContent, ps);
+    if (!parentStake.visible) continue;
     const key = `${link.parentContentId}::${link.childContentId}`;
     if (!upstreamIncomeMap.has(key)) {
       const auth = authByLinkId.get(link.id);
@@ -13805,7 +13865,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
         childDeletedAt: link.childContent?.deletedAt ? link.childContent.deletedAt.toISOString() : null,
         parentDeletedAt: link.parentContent?.deletedAt ? link.parentContent.deletedAt.toISOString() : null,
         upstreamBps: link.upstreamBps || 0,
-        myEffectiveBps: Math.round((link.upstreamBps || 0) * (toBps(parentParticipant) || 0) / 10000),
+        myEffectiveBps: Math.round((link.upstreamBps || 0) * parentStake.parentBps / 10000),
         earnedSatsToDate: 0n,
         approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null,
         status: auth?.status || (link.approvedAt ? "APPROVED" : "PENDING"),
@@ -27594,26 +27654,43 @@ async function ensureStableReceiptIdForIntent<T extends { id: string; receiptId?
 ): Promise<T & { receiptId?: string | null }> {
   const existing = String((intent as any)?.receiptId || "").trim();
   if (existing) return intent as T & { receiptId?: string | null };
+  if (paymentIntentReceiptIdFieldAvailable === false) return intent as T & { receiptId?: string | null };
   const nextId = createStableReceiptId();
   try {
     const updated = await (prisma as any).paymentIntent.update({
       where: { id: String((intent as any)?.id || "") },
       data: { receiptId: nextId }
     });
+    paymentIntentReceiptIdFieldAvailable = true;
     return (updated as T & { receiptId?: string | null }) || ({ ...(intent as any), receiptId: nextId } as T & { receiptId?: string | null });
-  } catch {
+  } catch (err: any) {
+    if (isMissingPaymentIntentReceiptIdFieldError(err)) {
+      markPaymentIntentReceiptIdFieldUnavailable(err);
+      return intent as T & { receiptId?: string | null };
+    }
     return ({ ...(intent as any), receiptId: nextId } as T & { receiptId?: string | null });
   }
 }
 
 let receiptIdBackfillStarted = false;
 async function backfillMissingReceiptIds(limit = 250) {
-  const rows = await (prisma as any).paymentIntent.findMany({
-    where: { receiptId: null },
-    select: { id: true },
-    orderBy: { createdAt: "asc" },
-    take: Math.max(1, Math.min(2000, Math.floor(limit)))
-  });
+  if (paymentIntentReceiptIdFieldAvailable === false) return 0;
+  let rows: Array<{ id?: string | null }> = [];
+  try {
+    rows = await (prisma as any).paymentIntent.findMany({
+      where: { receiptId: null },
+      select: { id: true },
+      orderBy: { createdAt: "asc" },
+      take: Math.max(1, Math.min(2000, Math.floor(limit)))
+    });
+    paymentIntentReceiptIdFieldAvailable = true;
+  } catch (err: any) {
+    if (isMissingPaymentIntentReceiptIdFieldError(err)) {
+      markPaymentIntentReceiptIdFieldUnavailable(err);
+      return 0;
+    }
+    throw err;
+  }
   if (!Array.isArray(rows) || rows.length === 0) return 0;
   let updated = 0;
   for (const row of rows) {
@@ -27624,8 +27701,14 @@ async function backfillMissingReceiptIds(limit = 250) {
         where: { id, receiptId: null },
         data: { receiptId: createStableReceiptId() }
       });
+      paymentIntentReceiptIdFieldAvailable = true;
       if (Number(res?.count || 0) > 0) updated += Number(res.count);
-    } catch {}
+    } catch (err: any) {
+      if (isMissingPaymentIntentReceiptIdFieldError(err)) {
+        markPaymentIntentReceiptIdFieldUnavailable(err);
+        return updated;
+      }
+    }
   }
   return updated;
 }
@@ -27747,8 +27830,20 @@ async function resolveReceiptContextForRequest(input: {
     paymentIntentId: input.paymentIntentId || null,
     findByReceiptToken: async (token) =>
       ((await (prisma as any).paymentIntent.findFirst({ where: { receiptToken: token } })) as ResolvedReceiptIntent | null) || null,
-    findByReceiptId: async (id) =>
-      ((await (prisma as any).paymentIntent.findFirst({ where: { receiptId: id } })) as ResolvedReceiptIntent | null) || null,
+    findByReceiptId: async (id) => {
+      if (paymentIntentReceiptIdFieldAvailable === false) return null;
+      try {
+        const intent = await (prisma as any).paymentIntent.findFirst({ where: { receiptId: id } });
+        paymentIntentReceiptIdFieldAvailable = true;
+        return (intent as ResolvedReceiptIntent | null) || null;
+      } catch (err: any) {
+        if (isMissingPaymentIntentReceiptIdFieldError(err)) {
+          markPaymentIntentReceiptIdFieldUnavailable(err);
+          return null;
+        }
+        throw err;
+      }
+    },
     findByPaymentIntentId: async (id) =>
       ((await (prisma as any).paymentIntent.findUnique({ where: { id } })) as ResolvedReceiptIntent | null) || null,
     refreshIntentIfPending: async (paymentIntentId) => {
@@ -31829,20 +31924,18 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
     if (content.status !== "published") return reply.code(403).send({ error: "Content not published" });
   }
 
-  const intent = await (prisma as any).paymentIntent.create({
-    data: {
-      buyerUserId: userId || null,
-      contentId: subjectId,
-      manifestSha256,
-      amountSats,
-      status: "pending" as any,
-      purpose: "CONTENT_PURCHASE" as any,
-      subjectType: "CONTENT" as any,
-      subjectId,
-      receiptToken: crypto.randomBytes(24).toString("hex"),
-      receiptTokenExpiresAt: new Date(Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000),
-      receiptId: createStableReceiptId()
-    }
+  const intent = await createPaymentIntentWithOptionalReceiptId({
+    buyerUserId: userId || null,
+    contentId: subjectId,
+    manifestSha256,
+    amountSats,
+    status: "pending" as any,
+    purpose: "CONTENT_PURCHASE" as any,
+    subjectType: "CONTENT" as any,
+    subjectId,
+    receiptToken: crypto.randomBytes(24).toString("hex"),
+    receiptTokenExpiresAt: new Date(Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000),
+    receiptId: createStableReceiptId()
   });
 
   let onchainReason: string | null = null;
