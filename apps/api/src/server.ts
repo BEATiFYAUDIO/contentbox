@@ -755,6 +755,28 @@ function getPublicOrigin(req: any): string {
   return APP_BASE_URL.replace(/\/+$/, "");
 }
 
+function resolveBuyerFacingOrigin(
+  req: any,
+  input?: {
+    requireDurable?: boolean;
+    preferCanonicalCommerceOrigin?: boolean;
+  }
+): string | null {
+  const requireDurable = Boolean(input?.requireDurable);
+  const preferCanonicalCommerceOrigin = input?.preferCanonicalCommerceOrigin !== false;
+  if (preferCanonicalCommerceOrigin) {
+    const profile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
+    const canonicalCommerceOrigin = normalizeOrigin(String(profile.canonicalCommerceOrigin || "").trim());
+    if (canonicalCommerceOrigin && (!requireDurable || isDurableReceiptOrigin(canonicalCommerceOrigin))) {
+      return canonicalCommerceOrigin.replace(/\/+$/, "");
+    }
+  }
+  const fallback = normalizeOrigin(getPublicOrigin(req));
+  if (!fallback) return null;
+  if (requireDurable && !isDurableReceiptOrigin(fallback)) return null;
+  return fallback.replace(/\/+$/, "");
+}
+
 function isLoopbackIp(ip: string): boolean {
   const value = String(ip || "");
   if (!value) return false;
@@ -8994,6 +9016,65 @@ function getPublicLinkState(): PublicLinkState {
   return state;
 }
 
+type PublicHostInvariant = {
+  nodeMode: "basic" | "advanced" | "lan";
+  requiresDurableHost: boolean;
+  canonicalOrigin: string | null;
+  canonicalOriginIsDurable: boolean;
+  canonicalBuyerOrigin: string | null;
+  namedConfigured: boolean;
+  namedOnline: boolean;
+  ownershipConflict: boolean;
+  durableReady: boolean;
+  reasons: string[];
+};
+
+function derivePublicHostInvariant(input: {
+  state: PublicLinkState;
+  tunnelControl: ReturnType<typeof detectTunnelControlMode>;
+  namedConfigured: boolean;
+  namedOnline: boolean;
+}): PublicHostInvariant {
+  const nodeMode = getNodeModeStatus().nodeMode;
+  const requiresDurableHost = nodeMode !== "basic";
+  const canonicalOrigin = normalizeOrigin(String(input.state.canonicalOrigin || "").trim());
+  const canonicalOriginIsDurable = isDurableReceiptOrigin(canonicalOrigin);
+  const ownershipConflict = Boolean(
+    input.tunnelControl.mode === "service_token" &&
+      input.tunnelControl.activeServiceTokenProcess &&
+      input.tunnelControl.activeAppManagedTokenProcess
+  );
+
+  const reasons: string[] = [];
+  if (requiresDurableHost) {
+    if (!input.namedConfigured) reasons.push("NAMED_TUNNEL_NOT_CONFIGURED");
+    if (!input.namedOnline) reasons.push("NAMED_TUNNEL_OFFLINE");
+    if (!canonicalOrigin) reasons.push("CANONICAL_ORIGIN_MISSING");
+    if (canonicalOrigin && !canonicalOriginIsDurable) reasons.push("CANONICAL_ORIGIN_NOT_DURABLE");
+  } else {
+    if (!canonicalOrigin) reasons.push("BASIC_PUBLIC_ORIGIN_UNAVAILABLE");
+    if (canonicalOrigin && !canonicalOriginIsDurable) reasons.push("BASIC_TEMP_LINK_NON_DURABLE");
+  }
+  if (ownershipConflict) reasons.push("TUNNEL_OWNERSHIP_CONFLICT");
+
+  const durableReady = requiresDurableHost
+    ? input.namedConfigured && input.namedOnline && canonicalOriginIsDurable && !ownershipConflict
+    : true;
+
+  return {
+    nodeMode,
+    requiresDurableHost,
+    canonicalOrigin,
+    canonicalOriginIsDurable,
+    canonicalBuyerOrigin: canonicalOriginIsDurable ? canonicalOrigin : null,
+    namedConfigured: input.namedConfigured,
+    namedOnline: input.namedOnline,
+    ownershipConflict,
+    durableReady,
+    reasons
+  };
+}
+
 function getPublicStatus() {
   const defer = shouldDeferNamedTunnelToServiceControl();
   if (defer.shouldDefer) {
@@ -9038,6 +9119,12 @@ function getPublicStatus() {
     : canonicalOriginReachable
       ? null
       : "CANONICAL_ORIGIN_UNREACHABLE_OR_OFFLINE";
+  const hostInvariant = derivePublicHostInvariant({
+    state,
+    tunnelControl,
+    namedConfigured,
+    namedOnline
+  });
 
   return {
     mode: state.mode,
@@ -9046,6 +9133,9 @@ function getPublicStatus() {
     canonicalOriginConfigured,
     canonicalOriginReachable,
     canonicalOriginReason,
+    canonicalBuyerOrigin: hostInvariant.canonicalBuyerOrigin,
+    durableBuyerHostReady: hostInvariant.durableReady,
+    durableBuyerHostReasons: hostInvariant.reasons,
     publicOrigin: state.canonicalOrigin,
     isCanonical: state.isCanonical,
     message: state.message,
@@ -9079,6 +9169,7 @@ function getPublicStatus() {
     lastCheckedAt: namedHealthCache.checkedAt,
     cloudflared,
     tunnelControl,
+    hostInvariant,
     consentRequired,
     autoStartEnabled
   };
@@ -9106,6 +9197,43 @@ function getPublicStatusCached(force = false) {
     value
   };
   return value;
+}
+
+function logPublicHostInvariantOnStartup() {
+  try {
+    const status = getPublicStatusCached(true);
+    const hostInvariant = status.hostInvariant;
+    if (!hostInvariant) return;
+    if (hostInvariant.ownershipConflict) {
+      app.log.error(
+        {
+          reasons: hostInvariant.reasons,
+          tunnelControlMode: status.tunnelControl?.mode || "unknown"
+        },
+        "publicHostInvariant.ownership_conflict"
+      );
+    } else if (hostInvariant.requiresDurableHost && !hostInvariant.durableReady) {
+      app.log.warn(
+        {
+          reasons: hostInvariant.reasons,
+          canonicalOrigin: hostInvariant.canonicalOrigin,
+          namedConfigured: hostInvariant.namedConfigured,
+          namedOnline: hostInvariant.namedOnline
+        },
+        "publicHostInvariant.durable_host_not_ready"
+      );
+    } else {
+      app.log.info(
+        {
+          canonicalBuyerOrigin: hostInvariant.canonicalBuyerOrigin,
+          nodeMode: hostInvariant.nodeMode
+        },
+        "publicHostInvariant.ready"
+      );
+    }
+  } catch (err: any) {
+    app.log.warn({ err: String(err?.message || err) }, "publicHostInvariant.startup_check_failed");
+  }
 }
 
 async function triggerPublicStartBestEffort() {
@@ -10658,7 +10786,11 @@ app.get("/api/public/diagnostics", async (_req: any, reply: any) => {
       mode: publicStatus.mode,
       status: publicStatus.status,
       url,
-      tunnelControlMode: publicStatus.tunnelControl?.mode || "unknown"
+      tunnelControlMode: publicStatus.tunnelControl?.mode || "unknown",
+      canonicalBuyerOrigin: publicStatus.canonicalBuyerOrigin || null,
+      durableBuyerReady: Boolean(publicStatus.durableBuyerHostReady),
+      durableBuyerReasons: Array.isArray(publicStatus.durableBuyerHostReasons) ? publicStatus.durableBuyerHostReasons : [],
+      ownershipConflict: Boolean(publicStatus.hostInvariant?.ownershipConflict)
     },
     paymentsMode
   });
@@ -18722,9 +18854,17 @@ app.put("/api/network/provider", { preHandler: requireAuth }, async (req: any, r
 // Public-safe canonical origin for buy links (no auth required).
 app.get("/api/public/origin", async (req: any, reply: any) => {
   const publicOrigin = getPublicOrigin(req);
+  const publicStatus = getPublicStatusCached();
   const profile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
+  const canonicalBuyerOrigin =
+    String(publicStatus.canonicalBuyerOrigin || "").trim() ||
+    (isDurableReceiptOrigin(profile.canonicalCommerceOrigin) ? String(profile.canonicalCommerceOrigin || "").trim() : "") ||
+    null;
   return reply.send({
     publicOrigin,
+    canonicalBuyerOrigin,
+    durableBuyerReady: Boolean(publicStatus.durableBuyerHostReady),
+    durableBuyerReasons: Array.isArray(publicStatus.durableBuyerHostReasons) ? publicStatus.durableBuyerHostReasons : [],
     canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
     canonicalCommerceKind: profile.canonicalCommerceKind,
     localNodeEndpointOrigin: profile.localNodeEndpointOrigin,
@@ -20587,7 +20727,16 @@ app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async
     throw e;
   }
   if (!shareLink) return reply.send({ shareLink: null });
-  const base = getPublicOrigin(req).replace(/\/$/, "");
+  const base = resolveBuyerFacingOrigin(req, {
+    requireDurable: true,
+    preferCanonicalCommerceOrigin: true
+  });
+  if (!base) {
+    return reply.code(409).send({
+      code: "DURABLE_PUBLIC_ORIGIN_REQUIRED",
+      message: "A stable named public origin is required to issue share links in sovereign modes."
+    });
+  }
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     shareLink: {
@@ -20660,7 +20809,16 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
     }
     throw e;
   }
-  const base = getPublicOrigin(req).replace(/\/$/, "");
+  const base = resolveBuyerFacingOrigin(req, {
+    requireDurable: true,
+    preferCanonicalCommerceOrigin: true
+  });
+  if (!base) {
+    return reply.code(409).send({
+      code: "DURABLE_PUBLIC_ORIGIN_REQUIRED",
+      message: "A stable named public origin is required to issue share links in sovereign modes."
+    });
+  }
   const url = `${base}/p/${shareLink.token}`;
   return reply.send({
     ok: true,
@@ -20925,9 +21083,17 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
   if (!splitVersionId) return badRequest(reply, "Split version missing");
 
   const now = new Date();
-  const publishServiceProfile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
-  const commerceOriginForPublish =
-    publishServiceProfile.canonicalCommerceOrigin || getPublicOrigin(req);
+  const requireDurableBuyerLinks = resolveRuntimeConfig().nodeMode !== "basic";
+  const commerceOriginForPublish = resolveBuyerFacingOrigin(req, {
+    requireDurable: requireDurableBuyerLinks,
+    preferCanonicalCommerceOrigin: true
+  });
+  if (!commerceOriginForPublish) {
+    return reply.code(409).send({
+      code: "DURABLE_PUBLIC_ORIGIN_REQUIRED",
+      message: "Publishing buyer links requires a stable named public origin in sovereign modes."
+    });
+  }
   await prisma.$transaction(async (tx) => {
     await tx.manifest.update({
       where: { id: manifest.id },
@@ -37544,6 +37710,7 @@ async function start() {
       }
     }
   }
+  logPublicHostInvariantOnStartup();
 }
 
 process.on("SIGTERM", () => {

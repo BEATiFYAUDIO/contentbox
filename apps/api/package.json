@@ -15,6 +15,7 @@
     "upgrade:advanced": "powershell -NoProfile -ExecutionPolicy Bypass -File ./upgrade-advanced.ps1",
     "smoke:basic": "npx tsx src/scripts/smoke_basic_mode.ts",
     "smoke:advanced": "npx tsx src/scripts/smoke_advanced_mode.ts",
+    "smoke:public-host": "API_BASE_URL=http://127.0.0.1:4000 npx tsx src/public_host_smoke.ts",
     "test:storefront-gating": "API_BASE_URL=http://127.0.0.1:4000 DEV_ALLOW_SIMULATE_PAYMENTS=1 npx tsx src/scripts/storefront_gating_test.ts",
     "test:delegated-invoice-harness": "npx tsx src/payments/delegated_invoice_harness.ts",
     "test:delegated-invoice-harness:ci": "EXPECT_SETTLED=1 EXPECT_UI_CONSISTENT=1 npx tsx src/payments/delegated_invoice_harness.ts",
