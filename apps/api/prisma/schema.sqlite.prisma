@@ -567,6 +567,7 @@ model PaymentIntent {
   confirmations   Int?
   receiptToken    String?
   receiptTokenExpiresAt DateTime?
+  receiptId       String? @unique
   ipHash          String?
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
@@ -583,6 +584,7 @@ model PaymentIntent {
   @@index([manifestSha256])
   @@index([status])
   @@index([receiptToken])
+  @@index([receiptId])
   @@index([ipHash])
   @@index([purpose, subjectType, subjectId])
 }

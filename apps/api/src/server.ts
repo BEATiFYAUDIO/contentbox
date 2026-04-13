@@ -94,6 +94,7 @@ import { SingleFlight } from "./lib/asyncPrimitives.js";
 import { resolveContentboxRootInfo } from "./lib/contentboxRoot.js";
 import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSessionToken } from "./lib/buyerSession.js";
 import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
+import { resolveReceiptContext, type ReceiptAvailability, type ResolvedReceiptIntent } from "./lib/receiptResolver.js";
 import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
 import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
 import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
@@ -1201,6 +1202,7 @@ const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
 const RECEIPT_TOKEN_TTL_SECONDS = Math.max(60 * 60 * 24 * 7, Math.floor(Number(process.env.RECEIPT_TOKEN_TTL_SECONDS || String(60 * 60 * 24 * 7))));
+const RECEIPT_ID_PREFIX = "rcpt_";
 const EDGE_DELIVERY_ENABLED = String(process.env.EDGE_DELIVERY_ENABLED || "false").toLowerCase() === "true";
 const EDGE_TICKET_TTL_SECONDS = Math.max(5, Math.floor(Number(process.env.EDGE_TICKET_TTL_SECONDS || "60")));
 const EDGE_TICKET_SECRET = String(process.env.EDGE_TICKET_SECRET || "").trim();
@@ -10531,6 +10533,8 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
   appPublic.get("/buy/receipts/:receiptToken/fulfill", handlePublicReceiptFulfill);
   appPublic.get("/buy/receipts/:receiptToken/file", handlePublicReceiptFile);
+  appPublic.get("/buy/receipts/r/:receiptId/status", handlePublicDurableReceiptStatus);
+  appPublic.post("/buy/receipts/r/:receiptId/reissue-token", handlePublicDurableReceiptReissue);
   appPublic.get("/invites/:token", handlePublicInviteLookup);
   appPublic.get("/invite/:token", handlePublicInvitePage);
   appPublic.post("/invites/:token/accept", handlePublicInviteAccept);
@@ -25981,7 +25985,11 @@ async function handleBuyPage(req: any, reply: any) {
     const rails = document.getElementById("rails");
     const lightning = intent.paymentOptions?.lightning || {};
     const onchain = intent.paymentOptions?.onchain || {};
-    const receiptLink = apiBase + "/buy/receipts/" + intent.receiptToken + "/status";
+    const receiptLink =
+      String(intent.durableReceiptStatusUrl || intent.receiptStatusUrl || "").trim() ||
+      (intent.receiptId
+        ? (apiBase + "/buy/receipts/r/" + encodeURIComponent(intent.receiptId) + "/status")
+        : (apiBase + "/buy/receipts/" + intent.receiptToken + "/status"));
     const lightningInvoice = String(lightning.bolt11 || "");
     const hasLightningInvoice = Boolean(lightningInvoice);
     const onchainAddress = String(onchain.address || "");
@@ -26911,42 +26919,49 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         orderBy: { createdAt: "desc" }
       });
       if (existingPending && (existingPending.bolt11 || existingPending.providerId || existingPending.onchainAddress)) {
+        const existingPendingWithReceipt = await ensureStableReceiptIdForIntent(existingPending as any);
+        const durableReceiptOrigin = await resolveDurableReceiptOriginForSeller(content.ownerUserId);
+        const stableReceiptId = String((existingPendingWithReceipt as any)?.receiptId || "").trim() || null;
+        const durableReceiptStatusUrl =
+          durableReceiptOrigin && stableReceiptId
+            ? `${durableReceiptOrigin}/buy/receipts/r/${encodeURIComponent(stableReceiptId)}/status`
+            : null;
         app.log.info(
           {
             ...intentLog,
             mappedCategory: "reuse_pending_intent",
             mappedCode: "OK",
-            paymentIntentId: existingPending.id
+            paymentIntentId: existingPendingWithReceipt.id
           },
           "publicPaymentsIntents.reused"
         );
         return reply.send({
           ok: true,
           buyerId,
-          paymentIntentId: existingPending.id,
-          status: existingPending.status,
-          amountSats: existingPending.amountSats.toString(),
-          bolt11: existingPending.bolt11 || null,
-          lightningExpiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null,
-          onchainAddress: existingPending.onchainAddress || null,
-          onchainReason: existingPending.onchainAddress ? null : "NOT_AVAILABLE",
-          lightningReason: existingPending.bolt11 ? null : "NOT_AVAILABLE",
-          onchain: existingPending.onchainAddress ? { address: existingPending.onchainAddress } : null,
-          lightning: existingPending.bolt11
-            ? { bolt11: existingPending.bolt11, expiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null }
+          paymentIntentId: existingPendingWithReceipt.id,
+          status: existingPendingWithReceipt.status,
+          amountSats: existingPendingWithReceipt.amountSats.toString(),
+          bolt11: existingPendingWithReceipt.bolt11 || null,
+          lightningExpiresAt: existingPendingWithReceipt.lightningExpiresAt ? existingPendingWithReceipt.lightningExpiresAt.toISOString() : null,
+          onchainAddress: existingPendingWithReceipt.onchainAddress || null,
+          onchainReason: existingPendingWithReceipt.onchainAddress ? null : "NOT_AVAILABLE",
+          lightningReason: existingPendingWithReceipt.bolt11 ? null : "NOT_AVAILABLE",
+          onchain: existingPendingWithReceipt.onchainAddress ? { address: existingPendingWithReceipt.onchainAddress } : null,
+          lightning: existingPendingWithReceipt.bolt11
+            ? { bolt11: existingPendingWithReceipt.bolt11, expiresAt: existingPendingWithReceipt.lightningExpiresAt ? existingPendingWithReceipt.lightningExpiresAt.toISOString() : null }
             : null,
           paymentOptions: {
             lightning: {
-              available: Boolean(existingPending.bolt11),
-              bolt11: existingPending.bolt11 || null,
-              expiresAt: existingPending.lightningExpiresAt ? existingPending.lightningExpiresAt.toISOString() : null,
-              reason: existingPending.bolt11 ? null : "NOT_AVAILABLE"
+              available: Boolean(existingPendingWithReceipt.bolt11),
+              bolt11: existingPendingWithReceipt.bolt11 || null,
+              expiresAt: existingPendingWithReceipt.lightningExpiresAt ? existingPendingWithReceipt.lightningExpiresAt.toISOString() : null,
+              reason: existingPendingWithReceipt.bolt11 ? null : "NOT_AVAILABLE"
             },
             onchain: {
-              available: Boolean(existingPending.onchainAddress),
-              address: existingPending.onchainAddress || null,
+              available: Boolean(existingPendingWithReceipt.onchainAddress),
+              address: existingPendingWithReceipt.onchainAddress || null,
               minConfirmations: ONCHAIN_MIN_CONFS,
-              reason: existingPending.onchainAddress ? null : "NOT_AVAILABLE"
+              reason: existingPendingWithReceipt.onchainAddress ? null : "NOT_AVAILABLE"
             }
           },
           creatorPayout: {
@@ -26957,10 +26972,13 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
             providerRemitMode: payoutDestination.providerRemitMode,
             message: "Reusing existing pending payment intent."
           },
-          receiptToken: existingPending.receiptToken || null,
-          receiptTokenExpiresAt: existingPending.receiptTokenExpiresAt
-            ? existingPending.receiptTokenExpiresAt.toISOString()
-            : null
+          receiptToken: existingPendingWithReceipt.receiptToken || null,
+          receiptTokenExpiresAt: existingPendingWithReceipt.receiptTokenExpiresAt
+            ? existingPendingWithReceipt.receiptTokenExpiresAt.toISOString()
+            : null,
+          receiptId: stableReceiptId,
+          receiptStatusUrl: durableReceiptStatusUrl,
+          durableReceiptStatusUrl
         });
       }
     }
@@ -26984,6 +27002,7 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         ipHash: buyerScopeHash
       }
     });
+    const intentWithReceipt = await ensureStableReceiptIdForIntent(intent as any);
 
     let lightningAddress: string | null = null;
     try {
@@ -27376,19 +27395,26 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         ...intentLog,
         mappedCategory: "ok",
         mappedCode: "OK",
-        paymentIntentId: intent.id,
+        paymentIntentId: intentWithReceipt.id,
         onchainAvailable: Boolean(onchain?.address),
         lightningAvailable: Boolean(lightning?.bolt11)
       },
       "publicPaymentsIntents.created"
     );
 
+    const durableReceiptOrigin = await resolveDurableReceiptOriginForSeller(content.ownerUserId);
+    const stableReceiptId = String((intentWithReceipt as any)?.receiptId || "").trim() || null;
+    const durableReceiptStatusUrl =
+      durableReceiptOrigin && stableReceiptId
+        ? `${durableReceiptOrigin}/buy/receipts/r/${encodeURIComponent(stableReceiptId)}/status`
+        : null;
+
     return reply.send({
       ok: true,
       buyerId,
-      paymentIntentId: intent.id,
-      status: intent.status,
-      amountSats: intent.amountSats.toString(),
+      paymentIntentId: intentWithReceipt.id,
+      status: intentWithReceipt.status,
+      amountSats: intentWithReceipt.amountSats.toString(),
       bolt11: lightning?.bolt11 || null,
       lightningExpiresAt: lightning?.expiresAt || null,
       onchainAddress: onchain?.address || null,
@@ -27420,6 +27446,10 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
       },
       receiptToken,
       receiptTokenExpiresAt: receiptTokenExpiresAt.toISOString()
+      ,
+      receiptId: stableReceiptId,
+      receiptStatusUrl: durableReceiptStatusUrl,
+      durableReceiptStatusUrl
     });
   } catch (e: any) {
     const mapped = mapPublicPaymentsIntentError(e);
@@ -27555,13 +27585,225 @@ async function reconcileBuyerEntitlementsFromPurchaseHistory(input: { buyerId: s
   );
 }
 
-function buyerIdFromIntent(intent: any): string | null {
-  const v = String(intent?.buyerId || "").trim();
-  return v || null;
+function createStableReceiptId(): string {
+  return `${RECEIPT_ID_PREFIX}${crypto.randomBytes(12).toString("hex")}`;
 }
 
-function resolveAccessBuyerId(intent: any, cookieBuyerId: string | null): { buyerId: string | null; warning: string | null } {
-  const intentBuyerId = buyerIdFromIntent(intent);
+async function ensureStableReceiptIdForIntent<T extends { id: string; receiptId?: string | null }>(
+  intent: T
+): Promise<T & { receiptId?: string | null }> {
+  const existing = String((intent as any)?.receiptId || "").trim();
+  if (existing) return intent as T & { receiptId?: string | null };
+  const nextId = createStableReceiptId();
+  try {
+    const updated = await (prisma as any).paymentIntent.update({
+      where: { id: String((intent as any)?.id || "") },
+      data: { receiptId: nextId }
+    });
+    return (updated as T & { receiptId?: string | null }) || ({ ...(intent as any), receiptId: nextId } as T & { receiptId?: string | null });
+  } catch {
+    return ({ ...(intent as any), receiptId: nextId } as T & { receiptId?: string | null });
+  }
+}
+
+let receiptIdBackfillStarted = false;
+async function backfillMissingReceiptIds(limit = 250) {
+  const rows = await (prisma as any).paymentIntent.findMany({
+    where: { receiptId: null },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+    take: Math.max(1, Math.min(2000, Math.floor(limit)))
+  });
+  if (!Array.isArray(rows) || rows.length === 0) return 0;
+  let updated = 0;
+  for (const row of rows) {
+    const id = String(row?.id || "").trim();
+    if (!id) continue;
+    try {
+      const res = await (prisma as any).paymentIntent.updateMany({
+        where: { id, receiptId: null },
+        data: { receiptId: createStableReceiptId() }
+      });
+      if (Number(res?.count || 0) > 0) updated += Number(res.count);
+    } catch {}
+  }
+  return updated;
+}
+
+function scheduleReceiptIdBackfillBestEffort() {
+  if (receiptIdBackfillStarted) return;
+  receiptIdBackfillStarted = true;
+  setTimeout(async () => {
+    try {
+      let total = 0;
+      for (let i = 0; i < 20; i += 1) {
+        const changed = await backfillMissingReceiptIds(250);
+        total += changed;
+        if (changed === 0) break;
+      }
+      if (total > 0) {
+        app.log.info({ updated: total }, "receipt.backfill.complete");
+      }
+    } catch (err: any) {
+      app.log.warn({ err: String(err?.message || err) }, "receipt.backfill.failed");
+    }
+  }, 1500);
+}
+
+function isDurableReceiptOrigin(origin: string | null | undefined): boolean {
+  const value = normalizeOrigin(String(origin || "").trim());
+  if (!value) return false;
+  const host = (() => {
+    try {
+      return new URL(value).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+  if (!host) return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") return false;
+  if (host.endsWith(".trycloudflare.com")) return false;
+  return true;
+}
+
+async function resolveDurableReceiptOriginForSeller(ownerUserId: string): Promise<string | null> {
+  const authority = await resolveCommerceAuthorityForUser(ownerUserId).catch(() => null);
+  if (!authority?.authority) return null;
+  const capabilityCtx = getCapabilityContext();
+  const sellerPaymentsReadiness = await getPaymentsReadiness(ownerUserId).catch(() => null);
+  const serviceProfile = resolveProviderServiceProfile({
+    hasLocalInvoiceMinting:
+      capabilityCtx.paymentsMode === "node" &&
+      capabilityCtx.nodeMode === "lan" &&
+      Boolean(sellerPaymentsReadiness?.lightning?.ready),
+    providerCfg: getNetworkProviderConfig(),
+    ctx: capabilityCtx
+  });
+  const candidate = String(serviceProfile.canonicalCommerceOrigin || "").trim();
+  if (!isDurableReceiptOrigin(candidate)) return null;
+  return candidate.replace(/\/+$/, "");
+}
+
+type ReceiptAuthenticityContext = {
+  paymentIntentId: string;
+  receiptId: string | null;
+  contentId: string;
+  manifestSha256: string | null;
+  creator: {
+    userId: string | null;
+    displayName: string | null;
+    handle: string | null;
+  };
+};
+
+async function getReceiptAuthenticityContext(intent: ResolvedReceiptIntent): Promise<ReceiptAuthenticityContext> {
+  const content = await prisma.contentItem.findUnique({
+    where: { id: intent.contentId },
+    include: {
+      owner: { select: { id: true, displayName: true, email: true } }
+    }
+  });
+  const ownerEmail = String(content?.owner?.email || "").trim();
+  const ownerHandle = ownerEmail.includes("@") ? ownerEmail.slice(0, ownerEmail.indexOf("@")) : null;
+  return {
+    paymentIntentId: intent.id,
+    receiptId: String((intent as any)?.receiptId || "").trim() || null,
+    contentId: intent.contentId,
+    manifestSha256: String(intent.manifestSha256 || "").trim() || null,
+    creator: {
+      userId: String(content?.owner?.id || "").trim() || null,
+      displayName: String(content?.owner?.displayName || "").trim() || null,
+      handle: ownerHandle
+    }
+  };
+}
+
+async function getReceiptAvailability(intent: ResolvedReceiptIntent): Promise<ReceiptAvailability> {
+  const content = await prisma.contentItem.findUnique({
+    where: { id: intent.contentId },
+    select: { id: true, deletedAt: true, storefrontStatus: true, repoPath: true }
+  });
+  if (!content || content.deletedAt) return "removed";
+  const status = String(content.storefrontStatus || "").trim().toUpperCase();
+  if (status === "REMOVED") return "removed";
+  const repoPath = String(content.repoPath || "").trim();
+  if (!repoPath) return "creator_offline";
+  try {
+    await fs.access(repoPath);
+    return "available";
+  } catch {
+    return "creator_offline";
+  }
+}
+
+async function resolveReceiptContextForRequest(input: {
+  receiptToken?: string | null;
+  receiptId?: string | null;
+  paymentIntentId?: string | null;
+}) {
+  return resolveReceiptContext({
+    receiptToken: input.receiptToken || null,
+    receiptId: input.receiptId || null,
+    paymentIntentId: input.paymentIntentId || null,
+    findByReceiptToken: async (token) =>
+      ((await (prisma as any).paymentIntent.findFirst({ where: { receiptToken: token } })) as ResolvedReceiptIntent | null) || null,
+    findByReceiptId: async (id) =>
+      ((await (prisma as any).paymentIntent.findFirst({ where: { receiptId: id } })) as ResolvedReceiptIntent | null) || null,
+    findByPaymentIntentId: async (id) =>
+      ((await (prisma as any).paymentIntent.findUnique({ where: { id } })) as ResolvedReceiptIntent | null) || null,
+    refreshIntentIfPending: async (paymentIntentId) => {
+      const refreshed = await settlePaymentIntentFromRails(paymentIntentId).catch(() => null);
+      return (refreshed?.intent as ResolvedReceiptIntent) || null;
+    },
+    ensureStableReceiptId: ensureStableReceiptIdForIntent,
+    getAuthenticityContext: getReceiptAuthenticityContext,
+    getAvailability: getReceiptAvailability
+  });
+}
+
+async function buildDurableReceiptStatusUrlForIntent(intent: ResolvedReceiptIntent): Promise<string | null> {
+  const receiptId = String((intent as any)?.receiptId || "").trim();
+  if (!receiptId) return null;
+  const content = await prisma.contentItem.findUnique({
+    where: { id: intent.contentId },
+    select: { ownerUserId: true }
+  });
+  const ownerUserId = String(content?.ownerUserId || "").trim();
+  if (!ownerUserId) return null;
+  const durableOrigin = await resolveDurableReceiptOriginForSeller(ownerUserId);
+  if (!durableOrigin) return null;
+  return `${durableOrigin}/buy/receipts/r/${encodeURIComponent(receiptId)}/status`;
+}
+
+async function resolveBuyerIdFromIntent(intent: any): Promise<string | null> {
+  // Legacy path: some older rows/callers may still carry buyerId directly.
+  const direct = String(intent?.buyerId || "").trim();
+  if (direct) return direct;
+
+  // Current public-commerce path: recover buyer binding through provider-intent
+  // metadata (buyerSessionId) when available.
+  const paymentIntentId = String(intent?.id || "").trim();
+  if (!paymentIntentId) return null;
+  const providerIntent = findProviderPaymentIntentByPaymentIntentId(paymentIntentId);
+  const buyerSessionId = String(providerIntent?.buyerSessionId || "").trim();
+  if (!buyerSessionId) return null;
+  try {
+    const session = await prisma.buyerSession.findUnique({
+      where: { id: buyerSessionId },
+      select: { buyerId: true }
+    });
+    const buyerId = String(session?.buyerId || "").trim();
+    return buyerId || null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAccessBuyerId(
+  intent: any,
+  cookieBuyerId: string | null
+): Promise<{ buyerId: string | null; warning: string | null }> {
+  const intentBuyerId = await resolveBuyerIdFromIntent(intent);
   const cookieId = String(cookieBuyerId || "").trim() || null;
   if (intentBuyerId && cookieId && intentBuyerId !== cookieId) {
     return { buyerId: intentBuyerId, warning: "BUYER_SESSION_MISMATCH_USING_INTENT_BUYER" };
@@ -27633,7 +27875,7 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
   if (!entitled && receiptToken) {
     const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
     if (intent && intent.contentId === content.id && intent.status === "paid") {
-      const accessBuyer = resolveAccessBuyerId(intent, cookieBuyerId);
+      const accessBuyer = await resolveAccessBuyerId(intent, cookieBuyerId);
       bindBuyerId = bindBuyerId || accessBuyer.buyerId || null;
       if (accessBuyer.buyerId) {
         await prisma.entitlement.upsert({
@@ -27674,27 +27916,13 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
 async function handlePublicReceiptStatus(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
-
-  let intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
-  const matchedReceiptToken = Boolean(intent);
-  if (!intent) {
-    intent = await prisma.paymentIntent.findUnique({ where: { id: receiptToken } });
-  }
-  if (!intent) return notFound(reply, "Receipt not found");
-  if (matchedReceiptToken && intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
-    return reply.code(410).send({ error: "Receipt token expired" });
-  }
-
-  if (intent.status !== "paid") {
-    try {
-      const refreshed = await settlePaymentIntentFromRails(intent.id);
-      if (refreshed?.intent) intent = refreshed.intent;
-    } catch {}
-  }
+  const context = await resolveReceiptContextForRequest({ receiptToken });
+  if (!context) return notFound(reply, "Receipt not found");
+  const intent = context.intent as any;
 
   const buyerSession = await resolveBuyerSession(req, reply);
   const cookieBuyerId = buyerSession?.buyer?.id || null;
-  const accessBuyer = resolveAccessBuyerId(intent, cookieBuyerId);
+  const accessBuyer = await resolveAccessBuyerId(intent, cookieBuyerId);
   const buyerId = accessBuyer.buyerId;
   if (buyerId && intent.status === "paid") {
     await prisma.entitlement.upsert({
@@ -27715,6 +27943,7 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
       ? providerCfg.providerNodeId
       : null;
+  const durableReceiptStatusUrl = await buildDurableReceiptStatusUrlForIntent(intent as any);
 
   return reply.send({
     status: intent.status,
@@ -27725,9 +27954,18 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     contentId: intent.contentId,
     manifestSha256: intent.manifestSha256,
     receiptToken: intent.receiptToken || null,
+    receiptId: String((intent as any)?.receiptId || "").trim() || null,
+    durableReceiptStatusUrl,
     invoiceProviderNodeId,
     canFulfill: accessUnlocked,
     access: accessUnlocked ? "unlocked" : "pending",
+    authenticity: context.authenticity,
+    entitlement: {
+      purchased: context.entitlement.purchased,
+      entitled: accessUnlocked
+    },
+    availability: context.availability,
+    token: context.token,
     warning: accessBuyer.warning || undefined
   });
 }
@@ -27735,25 +27973,186 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
 app.get("/public/receipts/:receiptToken/status", handlePublicReceiptStatus);
 app.get("/buy/receipts/:receiptToken/status", handlePublicReceiptStatus);
 
+async function handlePublicDurableReceiptStatus(req: any, reply: any) {
+  const receiptId = asString((req.params as any).receiptId || "").trim();
+  if (!receiptId) return badRequest(reply, "receiptId required");
+  const context = await resolveReceiptContextForRequest({ receiptId });
+  if (!context) return notFound(reply, "Receipt not found");
+  const intent = context.intent as any;
+
+  const buyerSession = await resolveBuyerSession(req, reply);
+  const cookieBuyerId = buyerSession?.buyer?.id || null;
+  const accessBuyer = await resolveAccessBuyerId(intent, cookieBuyerId);
+  const buyerId = accessBuyer.buyerId;
+  if (buyerId && intent.status === "paid") {
+    await prisma.entitlement.upsert({
+      where: { buyerId_contentId: { buyerId, contentId: intent.contentId } },
+      update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
+      create: {
+        buyerId,
+        buyerUserId: null,
+        contentId: intent.contentId,
+        manifestSha256: intent.manifestSha256 || "",
+        paymentIntentId: intent.id
+      }
+    }).catch(() => {});
+  }
+  const accessUnlocked = intent.status === "paid" || (buyerId ? await hasAccess(buyerId, intent.contentId) : false);
+  const providerCfg = getNetworkProviderConfig();
+  const invoiceProviderNodeId =
+    !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
+      ? providerCfg.providerNodeId
+      : null;
+  const durableReceiptStatusUrl = await buildDurableReceiptStatusUrlForIntent(intent as any);
+
+  return reply.send({
+    status: intent.status,
+    paymentStatus: intent.status,
+    paymentMethod: resolvePaymentMethodFromIntent(intent),
+    paidAt: intent.paidAt ? new Date(intent.paidAt).toISOString() : null,
+    paymentIntentId: intent.id,
+    contentId: intent.contentId,
+    manifestSha256: intent.manifestSha256,
+    receiptToken: intent.receiptToken || null,
+    receiptId: String((intent as any)?.receiptId || "").trim() || null,
+    durableReceiptStatusUrl,
+    invoiceProviderNodeId,
+    canFulfill: accessUnlocked,
+    access: accessUnlocked ? "unlocked" : "pending",
+    authenticity: context.authenticity,
+    entitlement: {
+      purchased: context.entitlement.purchased,
+      entitled: accessUnlocked
+    },
+    availability: context.availability,
+    token: context.token,
+    warning: accessBuyer.warning || undefined
+  });
+}
+
+app.get("/public/receipts/r/:receiptId/status", handlePublicDurableReceiptStatus);
+app.get("/buy/receipts/r/:receiptId/status", handlePublicDurableReceiptStatus);
+
+async function handlePublicDurableReceiptReissue(req: any, reply: any) {
+  const receiptId = asString((req.params as any).receiptId || "").trim();
+  if (!receiptId) return badRequest(reply, "receiptId required");
+  const context = await resolveReceiptContextForRequest({ receiptId });
+  if (!context) return notFound(reply, "Receipt not found");
+  if (!context.entitlement.purchased) {
+    return reply.code(402).send({ code: "PAYMENT_NOT_SETTLED", message: "Payment not settled yet." });
+  }
+  const nextToken = crypto.randomBytes(24).toString("hex");
+  const nextExpiry = new Date(Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000);
+  const updated = await prisma.paymentIntent.update({
+    where: { id: context.intent.id },
+    data: {
+      receiptToken: nextToken,
+      receiptTokenExpiresAt: nextExpiry
+    }
+  });
+  const statusUrl = await buildDurableReceiptStatusUrlForIntent(updated as any);
+  return reply.send({
+    ok: true,
+    paymentIntentId: updated.id,
+    receiptId: String((updated as any)?.receiptId || "").trim() || receiptId,
+    receiptToken: updated.receiptToken || null,
+    receiptTokenExpiresAt: updated.receiptTokenExpiresAt ? updated.receiptTokenExpiresAt.toISOString() : null,
+    receiptStatusUrl: statusUrl
+  });
+}
+
+app.post("/public/receipts/r/:receiptId/reissue-token", handlePublicDurableReceiptReissue);
+app.post("/buy/receipts/r/:receiptId/reissue-token", handlePublicDurableReceiptReissue);
+
+function replyReceiptAccessState(
+  reply: any,
+  input: {
+    purchased: boolean;
+    buyerId: string | null;
+    warning: string | null;
+    receiptId: string | null;
+    authenticity: any;
+    entitlement: any;
+    availability: ReceiptAvailability;
+  }
+) {
+  if (!input.purchased) {
+    return reply.code(402).send({
+      code: "PAYMENT_NOT_SETTLED",
+      message: "Payment not settled yet."
+    });
+  }
+  if (!input.buyerId) {
+    return reply.code(409).send({
+      code: "BUYER_SESSION_REQUIRED",
+      message: "Purchase is valid, but a buyer access session is required to unlock content.",
+      receiptId: input.receiptId,
+      authenticity: input.authenticity,
+      entitlement: input.entitlement,
+      availability: input.availability
+    });
+  }
+  if (input.warning) {
+    return reply.code(409).send({
+      code: "ACCESS_CONTEXT_REQUIRED",
+      message: "Purchase is valid, but current access session does not match receipt context.",
+      receiptId: input.receiptId,
+      warning: input.warning,
+      authenticity: input.authenticity,
+      entitlement: input.entitlement,
+      availability: input.availability
+    });
+  }
+  return reply.code(409).send({
+    code: "ENTITLEMENT_RECONCILIATION_PENDING",
+    message: "Purchase is valid, but entitlement reconciliation is still in progress.",
+    receiptId: input.receiptId,
+    authenticity: input.authenticity,
+    entitlement: input.entitlement,
+    availability: input.availability
+  });
+}
+
 async function handlePublicReceiptFulfill(req: any, reply: any) {
   const receiptToken = asString((req.params as any).receiptToken || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
+  const context = await resolveReceiptContextForRequest({ receiptToken });
+  if (!context) return notFound(reply, "Receipt not found");
+  const latestIntent = context.intent as any;
+  const receiptId = String((latestIntent as any)?.receiptId || "").trim() || null;
 
-  const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
-  if (!intent) return notFound(reply, "Receipt not found");
-  if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
-    return reply.code(410).send({ error: "Receipt token expired" });
+  if (context.token.expired && context.token.matchesCurrent) {
+    return reply.code(409).send({
+      code: "RECEIPT_TOKEN_EXPIRED_REISSUE_REQUIRED",
+      message: "Receipt token expired. Reissue a new token to continue fulfillment.",
+      receiptId,
+      canReissue: context.token.canReissue,
+      purchased: context.entitlement.purchased
+    });
   }
-  let latestIntent = intent;
-  if (latestIntent.status !== "paid") {
-    try {
-      const refreshed = await settlePaymentIntentFromRails(latestIntent.id);
-      if (refreshed?.intent) latestIntent = refreshed.intent as any;
-    } catch {}
+  if (context.availability === "removed") {
+    return reply.code(410).send({
+      code: "CONTENT_REMOVED",
+      message: "Purchase proof is valid but this content is no longer available.",
+      receiptId,
+      authenticity: context.authenticity,
+      entitlement: context.entitlement,
+      availability: context.availability
+    });
+  }
+  if (context.availability === "creator_offline") {
+    return reply.code(409).send({
+      code: "CREATOR_OFFLINE",
+      message: "Purchase proof is valid but creator-hosted content is currently unavailable.",
+      receiptId,
+      authenticity: context.authenticity,
+      entitlement: context.entitlement,
+      availability: context.availability
+    });
   }
   const buyerSession = await resolveBuyerSession(req, reply);
   const cookieBuyerId = buyerSession?.buyer?.id || null;
-  const accessBuyer = resolveAccessBuyerId(latestIntent, cookieBuyerId);
+  const accessBuyer = await resolveAccessBuyerId(latestIntent, cookieBuyerId);
   const buyerId = accessBuyer.buyerId;
   const canAccess = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
   if (!canAccess && latestIntent.status === "paid" && buyerId) {
@@ -27770,7 +28169,17 @@ async function handlePublicReceiptFulfill(req: any, reply: any) {
     }).catch(() => {});
   }
   const canAccessAfterGrant = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
-  if (!canAccessAfterGrant) return reply.code(402).send({ error: "Payment not settled" });
+  if (!canAccessAfterGrant) {
+    return replyReceiptAccessState(reply, {
+      purchased: context.entitlement.purchased,
+      buyerId,
+      warning: accessBuyer.warning,
+      receiptId,
+      authenticity: context.authenticity,
+      entitlement: context.entitlement,
+      availability: context.availability
+    });
+  }
   if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
 
   const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
@@ -27818,25 +28227,70 @@ async function handlePublicReceiptFile(req: any, reply: any) {
   const objectKey = asString((req.query || {})?.objectKey || "").trim();
   if (!receiptToken) return badRequest(reply, "receiptToken required");
   if (!objectKey) return badRequest(reply, "objectKey required");
+  const context = await resolveReceiptContextForRequest({ receiptToken });
+  if (!context) return notFound(reply, "Receipt not found");
+  const latestIntent = context.intent as any;
+  const receiptId = String((latestIntent as any)?.receiptId || "").trim() || null;
 
-  const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
-  if (!intent) return notFound(reply, "Receipt not found");
-  if (intent.receiptTokenExpiresAt && intent.receiptTokenExpiresAt.getTime() < Date.now()) {
-    return reply.code(410).send({ error: "Receipt token expired" });
+  if (context.token.expired && context.token.matchesCurrent) {
+    return reply.code(409).send({
+      code: "RECEIPT_TOKEN_EXPIRED_REISSUE_REQUIRED",
+      message: "Receipt token expired. Reissue a new token to continue file access.",
+      receiptId,
+      canReissue: context.token.canReissue,
+      purchased: context.entitlement.purchased
+    });
   }
-  let latestIntent = intent;
-  if (latestIntent.status !== "paid") {
-    try {
-      const refreshed = await settlePaymentIntentFromRails(latestIntent.id);
-      if (refreshed?.intent) latestIntent = refreshed.intent as any;
-    } catch {}
+  if (context.availability === "removed") {
+    return reply.code(410).send({
+      code: "CONTENT_REMOVED",
+      message: "Purchase proof is valid but this content is no longer available.",
+      receiptId,
+      authenticity: context.authenticity,
+      entitlement: context.entitlement,
+      availability: context.availability
+    });
+  }
+  if (context.availability === "creator_offline") {
+    return reply.code(409).send({
+      code: "CREATOR_OFFLINE",
+      message: "Purchase proof is valid but creator-hosted content is currently unavailable.",
+      receiptId,
+      authenticity: context.authenticity,
+      entitlement: context.entitlement,
+      availability: context.availability
+    });
   }
   const buyerSession = await resolveBuyerSession(req, reply);
   const cookieBuyerId = buyerSession?.buyer?.id || null;
-  const accessBuyer = resolveAccessBuyerId(latestIntent, cookieBuyerId);
+  const accessBuyer = await resolveAccessBuyerId(latestIntent, cookieBuyerId);
   const buyerId = accessBuyer.buyerId;
   const canAccess = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
-  if (!canAccess) return reply.code(402).send({ error: "Payment not settled" });
+  if (!canAccess && latestIntent.status === "paid" && buyerId) {
+    await prisma.entitlement.upsert({
+      where: { buyerId_contentId: { buyerId, contentId: latestIntent.contentId } },
+      update: { paymentIntentId: latestIntent.id, manifestSha256: latestIntent.manifestSha256 || "" },
+      create: {
+        buyerId,
+        buyerUserId: null,
+        contentId: latestIntent.contentId,
+        manifestSha256: latestIntent.manifestSha256 || "",
+        paymentIntentId: latestIntent.id
+      }
+    }).catch(() => {});
+  }
+  const canAccessAfterGrant = buyerId ? await hasAccess(buyerId, latestIntent.contentId) : false;
+  if (!canAccessAfterGrant) {
+    return replyReceiptAccessState(reply, {
+      purchased: context.entitlement.purchased,
+      buyerId,
+      warning: accessBuyer.warning,
+      receiptId,
+      authenticity: context.authenticity,
+      entitlement: context.entitlement,
+      availability: context.availability
+    });
+  }
   if (!latestIntent.manifestSha256) return badRequest(reply, "manifestSha256 required");
 
   const content = await prisma.contentItem.findUnique({ where: { id: latestIntent.contentId } });
@@ -28888,7 +29342,7 @@ async function handlePublicContentFile(req: any, reply: any) {
       } else {
         const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken: token } });
         if (intent && intent.contentId === content.id) {
-          const accessBuyer = resolveAccessBuyerId(intent, buyerId);
+          const accessBuyer = await resolveAccessBuyerId(intent, buyerId);
           const targetBuyerId = accessBuyer.buyerId;
           if (intent.status === "paid" && targetBuyerId) {
             await prisma.entitlement.upsert({
@@ -31375,7 +31829,7 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
     if (content.status !== "published") return reply.code(403).send({ error: "Content not published" });
   }
 
-  const intent = await prisma.paymentIntent.create({
+  const intent = await (prisma as any).paymentIntent.create({
     data: {
       buyerUserId: userId || null,
       contentId: subjectId,
@@ -31386,7 +31840,8 @@ app.post("/api/payments/intents", { preHandler: optionalAuth }, async (req: any,
       subjectType: "CONTENT" as any,
       subjectId,
       receiptToken: crypto.randomBytes(24).toString("hex"),
-      receiptTokenExpiresAt: new Date(Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000)
+      receiptTokenExpiresAt: new Date(Date.now() + RECEIPT_TOKEN_TTL_SECONDS * 1000),
+      receiptId: createStableReceiptId()
     }
   });
 
@@ -34198,6 +34653,7 @@ async function ensureOrRotateLightningInvoiceForIntent(intentId: string) {
 async function settlePaymentIntentFromRails(intentId: string) {
   const intent = await prisma.paymentIntent.findUnique({ where: { id: intentId } });
   if (!intent) return null;
+  const resolvedBuyerId = await resolveBuyerIdFromIntent(intent);
 
   if (intent.status === "paid") {
     try {
@@ -34239,7 +34695,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
           paymentIntentId: intent.id,
           providerId: intent.providerId,
           paymentHash: intent.providerId,
-          buyerId: buyerIdFromIntent(intent),
+          buyerId: resolvedBuyerId,
           contentId: intent.contentId,
           invoiceSettledObserved: true,
           settlementSource: "invoice_check"
@@ -34279,7 +34735,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
         }
       });
 
-      const buyerId = buyerIdFromIntent(updatedIntent);
+      const buyerId = resolvedBuyerId;
       if (buyerId) {
         const existing = await tx.entitlement.findFirst({
           where: { buyerId, contentId: updatedIntent.contentId },
@@ -34315,7 +34771,7 @@ async function settlePaymentIntentFromRails(intentId: string) {
       {
         paymentIntentId: intent.id,
         providerId: intent.providerId || null,
-        buyerId: buyerIdFromIntent(intent),
+        buyerId: resolvedBuyerId,
         sellerId: seller?.ownerUserId || null,
         contentId: intent.contentId,
         invoiceSettledObserved: true,
@@ -36691,6 +37147,7 @@ async function start() {
   })();
   await preflightPrismaReadiness();
   await preflightDb();
+  scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
   await reconcileStaleForwardingRemittancesOnStartup().catch((err) => {

@@ -44,6 +44,10 @@ function derivativeAuthorityError(
   return err;
 }
 
+function createStableReceiptId(): string {
+  return `rcpt_${crypto.randomBytes(12).toString("hex")}`;
+}
+
 export async function resolveDerivativeParentLockedSplitForFinalize(
   prisma: PrismaClient,
   link: { id?: string | null; parentContentId: string; parentSplitVersionId?: string | null }
@@ -256,6 +260,15 @@ export async function finalizePurchase(paymentIntentId: string, client?: PrismaC
     const now = Date.now();
     const tokenExpired = intent.receiptTokenExpiresAt ? intent.receiptTokenExpiresAt.getTime() < now : false;
     const storefrontEnabled = content.storefrontStatus && content.storefrontStatus !== "DISABLED";
+    const stableReceiptId = String((intent as any)?.receiptId || "").trim();
+    if (!stableReceiptId) {
+      try {
+        await (prisma as any).paymentIntent.update({
+          where: { id: intent.id },
+          data: { receiptId: createStableReceiptId() }
+        });
+      } catch {}
+    }
     if (storefrontEnabled && (!intent.receiptToken || tokenExpired)) {
       const receiptToken = crypto.randomBytes(24).toString("hex");
       const receiptTokenExpiresAt = new Date(now + ttlSeconds * 1000);
