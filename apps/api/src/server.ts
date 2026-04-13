@@ -117,6 +117,7 @@ import {
   resolveLockedSnapshotAttributionLabel
 } from "./lib/lockedParticipantSnapshot.js";
 import { mapRemoteInviteAcceptErrorCode, mapTerminalInviteStatusToCode } from "./lib/inviteAcceptResolution.js";
+import { evaluateTunnelConflictGuard, type TunnelConflictGuardState } from "./lib/tunnelConflictGuard.js";
 import {
   buildContentPublishReceiptPayload,
   computeCanonicalManifestHash,
@@ -764,6 +765,13 @@ function resolveBuyerFacingOrigin(
 ): string | null {
   const requireDurable = Boolean(input?.requireDurable);
   const preferCanonicalCommerceOrigin = input?.preferCanonicalCommerceOrigin !== false;
+  if (requireDurable) {
+    const status = getPublicStatusCached();
+    const hostInvariant = status.hostInvariant;
+    if (hostInvariant?.requiresDurableHost && hostInvariant.ownershipConflictPersistent) {
+      return null;
+    }
+  }
   if (preferCanonicalCommerceOrigin) {
     const profile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
     const canonicalCommerceOrigin = normalizeOrigin(String(profile.canonicalCommerceOrigin || "").trim());
@@ -775,6 +783,26 @@ function resolveBuyerFacingOrigin(
   if (!fallback) return null;
   if (requireDurable && !isDurableReceiptOrigin(fallback)) return null;
   return fallback.replace(/\/+$/, "");
+}
+
+function getDurableBuyerOriginFailure(): { code: string; message: string; details?: Record<string, unknown> } {
+  const status = getPublicStatusCached();
+  const hostInvariant = status.hostInvariant;
+  if (hostInvariant?.requiresDurableHost && hostInvariant.ownershipConflictPersistent) {
+    return {
+      code: "PERSISTENT_TUNNEL_OWNERSHIP_CONFLICT",
+      message:
+        "Persistent tunnel ownership conflict detected. Sovereign buyer links are disabled until a single named tunnel owner remains.",
+      details: {
+        thresholdMs: hostInvariant.ownershipConflictThresholdMs,
+        reasons: hostInvariant.reasons
+      }
+    };
+  }
+  return {
+    code: "DURABLE_PUBLIC_ORIGIN_REQUIRED",
+    message: "A stable named public origin is required for sovereign buyer links."
+  };
 }
 
 function isLoopbackIp(ip: string): boolean {
@@ -8924,6 +8952,14 @@ const namedHealthCache: { ok: boolean | null; checkedAt: number | null; inflight
   inflight: false
 };
 let lastNamedOwnershipReconcileAt = 0;
+const TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS = Math.max(
+  15_000,
+  Number(process.env.TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS || "20000")
+);
+let tunnelConflictGuardState: TunnelConflictGuardState = {
+  firstDetectedAtMs: null,
+  persistent: false
+};
 
 function reconcileNamedTunnelOwnership(force = false) {
   const now = Date.now();
@@ -9024,14 +9060,17 @@ type PublicHostInvariant = {
   canonicalBuyerOrigin: string | null;
   namedConfigured: boolean;
   namedOnline: boolean;
-  ownershipConflict: boolean;
+  ownershipConflictDetected: boolean;
+  ownershipConflictPersistent: boolean;
+  ownershipConflictThresholdMs: number;
   durableReady: boolean;
   reasons: string[];
 };
 
 function derivePublicHostInvariant(input: {
   state: PublicLinkState;
-  tunnelControl: ReturnType<typeof detectTunnelControlMode>;
+  ownershipConflictDetected: boolean;
+  ownershipConflictPersistent: boolean;
   namedConfigured: boolean;
   namedOnline: boolean;
 }): PublicHostInvariant {
@@ -9039,12 +9078,6 @@ function derivePublicHostInvariant(input: {
   const requiresDurableHost = nodeMode !== "basic";
   const canonicalOrigin = normalizeOrigin(String(input.state.canonicalOrigin || "").trim());
   const canonicalOriginIsDurable = isDurableReceiptOrigin(canonicalOrigin);
-  const ownershipConflict = Boolean(
-    input.tunnelControl.mode === "service_token" &&
-      input.tunnelControl.activeServiceTokenProcess &&
-      input.tunnelControl.activeAppManagedTokenProcess
-  );
-
   const reasons: string[] = [];
   if (requiresDurableHost) {
     if (!input.namedConfigured) reasons.push("NAMED_TUNNEL_NOT_CONFIGURED");
@@ -9055,10 +9088,11 @@ function derivePublicHostInvariant(input: {
     if (!canonicalOrigin) reasons.push("BASIC_PUBLIC_ORIGIN_UNAVAILABLE");
     if (canonicalOrigin && !canonicalOriginIsDurable) reasons.push("BASIC_TEMP_LINK_NON_DURABLE");
   }
-  if (ownershipConflict) reasons.push("TUNNEL_OWNERSHIP_CONFLICT");
+  if (input.ownershipConflictDetected) reasons.push("TUNNEL_OWNERSHIP_CONFLICT");
+  if (input.ownershipConflictPersistent) reasons.push("TUNNEL_OWNERSHIP_CONFLICT_PERSISTENT");
 
   const durableReady = requiresDurableHost
-    ? input.namedConfigured && input.namedOnline && canonicalOriginIsDurable && !ownershipConflict
+    ? input.namedConfigured && input.namedOnline && canonicalOriginIsDurable && !input.ownershipConflictPersistent
     : true;
 
   return {
@@ -9066,10 +9100,13 @@ function derivePublicHostInvariant(input: {
     requiresDurableHost,
     canonicalOrigin,
     canonicalOriginIsDurable,
-    canonicalBuyerOrigin: canonicalOriginIsDurable ? canonicalOrigin : null,
+    canonicalBuyerOrigin:
+      canonicalOriginIsDurable && (!requiresDurableHost || !input.ownershipConflictPersistent) ? canonicalOrigin : null,
     namedConfigured: input.namedConfigured,
     namedOnline: input.namedOnline,
-    ownershipConflict,
+    ownershipConflictDetected: input.ownershipConflictDetected,
+    ownershipConflictPersistent: input.ownershipConflictPersistent,
+    ownershipConflictThresholdMs: TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS,
     durableReady,
     reasons
   };
@@ -9096,6 +9133,28 @@ function getPublicStatus() {
   const advancedNeedsNamed = productTier === "advanced";
   const namedConfigured = Boolean(namedCfg);
   const namedOnline = state.mode === "named" && state.status === "online";
+  const ownershipConflictDetected = Boolean(
+    tunnelControl.mode === "service_token" &&
+      tunnelControl.activeServiceTokenProcess &&
+      tunnelControl.activeAppManagedTokenProcess
+  );
+  const conflictEval = evaluateTunnelConflictGuard({
+    hasConflict: ownershipConflictDetected,
+    nowMs: Date.now(),
+    thresholdMs: TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS,
+    state: tunnelConflictGuardState
+  });
+  tunnelConflictGuardState = conflictEval.state;
+  if (conflictEval.justBecamePersistent) {
+    app.log.error(
+      {
+        thresholdMs: TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS,
+        remediation:
+          "Stop app-managed cloudflared process or disable Windows service duplication so only one named tunnel owner remains."
+      },
+      "publicHostInvariant.ownership_conflict_persistent"
+    );
+  }
   const advancedNamedReady = !advancedNeedsNamed || (namedConfigured && namedOnline);
   const advancedNamedReason = !advancedNeedsNamed
     ? null
@@ -9121,7 +9180,8 @@ function getPublicStatus() {
       : "CANONICAL_ORIGIN_UNREACHABLE_OR_OFFLINE";
   const hostInvariant = derivePublicHostInvariant({
     state,
-    tunnelControl,
+    ownershipConflictDetected,
+    ownershipConflictPersistent: conflictEval.persistent,
     namedConfigured,
     namedOnline
   });
@@ -9136,6 +9196,7 @@ function getPublicStatus() {
     canonicalBuyerOrigin: hostInvariant.canonicalBuyerOrigin,
     durableBuyerHostReady: hostInvariant.durableReady,
     durableBuyerHostReasons: hostInvariant.reasons,
+    ownershipConflictPersistent: hostInvariant.ownershipConflictPersistent,
     publicOrigin: state.canonicalOrigin,
     isCanonical: state.isCanonical,
     message: state.message,
@@ -9204,13 +9265,25 @@ function logPublicHostInvariantOnStartup() {
     const status = getPublicStatusCached(true);
     const hostInvariant = status.hostInvariant;
     if (!hostInvariant) return;
-    if (hostInvariant.ownershipConflict) {
+    if (hostInvariant.ownershipConflictPersistent) {
       app.log.error(
         {
           reasons: hostInvariant.reasons,
-          tunnelControlMode: status.tunnelControl?.mode || "unknown"
+          tunnelControlMode: status.tunnelControl?.mode || "unknown",
+          thresholdMs: hostInvariant.ownershipConflictThresholdMs,
+          remediation:
+            "Resolve tunnel ownership conflict (service-managed vs app-managed cloudflared) so a single named tunnel owner remains."
         },
-        "publicHostInvariant.ownership_conflict"
+        "publicHostInvariant.ownership_conflict_persistent"
+      );
+    } else if (hostInvariant.ownershipConflictDetected) {
+      app.log.warn(
+        {
+          reasons: hostInvariant.reasons,
+          tunnelControlMode: status.tunnelControl?.mode || "unknown",
+          thresholdMs: hostInvariant.ownershipConflictThresholdMs
+        },
+        "publicHostInvariant.ownership_conflict_detected"
       );
     } else if (hostInvariant.requiresDurableHost && !hostInvariant.durableReady) {
       app.log.warn(
@@ -10790,7 +10863,9 @@ app.get("/api/public/diagnostics", async (_req: any, reply: any) => {
       canonicalBuyerOrigin: publicStatus.canonicalBuyerOrigin || null,
       durableBuyerReady: Boolean(publicStatus.durableBuyerHostReady),
       durableBuyerReasons: Array.isArray(publicStatus.durableBuyerHostReasons) ? publicStatus.durableBuyerHostReasons : [],
-      ownershipConflict: Boolean(publicStatus.hostInvariant?.ownershipConflict)
+      ownershipConflictDetected: Boolean(publicStatus.hostInvariant?.ownershipConflictDetected),
+      ownershipConflictPersistent: Boolean(publicStatus.hostInvariant?.ownershipConflictPersistent),
+      ownershipConflictThresholdMs: Number(publicStatus.hostInvariant?.ownershipConflictThresholdMs || 0)
     },
     paymentsMode
   });
@@ -18865,6 +18940,9 @@ app.get("/api/public/origin", async (req: any, reply: any) => {
     canonicalBuyerOrigin,
     durableBuyerReady: Boolean(publicStatus.durableBuyerHostReady),
     durableBuyerReasons: Array.isArray(publicStatus.durableBuyerHostReasons) ? publicStatus.durableBuyerHostReasons : [],
+    ownershipConflictDetected: Boolean(publicStatus.hostInvariant?.ownershipConflictDetected),
+    ownershipConflictPersistent: Boolean(publicStatus.hostInvariant?.ownershipConflictPersistent),
+    ownershipConflictThresholdMs: Number(publicStatus.hostInvariant?.ownershipConflictThresholdMs || 0),
     canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
     canonicalCommerceKind: profile.canonicalCommerceKind,
     localNodeEndpointOrigin: profile.localNodeEndpointOrigin,
@@ -20732,9 +20810,11 @@ app.get("/api/content/:contentId/share-link", { preHandler: requireAuth }, async
     preferCanonicalCommerceOrigin: true
   });
   if (!base) {
+    const failure = getDurableBuyerOriginFailure();
     return reply.code(409).send({
-      code: "DURABLE_PUBLIC_ORIGIN_REQUIRED",
-      message: "A stable named public origin is required to issue share links in sovereign modes."
+      code: failure.code,
+      message: failure.message,
+      ...(failure.details ? { details: failure.details } : {})
     });
   }
   const url = `${base}/p/${shareLink.token}`;
@@ -20814,9 +20894,11 @@ app.post("/api/content/:contentId/share-link", { preHandler: requireAuth }, asyn
     preferCanonicalCommerceOrigin: true
   });
   if (!base) {
+    const failure = getDurableBuyerOriginFailure();
     return reply.code(409).send({
-      code: "DURABLE_PUBLIC_ORIGIN_REQUIRED",
-      message: "A stable named public origin is required to issue share links in sovereign modes."
+      code: failure.code,
+      message: failure.message,
+      ...(failure.details ? { details: failure.details } : {})
     });
   }
   const url = `${base}/p/${shareLink.token}`;
@@ -21089,9 +21171,11 @@ app.post("/api/content/:contentId/publish", { preHandler: requireAuth }, async (
     preferCanonicalCommerceOrigin: true
   });
   if (!commerceOriginForPublish) {
+    const failure = getDurableBuyerOriginFailure();
     return reply.code(409).send({
-      code: "DURABLE_PUBLIC_ORIGIN_REQUIRED",
-      message: "Publishing buyer links requires a stable named public origin in sovereign modes."
+      code: failure.code,
+      message: failure.message,
+      ...(failure.details ? { details: failure.details } : {})
     });
   }
   await prisma.$transaction(async (tx) => {
