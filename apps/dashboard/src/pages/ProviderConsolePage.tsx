@@ -296,7 +296,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     "all" | "created" | "issued" | "paid" | "cancelled" | "expired"
   >("all");
   const [expandedIntentIds, setExpandedIntentIds] = useState<Record<string, boolean>>({});
-  const [payoutTableScope, setPayoutTableScope] = useState<"latest" | "all">("latest");
+  const [payoutTableScope, setPayoutTableScope] = useState<"latest" | "all">("all");
   const [timeBasis, setTimeBasis] = useState<TimeBasis>("paid");
   const [timePeriod, setTimePeriod] = useState<TimePeriod>("30d");
   const [creatorScopeId, setCreatorScopeId] = useState<string>("all");
@@ -305,6 +305,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const [qaLoading, setQaLoading] = useState(false);
   const [qaError, setQaError] = useState<string | null>(null);
   const [qaResult, setQaResult] = useState<QaResult | null>(null);
+  const [showQaDiagnostics, setShowQaDiagnostics] = useState(false);
   const [opsExpanded, setOpsExpanded] = useState({
     execution: false,
     ledger: false,
@@ -1165,78 +1166,91 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold">QA Reconciliation (Temporary)</div>
+            <div className="text-sm font-semibold">Diagnostics (Optional)</div>
             <div className="mt-1 text-xs text-neutral-500">
-              Compares local settled provider intents vs public provider revenue snapshot (all-time, creator-scoped).
+              Reconciliation checks are for troubleshooting only and are not primary payout-row truth.
             </div>
           </div>
           <button
             type="button"
-            onClick={() => void runQaCheck()}
-            disabled={qaLoading || creatorScopeId === "all"}
+            onClick={() => setShowQaDiagnostics((prev) => !prev)}
             className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60 disabled:opacity-60"
           >
-            {qaLoading ? "Checking..." : "Run QA Check"}
+            {showQaDiagnostics ? "Hide diagnostics" : "Show diagnostics"}
           </button>
         </div>
-        {creatorScopeId === "all" ? (
-          <div className="mt-3 text-xs text-neutral-500">Select a delegated creator to run reconciliation.</div>
-        ) : null}
-        {qaError ? <div className="mt-3 text-xs text-rose-300">{qaError}</div> : null}
-        {qaResult ? (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full min-w-[760px] text-sm">
-              <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
-                <tr>
-                  <th className="py-2 pr-3 font-medium">Metric</th>
-                  <th className="py-2 pr-3 font-medium">Local Provider Console</th>
-                  <th className="py-2 pr-3 font-medium">Public Revenue Snapshot</th>
-                  <th className="py-2 pr-3 font-medium">Delta (Public - Local)</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className="border-t border-neutral-800/70">
-                  <td className="py-2 pr-3">Gross Sales</td>
-                  <td className="py-2 pr-3">{sats(qaResult.local.gross.toString())} sats</td>
-                  <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.gross.toString())} sats</td>
-                  <td className={["py-2 pr-3", qaResult.delta.gross === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
-                    {sats(qaResult.delta.gross.toString())} sats
-                  </td>
-                </tr>
-                <tr className="border-t border-neutral-800/70">
-                  <td className="py-2 pr-3">Provider Fees</td>
-                  <td className="py-2 pr-3">{sats(qaResult.local.providerFee.toString())} sats</td>
-                  <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.providerFee.toString())} sats</td>
-                  <td className={["py-2 pr-3", qaResult.delta.providerFee === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
-                    {sats(qaResult.delta.providerFee.toString())} sats
-                  </td>
-                </tr>
-                <tr className="border-t border-neutral-800/70">
-                  <td className="py-2 pr-3">Creator Net</td>
-                  <td className="py-2 pr-3">{sats(qaResult.local.creatorNet.toString())} sats</td>
-                  <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.creatorNet.toString())} sats</td>
-                  <td className={["py-2 pr-3", qaResult.delta.creatorNet === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
-                    {sats(qaResult.delta.creatorNet.toString())} sats
-                  </td>
-                </tr>
-                <tr className="border-t border-neutral-800/70">
-                  <td className="py-2 pr-3">Settled Rows</td>
-                  <td className="py-2 pr-3">{qaResult.local.settledCount.toLocaleString()}</td>
-                  <td className="py-2 pr-3">{qaResult.publicSnapshot.settledCount.toLocaleString()}</td>
-                  <td className={["py-2 pr-3", qaResult.delta.settledCount === 0 ? "text-emerald-300" : "text-amber-300"].join(" ")}>
-                    {qaResult.delta.settledCount.toLocaleString()}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <div className="mt-2 text-[11px] text-neutral-500">
-              Creator: <span className="text-neutral-300">{shortId(qaResult.creatorNodeId, 12, 10)}</span>
-              <span className="mx-2">|</span>
-              Public asOf: <span className="text-neutral-300">{formatDate(qaResult.publicSnapshot.asOf)}</span>
-              <span className="mx-2">|</span>
-              Checked: <span className="text-neutral-300">{formatDate(qaResult.checkedAt)}</span>
+        {showQaDiagnostics ? (
+          <>
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => void runQaCheck()}
+                disabled={qaLoading || creatorScopeId === "all"}
+                className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60 disabled:opacity-60"
+              >
+                {qaLoading ? "Checking..." : "Run QA Reconciliation"}
+              </button>
             </div>
-          </div>
+            {creatorScopeId === "all" ? (
+              <div className="mt-3 text-xs text-neutral-500">Select a delegated creator to run reconciliation.</div>
+            ) : null}
+            {qaError ? <div className="mt-3 text-xs text-rose-300">{qaError}</div> : null}
+            {qaResult ? (
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full min-w-[760px] text-sm">
+                  <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
+                    <tr>
+                      <th className="py-2 pr-3 font-medium">Metric</th>
+                      <th className="py-2 pr-3 font-medium">Local Provider Console</th>
+                      <th className="py-2 pr-3 font-medium">Public Revenue Snapshot</th>
+                      <th className="py-2 pr-3 font-medium">Delta (Public - Local)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-neutral-800/70">
+                      <td className="py-2 pr-3">Gross Sales</td>
+                      <td className="py-2 pr-3">{sats(qaResult.local.gross.toString())} sats</td>
+                      <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.gross.toString())} sats</td>
+                      <td className={["py-2 pr-3", qaResult.delta.gross === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                        {sats(qaResult.delta.gross.toString())} sats
+                      </td>
+                    </tr>
+                    <tr className="border-t border-neutral-800/70">
+                      <td className="py-2 pr-3">Provider Fees</td>
+                      <td className="py-2 pr-3">{sats(qaResult.local.providerFee.toString())} sats</td>
+                      <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.providerFee.toString())} sats</td>
+                      <td className={["py-2 pr-3", qaResult.delta.providerFee === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                        {sats(qaResult.delta.providerFee.toString())} sats
+                      </td>
+                    </tr>
+                    <tr className="border-t border-neutral-800/70">
+                      <td className="py-2 pr-3">Creator Net</td>
+                      <td className="py-2 pr-3">{sats(qaResult.local.creatorNet.toString())} sats</td>
+                      <td className="py-2 pr-3">{sats(qaResult.publicSnapshot.creatorNet.toString())} sats</td>
+                      <td className={["py-2 pr-3", qaResult.delta.creatorNet === 0n ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                        {sats(qaResult.delta.creatorNet.toString())} sats
+                      </td>
+                    </tr>
+                    <tr className="border-t border-neutral-800/70">
+                      <td className="py-2 pr-3">Settled Rows</td>
+                      <td className="py-2 pr-3">{qaResult.local.settledCount.toLocaleString()}</td>
+                      <td className="py-2 pr-3">{qaResult.publicSnapshot.settledCount.toLocaleString()}</td>
+                      <td className={["py-2 pr-3", qaResult.delta.settledCount === 0 ? "text-emerald-300" : "text-amber-300"].join(" ")}>
+                        {qaResult.delta.settledCount.toLocaleString()}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div className="mt-2 text-[11px] text-neutral-500">
+                  Creator: <span className="text-neutral-300">{shortId(qaResult.creatorNodeId, 12, 10)}</span>
+                  <span className="mx-2">|</span>
+                  Public asOf: <span className="text-neutral-300">{formatDate(qaResult.publicSnapshot.asOf)}</span>
+                  <span className="mx-2">|</span>
+                  Checked: <span className="text-neutral-300">{formatDate(qaResult.checkedAt)}</span>
+                </div>
+              </div>
+            ) : null}
+          </>
         ) : null}
       </div>
 
