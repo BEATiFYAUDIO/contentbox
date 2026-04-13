@@ -10245,6 +10245,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/u/:handle", handlePublicNodeProfilePage);
   appPublic.get("/u/:handle/proofs.json", handlePublicProofBundle);
   appPublic.get("/profile", handlePublicProfileRedirect);
+  appPublic.get("/logo.png", handleProfileLogo);
   appPublic.get("/certifyd-profile-logo.png", handleProfileLogo);
   appPublic.get("/certifyd-tab-icon.png", handleTabIcon);
   appPublic.get("/favicon.ico", handleTabIcon);
@@ -23339,18 +23340,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeNodeSha = escHtml(nodeSha || "Unavailable");
   const safeShortSha = escHtml(shortSha || "Unavailable");
   const safeProofBundleUrl = escHtml(`${nodeUrl.replace(/\/+$/, "")}/u/${encodeURIComponent(requested)}/proofs.json`);
-  const brandLogoDataUri = (() => {
-    const logoPath = resolveProfileLogoPath();
-    if (!logoPath) return null;
-    try {
-      const bytes = fsSync.readFileSync(logoPath);
-      if (!bytes || bytes.length === 0) return null;
-      return `data:image/png;base64,${bytes.toString("base64")}`;
-    } catch {
-      return null;
-    }
-  })();
-  const safeBrandLogoDataUri = brandLogoDataUri ? escHtml(brandLogoDataUri) : "";
+  const safeBrandLogoSrc = resolveProfileLogoPath()
+    ? escHtml("/logo.png?v=20260413b")
+    : "";
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
   const verifiedDomainProofs = verifiedProofs.filter((p) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
@@ -24251,7 +24243,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         --profile-avatar-size: 82px;
         --profile-id-gap: 10px;
         --profile-id-offset: 0px;
+        --profile-signal-col: 260px;
+        grid-template-columns:var(--profile-brand-col) minmax(0, 1fr) minmax(220px, var(--profile-signal-col));
+        grid-template-areas:"brand identity signal";
+        gap:10px 10px;
       }
+      .brand-rail { grid-area:brand; padding-top:0; padding-left:0; }
+      .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
+      .signal-rail { grid-area:signal; width:100%; }
+      .hero-name { font-size:22px; line-height:1.12; }
+      .signal-rail { width:100%; }
+    }
+    @media (max-width: 700px) {
       .profile-header-grid {
         grid-template-columns:auto 1fr;
         grid-template-areas:
@@ -24259,11 +24262,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           "signal signal";
         gap:10px 12px;
       }
-      .brand-rail { grid-area:brand; padding-top:0; padding-left:0; }
-      .identity-rail { grid-area:identity; align-items:center; margin-left:0; }
-      .signal-rail { grid-area:signal; width:100%; }
-      .hero-name { font-size:22px; line-height:1.12; }
-      .signal-rail { width:100%; }
     }
     @media (max-width: 640px) {
       .profile-header-grid {
@@ -24338,8 +24336,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="brand-rail">
         <div class="brand-row" aria-label="Certifyd">
           ${
-            safeBrandLogoDataUri
-              ? `<img src="${safeBrandLogoDataUri}" alt="Certifyd Creator" class="brand-logo-image" />`
+            safeBrandLogoSrc
+              ? `<img src="${safeBrandLogoSrc}" alt="Certifyd Creator" class="brand-logo-image" />`
               : `<span class="brand-mark">c</span><span class="brand-word">Certifyd</span>`
           }
         </div>
@@ -26353,6 +26351,8 @@ async function handleBuyPage(req: any, reply: any) {
   return reply.send(html);
 }
 
+app.get("/logo.png", handleProfileLogo);
+app.get("/certifyd-profile-logo.png", handleProfileLogo);
 app.get("/certifyd-tab-icon.png", handleTabIcon);
 app.get("/favicon.ico", handleTabIcon);
 app.get("/favicon.png", handleTabIcon);
