@@ -10252,6 +10252,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/favicon.png", handleTabIcon);
   appPublic.get("/apple-touch-icon.png", handleTabIcon);
   appPublic.get("/buy/:contentId", handleBuyPage);
+  appPublic.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
   appPublic.get("/library", handleBuyerLibraryPage);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
@@ -23646,24 +23647,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const externalThumbUrl = deriveExternalVideoThumbnail(
               manifestJson?.sourceUrl || manifestJson?.externalUrl || manifestJson?.url || primaryObjectKey || ""
             );
-            const posterObjectKey =
-              asString(manifestJson?.poster || "").trim() ||
-              asString(manifestJson?.thumbnail || "").trim() ||
-              asString(manifestJson?.previewPoster || "").trim();
-            const posterUrl = posterObjectKey
-              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(posterObjectKey)}`)
-              : coverUrl;
-            const normalizedManifestThumbUrl = normalizeKnownPublicRouteToOrigin(currentPublicOrigin, manifestThumbnailRaw);
-            const videoThumbUrl = normalizedManifestThumbUrl
-              ? normalizedManifestThumbUrl
-              : manifestThumbnailRaw
-                ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(manifestThumbnailRaw)}`)
-                : externalThumbUrl || coverUrl || posterUrl;
             const buyUrl = buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
-                    <video class="featured-video-preview" preload="metadata" muted autoplay loop playsinline poster="${escHtml(videoThumbUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <video class="featured-video-preview" preload="metadata" muted autoplay loop playsinline onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
                       <source src="${escHtml(videoPreviewUrl)}" />
                     </video>
                     <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
@@ -25162,7 +25150,12 @@ async function handleTabIcon(req: any, reply: any) {
 }
 
 async function handleBuyPage(req: any, reply: any) {
-  const contentId = asString((req.params as any).contentId || "").trim();
+  let contentId = asString((req.params as any).contentId || "").trim();
+  const initialReceiptId = asString((req.query || {})?.receiptId || "").trim();
+  if (!contentId && initialReceiptId) {
+    const context = await resolveReceiptContextForRequest({ receiptId: initialReceiptId });
+    contentId = asString((context as any)?.intent?.contentId || "").trim();
+  }
   if (!contentId) return notFound(reply, "Not found");
   const productTier = resolveProductTier().productTier;
   const content = await prisma.contentItem.findUnique({
@@ -25282,6 +25275,7 @@ async function handleBuyPage(req: any, reply: any) {
 <script>
 (function(){
   const contentId = ${JSON.stringify(contentId)};
+  const initialReceiptId = ${JSON.stringify(initialReceiptId || null)};
   const productTier = ${JSON.stringify(productTier)};
   const sellerLightningAddress = ${JSON.stringify(sellerLightningAddress)};
   const sellerDisplayName = ${JSON.stringify(sellerDisplayName)};
@@ -25290,6 +25284,8 @@ async function handleBuyPage(req: any, reply: any) {
   const app = document.getElementById("app");
   const apiBase = location.origin;
   let receiptToken = null;
+  let activeReceiptId = initialReceiptId || null;
+  let latestReceiptStatus = null;
   let pollTimer = null;
   let refreshTimer = null;
   let currentOffer = null;
@@ -25305,6 +25301,163 @@ async function handleBuyPage(req: any, reply: any) {
   function qrUrl(data){ return "https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=" + encodeURIComponent(data); }
   function copy(text){ if (!navigator.clipboard) return; navigator.clipboard.writeText(text).catch(()=>{}); }
   function esc(v){ return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function receiptPageUrl(receiptId){
+    const id = String(receiptId || "").trim();
+    return id ? ("/buy/receipt/" + encodeURIComponent(id)) : "";
+  }
+  function durableReceiptStatusPath(receiptId){
+    const id = String(receiptId || "").trim();
+    return id ? ("/buy/receipts/r/" + encodeURIComponent(id) + "/status") : "";
+  }
+  function deriveReceiptViewState(entitlement, owned){
+    const hasReceiptContext = Boolean(activeReceiptId || initialReceiptId);
+    const status = latestReceiptStatus || null;
+    if (hasReceiptContext && !status) {
+      return {
+        key: "invalid_or_not_found",
+        show: true,
+        badge: "",
+        title: "Receipt unavailable",
+        subtitle: "We couldn’t resolve this receipt.",
+        state: "Invalid receipt",
+        actionLabel: "",
+        actionKind: "",
+        showPlayer: false
+      };
+    }
+    if (!hasReceiptContext && !status) {
+      const fallbackPurchased = Boolean(entitlement?.status === "paid" || entitlement?.status === "bypassed" || owned);
+      if (!fallbackPurchased) {
+        return {
+          key: "payment_required",
+          show: false,
+          badge: "",
+          title: "",
+          subtitle: "",
+          state: "",
+          actionLabel: "",
+          actionKind: "",
+          showPlayer: true
+        };
+      }
+      return {
+        key: "available",
+        show: true,
+        badge: "Unlocked",
+        title: "Purchase confirmed",
+        subtitle: "Your purchase is confirmed and access is available.",
+        state: "Access available",
+        actionLabel: "View library",
+        actionKind: "view_library",
+        showPlayer: true
+      };
+    }
+    const purchased = Boolean(status?.entitlement?.purchased || entitlement?.status === "paid" || entitlement?.status === "bypassed" || owned);
+    if (!purchased) {
+      return {
+        key: "payment_required",
+        show: false,
+        badge: "",
+        title: "",
+        subtitle: "",
+        state: "",
+        actionLabel: "",
+        actionKind: "",
+        showPlayer: true
+      };
+    }
+    const availability = String(status?.availability || "").trim().toLowerCase();
+    if (availability === "creator_offline") {
+      return {
+        key: "creator_offline",
+        show: true,
+        badge: "Unlocked",
+        title: "Purchase confirmed",
+        subtitle: "Your purchase is confirmed. The creator is currently offline.",
+        state: "Creator offline",
+        actionLabel: "",
+        actionKind: "",
+        showPlayer: false
+      };
+    }
+    if (availability === "removed") {
+      return {
+        key: "removed",
+        show: true,
+        badge: "Unlocked",
+        title: "Purchase confirmed",
+        subtitle: "Your purchase is confirmed. This content is currently unavailable.",
+        state: "Content unavailable",
+        actionLabel: "",
+        actionKind: "",
+        showPlayer: false
+      };
+    }
+    if (status?.token?.expired) {
+      return {
+        key: "token_expired_reissue_required",
+        show: true,
+        badge: "Unlocked",
+        title: "Purchase confirmed",
+        subtitle: "Your purchase is confirmed. Access needs to be refreshed.",
+        state: "Access needs refresh",
+        actionLabel: "Refresh access",
+        actionKind: "refresh_access",
+        showPlayer: false
+      };
+    }
+    const canFulfill = Boolean(status?.canFulfill || status?.access === "unlocked");
+    if (canFulfill) {
+      return {
+        key: "available",
+        show: true,
+        badge: "Unlocked",
+        title: "Purchase confirmed",
+        subtitle: "Your purchase is confirmed and access is available.",
+        state: "Access available",
+        actionLabel: "View library",
+        actionKind: "view_library",
+        showPlayer: true
+      };
+    }
+    if (String(status?.warning || "").trim()) {
+      return {
+        key: "access_context_required",
+        show: true,
+        badge: "Unlocked",
+        title: "Purchase confirmed",
+        subtitle: "Your purchase is confirmed. Access needs to be retried.",
+        state: "Access needs retry",
+        actionLabel: "Retry access",
+        actionKind: "retry_access",
+        showPlayer: false
+      };
+    }
+    if (buyer && buyer.id) {
+      return {
+        key: "entitlement_reconciliation_pending",
+        show: true,
+        badge: "Unlocked",
+        title: "Purchase confirmed",
+        subtitle: "Your purchase is confirmed. Access is still being prepared.",
+        state: "Access pending",
+        actionLabel: "Try again",
+        actionKind: "try_again",
+        showPlayer: false
+      };
+    }
+    return {
+      key: "buyer_session_required",
+      show: true,
+      badge: "Unlocked",
+      title: "Purchase confirmed",
+      subtitle: "Your purchase is confirmed. Continue to unlock content.",
+      state: "Buyer session required",
+      actionLabel: "Continue to unlock",
+      actionKind: "continue_unlock",
+      showPlayer: false
+    };
+  }
   function logAudienceView(){
     if (!contentId) return;
     fetch(apiBase + "/public/interactions", {
@@ -25518,7 +25671,7 @@ async function handleBuyPage(req: any, reply: any) {
     const creatorNodeId = String(proof?.creatorNodeId || "").trim();
     const providerNodeId = String(proof?.providerNodeId || "").trim();
     return "<div class=\\"proof-card\\">" +
-      "<div class=\\"proof-title\\">Published to Certifyd Network</div>" +
+      "<div class=\\"proof-title\\">Content record</div>" +
       "<div class=\\"proof-grid\\">" +
         "<div><span class=\\"proof-label\\">Published at:</span> " + esc(formatProofTime(publishedAt)) + "</div>" +
         "<div><span class=\\"proof-label\\">Manifest hash:</span> <span class=\\"code\\">" + esc(shortHash(manifestHash)) + "</span></div>" +
@@ -25601,7 +25754,7 @@ async function handleBuyPage(req: any, reply: any) {
     const providerNode = proof.invoiceProviderNodeId ? shortHash(proof.invoiceProviderNodeId) : "—";
     const entitlementLabel = proof.entitlementState === "entitled" ? "Entitled" : proof.entitlementState === "preview" ? "Preview" : "Locked";
     return "<div class=\\"access-card\\">" +
-      "<div class=\\"access-title\\">Payment / Access Proof</div>" +
+      "<div class=\\"access-title\\">Payment confirmation</div>" +
       "<div class=\\"access-grid\\">" +
         "<div><span class=\\"access-label\\">Access:</span> " + esc(paymentStateLabel(proof.paymentState)) + "</div>" +
         "<div><span class=\\"access-label\\">Entitlement:</span> " + esc(entitlementLabel) + "</div>" +
@@ -25619,7 +25772,7 @@ async function handleBuyPage(req: any, reply: any) {
     const access = renderPaymentAccessProofBlock(offer, entitlement, owned);
     if (!publish && !access) return "";
     return "<details class=\\"proof-drawer\\">" +
-      "<summary><span>Tip / Unlock details</span><span class=\\"proof-drawer-badge\\">Hidden by default</span></summary>" +
+      "<summary><span>Technical details</span><span class=\\"proof-drawer-badge\\">Hidden by default</span></summary>" +
       "<div class=\\"proof-drawer-body\\">" +
         publish +
         access +
@@ -25907,33 +26060,33 @@ async function handleBuyPage(req: any, reply: any) {
     const mediaControlsList = deliveryMode === "stream_only" ? ' controlsList="nodownload"' : "";
     const canStream = !isPaid || Boolean(token) || entitlement?.status === "preview" || Boolean(previewFallbackUrl(offer));
     const hidePay = already || !isPaid || entitlement?.status === "paid" || entitlement?.status === "bypassed";
+    const receiptView = deriveReceiptViewState(entitlement, owned);
     app.innerHTML = \`
       <div>
         <div style="font-size:22px;font-weight:700;">\${offer.title || "Content"}</div>
         <div class="muted">\${offer.description || ""}</div>
         <section id="cb-attribution" style="display:none"></section>
-        \${isAudio ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
-        \${already ? \`
-          <div class="step" style="border-color:#14532d;background:#0b1f14;">
-            <div style="font-weight:600;">Already owned</div>
-            <div class="muted" style="margin-top:6px;">This item is in your library.</div>
-            <div class="library-return-wrap"><a class="btn library-return" href="/library">Go to library</a></div>
-          </div>
-        \` : ""}
-        \${mediaSrc && canStream ? \`
+        \${isAudio && (!receiptView.show || receiptView.showPlayer) ? (coverSrc ? \`<div class="song-cover"><img src="\${coverSrc}" alt="Album cover" loading="lazy" onerror="var p=this.parentElement;if(p){p.className='song-cover placeholder';p.textContent='No cover';}" /></div>\` : \`<div class="song-cover placeholder">No cover</div>\`) : ""}
+        \${mediaSrc && canStream && (!receiptView.show || receiptView.showPlayer) ? \`
           <div class="preview">
             \${entitlement?.status === "preview" ? \`<div style="margin-bottom:6px;font-size:12px;color:#fbbf24;">Preview the release</div>\` : ""}
             \${isVideo ? \`<video id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></video>\` : ""}
             \${isAudio ? \`<audio id="player" controls\${mediaControlsList} preload="metadata" src="\${mediaSrc}"></audio>\` : ""}
             \${!isVideo && !isAudio ? \`<a class="muted" href="\${mediaSrc}" target="_blank" rel="noreferrer">Open preview</a>\` : ""}
           </div>
-        \` : \`\${isPaid ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
-        \${entitlement?.status === "paid" || entitlement?.status === "bypassed" ? \`<div id="unlockBanner" class="step" style="border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\` : \`<div id="unlockBanner" class="step" style="display:none;border-color:#14532d;background:#0b1f14;margin-top:10px;"><div style="font-weight:700;">Unlocked</div></div>\`}
+        \` : \`\${isPaid && (!receiptView.show || receiptView.showPlayer) ? "<div class='muted' style='margin-top:10px;'>Unlock to play.</div>" : ""}\`}
         \${isPaid ? \`
           <div class="purchase-card\${hidePay ? " purchase-card--unlocked" : ""}">
-            <div class="purchase-kicker">\${hidePay ? "Release unlocked" : "Unlock this release"}</div>
-            <div class="purchase-price">\${hidePay ? "Release unlocked" : "Unlock for " + (offer.priceSats || 0) + " sats"}</div>
-            <div class="purchase-sub">\${hidePay ? "Access is already available for this release." : "Pay with Lightning to unlock full access."}</div>
+            \${hidePay ? \`<div style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#93c5fd;">\${esc(receiptView.badge || "Unlocked")}</div>\` : \`<div class="purchase-kicker">Unlock this release</div>\`}
+            <div class="purchase-price">\${hidePay ? esc(receiptView.title || "Purchase confirmed") : ("Unlock for " + (offer.priceSats || 0) + " sats")}</div>
+            <div class="purchase-sub">\${hidePay ? esc(receiptView.subtitle || "Your purchase is confirmed and access is available.") : "Pay with Lightning to unlock full access."}</div>
+            \${hidePay ? \`<div class="muted" style="margin-top:6px;">This record proves your purchase of this work.</div>\` : ""}
+            \${hidePay && offer?.manifestSha256 ? \`<div class="muted" style="margin-top:4px;font-size:12px;color:#94a3b8;"><span style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:#7f8ea3;">sha256:\${esc(shortHash(offer.manifestSha256))}</span></div>\` : ""}
+            \${hidePay ? \`<div class="muted" style="margin-top:8px;">Amount: \${offer.priceSats || 0} sats</div>\` : ""}
+            \${hidePay ? \`<div class="muted" style="margin-top:2px;">Status: Paid</div>\` : ""}
+            \${hidePay && latestReceiptStatus?.paidAt ? \`<div class="muted" style="margin-top:2px;">Paid at: \${esc(formatProofTime(latestReceiptStatus.paidAt))}</div>\` : ""}
+            \${hidePay && activeReceiptId ? \`<div class="muted" style="margin-top:2px;">Receipt: <span class="code">\${esc(shortHash(activeReceiptId))}</span></div>\` : ""}
+            \${hidePay && receiptView.actionLabel ? \`<div style="margin-top:10px;"><button id="receiptPrimaryAction" class="btn">\${esc(receiptView.actionLabel)}</button></div>\` : ""}
         \` : \`<div style="margin-top:8px;font-size:18px;">\${price}</div>\`}
         \${(isPaid && !hidePay) ? \`
           <div class="step" id="stepContinue" style="margin-top:12px;\${hasBuyer ? "display:none;" : ""}">
@@ -25954,9 +26107,8 @@ async function handleBuyPage(req: any, reply: any) {
             <div id="status" class="muted" style="margin-top:8px;"></div>
           </div>
         \` : \`
-          <div id="status" class="muted" style="margin-top:8px;"></div>
+          <div id="status" class="muted" style="margin-top:8px;\${hidePay ? "display:none;" : ""}"></div>
         \`}
-        \${isPaid ? \`<div id="entStatus" class="muted" style="margin-top:6px;">Permit: \${entitlement?.status || "unpaid"}</div>\` : ""}
         <div id="rails" class="rails-wrap"></div>
         \${isPaid ? \`</div>\` : ""}
         <div id="downloads" style="margin-top:16px;"></div>
@@ -26044,17 +26196,52 @@ async function handleBuyPage(req: any, reply: any) {
     if (token) {
       maybeUpgradeRenderedMediaToEdge(offer, token);
     }
+    const receiptActionBtn = document.getElementById("receiptPrimaryAction");
+    if (receiptActionBtn) {
+      receiptActionBtn.addEventListener("click", async () => {
+        const view = deriveReceiptViewState(entitlement, owned);
+        const statusEl = document.getElementById("status");
+        if (view.actionKind === "view_library") {
+          window.location.assign("/library");
+          return;
+        }
+        if (view.actionKind === "open_content") {
+          const player = document.getElementById("player");
+          if (player && typeof player.play === "function") {
+            try { player.play().catch(()=>{}); } catch {}
+            player.scrollIntoView({ behavior: "smooth", block: "center" });
+          } else if (mediaSrc) {
+            window.open(mediaSrc, "_blank", "noopener");
+          }
+          return;
+        }
+        if (view.actionKind === "continue_unlock") {
+          try {
+            const res = await fetchJson("/api/buyer/bootstrap", { method: "POST" });
+            buyer = res?.buyer || null;
+          } catch {}
+        } else if (view.actionKind === "refresh_access" && activeReceiptId) {
+          try {
+            const refreshed = await fetchJson("/buy/receipts/r/" + encodeURIComponent(activeReceiptId) + "/reissue-token", { method: "POST" });
+            if (refreshed?.receiptToken) receiptToken = refreshed.receiptToken;
+          } catch (e) {
+            if (statusEl) statusEl.textContent = String(e?.message || "Unable to refresh access.");
+            return;
+          }
+        }
+        await pollStatus().catch(()=>{});
+      });
+    }
   }
 
   function renderRails(intent){
     const rails = document.getElementById("rails");
     const lightning = intent.paymentOptions?.lightning || {};
     const onchain = intent.paymentOptions?.onchain || {};
-    const receiptLink =
-      String(intent.durableReceiptStatusUrl || intent.receiptStatusUrl || "").trim() ||
-      (intent.receiptId
-        ? (apiBase + "/buy/receipts/r/" + encodeURIComponent(intent.receiptId) + "/status")
-        : (apiBase + "/buy/receipts/" + intent.receiptToken + "/status"));
+    if (intent?.receiptId) activeReceiptId = String(intent.receiptId).trim() || activeReceiptId;
+    const receiptPageLink = activeReceiptId
+      ? (apiBase + receiptPageUrl(activeReceiptId))
+      : String(intent.receiptStatusUrl || "").trim() || (apiBase + "/buy/receipts/" + intent.receiptToken + "/status");
     const lightningInvoice = String(lightning.bolt11 || "");
     const hasLightningInvoice = Boolean(lightningInvoice);
     const onchainAddress = String(onchain.address || "");
@@ -26100,8 +26287,11 @@ async function handleBuyPage(req: any, reply: any) {
         </div>
       \` : ""}
       <div class="receipt-row">
-        <div class="muted">Receipt link</div>
-        <div class="muted"><span class="code">\${receiptLink}</span> <button class="copy" data-copy="\${receiptLink}">Copy receipt link</button></div>
+        <div class="muted">Receipt</div>
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+          <a class="btn outline small" href="\${receiptPageLink}">View receipt</a>
+          <button class="copy" data-copy="\${receiptPageLink}">Copy receipt link</button>
+        </div>
       </div>
     \`;
     rails.querySelectorAll(".copy").forEach((btn)=>btn.addEventListener("click", (e)=>copy(e.currentTarget.getAttribute("data-copy")||"")));
@@ -26175,8 +26365,13 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   async function pollStatus(){
-    if (!receiptToken) return;
-    const status = await fetchJson("/buy/receipts/" + receiptToken + "/status");
+    if (!receiptToken && !activeReceiptId) return;
+    const statusPath = activeReceiptId
+      ? durableReceiptStatusPath(activeReceiptId)
+      : ("/buy/receipts/" + receiptToken + "/status");
+    const status = await fetchJson(statusPath);
+    latestReceiptStatus = status || null;
+    if (status?.receiptId) activeReceiptId = String(status.receiptId).trim() || activeReceiptId;
     if (status?.receiptToken && status.receiptToken !== receiptToken) {
       receiptToken = status.receiptToken;
     }
@@ -26193,18 +26388,66 @@ async function handleBuyPage(req: any, reply: any) {
     if (paid) {
       clearManualIntent();
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
-      renderDownloads(payload);
+      if (receiptToken) {
+        try {
+          const payload = await fetchJson("/buy/receipts/" + receiptToken + "/fulfill");
+          renderDownloads(payload);
+        } catch (e) {
+          const code = String(e?.code || "").trim();
+          const statusEl = document.getElementById("status");
+          if (statusEl) {
+            statusEl.textContent = code === "RECEIPT_TOKEN_EXPIRED_REISSUE_REQUIRED"
+              ? "Your purchase is confirmed. Access needs to be refreshed."
+              : code === "BUYER_SESSION_REQUIRED"
+                ? "Your purchase is confirmed. Continue to unlock content."
+                : code === "ACCESS_CONTEXT_REQUIRED"
+                  ? "Your purchase is confirmed. Access needs to be retried."
+                  : code === "ENTITLEMENT_RECONCILIATION_PENDING"
+                    ? "Your purchase is confirmed. Access is still being prepared."
+                    : code === "CREATOR_OFFLINE"
+                      ? "Your purchase is confirmed. The creator is currently offline."
+                      : code === "CONTENT_REMOVED"
+                        ? "Your purchase is confirmed. This content is currently unavailable."
+                        : String(e?.message || "Access is not ready yet.");
+          }
+        }
+      }
       if (currentOffer?.manifestSha256) {
         const ent = setEntitlement(currentOffer.manifestSha256, receiptToken, "paid");
         renderOffer(currentOffer, ent, alreadyOwned);
       }
-      const banner = document.getElementById("unlockBanner");
-      if (banner) banner.style.display = "";
-      document.getElementById("status").textContent = "Payment received. Download is ready.";
+      const statusEl = document.getElementById("status");
+      if (statusEl && !String(statusEl.textContent || "").trim()) {
+        statusEl.textContent = "Payment received. Download is ready.";
+      }
     } else {
       document.getElementById("status").textContent = "Waiting for payment…";
     }
+  }
+
+  async function hydrateFromDurableReceipt(){
+    if (!activeReceiptId) return;
+    try {
+      const status = await fetchJson(durableReceiptStatusPath(activeReceiptId));
+      latestReceiptStatus = status || null;
+      if (status?.receiptId) activeReceiptId = String(status.receiptId).trim() || activeReceiptId;
+      if (status?.receiptToken) receiptToken = String(status.receiptToken).trim() || receiptToken;
+      if (status?.entitlement?.purchased || status?.status === "paid" || status?.paymentStatus === "paid") {
+        alreadyOwned = true;
+      }
+    } catch {}
+  }
+
+  function scheduleAttributionLoad(){
+    const run = () => { loadAttribution().catch(()=>{}); };
+    try {
+      const ric = window.requestIdleCallback;
+      if (typeof ric === "function") {
+        ric(run, { timeout: 1500 });
+        return;
+      }
+    } catch {}
+    setTimeout(run, 300);
   }
 
   async function startPurchase(offer){
@@ -26292,55 +26535,60 @@ async function handleBuyPage(req: any, reply: any) {
     fetchJson("/buy/content/" + contentId + "/offer")
       .then((offer) => renderBasicOffer(offer))
       .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
+    scheduleAttributionLoad();
     return;
   }
 
-  fetchBuyerMe()
-    .finally(() => {
-      fetchOwnedEntitlement()
-        .finally(() => {
-          fetchJson("/buy/content/" + contentId + "/offer")
-            .then(async (offer)=> {
-              currentOffer = offer;
-              livePaymentProof = null;
-              if (!Boolean(offer?.commerceAuthorityAvailable)) {
-                renderBasicOffer(offer);
-                return;
-              }
-              const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
-              const shouldUpgradeOwnedFromPreview = Boolean(
-                alreadyOwned &&
-                Number(offer.priceSats || 0) > 0 &&
-                ent &&
-                ent.token &&
-                ent.status === "preview"
-              );
-              if (ent && ent.token && !shouldUpgradeOwnedFromPreview) {
-                renderOffer(offer, ent, alreadyOwned);
-                return;
-              }
-              if (Number(offer.priceSats || 0) > 0) {
-                try {
-                  const desiredScope = alreadyOwned ? "stream" : "preview";
-                  const p = await fetchJson("/buy/permits", {
-                    method: "POST",
-                    body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: (buyer && buyer.id) ? buyer.id : "guest", requestedScope: desiredScope }
-                  });
-                  previewSeconds = p.previewSeconds || previewSeconds;
-                  const nextStatus = p.accessMode === "stream" ? "paid" : "preview";
-                  const next = setEntitlement(offer.manifestSha256, p.permit, nextStatus, Date.parse(p.expiresAt));
-                  renderOffer(offer, next, alreadyOwned);
-                  checkManualStatus();
-                  return;
-                } catch {}
-              }
-              renderOffer(offer, null, alreadyOwned);
-              checkManualStatus();
-            })
-            .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
-        });
-    });
-  loadAttribution().catch(()=>{});
+  const offerPromise = fetchJson("/buy/content/" + contentId + "/offer");
+  const buyerBootstrapPromise = hydrateFromDurableReceipt().finally(() => fetchBuyerMe().catch(()=>{}));
+
+  Promise.all([offerPromise, buyerBootstrapPromise])
+    .then(async ([offer]) => {
+      currentOffer = offer;
+      livePaymentProof = null;
+      if (!Boolean(offer?.commerceAuthorityAvailable)) {
+        renderBasicOffer(offer);
+        return;
+      }
+      if (!alreadyOwned) {
+        await fetchOwnedEntitlement().catch(()=>{});
+      }
+      const ent = offer?.manifestSha256 ? getEntitlement(offer.manifestSha256) : null;
+      const durableEnt = (activeReceiptId && latestReceiptStatus?.paymentStatus === "paid" && latestReceiptStatus?.receiptToken && offer?.manifestSha256)
+        ? setEntitlement(offer.manifestSha256, latestReceiptStatus.receiptToken, "paid")
+        : null;
+      const effectiveEnt = durableEnt || ent;
+      const shouldUpgradeOwnedFromPreview = Boolean(
+        alreadyOwned &&
+        Number(offer.priceSats || 0) > 0 &&
+        effectiveEnt &&
+        effectiveEnt.token &&
+        effectiveEnt.status === "preview"
+      );
+      if (effectiveEnt && effectiveEnt.token && !shouldUpgradeOwnedFromPreview) {
+        renderOffer(offer, effectiveEnt, alreadyOwned);
+        return;
+      }
+      if (Number(offer.priceSats || 0) > 0) {
+        try {
+          const desiredScope = alreadyOwned ? "stream" : "preview";
+          const p = await fetchJson("/buy/permits", {
+            method: "POST",
+            body: { manifestHash: offer.manifestSha256, fileId: offer.primaryFileId, buyerId: (buyer && buyer.id) ? buyer.id : "guest", requestedScope: desiredScope }
+          });
+          previewSeconds = p.previewSeconds || previewSeconds;
+          const nextStatus = p.accessMode === "stream" ? "paid" : "preview";
+          const next = setEntitlement(offer.manifestSha256, p.permit, nextStatus, Date.parse(p.expiresAt));
+          renderOffer(offer, next, alreadyOwned);
+          checkManualStatus();
+          return;
+        } catch {}
+      }
+      renderOffer(offer, null, alreadyOwned);
+      checkManualStatus();
+    })
+    .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
+  scheduleAttributionLoad();
   logAudienceView();
 })();
 </script>
@@ -26351,6 +26599,18 @@ async function handleBuyPage(req: any, reply: any) {
   return reply.send(html);
 }
 
+async function handleBuyReceiptPage(req: any, reply: any) {
+  const receiptId = asString((req.params as any)?.receiptId || "").trim();
+  if (!receiptId) return badRequest(reply, "receiptId required");
+  const context = await resolveReceiptContextForRequest({ receiptId });
+  if (!context) return notFound(reply, "Receipt not found");
+  const contentId = asString((context as any)?.intent?.contentId || "").trim();
+  if (!contentId) return notFound(reply, "Content not found");
+  req.params = { ...(req.params || {}), contentId };
+  req.query = { ...(req.query || {}), receiptId };
+  return handleBuyPage(req, reply);
+}
+
 app.get("/logo.png", handleProfileLogo);
 app.get("/certifyd-profile-logo.png", handleProfileLogo);
 app.get("/certifyd-tab-icon.png", handleTabIcon);
@@ -26358,6 +26618,7 @@ app.get("/favicon.ico", handleTabIcon);
 app.get("/favicon.png", handleTabIcon);
 app.get("/apple-touch-icon.png", handleTabIcon);
 app.get("/buy/:contentId", handleBuyPage);
+app.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
 
 async function handleBuyerLibraryPage(_req: any, reply: any) {
   const html = `<!doctype html>
