@@ -258,8 +258,10 @@ export default function ProfilePage({
                 onChange={(e) => setMe(me ? { ...me, bio: e.target.value } : me)}
                 className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 mt-1"
                 rows={3}
+                maxLength={20}
                 autoComplete="off"
               />
+              <div className="mt-1 text-xs text-neutral-500">{(me?.bio || "").length}/20</div>
             </div>
 
             <div>
