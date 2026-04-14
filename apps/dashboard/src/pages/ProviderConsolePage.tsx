@@ -229,6 +229,21 @@ function toBigIntSats(raw: string | number | null | undefined) {
   return BigInt(String(raw || "0"));
 }
 
+function normalizeTimestampForScope(value: string | null | undefined): string {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  // Accept unix epoch values that may be serialized as strings from backend snapshots.
+  if (/^\d{10,13}$/.test(raw)) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) {
+      const ms = raw.length <= 10 ? n * 1000 : n;
+      const d = new Date(ms);
+      if (Number.isFinite(d.getTime())) return d.toISOString();
+    }
+  }
+  return raw;
+}
+
 function maxIsoTimestamp(current: string | null, candidate: string | null | undefined) {
   if (!candidate) return current;
   const nextTs = Date.parse(candidate);
@@ -443,21 +458,23 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const scopedPaymentIntents = useMemo(() => {
     if (timePeriod === "all") return paymentIntents;
     return paymentIntents.filter((row) => {
-      const ts = timeBasis === "sale" ? (row.paidAt || row.createdAt) : (row.remittedAt || row.paidAt || row.updatedAt);
+      const tsRaw = timeBasis === "sale" ? (row.paidAt || row.createdAt) : (row.remittedAt || row.paidAt || row.updatedAt);
+      const ts = normalizeTimestampForScope(tsRaw);
       return isWithinPeriod(ts, timePeriod);
     });
   }, [paymentIntents, timeBasis, timePeriod]);
   const scopedParticipantPayouts = useMemo(() => {
     if (timePeriod === "all") return participantPayouts;
     return participantPayouts.filter((row) => {
-      const ts = timeBasis === "sale" ? row.updatedAt : (row.remittedAt || row.updatedAt);
+      const tsRaw = timeBasis === "sale" ? row.updatedAt : (row.remittedAt || row.updatedAt);
+      const ts = normalizeTimestampForScope(tsRaw);
       return isWithinPeriod(ts, timePeriod);
     });
   }, [participantPayouts, timeBasis, timePeriod]);
   const scopedPaymentReceipts = useMemo(() => {
     if (timePeriod === "all") return paymentReceipts;
     return paymentReceipts.filter((row) => {
-      const ts = row.paidAt;
+      const ts = normalizeTimestampForScope(row.paidAt);
       return isWithinPeriod(ts, timePeriod);
     });
   }, [paymentReceipts, timePeriod]);
@@ -846,11 +863,14 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
     ).length;
   }, [creatorScopeId, creatorSummaryRows]);
 
-  const creatorEconomicsCards = [
+  const creatorIntakeCards = [
     { label: "Active creators", value: `${activeCreatorsCount.toLocaleString()}`, tone: "text-neutral-100" },
     { label: "Settled Gross Sales", value: `${sats(creatorSummary.gross.toString())} sats`, tone: "text-neutral-100" },
     { label: "Creator Gross Entitlements", value: `${sats(creatorSummary.creatorNet.toString())} sats`, tone: "text-cyan-200" },
-    { label: "Provider Fees Retained", value: `${sats(creatorSummary.providerFees.toString())} sats`, tone: "text-neutral-200" },
+    { label: "Provider Fees Retained", value: `${sats(creatorSummary.providerFees.toString())} sats`, tone: "text-neutral-200" }
+  ];
+
+  const creatorExecutionCards = [
     { label: "Paid", value: `${sats(creatorSummary.paid.toString())} sats`, tone: "text-emerald-300" },
     { label: "Payable", value: `${sats(creatorSummary.payable.toString())} sats`, tone: "text-amber-300" },
     { label: "Failed / Blocked", value: `${sats(creatorSummary.attention.toString())} sats`, tone: "text-rose-300" }
@@ -1259,21 +1279,20 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
           <div className="text-sm font-semibold">Active Creator Overview</div>
           <div className="mt-1 text-xs text-neutral-500">
-            Compare active creator customers on this provider. Select a row to scope the console.
+            Payout execution truth by creator in the selected scope. Select a row to focus the console.
           </div>
           {creatorSummaryRows.length === 0 ? (
             <div className="mt-3 text-sm text-neutral-400">No delegated creator activity in the selected time scope.</div>
           ) : (
             <div className="mt-3 overflow-x-auto">
-              <table className="w-full min-w-[900px] text-sm">
+              <table className="w-full min-w-[860px] text-sm">
                 <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                   <tr>
                     <th className="py-2 pr-3 font-medium">Active Creator</th>
                     <th className="py-2 pr-3 font-medium">Published</th>
-                    <th className="py-2 pr-3 font-medium">Gross Sales</th>
-                    <th className="py-2 pr-3 font-medium">Earnings / Net</th>
                     <th className="py-2 pr-3 font-medium">Paid</th>
                     <th className="py-2 pr-3 font-medium">Payable</th>
+                    <th className="py-2 pr-3 font-medium">At Risk</th>
                     <th className="py-2 pr-3 font-medium">Health</th>
                     <th className="py-2 pr-3 font-medium">Last Activity</th>
                   </tr>
@@ -1301,10 +1320,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                           </div>
                         </td>
                         <td className="py-2 pr-3 align-top text-neutral-200">{row.publishedItems.toLocaleString()}</td>
-                        <td className="py-2 pr-3 align-top text-neutral-200">{sats(row.gross.toString())} sats</td>
-                        <td className="py-2 pr-3 align-top text-cyan-200">{sats(row.net.toString())} sats</td>
                         <td className="py-2 pr-3 align-top text-emerald-300">{sats(row.paid.toString())} sats</td>
                         <td className="py-2 pr-3 align-top text-amber-300">{sats(row.payable.toString())} sats</td>
+                        <td className="py-2 pr-3 align-top text-rose-300">{sats(row.attention.toString())} sats</td>
                         <td className="py-2 pr-3 align-top">
                           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] ${healthTone}`}>
                             {health}
@@ -1316,6 +1334,10 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                   })}
                 </tbody>
               </table>
+              <div className="mt-2 text-[11px] text-neutral-500">
+                Gross sales and creator entitlements remain in the Money State cards above. This table is execution-only:
+                paid, payable, and at-risk values come from participant payout rows.
+              </div>
             </div>
           )}
         </div>
@@ -1455,15 +1477,37 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
           </span>
         </div>
         <div className="mt-2 text-xs text-neutral-500">
-          These values are creator-scoped provider settlement metrics; they are not a 1:1 match to creator accounting snapshots across all works.
+          Intake and entitlement totals are separated from payout execution below so the two truth models do not read as one metric set.
         </div>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {creatorEconomicsCards.map((card) => (
-            <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
-              <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
-              <div className={["mt-2 text-2xl font-semibold", card.tone].join(" ")}>{card.value}</div>
+        <div className="mt-3 space-y-4">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Money In & Entitlements</div>
+            <div className="mt-1 text-[11px] text-neutral-500">
+              Settled provider intake and creator entitlement totals for the selected scope.
             </div>
-          ))}
+            <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {creatorIntakeCards.map((card) => (
+                <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+                  <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
+                  <div className={["mt-2 text-2xl font-semibold", card.tone].join(" ")}>{card.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-neutral-500">Payout Execution</div>
+            <div className="mt-1 text-[11px] text-neutral-500">
+              Participant payout row truth for the selected scope window.
+            </div>
+            <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {creatorExecutionCards.map((card) => (
+                <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-4">
+                  <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
+                  <div className={["mt-2 text-2xl font-semibold", card.tone].join(" ")}>{card.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
