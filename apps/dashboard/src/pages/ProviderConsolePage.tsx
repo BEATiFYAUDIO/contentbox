@@ -306,6 +306,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
   const [qaError, setQaError] = useState<string | null>(null);
   const [qaResult, setQaResult] = useState<QaResult | null>(null);
   const [showQaDiagnostics, setShowQaDiagnostics] = useState(false);
+  const [showNodeDiagnostics, setShowNodeDiagnostics] = useState(false);
   const [opsExpanded, setOpsExpanded] = useState({
     execution: false,
     ledger: false,
@@ -650,13 +651,6 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         : delegatedPublishes.filter((row) => String(row.creatorNodeId || "").trim() === creatorScopeId),
     [creatorScopeId, delegatedPublishes]
   );
-  const creatorScopedPaymentReceipts = useMemo(
-    () =>
-      creatorScopeId === "all"
-        ? scopedPaymentReceipts
-        : scopedPaymentReceipts.filter((row) => String(row.creatorNodeId || "").trim() === creatorScopeId),
-    [creatorScopeId, scopedPaymentReceipts]
-  );
   const creatorScopedCreatorLinks = useMemo(
     () =>
       creatorScopeId === "all"
@@ -835,24 +829,31 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
 
   const selectedCreatorLabel =
     creatorScopeId === "all"
-      ? "All Delegated Creators"
+      ? "All Active Creators"
       : displayLabelForCreator(creatorScopeId, null);
 
   const summaryCards = [
-    { label: "Delegated Creators", value: summary?.delegatedCreators ?? creatorLinks.length },
+    { label: "Active creators", value: summary?.delegatedCreators ?? creatorLinks.length },
     { label: "Published Items", value: summary?.publishedItems ?? delegatedPublishes.length },
     { label: "Active Payment Intents", value: nodeSummary.activePaymentIntents },
     { label: "Settled Invoices", value: nodeSummary.settledPayments || scopedPaymentReceipts.length }
   ];
 
+  const activeCreatorsCount = useMemo(() => {
+    if (creatorScopeId !== "all") return 1;
+    return creatorSummaryRows.filter(
+      (row) => row.publishedItems > 0 || row.gross > 0n || row.paid > 0n || row.payable > 0n || row.attention > 0n
+    ).length;
+  }, [creatorScopeId, creatorSummaryRows]);
+
   const creatorEconomicsCards = [
+    { label: "Active creators", value: `${activeCreatorsCount.toLocaleString()}`, tone: "text-neutral-100" },
     { label: "Settled Gross Sales", value: `${sats(creatorSummary.gross.toString())} sats`, tone: "text-neutral-100" },
-    { label: "Creator Net (Settlement)", value: `${sats(creatorSummary.creatorNet.toString())} sats`, tone: "text-cyan-200" },
-    { label: "Provider Fees (Settlement)", value: `${sats(creatorSummary.providerFees.toString())} sats`, tone: "text-neutral-200" },
-    { label: "Settled Invoices", value: `${creatorScopedPaymentReceipts.length.toLocaleString()}`, tone: "text-neutral-100" },
+    { label: "Creator Gross Entitlements", value: `${sats(creatorSummary.creatorNet.toString())} sats`, tone: "text-cyan-200" },
+    { label: "Provider Fees Retained", value: `${sats(creatorSummary.providerFees.toString())} sats`, tone: "text-neutral-200" },
     { label: "Paid", value: `${sats(creatorSummary.paid.toString())} sats`, tone: "text-emerald-300" },
     { label: "Payable", value: `${sats(creatorSummary.payable.toString())} sats`, tone: "text-amber-300" },
-    { label: "Needs Attention", value: `${sats(creatorSummary.attention.toString())} sats`, tone: "text-rose-300" }
+    { label: "Failed / Blocked", value: `${sats(creatorSummary.attention.toString())} sats`, tone: "text-rose-300" }
   ];
 
   const visiblePaymentIntents =
@@ -1108,7 +1109,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         {error ? <div className="mt-3 text-xs text-rose-300">{error}</div> : null}
         <div className="mt-3 rounded-xl border border-cyan-800/40 bg-cyan-950/20 p-3">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="uppercase tracking-wide text-cyan-200/80">Delegated Creator Scope</span>
+            <span className="uppercase tracking-wide text-cyan-200/80">Creator Scope</span>
             {providerNodeId ? (
               <span className="inline-flex items-center rounded-full border border-neutral-700 bg-neutral-900/60 px-2 py-0.5 text-neutral-300">
                 Provider Node: {shortId(providerNodeId, 10, 8)}
@@ -1126,16 +1127,16 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                   : "border-neutral-700 text-neutral-300 hover:bg-neutral-800/60"
               ].join(" ")}
             >
-              All Delegated Creators
+              All Active Creators
             </button>
             <label className="inline-flex items-center gap-2 text-xs text-neutral-300">
-              <span className="text-neutral-400">Delegated Creator</span>
+              <span className="text-neutral-400">Active creator</span>
               <select
                 value={creatorScopeId}
                 onChange={(e) => setCreatorScopeId(e.target.value)}
                 className="rounded-md border border-neutral-700 bg-neutral-950 px-2 py-1 text-xs text-neutral-200"
               >
-                <option value="all">All Delegated Creators</option>
+                <option value="all">All Active Creators</option>
                 {creatorOptions.map((opt) => (
                   <option key={opt.id} value={opt.id}>
                     {opt.label}
@@ -1143,7 +1144,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
                 ))}
               </select>
             </label>
-            <div className="text-xs text-neutral-400">Active creator scope: <span className="text-neutral-200">{selectedCreatorLabel}</span></div>
+            <div className="text-xs text-neutral-400">Selected creator: <span className="text-neutral-200">{selectedCreatorLabel}</span></div>
           </div>
           <div className="mt-3">
             <TimeScopeControls
@@ -1256,9 +1257,9 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
 
       {creatorScopeId === "all" ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-          <div className="text-sm font-semibold">Delegated Creator Overview</div>
+          <div className="text-sm font-semibold">Active Creator Overview</div>
           <div className="mt-1 text-xs text-neutral-500">
-            Compare delegated creators on this node. Select a row to scope the full console.
+            Compare active creator customers on this provider. Select a row to scope the console.
           </div>
           {creatorSummaryRows.length === 0 ? (
             <div className="mt-3 text-sm text-neutral-400">No delegated creator activity in the selected time scope.</div>
@@ -1267,7 +1268,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
               <table className="w-full min-w-[900px] text-sm">
                 <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                   <tr>
-                    <th className="py-2 pr-3 font-medium">Delegated Creator</th>
+                    <th className="py-2 pr-3 font-medium">Active Creator</th>
                     <th className="py-2 pr-3 font-medium">Published</th>
                     <th className="py-2 pr-3 font-medium">Gross Sales</th>
                     <th className="py-2 pr-3 font-medium">Earnings / Net</th>
@@ -1322,7 +1323,24 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
 
       {creatorScopeId === "all" ? (
         <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-          <div className="text-sm font-semibold">Node Fee Attribution</div>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">Node & Diagnostics</div>
+              <div className="mt-1 text-xs text-neutral-500">
+                Secondary node-level attribution and aggregate diagnostics.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowNodeDiagnostics((prev) => !prev)}
+              className="rounded-md border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800/60"
+            >
+              {showNodeDiagnostics ? "Hide details" : "Show details"}
+            </button>
+          </div>
+          {showNodeDiagnostics ? (
+            <>
+          <div className="mt-3 text-sm font-semibold">Node Fee Attribution</div>
           <div className="mt-1 text-xs text-neutral-500">
             Provider fee collection by delegated creator using settled intent data.
           </div>
@@ -1361,7 +1379,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
               <table className="w-full text-sm">
                 <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                   <tr>
-                    <th className="py-2 pr-3 font-medium">Delegated Creator</th>
+                    <th className="py-2 pr-3 font-medium">Creator</th>
                     <th className="py-2 pr-3 font-medium">Gross Sales</th>
                     <th className="py-2 pr-3 font-medium">Provider Fees</th>
                     <th className="py-2 pr-3 font-medium">Invoicing Fee</th>
@@ -1401,11 +1419,29 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             </div>
             </>
           )}
+            <div className="mt-4 space-y-2 opacity-70">
+              <div className="text-sm font-semibold text-neutral-200">Provider Node Overview</div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {summaryCards.map((card) => (
+                  <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
+                    <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
+                    <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-[11px] text-neutral-500">
+                Relationship diagnostics: Delegation relationships {creatorLinks.length.toLocaleString()}
+              </div>
+            </div>
+            </>
+          ) : (
+            <div className="mt-3 text-xs text-neutral-500">Hidden by default to keep primary operator money flow clear.</div>
+          )}
         </div>
       ) : null}
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-        <div className="text-sm font-semibold">Money State</div>
+        <div className="text-sm font-semibold">Operator Snapshot</div>
         <div className="mt-1 text-xs text-neutral-500">{creatorScopeId === "all" ? "All delegated creators." : selectedCreatorLabel}</div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
           <span className="inline-flex items-center rounded-full border border-cyan-800/50 bg-cyan-950/20 px-2 py-0.5 text-cyan-200/90">
@@ -1887,7 +1923,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
 
       {creatorScopeId === "all" ? (
       <div className="mt-3 rounded-lg border border-neutral-800/70 bg-neutral-950/25 p-3">
-        <div className="text-xs uppercase tracking-wide text-neutral-500">Delegated Creator Links</div>
+        <div className="text-xs uppercase tracking-wide text-neutral-500">Creator Relationships</div>
         {creatorScopedCreatorLinks.length === 0 ? (
           <div className="mt-2 text-xs text-neutral-400">No delegated creator links yet.</div>
         ) : (
@@ -1895,7 +1931,7 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
             <table className="w-full min-w-[760px] text-sm">
               <thead className="text-left text-xs uppercase tracking-wide text-neutral-500">
                 <tr>
-                  <th className="py-2 pr-3 font-medium">Delegated Creator</th>
+                  <th className="py-2 pr-3 font-medium">Creator</th>
                   <th className="py-2 pr-3 font-medium">Trust</th>
                   <th className="py-2 pr-3 font-medium">Handshake</th>
                   <th className="py-2 pr-3 font-medium">Execution</th>
@@ -1989,19 +2025,6 @@ export default function ProviderConsolePage({ onOpenLightningConfig }: { onOpenL
         )}
       </div>
 
-      {creatorScopeId === "all" ? (
-      <div className="space-y-2 opacity-70">
-        <div className="text-sm font-semibold text-neutral-200">Provider Node Overview</div>
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {summaryCards.map((card) => (
-            <div key={card.label} className="rounded-xl border border-neutral-800 bg-neutral-900/30 p-4">
-              <div className="text-xs uppercase tracking-wide text-neutral-500">{card.label}</div>
-              <div className="mt-2 text-2xl font-semibold text-neutral-100">{card.value}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-      ) : null}
     </div>
   );
 }

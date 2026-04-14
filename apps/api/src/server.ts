@@ -23901,9 +23901,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
-                    <video class="featured-video-preview" preload="metadata" muted autoplay loop playsinline onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                      <source src="${escHtml(videoPreviewUrl)}" />
-                    </video>
+                    <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(videoPreviewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
                     <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
                     <span class="featured-video-play" aria-hidden="true">▶</span>
                   </div>`
@@ -24101,9 +24099,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     );
     if (type === "video") {
       return `<div class="featured-video-thumb-wrap">
-        <video class="featured-video-preview" preload="metadata" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-          <source src="${escHtml(previewUrl)}" />
-        </video>
+        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
         <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
         <span class="featured-video-play" aria-hidden="true">▶</span>
       </div>`;
@@ -24565,6 +24561,47 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         if (window.self !== window.top) document.body.classList.add("iframe-embedded");
       } catch (_) {
         document.body.classList.add("iframe-embedded");
+      }
+    })();
+    (function () {
+      function armVideo(el) {
+        if (!el) return;
+        if (el.dataset.previewArmed === "1") return;
+        const src = (el.getAttribute("data-preview-src") || "").trim();
+        if (!src) return;
+        el.dataset.previewArmed = "1";
+        el.setAttribute("src", src);
+        try { el.load(); } catch (_) {}
+        const playNow = function () {
+          const p = el.play && el.play();
+          if (p && typeof p.catch === "function") p.catch(function () {});
+        };
+        if ("requestIdleCallback" in window) {
+          window.requestIdleCallback(playNow, { timeout: 250 });
+        } else {
+          setTimeout(playNow, 0);
+        }
+      }
+      function setupLazyVideos() {
+        var nodes = Array.prototype.slice.call(document.querySelectorAll("video.js-lazy-video[data-preview-src]"));
+        if (!nodes.length) return;
+        if (!("IntersectionObserver" in window)) {
+          nodes.forEach(armVideo);
+          return;
+        }
+        var io = new IntersectionObserver(function (entries) {
+          entries.forEach(function (entry) {
+            if (!entry.isIntersecting) return;
+            armVideo(entry.target);
+            io.unobserve(entry.target);
+          });
+        }, { rootMargin: "180px 0px", threshold: 0.15 });
+        nodes.forEach(function (node) { io.observe(node); });
+      }
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", setupLazyVideos, { once: true });
+      } else {
+        setupLazyVideos();
       }
     })();
   </script>
