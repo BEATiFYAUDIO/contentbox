@@ -233,7 +233,15 @@ export default function App() {
   const [inviteToken, setInviteToken] = useState<string | null>(null);
   const [receiptToken, setReceiptToken] = useState<string | null>(null);
   const [financeTab, setFinanceTab] = useState<FinanceTab>("overview");
-  const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(null);
+  const [identityDetail, setIdentityDetail] = useState<IdentityDetail | null>(() => {
+    try {
+      const raw = window.localStorage.getItem("contentbox.identityDetail");
+      if (!raw) return null;
+      return JSON.parse(raw) as IdentityDetail;
+    } catch {
+      return null;
+    }
+  });
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
   const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
   const [whoamiInfo, setWhoamiInfo] = useState<WhoamiInfo | null>(null);
@@ -328,7 +336,9 @@ export default function App() {
           window.localStorage.setItem("contentbox.identityDetail", JSON.stringify(d));
         } catch {}
       })
-      .catch(() => setIdentityDetail(null));
+      .catch(() => {
+        // Preserve last known identity snapshot on transient failures.
+      });
   };
 
   useEffect(() => {
@@ -365,8 +375,6 @@ export default function App() {
           try {
             window.localStorage.setItem("contentbox.identityDetail", JSON.stringify(identityRes.value));
           } catch {}
-        } else {
-          setIdentityDetail(null);
         }
 
         let canUseLightningAdmin = false;
@@ -538,6 +546,7 @@ export default function App() {
   const capabilityReasons = identityDetail?.capabilityReasons || {};
   const advancedInactive = productTier === "advanced" && !sovereignCapabilities.canActAsSovereignCreator;
   const canSeeProviderConsole = Boolean(sovereignCapabilities.canActAsProviderNode && nodeMode === "lan");
+  const commerceStatusResolved = nodeModeSnapshot != null;
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
   const requireLocalLightning = nodeMode === "lan";
   const localLightningDetected = Boolean(
@@ -548,15 +557,14 @@ export default function App() {
   );
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
+    commerceStatusResolved &&
     !commerceEnabled &&
     (page === "participations" ||
       page === "splits" ||
-      page === "split-editor" ||
       page === "invite" ||
       page === "finance" ||
       page === "sales" ||
-      page === "payouts" ||
-      page === "royalties-terms");
+      page === "payouts");
 
   // Navigation options for the sidebar
   const accountNav = [{ key: "profile" as const, label: "Profile", hint: "Identity" }];
@@ -1260,15 +1268,21 @@ export default function App() {
               )}
 
               {page === "split-editor" && !isCommerceLockedPage && (
-                <SplitEditorPage
-                  identityLevel={identityLevel}
-                  features={features}
-                  lockReasons={lockReasons}
-                  capabilities={capabilities}
-                  capabilityReasons={capabilityReasons}
-                  contentId={selectedContentId}
-                  onGoToPayouts={() => setPage("payouts")}
-                />
+                identityDetail ? (
+                  <SplitEditorPage
+                    identityLevel={identityLevel}
+                    features={features}
+                    lockReasons={lockReasons}
+                    capabilities={capabilities}
+                    capabilityReasons={capabilityReasons}
+                    contentId={selectedContentId}
+                    onGoToPayouts={() => setPage("payouts")}
+                  />
+                ) : (
+                  <div className="rounded-xl border border-neutral-800 bg-neutral-950/40 p-6 text-sm text-neutral-300">
+                    Resolving split permissions…
+                  </div>
+                )
               )}
 
               {page === "profile" && (

@@ -130,11 +130,8 @@ export default function SplitParticipationsPage(props: {
   };
   const openSplitSummary = (contentId?: string | null) => {
     const id = String(contentId || "").trim();
-    if (id) {
-      window.location.href = `/royalties/${encodeURIComponent(id)}`;
-      return;
-    }
-    window.location.href = "/splits";
+    if (!id) return;
+    window.location.href = `/royalties/${encodeURIComponent(id)}`;
   };
 
   const activeWorks = works.filter((p) => {
@@ -636,7 +633,14 @@ export default function SplitParticipationsPage(props: {
                   </button>
                   {r.contentId ? (
                     <button
-                      onClick={() => openSplitSummary(r.contentId)}
+                      onClick={() => {
+                        const id = String(r.contentId || "").trim();
+                        if (id && localKnownIds.has(id)) {
+                          openSplitEditor(id);
+                          return;
+                        }
+                        openSplitSummary(id || null);
+                      }}
                       className="text-xs rounded-lg border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                     >
                       Open

@@ -442,17 +442,6 @@ export default function SplitEditorPage(props: {
   }, [splitsAllowed]);
 
   React.useEffect(() => {
-    if (!splitsAllowed) {
-      setContent(null);
-      setVersions([]);
-      setSelectedVersionId(null);
-      setRows([]);
-      setProofByVersionId({});
-      setPurchase(null);
-      setPayMsg(null);
-      setUpstreamInfo(null);
-      return;
-    }
     if (!contentId) {
       setContent(null);
       setVersions([]);
@@ -863,22 +852,8 @@ export default function SplitEditorPage(props: {
   }
 
   const canEdit = content?.canEdit !== false;
-  const viewOnly = !canEdit || !latestIsEditable || (selectedVersionId && selectedVersionId !== latest?.id);
+  const viewOnly = !splitsAllowed || !canEdit || !latestIsEditable || (selectedVersionId && selectedVersionId !== latest?.id);
   const invitedParticipants = rows.filter((p) => p.invitationStatus === "pending");
-
-  if (!splitsAllowed) {
-    return (
-      <div className="space-y-4">
-        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
-          {lockReason}
-        </div>
-        <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
-          <div className="text-lg font-semibold">Splits editor</div>
-          <div className="text-sm text-neutral-400 mt-1">{lockReason}</div>
-        </div>
-      </div>
-    );
-  }
 
   if (!contentId) {
     return (
@@ -910,6 +885,11 @@ export default function SplitEditorPage(props: {
 
   return (
     <div className="space-y-4">
+      {!splitsAllowed ? (
+        <div className="rounded-xl border border-amber-900/60 bg-amber-950/40 p-4 text-xs text-amber-200">
+          {lockReason} Viewing terms in read-only mode.
+        </div>
+      ) : null}
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
