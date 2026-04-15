@@ -297,7 +297,7 @@ export default function SplitParticipationsPage(props: {
   ];
   const visibleUpstream = allUpstreamRows.filter((u) => {
     if (showInactive) return true;
-    return !u.childDeletedAt && !u.parentDeletedAt && (!u.childStatus || u.childStatus === "published");
+    return !u.childDeletedAt && !u.parentDeletedAt;
   });
   const collaborationCount = participations.length + remoteRoyalties.length;
   const ownedCount = ownedLocalWorks.length;
@@ -755,7 +755,7 @@ export default function SplitParticipationsPage(props: {
           ) : (
             <div className="mt-3 space-y-3">
               {visibleUpstream
-                .slice(0, showAllUpstream ? upstream.length : 3)
+                .slice(0, showAllUpstream ? visibleUpstream.length : 3)
                 .map((u, idx) => (
                   <div key={`${u.parentTitle}-${u.childTitle}-${idx}`} className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
                     <div className="text-sm font-medium text-neutral-100">
