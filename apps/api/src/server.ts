@@ -6887,14 +6887,26 @@ function getLocalNodePrivatePem(): string | null {
   }
 }
 
-function hasInvoiceProviderRole(nodeMode: "basic" | "advanced" | "lan"): boolean {
-  // Only full Sovereign Node should advertise invoice-provider capability.
-  return nodeMode === "lan";
+function hasInvoiceProviderRole(input: {
+  nodeMode: "basic" | "advanced" | "lan";
+  namedTunnelDetected: boolean;
+  localCommerceReady: boolean;
+}): boolean {
+  // Full Sovereign Node always advertises provider capability. Sovereign Creator
+  // may advertise provider capability only when it has a named host and local
+  // commerce rails ready, which matches the existing provider execution gate
+  // more closely than nodeMode alone.
+  if (input.nodeMode === "lan") return true;
+  if (input.nodeMode === "advanced" && input.namedTunnelDetected && input.localCommerceReady) {
+    return true;
+  }
+  return false;
 }
 
 async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeIdentityDoc> {
   const runtime = resolveRuntimeConfig();
   const ctx = getCapabilityContext();
+  const sovereignReadiness = await getLocalSovereignReadinessCached();
   const publicUrl = ctx.publicStatus.canonicalOrigin || ctx.publicStatus.publicOrigin || null;
   const endpointKind: "quick" | "named" | "custom" =
     ctx.publicStatus.mode === "quick" ? "quick" : ctx.publicStatus.mode === "named" ? "named" : "custom";
@@ -6916,7 +6928,11 @@ async function buildLocalNodeIdentityDoc(userId?: string | null): Promise<NodeId
     profileId = owner?.id || null;
   }
 
-  const invoiceProviderRole = hasInvoiceProviderRole(runtime.nodeMode as "basic" | "advanced" | "lan");
+  const invoiceProviderRole = hasInvoiceProviderRole({
+    nodeMode: runtime.nodeMode as "basic" | "advanced" | "lan",
+    namedTunnelDetected: sovereignReadiness.namedTunnelDetected,
+    localCommerceReady: sovereignReadiness.localCommerceReady
+  });
   const creatorRole = true;
 
   return {
@@ -10501,6 +10517,48 @@ async function recordAudienceViewEvent(contentId: string, req: any, reply: any):
   return false;
 }
 
+async function proxyPublicRouteToMainApp(
+  method: "GET" | "POST",
+  url: string,
+  req: any,
+  reply: any
+) {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(req.headers || {})) {
+    if (value == null) continue;
+    const normalizedKey = String(key || "").toLowerCase();
+    if (normalizedKey === "host" || normalizedKey === "content-length") continue;
+    headers[key] = Array.isArray(value) ? String(value[0] || "") : String(value);
+  }
+  const injected = await app.inject({
+    method,
+    url,
+    headers,
+    payload: method === "POST" ? (req.body ?? {}) : undefined
+  });
+  for (const [key, value] of Object.entries(injected.headers || {})) {
+    if (value == null) continue;
+    const normalizedKey = String(key || "").toLowerCase();
+    if (
+      normalizedKey === "content-length" ||
+      normalizedKey === "transfer-encoding" ||
+      normalizedKey === "connection" ||
+      normalizedKey === "date"
+    ) {
+      continue;
+    }
+    reply.header(key, value as any);
+  }
+  reply.code(injected.statusCode);
+  const contentType = String((injected.headers || {})["content-type"] || "").toLowerCase();
+  if (contentType.includes("application/json")) {
+    try {
+      return reply.send(JSON.parse(injected.payload || "null"));
+    } catch {}
+  }
+  return reply.send(injected.payload);
+}
+
 /** ---------- routes ---------- */
 
 function registerPublicRoutes(appPublic: any) {
@@ -10538,6 +10596,24 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/favicon.ico", handleTabIcon);
   appPublic.get("/favicon.png", handleTabIcon);
   appPublic.get("/apple-touch-icon.png", handleTabIcon);
+  appPublic.get("/.well-known/certifyd-node", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", "/.well-known/certifyd-node", req, reply)
+  );
+  appPublic.get("/api/network/provider/capabilities", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", "/api/network/provider/capabilities", req, reply)
+  );
+  appPublic.post("/api/network/provider/acknowledge-client", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", "/api/network/provider/acknowledge-client", req, reply)
+  );
+  appPublic.post("/api/network/provider/accept-operation-intent", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", "/api/network/provider/accept-operation-intent", req, reply)
+  );
+  appPublic.post("/api/network/provider/execute-test", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", "/api/network/provider/execute-test", req, reply)
+  );
+  appPublic.post("/api/network/provider/delegated-publish", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", "/api/network/provider/delegated-publish", req, reply)
+  );
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
   appPublic.get("/library", handleBuyerLibraryPage);
@@ -16392,7 +16468,11 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
       ? "Provider-backed commerce is payout-ready."
       : "Configure a creator payout destination before provider-backed invoicing can be fully activated.";
 
-  const invoiceProviderRole = hasInvoiceProviderRole(runtime.nodeMode as "basic" | "advanced" | "lan");
+  const invoiceProviderRole = hasInvoiceProviderRole({
+    nodeMode: runtime.nodeMode as "basic" | "advanced" | "lan",
+    namedTunnelDetected: sovereignReadiness.namedTunnelDetected,
+    localCommerceReady: sovereignReadiness.localCommerceReady
+  });
   const creatorRole = true;
   const hybridRole = creatorRole && invoiceProviderRole;
 
