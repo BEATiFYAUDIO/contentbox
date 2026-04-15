@@ -1204,6 +1204,7 @@ const ETH_RPC_URL = (process.env.ETH_RPC_URL || "").trim() || null;
 const PAYMENT_PROVIDER = createPaymentProvider();
 const BOOT_ID = crypto.randomUUID();
 const STARTED_AT = new Date().toISOString();
+const STARTED_AT_MS = Date.parse(STARTED_AT) || Date.now();
 const NODE_ID = (process.env.NODE_ID || "").trim() || os.hostname();
 const WHOAMI_ENABLED = process.env.WHOAMI_ENABLED === "1";
 const WHOAMI_ALLOW_REMOTE = process.env.WHOAMI_ALLOW_REMOTE === "1";
@@ -9002,10 +9003,33 @@ const TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS = Math.max(
   15_000,
   Number(process.env.TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS || "20000")
 );
+const SERVICE_MANAGED_NAMED_STARTUP_GRACE_MS = Math.max(
+  5_000,
+  Number(process.env.SERVICE_MANAGED_NAMED_STARTUP_GRACE_MS || "15000")
+);
 let tunnelConflictGuardState: TunnelConflictGuardState = {
   firstDetectedAtMs: null,
   persistent: false
 };
+
+function getServiceManagedNamedStartupGraceState(input: {
+  nowMs?: number;
+  namedConfigured: boolean;
+  namedOnline: boolean;
+  shouldDeferToServiceControl: boolean;
+}) {
+  const nowMs = input.nowMs ?? Date.now();
+  const elapsedMs = Math.max(0, nowMs - STARTED_AT_MS);
+  const active =
+    input.shouldDeferToServiceControl &&
+    input.namedConfigured &&
+    !input.namedOnline &&
+    elapsedMs < SERVICE_MANAGED_NAMED_STARTUP_GRACE_MS;
+  return {
+    active,
+    remainingMs: active ? Math.max(0, SERVICE_MANAGED_NAMED_STARTUP_GRACE_MS - elapsedMs) : 0
+  };
+}
 
 function reconcileNamedTunnelOwnership(force = false) {
   const now = Date.now();
@@ -9109,6 +9133,8 @@ type PublicHostInvariant = {
   ownershipConflictDetected: boolean;
   ownershipConflictPersistent: boolean;
   ownershipConflictThresholdMs: number;
+  namedVerificationPending: boolean;
+  startupGraceRemainingMs: number;
   durableReady: boolean;
   reasons: string[];
 };
@@ -9119,6 +9145,8 @@ function derivePublicHostInvariant(input: {
   ownershipConflictPersistent: boolean;
   namedConfigured: boolean;
   namedOnline: boolean;
+  namedVerificationPending: boolean;
+  startupGraceRemainingMs: number;
 }): PublicHostInvariant {
   const nodeMode = getNodeModeStatus().nodeMode;
   const requiresDurableHost = nodeMode !== "basic";
@@ -9127,7 +9155,7 @@ function derivePublicHostInvariant(input: {
   const reasons: string[] = [];
   if (requiresDurableHost) {
     if (!input.namedConfigured) reasons.push("NAMED_TUNNEL_NOT_CONFIGURED");
-    if (!input.namedOnline) reasons.push("NAMED_TUNNEL_OFFLINE");
+    if (!input.namedOnline) reasons.push(input.namedVerificationPending ? "NAMED_TUNNEL_VERIFYING" : "NAMED_TUNNEL_OFFLINE");
     if (!canonicalOrigin) reasons.push("CANONICAL_ORIGIN_MISSING");
     if (canonicalOrigin && !canonicalOriginIsDurable) reasons.push("CANONICAL_ORIGIN_NOT_DURABLE");
   } else {
@@ -9153,6 +9181,8 @@ function derivePublicHostInvariant(input: {
     ownershipConflictDetected: input.ownershipConflictDetected,
     ownershipConflictPersistent: input.ownershipConflictPersistent,
     ownershipConflictThresholdMs: TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS,
+    namedVerificationPending: input.namedVerificationPending,
+    startupGraceRemainingMs: input.startupGraceRemainingMs,
     durableReady,
     reasons
   };
@@ -9179,6 +9209,11 @@ function getPublicStatus() {
   const advancedNeedsNamed = productTier === "advanced";
   const namedConfigured = Boolean(namedCfg);
   const namedOnline = state.mode === "named" && state.status === "online";
+  const startupGraceState = getServiceManagedNamedStartupGraceState({
+    namedConfigured,
+    namedOnline,
+    shouldDeferToServiceControl: defer.shouldDefer
+  });
   const ownershipConflictDetected = Boolean(
     tunnelControl.mode === "service_token" &&
       tunnelControl.activeServiceTokenProcess &&
@@ -9206,6 +9241,8 @@ function getPublicStatus() {
     ? null
     : !namedConfigured
       ? "NAMED_TUNNEL_NOT_CONFIGURED"
+      : startupGraceState.active
+        ? "NAMED_TUNNEL_VERIFYING"
       : !namedOnline
         ? "NAMED_TUNNEL_OFFLINE"
         : null;
@@ -9221,6 +9258,8 @@ function getPublicStatus() {
   const canonicalOriginReachable = state.status === "online";
   const canonicalOriginReason = !canonicalOriginConfigured
     ? "CANONICAL_ORIGIN_NOT_CONFIGURED"
+    : startupGraceState.active
+      ? "CANONICAL_ORIGIN_VERIFYING"
     : canonicalOriginReachable
       ? null
       : "CANONICAL_ORIGIN_UNREACHABLE_OR_OFFLINE";
@@ -9229,7 +9268,9 @@ function getPublicStatus() {
     ownershipConflictDetected,
     ownershipConflictPersistent: conflictEval.persistent,
     namedConfigured,
-    namedOnline
+    namedOnline,
+    namedVerificationPending: startupGraceState.active,
+    startupGraceRemainingMs: startupGraceState.remainingMs
   });
 
   return {
@@ -9360,6 +9401,17 @@ function logPublicHostInvariantOnStartup() {
           thresholdMs: hostInvariant.ownershipConflictThresholdMs
         },
         "publicHostInvariant.ownership_conflict_detected"
+      );
+    } else if (hostInvariant.namedVerificationPending) {
+      app.log.info(
+        {
+          reasons: hostInvariant.reasons,
+          canonicalOrigin: hostInvariant.canonicalOrigin,
+          namedConfigured: hostInvariant.namedConfigured,
+          startupGraceRemainingMs: hostInvariant.startupGraceRemainingMs,
+          tunnelControlMode: status.tunnelControl?.mode || "unknown"
+        },
+        "publicHostInvariant.durable_host_verifying"
       );
     } else if (hostInvariant.requiresDurableHost && !hostInvariant.durableReady) {
       app.log.warn(
