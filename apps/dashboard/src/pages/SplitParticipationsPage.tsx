@@ -132,7 +132,8 @@ export default function SplitParticipationsPage(props: {
       props.onOpenSplitEditor(id);
       return;
     }
-    window.location.href = `/content/${encodeURIComponent(id)}/splits`;
+    window.history.pushState({}, "", `/content/${encodeURIComponent(id)}/splits`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
   };
   const openSplitSummary = (contentId?: string | null) => {
     const id = String(contentId || "").trim();
@@ -141,7 +142,8 @@ export default function SplitParticipationsPage(props: {
       props.onOpenSplitSummary(id);
       return;
     }
-    window.location.href = `/royalties/${encodeURIComponent(id)}`;
+    window.history.pushState({}, "", `/royalties/${encodeURIComponent(id)}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
   };
 
   const activeWorks = works.filter((p) => {

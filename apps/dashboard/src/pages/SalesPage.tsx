@@ -226,7 +226,8 @@ export default function SalesPage({
       onOpenSplitEditor(contentId);
       return;
     }
-    window.location.href = `/content/${encodeURIComponent(contentId)}/splits`;
+    window.history.pushState({}, "", `/content/${encodeURIComponent(contentId)}/splits`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
   }, [onOpenSplitEditor]);
 
   const scopedSales = React.useMemo(() => {

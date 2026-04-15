@@ -960,7 +960,16 @@ export default function SplitEditorPage(props: {
               <div className="mt-2 text-xs text-neutral-400 space-y-1">
                 <div>
                   Original:{" "}
-                  <a href={`/content/${upstreamInfo.parent?.id}/splits`} className="text-neutral-200 underline">
+                  <a
+                    href={`/content/${upstreamInfo.parent?.id}/splits`}
+                    className="text-neutral-200 underline"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      if (!upstreamInfo.parent?.id) return;
+                      window.history.pushState({}, "", `/content/${encodeURIComponent(upstreamInfo.parent.id)}/splits`);
+                      window.dispatchEvent(new PopStateEvent("popstate"));
+                    }}
+                  >
                     {upstreamInfo.parent?.title || "Original work"}
                   </a>
                 </div>

@@ -1275,6 +1275,11 @@ export default function EarningsV2Page({
                   <a
                     href={`/content/${encodeURIComponent(scopedRow.contentId)}/splits`}
                     className="mt-2 inline-flex rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      window.history.pushState({}, "", `/content/${encodeURIComponent(scopedRow.contentId)}/splits`);
+                      window.dispatchEvent(new PopStateEvent("popstate"));
+                    }}
                   >
                     Open split editor
                   </a>

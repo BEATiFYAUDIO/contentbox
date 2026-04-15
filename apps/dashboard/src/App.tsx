@@ -443,41 +443,82 @@ export default function App() {
     } catch {}
   }, [authNotice]);
 
-
-  // Extract the invite token from the URL when the component mounts
-  useEffect(() => {
+  const syncRouteFromLocation = () => {
     const tokenFromUrl = getInviteTokenFromLocation();
     const splitEditorContentId = getSplitEditorContentIdFromLocation();
     const royaltiesTermsContentId = getRoyaltiesTermsContentIdFromLocation();
     const financeTabFromUrl = getFinanceTabFromLocation();
-    if (tokenFromUrl) {
-      setInviteToken(tokenFromUrl);  // Set token when found
-      setPage("invite");  // Show InvitePage directly
-    }
     const receiptFromUrl = getReceiptTokenFromLocation();
-    if (!tokenFromUrl && receiptFromUrl) {
+
+    if (tokenFromUrl) {
+      setInviteToken(tokenFromUrl);
+      setReceiptToken(null);
+      setSelectedContentId(null);
+      setPage("invite");
+      return;
+    }
+
+    if (receiptFromUrl) {
       setReceiptToken(receiptFromUrl);
+      setInviteToken(null);
+      setSelectedContentId(null);
       setPage("receipt");
+      return;
     }
-    if (!tokenFromUrl && !receiptFromUrl) {
-      if (financeTabFromUrl) {
-        setFinanceTab(financeTabFromUrl);
-        setPage("finance");
-      } else if (splitEditorContentId) {
-        setSelectedContentId(splitEditorContentId);
-        setPage("split-editor");
-      } else if (royaltiesTermsContentId) {
-        setSelectedContentId(royaltiesTermsContentId);
-        setPage("royalties-terms");
-      } else {
-        // Canonical refresh route: always land on Content unless this is an
-        // explicit deep-link surface (invite/receipt/split editor).
-        window.history.replaceState({}, "", "/");
-        setPage("content");
-      }
+
+    if (financeTabFromUrl) {
+      setFinanceTab(financeTabFromUrl);
+      setInviteToken(null);
+      setReceiptToken(null);
+      setSelectedContentId(null);
+      setPage("finance");
+      return;
     }
+
+    if (splitEditorContentId) {
+      setSelectedContentId(splitEditorContentId);
+      setInviteToken(null);
+      setReceiptToken(null);
+      setPage("split-editor");
+      return;
+    }
+
+    if (royaltiesTermsContentId) {
+      setSelectedContentId(royaltiesTermsContentId);
+      setInviteToken(null);
+      setReceiptToken(null);
+      setPage("royalties-terms");
+      return;
+    }
+
+    setInviteToken(null);
+    setReceiptToken(null);
+    setSelectedContentId(null);
+    setPage("content");
+  };
+
+
+  // Extract the invite token from the URL when the component mounts
+  useEffect(() => {
+    const tokenFromUrl = getInviteTokenFromLocation();
+    const receiptFromUrl = getReceiptTokenFromLocation();
+    const financeTabFromUrl = getFinanceTabFromLocation();
+    const splitEditorContentId = getSplitEditorContentIdFromLocation();
+    const royaltiesTermsContentId = getRoyaltiesTermsContentIdFromLocation();
+    if (!tokenFromUrl && !receiptFromUrl && !financeTabFromUrl && !splitEditorContentId && !royaltiesTermsContentId) {
+      // Canonical refresh route: always land on Content unless this is an
+      // explicit deep-link surface (invite/receipt/split editor).
+      window.history.replaceState({}, "", "/");
+    }
+    syncRouteFromLocation();
     loadMe();  // Load user data
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => syncRouteFromLocation();
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
   }, []);
 
   // Function to load user data
@@ -1311,10 +1352,6 @@ export default function App() {
                   setMe={setMe}
                   identityDetail={identityDetail}
                   requireLocalLightning={requireLocalLightning}
-                  onOpenParticipations={() => {
-                    window.history.pushState({}, "", "/participations");
-                    setPage("participations");
-                  }}
                   onOpenNodeLightning={goToNodeLightning}
                 />
               )}

@@ -2740,6 +2740,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             href={remoteParentHref || `/content/${a.parentContentId}/splits`}
                             target={remoteParentHref ? "_blank" : undefined}
                             rel={remoteParentHref ? "noreferrer noopener" : undefined}
+                            onClick={(event) => {
+                              if (remoteParentHref) return;
+                              event.preventDefault();
+                              if (!a.parentContentId) return;
+                              window.history.pushState({}, "", `/content/${encodeURIComponent(String(a.parentContentId))}/splits`);
+                              window.dispatchEvent(new PopStateEvent("popstate"));
+                            }}
                           >
                             {parentTitle}
                           </a>
@@ -3662,7 +3669,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   </span>
                                   {" "}•{" "}
                                   {splitsAllowed ? (
-                                    <a href={`/content/${it.id}/splits`} className="text-neutral-200 underline">
+                                    <a
+                                      href={`/content/${it.id}/splits`}
+                                      className="text-neutral-200 underline"
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        window.history.pushState({}, "", `/content/${encodeURIComponent(it.id)}/splits`);
+                                        window.dispatchEvent(new PopStateEvent("popstate"));
+                                      }}
+                                    >
                                       View routing
                                     </a>
                                   ) : (
@@ -3878,7 +3893,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div className="mt-2 text-xs text-neutral-400">
                                 Original:{" "}
                                 {splitsAllowed ? (
-                                  <a href={`/content/${parentLink.parent?.id}/splits`} className="text-neutral-200 underline">
+                                  <a
+                                    href={`/content/${parentLink.parent?.id}/splits`}
+                                    className="text-neutral-200 underline"
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      if (!parentLink.parent?.id) return;
+                                      window.history.pushState({}, "", `/content/${encodeURIComponent(parentLink.parent.id)}/splits`);
+                                      window.dispatchEvent(new PopStateEvent("popstate"));
+                                    }}
+                                  >
                                     {parentLink.parent?.title || "Original work"}
                                   </a>
                                 ) : (
@@ -3890,7 +3914,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 {parentLink.requiresApproval ? (parentLink.approvedAt ? "Cleared" : "Pending clearance") : "Not required"}
                                 {" "}•{" "}
                                 {splitsAllowed ? (
-                                  <a href={`/content/${it.id}/splits`} className="text-neutral-200 underline">
+                                  <a
+                                    href={`/content/${it.id}/splits`}
+                                    className="text-neutral-200 underline"
+                                    onClick={(event) => {
+                                      event.preventDefault();
+                                      window.history.pushState({}, "", `/content/${encodeURIComponent(it.id)}/splits`);
+                                      window.dispatchEvent(new PopStateEvent("popstate"));
+                                    }}
+                                  >
                                     View routing
                                   </a>
                                 ) : (
@@ -3903,7 +3935,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 {splitsAllowed ? (
                                   <>
                                     {" "}
-                                    <a href={`/content/${it.id}/splits`} className="underline">
+                                    <a
+                                      href={`/content/${it.id}/splits`}
+                                      className="underline"
+                                      onClick={(event) => {
+                                        event.preventDefault();
+                                        window.history.pushState({}, "", `/content/${encodeURIComponent(it.id)}/splits`);
+                                        window.dispatchEvent(new PopStateEvent("popstate"));
+                                      }}
+                                    >
                                       Link original in Splits
                                     </a>.
                                   </>
