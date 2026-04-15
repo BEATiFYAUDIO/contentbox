@@ -34533,6 +34533,33 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
       })
     : [];
   const contentById = new Map(contents.map((c) => [c.id, c]));
+  const remoteInviteTitleRows = contentIds.length
+    ? await prisma.remoteInvite.findMany({
+        where: {
+          userId,
+          contentId: { in: contentIds }
+        },
+        select: {
+          contentId: true,
+          contentTitle: true,
+          contentType: true,
+          acceptedAt: true,
+          createdAt: true
+        },
+        orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+      })
+    : [];
+  const remoteContentById = new Map<string, { id: string; title: string; type: string | null }>();
+  for (const row of remoteInviteTitleRows) {
+    const contentId = asString(row.contentId || "").trim();
+    const contentTitle = asString(row.contentTitle || "").trim();
+    if (!contentId || !contentTitle || remoteContentById.has(contentId)) continue;
+    remoteContentById.set(contentId, {
+      id: contentId,
+      title: contentTitle,
+      type: asString(row.contentType || "").trim() || null
+    });
+  }
   const parentByChildContentId = new Map<string, string>();
   for (const link of childLinks) {
     const childId = String(link.childContentId || "").trim();
@@ -34570,7 +34597,7 @@ app.get("/finance/payouts", { preHandler: [requireAuth, requireAdvancedTier("fin
       pendingSats += amount;
 
     const contentId = String((row as any)?.allocation?.contentId || "").trim() || null;
-    const content = contentId ? contentById.get(contentId) : null;
+    const content = contentId ? contentById.get(contentId) || remoteContentById.get(contentId) || null : null;
     const parentContentId = contentId ? parentByChildContentId.get(contentId) || null : null;
     const parentContent = parentContentId ? contentById.get(parentContentId) : null;
     const allocationRole = String((row as any)?.allocation?.role || "").trim() || null;
