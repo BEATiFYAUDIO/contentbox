@@ -78,6 +78,26 @@ type RemoteRoyaltyRow = {
   payoutSummary?: Record<string, number>;
   payoutState?: string;
   destinationState?: string;
+  clearanceInbox?: Array<{
+    authorizationId?: string;
+    parentContentId?: string | null;
+    parentTitle?: string | null;
+    childContentId?: string | null;
+    childTitle?: string | null;
+    childStatus?: string | null;
+    relation?: string | null;
+    status?: string | null;
+    approveWeightBps?: number | null;
+    approvalBpsTarget?: number | null;
+    approvedApprovers?: number | null;
+    upstreamRatePercent?: number | null;
+  }>;
+};
+
+type UpstreamDisplayRow = UpstreamIncomeRow & {
+  remoteOrigin?: string | null;
+  childStatus?: string | null;
+  source: "local" | "remote";
 };
 
 type ParticipationRow = {
@@ -237,7 +257,48 @@ export default function SplitParticipationsPage(props: {
     const pct = toSharePercent(row);
     return pct == null || pct < 100;
   });
-  const visibleUpstream = upstream.filter((u) => showInactive || (!u.childDeletedAt && !u.parentDeletedAt));
+  const remoteUpstreamRows = remoteRoyalties.flatMap((row) => {
+    const parentPercent = Number(row.percent ?? 0);
+    const inbox = Array.isArray(row.clearanceInbox) ? row.clearanceInbox : [];
+    return inbox
+      .map((entry) => {
+        const childContentId = String(entry.childContentId || "").trim();
+        if (!childContentId) return null;
+        const upstreamRatePercent = Number(entry.upstreamRatePercent ?? 0);
+        const upstreamBps = Number.isFinite(upstreamRatePercent) ? Math.max(0, Math.round(upstreamRatePercent * 100)) : 0;
+        const myEffectiveBps =
+          Number.isFinite(parentPercent) && Number.isFinite(upstreamRatePercent)
+            ? Math.max(0, Math.round((parentPercent / 100) * upstreamBps))
+            : 0;
+        return {
+          parentContentId: String(entry.parentContentId || row.contentId || "").trim(),
+          parentTitle: String(entry.parentTitle || row.contentTitle || "Untitled").trim(),
+          childContentId,
+          childTitle: String(entry.childTitle || "").trim() || "Untitled",
+          upstreamBps,
+          myEffectiveBps,
+          earnedSatsToDate: "0",
+          approvedAt: String(entry.status || "").trim().toUpperCase() === "APPROVED" ? row.acceptedAt || null : null,
+          status: String(entry.status || "").trim().toUpperCase() || undefined,
+          approveWeightBps: typeof entry.approveWeightBps === "number" ? entry.approveWeightBps : null,
+          approvalBpsTarget: typeof entry.approvalBpsTarget === "number" ? entry.approvalBpsTarget : null,
+          childDeletedAt: null,
+          parentDeletedAt: null,
+          childStatus: String(entry.childStatus || "").trim().toLowerCase() || null,
+          remoteOrigin: row.remoteOrigin,
+          source: "remote" as const
+        } satisfies UpstreamDisplayRow;
+      })
+      .filter((entry) => Boolean(entry)) as UpstreamDisplayRow[];
+  });
+  const allUpstreamRows: UpstreamDisplayRow[] = [
+    ...upstream.map((u) => ({ ...u, childStatus: null, remoteOrigin: null, source: "local" as const })),
+    ...remoteUpstreamRows
+  ];
+  const visibleUpstream = allUpstreamRows.filter((u) => {
+    if (showInactive) return true;
+    return !u.childDeletedAt && !u.parentDeletedAt && (!u.childStatus || u.childStatus === "published");
+  });
   const collaborationCount = participations.length + remoteRoyalties.length;
   const ownedCount = ownedLocalWorks.length;
   const collaborationOwnedCount = collaborativeLocalWorks.length;
@@ -712,6 +773,9 @@ export default function SplitParticipationsPage(props: {
                       {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
                       {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
                         <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
+                      ) : null}
+                      {u.source === "remote" && u.remoteOrigin ? (
+                        <span className="ml-2 text-neutral-500">Remote: {u.remoteOrigin}</span>
                       ) : null}
                     </div>
                     <div className="mt-2">
