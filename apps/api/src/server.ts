@@ -26985,18 +26985,6 @@ async function handleBuyPage(req: any, reply: any) {
     } catch {}
   }
 
-  function scheduleAttributionLoad(){
-    const run = () => { loadAttribution().catch(()=>{}); };
-    try {
-      const ric = window.requestIdleCallback;
-      if (typeof ric === "function") {
-        ric(run, { timeout: 1500 });
-        return;
-      }
-    } catch {}
-    setTimeout(run, 300);
-  }
-
   async function startPurchase(offer){
     if (!buyer || !buyer.id) {
       try {
@@ -27079,17 +27067,20 @@ async function handleBuyPage(req: any, reply: any) {
 
   if (productTier === "basic") {
     logAudienceView();
-    fetchJson("/buy/content/" + contentId + "/offer")
-      .then((offer) => renderBasicOffer(offer))
+    Promise.all([
+      fetchJson("/buy/content/" + contentId + "/offer"),
+      loadAttribution().catch(()=>null)
+    ])
+      .then(([offer]) => renderBasicOffer(offer))
       .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
-    scheduleAttributionLoad();
     return;
   }
 
   const offerPromise = fetchJson("/buy/content/" + contentId + "/offer");
   const buyerBootstrapPromise = hydrateFromDurableReceipt().finally(() => fetchBuyerMe().catch(()=>{}));
+  const attributionPromise = loadAttribution().catch(()=>null);
 
-  Promise.all([offerPromise, buyerBootstrapPromise])
+  Promise.all([offerPromise, buyerBootstrapPromise, attributionPromise])
     .then(async ([offer]) => {
       currentOffer = offer;
       livePaymentProof = null;
@@ -27135,7 +27126,6 @@ async function handleBuyPage(req: any, reply: any) {
       checkManualStatus();
     })
     .catch(err => { app.textContent = err && err.message ? err.message : "Unable to load offer."; console.error(err); });
-  scheduleAttributionLoad();
   logAudienceView();
 })();
 </script>
