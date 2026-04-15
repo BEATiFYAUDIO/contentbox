@@ -194,6 +194,7 @@ export default function ConfigPage({
   const [publicBusy, setPublicBusy] = useState(false);
   const [publicMsg, setPublicMsg] = useState<string | null>(null);
   const [publicAdvancedOpen, setPublicAdvancedOpen] = useState(false);
+  const [networkingOverridesOpen, setNetworkingOverridesOpen] = useState(false);
   const [publicOriginDetected, setPublicOriginDetected] = useState<string>("");
   const [publicOriginWarn, setPublicOriginWarn] = useState<boolean>(false);
   const [apiBaseOverride, setApiBaseOverride] = useState<string>(() => readStoredValue(STORAGE_API_BASE));
@@ -508,6 +509,41 @@ export default function ConfigPage({
     ? null
     : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
+  const routingStatusTitle = publicStatus?.namedDisabled
+    ? "Named tunnel override is on"
+    : selectedTunnelMode === "existing_named" && namedTunnelOnline
+      ? `Named tunnel ready${discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}`
+      : selectedTunnelMode === "existing_named" && namedTunnelDetected
+        ? `Named tunnel detected${discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}`
+        : "Temporary link mode";
+  const routingStatusTone = publicStatus?.namedDisabled
+    ? "#ffb4b4"
+    : selectedTunnelMode === "existing_named" && namedTunnelOnline
+      ? "#a7f3d0"
+      : selectedTunnelMode === "existing_named"
+        ? "#fbbf24"
+        : "rgba(255,255,255,0.72)";
+  const routingStatusDetail = publicStatus?.namedDisabled
+    ? "Local named-tunnel settings are overridden until you re-enable named mode."
+    : serviceManagedTokenMode
+      ? "Service-managed token tunnel is authoritative. Local cloudflared ingress settings are informational only."
+      : selectedTunnelMode === "existing_named" && namedTunnelOnline
+        ? "This machine has a durable named tunnel online. Buyer-facing links should resolve through the configured public domain."
+        : selectedTunnelMode === "existing_named" && namedTunnelDetected
+        ? "A matching named tunnel exists, but it is not online yet. Start sharing when you want this host active."
+        : "No named tunnel is active. Quick links are temporary and do not unlock sovereign creator posture.";
+  const routingAuthorityLabel = publicStatus?.namedDisabled
+    ? "Temporary-link override"
+    : serviceManagedTokenMode
+      ? "Service-managed named tunnel"
+      : tunnelControlMode === "local_config"
+        ? "Local config-managed named tunnel"
+        : selectedTunnelMode === "existing_named"
+        ? "Named tunnel"
+          : "Temporary link";
+  const stopActionLabel = publicStatus?.mode === "named" ? "Stop named tunnel" : "Stop temporary link";
+  const refreshRoutingLabel = "Refresh routing";
+  const localRoutingControlsDisabled = serviceManagedTokenMode && !publicStatus?.namedDisabled;
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
   const creatorProgressionSteps = useMemo<ProgressStep[]>(() => {
     const selected = modeInfo?.selectedMode || modeInfo?.nodeMode;
@@ -1259,14 +1295,14 @@ export default function ConfigPage({
               disabled={publicBusy || publicStatus?.status !== "online"}
               style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
             >
-              Stop sharing
+              {stopActionLabel}
             </button>
             <button
               onClick={() => refreshPublicStatus({ discover: true })}
               disabled={publicBusy}
               style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
             >
-              Refresh status
+              {refreshRoutingLabel}
             </button>
           </div>
         ) : null}
@@ -1277,30 +1313,60 @@ export default function ConfigPage({
               disabled={publicBusy || publicStatus?.namedDisabled}
               style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
             >
-              Disable named (override)
+              Force temporary link
             </button>
             <button
               onClick={() => setNamedOverride(false)}
               disabled={publicBusy || !publicStatus?.namedDisabled}
               style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
             >
-              Re-enable named
+              Restore named tunnel
             </button>
             {publicStatus?.namedDisabled ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                Named tunnel override is ON. Env config is ignored.
+                Temporary-link override is on. Named tunnel env config is being ignored.
               </div>
             ) : null}
           </div>
         ) : null}
-            <div style={{ opacity: 0.7, marginBottom: 10 }}>
-              Advanced routing for public links.
-            </div>
-            {serviceManagedTokenMode ? (
-              <div style={{ marginBottom: 10, fontSize: 12, color: "#fbbf24" }}>
-                Service-managed token tunnel detected. Local `~/.cloudflared/config.yml` ingress is not authoritative in this mode.
-              </div>
+        <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10, marginBottom: 10 }}>
+          <div style={{ fontWeight: 600, marginBottom: 4, color: routingStatusTone }}>{routingStatusTitle}</div>
+          <div style={{ fontSize: 12, opacity: 0.82 }}>{routingStatusDetail}</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+            <span
+              style={{
+                fontSize: 11,
+                padding: "2px 8px",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.12)",
+                color: routingStatusTone
+              }}
+            >
+              Authority: {routingAuthorityLabel}
+            </span>
+            {localRoutingControlsDisabled ? (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(251,191,36,0.35)",
+                  color: "#fbbf24"
+                }}
+              >
+                Local controls read-only
+              </span>
             ) : null}
+          </div>
+          <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.82, marginTop: 8 }}>
+            <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
+            <div>Tunnel control: <b>{serviceManagedTokenMode ? "Service-managed token" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
+            <div>Named tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
+          </div>
+          {tunnelControlMessage ? (
+            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.65 }}>{tunnelControlMessage}</div>
+          ) : null}
+        </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8 }} htmlFor="tunnel-settings-enabled">
           <input
             id="tunnel-settings-enabled"
@@ -1317,7 +1383,7 @@ export default function ConfigPage({
               }
             }}
           />
-          <span>Enable advanced routing settings</span>
+          <span>Show routing controls</span>
         </label>
         {!tunnelEnabled && publicStatus?.mode === "named" && publicStatus?.status !== "offline" ? (
           <div style={{ marginTop: 8, fontSize: 12, color: "#ffb4b4" }}>
@@ -1326,7 +1392,7 @@ export default function ConfigPage({
         ) : null}
         {!tunnelEnabled && (
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-            Advanced routing is off — Quick tunnel will be used (no DDNS/custom domain).
+            Routing controls are hidden. Quick tunnel remains temporary and named tunnel state is unchanged.
           </div>
         )}
 
@@ -1335,13 +1401,18 @@ export default function ConfigPage({
         {token && (
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
+            {localRoutingControlsDisabled ? (
+              <div style={{ fontSize: 12, color: "#fbbf24" }}>
+                Service-managed authority is active. Local tunnel fields remain visible for reference, but save/bootstrap actions are disabled on this machine.
+              </div>
+            ) : null}
             {publicStatus?.mode && publicStatus.mode !== "named" ? (
               <div style={{ fontSize: 12, opacity: 0.75 }}>
                 Named tunnel settings apply only when PUBLIC_MODE=named.
               </div>
             ) : null}
             <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>Named tunnel mode status</div>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Routing details</div>
               <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.9 }}>
                 <div>Tunnel provider: <b>{tunnelProvider || "cloudflare"}</b></div>
                 <div>Tunnel name: <b>{configuredTunnelName || "—"}</b></div>
@@ -1351,12 +1422,9 @@ export default function ConfigPage({
                 <div>Tunnel control mode: <b>{serviceManagedTokenMode ? "Service-managed token" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
                 <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
               </div>
-              {tunnelControlMessage ? (
-                <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>{tunnelControlMessage}</div>
-              ) : null}
               {selectedTunnelMode === "existing_named" ? (
                 <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>
-                  Existing named tunnel detected{discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}. Token bootstrap is not required.
+                  Use the named tunnel path. Token bootstrap is not required.
                 </div>
               ) : (
                 <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
@@ -1373,7 +1441,7 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelProvider(e.target.value)}
                 placeholder="cloudflare"
                 className={inputClass}
-                disabled={!tunnelEnabled || !namedTunnelDetected}
+                disabled={!tunnelEnabled || !namedTunnelDetected || localRoutingControlsDisabled}
                 autoComplete="off"
               />
               {!namedTunnelDetected ? (
@@ -1391,7 +1459,7 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelDomain(e.target.value)}
                 placeholder="contentbox.link"
                 className={inputClass}
-                disabled={!tunnelEnabled}
+                disabled={!tunnelEnabled || localRoutingControlsDisabled}
                 autoComplete="off"
               />
               <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
@@ -1412,11 +1480,11 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelName(e.target.value)}
                 placeholder="contentbox"
                 className={inputClass}
-                disabled={!tunnelEnabled}
+                disabled={!tunnelEnabled || localRoutingControlsDisabled}
                 autoComplete="off"
               />
             </label>
-            {tunnelEnabled && tokenBootstrapRequired ? (
+            {tunnelEnabled && tokenBootstrapRequired && !localRoutingControlsDisabled ? (
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
                 <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
@@ -1467,13 +1535,10 @@ export default function ConfigPage({
                 {namedTokenMsg ? <div style={{ marginTop: 6, color: "#ffb4b4" }}>{namedTokenMsg}</div> : null}
               </div>
             ) : null}
-            {tunnelEnabled && selectedTunnelMode === "existing_named" && namedTokenMsg ? (
-              <div style={{ marginTop: 4, color: "#a7f3d0", fontSize: 12 }}>{namedTokenMsg}</div>
-            ) : null}
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={saveTunnelConfig}
-                disabled={tunnelLoading || !tunnelEnabled}
+                disabled={tunnelLoading || !tunnelEnabled || localRoutingControlsDisabled}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
                 Save tunnel config
@@ -1491,7 +1556,7 @@ export default function ConfigPage({
             {tunnelActionMsg ? <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>{tunnelActionMsg}</div> : null}
             {tunnelList.length > 0 && (
               <div style={{ marginTop: 8, fontSize: 13, opacity: 0.85 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>Found tunnels</div>
+                <div style={{ fontWeight: 600, marginBottom: 6 }}>Detected tunnels</div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                   {tunnelList.map((t, i) => {
                     const label = t?.name || t?.id || String(i + 1);
@@ -1644,120 +1709,138 @@ export default function ConfigPage({
 
       {showAdvancedInfraPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>Networking</div>
-        <div style={{ opacity: 0.7, marginBottom: 12 }}>
-          Use one primary public host by default. Route-specific hosts below are optional overrides.
-        </div>
-
-        <div style={{ display: "grid", gap: 8 }}>
-          <label htmlFor="public-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Primary public host (recommended)</div>
-            <input
-              id="public-origin"
-              name="publicOrigin"
-              value={publicOrigin}
-              onChange={(e) => setPublicOrigin(e.target.value)}
-              placeholder="https://creator.yourdomain.com"
-              className={inputClass}
-              disabled={!namedTunnelOnline}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-buy-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host override (optional)</div>
-            <input
-              id="public-buy-origin"
-              name="publicBuyOrigin"
-              value={publicBuyOrigin}
-              onChange={(e) => setPublicBuyOrigin(e.target.value)}
-              placeholder="https://buy.yourdomain.com"
-              className={inputClass}
-              disabled={!namedTunnelOnline}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-studio-origin">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host override (optional)</div>
-            <input
-              id="public-studio-origin"
-              name="publicStudioOrigin"
-              value={publicStudioOrigin}
-              onChange={(e) => setPublicStudioOrigin(e.target.value)}
-              placeholder="https://studio.yourdomain.com"
-              className={inputClass}
-              disabled={!namedTunnelOnline}
-              autoComplete="url"
-            />
-          </label>
-        </div>
-        <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
-          If overrides are blank, routing uses the primary public host.
-        </div>
-        {!namedTunnelOnline ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>
-            Commerce/public host overrides unlock only after named tunnel is online.
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>Advanced networking overrides</div>
+            <div style={{ opacity: 0.7 }}>
+              Only use this for split-host or fallback routing. Most setups should leave this blank and rely on the canonical public host.
+            </div>
           </div>
-        ) : null}
-
-        <div style={{ marginTop: 12, fontWeight: 600 }}>Fallback hosts (optional)</div>
-        <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-          <label htmlFor="public-buy-origin-fallback">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy fallback</div>
-            <input
-              id="public-buy-origin-fallback"
-              name="publicBuyOriginFallback"
-              value={publicBuyOriginFallback}
-              onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
-              placeholder="https://buy.fallback.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-studio-origin-fallback">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio fallback</div>
-            <input
-              id="public-studio-origin-fallback"
-              name="publicStudioOriginFallback"
-              value={publicStudioOriginFallback}
-              onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
-              placeholder="https://studio.fallback.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-          <label htmlFor="public-origin-fallback">
-            <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator fallback</div>
-            <input
-              id="public-origin-fallback"
-              name="publicOriginFallback"
-              value={publicOriginFallback}
-              onChange={(e) => setPublicOriginFallback(e.target.value)}
-              placeholder="https://creator.fallback.com"
-              className={inputClass}
-              autoComplete="url"
-            />
-          </label>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <button
-            onClick={saveNetworking}
-            disabled={!namedTunnelOnline}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            onClick={() => setNetworkingOverridesOpen((v) => !v)}
+            style={{ padding: "6px 10px", borderRadius: 10, cursor: "pointer" }}
           >
-            Save networking
-          </button>
-          <button
-            onClick={clearNetworking}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Clear overrides
+            {networkingOverridesOpen ? "Hide overrides" : "Show overrides"}
           </button>
         </div>
 
-        <div style={{ marginTop: 12, opacity: 0.7 }}>
-          Health path used: <b>{DEFAULT_HEALTH_PATH}</b>
-        </div>
+        {networkingOverridesOpen ? (
+          <>
+            <div style={{ display: "grid", gap: 8, marginTop: 12 }}>
+              <label htmlFor="public-origin">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Primary public host (recommended)</div>
+                <input
+                  id="public-origin"
+                  name="publicOrigin"
+                  value={publicOrigin}
+                  onChange={(e) => setPublicOrigin(e.target.value)}
+                  placeholder="https://creator.yourdomain.com"
+                  className={inputClass}
+                  disabled={!namedTunnelOnline}
+                  autoComplete="url"
+                />
+              </label>
+              <label htmlFor="public-buy-origin">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy host override (optional)</div>
+                <input
+                  id="public-buy-origin"
+                  name="publicBuyOrigin"
+                  value={publicBuyOrigin}
+                  onChange={(e) => setPublicBuyOrigin(e.target.value)}
+                  placeholder="https://buy.yourdomain.com"
+                  className={inputClass}
+                  disabled={!namedTunnelOnline}
+                  autoComplete="url"
+                />
+              </label>
+              <label htmlFor="public-studio-origin">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio host override (optional)</div>
+                <input
+                  id="public-studio-origin"
+                  name="publicStudioOrigin"
+                  value={publicStudioOrigin}
+                  onChange={(e) => setPublicStudioOrigin(e.target.value)}
+                  placeholder="https://studio.yourdomain.com"
+                  className={inputClass}
+                  disabled={!namedTunnelOnline}
+                  autoComplete="url"
+                />
+              </label>
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, opacity: 0.7 }}>
+              If overrides are blank, routing uses the primary public host.
+            </div>
+            {!namedTunnelOnline ? (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#fbbf24" }}>
+                Commerce/public host overrides unlock only after named tunnel is online.
+              </div>
+            ) : null}
+
+            <div style={{ marginTop: 12, fontWeight: 600 }}>Fallback hosts (optional)</div>
+            <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+              <label htmlFor="public-buy-origin-fallback">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Buy fallback</div>
+                <input
+                  id="public-buy-origin-fallback"
+                  name="publicBuyOriginFallback"
+                  value={publicBuyOriginFallback}
+                  onChange={(e) => setPublicBuyOriginFallback(e.target.value)}
+                  placeholder="https://buy.fallback.com"
+                  className={inputClass}
+                  autoComplete="url"
+                />
+              </label>
+              <label htmlFor="public-studio-origin-fallback">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Studio fallback</div>
+                <input
+                  id="public-studio-origin-fallback"
+                  name="publicStudioOriginFallback"
+                  value={publicStudioOriginFallback}
+                  onChange={(e) => setPublicStudioOriginFallback(e.target.value)}
+                  placeholder="https://studio.fallback.com"
+                  className={inputClass}
+                  autoComplete="url"
+                />
+              </label>
+              <label htmlFor="public-origin-fallback">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>Certifyd Creator fallback</div>
+                <input
+                  id="public-origin-fallback"
+                  name="publicOriginFallback"
+                  value={publicOriginFallback}
+                  onChange={(e) => setPublicOriginFallback(e.target.value)}
+                  placeholder="https://creator.fallback.com"
+                  className={inputClass}
+                  autoComplete="url"
+                />
+              </label>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button
+                onClick={saveNetworking}
+                disabled={!namedTunnelOnline}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Save overrides
+              </button>
+              <button
+                onClick={clearNetworking}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Clear overrides
+              </button>
+            </div>
+
+            <div style={{ marginTop: 12, opacity: 0.7 }}>
+              Health path used: <b>{DEFAULT_HEALTH_PATH}</b>
+            </div>
+          </>
+        ) : (
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.65 }}>
+            Hidden by default. Canonical-host routing should be enough unless you intentionally run split hosts or recovery fallbacks.
+          </div>
+        )}
       </div>
       ) : null}
 
