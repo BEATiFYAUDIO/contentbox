@@ -65,11 +65,13 @@ type SalesPageProps = {
   productTier?: string;
   disabled?: boolean;
   hasInvoiceCommerce?: boolean;
+  onOpenSplitEditor?: (contentId: string) => void;
 };
 
 export default function SalesPage({
   disabled = false,
-  hasInvoiceCommerce = false
+  hasInvoiceCommerce = false,
+  onOpenSplitEditor
 }: SalesPageProps) {
   const [sales, setSales] = React.useState<SaleRow[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -220,8 +222,12 @@ export default function SalesPage({
 
   const openSplitEditorForContent = React.useCallback((contentId: string) => {
     if (!contentId) return;
+    if (onOpenSplitEditor) {
+      onOpenSplitEditor(contentId);
+      return;
+    }
     window.location.href = `/content/${encodeURIComponent(contentId)}/splits`;
-  }, []);
+  }, [onOpenSplitEditor]);
 
   const scopedSales = React.useMemo(() => {
     const rowTimestampForScope = (row: SaleRow): string => {

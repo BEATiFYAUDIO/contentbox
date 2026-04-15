@@ -104,6 +104,8 @@ export default function SplitParticipationsPage(props: {
   lockReasons?: Record<string, string>;
   capabilities?: CapabilitySet;
   nodeMode?: NodeMode | null;
+  onOpenSplitEditor?: (contentId: string) => void;
+  onOpenSplitSummary?: (contentId: string) => void;
 }) {
   type RoyaltiesScope = "local" | "remote" | "derivatives" | "history";
   const canAdvancedSplits = props.features?.advancedSplits ?? false;
@@ -126,11 +128,19 @@ export default function SplitParticipationsPage(props: {
   const openSplitEditor = (contentId: string) => {
     const id = String(contentId || "").trim();
     if (!id) return;
+    if (props.onOpenSplitEditor) {
+      props.onOpenSplitEditor(id);
+      return;
+    }
     window.location.href = `/content/${encodeURIComponent(id)}/splits`;
   };
   const openSplitSummary = (contentId?: string | null) => {
     const id = String(contentId || "").trim();
     if (!id) return;
+    if (props.onOpenSplitSummary) {
+      props.onOpenSplitSummary(id);
+      return;
+    }
     window.location.href = `/royalties/${encodeURIComponent(id)}`;
   };
 

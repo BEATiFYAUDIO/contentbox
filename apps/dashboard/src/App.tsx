@@ -1138,6 +1138,16 @@ export default function App() {
                   lockReasons={lockReasons}
                   capabilities={capabilities}
                   nodeMode={nodeMode}
+                  onOpenSplitEditor={(contentId) => {
+                    window.history.pushState({}, "", `/content/${encodeURIComponent(contentId)}/splits`);
+                    setSelectedContentId(contentId);
+                    setPage("split-editor");
+                  }}
+                  onOpenSplitSummary={(contentId) => {
+                    window.history.pushState({}, "", `/royalties/${encodeURIComponent(contentId)}`);
+                    setSelectedContentId(contentId);
+                    setPage("royalties-terms");
+                  }}
                 />
               )}
 
@@ -1214,7 +1224,17 @@ export default function App() {
                 />
               )}
 
-              {page === "sales" && !isCommerceLockedPage && <SalesPage productTier={productTier} disabled={!commerceEnabled} />}
+              {page === "sales" && !isCommerceLockedPage && (
+                <SalesPage
+                  productTier={productTier}
+                  disabled={!commerceEnabled}
+                  onOpenSplitEditor={(contentId) => {
+                    window.history.pushState({}, "", `/content/${encodeURIComponent(contentId)}/splits`);
+                    setSelectedContentId(contentId);
+                    setPage("split-editor");
+                  }}
+                />
+              )}
 
               {page === "receipt" && receiptToken && <ReceiptPage token={receiptToken} />}
 
