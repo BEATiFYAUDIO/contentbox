@@ -10585,6 +10585,7 @@ function registerPublicRoutes(appPublic: any) {
     });
   });
   appPublic.get("/health", handlePublicPing);
+  appPublic.get("/api/health", handlePublicPing);
   appPublic.get("/public/ping", handlePublicPing);
   appPublic.get("/p/:token", handleShortPublicLink);
   appPublic.get("/u/:handle", handlePublicNodeProfilePage);
