@@ -9309,6 +9309,32 @@ function logPublicHostInvariantOnStartup() {
   }
 }
 
+async function warmStartupRuntimeCaches() {
+  const startedAtMs = Date.now();
+  const tasks: Array<Promise<unknown>> = [
+    Promise.resolve().then(() => getPublicStatusCached(true)),
+    Promise.resolve().then(() => getCapabilityContextCached(true)),
+    getLocalSovereignReadinessCached(true),
+    getCachedCreatorSignalNodeDetails(),
+    getCachedProfileServiceMode()
+  ];
+  const results = await Promise.allSettled(tasks);
+  const rejected = results.filter((result) => result.status === "rejected");
+  const durationMs = Date.now() - startedAtMs;
+  if (rejected.length > 0) {
+    app.log.warn(
+      {
+        durationMs,
+        rejectedCount: rejected.length,
+        errors: rejected.map((result) => String((result as PromiseRejectedResult).reason || "unknown"))
+      },
+      "startup.runtime_cache_warm.partial_failure"
+    );
+    return;
+  }
+  app.log.info({ durationMs }, "startup.runtime_cache_warm.ready");
+}
+
 async function triggerPublicStartBestEffort() {
   const state = getPublicLinkState();
   if (state.mode === "quick") {
@@ -37861,6 +37887,11 @@ async function start() {
     }
   }
   logPublicHostInvariantOnStartup();
+  setTimeout(() => {
+    warmStartupRuntimeCaches().catch((err) => {
+      app.log.warn({ err: String((err as any)?.message || err) }, "startup.runtime_cache_warm.failed");
+    });
+  }, 25);
 }
 
 process.on("SIGTERM", () => {
