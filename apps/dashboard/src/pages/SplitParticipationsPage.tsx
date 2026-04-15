@@ -303,7 +303,8 @@ export default function SplitParticipationsPage(props: {
     if (t) params.set("title", t);
     params.set("source", "royalties");
     const query = params.toString();
-    window.location.href = query ? `/earnings-v2?${query}` : "/earnings-v2";
+    window.history.pushState({}, "", query ? `/earnings-v2?${query}` : "/earnings-v2");
+    window.dispatchEvent(new PopStateEvent("popstate"));
   };
   const describeRelationshipRole = (row: WorkRoyaltyRow): string => {
     const pct = toSharePercent(row);
