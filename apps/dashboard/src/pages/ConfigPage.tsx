@@ -509,8 +509,11 @@ export default function ConfigPage({
     ? null
     : "Canonical public origin not detected yet. Sovereign Creator unlocks after stable public host detection.";
   const isBasicMode = modeInfo?.nodeMode === "basic";
+  const temporaryOverrideAllowed = !namedTunnelDetected;
   const routingStatusTitle = publicStatus?.namedDisabled
-    ? "Named tunnel override is on"
+    ? namedTunnelDetected
+      ? "Named tunnel paused"
+      : "Temporary-link override is on"
     : selectedTunnelMode === "existing_named" && namedTunnelOnline
       ? `Named tunnel ready${discoveredTunnelName ? ` (${discoveredTunnelName})` : ""}`
       : selectedTunnelMode === "existing_named" && namedTunnelDetected
@@ -524,7 +527,9 @@ export default function ConfigPage({
         ? "#fbbf24"
         : "rgba(255,255,255,0.72)";
   const routingStatusDetail = publicStatus?.namedDisabled
-    ? "Local named-tunnel settings are overridden until you re-enable named mode."
+    ? namedTunnelDetected
+      ? "A legacy temporary-link override is still active. Restore the named tunnel to return to durable routing."
+      : "Temporary-link override is active until you restore named routing."
     : serviceManagedTokenMode
       ? "Service-managed token tunnel is authoritative. Local cloudflared ingress settings are informational only."
       : selectedTunnelMode === "existing_named" && namedTunnelOnline
@@ -533,7 +538,9 @@ export default function ConfigPage({
         ? "A matching named tunnel exists, but it is not online yet. Start sharing when you want this host active."
         : "No named tunnel is active. Quick links are temporary and do not unlock sovereign creator posture.";
   const routingAuthorityLabel = publicStatus?.namedDisabled
-    ? "Temporary-link override"
+    ? namedTunnelDetected
+      ? "Named tunnel paused"
+      : "Temporary link override"
     : serviceManagedTokenMode
       ? "Service-managed named tunnel"
       : tunnelControlMode === "local_config"
@@ -1308,23 +1315,29 @@ export default function ConfigPage({
         ) : null}
         {publicStatus ? (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-            <button
-              onClick={() => setNamedOverride(true)}
-              disabled={publicBusy || publicStatus?.namedDisabled}
-              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-            >
-              Force temporary link
-            </button>
-            <button
-              onClick={() => setNamedOverride(false)}
-              disabled={publicBusy || !publicStatus?.namedDisabled}
-              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-            >
-              Restore named tunnel
-            </button>
+            {temporaryOverrideAllowed ? (
+              <button
+                onClick={() => setNamedOverride(true)}
+                disabled={publicBusy || publicStatus?.namedDisabled}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Use temporary link instead
+              </button>
+            ) : null}
+            {publicStatus?.namedDisabled ? (
+              <button
+                onClick={() => setNamedOverride(false)}
+                disabled={publicBusy}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Restore named tunnel
+              </button>
+            ) : null}
             {publicStatus?.namedDisabled ? (
               <div style={{ fontSize: 12, color: "#ffb4b4", alignSelf: "center" }}>
-                Temporary-link override is on. Named tunnel env config is being ignored.
+                {namedTunnelDetected
+                  ? "Named tunnel detected. Restore named routing to return to the durable host."
+                  : "Temporary-link override is active. Named routing is paused until you restore it."}
               </div>
             ) : null}
           </div>
@@ -1383,16 +1396,16 @@ export default function ConfigPage({
               }
             }}
           />
-          <span>Show routing controls</span>
+          <span>Show advanced tunnel fields</span>
         </label>
         {!tunnelEnabled && publicStatus?.mode === "named" && publicStatus?.status !== "offline" ? (
           <div style={{ marginTop: 8, fontSize: 12, color: "#ffb4b4" }}>
-            Named tunnel still running. Use <b>Stop sharing</b> to disable it.
+            Named tunnel is still running. Use <b>Stop named tunnel</b> to disable it.
           </div>
         ) : null}
         {!tunnelEnabled && (
           <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-            Routing controls are hidden. Quick tunnel remains temporary and named tunnel state is unchanged.
+            Advanced tunnel fields are hidden. Current routing stays active.
           </div>
         )}
 
@@ -1403,35 +1416,35 @@ export default function ConfigPage({
             {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
             {localRoutingControlsDisabled ? (
               <div style={{ fontSize: 12, color: "#fbbf24" }}>
-                Service-managed authority is active. Local tunnel fields remain visible for reference, but save/bootstrap actions are disabled on this machine.
+                Service-managed tunnel authority is active. Local fields below are reference-only on this machine.
               </div>
             ) : null}
             {publicStatus?.mode && publicStatus.mode !== "named" ? (
               <div style={{ fontSize: 12, opacity: 0.75 }}>
-                Named tunnel settings apply only when PUBLIC_MODE=named.
+                Named tunnel fields below are for setup/reference. Current routing is not using named mode.
               </div>
             ) : null}
-            <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
-              <div style={{ fontWeight: 600, marginBottom: 6 }}>Routing details</div>
-              <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.9 }}>
+            <details style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
+              <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced tunnel details</summary>
+              <div style={{ display: "grid", gap: 3, fontSize: 12, opacity: 0.9, marginTop: 8 }}>
                 <div>Tunnel provider: <b>{tunnelProvider || "cloudflare"}</b></div>
                 <div>Tunnel name: <b>{configuredTunnelName || "—"}</b></div>
                 <div>Tunnel detected: <b>{namedTunnelDetected ? "yes" : "no"}</b></div>
                 <div>Tunnel online: <b>{namedTunnelOnline ? "yes" : "no"}</b></div>
-                <div>Active mode: <b>{selectedTunnelMode === "existing_named" ? "Existing named tunnel" : "Token bootstrap"}</b></div>
+                <div>Preferred route: <b>{selectedTunnelMode === "existing_named" ? "Named tunnel" : "Temporary bootstrap"}</b></div>
                 <div>Tunnel control mode: <b>{serviceManagedTokenMode ? "Service-managed token" : tunnelControlMode === "local_config" ? "Local config-managed" : "Unknown"}</b></div>
                 <div>Public base domain: <b>{tunnelDomain || "—"}</b></div>
               </div>
               {selectedTunnelMode === "existing_named" ? (
                 <div style={{ marginTop: 6, fontSize: 12, color: "#a7f3d0" }}>
-                  Use the named tunnel path. Token bootstrap is not required.
+                  Named tunnel detected. Temporary bootstrap is not needed.
                 </div>
               ) : (
                 <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
-                  No matching named tunnel was detected yet. Use token bootstrap only if you are setting up this tunnel for the first time.
+                  No matching named tunnel detected yet. Use temporary bootstrap only for first-time setup.
                 </div>
               )}
-            </div>
+            </details>
             <label htmlFor="tunnel-provider">
               <div style={{ opacity: 0.7, marginBottom: 4 }}>Provider</div>
               <input
