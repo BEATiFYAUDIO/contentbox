@@ -24341,7 +24341,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const buyUrl = item.contentId ? `${base}/buy/${encodeURIComponent(item.contentId)}` : "";
             const attributionUrl = item.contentId ? `${base}/public/content/${encodeURIComponent(item.contentId)}/attribution` : "";
             const originalWorkUrl = (item as any).parentContentId
-              ? `${base}/public/content/${encodeURIComponent(String((item as any).parentContentId))}/attribution`
+              ? `${base}/buy/${encodeURIComponent(String((item as any).parentContentId))}`
               : "";
             const parentTitle = escHtml(asString((item as any).derivativeParentTitle || "").trim() || "Original work");
             const linkHref = buyUrl || attributionUrl;
@@ -26069,8 +26069,8 @@ async function handleBuyPage(req: any, reply: any) {
             const creatorHtml = creatorProfileHref
               ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\">" + pn + ph + "</a>")
               : (pn + ph);
-            const parentAttributionUrl = it?.parentContentId
-              ? "/public/content/" + encodeURIComponent(String(it.parentContentId)) + "/attribution"
+            const parentContentUrl = it?.parentContentId
+              ? "/buy/" + encodeURIComponent(String(it.parentContentId))
               : "";
             const shareholders = Array.isArray(it?.shareholders) ? it.shareholders : [];
             const shareholdersHtml = shareholders.length > 0
@@ -26092,8 +26092,8 @@ async function handleBuyPage(req: any, reply: any) {
                 (shareholders.length > 6 ? " • …" : "") +
                 "</div>"
               : "";
-            const attributionLinkHtml = parentAttributionUrl
-              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(parentAttributionUrl) + "\\" style=\\"text-decoration:underline;\\">Original work attribution</a></div>"
+            const attributionLinkHtml = parentContentUrl
+              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(parentContentUrl) + "\\" style=\\"text-decoration:underline;\\">Original work attribution</a></div>"
               : "";
             return "<li>" + t + creatorHtml + shareholdersHtml + attributionLinkHtml + "</li>";
           }).join("") +
