@@ -8354,21 +8354,51 @@ const CAPABILITY_CONTEXT_CACHE_TTL_MS = Math.max(
   1000,
   Number(process.env.CAPABILITY_CONTEXT_CACHE_TTL_MS || "10000")
 );
+const CAPABILITY_CONTEXT_STALE_TTL_MS = Math.max(
+  CAPABILITY_CONTEXT_CACHE_TTL_MS,
+  Number(process.env.CAPABILITY_CONTEXT_STALE_TTL_MS || "45000")
+);
 let capabilityContextCache:
   | {
       expiresAt: number;
+      staleExpiresAt: number;
       value: ReturnType<typeof getCapabilityContext>;
     }
   | null = null;
+let capabilityContextRefreshScheduled = false;
+
+function refreshCapabilityContextInBackground() {
+  if (capabilityContextRefreshScheduled) return;
+  capabilityContextRefreshScheduled = true;
+  setTimeout(() => {
+    try {
+      const value = getCapabilityContext();
+      capabilityContextCache = {
+        expiresAt: Date.now() + CAPABILITY_CONTEXT_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + CAPABILITY_CONTEXT_STALE_TTL_MS,
+        value
+      };
+    } catch (err: any) {
+      app.log.debug({ err: String(err?.message || err) }, "capabilityContext.background_refresh.failed");
+    } finally {
+      capabilityContextRefreshScheduled = false;
+    }
+  }, 0);
+}
 
 function getCapabilityContextCached(force = false) {
   const now = Date.now();
   if (!force && capabilityContextCache && capabilityContextCache.expiresAt > now) {
     return capabilityContextCache.value;
   }
+  if (!force && capabilityContextCache && capabilityContextCache.staleExpiresAt > now) {
+    refreshCapabilityContextInBackground();
+    return capabilityContextCache.value;
+  }
   const value = getCapabilityContext();
   capabilityContextCache = {
     expiresAt: now + CAPABILITY_CONTEXT_CACHE_TTL_MS,
+    staleExpiresAt: now + CAPABILITY_CONTEXT_STALE_TTL_MS,
     value
   };
   return value;
@@ -9240,21 +9270,51 @@ const PUBLIC_STATUS_CACHE_TTL_MS = Math.max(
   1000,
   Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || "8000")
 );
+const PUBLIC_STATUS_STALE_TTL_MS = Math.max(
+  PUBLIC_STATUS_CACHE_TTL_MS,
+  Number(process.env.PUBLIC_STATUS_STALE_TTL_MS || "45000")
+);
 let publicStatusCache:
   | {
       expiresAt: number;
+      staleExpiresAt: number;
       value: ReturnType<typeof getPublicStatus>;
     }
   | null = null;
+let publicStatusRefreshScheduled = false;
+
+function refreshPublicStatusInBackground() {
+  if (publicStatusRefreshScheduled) return;
+  publicStatusRefreshScheduled = true;
+  setTimeout(() => {
+    try {
+      const value = getPublicStatus();
+      publicStatusCache = {
+        expiresAt: Date.now() + PUBLIC_STATUS_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + PUBLIC_STATUS_STALE_TTL_MS,
+        value
+      };
+    } catch (err: any) {
+      app.log.debug({ err: String(err?.message || err) }, "publicStatus.background_refresh.failed");
+    } finally {
+      publicStatusRefreshScheduled = false;
+    }
+  }, 0);
+}
 
 function getPublicStatusCached(force = false) {
   const now = Date.now();
   if (!force && publicStatusCache && publicStatusCache.expiresAt > now) {
     return publicStatusCache.value;
   }
+  if (!force && publicStatusCache && publicStatusCache.staleExpiresAt > now) {
+    refreshPublicStatusInBackground();
+    return publicStatusCache.value;
+  }
   const value = getPublicStatus();
   publicStatusCache = {
     expiresAt: now + PUBLIC_STATUS_CACHE_TTL_MS,
+    staleExpiresAt: now + PUBLIC_STATUS_STALE_TTL_MS,
     value
   };
   return value;
@@ -15260,9 +15320,14 @@ const LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS = Math.max(
   1000,
   Number(process.env.LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS || "10000")
 );
+const LOCAL_SOVEREIGN_READINESS_STALE_TTL_MS = Math.max(
+  LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS,
+  Number(process.env.LOCAL_SOVEREIGN_READINESS_STALE_TTL_MS || "45000")
+);
 let localSovereignReadinessCache:
   | {
       expiresAt: number;
+      staleExpiresAt: number;
       value: LocalSovereignReadiness;
     }
   | null = null;
@@ -15273,6 +15338,23 @@ async function getLocalSovereignReadinessCached(force = false): Promise<LocalSov
   if (!force && localSovereignReadinessCache && localSovereignReadinessCache.expiresAt > now) {
     return localSovereignReadinessCache.value;
   }
+  if (!force && localSovereignReadinessCache && localSovereignReadinessCache.staleExpiresAt > now) {
+    if (!localSovereignReadinessInflight) {
+      localSovereignReadinessInflight = getLocalSovereignReadiness()
+        .then((value) => {
+          localSovereignReadinessCache = {
+            expiresAt: Date.now() + LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS,
+            staleExpiresAt: Date.now() + LOCAL_SOVEREIGN_READINESS_STALE_TTL_MS,
+            value
+          };
+          return value;
+        })
+        .finally(() => {
+          localSovereignReadinessInflight = null;
+        });
+    }
+    return localSovereignReadinessCache.value;
+  }
   if (!force && localSovereignReadinessInflight) {
     return localSovereignReadinessInflight;
   }
@@ -15280,6 +15362,7 @@ async function getLocalSovereignReadinessCached(force = false): Promise<LocalSov
     .then((value) => {
       localSovereignReadinessCache = {
         expiresAt: Date.now() + LOCAL_SOVEREIGN_READINESS_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + LOCAL_SOVEREIGN_READINESS_STALE_TTL_MS,
         value
       };
       return value;
@@ -23015,27 +23098,61 @@ const PROFILE_RUNTIME_CACHE_TTL_MS = Math.max(
   1000,
   Number(process.env.PROFILE_RUNTIME_CACHE_TTL_MS || "15000")
 );
+const PROFILE_RUNTIME_STALE_TTL_MS = Math.max(
+  PROFILE_RUNTIME_CACHE_TTL_MS,
+  Number(process.env.PROFILE_RUNTIME_STALE_TTL_MS || "60000")
+);
 let creatorSignalNodeDetailsCache:
-  | { expiresAt: number; value: CreatorSignalNodeDetails }
+  | { expiresAt: number; staleExpiresAt: number; value: CreatorSignalNodeDetails }
   | null = null;
 let profileServiceModeCache:
   | {
       expiresAt: number;
+      staleExpiresAt: number;
       value: "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
     }
   | null = null;
+let creatorSignalNodeDetailsInflight: Promise<CreatorSignalNodeDetails> | null = null;
+let profileServiceModeInflight: Promise<
+  "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node"
+> | null = null;
 
 async function getCachedCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDetails> {
   const now = Date.now();
   if (creatorSignalNodeDetailsCache && creatorSignalNodeDetailsCache.expiresAt > now) {
     return creatorSignalNodeDetailsCache.value;
   }
-  const value = await getCreatorSignalNodeDetails();
-  creatorSignalNodeDetailsCache = {
-    expiresAt: now + PROFILE_RUNTIME_CACHE_TTL_MS,
-    value
-  };
-  return value;
+  if (creatorSignalNodeDetailsCache && creatorSignalNodeDetailsCache.staleExpiresAt > now) {
+    if (!creatorSignalNodeDetailsInflight) {
+      creatorSignalNodeDetailsInflight = getCreatorSignalNodeDetails()
+        .then((value) => {
+          creatorSignalNodeDetailsCache = {
+            expiresAt: Date.now() + PROFILE_RUNTIME_CACHE_TTL_MS,
+            staleExpiresAt: Date.now() + PROFILE_RUNTIME_STALE_TTL_MS,
+            value
+          };
+          return value;
+        })
+        .finally(() => {
+          creatorSignalNodeDetailsInflight = null;
+        });
+    }
+    return creatorSignalNodeDetailsCache.value;
+  }
+  if (creatorSignalNodeDetailsInflight) return creatorSignalNodeDetailsInflight;
+  creatorSignalNodeDetailsInflight = getCreatorSignalNodeDetails()
+    .then((value) => {
+      creatorSignalNodeDetailsCache = {
+        expiresAt: Date.now() + PROFILE_RUNTIME_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + PROFILE_RUNTIME_STALE_TTL_MS,
+        value
+      };
+      return value;
+    })
+    .finally(() => {
+      creatorSignalNodeDetailsInflight = null;
+    });
+  return creatorSignalNodeDetailsInflight;
 }
 
 async function getCachedProfileServiceMode(): Promise<
@@ -23045,20 +23162,54 @@ async function getCachedProfileServiceMode(): Promise<
   if (profileServiceModeCache && profileServiceModeCache.expiresAt > now) {
     return profileServiceModeCache.value;
   }
+  if (profileServiceModeCache && profileServiceModeCache.staleExpiresAt > now) {
+    if (!profileServiceModeInflight) {
+      profileServiceModeInflight = (async () => {
+        const profileCapabilityCtx = getCapabilityContextCached();
+        const profileProviderConnection = deriveProviderCommerceConnectionState();
+        const profileSovereignReadiness = await getLocalSovereignReadinessCached();
+        const value = resolveProviderServiceProfile({
+          hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
+          localSovereignReady: profileSovereignReadiness.ready,
+          providerConnected: profileProviderConnection.providerConnected,
+          ctx: profileCapabilityCtx
+        }).participationMode as "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+        profileServiceModeCache = {
+          expiresAt: Date.now() + PROFILE_RUNTIME_CACHE_TTL_MS,
+          staleExpiresAt: Date.now() + PROFILE_RUNTIME_STALE_TTL_MS,
+          value
+        };
+        return value;
+      })().finally(() => {
+        profileServiceModeInflight = null;
+      });
+    }
+    return profileServiceModeCache.value;
+  }
+  if (profileServiceModeInflight) return profileServiceModeInflight;
   const profileCapabilityCtx = getCapabilityContextCached();
   const profileProviderConnection = deriveProviderCommerceConnectionState();
   const profileSovereignReadiness = await getLocalSovereignReadinessCached();
-  const value = resolveProviderServiceProfile({
-    hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
-    localSovereignReady: profileSovereignReadiness.ready,
-    providerConnected: profileProviderConnection.providerConnected,
-    ctx: profileCapabilityCtx
-  }).participationMode as "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
-  profileServiceModeCache = {
-    expiresAt: now + PROFILE_RUNTIME_CACHE_TTL_MS,
-    value
-  };
-  return value;
+  profileServiceModeInflight = Promise.resolve(
+    resolveProviderServiceProfile({
+      hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
+      localSovereignReady: profileSovereignReadiness.ready,
+      providerConnected: profileProviderConnection.providerConnected,
+      ctx: profileCapabilityCtx
+    }).participationMode as "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node"
+  )
+    .then((value) => {
+      profileServiceModeCache = {
+        expiresAt: now + PROFILE_RUNTIME_CACHE_TTL_MS,
+        staleExpiresAt: now + PROFILE_RUNTIME_STALE_TTL_MS,
+        value
+      };
+      return value;
+    })
+    .finally(() => {
+      profileServiceModeInflight = null;
+    });
+  return profileServiceModeInflight;
 }
 
 function computeCreatorSignal(
