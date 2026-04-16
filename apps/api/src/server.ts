@@ -13111,6 +13111,7 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
   const cacheKey = `${normalizeRemoteOrigin(remoteOrigin)}::${String(token || "").trim()}`;
   const now = Date.now();
   const cached = remoteInviteAccountingCache.get(cacheKey);
+  const staleValue = cached ? cached.value : null;
   if (cached && cached.expiresAt > now) {
     return cached.value;
   }
@@ -13119,16 +13120,40 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
   const origin = normalizeRemoteOrigin(remoteOrigin);
   if (!origin || !token) return null;
   const work = (async () => {
-    if (!(await isOriginReachable(origin))) return null;
+    if (!(await isOriginReachable(origin))) {
+      if (staleValue) {
+        remoteInviteAccountingCache.set(cacheKey, {
+          expiresAt: Date.now() + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
+          value: staleValue
+        });
+      }
+      return staleValue;
+    }
     try {
       const res = await fetchWithTimeout(
         `${origin}/invites/${encodeURIComponent(token)}/accounting`,
         { method: "GET", headers: { Accept: "application/json" } as any } as any,
         8000
       );
-      if (!res.ok) return null;
+      if (!res.ok) {
+        if (staleValue) {
+          remoteInviteAccountingCache.set(cacheKey, {
+            expiresAt: Date.now() + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
+            value: staleValue
+          });
+        }
+        return staleValue;
+      }
       const payload: any = await res.json().catch(() => null);
-      if (!payload || payload.ok !== true) return null;
+      if (!payload || payload.ok !== true) {
+        if (staleValue) {
+          remoteInviteAccountingCache.set(cacheKey, {
+            expiresAt: Date.now() + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
+            value: staleValue
+          });
+        }
+        return staleValue;
+      }
       if (process.env.NODE_ENV !== "production") {
         const inbox = Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : [];
         app.log.info(
@@ -13159,9 +13184,9 @@ async function fetchRemoteInviteAccounting(remoteOrigin: string, token: string):
     } catch {
       remoteInviteAccountingCache.set(cacheKey, {
         expiresAt: Date.now() + Math.max(1500, Math.floor(REMOTE_INVITE_FETCH_CACHE_TTL_MS / 3)),
-        value: null
+        value: staleValue
       });
-      return null;
+      return staleValue;
     }
   })();
   remoteInviteAccountingInflight.set(cacheKey, work);
