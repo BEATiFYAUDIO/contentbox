@@ -25235,7 +25235,9 @@ async function resolveInviteClearanceContext(token: string, authorizationId: str
     include: { splitParticipant: { include: { splitVersion: true } } }
   });
   if (!inv || !inv.splitParticipantId) return null;
-  const parentContentId = asString(inv?.splitParticipant?.splitVersion?.contentId || "").trim();
+  const parentContentId = asString(
+    inv?.splitParticipant?.splitVersion?.contentId || inv?.contentId || ""
+  ).trim();
   if (!parentContentId) return null;
   const auth = await prisma.derivativeAuthorization.findUnique({
     where: { id: authorizationId },
@@ -36889,7 +36891,9 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         ? "resolved"
         : "unresolved";
 
-  const parentContentId = asString(inv?.splitParticipant?.splitVersion?.contentId || "").trim();
+  const parentContentId = asString(
+    inv?.splitParticipant?.splitVersion?.contentId || inv?.contentId || ""
+  ).trim();
   const acceptedIdentityRef = asString(inv?.acceptedIdentityRef || "").trim();
   const acceptedIdentityUserId = parseUserIdFromParticipantRef(acceptedIdentityRef);
   const inviteUserId = asString(
