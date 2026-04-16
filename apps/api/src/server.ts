@@ -13789,10 +13789,18 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
           remoteUserId = asString(remoteInvitation?.acceptedByUserId || "").trim() || remoteUserId;
         }
       }
-      const accounting =
-        inviteToken && inviteStatus === "accepted"
-          ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken)
-          : null;
+      const shouldFetchRemoteAccounting = Boolean(
+        inviteToken &&
+          (
+            inviteStatus === "accepted" ||
+            acceptedAt ||
+            remoteUserId ||
+            inv.remoteVerified
+          )
+      );
+      const accounting = shouldFetchRemoteAccounting
+        ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken!)
+        : null;
       const normalizedContentStatus = (() => {
         const v = asString(contentStatus || "").trim().toLowerCase();
         if (v === "published" || v === "draft") return v;
@@ -13806,10 +13814,12 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
           contentId: inv.contentId || null,
           inviteStatus,
           inviteTokenPresent: Boolean(inviteToken),
+          accountingRequested: shouldFetchRemoteAccounting,
           accountingVisible: Boolean(accounting),
           earnedSatsToDate: accounting?.earnedSatsToDate || "0",
           payoutRows: accounting?.payoutRows || 0,
-          payoutState: accounting?.payoutState || "none"
+          payoutState: accounting?.payoutState || "none",
+          clearanceInboxCount: Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox.length : 0
         },
         "splitAccounting.ledger_visibility"
       );
