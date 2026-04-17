@@ -4,6 +4,7 @@ import type { IdentityDetail } from "../lib/identity";
 import { modeLabel } from "../lib/nodeMode";
 import { setToken } from "../lib/auth";
 import { normalizeAuthBootstrapStatus, shouldShowBootstrapCreate, type AuthBootstrapStatus } from "../lib/authLanding";
+import { getLocalWitnessPublicKey, signWithLocalWitnessKey } from "../modules/witness/useWitnessIdentity";
 
 type Mode = "login" | "signup";
 
@@ -28,6 +29,8 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
   const [recoveryError, setRecoveryError] = React.useState<string | null>(null);
   const [pendingToken, setPendingToken] = React.useState<string | null>(null);
   const [newRecoveryKeyIssued, setNewRecoveryKeyIssued] = React.useState<string | null>(null);
+  const [witnessLoginAvailable, setWitnessLoginAvailable] = React.useState(false);
+  const [witnessLoginLoading, setWitnessLoginLoading] = React.useState(false);
 
   React.useEffect(() => {
     try {
@@ -60,11 +63,26 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
     probeRecovery();
   }, [probeRecovery]);
 
+  React.useEffect(() => {
+    let cancelled = false;
+    getLocalWitnessPublicKey()
+      .then((publicKey) => {
+        if (!cancelled) setWitnessLoginAvailable(Boolean(publicKey));
+      })
+      .catch(() => {
+        if (!cancelled) setWitnessLoginAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const isAdvanced = nodeMode === "advanced";
   const isLan = nodeMode === "lan";
   const isBasic = nodeMode === "basic";
   const signupAllowed = !isAdvanced || !ownerEmail;
   const isBootstrap = shouldShowBootstrapCreate(bootstrapStatus);
+  const recoveryEntryAvailable = Boolean(recoveryAvailable || recoveryProbeError || isBootstrap || mode === "login");
 
   React.useEffect(() => {
     if (!signupAllowed && mode === "signup") setMode("login");
@@ -126,6 +144,31 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
     }
   }
 
+  async function submitWitnessLogin() {
+    setError(null);
+    setWitnessLoginLoading(true);
+    try {
+      const publicKey = await getLocalWitnessPublicKey();
+      if (!publicKey) throw new Error("Creator identity sign-in is only available on devices that already hold your local verification key.");
+      const challenge = await api<{ challengeId: string; challengeText: string }>("/auth/witness/challenge", "POST", {
+        publicKey,
+        algorithm: "ed25519"
+      });
+      const signed = await signWithLocalWitnessKey(challenge.challengeText);
+      const resp = await api<{ token: string }>("/auth/witness/login", "POST", {
+        challengeId: challenge.challengeId,
+        publicKey: signed.publicKey,
+        signature: signed.signature
+      });
+      setToken(resp.token);
+      onAuthed();
+    } catch (err: any) {
+      setError(err?.message || "Creator identity sign-in failed.");
+    } finally {
+      setWitnessLoginLoading(false);
+    }
+  }
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-neutral-950 text-neutral-100 p-6">
       <div className="w-full max-w-md rounded-2xl border border-neutral-800 bg-neutral-900 p-6 shadow">
@@ -174,6 +217,19 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
           {!signupAllowed && lockReasons?.multi_user ? (
             <div className="text-neutral-500">{lockReasons.multi_user}</div>
           ) : null}
+        </div>
+
+        <div className="mb-4 rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-3 text-xs text-neutral-300 space-y-2">
+          <div className="font-medium text-neutral-100">Recovery options</div>
+          <div>
+            <b>Restore from Backup</b>: restores this device from a local backup file.
+          </div>
+          <div>
+            <b>Recover with Key</b>: restore your identity on a new device using your recovery key.
+          </div>
+          <div className="text-neutral-400">
+            Your recovery key restores your identity. Backups restore this device.
+          </div>
         </div>
 
         <form onSubmit={isBootstrap ? submitBootstrap : submit} className="space-y-3">
@@ -256,7 +312,19 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
         </form>
 
         {mode === "login" && !isBootstrap ? (
-          <div className="mt-4 text-xs text-neutral-400">
+          <div className="mt-4 flex items-center gap-3 text-xs text-neutral-400">
+            {witnessLoginAvailable ? (
+              <button
+                className="text-xs text-neutral-300 hover:text-white"
+                type="button"
+                onClick={() => {
+                  submitWitnessLogin().catch(() => {});
+                }}
+                disabled={witnessLoginLoading}
+              >
+                {witnessLoginLoading ? "Signing in…" : "Sign in with Creator Identity"}
+              </button>
+            ) : null}
             {recoveryAvailable ? (
               <button
                 className="text-xs text-neutral-300 hover:text-white"
@@ -269,6 +337,35 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
                 Forgot password?
               </button>
             ) : null}
+            {recoveryEntryAvailable ? (
+              <button
+                className="text-xs text-neutral-300 hover:text-white"
+                type="button"
+                onClick={() => {
+                  setRecoveryError(null);
+                  setShowRecovery(true);
+                }}
+              >
+                I have a recovery key
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+
+        {isBootstrap ? (
+          <div className="mt-4 text-xs text-neutral-400">
+            {recoveryEntryAvailable ? (
+              <button
+                className="text-xs text-neutral-300 hover:text-white"
+                type="button"
+                onClick={() => {
+                  setRecoveryError(null);
+                  setShowRecovery(true);
+                }}
+              >
+                I have a recovery key
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -276,8 +373,10 @@ export default function AuthPage({ onAuthed, notice }: { onAuthed: () => void; n
       {showRecovery ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-sm rounded-xl border border-neutral-800 bg-neutral-900 p-4">
-            <div className="text-sm font-medium">Reset password</div>
-            <div className="text-xs text-neutral-400 mt-1">Use your Recovery Key to set a new password.</div>
+            <div className="text-sm font-medium">Recover with Key</div>
+            <div className="text-xs text-neutral-400 mt-1">
+              Restore your identity on a new device using your recovery key, then set a new password.
+            </div>
             <div className="mt-3 space-y-2">
               <label className="block text-xs text-neutral-400" htmlFor="recovery-key">
                 Recovery key

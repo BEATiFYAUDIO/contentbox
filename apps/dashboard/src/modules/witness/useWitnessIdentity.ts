@@ -121,6 +121,36 @@ async function ensureLocalKey(): Promise<{ key: LocalWitnessRecord; createdLocal
   return { key: created, createdLocal: true };
 }
 
+export async function getLocalWitnessPublicKey(): Promise<string | null> {
+  const local = await readLocalKey();
+  return local?.publicKey || null;
+}
+
+export async function signWithLocalWitnessKey(challengeText: string): Promise<{ publicKey: string; signature: string }> {
+  const local = await readLocalKey();
+  if (!local?.publicKey) throw new Error("LOCAL_WITNESS_KEY_UNAVAILABLE");
+
+  const payload = new TextEncoder().encode(String(challengeText || ""));
+  if (local.privateKeyCrypto && globalThis.crypto?.subtle) {
+    const sig = await globalThis.crypto.subtle.sign({ name: "Ed25519" }, local.privateKeyCrypto, payload);
+    return {
+      publicKey: local.publicKey,
+      signature: toBase64(new Uint8Array(sig))
+    };
+  }
+
+  if (local.privateKeyRawHex) {
+    const noble = await import("@noble/ed25519");
+    const sig = await noble.signAsync(payload, local.privateKeyRawHex);
+    return {
+      publicKey: local.publicKey,
+      signature: toBase64(sig)
+    };
+  }
+
+  throw new Error("LOCAL_WITNESS_KEY_UNAVAILABLE");
+}
+
 export function useWitnessIdentity() {
   const [identity, setIdentity] = useState<WitnessIdentity | null>(null);
   const [hasLocalKey, setHasLocalKey] = useState(false);
