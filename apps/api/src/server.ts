@@ -10995,6 +10995,9 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/receipts/r/:receiptId/status", handlePublicDurableReceiptStatus);
   appPublic.post("/buy/receipts/r/:receiptId/reissue-token", handlePublicDurableReceiptReissue);
   appPublic.get("/invites/:token", handlePublicInviteLookup);
+  appPublic.get("/invites/:token/accounting", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", `/invites/${encodeURIComponent(asString((req.params as any)?.token || "").trim())}/accounting`, req, reply)
+  );
   appPublic.get("/invite/:token", handlePublicInvitePage);
   appPublic.post("/invites/:token/accept", handlePublicInviteAccept);
   appPublic.get("/content/:manifestHash/:fileId", handlePublicContentFile);
