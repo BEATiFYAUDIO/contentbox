@@ -766,11 +766,17 @@ export default function SplitParticipationsPage(props: {
                     </div>
                     <div className="text-xs text-neutral-400 mt-1">
                       Upstream rate: {(u.upstreamBps / 100).toFixed(u.upstreamBps % 100 ? 2 : 0)}% • My effective share:{" "}
-                      {(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%
+                      {typeof u.myEffectiveBps === "number"
+                        ? `${(u.myEffectiveBps / 100).toFixed(u.myEffectiveBps % 100 ? 2 : 0)}%`
+                        : "Not split-derived"}
                     </div>
                     <div className="text-xs text-neutral-400 mt-1">
                       Relationship role: <span className="text-neutral-200">Upstream stakeholder</span>
-                      {u.approvedAt ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}` : " • Pending clearance"}
+                      {u.approvedAt
+                        ? ` • Cleared ${new Date(u.approvedAt).toLocaleString()}`
+                        : String(u.status || "").trim().toUpperCase() === "APPROVED"
+                          ? " • Cleared"
+                          : " • Pending clearance"}
                       {u.approveWeightBps != null && u.approvalBpsTarget != null ? (
                         <span className="ml-2 text-neutral-500">Progress: {u.approveWeightBps}/{u.approvalBpsTarget} bps</span>
                       ) : null}

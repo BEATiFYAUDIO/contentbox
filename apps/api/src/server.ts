@@ -14295,7 +14295,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
   }
 
   const linksForStatus = await prisma.contentLink.findMany({
-    where: { requiresApproval: true },
+    where: { relation: { in: ["derivative", "remix", "mashup"] as any } },
     include: { parentContent: true, childContent: true }
   });
   const auths = await prisma.derivativeAuthorization.findMany({
@@ -14334,7 +14334,7 @@ app.get("/my/royalties", { preHandler: requireAuth }, async (req: any, reply: an
             : null,
         earnedSatsToDate: 0n,
         approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null,
-        status: auth?.status || (link.approvedAt ? "APPROVED" : "PENDING"),
+        status: link.requiresApproval ? auth?.status || (link.approvedAt ? "APPROVED" : "PENDING") : "APPROVED",
         approveWeightBps: auth?.approveWeightBps ?? 0,
         approvalBpsTarget: auth?.approvalBpsTarget ?? 6667
       });
