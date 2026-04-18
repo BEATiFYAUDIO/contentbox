@@ -2994,7 +2994,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           type="button"
                           onClick={() => {
                             window.history.pushState({}, "", "/config");
-                            window.location.reload();
+                            window.dispatchEvent(new PopStateEvent("popstate"));
                           }}
                           className="underline text-amber-200 hover:text-amber-100"
                         >
@@ -3354,7 +3354,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           type="button"
                           onClick={() => {
                             window.history.pushState({}, "", "/config");
-                            window.location.reload();
+                            window.dispatchEvent(new PopStateEvent("popstate"));
                           }}
                           className="underline text-amber-200 hover:text-amber-100"
                         >
@@ -3906,7 +3906,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     type="button"
                                     onClick={() => {
                                       window.history.pushState({}, "", "/config");
-                                      window.location.reload();
+                            window.dispatchEvent(new PopStateEvent("popstate"));
                                     }}
                                     className="underline text-amber-200 hover:text-amber-100"
                                   >
@@ -4205,7 +4205,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       type="button"
                                       onClick={() => {
                                         window.history.pushState({}, "", "/config");
-                                        window.location.reload();
+                            window.dispatchEvent(new PopStateEvent("popstate"));
                                       }}
                                       className="underline text-amber-200 hover:text-amber-100"
                                     >
@@ -5225,7 +5225,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   type="button"
                                   onClick={() => {
                                     window.history.pushState({}, "", "/config");
-                                    window.location.reload();
+                            window.dispatchEvent(new PopStateEvent("popstate"));
                                   }}
                                   className="underline text-amber-200 hover:text-amber-100"
                                 >
