@@ -10416,6 +10416,25 @@ function shouldShowRemoteInviteInActiveLists(inv: {
   return status === "pending" || status === "accepted";
 }
 
+function summarizeRemoteInviteCollaborators(snapshot: any): string[] {
+  const relatedInvites = Array.isArray(snapshot?.invites) ? snapshot.invites : [];
+  const labels = relatedInvites
+    .map((row: any) => {
+      const targetDisplayName = asString(row?.targetDisplayName || "").trim();
+      if (targetDisplayName && !looksLikeInternalUserId(targetDisplayName)) return targetDisplayName;
+      const participantDisplayName = asString(row?.participantDisplayName || "").trim();
+      if (participantDisplayName && !looksLikeInternalUserId(participantDisplayName)) return participantDisplayName;
+      const participantEmail = normalizeEmail(row?.participantEmail || "");
+      if (participantEmail) return participantEmail;
+      const targetValue = asString(row?.targetValue || "").trim();
+      if (targetValue && !looksLikeInternalUserId(targetValue)) return targetValue;
+      return "";
+    })
+    .map((label: string) => label.trim())
+    .filter(Boolean);
+  return Array.from(new Set(labels));
+}
+
 function hashInviteToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -13003,6 +13022,9 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
         let percent = percentToPrimitive(inv.percent ?? null);
         let participantEmail = inv.participantEmail || null;
         let remoteUserId = inv.remoteUserId || null;
+        let collaboratorNames = Array.isArray((inv as any).collaboratorNames)
+          ? (inv as any).collaboratorNames.map((value: any) => asString(value || "").trim()).filter(Boolean)
+          : [];
 
         if (inviteToken && (normalizedStatus === "pending" || normalizedStatus === "accepted")) {
           const snapshot = await fetchRemoteInviteSnapshot(inv.remoteOrigin, inviteToken);
@@ -13039,6 +13061,7 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
             if (Number.isFinite(remotePercent) && remotePercent > 0) percent = remotePercent;
             participantEmail = asString(remoteSplitParticipant?.participantEmail || "").trim() || participantEmail;
             remoteUserId = asString(remoteInvitation?.acceptedByUserId || "").trim() || remoteUserId;
+            collaboratorNames = summarizeRemoteInviteCollaborators(snapshot);
           }
         }
         return {
@@ -13063,6 +13086,7 @@ app.get("/my/invitations/remote", { preHandler: requireAuth }, async (req: any, 
           remoteUserId,
           remoteNodeUrl: inv.remoteNodeUrl || null,
           remoteVerified: Boolean(inv.remoteVerified),
+          collaboratorNames,
           createdAt: inv.createdAt.toISOString()
         };
       })

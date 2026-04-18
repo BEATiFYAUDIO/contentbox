@@ -92,6 +92,7 @@ type RemoteRoyaltyRow = {
   remoteUserId?: string | null;
   remoteNodeUrl?: string | null;
   remoteVerified?: boolean;
+  collaboratorNames?: string[] | null;
   createdAt?: string | null;
 };
 
@@ -275,6 +276,7 @@ function mapRemoteRoyaltyToInviteRow(row: RemoteRoyaltyRow): any {
     remoteUserId: row.remoteUserId || null,
     remoteNodeUrl: row.remoteNodeUrl || null,
     remoteVerified: Boolean(row.remoteVerified),
+    collaboratorNames: Array.isArray(row.collaboratorNames) ? row.collaboratorNames.filter(Boolean) : [],
     createdAt: row.createdAt || null,
     source: "remote_royalty"
   };
@@ -623,7 +625,18 @@ export default function InvitePage({
       }
       const prevTs = inviteSortTs(prev);
       const curTs = inviteSortTs(inv);
-      if (curTs >= prevTs) merged.set(id, { ...prev, ...inv });
+      if (curTs >= prevTs) {
+        merged.set(id, {
+          ...prev,
+          ...inv,
+          collaboratorNames:
+            Array.isArray((inv as any)?.collaboratorNames) && (inv as any).collaboratorNames.length > 0
+              ? (inv as any).collaboratorNames
+              : Array.isArray((prev as any)?.collaboratorNames)
+                ? (prev as any).collaboratorNames
+                : []
+        });
+      }
     }
     setRemoteReceivedInvites(sortInvitesNewestFirst(Array.from(merged.values())));
   }
@@ -1366,6 +1379,11 @@ export default function InvitePage({
                                     {inv.percent !== null && inv.percent !== undefined ? (
                                       <div className="text-xs text-neutral-400">Percent: {num(inv.percent)}%</div>
                                     ) : null}
+                                    {Array.isArray(inv.collaboratorNames) && inv.collaboratorNames.length > 0 ? (
+                                      <div className="text-xs text-neutral-400">
+                                        Participants: {inv.collaboratorNames.join(", ")}
+                                      </div>
+                                    ) : null}
                                     <div className="text-xs text-neutral-400">Created: {formatDate(inv.createdAt)}</div>
                                     <div className="text-xs text-neutral-400">Expires: {formatDate(inv.expiresAt)}</div>
                                     {inv.contentDeletedAt ? <div className="text-[11px] text-amber-300">Tombstoned</div> : null}
@@ -1400,7 +1418,7 @@ export default function InvitePage({
                         {open && (
                           <div className="mt-2 space-y-2">
                             {group.invites.map((inv) => {
-                              const accepted = Boolean(inv.acceptedAt);
+                              const accepted = inviteStatus(inv) === "accepted";
                               return (
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
