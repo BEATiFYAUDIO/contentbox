@@ -21943,12 +21943,6 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
   const link = links[0];
   const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
   const parent = await prisma.contentItem.findUnique({ where: { id: link.parentContentId } });
-  const { split: parentSplit, eligible } = await getEligibleApproversForParent(link.parentContentId);
-
-  const user = await prisma.user.findUnique({ where: { id: userId } });
-  const userEmail = (user?.email || "").toLowerCase();
-  const isEligibleVoter = eligible.some((p) => matchApproverToUser(p, userId, userEmail));
-
   let remoteStatus: any = null;
   const parentOrigin =
     parent && parent.deletedReason === "hard" && !parent.repoPath ? getRemoteOriginFromDescription(parent.description) : null;
@@ -21965,6 +21959,30 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
       if (res.ok && data) remoteStatus = data;
     } catch {}
   }
+
+  const effectiveParentSplitVersionId =
+    asString(link.parentSplitVersionId || "").trim() || asString(remoteStatus?.parentSplitVersionId || "").trim() || null;
+  if (!link.parentSplitVersionId && effectiveParentSplitVersionId) {
+    try {
+      await prisma.contentLink.update({
+        where: { id: link.id },
+        data: { parentSplitVersionId: effectiveParentSplitVersionId }
+      });
+      link.parentSplitVersionId = effectiveParentSplitVersionId;
+    } catch {}
+  }
+  const { split: parentSplit, eligible } = await getApproversForDerivativeLinkAuthority(
+    {
+      id: link.id,
+      parentContentId: link.parentContentId,
+      parentSplitVersionId: effectiveParentSplitVersionId
+    },
+    { logContext: "content.parent_link", allowCurrentFallback: true }
+  );
+
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const userEmail = (user?.email || "").toLowerCase();
+  const isEligibleVoter = eligible.some((p) => matchApproverToUser(p, userId, userEmail));
 
   let clearanceRequest: { status: string; requestedAt: string; reviewGrantedAt?: string | null } | null = null;
   const clearanceModel = (prisma as any).clearanceRequest;
@@ -22249,7 +22267,14 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       String(child?.description || "").toLowerCase().startsWith("remote origin:");
     if (childDeleted && !childShadowRemote) continue;
 
-    const { eligible } = await getEligibleApproversForParent(a.parentContentId);
+    const { eligible } = await getApproversForDerivativeLinkAuthority(
+      {
+        id: a.derivativeLink.id,
+        parentContentId: a.parentContentId,
+        parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null
+      },
+      { logContext: "derivatives.approvals", allowCurrentFallback: true }
+    );
     const parent = await prisma.contentItem.findUnique({
       where: { id: a.parentContentId },
       select: { ownerUserId: true, repoPath: true, deletedReason: true, description: true }
@@ -22351,7 +22376,14 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   if (!child) return notFound(reply, "Content not found");
   if (child.ownerUserId !== userId) return forbidden(reply);
 
-  const { approvers } = await getApproversForParent(link.parentContentId);
+  const { approvers } = await getApproversForDerivativeLinkAuthority(
+    {
+      id: link.id,
+      parentContentId: link.parentContentId,
+      parentSplitVersionId: link.parentSplitVersionId || null
+    },
+    { logContext: "clearance.request", allowCurrentFallback: true }
+  );
   const parent = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
     select: { description: true, repoPath: true, deletedReason: true }
@@ -22425,6 +22457,14 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
             message: "Parent node did not create the clearance request."
           });
         }
+        const remoteParentSplitVersionId = asString(data?.parentSplitVersionId || "").trim() || null;
+        if (remoteParentSplitVersionId && !link.parentSplitVersionId) {
+          await prisma.contentLink.update({
+            where: { id: link.id },
+            data: { parentSplitVersionId: remoteParentSplitVersionId }
+          });
+          link.parentSplitVersionId = remoteParentSplitVersionId;
+        }
         remoteApprovalUrls = data.approvalUrls;
       } finally {
         clearTimeout(timeout);
@@ -22490,7 +22530,14 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
   }
 
-  return reply.send({ ok: true, authorization: auth, approvalUrls, remoteApprovalUrls, expiresAt });
+  return reply.send({
+    ok: true,
+    authorization: auth,
+    approvalUrls,
+    remoteApprovalUrls,
+    expiresAt,
+    parentSplitVersionId: link.parentSplitVersionId || null
+  });
 });
 
 // Compatibility: request clearance (musician wording)
@@ -22657,7 +22704,13 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
   }
 
-  return reply.send({ ok: true, authorization: auth, approvalUrls, expiresAt });
+  return reply.send({
+    ok: true,
+    authorization: auth,
+    approvalUrls,
+    expiresAt,
+    parentSplitVersionId: link.parentSplitVersionId || parentSplit.id
+  });
 });
 
 // Remote clearance status (parent node -> child node)
@@ -22718,14 +22771,22 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   const link = await prisma.contentLink.findUnique({ where: { id: linkId } });
   if (!link) return notFound(reply, "Content link not found");
 
-  const parentSplit = await getLockedSplitForContent(link.parentContentId);
+  const authority = await getApproversForDerivativeLinkAuthority(
+    {
+      id: link.id,
+      parentContentId: link.parentContentId,
+      parentSplitVersionId: link.parentSplitVersionId || null
+    },
+    { logContext: "clearance.vote", allowCurrentFallback: true }
+  );
+  const parentSplit = authority.split;
   if (!parentSplit || parentSplit.status !== "locked") {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before voting." });
   }
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
   const userEmail = (user?.email || "").toLowerCase();
-  const { eligible, approvers } = await getEligibleApproversForParent(link.parentContentId);
+  const { eligible, approvers } = authority;
   const parent = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
     select: { ownerUserId: true }
@@ -22885,7 +22946,14 @@ app.post("/content-links/:linkId/review-notes", { preHandler: requireAuth }, asy
 
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
   const email = (me?.email || "").toLowerCase();
-  const { eligible } = await getEligibleApproversForParent(link.parentContentId);
+  const { eligible } = await getApproversForDerivativeLinkAuthority(
+    {
+      id: link.id,
+      parentContentId: link.parentContentId,
+      parentSplitVersionId: link.parentSplitVersionId || null
+    },
+    { logContext: "clearance.note", allowCurrentFallback: true }
+  );
   const canReview = eligible.some((approver) => matchApproverToUser(approver, userId, email));
   if (!canReview) return forbidden(reply);
 
@@ -22928,7 +22996,14 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
   });
 
   const thresholdBps = 6667;
-  const { approvers, eligible } = await getEligibleApproversForParent(link.parentContentId);
+  const { approvers, eligible } = await getApproversForDerivativeLinkAuthority(
+    {
+      id: link.id,
+      parentContentId: link.parentContentId,
+      parentSplitVersionId: link.parentSplitVersionId || null
+    },
+    { logContext: "clearance.summary", allowCurrentFallback: true }
+  );
   const parent = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
     select: { ownerUserId: true }
@@ -30533,17 +30608,14 @@ async function canAccessReviewPreview(userId: string, contentId: string): Promis
 
   const parentLink = links[0];
   if (parentLink?.parentContentId) {
-    const parentSplit = await getLockedSplitForContent(parentLink.parentContentId);
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
     const email = (user?.email || "").toLowerCase();
     const isParentOwner = parentLink.parentContent?.ownerUserId === userId;
-    const isParentStakeholder = Boolean(
-      parentSplit?.participants?.some(
-        (p) =>
-          (p.participantUserId && p.participantUserId === userId) ||
-          (p.participantEmail && email && p.participantEmail.toLowerCase() === email)
-      )
-    );
+    const { eligible } = await getApproversForDerivativeLinkAuthority(parentLink, {
+      logContext: "preview.access",
+      allowCurrentFallback: true
+    });
+    const isParentStakeholder = eligible.some((approver) => matchApproverToUser(approver, userId, email));
 
     if (isParentOwner || isParentStakeholder) {
       return { ok: true, content, linkId: parentLink.id, reason: "parent_stakeholder" };
@@ -32262,6 +32334,9 @@ type ApproverInfo = {
   splitParticipantId?: string | null;
   participantUserId: string | null;
   participantEmail: string | null;
+  identityRef?: string | null;
+  displayName?: string | null;
+  profilePath?: string | null;
   role: string | null;
   weightBps: number;
   accepted: boolean;
@@ -32269,13 +32344,135 @@ type ApproverInfo = {
 
 function matchApproverToUser(approver: ApproverInfo, userId: string, userEmail: string): boolean {
   if (approver.participantUserId && approver.participantUserId === userId) return true;
+  if (parseUserIdFromParticipantRef(approver.identityRef || null) === userId) return true;
   if (approver.participantEmail && userEmail && approver.participantEmail.toLowerCase() === userEmail) return true;
   return false;
+}
+
+function dedupeApprovers(approvers: ApproverInfo[]): ApproverInfo[] {
+  const unique: ApproverInfo[] = [];
+  const seen = new Set<string>();
+  for (const a of approvers) {
+    const email = normalizeEmail(a.participantEmail || "");
+    const identityRef = asString(a.identityRef || "").trim();
+    const key = a.participantUserId
+      ? `u:${a.participantUserId}`
+      : identityRef
+      ? `i:${identityRef}`
+      : email
+      ? `e:${email}`
+      : `x:${a.splitParticipantId || unique.length}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(a);
+  }
+  return unique;
+}
+
+function buildApproversFromLockedSnapshots(snapshots: LockedParticipantSnapshotRecord[]): {
+  approvers: ApproverInfo[];
+  excludedReasons: Record<string, number>;
+} {
+  const excludedReasons: Record<string, number> = {};
+  const approvers: ApproverInfo[] = [];
+  for (const snapshot of snapshots) {
+    const reasons: string[] = [];
+    if (!snapshot?.acceptedAt) reasons.push("missing_accepted_at");
+    if (!snapshot?.verifiedAt) reasons.push("missing_verified_at");
+    if (!snapshot?.participantUserId && !snapshot?.identityRef && !snapshot?.participantEmail) {
+      reasons.push("missing_identity");
+    }
+    if (reasons.length > 0) {
+      for (const reason of reasons) excludedReasons[reason] = (excludedReasons[reason] || 0) + 1;
+      continue;
+    }
+    approvers.push({
+      splitParticipantId: snapshot.splitParticipantId || null,
+      participantUserId: snapshot.participantUserId || null,
+      participantEmail: normalizeEmail(snapshot.participantEmail || "") || null,
+      identityRef: asString(snapshot.identityRef || "").trim() || null,
+      displayName: resolveLockedSnapshotAttributionLabel(snapshot),
+      profilePath: normalizePublicProfileHref(snapshot.profilePathSnapshot || "") || null,
+      role: snapshot.role || null,
+      weightBps: Math.max(0, Math.round(Number(snapshot.bps || 0))),
+      accepted: true
+    });
+  }
+  return { approvers: dedupeApprovers(approvers), excludedReasons };
+}
+
+async function getApproversForDerivativeLinkAuthority(
+  link: { id?: string | null; parentContentId: string; parentSplitVersionId?: string | null },
+  opts?: { logContext?: string | null; allowCurrentFallback?: boolean }
+): Promise<{
+  split: any | null;
+  approvers: ApproverInfo[];
+  eligible: ApproverInfo[];
+  source: "snapshot" | "current_locked" | "missing";
+}> {
+  const parentContentId = asString(link?.parentContentId || "").trim();
+  const parentSplitVersionId = asString(link?.parentSplitVersionId || "").trim();
+  const logContext = asString(opts?.logContext || "").trim() || "derivative.authority";
+  if (parentSplitVersionId) {
+    const split = await getParentLockedSplitSnapshotForDerivative({
+      id: link?.id || null,
+      parentContentId,
+      parentSplitVersionId
+    });
+    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(split.id);
+    const { approvers, excludedReasons } = buildApproversFromLockedSnapshots(snapshots);
+    app.log.info(
+      {
+        logContext,
+        linkId: asString(link?.id || "").trim() || null,
+        parentContentId,
+        parentSplitVersionId,
+        fetchedParentSplitVersionId: split.id,
+        participantsBeforeFiltering: snapshots.length,
+        participantsAfterFiltering: approvers.length,
+        excludedReasons,
+        finalPreviewAllocationCount: approvers.length
+      },
+      "derivative.preview_authority_resolved"
+    );
+    return { split, approvers, eligible: approvers, source: "snapshot" };
+  }
+
+  if (opts?.allowCurrentFallback === false) {
+    app.log.info(
+      {
+        logContext,
+        linkId: asString(link?.id || "").trim() || null,
+        parentContentId,
+        parentSplitVersionId: null,
+        source: "missing"
+      },
+      "derivative.preview_authority_missing_snapshot"
+    );
+    return { split: null, approvers: [], eligible: [], source: "missing" };
+  }
+
+  const fallback = await getApproversForParent(parentContentId);
+  app.log.info(
+    {
+      logContext,
+      linkId: asString(link?.id || "").trim() || null,
+      parentContentId,
+      parentSplitVersionId: null,
+      fetchedParentSplitVersionId: fallback.split?.id || null,
+      participantsBeforeFiltering: fallback.approvers.length,
+      participantsAfterFiltering: fallback.eligible.length,
+      fallbackToCurrentLocked: true
+    },
+    "derivative.preview_authority_fallback_current_locked"
+  );
+  return { ...fallback, source: fallback.split ? "current_locked" : "missing" };
 }
 
 async function getApproversForParent(parentContentId: string): Promise<{
   split: any | null;
   approvers: ApproverInfo[];
+  eligible: ApproverInfo[];
 }> {
   const split = await getLockedSplitForContent(parentContentId);
   const participants = split?.participants || [];
@@ -32321,18 +32518,11 @@ async function getApproversForParent(parentContentId: string): Promise<{
     });
   }
 
-  // De-dupe by userId or email to avoid double-counting approvers.
-  const unique: ApproverInfo[] = [];
-  const seen = new Set<string>();
-  for (const a of approvers) {
-    const email = (a.participantEmail || "").toLowerCase();
-    const key = a.participantUserId ? `u:${a.participantUserId}` : email ? `e:${email}` : `x:${a.splitParticipantId || unique.length}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    unique.push(a);
-  }
-
-  return { split, approvers: unique };
+  const deduped = dedupeApprovers(approvers);
+  const eligible = deduped.filter(
+    (a) => a.role === "owner" || a.accepted || a.participantUserId || a.participantEmail || a.identityRef
+  );
+  return { split, approvers: deduped, eligible };
 }
 
 function getRemoteOriginFromDescription(desc?: string | null): string | null {
