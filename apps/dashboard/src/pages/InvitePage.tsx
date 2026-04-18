@@ -310,6 +310,7 @@ export default function InvitePage({
   const [sentOpen, setSentOpen] = useState<Record<string, boolean>>({});
   const [receivedOpen, setReceivedOpen] = useState<Record<string, boolean>>({});
   const [remoteAcceptBusy, setRemoteAcceptBusy] = useState<Record<string, boolean>>({});
+  const [remoteSyncBusy, setRemoteSyncBusy] = useState<Record<string, boolean>>({});
   const [showHistory, setShowHistory] = useState(false);
   const [contentList, setContentList] = useState<any[]>([]);
   const [selectedContentId, setSelectedContentId] = useState<string>("");
@@ -604,6 +605,11 @@ export default function InvitePage({
       contentDeletedAt: content?.deletedAt || null,
       remoteNodeUrl: origin
     });
+  }
+
+  function isNotFoundInviteError(err: unknown): boolean {
+    const msg = String((err as any)?.message || err || "").toLowerCase();
+    return msg.includes("404") || msg.includes("invite not found") || msg.includes("not found");
   }
 
   async function refreshRemoteReceivedList() {
@@ -1030,6 +1036,55 @@ export default function InvitePage({
     }
   }
 
+  async function syncRemoteInvite(inv: any) {
+    const inviteUrl = String(inv?.inviteUrl || "").trim();
+    const token = extractInviteTokenFromPaste(inviteUrl || inv?.token || "");
+    let origin = String(inv?.remoteOrigin || "").trim();
+    if (!origin && inviteUrl) {
+      try {
+        origin = new URL(inviteUrl).origin;
+      } catch {}
+    }
+    if (!token || !origin) {
+      setMsg("Remote invite is missing token or origin.");
+      return;
+    }
+    if (!(await checkRemoteOriginReachable(origin))) {
+      setMsg("Shared invite host is not reachable. Copy token or configure a working public invite origin.");
+      return;
+    }
+    setRemoteSyncBusy((m) => ({ ...m, [inv.id]: true }));
+    try {
+      const res = await fetchRemoteJsonFromOrigin(origin, `/invites/${encodeURIComponent(token)}`, { method: "GET" });
+      await ingestRemoteSnapshot({
+        origin,
+        token,
+        inviteUrl,
+        snapshot: res
+      });
+      await refreshRemoteReceivedList();
+    } catch (e: any) {
+      if (isNotFoundInviteError(e)) {
+        try {
+          await ingestRemoteSnapshot({
+            origin,
+            token,
+            inviteUrl,
+            forceStatus: "tombstoned"
+          });
+          await refreshRemoteReceivedList();
+          setMsg("Invite no longer exists on remote node. Marked as tombstoned locally.");
+          return;
+        } catch {
+          // continue to standard error handling
+        }
+      }
+      setMsg(mapAcceptErrorMessage(e?.message || "Remote sync failed"));
+    } finally {
+      setRemoteSyncBusy((m) => ({ ...m, [inv.id]: false }));
+    }
+  }
+
   if (isBasic) {
     return <LockedFeaturePanel title="Split Invites" />;
   }
@@ -1422,6 +1477,15 @@ export default function InvitePage({
                                   <div className="flex items-center gap-2">
                                     {!accepted ? (
                                       <button
+                                        onClick={() => syncRemoteInvite(inv)}
+                                        className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
+                                        disabled={remoteSyncBusy[inv.id]}
+                                      >
+                                        {remoteSyncBusy[inv.id] ? "Syncing…" : "Sync"}
+                                      </button>
+                                    ) : null}
+                                    {!accepted ? (
+                                      <button
                                         onClick={() => acceptRemoteInvite(inv)}
                                         className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50"
                                         disabled={remoteAcceptBusy[inv.id]}
@@ -1431,7 +1495,7 @@ export default function InvitePage({
                                     ) : null}
                                     {accepted ? (
                                       <div className="text-xs rounded-md border border-emerald-700/60 bg-emerald-900/20 px-2 py-1 text-emerald-300">
-                                        Accepted
+                                        Synced
                                       </div>
                                     ) : null}
                                     <div className="text-xs uppercase tracking-wide text-neutral-400">
