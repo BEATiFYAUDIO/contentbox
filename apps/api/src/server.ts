@@ -32414,28 +32414,55 @@ async function getApproversForDerivativeLinkAuthority(
   const parentSplitVersionId = asString(link?.parentSplitVersionId || "").trim();
   const logContext = asString(opts?.logContext || "").trim() || "derivative.authority";
   if (parentSplitVersionId) {
-    const split = await getParentLockedSplitSnapshotForDerivative({
-      id: link?.id || null,
-      parentContentId,
-      parentSplitVersionId
-    });
-    const snapshots = await getLockedParticipantSnapshotsForSplitVersion(split.id);
-    const { approvers, excludedReasons } = buildApproversFromLockedSnapshots(snapshots);
-    app.log.info(
-      {
-        logContext,
-        linkId: asString(link?.id || "").trim() || null,
+    try {
+      const split = await getParentLockedSplitSnapshotForDerivative({
+        id: link?.id || null,
         parentContentId,
-        parentSplitVersionId,
-        fetchedParentSplitVersionId: split.id,
-        participantsBeforeFiltering: snapshots.length,
-        participantsAfterFiltering: approvers.length,
-        excludedReasons,
-        finalPreviewAllocationCount: approvers.length
-      },
-      "derivative.preview_authority_resolved"
-    );
-    return { split, approvers, eligible: approvers, source: "snapshot" };
+        parentSplitVersionId
+      });
+      const snapshots = await getLockedParticipantSnapshotsForSplitVersion(split.id);
+      const { approvers, excludedReasons } = buildApproversFromLockedSnapshots(snapshots);
+      app.log.info(
+        {
+          logContext,
+          linkId: asString(link?.id || "").trim() || null,
+          parentContentId,
+          parentSplitVersionId,
+          fetchedParentSplitVersionId: split.id,
+          participantsBeforeFiltering: snapshots.length,
+          participantsAfterFiltering: approvers.length,
+          excludedReasons,
+          finalPreviewAllocationCount: approvers.length
+        },
+        "derivative.preview_authority_resolved"
+      );
+      return { split, approvers, eligible: approvers, source: "snapshot" };
+    } catch (err: any) {
+      const parent = await prisma.contentItem.findUnique({
+        where: { id: parentContentId },
+        select: { repoPath: true, deletedReason: true, description: true }
+      });
+      const isRemoteShadowParent =
+        Boolean(parent?.deletedReason === "hard") &&
+        !parent?.repoPath &&
+        String(parent?.description || "").toLowerCase().startsWith("remote origin:");
+      if (isRemoteShadowParent && ["PARENT_SPLIT_SNAPSHOT_NOT_FOUND", "PARENT_SPLIT_SNAPSHOT_NOT_LOCKED"].includes(String(err?.code || ""))) {
+        app.log.warn(
+          {
+            logContext,
+            linkId: asString(link?.id || "").trim() || null,
+            parentContentId,
+            parentSplitVersionId,
+            errorCode: String(err?.code || ""),
+            fallbackToCurrentLocked: false,
+            remoteShadowParent: true
+          },
+          "derivative.preview_authority_remote_snapshot_missing"
+        );
+        return { split: null, approvers: [], eligible: [], source: "missing" };
+      }
+      throw err;
+    }
   }
 
   if (opts?.allowCurrentFallback === false) {
