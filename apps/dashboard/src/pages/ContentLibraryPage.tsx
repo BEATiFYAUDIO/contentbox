@@ -2983,8 +2983,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                             onClick={() => {
                               const remoteOrigin = String(a?.remoteOrigin || "").trim();
-                              const remoteInviteToken = String(a?.remoteInviteToken || "").trim();
-                              const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                              const remoteInviteToken = resolvedRemoteInviteToken;
+                              const remoteAuthorizationId = resolvedRemoteAuthorizationId;
                               if (remoteOrigin && remoteInviteToken && remoteAuthorizationId) {
                                 return openRemoteInviteClearancePreview(
                                   remoteOrigin,
