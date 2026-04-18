@@ -20871,10 +20871,10 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
   }
   const fixedUpstreamBps = parseFixedUpstreamBps(body);
 
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const meEmail = me?.email ? normalizeEmail(me.email) : null;
   let splitDraft = Array.isArray(body.splitDraft) ? body.splitDraft : [];
   if (splitDraft.length === 0) {
-    const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-    const meEmail = me?.email ? normalizeEmail(me.email) : null;
     splitDraft = [
       {
         participantEmail: meEmail || undefined,
@@ -20947,15 +20947,22 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
       for (const sp of splitDraft) {
         const bps = Math.max(0, Math.floor(num(sp.bps)));
         const percent = bps / 100;
+        const participantEmail = sp.participantEmail ? normalizeEmail(sp.participantEmail) : null;
+        const bindsToCreator =
+          String(sp.userId || "").trim() === userId ||
+          (Boolean(meEmail) && participantEmail === meEmail);
+        const acceptedNow = bindsToCreator ? new Date() : null;
         await tx.splitParticipant.create({
           data: {
             splitVersionId: sv.id,
-            participantEmail: sp.participantEmail ? normalizeEmail(sp.participantEmail) : null,
+            participantEmail,
             participantUserId: sp.userId || null,
             role: asString(sp.role).trim() || "writer",
             roleCode: "writer" as any,
             percent,
-            bps
+            bps,
+            acceptedAt: acceptedNow,
+            verifiedAt: acceptedNow
           }
         });
       }
