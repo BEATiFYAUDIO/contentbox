@@ -24884,7 +24884,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         grid-template-areas:
           "brand"
           "identity"
-          "signal signal";
+          "signal";
         gap:10px 0;
       }
       body.iframe-embedded .brand-rail { justify-content:flex-start; padding-left:0; }
