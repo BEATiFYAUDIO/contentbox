@@ -25783,6 +25783,11 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
     select: { reviewGrantedAt: true }
   });
   let reviewGrantedAt = latestReview?.reviewGrantedAt || null;
+  const child = await prisma.contentItem.findUnique({
+    where: { id: link.childContentId },
+    select: { id: true, repoPath: true, description: true }
+  });
+  const childOrigin = getRemoteOriginFromDescription(child?.description || null);
   if (!reviewGrantedAt && childOrigin) {
     try {
       const ctrl = new AbortController();
@@ -25805,11 +25810,6 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
     return reply.code(409).type("text/plain").send("Preview not granted yet.");
   }
 
-  const child = await prisma.contentItem.findUnique({
-    where: { id: link.childContentId },
-    select: { id: true, repoPath: true, description: true }
-  });
-  const childOrigin = getRemoteOriginFromDescription(child?.description || null);
   if (!child?.repoPath && childOrigin) {
     return reply.redirect(
       302,
