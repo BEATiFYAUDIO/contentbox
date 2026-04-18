@@ -506,6 +506,9 @@ export default function ContentLibraryPage({
   const [approvals, setApprovals] = React.useState<any[]>([]);
   const [approvalsLoading, setApprovalsLoading] = React.useState(false);
   const [rejectReasonByApproval, setRejectReasonByApproval] = React.useState<Record<string, string>>({});
+  const [reviewNoteDraftByApproval, setReviewNoteDraftByApproval] = React.useState<Record<string, string>>({});
+  const [reviewNoteBusyByApproval, setReviewNoteBusyByApproval] = React.useState<Record<string, boolean>>({});
+  const [reviewNoteMsgByApproval, setReviewNoteMsgByApproval] = React.useState<Record<string, string>>({});
   const [clearanceLoadError, setClearanceLoadError] = React.useState<string | null>(null);
   const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
@@ -1448,7 +1451,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     : 0,
                   approverCount: Array.isArray(cs.approvers) ? cs.approvers.length : 0,
                   approvers: Array.isArray(cs.approvers) ? cs.approvers : [],
-                  votes: Array.isArray(cs.votes) ? cs.votes : []
+                  votes: Array.isArray(cs.votes) ? cs.votes : [],
+                  reviewNotes: Array.isArray(cs.reviewNotes) ? cs.reviewNotes : []
                 }
               : (data as ParentLinkInfo).clearance
           };
@@ -1713,6 +1717,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           mergedByDerivative.set(key, entry);
           continue;
         }
+        const entryHasLocalLink = Boolean(String(entry?.linkId || "").trim());
+        const existingHasLocalLink = Boolean(String(existing?.linkId || "").trim());
+        if (entryHasLocalLink && !existingHasLocalLink) {
+          mergedByDerivative.set(key, entry);
+          continue;
+        }
+        if (!entryHasLocalLink && existingHasLocalLink) {
+          continue;
+        }
         const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
         const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
         if (entryIsRemote && !existingIsRemote) {
@@ -1812,6 +1825,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           mergedByDerivative.set(key, entry);
           continue;
         }
+        const entryHasLocalLink = Boolean(String(entry?.linkId || "").trim());
+        const existingHasLocalLink = Boolean(String(existing?.linkId || "").trim());
+        if (entryHasLocalLink && !existingHasLocalLink) {
+          mergedByDerivative.set(key, entry);
+          continue;
+        }
+        if (!entryHasLocalLink && existingHasLocalLink) {
+          continue;
+        }
         const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
         const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
         if (entryIsRemote && !existingIsRemote) {
@@ -1841,6 +1863,55 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setClearanceByLink((m) => ({ ...m, [linkId]: null }));
     } finally {
       setClearanceLoadingByLink((m) => ({ ...m, [linkId]: false }));
+    }
+  }
+
+  async function submitReviewNote(input: {
+    approvalKey: string;
+    linkId?: string | null;
+    isRemoteApproval: boolean;
+    remoteOrigin?: string | null;
+    remoteInviteToken?: string | null;
+    remoteAuthorizationId?: string | null;
+  }) {
+    const approvalKey = String(input.approvalKey || "").trim();
+    const note = String(reviewNoteDraftByApproval[approvalKey] || "").trim();
+    if (!approvalKey) return;
+    if (!note) {
+      setReviewNoteMsgByApproval((m) => ({ ...m, [approvalKey]: "Add a note first." }));
+      return;
+    }
+    setReviewNoteBusyByApproval((m) => ({ ...m, [approvalKey]: true }));
+    setReviewNoteMsgByApproval((m) => ({ ...m, [approvalKey]: "" }));
+    try {
+      if (input.isRemoteApproval) {
+        const remoteOrigin = String(input.remoteOrigin || "").trim();
+        const inviteToken = String(input.remoteInviteToken || "").trim();
+        const remoteAuthorizationId = String(input.remoteAuthorizationId || "").trim();
+        if (!remoteOrigin || !inviteToken || !remoteAuthorizationId) {
+          throw new Error("Missing review-note routing context.");
+        }
+        await api(
+          `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+            remoteAuthorizationId
+          )}/note?origin=${encodeURIComponent(remoteOrigin)}`,
+          "POST",
+          { note }
+        );
+      } else {
+        const linkId = String(input.linkId || "").trim();
+        if (!linkId) throw new Error("Missing parent link.");
+        await api(`/content-links/${linkId}/review-notes`, "POST", { note });
+        await loadClearanceSummary(linkId);
+      }
+      setReviewNoteDraftByApproval((m) => ({ ...m, [approvalKey]: "" }));
+      setReviewNoteMsgByApproval((m) => ({ ...m, [approvalKey]: "Suggestion sent." }));
+      await loadApprovals(clearanceScope);
+      await loadPendingClearanceCount();
+    } catch (e: any) {
+      setReviewNoteMsgByApproval((m) => ({ ...m, [approvalKey]: e?.message || "Failed to send suggestion." }));
+    } finally {
+      setReviewNoteBusyByApproval((m) => ({ ...m, [approvalKey]: false }));
     }
   }
 
@@ -2786,7 +2857,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             <div className="space-y-2">
               {approvals.map((a) => {
                 const linkId = String(a?.linkId || "");
-                const isRemoteApproval = Boolean(String(a?.remoteOrigin || "").trim());
+                const hasLocalAuthorityLink = Boolean(linkId.trim());
+                const isRemoteApproval = !hasLocalAuthorityLink && Boolean(String(a?.remoteOrigin || "").trim());
                 const approvalKey = isRemoteApproval
                   ? `remote:${String(a?.remoteAuthorizationId || a?.authorizationId || "")}`
                   : `local:${linkId || String(a?.authorizationId || "")}`;
@@ -2815,6 +2887,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
+                const reviewNotes = Array.isArray(clearance?.reviewNotes)
+                  ? clearance.reviewNotes
+                  : Array.isArray(a?.reviewNotes)
+                    ? a.reviewNotes
+                    : [];
                 const requestedUpstreamRate =
                   Number.isFinite(Number(a?.upstreamRatePercent))
                     ? Number(a.upstreamRatePercent)
@@ -2826,6 +2903,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   String(a?.remoteInviteToken || "").trim() || String(clearanceRouteParts.inviteToken || "").trim();
                 const resolvedRemoteAuthorizationId =
                   String(a?.remoteAuthorizationId || "").trim() || String(clearanceRouteParts.authorizationId || "").trim();
+                const canLeaveReviewNote = !isCleared && (isRemoteApproval
+                  ? Boolean(String(a?.remoteOrigin || "").trim() && resolvedRemoteInviteToken && resolvedRemoteAuthorizationId)
+                  : Boolean(linkId));
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2890,6 +2970,23 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           </div>
                         ) : !isRemoteApproval ? (
                           <div className="text-[11px] text-neutral-500 mt-1">Preview access: not granted</div>
+                        ) : null}
+                        {reviewNotes.length > 0 ? (
+                          <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/70 p-2 text-[11px] text-neutral-300">
+                            <div className="text-[10px] uppercase tracking-wide text-neutral-500">Review notes</div>
+                            <div className="mt-1 space-y-2">
+                              {reviewNotes.map((note: any) => (
+                                <div key={String(note?.id || "")} className="border-l border-neutral-700 pl-2">
+                                  <div className="whitespace-pre-wrap text-neutral-200">{String(note?.note || "")}</div>
+                                  <div className="mt-0.5 text-[10px] text-neutral-500">
+                                    {note?.actor?.displayName || note?.actor?.email || note?.actor?.userId || "Rights holder"}
+                                    {note?.kind === "reject" ? " • Rejection note" : " • Suggested changes"}
+                                    {note?.createdAt ? ` • ${new Date(String(note.createdAt)).toLocaleString()}` : ""}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
                         ) : null}
                         {linkId ? (
                           <div className="text-[10px] text-neutral-600 mt-1">
@@ -2958,6 +3055,37 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           >
                             {derivativePreviewLoading[String(a?.childContentId || "")] ? "Loading…" : "Preview submission"}
                           </button>
+                        ) : null}
+                        {canLeaveReviewNote ? (
+                          <>
+                            <input
+                              type="text"
+                              className="w-56 text-xs rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1"
+                              placeholder="Suggest changes or leave a review note"
+                              value={reviewNoteDraftByApproval[approvalKey] || ""}
+                              onChange={(e) =>
+                                setReviewNoteDraftByApproval((m) => ({ ...m, [approvalKey]: e.target.value }))
+                              }
+                            />
+                            <button
+                              type="button"
+                              className="text-xs rounded-md border border-sky-900 bg-sky-950/30 px-2 py-1 text-sky-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                              onClick={() =>
+                                submitReviewNote({
+                                  approvalKey,
+                                  linkId,
+                                  isRemoteApproval,
+                                  remoteOrigin: String(a?.remoteOrigin || ""),
+                                  remoteInviteToken: resolvedRemoteInviteToken,
+                                  remoteAuthorizationId: resolvedRemoteAuthorizationId
+                                })
+                              }
+                              disabled={!crossNodeAllowed || reviewNoteBusyByApproval[approvalKey]}
+                              title={!crossNodeAllowed ? clearanceReason : "Suggest changes"}
+                            >
+                              {reviewNoteBusyByApproval[approvalKey] ? "Sending…" : "Suggest changes"}
+                            </button>
+                          </>
                         ) : null}
                         {!isCleared && isRemoteApproval && canVote && !viewerVote ? (
                           <>
@@ -3103,6 +3231,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       <div className="mt-2 text-[11px] text-amber-300">
                         Vote link not issued yet. Click Refresh to sync latest clearance routing.
                       </div>
+                    ) : null}
+                    {reviewNoteMsgByApproval[approvalKey] ? (
+                      <div className="mt-2 text-[11px] text-sky-200">{reviewNoteMsgByApproval[approvalKey]}</div>
                     ) : null}
 
                     <div className="mt-2 h-2 rounded-full bg-neutral-900 border border-neutral-800 overflow-hidden">
@@ -3920,6 +4051,31 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   {formatDateLabel(parentLink.clearanceRequest.requestedAt)}
                                 </div>
                               ) : null}
+                              {(() => {
+                                const reviewNotes = Array.isArray(parentLink.clearance?.reviewNotes)
+                                  ? parentLink.clearance.reviewNotes
+                                  : Array.isArray((parentLink as any)?.reviewNotes)
+                                    ? (parentLink as any).reviewNotes
+                                    : [];
+                                if (reviewNotes.length === 0) return null;
+                                return (
+                                  <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/60 p-2 text-[11px] text-neutral-300">
+                                    <div className="text-[10px] uppercase tracking-wide text-neutral-500">Rights-holder feedback</div>
+                                    <div className="mt-1 space-y-2">
+                                      {reviewNotes.map((note: any) => (
+                                        <div key={String(note?.id || "")} className="border-l border-neutral-700 pl-2">
+                                          <div className="whitespace-pre-wrap text-neutral-200">{String(note?.note || "")}</div>
+                                          <div className="mt-0.5 text-[10px] text-neutral-500">
+                                            {note?.actor?.displayName || note?.actor?.email || note?.actor?.userId || "Rights holder"}
+                                            {note?.kind === "reject" ? " • Rejection note" : " • Suggested changes"}
+                                            {note?.createdAt ? ` • ${new Date(String(note.createdAt)).toLocaleString()}` : ""}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                               {filesCount === 0 ? (
                                 <div className="mt-2 text-[11px] text-amber-300 flex items-center gap-2">
                                   <span>No files uploaded yet. Upload your remix to enable preview and clearance.</span>

@@ -295,6 +295,12 @@ function parseRejectReason(input: any): string | null {
   return raw.slice(0, 240);
 }
 
+function parseClearanceReviewNote(input: any): string | null {
+  const raw = asString(input?.note || "").trim();
+  if (!raw) return null;
+  return raw.slice(0, 2000);
+}
+
 function parseSats(x: unknown): bigint {
   if (typeof x === "bigint") return x;
   if (typeof x === "number") return BigInt(Math.floor(x));
@@ -1279,6 +1285,53 @@ app.log.info(
   "Startup runtime configuration"
 );
 const prisma = new PrismaClient();
+
+async function listClearanceReviewNotes(contentLinkId: string) {
+  const linkId = asString(contentLinkId || "").trim();
+  if (!linkId) return [];
+  const events = await prisma.auditEvent.findMany({
+    where: {
+      entityType: "ContentLink",
+      entityId: linkId,
+      action: { in: ["clearance.note", "clearance.reject"] }
+    },
+    orderBy: { createdAt: "asc" },
+    include: {
+      user: {
+        select: {
+          id: true,
+          email: true,
+          displayName: true
+        }
+      }
+    }
+  });
+  return events
+    .map((event) => {
+      const payload =
+        event.payloadJson && typeof event.payloadJson === "object" && !Array.isArray(event.payloadJson)
+          ? (event.payloadJson as Record<string, unknown>)
+          : {};
+      const note =
+        event.action === "clearance.reject"
+          ? asString(payload.reason || "").trim()
+          : asString(payload.note || "").trim();
+      if (!note) return null;
+      return {
+        id: event.id,
+        kind: event.action === "clearance.reject" ? "reject" : "note",
+        note,
+        createdAt: event.createdAt.toISOString(),
+        via: asString(payload.via || "").trim() || null,
+        actor: {
+          userId: event.user?.id || null,
+          email: event.user?.email || null,
+          displayName: event.user?.displayName || null
+        }
+      };
+    })
+    .filter(Boolean);
+}
 const PAYMENT_UNIT_SECONDS = 30;
 const DEFAULT_RATE_SATS_PER_UNIT = Number(process.env.RATE_SATS_PER_UNIT || "100");
 const ONCHAIN_MIN_CONFS = Math.max(0, Math.floor(Number(process.env.ONCHAIN_MIN_CONFS || "1")));
@@ -16071,6 +16124,53 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
   }
 });
 
+app.post("/api/remote/invites/:token/clearance/:authorizationId/note", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
+  const token = asString((req.params as any).token);
+  const authorizationId = asString((req.params as any).authorizationId);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!authorizationId) return badRequest(reply, "authorizationId required");
+  if (!origin) return badRequest(reply, "invalid origin");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote invite host unreachable", origin });
+  }
+
+  const note = parseClearanceReviewNote(req.body);
+  if (!note) return badRequest(reply, "note required");
+
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/note`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" } as any,
+        body: JSON.stringify({ note })
+      } as any,
+      10000
+    );
+    const text = await res.text();
+    let payload: any = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = null;
+    }
+    if (!res.ok) {
+      return reply.code(res.status).send(payload || { error: text || `HTTP_${res.status}` });
+    }
+    return reply.send(payload || { ok: true });
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote clearance note failed", details: String(e?.message || e) });
+  }
+});
+
 // Proxy remote invite accept to avoid browser CORS (auth required)
 app.get("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.code(405).send({
@@ -21913,6 +22013,7 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
       ? { splitVersionId: parentSplit.id, status: parentSplit.status, lockedAt: parentSplit.lockedAt || null }
       : null,
     clearanceRequest,
+    reviewNotes: await listClearanceReviewNotes(link.id),
     canRequestApproval: Boolean(content.ownerUserId === userId) && Boolean(link.requiresApproval) && !(remoteStatus?.approvedAt || link.approvedAt),
     canVote: Boolean(isEligibleVoter) && !(remoteStatus?.approvedAt || link.approvedAt)
   });
@@ -22763,6 +22864,57 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   return reply.send({ ok: true, status, approveWeightBps: approveBps, rejectWeightBps: rejectBps });
 });
 
+app.post("/content-links/:linkId/review-notes", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const userId = (req.user as JwtUser).sub;
+  const linkId = asString((req.params as any).linkId);
+  const note = parseClearanceReviewNote(req.body);
+  if (!note) return badRequest(reply, "note required");
+
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
+
+  const link = await prisma.contentLink.findUnique({ where: { id: linkId } });
+  if (!link) return notFound(reply, "Content link not found");
+
+  const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
+  const email = (me?.email || "").toLowerCase();
+  const { eligible } = await getEligibleApproversForParent(link.parentContentId);
+  const canReview = eligible.some((approver) => matchApproverToUser(approver, userId, email));
+  if (!canReview) return forbidden(reply);
+
+  const created = await prisma.auditEvent.create({
+    data: {
+      userId,
+      action: "clearance.note",
+      entityType: "ContentLink",
+      entityId: link.id,
+      payloadJson: { note } as any
+    }
+  });
+
+  return reply.send({
+    ok: true,
+    reviewNote: {
+      id: created.id,
+      kind: "note",
+      note,
+      createdAt: created.createdAt.toISOString(),
+      via: null,
+      actor: {
+        userId,
+        email: me?.email || null,
+        displayName: me?.displayName || null
+      }
+    }
+  });
+});
+
 // Clearance summary for UI (approvers + votes + progress)
 app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
@@ -22872,6 +23024,7 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     votes,
     progressBps,
     reviewGrantedAt: review?.reviewGrantedAt ? review.reviewGrantedAt.toISOString() : null,
+    reviewNotes: await listClearanceReviewNotes(link.id),
     viewer: {
       canVote: Boolean(viewerApprover) && !link.approvedAt,
       hasVoted: Boolean(viewerVote),
@@ -25499,26 +25652,38 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
       <button class="primary" id="grantBtn" type="button">Grant clearance</button>
       <button class="danger" id="rejectBtn" type="button">Reject</button>
     </div>
+    <div style="margin-top: 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <input id="noteInput" type="text" placeholder="Suggest changes or leave a review note" style="min-width:280px;" />
+      <button id="noteBtn" type="button">Suggest changes</button>
+    </div>
     <div id="msg" class="muted" style="margin-top:10px;"></div>
   </div>
   <script>
     const msg = document.getElementById("msg");
-    async function submit(decision) {
-      const body = { decision };
+    async function submit(action) {
+      const note = document.getElementById("noteInput")?.value?.trim() || "";
+      const isNote = action === "note";
+      const body = isNote ? { note } : { decision: action };
+      if (isNote && !note) {
+        msg.textContent = "Add a note first.";
+        return;
+      }
       try {
-        const r = await fetch("/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/vote", {
+        const r = await fetch("/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/" + (isNote ? "note" : "vote"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
         const text = await r.text();
         msg.textContent = text || (r.ok ? "Recorded." : "Failed.");
+        if (r.ok && isNote) document.getElementById("noteInput").value = "";
       } catch (e) {
         msg.textContent = "Failed to submit.";
       }
     }
     document.getElementById("grantBtn").addEventListener("click", () => submit("approve"));
     document.getElementById("rejectBtn").addEventListener("click", () => submit("reject"));
+    document.getElementById("noteBtn").addEventListener("click", () => submit("note"));
   </script>
 </body>
 </html>`;
@@ -25692,6 +25857,84 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   return reply.type("text/plain").send("Thanks — your clearance response has been recorded.");
 });
 
+app.post("/invites/:token/clearance/:authorizationId/note", async (req: any, reply: any) => {
+  const token = asString((req.params as any).token).trim();
+  const authorizationId = asString((req.params as any).authorizationId).trim();
+  if (!token || !authorizationId) return notFound(reply, "Not found");
+  const ctx = await resolveInviteClearanceContext(token, authorizationId);
+  if (!ctx) return forbidden(reply);
+
+  const link = ctx.auth.derivativeLink;
+  if (!link) return notFound(reply, "Not found");
+  const note = parseClearanceReviewNote(req.body);
+  if (!note) return badRequest(reply, "note required");
+
+  const created = await prisma.auditEvent.create({
+    data: {
+      userId: ctx.inviteUserId,
+      action: "clearance.note",
+      entityType: "ContentLink",
+      entityId: link.id,
+      payloadJson: { note, via: "invite_clearance" } as any
+    }
+  });
+
+  return reply.send({
+    ok: true,
+    reviewNote: {
+      id: created.id,
+      kind: "note",
+      note,
+      createdAt: created.createdAt.toISOString(),
+      via: "invite_clearance",
+      actor: {
+        userId: ctx.inviteUserId,
+        email: ctx.approverEmailForToken || null,
+        displayName: null
+      }
+    }
+  });
+});
+
+app.post("/clearance/:token/note", async (req: any, reply) => {
+  const token = asString((req.params as any).token);
+  if (!token) return notFound(reply, "Not found");
+  const tokenHash = hashApprovalToken(token);
+  const approval = await prisma.approvalToken.findUnique({ where: { tokenHash } });
+  if (!approval) return notFound(reply, "Not found");
+  if (approval.usedAt) return reply.code(410).send("This clearance link has already been used.");
+  if (approval.expiresAt.getTime() < Date.now()) return reply.code(410).send("This clearance link has expired.");
+
+  const note = parseClearanceReviewNote(req.body);
+  if (!note) return badRequest(reply, "note required");
+
+  const created = await prisma.auditEvent.create({
+    data: {
+      userId: "external",
+      action: "clearance.note",
+      entityType: "ContentLink",
+      entityId: approval.contentLinkId,
+      payloadJson: { note, via: "public_clearance", approverEmail: approval.approverEmail } as any
+    }
+  });
+
+  return reply.send({
+    ok: true,
+    reviewNote: {
+      id: created.id,
+      kind: "note",
+      note,
+      createdAt: created.createdAt.toISOString(),
+      via: "public_clearance",
+      actor: {
+        userId: "external",
+        email: approval.approverEmail || null,
+        displayName: null
+      }
+    }
+  });
+});
+
 // External clearance page (no login required)
 app.get("/clearance/:token", async (req: any, reply) => {
   const token = asString((req.params as any).token);
@@ -25735,26 +25978,38 @@ app.get("/clearance/:token", async (req: any, reply) => {
       <button class="primary" id="grantBtn" type="button">Grant clearance</button>
       <button class="danger" id="rejectBtn" type="button">Reject</button>
     </div>
+    <div style="margin-top: 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <input id="noteInput" type="text" placeholder="Suggest changes or leave a review note" style="min-width:280px;" />
+      <button id="noteBtn" type="button">Suggest changes</button>
+    </div>
     <div id="msg" class="muted" style="margin-top:10px;"></div>
   </div>
   <script>
     const msg = document.getElementById("msg");
-    async function submit(decision) {
-      const body = { decision };
+    async function submit(action) {
+      const note = document.getElementById("noteInput")?.value?.trim() || "";
+      const isNote = action === "note";
+      const body = isNote ? { note } : { decision: action };
+      if (isNote && !note) {
+        msg.textContent = "Add a note first.";
+        return;
+      }
       try {
-        const r = await fetch("/clearance/${encodeURIComponent(token)}/vote", {
+        const r = await fetch("/clearance/${encodeURIComponent(token)}/" + (isNote ? "note" : "vote"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
         const text = await r.text();
         msg.textContent = text || (r.ok ? "Recorded." : "Failed.");
+        if (r.ok && isNote) document.getElementById("noteInput").value = "";
       } catch (e) {
         msg.textContent = "Failed to submit.";
       }
     }
     document.getElementById("grantBtn").addEventListener("click", () => submit("approve"));
     document.getElementById("rejectBtn").addEventListener("click", () => submit("reject"));
+    document.getElementById("noteBtn").addEventListener("click", () => submit("note"));
   </script>
 </body>
 </html>`;
@@ -37223,6 +37478,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
                 reviewGrantedAt: latestReview.reviewGrantedAt ? latestReview.reviewGrantedAt.toISOString() : null
               }
             : null,
+          reviewNotes: await listClearanceReviewNotes(auth.derivativeLinkId),
           approveWeightBps: auth.approveWeightBps ?? 0,
           approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
           approvedApprovers: auth.approvedApprovers ?? 0,
