@@ -25776,13 +25776,33 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
 
   const link = ctx.auth.derivativeLink;
   if (!link?.childContentId) return notFound(reply, "Not found");
+  const childOrigin = getRemoteOriginFromDescription(link.childContent?.description || null);
 
   const latestReview = await prisma.clearanceRequest.findFirst({
     where: { contentLinkId: link.id },
     orderBy: { createdAt: "desc" },
     select: { reviewGrantedAt: true }
   });
-  if (!latestReview?.reviewGrantedAt) {
+  let reviewGrantedAt = latestReview?.reviewGrantedAt || null;
+  if (!reviewGrantedAt && childOrigin) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        const statusUrl = `${childOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+          link.parentContentId
+        )}&childContentId=${encodeURIComponent(link.childContentId)}`;
+        const res = await fetch(statusUrl, { signal: ctrl.signal as any });
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.reviewGrantedAt) {
+          reviewGrantedAt = new Date(String(data.reviewGrantedAt));
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {}
+  }
+  if (!reviewGrantedAt) {
     return reply.code(409).type("text/plain").send("Preview not granted yet.");
   }
 
@@ -25790,6 +25810,12 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
     where: { id: link.childContentId },
     select: { id: true, repoPath: true }
   });
+  if (!child?.repoPath && childOrigin) {
+    return reply.redirect(
+      302,
+      `${childOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(link.childContentId)}/preview-file`
+    );
+  }
   if (!child?.repoPath) return notFound(reply, "Not found");
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId: child.id } });
