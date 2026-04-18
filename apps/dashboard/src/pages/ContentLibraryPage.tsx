@@ -1681,7 +1681,34 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           return true;
         });
 
-      const merged = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
+      const mergedRaw = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
+      const mergedByDerivative = new Map<string, any>();
+      for (const entry of mergedRaw) {
+        const key = [
+          String(entry?.parentContentId || "").trim(),
+          String(entry?.childContentId || "").trim(),
+          String(entry?.relation || "").trim().toLowerCase()
+        ].join("::");
+        const existing = mergedByDerivative.get(key);
+        if (!existing) {
+          mergedByDerivative.set(key, entry);
+          continue;
+        }
+        const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
+        const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
+        if (entryIsRemote && !existingIsRemote) {
+          mergedByDerivative.set(key, entry);
+          continue;
+        }
+        if (entryIsRemote === existingIsRemote) {
+          const entryRequestedAt = String(entry?.clearanceRequest?.requestedAt || "").trim();
+          const existingRequestedAt = String(existing?.clearanceRequest?.requestedAt || "").trim();
+          if (entryRequestedAt && (!existingRequestedAt || entryRequestedAt > existingRequestedAt)) {
+            mergedByDerivative.set(key, entry);
+          }
+        }
+      }
+      const merged = Array.from(mergedByDerivative.values());
       if (import.meta.env.DEV) {
         console.debug("clearance.loadApprovals.remote_merge", {
           scope,
@@ -2824,6 +2851,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             Preview submission
                           </button>
                         ) : null}
+                        {!isRemoteApproval && String(a?.childContentId || "").trim() ? (
+                          <button
+                            type="button"
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                            onClick={() => loadDerivativePreview(String(a?.childContentId || ""))}
+                            disabled={!crossNodeAllowed}
+                            title={!crossNodeAllowed ? clearanceReason : "Preview submission"}
+                          >
+                            {derivativePreviewLoading[String(a?.childContentId || "")] ? "Loading…" : "Preview submission"}
+                          </button>
+                        ) : null}
                         {!isCleared && isRemoteApproval && canVote && !viewerVote ? (
                           <>
                             <input
@@ -2976,6 +3014,57 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     <div className="mt-1 text-[11px] text-neutral-500">
                       Progress: {progressBps}/{thresholdBps} bps
                     </div>
+                    {String(a?.childContentId || "").trim() && derivativePreviewError[String(a?.childContentId || "")] ? (
+                      <div className="mt-2 text-[11px] text-amber-300">
+                        {derivativePreviewError[String(a?.childContentId || "")]}
+                      </div>
+                    ) : null}
+                    {String(a?.childContentId || "").trim() && derivativePreviewByChild[String(a?.childContentId || "")] ? (
+                      <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/60 p-2 text-[11px] text-neutral-300">
+                        <div className="font-medium text-neutral-200">Preview</div>
+                        {(() => {
+                          const childId = String(a?.childContentId || "").trim();
+                          const previewUrl = derivativePreviewByChild[childId]?.previewUrl || null;
+                          const pf = previewFileFor(previewUrl, derivativePreviewByChild[childId]?.files || []);
+                          const mime = String(pf?.mime || "").toLowerCase();
+                          const type = String(derivativePreviewByChild[childId]?.content?.type || "").toLowerCase();
+                          const isVideo = mime.startsWith("video/") || type === "video";
+                          const isAudio = mime.startsWith("audio/") || type === "song";
+                          if (previewUrl && isVideo) {
+                            return (
+                              <div className="mt-2">
+                                <video className="w-full rounded-md" controls src={previewUrl} />
+                              </div>
+                            );
+                          }
+                          if (previewUrl && isAudio) {
+                            return (
+                              <div className="mt-2">
+                                <audio className="w-full" controls src={previewUrl} />
+                              </div>
+                            );
+                          }
+                          if (previewUrl) {
+                            return (
+                              <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
+                                Open preview
+                              </a>
+                            );
+                          }
+                          return <div className="text-neutral-400">No preview available.</div>;
+                        })()}
+                        {Array.isArray(derivativePreviewByChild[String(a?.childContentId || "")]?.files) &&
+                        derivativePreviewByChild[String(a?.childContentId || "")].files.length > 0 ? (
+                          <div className="mt-2 space-y-1">
+                            {derivativePreviewByChild[String(a?.childContentId || "")].files.map((f: any) => (
+                              <div key={f.id} className="text-neutral-400">
+                                {f.originalName || f.objectKey} • {formatBytes(f.sizeBytes || 0)}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
