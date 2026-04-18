@@ -25788,6 +25788,21 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
     select: { id: true, repoPath: true, description: true }
   });
   const childOrigin = getRemoteOriginFromDescription(child?.description || null);
+  if (!reviewGrantedAt) {
+    const siblingReview = await prisma.clearanceRequest.findFirst({
+      where: {
+        contentLink: {
+          parentContentId: link.parentContentId,
+          childContentId: link.childContentId
+        }
+      },
+      orderBy: { createdAt: "desc" },
+      select: { reviewGrantedAt: true }
+    }).catch(() => null);
+    if (siblingReview?.reviewGrantedAt) {
+      reviewGrantedAt = siblingReview.reviewGrantedAt;
+    }
+  }
   if (!reviewGrantedAt && childOrigin) {
     try {
       const ctrl = new AbortController();
