@@ -25776,7 +25776,6 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
 
   const link = ctx.auth.derivativeLink;
   if (!link?.childContentId) return notFound(reply, "Not found");
-  const childOrigin = getRemoteOriginFromDescription(link.childContent?.description || null);
 
   const latestReview = await prisma.clearanceRequest.findFirst({
     where: { contentLinkId: link.id },
@@ -25793,7 +25792,7 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
           link.parentContentId
         )}&childContentId=${encodeURIComponent(link.childContentId)}`;
         const res = await fetch(statusUrl, { signal: ctrl.signal as any });
-        const data = await res.json().catch(() => null);
+        const data: any = await res.json().catch(() => null);
         if (res.ok && data?.reviewGrantedAt) {
           reviewGrantedAt = new Date(String(data.reviewGrantedAt));
         }
@@ -25808,8 +25807,9 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
 
   const child = await prisma.contentItem.findUnique({
     where: { id: link.childContentId },
-    select: { id: true, repoPath: true }
+    select: { id: true, repoPath: true, description: true }
   });
+  const childOrigin = getRemoteOriginFromDescription(child?.description || null);
   if (!child?.repoPath && childOrigin) {
     return reply.redirect(
       302,
