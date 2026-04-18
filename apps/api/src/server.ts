@@ -22139,8 +22139,13 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
 
   const out: any[] = [];
   for (const a of auths) {
-    const childDeleted = Boolean(a.derivativeLink?.childContent?.deletedAt);
-    if (childDeleted) continue;
+    const child = a.derivativeLink?.childContent || null;
+    const childDeleted = Boolean(child?.deletedAt);
+    const childShadowRemote =
+      Boolean(child?.deletedReason === "hard") &&
+      !child?.repoPath &&
+      String(child?.description || "").toLowerCase().startsWith("remote origin:");
+    if (childDeleted && !childShadowRemote) continue;
 
     const { eligible } = await getEligibleApproversForParent(a.parentContentId);
     const parent = await prisma.contentItem.findUnique({
