@@ -22166,6 +22166,23 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         select: { reviewGrantedAt: true, createdAt: true, status: true }
       })
       .catch(() => null);
+    const childOrigin = getRemoteOriginFromDescription(a.derivativeLink.childContent?.description || null);
+    const remoteInviteForViewer =
+      childOrigin
+        ? await prisma.remoteInvite.findFirst({
+            where: {
+              userId,
+              contentId: a.parentContentId,
+              remoteOrigin: childOrigin,
+              contentDeletedAt: null,
+              revokedAt: null,
+              tombstonedAt: null,
+              OR: [{ acceptedAt: { not: null } }, { status: "accepted" }]
+            },
+            orderBy: { updatedAt: "desc" },
+            select: { inviteUrl: true }
+          }).catch(() => null)
+        : null;
     const isRequester = String(a.derivativeLink?.childContent?.ownerUserId || "").trim() === userId;
     const isParentOwner = String(parent?.ownerUserId || "").trim() === userId && !isShadowRemote;
     const isEligible =
@@ -22192,7 +22209,10 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       parentTitle: a.derivativeLink.parentContent?.title || null,
       childContentId: a.derivativeLink.childContentId,
       childTitle: a.derivativeLink.childContent?.title || null,
-      childOrigin: getRemoteOriginFromDescription(a.derivativeLink.childContent?.description || null),
+      childOrigin: childOrigin,
+      remoteOrigin: childOrigin,
+      remoteAuthorizationId: a.id,
+      remoteInviteToken: extractInviteTokenFromUrl(remoteInviteForViewer?.inviteUrl || null),
       relation: a.derivativeLink.relation,
       status: a.status,
       viewerVote: existingVote?.decision || null,

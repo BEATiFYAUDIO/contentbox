@@ -2914,11 +2914,22 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           <button
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                            onClick={() =>
-                              String(a?.childOrigin || "").trim()
+                            onClick={() => {
+                              const remoteOrigin = String(a?.remoteOrigin || "").trim();
+                              const remoteInviteToken = String(a?.remoteInviteToken || "").trim();
+                              const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                              if (remoteOrigin && remoteInviteToken && remoteAuthorizationId) {
+                                return openRemoteInviteClearancePreview(
+                                  remoteOrigin,
+                                  remoteInviteToken,
+                                  remoteAuthorizationId,
+                                  String(a?.childContentId || "")
+                                );
+                              }
+                              return String(a?.childOrigin || "").trim()
                                 ? loadDerivativePreview(String(a?.childContentId || ""), String(a?.childOrigin || ""))
-                                : loadDerivativePreview(String(a?.childContentId || ""))
-                            }
+                                : loadDerivativePreview(String(a?.childContentId || ""));
+                            }}
                             disabled={!crossNodeAllowed}
                             title={!crossNodeAllowed ? clearanceReason : "Preview submission"}
                           >
