@@ -22192,6 +22192,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       parentTitle: a.derivativeLink.parentContent?.title || null,
       childContentId: a.derivativeLink.childContentId,
       childTitle: a.derivativeLink.childContent?.title || null,
+      childOrigin: getRemoteOriginFromDescription(a.derivativeLink.childContent?.description || null),
       relation: a.derivativeLink.relation,
       status: a.status,
       viewerVote: existingVote?.decision || null,
