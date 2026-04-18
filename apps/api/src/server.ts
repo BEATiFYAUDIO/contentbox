@@ -22162,20 +22162,21 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       })
       .catch(() => null);
     const isRequester = String(a.derivativeLink?.childContent?.ownerUserId || "").trim() === userId;
+    const isParentOwner = String(parent?.ownerUserId || "").trim() === userId && !isShadowRemote;
     const isEligible =
       eligible.some((p) => matchApproverToUser(p, userId, meEmail)) ||
-      (parent?.ownerUserId === userId && !isShadowRemote);
+      isParentOwner;
 
     if (scope === "pending") {
-      if (!isEligible && !isRequester) continue;
+      if (!isEligible && !isRequester && !isParentOwner) continue;
       if (a.status !== "PENDING") continue;
     } else if (scope === "voted") {
       if (!existingVote) continue;
     } else if (scope === "cleared") {
       if (a.status !== "APPROVED") continue;
-      if (!isEligible && !existingVote && !isRequester) continue;
+      if (!isEligible && !existingVote && !isRequester && !isParentOwner) continue;
     } else if (scope === "all") {
-      if (!isEligible && !existingVote && !isRequester) continue;
+      if (!isEligible && !existingVote && !isRequester && !isParentOwner) continue;
     }
     out.push({
       authorizationId: a.id,
