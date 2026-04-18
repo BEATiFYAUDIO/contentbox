@@ -141,6 +141,24 @@ function extractInviteTokenFromUrl(url: string | null | undefined): string | nul
   }
 }
 
+function extractInviteClearanceRouteParts(url: string | null | undefined): { inviteToken: string | null; authorizationId: string | null } {
+  const raw = String(url || "").trim();
+  if (!raw) return { inviteToken: null, authorizationId: null };
+  const parsePath = (path: string) => {
+    const m = path.match(/\/invites\/([^/?#]+)\/clearance\/([^/?#]+)/i);
+    return {
+      inviteToken: m?.[1] ? decodeURIComponent(m[1]) : null,
+      authorizationId: m?.[2] ? decodeURIComponent(m[2]) : null
+    };
+  };
+  try {
+    const parsed = new URL(raw);
+    return parsePath(parsed.pathname);
+  } catch {
+    return parsePath(raw);
+  }
+}
+
 type SplitVersion = {
   id: string;
   contentId: string;
@@ -2803,6 +2821,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     : Number.isFinite(Number(clearance?.upstreamBps))
                     ? Number(clearance.upstreamBps) / 100
                     : null;
+                const clearanceRouteParts = extractInviteClearanceRouteParts(String(a?.remoteClearanceUrl || ""));
+                const resolvedRemoteInviteToken =
+                  String(a?.remoteInviteToken || "").trim() || String(clearanceRouteParts.inviteToken || "").trim();
+                const resolvedRemoteAuthorizationId =
+                  String(a?.remoteAuthorizationId || "").trim() || String(clearanceRouteParts.authorizationId || "").trim();
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2901,8 +2924,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             onClick={() =>
                               openRemoteInviteClearancePreview(
                                 String(a?.remoteOrigin || ""),
-                                String(a?.remoteInviteToken || ""),
-                                String(a?.remoteAuthorizationId || ""),
+                                resolvedRemoteInviteToken,
+                                resolvedRemoteAuthorizationId,
                                 String(a?.childContentId || "")
                               )
                             }
@@ -2951,9 +2974,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               type="button"
                               className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
                               onClick={async () => {
-                                const inviteToken = String(a?.remoteInviteToken || "").trim();
+                                const inviteToken = resolvedRemoteInviteToken;
                                 const remoteOrigin = String(a?.remoteOrigin || "").trim();
-                                const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                                const remoteAuthorizationId = resolvedRemoteAuthorizationId;
                                 if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
                                   setError("Missing remote vote routing context.");
                                   return;
@@ -2981,9 +3004,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               type="button"
                               className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                               onClick={async () => {
-                                const inviteToken = String(a?.remoteInviteToken || "").trim();
+                                const inviteToken = resolvedRemoteInviteToken;
                                 const remoteOrigin = String(a?.remoteOrigin || "").trim();
-                                const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                                const remoteAuthorizationId = resolvedRemoteAuthorizationId;
                                 if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
                                   setError("Missing remote vote routing context.");
                                   return;
