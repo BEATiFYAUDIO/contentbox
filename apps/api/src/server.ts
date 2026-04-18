@@ -10781,6 +10781,7 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
   appPublic.get("/library", handleBuyerLibraryPage);
+  appPublic.get("/public/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:contentId/offer", handlePublicOffer);
   appPublic.get("/buy/content/:id/preview-file", handleBuyPreviewRedirect);
   appPublic.get("/buy/content/:id/cover", handlePublicCoverFile);
