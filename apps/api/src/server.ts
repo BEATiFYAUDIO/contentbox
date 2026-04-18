@@ -22210,6 +22210,87 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     }
   }
 
+  const clearanceModel = (prisma as any).clearanceRequest;
+  const approvalTokenModel = (prisma as any).approvalToken;
+  if (!clearanceModel || !approvalTokenModel) {
+    return reply.code(501).send({ error: "Clearance requests not enabled. Restart API after migrations." });
+  }
+
+  // Generate external approval tokens for parent stakeholders (email-based)
+  const ttlHours = Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168)));
+  const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
+  const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
+
+  const clearanceBase = getPublicOrigin(req);
+  let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
+  const childPublicOrigin = getPublicOrigin(req);
+  if (remoteOrigin) {
+    if (!isShareablePublicOrigin(childPublicOrigin)) {
+      return reply.code(409).send({
+        code: "CHILD_PUBLIC_ORIGIN_NOT_SHAREABLE",
+        message: "This node is not advertising a shareable public origin for remote clearance."
+      });
+    }
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            parentContentId: link.parentContentId,
+            childContentId: link.childContentId,
+            childOrigin: childPublicOrigin,
+            relation: link.relation,
+            childTitle: child.title,
+            childType: child.type,
+            upstreamBps: link.upstreamBps || 0
+          }),
+          signal: ctrl.signal as any
+        });
+        const raw = await res.text();
+        let data: any = null;
+        try {
+          data = raw ? JSON.parse(raw) : null;
+        } catch {}
+        if (!res.ok || data?.ok !== true || !data?.authorization?.id || !Array.isArray(data?.approvalUrls)) {
+          req.log.warn(
+            {
+              remoteOrigin,
+              parentContentId: link.parentContentId,
+              childContentId: link.childContentId,
+              responseStatus: res.status,
+              responseBody: String(raw || "").slice(0, 500)
+            },
+            "clearance.remote_request_failed"
+          );
+          return reply.code(502).send({
+            code: "UPSTREAM_REQUEST_FAILED",
+            message: "Parent node did not create the clearance request."
+          });
+        }
+        remoteApprovalUrls = data.approvalUrls;
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (e: any) {
+      req.log.warn(
+        {
+          remoteOrigin,
+          parentContentId: link.parentContentId,
+          childContentId: link.childContentId,
+          error: String(e?.message || e)
+        },
+        "clearance.remote_request_failed"
+      );
+      return reply.code(502).send({
+        code: "UPSTREAM_REQUEST_FAILED",
+        message: "Parent node did not create the clearance request."
+      });
+    }
+  }
+
   const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: linkId } });
   const auth =
     existing ||
@@ -22227,13 +22308,6 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
       }
     }));
 
-  // Create a clearance request record (idempotent on PENDING)
-  const clearanceModel = (prisma as any).clearanceRequest;
-  const approvalTokenModel = (prisma as any).approvalToken;
-  if (!clearanceModel || !approvalTokenModel) {
-    return reply.code(501).send({ error: "Clearance requests not enabled. Restart API after migrations." });
-  }
-
   const existingReq = await clearanceModel.findFirst({
     where: { contentLinkId: linkId, status: "PENDING" }
   });
@@ -22243,12 +22317,6 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     });
   }
 
-  // Generate external approval tokens for parent stakeholders (email-based)
-  const ttlHours = Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168)));
-  const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
-  const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
-
-  const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
     const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
     if (!email) continue;
@@ -22265,34 +22333,6 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
       }
     });
     approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
-  }
-
-  let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const childPublicOrigin = getPublicOrigin(req);
-  if (remoteOrigin) {
-    try {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          parentContentId: link.parentContentId,
-          childContentId: link.childContentId,
-          childOrigin: childPublicOrigin,
-          relation: link.relation,
-          childTitle: child.title,
-          childType: child.type,
-          upstreamBps: link.upstreamBps || 0
-        }),
-        signal: ctrl.signal as any
-      });
-      const data: any = await res.json().catch(() => null);
-      clearTimeout(timeout);
-      if (res.ok && Array.isArray(data?.approvalUrls)) {
-        remoteApprovalUrls = data.approvalUrls;
-      }
-    } catch {}
   }
 
   return reply.send({ ok: true, authorization: auth, approvalUrls, remoteApprovalUrls, expiresAt });
