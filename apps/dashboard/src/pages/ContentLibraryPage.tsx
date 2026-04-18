@@ -1654,6 +1654,73 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
+  function buildRemoteClearanceApprovals(row: any, options?: { includeClearanceDetails?: boolean }) {
+    const includeClearanceDetails = Boolean(options?.includeClearanceDetails);
+    const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
+    const inviteId = String(row?.id || "").trim();
+    const inviteToken = extractInviteTokenFromUrl(String(row?.inviteUrl || ""));
+    const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
+    return inbox.map((entry: any) => ({
+      authorizationId: `remote:${remoteOrigin}:${String(entry?.authorizationId || "")}`,
+      remoteAuthorizationId: String(entry?.authorizationId || ""),
+      linkId: "",
+      parentContentId: String(entry?.parentContentId || ""),
+      parentTitle: entry?.parentTitle || null,
+      childContentId: String(entry?.childContentId || ""),
+      childTitle: entry?.childTitle || null,
+      relation: entry?.relation || "derivative",
+      status: String(entry?.status || "PENDING"),
+      viewerVote: entry?.viewerVote || null,
+      remoteOrigin,
+      remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
+      remoteInviteId: inviteId,
+      remoteInviteToken: inviteToken,
+      remoteClearanceUrl: entry?.clearanceUrl || null,
+      ...(includeClearanceDetails
+        ? {
+            clearanceRequest: entry?.clearanceRequest || null,
+            approveWeightBps: Number(entry?.approveWeightBps || 0),
+            approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
+            approvedApprovers: Number(entry?.approvedApprovers || 0),
+            approverCount: Number(entry?.approverCount || 0),
+            upstreamRatePercent:
+              Number.isFinite(Number(entry?.upstreamRatePercent))
+                ? Number(entry.upstreamRatePercent)
+                : null
+          }
+        : {})
+    }));
+  }
+
+  function mergeClearanceApprovalsByDerivative(entries: any[]) {
+    const mergedByDerivative = new Map<string, any>();
+    for (const entry of entries) {
+      const key = [
+        String(entry?.parentContentId || "").trim(),
+        String(entry?.childContentId || "").trim(),
+        String(entry?.relation || "").trim().toLowerCase()
+      ].join("::");
+      const existing = mergedByDerivative.get(key);
+      if (!existing) {
+        mergedByDerivative.set(key, entry);
+        continue;
+      }
+      const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
+      const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
+      if (entryIsRemote && !existingIsRemote) {
+        mergedByDerivative.set(key, entry);
+        continue;
+      }
+      if (!entryIsRemote && existingIsRemote) continue;
+      const entryRequestedAt = String(entry?.clearanceRequest?.requestedAt || "").trim();
+      const existingRequestedAt = String(existing?.clearanceRequest?.requestedAt || "").trim();
+      if (entryRequestedAt && (!existingRequestedAt || entryRequestedAt > existingRequestedAt)) {
+        mergedByDerivative.set(key, entry);
+      }
+    }
+    return Array.from(mergedByDerivative.values());
+  }
+
   async function loadApprovals(scope: "pending" | "voted" | "cleared" = clearanceScope) {
     if (!derivativesAllowed) return;
     setApprovalsLoading(true);
@@ -1664,37 +1731,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         api<any[]>("/my/royalties/remote", "GET")
       ]);
       const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
-        .flatMap((row) => {
-          const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
-          const inviteId = String(row?.id || "").trim();
-          const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
-          return inbox.map((entry: any) => ({
-            authorizationId: `remote:${remoteOrigin}:${String(entry?.authorizationId || "")}`,
-            remoteAuthorizationId: String(entry?.authorizationId || ""),
-            linkId: "",
-            parentContentId: String(entry?.parentContentId || ""),
-            parentTitle: entry?.parentTitle || null,
-            childContentId: String(entry?.childContentId || ""),
-            childTitle: entry?.childTitle || null,
-            relation: entry?.relation || "derivative",
-            status: String(entry?.status || "PENDING"),
-            viewerVote: entry?.viewerVote || null,
-            remoteOrigin,
-            remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
-            remoteInviteId: inviteId,
-            remoteInviteToken: extractInviteTokenFromUrl(String(row?.inviteUrl || "")),
-            remoteClearanceUrl: entry?.clearanceUrl || null,
-            clearanceRequest: entry?.clearanceRequest || null,
-            approveWeightBps: Number(entry?.approveWeightBps || 0),
-            approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
-            approvedApprovers: Number(entry?.approvedApprovers || 0),
-            approverCount: Number(entry?.approverCount || 0),
-            upstreamRatePercent:
-              Number.isFinite(Number(entry?.upstreamRatePercent))
-                ? Number(entry.upstreamRatePercent)
-                : null
-          }));
-        })
+        .flatMap((row) => buildRemoteClearanceApprovals(row, { includeClearanceDetails: true }))
         .filter((entry) => {
           const status = String(entry.status || "").toUpperCase();
           const voted = Boolean(String(entry.viewerVote || "").trim());
@@ -1704,37 +1741,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           return true;
         });
 
-      const mergedRaw = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
-      const mergedByDerivative = new Map<string, any>();
-      for (const entry of mergedRaw) {
-        const key = [
-          String(entry?.parentContentId || "").trim(),
-          String(entry?.childContentId || "").trim(),
-          String(entry?.relation || "").trim().toLowerCase()
-        ].join("::");
-        const existing = mergedByDerivative.get(key);
-        if (!existing) {
-          mergedByDerivative.set(key, entry);
-          continue;
-        }
-        const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
-        const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
-        if (entryIsRemote && !existingIsRemote) {
-          mergedByDerivative.set(key, entry);
-          continue;
-        }
-        if (!entryIsRemote && existingIsRemote) {
-          continue;
-        }
-        if (entryIsRemote === existingIsRemote) {
-          const entryRequestedAt = String(entry?.clearanceRequest?.requestedAt || "").trim();
-          const existingRequestedAt = String(existing?.clearanceRequest?.requestedAt || "").trim();
-          if (entryRequestedAt && (!existingRequestedAt || entryRequestedAt > existingRequestedAt)) {
-            mergedByDerivative.set(key, entry);
-          }
-        }
-      }
-      const merged = Array.from(mergedByDerivative.values());
+      const merged = mergeClearanceApprovalsByDerivative([...(Array.isArray(localData) ? localData : []), ...remoteApprovals]);
       if (import.meta.env.DEV) {
         console.debug("clearance.loadApprovals.remote_merge", {
           scope,
@@ -1779,64 +1786,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         api<any[]>("/my/royalties/remote", "GET").catch(() => [])
       ]);
       const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
-        .flatMap((row) => {
-          const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
-          const inviteId = String(row?.id || "").trim();
-          const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
-          return inbox.map((entry: any) => ({
-            authorizationId: `remote:${remoteOrigin}:${String(entry?.authorizationId || "")}`,
-            remoteAuthorizationId: String(entry?.authorizationId || ""),
-            linkId: "",
-            parentContentId: String(entry?.parentContentId || ""),
-            parentTitle: entry?.parentTitle || null,
-            childContentId: String(entry?.childContentId || ""),
-            childTitle: entry?.childTitle || null,
-            relation: entry?.relation || "derivative",
-            status: String(entry?.status || "PENDING"),
-            viewerVote: entry?.viewerVote || null,
-            remoteOrigin,
-            remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
-            remoteInviteId: inviteId,
-            remoteInviteToken: extractInviteTokenFromUrl(String(row?.inviteUrl || "")),
-            remoteClearanceUrl: entry?.clearanceUrl || null
-          }));
-        })
+        .flatMap((row) => buildRemoteClearanceApprovals(row))
         .filter((entry) => {
           const status = String(entry.status || "").toUpperCase();
           const voted = Boolean(String(entry.viewerVote || "").trim());
           return status === "PENDING" && !voted;
         });
-      const mergedRaw = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
-      const mergedByDerivative = new Map<string, any>();
-      for (const entry of mergedRaw) {
-        const key = [
-          String(entry?.parentContentId || "").trim(),
-          String(entry?.childContentId || "").trim(),
-          String(entry?.relation || "").trim().toLowerCase()
-        ].join("::");
-        const existing = mergedByDerivative.get(key);
-        if (!existing) {
-          mergedByDerivative.set(key, entry);
-          continue;
-        }
-        const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
-        const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
-        if (entryIsRemote && !existingIsRemote) {
-          mergedByDerivative.set(key, entry);
-          continue;
-        }
-        if (!entryIsRemote && existingIsRemote) {
-          continue;
-        }
-        if (entryIsRemote === existingIsRemote) {
-          const entryRequestedAt = String(entry?.clearanceRequest?.requestedAt || "").trim();
-          const existingRequestedAt = String(existing?.clearanceRequest?.requestedAt || "").trim();
-          if (entryRequestedAt && (!existingRequestedAt || entryRequestedAt > existingRequestedAt)) {
-            mergedByDerivative.set(key, entry);
-          }
-        }
-      }
-      setPendingClearanceCount(mergedByDerivative.size);
+      setPendingClearanceCount(
+        mergeClearanceApprovalsByDerivative([...(Array.isArray(localData) ? localData : []), ...remoteApprovals]).length
+      );
     } catch {
       setPendingClearanceCount(0);
     }
