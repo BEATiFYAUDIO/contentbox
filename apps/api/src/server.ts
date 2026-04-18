@@ -105,6 +105,7 @@ import {
   type ReceiptAvailability,
   type ResolvedReceiptIntent
 } from "./lib/receiptResolver.js";
+import { resolveDerivativeParentMode } from "./lib/derivativeParentMode.js";
 import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
 import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
 import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
@@ -10700,6 +10701,12 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.post("/api/network/provider/delegated-publish", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("POST", "/api/network/provider/delegated-publish", req, reply)
   );
+  appPublic.post("/api/derivatives/remote-request", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("POST", "/api/derivatives/remote-request", req, reply)
+  );
+  appPublic.get("/api/derivatives/remote-status", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", "/api/derivatives/remote-status", req, reply)
+  );
   appPublic.get("/buy/:contentId", handleBuyPage);
   appPublic.get("/buy/receipt/:receiptId", handleBuyReceiptPage);
   appPublic.get("/library", handleBuyerLibraryPage);
@@ -20857,8 +20864,9 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     });
   }
   if (!parent) return notFound(reply, "parent content not found");
-  const parentLockedSplit = await getLockedSplitForContent(parent.id);
-  if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
+  const parentMode = resolveDerivativeParentMode({ parent, parentOrigin });
+  const parentLockedSplit = parentMode.requiresLocalLockedSplit ? await getLockedSplitForContent(parent.id) : null;
+  if (parentMode.requiresLocalLockedSplit && (!parentLockedSplit || parentLockedSplit.status !== "locked")) {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before creating derivative links." });
   }
   const fixedUpstreamBps = parseFixedUpstreamBps(body);
@@ -20890,45 +20898,47 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
         data: {
           parentContentId: parentId,
           childContentId: child.id,
-          parentSplitVersionId: parentLockedSplit.id,
+          parentSplitVersionId: parentLockedSplit?.id || null,
           relation: type as any,
           upstreamBps: fixedUpstreamBps,
           requiresApproval: true
         }
       });
 
-      // Create storefront authorization gate for derivative exposure
-      const parentSplit = await tx.splitVersion.findFirst({
-        where: { contentId: parentId, status: "locked" },
-        orderBy: { versionNumber: "desc" },
-        include: { participants: true }
-      });
-      const parentEmails = parentSplit?.participants
-        ?.map((sp) => sp.participantEmail)
-        .filter(Boolean)
-        .map((e) => String(e).toLowerCase()) || [];
-      const parentUsers = parentSplit?.participants?.map((sp) => sp.participantUserId).filter(Boolean) || [];
-      const usersFromEmail = parentEmails.length
-        ? await tx.user.findMany({ where: { email: emailIn(parentEmails) }, select: { id: true } })
-        : [];
-      const approverIds = Array.from(new Set([...parentUsers.map(String), ...usersFromEmail.map((u) => u.id)]));
-      if (approverIds.length === 0) {
-        if (parent?.ownerUserId) approverIds.push(parent.ownerUserId);
-      }
-
-      await tx.derivativeAuthorization.create({
-        data: {
-          derivativeLinkId: link.id,
-          parentContentId: parentId,
-          requiredApprovers: Math.max(1, approverIds.length),
-          approvedApprovers: 0,
-          approveWeightBps: 0,
-          rejectWeightBps: 0,
-          approvalPolicy: "BPS_MAJORITY",
-          approvalBpsTarget: 6667,
-          status: "PENDING"
+      if (parentMode.requiresLocalLockedSplit) {
+        // Create storefront authorization gate for derivative exposure when the parent split is local.
+        const parentSplit = await tx.splitVersion.findFirst({
+          where: { contentId: parentId, status: "locked" },
+          orderBy: { versionNumber: "desc" },
+          include: { participants: true }
+        });
+        const parentEmails = parentSplit?.participants
+          ?.map((sp) => sp.participantEmail)
+          .filter(Boolean)
+          .map((e) => String(e).toLowerCase()) || [];
+        const parentUsers = parentSplit?.participants?.map((sp) => sp.participantUserId).filter(Boolean) || [];
+        const usersFromEmail = parentEmails.length
+          ? await tx.user.findMany({ where: { email: emailIn(parentEmails) }, select: { id: true } })
+          : [];
+        const approverIds = Array.from(new Set([...parentUsers.map(String), ...usersFromEmail.map((u) => u.id)]));
+        if (approverIds.length === 0) {
+          if (parent?.ownerUserId) approverIds.push(parent.ownerUserId);
         }
-      });
+
+        await tx.derivativeAuthorization.create({
+          data: {
+            derivativeLinkId: link.id,
+            parentContentId: parentId,
+            requiredApprovers: Math.max(1, approverIds.length),
+            approvedApprovers: 0,
+            approveWeightBps: 0,
+            rejectWeightBps: 0,
+            approvalPolicy: "BPS_MAJORITY",
+            approvalBpsTarget: 6667,
+            status: "PENDING"
+          }
+        });
+      }
 
       const sv = await tx.splitVersion.create({
         data: { contentId: child.id, versionNumber: 1, createdByUserId: userId, status: "draft" }
@@ -22272,7 +22282,8 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           childOrigin: childPublicOrigin,
           relation: link.relation,
           childTitle: child.title,
-          childType: child.type
+          childType: child.type,
+          upstreamBps: link.upstreamBps || 0
         }),
         signal: ctrl.signal as any
       });
@@ -22310,7 +22321,7 @@ app.post("/content-links/:linkId/request-clearance", { preHandler: requireAuth }
 });
 
 // Remote clearance request (child node -> parent node)
-app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/api/derivatives/remote-request", async (req: any, reply) => {
   const clearanceCtx = getCapabilityContext();
   if (sendAdvancedInactive(reply, clearanceCtx)) return;
   if (!canRequestClearance(clearanceCtx)) {
