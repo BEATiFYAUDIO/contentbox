@@ -4067,6 +4067,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     try {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "" }));
                                       await api(`/content-links/${parentLink.linkId}/grant-review`, "POST");
+                                      await loadParentLink(it.id);
+                                      if (showClearance) {
+                                        await loadApprovals(clearanceScope);
+                                        await loadPendingClearanceCount();
+                                      }
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access granted to OG." }));
                                     } catch (e: any) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Grant failed." }));
@@ -4088,6 +4093,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     try {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "" }));
                                       await api(`/content-links/${parentLink.linkId}/revoke-review`, "POST");
+                                      await loadParentLink(it.id);
+                                      if (showClearance) {
+                                        await loadApprovals(clearanceScope);
+                                        await loadPendingClearanceCount();
+                                      }
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access revoked." }));
                                     } catch (e: any) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Revoke failed." }));
