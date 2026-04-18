@@ -1400,7 +1400,7 @@ export default function InvitePage({
                         {open && (
                           <div className="mt-2 space-y-2">
                             {group.invites.map((inv) => {
-                              const accepted = Boolean(inv.acceptedAt);
+                              const accepted = inviteStatus(inv) === "accepted";
                               return (
                                 <div key={inv.id} className="flex items-center justify-between gap-2">
                                   <div className="break-all">
