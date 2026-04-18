@@ -37161,6 +37161,13 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
     const approvalTokenModel = (prisma as any).approvalToken;
     clearanceInbox = await Promise.all(
       actionableAuths.map(async (auth) => {
+        const latestReview = await prisma.clearanceRequest
+          .findFirst({
+            where: { contentLinkId: auth.derivativeLinkId },
+            orderBy: { createdAt: "desc" },
+            select: { reviewGrantedAt: true, createdAt: true, status: true }
+          })
+          .catch(() => null);
         const viewerVote = inviteUserId
           ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
           : null;
@@ -37189,6 +37196,13 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           relation: auth.derivativeLink?.relation || "derivative",
           status: auth.status,
           viewerVote: viewerVote ? String(viewerVote).toLowerCase() : null,
+          clearanceRequest: latestReview
+            ? {
+                status: String(latestReview.status || "PENDING"),
+                requestedAt: latestReview.createdAt ? latestReview.createdAt.toISOString() : null,
+                reviewGrantedAt: latestReview.reviewGrantedAt ? latestReview.reviewGrantedAt.toISOString() : null
+              }
+            : null,
           approveWeightBps: auth.approveWeightBps ?? 0,
           approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
           approvedApprovers: auth.approvedApprovers ?? 0,

@@ -1662,6 +1662,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             remoteInviteId: inviteId,
             remoteInviteToken: extractInviteTokenFromUrl(String(row?.inviteUrl || "")),
             remoteClearanceUrl: entry?.clearanceUrl || null,
+            clearanceRequest: entry?.clearanceRequest || null,
             approveWeightBps: Number(entry?.approveWeightBps || 0),
             approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
             approvedApprovers: Number(entry?.approvedApprovers || 0),
@@ -1752,16 +1753,62 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET").catch(() => []),
         api<any[]>("/my/royalties/remote", "GET").catch(() => [])
       ]);
-      const remotePending = (Array.isArray(remoteRows) ? remoteRows : []).reduce((sum, row) => {
-        const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
-        const mine = inbox.filter((entry: any) => {
-          const status = String(entry?.status || "").toUpperCase();
-          const voted = Boolean(String(entry?.viewerVote || "").trim());
+      const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
+        .flatMap((row) => {
+          const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
+          const inviteId = String(row?.id || "").trim();
+          const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
+          return inbox.map((entry: any) => ({
+            authorizationId: `remote:${remoteOrigin}:${String(entry?.authorizationId || "")}`,
+            remoteAuthorizationId: String(entry?.authorizationId || ""),
+            linkId: "",
+            parentContentId: String(entry?.parentContentId || ""),
+            parentTitle: entry?.parentTitle || null,
+            childContentId: String(entry?.childContentId || ""),
+            childTitle: entry?.childTitle || null,
+            relation: entry?.relation || "derivative",
+            status: String(entry?.status || "PENDING"),
+            viewerVote: entry?.viewerVote || null,
+            remoteOrigin,
+            remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
+            remoteInviteId: inviteId,
+            remoteInviteToken: extractInviteTokenFromUrl(String(row?.inviteUrl || "")),
+            remoteClearanceUrl: entry?.clearanceUrl || null
+          }));
+        })
+        .filter((entry) => {
+          const status = String(entry.status || "").toUpperCase();
+          const voted = Boolean(String(entry.viewerVote || "").trim());
           return status === "PENDING" && !voted;
-        }).length;
-        return sum + mine;
-      }, 0);
-      setPendingClearanceCount((Array.isArray(localData) ? localData.length : 0) + remotePending);
+        });
+      const mergedRaw = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
+      const mergedByDerivative = new Map<string, any>();
+      for (const entry of mergedRaw) {
+        const key = [
+          String(entry?.parentContentId || "").trim(),
+          String(entry?.childContentId || "").trim(),
+          String(entry?.relation || "").trim().toLowerCase()
+        ].join("::");
+        const existing = mergedByDerivative.get(key);
+        if (!existing) {
+          mergedByDerivative.set(key, entry);
+          continue;
+        }
+        const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
+        const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
+        if (entryIsRemote && !existingIsRemote) {
+          mergedByDerivative.set(key, entry);
+          continue;
+        }
+        if (entryIsRemote === existingIsRemote) {
+          const entryRequestedAt = String(entry?.clearanceRequest?.requestedAt || "").trim();
+          const existingRequestedAt = String(existing?.clearanceRequest?.requestedAt || "").trim();
+          if (entryRequestedAt && (!existingRequestedAt || entryRequestedAt > existingRequestedAt)) {
+            mergedByDerivative.set(key, entry);
+          }
+        }
+      }
+      setPendingClearanceCount(mergedByDerivative.size);
     } catch {
       setPendingClearanceCount(0);
     }
