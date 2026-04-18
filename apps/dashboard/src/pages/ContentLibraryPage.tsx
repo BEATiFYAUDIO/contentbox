@@ -4230,8 +4230,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               </div>
                             ) : (
                               <div className="mt-2 text-xs text-amber-300">
-                                No original linked.
-                                {splitsAllowed ? (
+                                {isDerivative ? "Original derivative link is missing." : "No original linked."}
+                                {!isDerivative && splitsAllowed ? (
                                   <>
                                     {" "}
                                     <a
