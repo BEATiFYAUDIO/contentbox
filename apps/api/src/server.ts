@@ -21971,14 +21971,32 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
       link.parentSplitVersionId = effectiveParentSplitVersionId;
     } catch {}
   }
-  const { split: parentSplit, eligible } = await getApproversForDerivativeLinkAuthority(
-    {
-      id: link.id,
-      parentContentId: link.parentContentId,
-      parentSplitVersionId: effectiveParentSplitVersionId
-    },
-    { logContext: "content.parent_link", allowCurrentFallback: true }
-  );
+  let parentSplit: any | null = null;
+  let eligible: ApproverInfo[] = [];
+  try {
+    const authority = await getApproversForDerivativeLinkAuthority(
+      {
+        id: link.id,
+        parentContentId: link.parentContentId,
+        parentSplitVersionId: effectiveParentSplitVersionId
+      },
+      { logContext: "content.parent_link", allowCurrentFallback: true }
+    );
+    parentSplit = authority.split;
+    eligible = authority.eligible;
+  } catch (err: any) {
+    if (!isDerivativeAuthorityUnavailableError(err)) throw err;
+    req.log.warn(
+      {
+        contentId,
+        linkId: link.id,
+        parentContentId: link.parentContentId,
+        parentSplitVersionId: effectiveParentSplitVersionId,
+        errorCode: String(err?.code || "")
+      },
+      "content.parent_link_authority_unavailable"
+    );
+  }
 
   const user = await prisma.user.findUnique({ where: { id: userId } });
   const userEmail = (user?.email || "").toLowerCase();
@@ -22267,14 +22285,30 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       String(child?.description || "").toLowerCase().startsWith("remote origin:");
     if (childDeleted && !childShadowRemote) continue;
 
-    const { eligible } = await getApproversForDerivativeLinkAuthority(
-      {
-        id: a.derivativeLink.id,
-        parentContentId: a.parentContentId,
-        parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null
-      },
-      { logContext: "derivatives.approvals", allowCurrentFallback: true }
-    );
+    let eligible: ApproverInfo[] = [];
+    try {
+      const authority = await getApproversForDerivativeLinkAuthority(
+        {
+          id: a.derivativeLink.id,
+          parentContentId: a.parentContentId,
+          parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null
+        },
+        { logContext: "derivatives.approvals", allowCurrentFallback: true }
+      );
+      eligible = authority.eligible;
+    } catch (err: any) {
+      if (!isDerivativeAuthorityUnavailableError(err)) throw err;
+      req.log.warn(
+        {
+          authorizationId: a.id,
+          linkId: a.derivativeLink.id,
+          parentContentId: a.parentContentId,
+          parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null,
+          errorCode: String(err?.code || "")
+        },
+        "derivatives.approvals_authority_unavailable"
+      );
+    }
     const parent = await prisma.contentItem.findUnique({
       where: { id: a.parentContentId },
       select: { ownerUserId: true, repoPath: true, deletedReason: true, description: true }
@@ -22996,14 +23030,31 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
   });
 
   const thresholdBps = 6667;
-  const { approvers, eligible } = await getApproversForDerivativeLinkAuthority(
-    {
-      id: link.id,
-      parentContentId: link.parentContentId,
-      parentSplitVersionId: link.parentSplitVersionId || null
-    },
-    { logContext: "clearance.summary", allowCurrentFallback: true }
-  );
+  let approvers: ApproverInfo[] = [];
+  let eligible: ApproverInfo[] = [];
+  try {
+    const authority = await getApproversForDerivativeLinkAuthority(
+      {
+        id: link.id,
+        parentContentId: link.parentContentId,
+        parentSplitVersionId: link.parentSplitVersionId || null
+      },
+      { logContext: "clearance.summary", allowCurrentFallback: true }
+    );
+    approvers = authority.approvers;
+    eligible = authority.eligible;
+  } catch (err: any) {
+    if (!isDerivativeAuthorityUnavailableError(err)) throw err;
+    req.log.warn(
+      {
+        linkId: link.id,
+        parentContentId: link.parentContentId,
+        parentSplitVersionId: link.parentSplitVersionId || null,
+        errorCode: String(err?.code || "")
+      },
+      "clearance.summary_authority_unavailable"
+    );
+  }
   const parent = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
     select: { ownerUserId: true }
@@ -25686,6 +25737,38 @@ async function resolveInviteClearanceContext(token: string, authorizationId: str
   };
 }
 
+async function resolveInviteClearanceActor(ctx: {
+  inviteUserId: string;
+  inviteApprover: ApproverInfo;
+  approverEmailForToken: string | null;
+}) {
+  const byApproverUserId = asString(ctx.inviteApprover?.participantUserId || "").trim();
+  if (byApproverUserId) {
+    const user = await prisma.user
+      .findUnique({ where: { id: byApproverUserId }, select: { id: true, email: true, displayName: true } })
+      .catch(() => null);
+    if (user) return user;
+  }
+
+  const inviteUserId = asString(ctx.inviteUserId || "").trim();
+  if (inviteUserId) {
+    const user = await prisma.user
+      .findUnique({ where: { id: inviteUserId }, select: { id: true, email: true, displayName: true } })
+      .catch(() => null);
+    if (user) return user;
+  }
+
+  const approverEmail = normalizeEmail(ctx.approverEmailForToken || "");
+  if (approverEmail) {
+    const user = await prisma.user
+      .findFirst({ where: { email: emailEquals(approverEmail) }, select: { id: true, email: true, displayName: true } })
+      .catch(() => null);
+    if (user) return user;
+  }
+
+  return null;
+}
+
 app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: any) => {
   const token = asString((req.params as any).token).trim();
   const authorizationId = asString((req.params as any).authorizationId).trim();
@@ -25887,6 +25970,8 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   if (!token || !authorizationId) return notFound(reply, "Not found");
   const ctx = await resolveInviteClearanceContext(token, authorizationId);
   if (!ctx) return forbidden(reply);
+  const actor = await resolveInviteClearanceActor(ctx);
+  if (!actor) return forbidden(reply);
 
   const link = ctx.auth.derivativeLink;
   if (!link) return notFound(reply, "Not found");
@@ -25908,9 +25993,9 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   }
 
   await prisma.derivativeApprovalVote.upsert({
-    where: { authorizationId_approverUserId: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId } },
+    where: { authorizationId_approverUserId: { authorizationId: ctx.auth.id, approverUserId: actor.id } },
     update: { decision },
-    create: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId, decision }
+    create: { authorizationId: ctx.auth.id, approverUserId: actor.id, decision }
   });
 
   const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: ctx.auth.id } });
@@ -25949,7 +26034,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   if (status === "APPROVED" && !link.approvedAt) {
     await prisma.contentLink.update({
       where: { id: link.id },
-      data: { approvedAt: new Date(), approvedByUserId: ctx.inviteUserId, requiresApproval: true }
+      data: { approvedAt: new Date(), approvedByUserId: actor.id, requiresApproval: true }
     });
     await prisma.clearanceRequest.updateMany({
       where: { contentLinkId: link.id, status: "PENDING" },
@@ -25961,7 +26046,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     try {
       await prisma.auditEvent.create({
         data: {
-          userId: ctx.inviteUserId,
+          userId: actor.id,
           action: "clearance.reject",
           entityType: "ContentLink",
           entityId: link.id,
@@ -25980,6 +26065,8 @@ app.post("/invites/:token/clearance/:authorizationId/note", async (req: any, rep
   if (!token || !authorizationId) return notFound(reply, "Not found");
   const ctx = await resolveInviteClearanceContext(token, authorizationId);
   if (!ctx) return forbidden(reply);
+  const actor = await resolveInviteClearanceActor(ctx);
+  if (!actor) return forbidden(reply);
 
   const link = ctx.auth.derivativeLink;
   if (!link) return notFound(reply, "Not found");
@@ -25988,7 +26075,7 @@ app.post("/invites/:token/clearance/:authorizationId/note", async (req: any, rep
 
   const created = await prisma.auditEvent.create({
     data: {
-      userId: ctx.inviteUserId,
+      userId: actor.id,
       action: "clearance.note",
       entityType: "ContentLink",
       entityId: link.id,
@@ -26005,9 +26092,9 @@ app.post("/invites/:token/clearance/:authorizationId/note", async (req: any, rep
       createdAt: created.createdAt.toISOString(),
       via: "invite_clearance",
       actor: {
-        userId: ctx.inviteUserId,
-        email: ctx.approverEmailForToken || null,
-        displayName: null
+        userId: actor.id,
+        email: actor.email || ctx.approverEmailForToken || null,
+        displayName: actor.displayName || null
       }
     }
   });
@@ -32596,6 +32683,15 @@ async function getApproversForParent(parentContentId: string): Promise<{
     (a) => a.role === "owner" || a.accepted || a.participantUserId || a.participantEmail || a.identityRef
   );
   return { split, approvers: deduped, eligible };
+}
+
+function isDerivativeAuthorityUnavailableError(err: any): boolean {
+  const code = String(err?.code || "").trim();
+  return [
+    "PARENT_SPLIT_SNAPSHOT_NOT_FOUND",
+    "PARENT_SPLIT_SNAPSHOT_NOT_LOCKED",
+    "PARENT_SPLIT_NOT_LOCKED"
+  ].includes(code);
 }
 
 function getRemoteOriginFromDescription(desc?: string | null): string | null {
