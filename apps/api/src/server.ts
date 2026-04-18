@@ -32446,7 +32446,12 @@ async function getApproversForDerivativeLinkAuthority(
         Boolean(parent?.deletedReason === "hard") &&
         !parent?.repoPath &&
         String(parent?.description || "").toLowerCase().startsWith("remote origin:");
-      if (isRemoteShadowParent && ["PARENT_SPLIT_SNAPSHOT_NOT_FOUND", "PARENT_SPLIT_SNAPSHOT_NOT_LOCKED"].includes(String(err?.code || ""))) {
+      if (
+        isRemoteShadowParent &&
+        ["PARENT_SPLIT_SNAPSHOT_NOT_FOUND", "PARENT_SPLIT_SNAPSHOT_NOT_LOCKED", "PARENT_SPLIT_NOT_LOCKED"].includes(
+          String(err?.code || "")
+        )
+      ) {
         app.log.warn(
           {
             logContext,
