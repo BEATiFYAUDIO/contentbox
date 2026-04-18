@@ -1717,19 +1717,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           mergedByDerivative.set(key, entry);
           continue;
         }
-        const entryHasLocalLink = Boolean(String(entry?.linkId || "").trim());
-        const existingHasLocalLink = Boolean(String(existing?.linkId || "").trim());
-        if (entryHasLocalLink && !existingHasLocalLink) {
-          mergedByDerivative.set(key, entry);
-          continue;
-        }
-        if (!entryHasLocalLink && existingHasLocalLink) {
-          continue;
-        }
         const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
         const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
         if (entryIsRemote && !existingIsRemote) {
           mergedByDerivative.set(key, entry);
+          continue;
+        }
+        if (!entryIsRemote && existingIsRemote) {
           continue;
         }
         if (entryIsRemote === existingIsRemote) {
@@ -1825,19 +1819,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           mergedByDerivative.set(key, entry);
           continue;
         }
-        const entryHasLocalLink = Boolean(String(entry?.linkId || "").trim());
-        const existingHasLocalLink = Boolean(String(existing?.linkId || "").trim());
-        if (entryHasLocalLink && !existingHasLocalLink) {
-          mergedByDerivative.set(key, entry);
-          continue;
-        }
-        if (!entryHasLocalLink && existingHasLocalLink) {
-          continue;
-        }
         const entryIsRemote = Boolean(String(entry?.remoteOrigin || "").trim());
         const existingIsRemote = Boolean(String(existing?.remoteOrigin || "").trim());
         if (entryIsRemote && !existingIsRemote) {
           mergedByDerivative.set(key, entry);
+          continue;
+        }
+        if (!entryIsRemote && existingIsRemote) {
           continue;
         }
         if (entryIsRemote === existingIsRemote) {
