@@ -10660,6 +10660,9 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/favicon.ico", handleTabIcon);
   appPublic.get("/favicon.png", handleTabIcon);
   appPublic.get("/apple-touch-icon.png", handleTabIcon);
+  appPublic.get("/.well-known/contentbox", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", "/.well-known/contentbox", req, reply)
+  );
   appPublic.get("/.well-known/certifyd-node", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("GET", "/.well-known/certifyd-node", req, reply)
   );
