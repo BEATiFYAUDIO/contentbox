@@ -669,10 +669,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           : baseList;
       const list = scopedList.filter((it: any) => {
         const deleted = Boolean(it?.deletedAt);
+        const tombstoned = Boolean(it?.tombstoned);
         const status = String(it?.status || "").toLowerCase();
-        if (tombstoneMode) return deleted && status === "published";
+        if (tombstoneMode) return (deleted || tombstoned) && status === "published";
         if (trashMode) return deleted && status !== "published";
-        return !deleted;
+        return !deleted && !tombstoned;
       });
       if (!Array.isArray(data)) {
         if (!isCurrent()) return;
