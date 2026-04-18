@@ -2797,6 +2797,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
+                const requestedUpstreamRate =
+                  Number.isFinite(Number(a?.upstreamRatePercent))
+                    ? Number(a.upstreamRatePercent)
+                    : Number.isFinite(Number(clearance?.upstreamBps))
+                    ? Number(clearance.upstreamBps) / 100
+                    : null;
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2831,6 +2837,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           {approverCount || "?"}
                           {viewerVote ? ` • You ${viewerVote}` : ""}
                         </div>
+                        {requestedUpstreamRate !== null ? (
+                          <div className="text-[11px] text-neutral-400 mt-1">
+                            Requested upstream royalty:{" "}
+                            <span className="text-neutral-200">{requestedUpstreamRate}%</span>
+                          </div>
+                        ) : null}
                         {Array.isArray(clearance?.approvers) && clearance.approvers.length > 0 ? (
                           <div className="text-[11px] text-neutral-400 mt-1">
                             Shareholders:{" "}
