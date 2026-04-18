@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveReceiptContext, type ResolvedReceiptIntent } from "./receiptResolver.js";
+import {
+  computeReceiptAccessPresentation,
+  resolveReceiptContext,
+  type ResolvedReceiptIntent
+} from "./receiptResolver.js";
 
 function mkIntent(overrides: Partial<ResolvedReceiptIntent> = {}): ResolvedReceiptIntent {
   return {
@@ -103,4 +107,68 @@ test("resolver can surface creator_offline availability while purchase remains v
   assert.ok(out);
   assert.equal(out?.entitlement.purchased, true);
   assert.equal(out?.availability, "creator_offline");
+});
+
+test("access presentation keeps paid receipt pending without buyer session", () => {
+  const out = computeReceiptAccessPresentation({
+    purchased: true,
+    entitled: false,
+    availability: "available",
+    buyerId: null,
+    warning: null
+  });
+
+  assert.deepEqual(out, {
+    canFulfill: false,
+    access: "pending",
+    entitled: false
+  });
+});
+
+test("access presentation keeps paid receipt pending on buyer mismatch warning", () => {
+  const out = computeReceiptAccessPresentation({
+    purchased: true,
+    entitled: true,
+    availability: "available",
+    buyerId: "buyer_1",
+    warning: "BUYER_SESSION_MISMATCH_USING_INTENT_BUYER"
+  });
+
+  assert.deepEqual(out, {
+    canFulfill: false,
+    access: "pending",
+    entitled: true
+  });
+});
+
+test("access presentation marks creator offline purchase as unavailable while preserving purchase truth", () => {
+  const out = computeReceiptAccessPresentation({
+    purchased: true,
+    entitled: false,
+    availability: "creator_offline",
+    buyerId: null,
+    warning: null
+  });
+
+  assert.deepEqual(out, {
+    canFulfill: false,
+    access: "unavailable",
+    entitled: false
+  });
+});
+
+test("access presentation unlocks only when purchased, entitled, available, and buyer-bound", () => {
+  const out = computeReceiptAccessPresentation({
+    purchased: true,
+    entitled: true,
+    availability: "available",
+    buyerId: "buyer_1",
+    warning: null
+  });
+
+  assert.deepEqual(out, {
+    canFulfill: true,
+    access: "unlocked",
+    entitled: true
+  });
 });

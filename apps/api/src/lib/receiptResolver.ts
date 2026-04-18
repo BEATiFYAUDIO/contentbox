@@ -44,6 +44,12 @@ export type ReceiptResolverResult = {
   };
 };
 
+export type ReceiptAccessPresentation = {
+  canFulfill: boolean;
+  access: "unlocked" | "pending" | "unavailable";
+  entitled: boolean;
+};
+
 export type ReceiptResolverInput = {
   receiptToken?: string | null;
   receiptId?: string | null;
@@ -67,6 +73,50 @@ function toIso(value: Date | string | null | undefined): string | null {
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
+}
+
+export function computeReceiptAccessPresentation(input: {
+  purchased: boolean;
+  entitled: boolean;
+  availability: ReceiptAvailability;
+  buyerId?: string | null;
+  warning?: string | null;
+}): ReceiptAccessPresentation {
+  const purchased = Boolean(input.purchased);
+  const entitled = Boolean(input.entitled);
+  const buyerId = asString(input.buyerId || "") || null;
+  const warning = asString(input.warning || "") || null;
+  const availability = input.availability;
+
+  if (!purchased) {
+    return {
+      canFulfill: false,
+      access: availability === "available" ? "pending" : "unavailable",
+      entitled: false
+    };
+  }
+
+  if (availability !== "available") {
+    return {
+      canFulfill: false,
+      access: "unavailable",
+      entitled
+    };
+  }
+
+  if (!buyerId || warning || !entitled) {
+    return {
+      canFulfill: false,
+      access: "pending",
+      entitled
+    };
+  }
+
+  return {
+    canFulfill: true,
+    access: "unlocked",
+    entitled: true
+  };
 }
 
 export async function resolveReceiptContext(input: ReceiptResolverInput): Promise<ReceiptResolverResult | null> {

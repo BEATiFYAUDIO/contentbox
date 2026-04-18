@@ -93,14 +93,25 @@ import { mapLightningErrorMessage } from "./lib/railHealth.js";
 import { SingleFlight } from "./lib/asyncPrimitives.js";
 import { resolveContentboxRootInfo } from "./lib/contentboxRoot.js";
 import { createBuyerSessionToken, resolveBuyerSessionIdFromToken, verifyBuyerSessionToken } from "./lib/buyerSession.js";
+import {
+  isUnsupportedMultiParentDerivativeCommerce,
+  MULTI_PARENT_DERIVATIVE_COMMERCE_BLOCK
+} from "./lib/derivativeCommerceGuard.js";
+import { canIssueEdgeTicketFromReceiptContext } from "./lib/edgeAccess.js";
 import { authorizeIntentByReceiptToken } from "./lib/receiptTokenAuth.js";
-import { resolveReceiptContext, type ReceiptAvailability, type ResolvedReceiptIntent } from "./lib/receiptResolver.js";
+import {
+  computeReceiptAccessPresentation,
+  resolveReceiptContext,
+  type ReceiptAvailability,
+  type ResolvedReceiptIntent
+} from "./lib/receiptResolver.js";
 import { reconcileMissingEntitlementsForBuyer, shouldAllowDebugEntitlementReset } from "./lib/entitlementReconcile.js";
 import { mintEdgeTicketToken } from "./lib/edgeTicket.js";
 import { resolveBuyPermitAccessMode } from "./lib/buyPermitAccess.js";
 import { validateUploadRequest } from "./lib/contentUploadValidation.js";
 import { computeFinanceOverviewFromIntents } from "./lib/financeOverview.js";
 import { mapPublicPaymentsIntentError } from "./lib/publicPaymentsIntentErrors.js";
+import { computePublicOriginExposure } from "./lib/publicOriginExposure.js";
 import {
   filterCommerceEligibleParticipants,
   isCommerceEligibleLockedParticipant,
@@ -19211,19 +19222,27 @@ app.get("/api/public/origin", async (req: any, reply: any) => {
   const publicOrigin = getPublicOrigin(req);
   const publicStatus = getPublicStatusCached();
   const profile = resolveProviderServiceProfile({ hasLocalInvoiceMinting: false });
-  const canonicalBuyerOrigin =
-    String(publicStatus.canonicalBuyerOrigin || "").trim() ||
-    (isDurableReceiptOrigin(profile.canonicalCommerceOrigin) ? String(profile.canonicalCommerceOrigin || "").trim() : "") ||
-    null;
+  const exposure = computePublicOriginExposure({
+    canonicalBuyerOrigin:
+      String(publicStatus.canonicalBuyerOrigin || "").trim() ||
+      (isDurableReceiptOrigin(profile.canonicalCommerceOrigin) ? String(profile.canonicalCommerceOrigin || "").trim() : "") ||
+      null,
+    canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
+    durableBuyerReady: Boolean(publicStatus.durableBuyerHostReady),
+    durableBuyerReasons: Array.isArray(publicStatus.durableBuyerHostReasons) ? publicStatus.durableBuyerHostReasons : [],
+    ownershipConflictPersistent: Boolean(publicStatus.hostInvariant?.ownershipConflictPersistent)
+  });
   return reply.send({
     publicOrigin,
-    canonicalBuyerOrigin,
+    canonicalBuyerOrigin: exposure.canonicalBuyerOrigin,
     durableBuyerReady: Boolean(publicStatus.durableBuyerHostReady),
     durableBuyerReasons: Array.isArray(publicStatus.durableBuyerHostReasons) ? publicStatus.durableBuyerHostReasons : [],
     ownershipConflictDetected: Boolean(publicStatus.hostInvariant?.ownershipConflictDetected),
     ownershipConflictPersistent: Boolean(publicStatus.hostInvariant?.ownershipConflictPersistent),
     ownershipConflictThresholdMs: Number(publicStatus.hostInvariant?.ownershipConflictThresholdMs || 0),
-    canonicalCommerceOrigin: profile.canonicalCommerceOrigin,
+    canonicalCommerceOrigin: exposure.canonicalCommerceOrigin,
+    originExposureBlocked: exposure.blocked,
+    originExposureBlockedReason: exposure.blockedReason,
     canonicalCommerceKind: profile.canonicalCommerceKind,
     localNodeEndpointOrigin: profile.localNodeEndpointOrigin,
     temporaryNodeEndpointOrigin: profile.temporaryNodeEndpointOrigin
@@ -27024,17 +27043,18 @@ async function handleBuyPage(req: any, reply: any) {
     if (status?.receiptToken && status.receiptToken !== receiptToken) {
       receiptToken = status.receiptToken;
     }
-    const paid = status.access === "unlocked" || status.canFulfill || status.status === "paid" || status.paymentStatus === "paid";
+    const purchased = Boolean(status?.entitlement?.purchased || status?.status === "paid" || status?.paymentStatus === "paid");
+    const accessUnlocked = Boolean(status?.access === "unlocked" || status?.canFulfill || status?.entitlement?.entitled === true);
     livePaymentProof = {
       contentId: status.contentId || contentId,
-      paymentState: paid ? "unlocked" : "payment_required",
-      entitlementState: paid ? "entitled" : "locked",
+      paymentState: accessUnlocked ? "unlocked" : "payment_required",
+      entitlementState: accessUnlocked ? "entitled" : "locked",
       paymentReceiptId: status.paymentIntentId || null,
       paidAt: status.paidAt || null,
       paymentMethod: status.paymentMethod || null,
       invoiceProviderNodeId: status.invoiceProviderNodeId || null
     };
-    if (paid) {
+    if (purchased) {
       clearManualIntent();
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
       if (receiptToken) {
@@ -27598,6 +27618,17 @@ async function handlePublicOffer(req: any, reply: any) {
   const content = gated.content;
   const allowDraftPreview = false;
 
+  if (content.priceSats != null && content.priceSats > 0n) {
+    const parentCount = await prisma.contentLink.count({ where: { childContentId: contentId } });
+    if (isUnsupportedMultiParentDerivativeCommerce({ parentCount, priceSats: content.priceSats })) {
+      return reply.code(409).send({
+        code: MULTI_PARENT_DERIVATIVE_COMMERCE_BLOCK.code,
+        message: MULTI_PARENT_DERIVATIVE_COMMERCE_BLOCK.message,
+        parentCount
+      });
+    }
+  }
+
   const manifest = await prisma.manifest.findUnique({ where: { contentId } });
   if (!manifest && !allowDraftPreview) return notFound(reply, "Manifest not found");
   if (manifest && manifestShaQuery && manifest.sha256 !== manifestShaQuery) {
@@ -27788,6 +27819,25 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
     if (!isSaleable(content)) {
       app.log.info({ ...intentLog, mappedCategory: "not_for_sale", mappedCode: "NOT_FOR_SALE" }, "publicPaymentsIntents.blocked");
       return reply.code(409).send({ code: "NOT_FOR_SALE", message: "This content is no longer for sale." });
+    }
+    if (content.priceSats != null && content.priceSats > 0n) {
+      const parentCount = await prisma.contentLink.count({ where: { childContentId: contentId } });
+      if (isUnsupportedMultiParentDerivativeCommerce({ parentCount, priceSats: content.priceSats })) {
+        app.log.info(
+          {
+            ...intentLog,
+            mappedCategory: "unsupported_multi_parent_derivative_commerce",
+            mappedCode: MULTI_PARENT_DERIVATIVE_COMMERCE_BLOCK.code,
+            parentCount
+          },
+          "publicPaymentsIntents.blocked"
+        );
+        return reply.code(409).send({
+          code: MULTI_PARENT_DERIVATIVE_COMMERCE_BLOCK.code,
+          message: MULTI_PARENT_DERIVATIVE_COMMERCE_BLOCK.message,
+          parentCount
+        });
+      }
     }
 
     const buyerSession = await resolveBuyerSession(req, reply);
@@ -28877,23 +28927,41 @@ app.post("/api/public/edge-ticket", async (req: any, reply: any) => {
 
   if (!entitled && receiptToken) {
     const intent = await prisma.paymentIntent.findFirst({ where: { receiptToken } });
-    if (intent && intent.contentId === content.id && intent.status === "paid") {
+    const tokenAuthorized = intent
+      ? authorizeIntentByReceiptToken(
+          { query: { receiptToken } },
+          {
+            receiptToken: intent.receiptToken,
+            receiptTokenExpiresAt: intent.receiptTokenExpiresAt
+          }
+        )
+      : false;
+    if (intent && tokenAuthorized && intent.contentId === content.id && intent.status === "paid") {
       const accessBuyer = await resolveAccessBuyerId(intent, cookieBuyerId);
-      bindBuyerId = bindBuyerId || accessBuyer.buyerId || null;
-      if (accessBuyer.buyerId) {
+      const receiptBuyerId = accessBuyer.buyerId || null;
+      bindBuyerId = bindBuyerId || receiptBuyerId;
+      let receiptEntitled = receiptBuyerId ? await hasAccess(receiptBuyerId, content.id) : false;
+      if (!receiptEntitled && receiptBuyerId) {
         await prisma.entitlement.upsert({
-          where: { buyerId_contentId: { buyerId: accessBuyer.buyerId, contentId: content.id } },
+          where: { buyerId_contentId: { buyerId: receiptBuyerId, contentId: content.id } },
           update: { paymentIntentId: intent.id, manifestSha256: intent.manifestSha256 || "" },
           create: {
-            buyerId: accessBuyer.buyerId,
+            buyerId: receiptBuyerId,
             buyerUserId: null,
             contentId: content.id,
             manifestSha256: intent.manifestSha256 || "",
             paymentIntentId: intent.id
           }
         }).catch(() => {});
+        receiptEntitled = await hasAccess(receiptBuyerId, content.id);
       }
-      entitled = true;
+      entitled = canIssueEdgeTicketFromReceiptContext({
+        tokenAuthorized,
+        purchased: true,
+        buyerId: receiptBuyerId,
+        warning: accessBuyer.warning,
+        entitled: receiptEntitled
+      });
     }
   }
 
@@ -28940,7 +29008,14 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
       }
     }).catch(() => {});
   }
-  const accessUnlocked = intent.status === "paid" || (buyerId ? await hasAccess(buyerId, intent.contentId) : false);
+  const entitledNow = buyerId ? await hasAccess(buyerId, intent.contentId) : false;
+  const accessState = computeReceiptAccessPresentation({
+    purchased: context.entitlement.purchased,
+    entitled: entitledNow,
+    availability: context.availability,
+    buyerId,
+    warning: accessBuyer.warning
+  });
   const providerCfg = getNetworkProviderConfig();
   const invoiceProviderNodeId =
     !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
@@ -28960,12 +29035,12 @@ async function handlePublicReceiptStatus(req: any, reply: any) {
     receiptId: String((intent as any)?.receiptId || "").trim() || null,
     durableReceiptStatusUrl,
     invoiceProviderNodeId,
-    canFulfill: accessUnlocked,
-    access: accessUnlocked ? "unlocked" : "pending",
+    canFulfill: accessState.canFulfill,
+    access: accessState.access,
     authenticity: context.authenticity,
     entitlement: {
       purchased: context.entitlement.purchased,
-      entitled: accessUnlocked
+      entitled: accessState.entitled
     },
     availability: context.availability,
     token: context.token,
@@ -29000,7 +29075,14 @@ async function handlePublicDurableReceiptStatus(req: any, reply: any) {
       }
     }).catch(() => {});
   }
-  const accessUnlocked = intent.status === "paid" || (buyerId ? await hasAccess(buyerId, intent.contentId) : false);
+  const entitledNow = buyerId ? await hasAccess(buyerId, intent.contentId) : false;
+  const accessState = computeReceiptAccessPresentation({
+    purchased: context.entitlement.purchased,
+    entitled: entitledNow,
+    availability: context.availability,
+    buyerId,
+    warning: accessBuyer.warning
+  });
   const providerCfg = getNetworkProviderConfig();
   const invoiceProviderNodeId =
     !asString(intent?.providerId || "").trim().toLowerCase().startsWith("lnd:") && isNetworkProviderConfigured(providerCfg)
@@ -29020,12 +29102,12 @@ async function handlePublicDurableReceiptStatus(req: any, reply: any) {
     receiptId: String((intent as any)?.receiptId || "").trim() || null,
     durableReceiptStatusUrl,
     invoiceProviderNodeId,
-    canFulfill: accessUnlocked,
-    access: accessUnlocked ? "unlocked" : "pending",
+    canFulfill: accessState.canFulfill,
+    access: accessState.access,
     authenticity: context.authenticity,
     entitlement: {
       purchased: context.entitlement.purchased,
-      entitled: accessUnlocked
+      entitled: accessState.entitled
     },
     availability: context.availability,
     token: context.token,
