@@ -726,6 +726,24 @@ async function resolveShareableInviteOrigin(req: any): Promise<string | null> {
   return null;
 }
 
+function resolveAdvertisedShareableOrigin(req: any): string | null {
+  const configuredShared =
+    normalizeOrigin(process.env.PUBLIC_INVITE_ORIGIN) || normalizeOrigin(process.env.PUBLIC_BASE_ORIGIN);
+  if (isShareablePublicOrigin(configuredShared)) return configuredShared!;
+
+  const publicStatus = getPublicStatus();
+  const statusOrigin = normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim());
+  if (isShareablePublicOrigin(statusOrigin)) return statusOrigin!;
+
+  const activeOrigin = normalizeOrigin(getActivePublicOrigin());
+  if (isShareablePublicOrigin(activeOrigin)) return activeOrigin!;
+
+  const requestOrigin = normalizeOrigin(getPublicOrigin(req));
+  if (isShareablePublicOrigin(requestOrigin)) return requestOrigin!;
+
+  return null;
+}
+
 function getPublicOrigin(req: any): string {
   const envOrigin =
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
@@ -22230,7 +22248,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
 
   const clearanceBase = getPublicOrigin(req);
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const childPublicOrigin = getPublicOrigin(req);
+  const childPublicOrigin = resolveAdvertisedShareableOrigin(req);
   if (remoteOrigin) {
     if (!isShareablePublicOrigin(childPublicOrigin)) {
       return reply.code(409).send({
@@ -30957,11 +30975,14 @@ app.get("/content/:id/split-versions", { preHandler: [requireAuth, requireFeatur
         })(),
         ...p,
         percent: percentToPrimitive(p.percent),
-        invitationStatus: (p as any)?.invitation?.status
-          ? normalizeInviteStatus((p as any)?.invitation?.status)
-          : (p as any)?.acceptedAt
+        invitationStatus:
+          (p as any)?.participantUserId && (p as any)?.acceptedAt && (p as any)?.verifiedAt
             ? "accepted"
-            : "pending",
+            : (p as any)?.invitation?.status
+              ? normalizeInviteStatus((p as any)?.invitation?.status)
+              : (p as any)?.acceptedAt
+                ? "accepted"
+                : "pending",
         invitationTargetType: (p as any)?.invitation?.targetType || null,
         invitationTargetValue: (p as any)?.invitation?.targetValue || null
       }))
