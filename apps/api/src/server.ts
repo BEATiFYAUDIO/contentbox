@@ -22175,6 +22175,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     if (scope === "pending") {
       if (!isEligible && !isRequester && !isParentOwner) continue;
       if (a.status !== "PENDING") continue;
+      if (existingVote) continue;
     } else if (scope === "voted") {
       if (!existingVote) continue;
     } else if (scope === "cleared") {
@@ -37134,7 +37135,9 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       include: {
         derivativeLink: {
           include: {
-            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true } },
+            childContent: {
+              select: { id: true, title: true, description: true, status: true, deletedAt: true, deletedReason: true, repoPath: true }
+            },
             parentContent: { select: { id: true, title: true } }
           }
         },
@@ -37142,7 +37145,15 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       },
       orderBy: { createdAt: "desc" }
     });
-    const actionableAuths = auths.filter((auth) => !auth.derivativeLink?.childContent?.deletedAt);
+    const actionableAuths = auths.filter((auth) => {
+      const child = auth.derivativeLink?.childContent || null;
+      const childDeleted = Boolean(child?.deletedAt);
+      const childShadowRemote =
+        Boolean(child?.deletedReason === "hard") &&
+        !child?.repoPath &&
+        String(child?.description || "").toLowerCase().startsWith("remote origin:");
+      return !childDeleted || childShadowRemote;
+    });
     const approverCount = eligible.length;
     const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
