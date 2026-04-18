@@ -4191,62 +4191,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             {parentLink ? (
                               <div className="mt-2 text-xs text-neutral-400">
                                 Original:{" "}
-                                {splitsAllowed ? (
-                                  <a
-                                    href={`/content/${parentLink.parent?.id}/splits`}
-                                    className="text-neutral-200 underline"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      if (!parentLink.parent?.id) return;
-                                      window.history.pushState({}, "", `/content/${encodeURIComponent(parentLink.parent.id)}/splits`);
-                                      window.dispatchEvent(new PopStateEvent("popstate"));
-                                    }}
-                                  >
-                                    {parentLink.parent?.title || "Original work"}
-                                  </a>
-                                ) : (
-                                  <span className="text-neutral-200">{parentLink.parent?.title || "Original work"}</span>
-                                )}
+                                <span className="text-neutral-200">{parentLink.parent?.title || "Original work"}</span>
                                 {" "}• Upstream: {typeof parentLink.upstreamBps === "number"
                                   ? `${upstreamRatePct}%${parentLink.upstreamBps === 0 ? " (no upstream payout)" : ""}`
                                   : "Fixed at derivative creation"} • Clearance:{" "}
                                 {parentLink.requiresApproval ? (parentLink.approvedAt ? "Cleared" : "Pending clearance") : "Not required"}
-                                {" "}•{" "}
-                                {splitsAllowed ? (
-                                  <a
-                                    href={`/content/${it.id}/splits`}
-                                    className="text-neutral-200 underline"
-                                    onClick={(event) => {
-                                      event.preventDefault();
-                                      window.history.pushState({}, "", `/content/${encodeURIComponent(it.id)}/splits`);
-                                      window.dispatchEvent(new PopStateEvent("popstate"));
-                                    }}
-                                  >
-                                    View routing
-                                  </a>
-                                ) : (
-                                  <span className="text-neutral-500">{lockReasons?.advanced_splits || "Routing requires Advanced or LAN mode."}</span>
-                                )}
                               </div>
                             ) : (
                               <div className="mt-2 text-xs text-amber-300">
                                 {isDerivative ? "Original derivative link is missing." : "No original linked."}
-                                {!isDerivative && splitsAllowed ? (
-                                  <>
-                                    {" "}
-                                    <a
-                                      href={`/content/${it.id}/splits`}
-                                      className="underline"
-                                      onClick={(event) => {
-                                        event.preventDefault();
-                                        window.history.pushState({}, "", `/content/${encodeURIComponent(it.id)}/splits`);
-                                        window.dispatchEvent(new PopStateEvent("popstate"));
-                                      }}
-                                    >
-                                      Link original in Splits
-                                    </a>.
-                                  </>
-                                ) : null}
                               </div>
                             )}
                             {parentLinkErrorByContent[it.id] ? (
