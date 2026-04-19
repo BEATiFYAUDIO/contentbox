@@ -674,6 +674,50 @@ export default function LibraryPage() {
     }
   }
 
+  function renderInlinePreview(previewUrl: string | null | undefined, mimeRaw: string | null | undefined, typeRaw: string | null | undefined) {
+    if (!previewUrl) return null;
+    const mime = String(mimeRaw || "").toLowerCase();
+    const type = String(typeRaw || "").toLowerCase();
+    const isVideo = mime.startsWith("video/") || type === "video";
+    const isAudio = mime.startsWith("audio/") || type === "song";
+    const isImage = mime.startsWith("image/");
+    const isPdf = mime === "application/pdf";
+    const isTextLike =
+      mime.startsWith("text/") ||
+      mime === "application/json" ||
+      mime === "application/xml" ||
+      mime === "application/javascript";
+
+    if (isVideo) return <video className="w-full rounded-md" controls src={previewUrl} />;
+    if (isAudio) return <audio className="w-full" controls src={previewUrl} />;
+    if (isImage) {
+      return (
+        <img
+          className="w-full rounded-md object-contain bg-neutral-950 max-h-[28rem]"
+          src={previewUrl}
+          alt="Preview"
+          loading="lazy"
+        />
+      );
+    }
+    if (isPdf || isTextLike) {
+      return (
+        <iframe
+          className="w-full min-h-[28rem] rounded-md border border-neutral-800 bg-neutral-950"
+          src={previewUrl}
+          title="Preview"
+        />
+      );
+    }
+    return (
+      <iframe
+        className="w-full min-h-[22rem] rounded-md border border-neutral-800 bg-neutral-950"
+        src={previewUrl}
+        title="Preview"
+      />
+    );
+  }
+
 function formatDateLabel(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
@@ -1011,18 +1055,8 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                       )
                                     : null;
                                 const effectivePreviewUrl = previewUrl || participantPreviewFallback;
-                                if (effectivePreviewUrl && isVideo) {
-                                  return <video className="w-full rounded-md" controls src={effectivePreviewUrl} />;
-                                }
-                                if (effectivePreviewUrl && isAudio) {
-                                  return <audio className="w-full" controls src={effectivePreviewUrl} />;
-                                }
                                 if (effectivePreviewUrl) {
-                                  return (
-                                    <a className="text-xs text-emerald-300 underline" href={effectivePreviewUrl} target="_blank" rel="noreferrer">
-                                      Open preview
-                                    </a>
-                                  );
+                                  return <div>{renderInlinePreview(effectivePreviewUrl, mime, type)}</div>;
                                 }
                                 return <div className="text-xs text-neutral-500">No preview available.</div>;
                               })()}
