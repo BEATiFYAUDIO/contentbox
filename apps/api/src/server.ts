@@ -22619,18 +22619,20 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const isEligible =
       eligible.some((p) => matchApproverToUser(p, userId, meEmail)) ||
       isParentOwner;
+    const effectiveViewerVote = existingVote?.decision || remoteClearanceEntry?.viewerVote || null;
+    const effectiveStatus = String(remoteClearanceEntry?.status || a.status || "PENDING");
 
     if (scope === "pending") {
       if (!isEligible && !isRequester && !isParentOwner) continue;
-      if (a.status !== "PENDING") continue;
-      if (existingVote) continue;
+      if (effectiveStatus !== "PENDING") continue;
+      if (effectiveViewerVote) continue;
     } else if (scope === "voted") {
-      if (!existingVote) continue;
+      if (!effectiveViewerVote) continue;
     } else if (scope === "cleared") {
-      if (a.status !== "APPROVED") continue;
-      if (!isEligible && !existingVote && !isRequester && !isParentOwner) continue;
+      if (effectiveStatus !== "APPROVED") continue;
+      if (!isEligible && !effectiveViewerVote && !isRequester && !isParentOwner) continue;
     } else if (scope === "all") {
-      if (!isEligible && !existingVote && !isRequester && !isParentOwner) continue;
+      if (!isEligible && !effectiveViewerVote && !isRequester && !isParentOwner) continue;
     }
     out.push({
       authorizationId: a.id,
@@ -22647,8 +22649,8 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       remoteClearanceToken: asString(remoteClearanceEntry?.clearanceToken || "").trim() || null,
       remoteClearanceUrl: remoteClearanceEntry?.clearanceUrl || null,
       relation: a.derivativeLink.relation,
-      status: String(remoteClearanceEntry?.status || a.status || "PENDING"),
-      viewerVote: existingVote?.decision || remoteClearanceEntry?.viewerVote || null,
+      status: effectiveStatus,
+      viewerVote: effectiveViewerVote,
       upstreamRatePercent:
         Number.isFinite(Number(remoteClearanceEntry?.upstreamRatePercent))
           ? Number(remoteClearanceEntry.upstreamRatePercent)
