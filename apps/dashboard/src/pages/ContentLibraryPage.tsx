@@ -2850,16 +2850,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   String(a?.remoteInviteToken || "").trim() || String(clearanceRouteParts.inviteToken || "").trim();
                 const resolvedRemoteAuthorizationId =
                   String(a?.remoteAuthorizationId || "").trim() || String(clearanceRouteParts.authorizationId || "").trim();
-                const hasLocalChildPreviewAuthority =
-                  Boolean(String(a?.childContentId || "").trim()) &&
-                  !String(a?.childOrigin || "").trim() &&
-                  Boolean(previewGrantedAt);
                 const canLeaveReviewNote = !isCleared && (isRemoteApproval
                   ? Boolean(String(a?.remoteOrigin || "").trim() && resolvedRemoteInviteToken && resolvedRemoteAuthorizationId)
                   : Boolean(linkId));
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
-                    ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
+                    ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/buy/${encodeURIComponent(String(a.parentContentId))}`
                     : "";
 
                 return (
@@ -2965,22 +2961,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             {isLoading ? "Loading…" : "Refresh"}
                           </button>
                         )}
-                        {isRemoteApproval && String(a?.childContentId || "").trim() ? (
+                        {isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.childContentId || "").trim() ? (
                           <button
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            onClick={() => {
-                              const childContentId = String(a?.childContentId || "");
-                              if (hasLocalChildPreviewAuthority) {
-                                return loadDerivativePreview(childContentId);
-                              }
-                              return openRemoteInviteClearancePreview(
+                            onClick={() =>
+                              openRemoteInviteClearancePreview(
                                 String(a?.remoteOrigin || ""),
                                 resolvedRemoteInviteToken,
                                 resolvedRemoteAuthorizationId,
-                                childContentId
-                              );
-                            }}
+                                String(a?.childContentId || "")
+                              )
+                            }
                           >
                             Preview submission
                           </button>
