@@ -10578,6 +10578,30 @@ function approvalTokenPrincipalMatchesParticipant(
   return false;
 }
 
+function remoteInviteSnapshotMatchesViewer(
+  snapshot: any,
+  userId: string,
+  userEmail: string
+): boolean {
+  const invitation = snapshot?.invitation || null;
+  const splitParticipant = snapshot?.splitParticipant || null;
+  const acceptedIdentityRef = asString(invitation?.acceptedIdentityRef || "").trim();
+  const targetType = normalizeInviteTargetType(invitation?.targetType || null);
+  const targetValue = asString(invitation?.targetValue || "").trim();
+  const participantUserId = asString(splitParticipant?.participantUserId || "").trim();
+  const participantEmail = normalizeEmail(splitParticipant?.participantEmail || "");
+  const acceptedByUserId = asString(invitation?.acceptedByUserId || "").trim();
+  if (acceptedByUserId && acceptedByUserId === userId) return true;
+  if (participantUserId && participantUserId === userId) return true;
+  if (parseUserIdFromParticipantRef(acceptedIdentityRef) === userId) return true;
+  if (participantEmail && userEmail && participantEmail === userEmail) return true;
+  if (targetType === "email" && normalizeEmail(targetValue) === userEmail) return true;
+  if ((targetType === "local_user" || targetType === "identity_ref") && parseUserIdFromParticipantRef(targetValue) === userId) {
+    return true;
+  }
+  return false;
+}
+
 /** ---------- proof bundles ---------- */
 
 function recipientRefForParticipant(p: {
@@ -22568,22 +22592,37 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const childOrigin = getRemoteOriginFromDescription(a.derivativeLink.childContent?.description || null);
     const parentOrigin =
       isShadowRemote ? getRemoteOriginFromDescription(parent?.description || null) : null;
-    const remoteInviteForViewer =
-      parentOrigin
-        ? await prisma.remoteInvite.findFirst({
-            where: {
-              userId,
-              contentId: a.parentContentId,
-              remoteOrigin: parentOrigin,
-              contentDeletedAt: null,
-              revokedAt: null,
-              tombstonedAt: null,
-              OR: [{ acceptedAt: { not: null } }, { status: "accepted" }]
-            },
-            orderBy: { updatedAt: "desc" },
-            select: { inviteUrl: true }
-          }).catch(() => null)
-        : null;
+    let remoteInviteForViewer: { inviteUrl: string | null } | null = null;
+    if (parentOrigin) {
+      const remoteInviteCandidates = await prisma.remoteInvite
+        .findMany({
+          where: {
+            userId,
+            contentId: a.parentContentId,
+            remoteOrigin: parentOrigin,
+            contentDeletedAt: null,
+            revokedAt: null,
+            tombstonedAt: null,
+            OR: [{ acceptedAt: { not: null } }, { status: "accepted" }]
+          },
+          orderBy: { updatedAt: "desc" },
+          select: { inviteUrl: true }
+        })
+        .catch(() => []);
+      for (const candidate of remoteInviteCandidates) {
+        const token = extractInviteTokenFromUrl(candidate?.inviteUrl || null);
+        if (!token) continue;
+        const snapshot = await fetchRemoteInviteSnapshot(parentOrigin, token).catch(() => null);
+        if (!snapshot) continue;
+        if (remoteInviteSnapshotMatchesViewer(snapshot, userId, meEmail)) {
+          remoteInviteForViewer = candidate;
+          break;
+        }
+      }
+      if (!remoteInviteForViewer && remoteInviteCandidates.length > 0) {
+        remoteInviteForViewer = remoteInviteCandidates[0] || null;
+      }
+    }
     const remoteInviteToken = extractInviteTokenFromUrl(remoteInviteForViewer?.inviteUrl || null);
     let remoteClearanceEntry: any = null;
     if (parentOrigin && remoteInviteToken) {
