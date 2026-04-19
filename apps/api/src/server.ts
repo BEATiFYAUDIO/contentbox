@@ -26649,14 +26649,21 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     }
   });
 
-  // Recompute approval weight (fallback to parent split if token weight is missing/zero)
+  // Recompute approval and rejection tallies so mirrored clearance rows stay in sync.
   const approved = await prisma.approvalToken.findMany({
     where: { contentLinkId: link.id, decision: "approve" }
   });
+  const rejected = await prisma.approvalToken.findMany({
+    where: { contentLinkId: link.id, decision: "reject" }
+  });
+  const auths = await prisma.derivativeAuthorization.findMany({
+    where: { derivativeLinkId: link.id },
+    select: { id: true, approvalBpsTarget: true }
+  });
   const parentSplit = await getLockedSplitForContent(link.parentContentId);
-  const approvedWeight = approved.reduce((s, a) => {
+  const resolveTokenWeightBps = (a: { weightBps: number | null; approverEmail: string | null }) => {
     const base = a.weightBps || 0;
-    if (base > 0) return s + base;
+    if (base > 0) return base;
     if (parentSplit && a.approverEmail) {
       const p = parentSplit.participants.find(
         (pp) =>
@@ -26665,24 +26672,35 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
             participantUserId: pp.participantUserId
           })
       );
-      if (p) return s + toBps(p);
+      if (p) return toBps(p);
     }
-    return s;
+    return 0;
+  };
+  const approveWeightBps = approved.reduce((s, a) => {
+    return s + resolveTokenWeightBps(a);
   }, 0);
+  const rejectWeightBps = rejected.reduce((s, a) => {
+    return s + resolveTokenWeightBps(a);
+  }, 0);
+  const approvedApprovers = approved.length;
+  const target = auths[0]?.approvalBpsTarget ?? 6667;
+  const status = approveWeightBps >= target ? "APPROVED" : "PENDING";
 
   if (process.env.NODE_ENV !== "production") {
-    app.log.info({ linkId: link.id, approvedWeight }, "clearance.vote");
+    app.log.info({ linkId: link.id, approveWeightBps, rejectWeightBps, approvedApprovers, target, status }, "clearance.vote");
   }
 
-  if (approvedWeight >= 6667) {
+  if (auths.length) {
+    await prisma.derivativeAuthorization.updateMany({
+      where: { derivativeLinkId: link.id },
+      data: { approveWeightBps, rejectWeightBps, approvedApprovers, status }
+    });
+  }
+
+  if (status === "APPROVED") {
     const updated = await prisma.contentLink.update({
       where: { id: link.id },
       data: { approvedAt: new Date() }
-    });
-
-    await prisma.derivativeAuthorization.updateMany({
-      where: { derivativeLinkId: link.id },
-      data: { status: "APPROVED" }
     });
 
     await prisma.clearanceRequest.updateMany({
