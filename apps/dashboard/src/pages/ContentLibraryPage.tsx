@@ -1744,6 +1744,34 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET"),
         api<any[]>("/my/royalties/remote", "GET")
       ]);
+      const localEntries = Array.isArray(localData) ? localData : [];
+      const localLinkIds = Array.from(
+        new Set(
+          localEntries
+            .map((entry) => String(entry?.linkId || "").trim())
+            .filter(Boolean)
+        )
+      );
+      if (localLinkIds.length) {
+        const summaries = await Promise.all(
+          localLinkIds.map(async (linkId) => {
+            try {
+              const cs: any = await api(`/content-links/${linkId}/clearance`, "GET");
+              return [linkId, cs] as const;
+            } catch {
+              return [linkId, null] as const;
+            }
+          })
+        );
+        setClearanceByLink((m) => {
+          const next = { ...m };
+          for (const [linkId, cs] of summaries) {
+            if (!cs) continue;
+            next[linkId] = cs;
+          }
+          return next;
+        });
+      }
       const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
         .flatMap((row) => buildRemoteClearanceApprovals(row, { includeClearanceDetails: true }))
         .filter((entry) => {
@@ -1755,7 +1783,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           return true;
         });
 
-      const merged = mergeClearanceApprovalsByDerivative([...(Array.isArray(localData) ? localData : []), ...remoteApprovals]);
+      const merged = mergeClearanceApprovalsByDerivative([...localEntries, ...remoteApprovals]);
       if (import.meta.env.DEV) {
         console.debug("clearance.loadApprovals.remote_merge", {
           scope,
