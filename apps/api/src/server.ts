@@ -22649,6 +22649,12 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       relation: a.derivativeLink.relation,
       status: String(remoteClearanceEntry?.status || a.status || "PENDING"),
       viewerVote: existingVote?.decision || remoteClearanceEntry?.viewerVote || null,
+      upstreamRatePercent:
+        Number.isFinite(Number(remoteClearanceEntry?.upstreamRatePercent))
+          ? Number(remoteClearanceEntry.upstreamRatePercent)
+          : Number.isFinite(Number(a.derivativeLink?.upstreamBps))
+          ? Number(a.derivativeLink.upstreamBps) / 100
+          : null,
       clearanceRequest: latestClearanceRequest
         ? {
             status: String(latestClearanceRequest.status || "PENDING"),
