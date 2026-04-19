@@ -2459,6 +2459,11 @@ function parseUserIdFromParticipantRef(participantRef: string | null | undefined
     const userId = asString(raw.slice("user:".length)).trim();
     return userId || null;
   }
+  const remoteUserMatch = raw.match(/#user:([^#]+)$/i);
+  if (remoteUserMatch?.[1]) {
+    const userId = asString(remoteUserMatch[1]).trim();
+    return userId || null;
+  }
   return null;
 }
 
@@ -10522,6 +10527,55 @@ function makeApprovalToken(): string {
 
 function hashApprovalToken(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function approvalTokenPrincipalForApprover(approver: {
+  participantEmail?: string | null;
+  identityRef?: string | null;
+  participantUserId?: string | null;
+}): string | null {
+  const email = normalizeEmail(approver?.participantEmail || "");
+  if (email) return email;
+  const identityRef = asString(approver?.identityRef || "").trim();
+  if (identityRef) return identityRef;
+  const participantUserId = asString(approver?.participantUserId || "").trim();
+  if (participantUserId) return `user:${participantUserId}`;
+  return null;
+}
+
+function approvalTokenPrincipalForInviteContext(input: {
+  inviteEmail?: string | null;
+  inviteUserEmail?: string | null;
+  acceptedIdentityRef?: string | null;
+  participantUserId?: string | null;
+  targetType?: string | null;
+  targetValue?: string | null;
+}): string | null {
+  const email = normalizeEmail(input.inviteEmail || "") || normalizeEmail(input.inviteUserEmail || "");
+  if (email) return email;
+  const acceptedIdentityRef = asString(input.acceptedIdentityRef || "").trim();
+  if (acceptedIdentityRef) return acceptedIdentityRef;
+  const participantUserId = asString(input.participantUserId || "").trim();
+  if (participantUserId) return `user:${participantUserId}`;
+  const targetType = normalizeInviteTargetType(input.targetType || null);
+  const targetValue = asString(input.targetValue || "").trim();
+  if ((targetType === "local_user" || targetType === "identity_ref") && targetValue) {
+    return `user:${targetValue}`;
+  }
+  return null;
+}
+
+function approvalTokenPrincipalMatchesParticipant(
+  principalRaw: string | null | undefined,
+  participant: { participantEmail?: string | null; participantUserId?: string | null }
+): boolean {
+  const principal = asString(principalRaw || "").trim();
+  if (!principal) return false;
+  const email = normalizeEmail(principal);
+  if (email && normalizeEmail(participant.participantEmail || "") === email) return true;
+  const principalUserId = parseUserIdFromParticipantRef(principal);
+  if (principalUserId && asString(participant.participantUserId || "").trim() === principalUserId) return true;
+  return false;
 }
 
 /** ---------- proof bundles ---------- */
@@ -22645,8 +22699,8 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   for (const p of approvers) {
-    const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
-    if (!email) continue;
+    const principal = approvalTokenPrincipalForApprover(p);
+    if (!principal) continue;
     const weightBps = p.weightBps || 0;
     const token = makeApprovalToken();
     const tokenHash = hashApprovalToken(token);
@@ -22654,12 +22708,12 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
       data: {
         contentLinkId: linkId,
         tokenHash,
-        approverEmail: email,
+        approverEmail: principal,
         weightBps,
         expiresAt
       }
     });
-    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
+    approvalUrls.push({ email: principal, url: `${clearanceBase}/clearance/${token}`, weightBps });
   }
 
   return reply.send({
@@ -22819,8 +22873,8 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
 
   const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
-    const email = p.participantEmail ? normalizeEmail(p.participantEmail) : "";
-    if (!email) continue;
+    const principal = approvalTokenPrincipalForApprover(p);
+    if (!principal) continue;
     const weightBps = p.weightBps || 0;
     const token = makeApprovalToken();
     const tokenHash = hashApprovalToken(token);
@@ -22828,12 +22882,12 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       data: {
         contentLinkId: link.id,
         tokenHash,
-        approverEmail: email,
+        approverEmail: principal,
         weightBps,
         expiresAt
       }
     });
-    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
+    approvalUrls.push({ email: principal, url: `${clearanceBase}/clearance/${token}`, weightBps });
   }
 
   return reply.send({
@@ -25893,17 +25947,29 @@ async function resolveInviteClearanceContext(token: string, authorizationId: str
     .findUnique({ where: { id: inviteUserId }, select: { email: true } })
     .catch(() => null);
   const inviteUserEmail = normalizeEmail(inviteUser?.email || "");
-  const approverEmailForToken = inviteEmail || inviteUserEmail;
+  const approverPrincipalForToken = approvalTokenPrincipalForInviteContext({
+    inviteEmail,
+    inviteUserEmail,
+    acceptedIdentityRef,
+    participantUserId: inv?.splitParticipant?.participantUserId || null,
+    targetType: inv?.targetType || null,
+    targetValue: inv?.targetValue || null
+  });
 
   const { eligible } = await getEligibleApproversForParent(parentContentId);
   const inviteApprover = eligible.find((a) => {
     const byUserId = Boolean(inviteUserId && a.participantUserId === inviteUserId);
     const byEmail = Boolean(
-      approverEmailForToken &&
+      approverPrincipalForToken &&
         normalizeEmail(a.participantEmail || "") &&
-        normalizeEmail(a.participantEmail || "") === approverEmailForToken
+        normalizeEmail(a.participantEmail || "") === approverPrincipalForToken
     );
-    return byUserId || byEmail;
+    const byIdentityRef = Boolean(
+      approverPrincipalForToken &&
+        asString(a.identityRef || "").trim() &&
+        asString(a.identityRef || "").trim() === approverPrincipalForToken
+    );
+    return byUserId || byEmail || byIdentityRef;
   });
   if (!inviteApprover) return null;
 
@@ -25913,7 +25979,7 @@ async function resolveInviteClearanceContext(token: string, authorizationId: str
     parentContentId,
     inviteUserId,
     inviteApprover,
-    approverEmailForToken
+    approverEmailForToken: approverPrincipalForToken
   };
 }
 
@@ -26592,9 +26658,12 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     const base = a.weightBps || 0;
     if (base > 0) return s + base;
     if (parentSplit && a.approverEmail) {
-      const email = String(a.approverEmail).toLowerCase();
       const p = parentSplit.participants.find(
-        (pp) => pp.participantEmail && pp.participantEmail.toLowerCase() === email
+        (pp) =>
+          approvalTokenPrincipalMatchesParticipant(a.approverEmail, {
+            participantEmail: pp.participantEmail,
+            participantUserId: pp.participantUserId
+          })
       );
       if (p) return s + toBps(p);
     }
@@ -38163,19 +38232,32 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
     ? await prisma.user.findUnique({ where: { id: inviteUserId }, select: { email: true } }).catch(() => null)
     : null;
   const inviteUserEmail = normalizeEmail(inviteUser?.email || "");
-  const approverEmailForToken = inviteEmail || inviteUserEmail;
+  const approverEmailForToken = approvalTokenPrincipalForInviteContext({
+    inviteEmail,
+    inviteUserEmail,
+    acceptedIdentityRef,
+    participantUserId: inv?.splitParticipant?.participantUserId || null,
+    targetType: inv?.targetType || null,
+    targetValue: inv?.targetValue || null
+  });
   let clearanceInbox: any[] = [];
   if (parentContentId) {
     const { eligible } = await getEligibleApproversForParent(parentContentId);
-    const inviteIsEligible = eligible.some((a) => {
+    const inviteApprover = eligible.find((a) => {
       const byUserId = Boolean(inviteUserId && a.participantUserId === inviteUserId);
       const byEmail = Boolean(
         approverEmailForToken &&
           normalizeEmail(a.participantEmail || "") &&
           normalizeEmail(a.participantEmail || "") === approverEmailForToken
       );
-      return byUserId || byEmail;
+      const byIdentityRef = Boolean(
+        approverEmailForToken &&
+          asString(a.identityRef || "").trim() &&
+          asString(a.identityRef || "").trim() === approverEmailForToken
+      );
+      return byUserId || byEmail || byIdentityRef;
     });
+    const inviteIsEligible = Boolean(inviteApprover);
     const auths = await prisma.derivativeAuthorization.findMany({
       where: { parentContentId },
       include: {
@@ -38248,6 +38330,24 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             orderBy: { createdAt: "desc" },
             select: { token: true }
           });
+          if (!clearanceToken && auth.status === "PENDING") {
+            const token = makeApprovalToken();
+            const tokenHash = hashApprovalToken(token);
+            const expiresAt = new Date(
+              Date.now() +
+                Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168))) * 60 * 60 * 1000
+            );
+            await approvalTokenModel.create({
+              data: {
+                contentLinkId: auth.derivativeLinkId,
+                tokenHash,
+                approverEmail: approverEmailForToken,
+                weightBps: inviteApprover?.weightBps || 0,
+                expiresAt
+              }
+            });
+            clearanceToken = { token };
+          }
           if (!viewerVote) {
             const tokenVote = await approvalTokenModel.findFirst({
               where: {
