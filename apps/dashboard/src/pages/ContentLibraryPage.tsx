@@ -1576,27 +1576,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Remote origin not set." }));
           return;
         }
-        const offer = await fetch(`${base}/public/content/${childContentId}/offer`).then((r) => r.json());
-        const objectKey = offer?.previewObjectKey || offer?.primaryFileId || null;
-        if (!objectKey) {
-          setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
-          return;
-        }
-        const previewUrl = `${base}/public/content/${childContentId}/preview-file?objectKey=${encodeURIComponent(objectKey)}`;
+        const previewUrl = `${base}/public/content/${encodeURIComponent(childContentId)}/preview-file`;
         setDerivativePreviewByChild((m) => ({
           ...m,
           [childContentId]: {
-            content: { id: childContentId, title: offer?.title || null, type: offer?.type || null, status: "published" },
+            content: { id: childContentId, title: null, type: null, status: "published" },
             previewUrl,
-            files: [
-              {
-                id: objectKey,
-                objectKey,
-                originalName: offer?.primaryFileId || objectKey,
-                sizeBytes: offer?.sizeBytes || 0,
-                mime: offer?.primaryFileMime || ""
-              }
-            ]
+            files: []
           }
         }));
         return;
@@ -1620,13 +1606,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
     setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
     try {
-      const offer = await fetch(`${base}/public/content/${childContentId}/offer`).then((r) => r.json());
-      const objectKey = offer?.previewObjectKey || offer?.primaryFileId || null;
-      if (!objectKey) {
-        setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
-        return;
-      }
-      const url = `${base}/public/content/${childContentId}/preview-file?objectKey=${encodeURIComponent(objectKey)}`;
+      const url = `${base}/public/content/${encodeURIComponent(childContentId)}/preview-file`;
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
       setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
