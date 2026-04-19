@@ -21484,7 +21484,36 @@ async function resolveDerivativeInfo(contentId: string, contentType: string | nu
   if (!isDerivative) return { isDerivative: false, clearanceCleared: true, clearanceId: null, link: null };
   if (links.length !== 1) return { isDerivative: true, clearanceCleared: false, clearanceId: null, link: links[0] || null };
   const link = links[0];
-  const clearanceCleared = !link.requiresApproval || Boolean(link.approvedAt);
+  let approvedAtEffective = link.approvedAt ? link.approvedAt.toISOString() : null;
+  if (!approvedAtEffective && link.requiresApproval) {
+    const parentShadow = await prisma.contentItem.findUnique({
+      where: { id: link.parentContentId },
+      select: { repoPath: true, deletedReason: true, description: true }
+    });
+    const parentOrigin =
+      parentShadow && parentShadow.deletedReason === "hard" && !parentShadow.repoPath
+        ? getRemoteOriginFromDescription(parentShadow.description)
+        : null;
+    if (parentOrigin) {
+      try {
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 5000);
+        try {
+          const url = `${parentOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+            link.parentContentId
+          )}&childContentId=${encodeURIComponent(link.childContentId)}`;
+          const res = await fetch(url, { signal: ctrl.signal as any });
+          const data: any = await res.json().catch(() => null);
+          if (res.ok && data?.approvedAt) {
+            approvedAtEffective = new Date(String(data.approvedAt)).toISOString();
+          }
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch {}
+    }
+  }
+  const clearanceCleared = !link.requiresApproval || Boolean(approvedAtEffective);
   let clearanceId: string | null = null;
   if (clearanceCleared) {
     const req = await prisma.clearanceRequest.findFirst({
@@ -22030,7 +22059,36 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requireFeat
         });
       }
       for (const link of links) {
-        if (link.requiresApproval && !link.approvedAt) {
+        let approvedAtEffective = link.approvedAt ? link.approvedAt.toISOString() : null;
+        if (!approvedAtEffective && link.requiresApproval) {
+          const parentShadow = await prisma.contentItem.findUnique({
+            where: { id: link.parentContentId },
+            select: { repoPath: true, deletedReason: true, description: true }
+          });
+          const parentOrigin =
+            parentShadow && parentShadow.deletedReason === "hard" && !parentShadow.repoPath
+              ? getRemoteOriginFromDescription(parentShadow.description)
+              : null;
+          if (parentOrigin) {
+            try {
+              const ctrl = new AbortController();
+              const timeout = setTimeout(() => ctrl.abort(), 5000);
+              try {
+                const url = `${parentOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+                  link.parentContentId
+                )}&childContentId=${encodeURIComponent(link.childContentId)}`;
+                const res = await fetch(url, { signal: ctrl.signal as any });
+                const data: any = await res.json().catch(() => null);
+                if (res.ok && data?.approvedAt) {
+                  approvedAtEffective = new Date(String(data.approvedAt)).toISOString();
+                }
+              } finally {
+                clearTimeout(timeout);
+              }
+            } catch {}
+          }
+        }
+        if (link.requiresApproval && !approvedAtEffective) {
           return reply.code(409).send({
             code: "DERIVATIVE_NOT_APPROVED",
             message: "Derivative must be approved by upstream owners before being listed publicly."
@@ -22674,6 +22732,21 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       isParentOwner;
     const effectiveViewerVote = existingVote?.decision || remoteClearanceEntry?.viewerVote || null;
     const effectiveStatus = String(remoteClearanceEntry?.status || a.status || "PENDING");
+    const effectiveClearanceRequest = remoteClearanceEntry?.clearanceRequest
+      ? {
+          status: String(remoteClearanceEntry.clearanceRequest?.status || "PENDING"),
+          requestedAt: asString(remoteClearanceEntry.clearanceRequest?.requestedAt || "").trim() || null,
+          reviewGrantedAt: asString(remoteClearanceEntry.clearanceRequest?.reviewGrantedAt || "").trim() || null
+        }
+      : latestClearanceRequest
+        ? {
+            status: String(latestClearanceRequest.status || "PENDING"),
+            requestedAt: latestClearanceRequest.createdAt ? latestClearanceRequest.createdAt.toISOString() : null,
+            reviewGrantedAt: latestClearanceRequest.reviewGrantedAt
+              ? latestClearanceRequest.reviewGrantedAt.toISOString()
+              : null
+          }
+        : null;
 
     if (scope === "pending") {
       if (!isEligible && !isRequester && !isParentOwner) continue;
@@ -22704,21 +22777,20 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       relation: a.derivativeLink.relation,
       status: effectiveStatus,
       viewerVote: effectiveViewerVote,
+      approveWeightBps: Number(remoteClearanceEntry?.approveWeightBps ?? a.approveWeightBps ?? 0),
+      approvalBpsTarget: Number(remoteClearanceEntry?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667),
+      approvedApprovers: Number(remoteClearanceEntry?.approvedApprovers ?? a.approvedApprovers ?? 0),
+      approverCount: Number(
+        remoteClearanceEntry?.approverCount ??
+          (Number.isFinite(Number(a.requiredApprovers)) ? Number(a.requiredApprovers) : 0)
+      ),
       upstreamRatePercent:
         Number.isFinite(Number(remoteClearanceEntry?.upstreamRatePercent))
           ? Number(remoteClearanceEntry.upstreamRatePercent)
           : Number.isFinite(Number(a.derivativeLink?.upstreamBps))
           ? Number(a.derivativeLink.upstreamBps) / 100
           : null,
-      clearanceRequest: latestClearanceRequest
-        ? {
-            status: String(latestClearanceRequest.status || "PENDING"),
-            requestedAt: latestClearanceRequest.createdAt ? latestClearanceRequest.createdAt.toISOString() : null,
-            reviewGrantedAt: latestClearanceRequest.reviewGrantedAt
-              ? latestClearanceRequest.reviewGrantedAt.toISOString()
-              : null
-          }
-        : null
+      clearanceRequest: effectiveClearanceRequest
     });
   }
 
