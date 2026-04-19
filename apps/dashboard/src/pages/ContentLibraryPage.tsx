@@ -2984,7 +2984,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const isCleared = a?.status === "APPROVED";
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
-                const requestStatus = String(a?.clearanceRequest?.status || "").trim();
+                const requestStatusRaw = String(a?.clearanceRequest?.status || "").trim();
+                const requestStatus = isCleared ? "CLEARED" : requestStatusRaw;
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
                 const reviewNotes = Array.isArray(clearance?.reviewNotes)
                   ? clearance.reviewNotes
