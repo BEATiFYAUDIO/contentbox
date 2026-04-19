@@ -24753,7 +24753,7 @@ async function handlePublicAttribution(req: any, reply: any) {
     getLockedSplitForContent(contentId),
     prisma.contentLink.findMany({
       where: { childContentId: contentId },
-      include: { parentContent: { include: { owner: { select: { displayName: true } } } } },
+      include: { parentContent: { include: { owner: { select: { displayName: true, email: true } } } } },
       orderBy: { id: "asc" }
     })
   ]);
@@ -24812,7 +24812,10 @@ async function handlePublicAttribution(req: any, reply: any) {
     kind: "derivative";
     items: Array<{
       parentContentId: string | null;
+      parentContentUrl: string | null;
+      parentAttributionUrl: string | null;
       title: string | null;
+      parentCreators: Array<{ displayName: string; handle: string | null; profilePath: string | null }>;
       primaryCreator: { displayName: string; handle: string | null; verification: { badge: string | null } };
       shareholders: Array<{ displayName: string; handle: string | null; profilePath: string | null; bps: number }>;
     }>;
@@ -24822,8 +24825,11 @@ async function handlePublicAttribution(req: any, reply: any) {
     const maxItems = 5;
     const items = await Promise.all(
       parentLinks.slice(0, maxItems).map(async (l) => {
-        const parentContentId = asString(l.parentContent?.id || "").trim() || null;
-        const parentSplit = parentContentId ? await getLockedSplitForContent(parentContentId) : null;
+        const parentContentId = asString(l.parentContentId || l.parentContent?.id || "").trim() || null;
+        const parentSplitSnapshotId = asString(l.parentSplitVersionId || "").trim() || null;
+        const parentSplit =
+          (parentSplitSnapshotId ? await getLockedSplitVersionById(parentSplitSnapshotId) : null) ||
+          (parentContentId ? await getLockedSplitForContent(parentContentId) : null);
         const parentSnapshots = parentSplit ? await getLockedParticipantSnapshotsForSplitVersion(parentSplit.id) : [];
         const shareholders = parentSnapshots
           .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
@@ -24847,15 +24853,49 @@ async function handlePublicAttribution(req: any, reply: any) {
           })
           .filter((s) => s.bps > 0)
           .sort((a, b) => b.bps - a.bps);
+        const primaryCreator =
+          toPublicCreator(l.parentContent?.owner) || {
+            displayName: "Creator",
+            handle: null,
+            verification: { badge: null as string | null }
+          };
+        const parentCreatorsSeed = [
+          ...shareholders.map((shareholder) => ({
+            displayName: shareholder.displayName,
+            handle: shareholder.handle,
+            profilePath: shareholder.profilePath
+          })),
+          {
+            displayName: asString(primaryCreator.displayName || "").trim() || "Creator",
+            handle: primaryCreator.handle || null,
+            profilePath: null as string | null
+          }
+        ];
+        const parentCreatorsSeen = new Set<string>();
+        const parentCreators = parentCreatorsSeed.filter((entry) => {
+          const key = `${asString(entry.displayName || "").trim().toLowerCase()}|${asString(entry.handle || "").trim().toLowerCase()}`;
+          if (!key || parentCreatorsSeen.has(key)) return false;
+          parentCreatorsSeen.add(key);
+          return true;
+        });
+        const parentOrigin = getRemoteOriginFromDescription(l.parentContent?.description || null);
+        const parentContentUrl = parentContentId
+          ? (parentOrigin
+              ? buildPublicUrlFromOrigin(parentOrigin, `/buy/${encodeURIComponent(parentContentId)}`)
+              : `/buy/${encodeURIComponent(parentContentId)}`)
+          : null;
+        const parentAttributionUrl = parentContentId
+          ? (parentOrigin
+              ? buildPublicUrlFromOrigin(parentOrigin, `/public/content/${encodeURIComponent(parentContentId)}/attribution`)
+              : `/public/content/${encodeURIComponent(parentContentId)}/attribution`)
+          : null;
         return {
           parentContentId,
+          parentContentUrl,
+          parentAttributionUrl,
           title: l.parentContent?.title || null,
-          primaryCreator:
-            toPublicCreator(l.parentContent?.owner) || {
-              displayName: "Creator",
-              handle: null,
-              verification: { badge: null as string | null }
-            },
+          parentCreators,
+          primaryCreator,
           shareholders
         };
       })
@@ -27886,20 +27926,33 @@ async function handleBuyPage(req: any, reply: any) {
           items.map((it) => {
             const t = it?.title ? (esc(it.title) + " — ") : "";
             const pc = it?.primaryCreator || {};
-            const upstreamCreatorLabel = resolvePublicPersonLabel(pc.displayName || pc.name || "", pc.handle || "", "Creator");
-            const pn = esc(upstreamCreatorLabel);
-            const phRaw = String(pc.handle || "").trim();
-            const normalizedHandle = normalizeHandleText(phRaw);
-            const ph = normalizedHandle && !labelIncludesHandle(upstreamCreatorLabel, normalizedHandle)
-              ? (" @" + esc(normalizedHandle))
-              : "";
-            const creatorProfileHref = normalizedHandle ? "/u/" + encodeURIComponent(normalizedHandle) : "";
-            const creatorHtml = creatorProfileHref
-              ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\">" + pn + ph + "</a>")
-              : (pn + ph);
-            const parentContentUrl = it?.parentContentId
-              ? "/buy/" + encodeURIComponent(String(it.parentContentId))
-              : "";
+            const parentCreators = Array.isArray(it?.parentCreators) ? it.parentCreators : [];
+            const creatorRows = parentCreators.length > 0 ? parentCreators : [pc];
+            const seenCreators = new Set();
+            const creatorHtml = creatorRows
+              .map((row) => {
+                const upstreamCreatorLabel = resolvePublicPersonLabel(row?.displayName || row?.name || "", row?.handle || "", "Creator");
+                const phRaw = String(row?.handle || "").trim();
+                const normalizedHandle = normalizeHandleText(phRaw);
+                const dedupeKey = (upstreamCreatorLabel + "|" + normalizedHandle).toLowerCase();
+                if (!dedupeKey || seenCreators.has(dedupeKey)) return "";
+                seenCreators.add(dedupeKey);
+                const pn = esc(upstreamCreatorLabel);
+                const ph = normalizedHandle && !labelIncludesHandle(upstreamCreatorLabel, normalizedHandle)
+                  ? (" @" + esc(normalizedHandle))
+                  : "";
+                const creatorProfileHref = resolveSafeProfilePath(String(row?.profilePath || "").trim()) || (normalizedHandle ? "/u/" + encodeURIComponent(normalizedHandle) : "");
+                return creatorProfileHref
+                  ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\" " + (/^https?:\\/\\//i.test(creatorProfileHref) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">" + pn + ph + "</a>")
+                  : (pn + ph);
+              })
+              .filter(Boolean)
+              .join(" • ");
+            const parentContentUrl = String(it?.parentContentUrl || "").trim() || (
+              it?.parentContentId
+                ? "/buy/" + encodeURIComponent(String(it.parentContentId))
+                : ""
+            );
             const shareholders = Array.isArray(it?.shareholders) ? it.shareholders : [];
             const shareholdersHtml = shareholders.length > 0
                 ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\">Shareholders: " + shareholders
@@ -27923,8 +27976,10 @@ async function handleBuyPage(req: any, reply: any) {
                 (shareholders.length > 6 ? " • …" : "") +
                 "</div>"
               : "";
-            const attributionLinkHtml = parentContentUrl
-              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(parentContentUrl) + "\\" style=\\"text-decoration:underline;\\">Original work attribution</a></div>"
+            const parentAttributionUrl = String(it?.parentAttributionUrl || "").trim();
+            const attributionHref = parentAttributionUrl || parentContentUrl;
+            const attributionLinkHtml = attributionHref
+              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\"><a href=\\"" + esc(attributionHref) + "\\" style=\\"text-decoration:underline;\\" " + (/^https?:\\/\\//i.test(attributionHref) ? "target=\\"_blank\\" rel=\\"noreferrer\\"" : "") + ">Original work attribution</a></div>"
               : "";
             return "<li>" + t + creatorHtml + shareholdersHtml + attributionLinkHtml + "</li>";
           }).join("") +
