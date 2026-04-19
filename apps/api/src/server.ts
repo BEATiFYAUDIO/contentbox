@@ -22805,15 +22805,24 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
           }
         : null;
 
+    const effectiveApproveWeightBps = Number(remoteClearanceEntry?.approveWeightBps ?? a.approveWeightBps ?? 0);
+    const effectiveApprovalBpsTargetRaw = Number(remoteClearanceEntry?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667);
+    const effectiveApprovalBpsTarget =
+      Number.isFinite(effectiveApprovalBpsTargetRaw) && effectiveApprovalBpsTargetRaw > 0
+        ? effectiveApprovalBpsTargetRaw
+        : 6667;
+    const effectiveIsCleared = effectiveStatus === "APPROVED" || effectiveApproveWeightBps >= effectiveApprovalBpsTarget;
+    const effectiveIsPending = effectiveStatus === "PENDING" && !effectiveIsCleared;
+
     if (scope === "pending") {
       if (!isEligible && !isRequester && !isParentOwner) continue;
-      if (effectiveStatus !== "PENDING") continue;
+      if (!effectiveIsPending) continue;
       if (effectiveViewerVote) continue;
     } else if (scope === "voted") {
+      if (!effectiveIsPending) continue;
       if (!effectiveViewerVote) continue;
-      if (effectiveStatus === "APPROVED") continue;
     } else if (scope === "cleared") {
-      if (effectiveStatus !== "APPROVED") continue;
+      if (!effectiveIsCleared) continue;
       if (!isEligible && !effectiveViewerVote && !isRequester && !isParentOwner) continue;
     } else if (scope === "all") {
       if (!isEligible && !effectiveViewerVote && !isRequester && !isParentOwner) continue;
@@ -22833,10 +22842,10 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       remoteClearanceToken: asString(remoteClearanceEntry?.clearanceToken || "").trim() || null,
       remoteClearanceUrl: remoteClearanceEntry?.clearanceUrl || null,
       relation: a.derivativeLink.relation,
-      status: effectiveStatus,
+      status: effectiveIsCleared ? "APPROVED" : effectiveStatus,
       viewerVote: effectiveViewerVote,
-      approveWeightBps: Number(remoteClearanceEntry?.approveWeightBps ?? a.approveWeightBps ?? 0),
-      approvalBpsTarget: Number(remoteClearanceEntry?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667),
+      approveWeightBps: effectiveApproveWeightBps,
+      approvalBpsTarget: effectiveApprovalBpsTarget,
       approvedApprovers: Number(remoteClearanceEntry?.approvedApprovers ?? a.approvedApprovers ?? 0),
       approverCount: Number(
         remoteClearanceEntry?.approverCount ??

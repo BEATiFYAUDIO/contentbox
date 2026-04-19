@@ -204,6 +204,10 @@ type LibraryParticipation = {
   contentType: string | null;
   contentStatus: string | null;
   contentDeletedAt: string | null;
+  acceptedAt?: string | null;
+  verifiedAt?: string | null;
+  revokedAt?: string | null;
+  tombstonedAt?: string | null;
   splitParticipantId: string | null;
   remoteInviteId: string | null;
   remoteOrigin: string | null;
@@ -711,6 +715,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         const localParticipations = Array.isArray(localParticipationsRes?.items) ? localParticipationsRes.items : [];
         const remoteParticipations = (Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [])
           .filter((row) => String(row?.status || "").trim().toLowerCase() === "accepted")
+          .filter((row) => !String(row?.revokedAt || "").trim() && !String(row?.tombstonedAt || "").trim())
+          .filter((row) => !String(row?.contentDeletedAt || "").trim())
           .filter((row) => Boolean(String(row?.contentId || "").trim()));
 
         const participationRows: LibraryParticipation[] = [
@@ -721,6 +727,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             contentType: row?.contentType || null,
             contentStatus: row?.contentStatus || null,
             contentDeletedAt: row?.contentDeletedAt || null,
+            acceptedAt: row?.acceptedAt || null,
+            verifiedAt: row?.verifiedAt || null,
+            revokedAt: row?.revokedAt || null,
+            tombstonedAt: row?.tombstonedAt || null,
             splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
             remoteInviteId: null,
             remoteOrigin: null,
@@ -737,6 +747,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             contentType: row?.contentType || null,
             contentStatus: row?.contentStatus || null,
             contentDeletedAt: row?.contentDeletedAt || null,
+            acceptedAt: row?.acceptedAt || null,
+            verifiedAt: row?.verifiedAt || null,
+            revokedAt: row?.revokedAt || null,
+            tombstonedAt: row?.tombstonedAt || null,
             splitParticipantId: null,
             remoteInviteId: String(row?.id || "").trim() || null,
             remoteOrigin: String(row?.remoteOrigin || "").replace(/\/+$/, "") || null,
@@ -790,6 +804,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             byId.set(contentId, {
               ...existing,
               libraryAccess: "participant",
+              deletedAt: existing.deletedAt || p.contentDeletedAt || null,
+              tombstonedAt: existing.tombstonedAt || p.tombstonedAt || null,
               ownerUserId: existing.ownerUserId || p.creatorUserId || null,
               owner:
                 existing.owner ||
@@ -805,6 +821,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             type: ((p.contentType || "file") as ContentType),
             status: (String(p.contentStatus || "").trim().toLowerCase() === "published" ? "published" : "draft"),
             createdAt: "",
+            deletedAt: p.contentDeletedAt || null,
+            tombstonedAt: p.tombstonedAt || null,
             ownerUserId: p.creatorUserId || null,
             owner:
               p.creatorDisplayName || p.creatorEmail
@@ -813,7 +831,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             libraryAccess: "participant"
           });
         }
-        mergedList = Array.from(byId.values());
+        mergedList = Array.from(byId.values()).filter((item) => {
+          if (item?.deletedAt) return false;
+          if ((item as any)?.tombstonedAt) return false;
+          if ((item as any)?.tombstoned) return false;
+          return true;
+        });
       }
 
       if (effectiveScope === "library" && !trashMode && !tombstoneMode) {
@@ -1747,7 +1770,22 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         mergedByDerivative.set(key, entry);
       }
     }
-    return Array.from(mergedByDerivative.values());
+    return Array.from(mergedByDerivative.values()).sort((a, b) => {
+      const aRequestedAt = Date.parse(String(a?.clearanceRequest?.requestedAt || "")) || 0;
+      const bRequestedAt = Date.parse(String(b?.clearanceRequest?.requestedAt || "")) || 0;
+      if (aRequestedAt !== bRequestedAt) return bRequestedAt - aRequestedAt;
+      return String(a?.childTitle || a?.childContentId || "").localeCompare(String(b?.childTitle || b?.childContentId || ""));
+    });
+  }
+
+  function approvalUiKey(entry: any): string {
+    const linkId = String(entry?.linkId || "").trim();
+    const hasLocalAuthorityLink = Boolean(linkId);
+    const isRemoteApproval = !hasLocalAuthorityLink && Boolean(String(entry?.remoteOrigin || "").trim());
+    if (isRemoteApproval) {
+      return `remote:${String(entry?.remoteAuthorizationId || entry?.authorizationId || "")}`;
+    }
+    return `local:${linkId || String(entry?.authorizationId || "")}`;
   }
 
   async function loadApprovals(scope: "pending" | "voted" | "cleared" = clearanceScope) {
@@ -1790,15 +1828,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
         .flatMap((row) => buildRemoteClearanceApprovals(row, { includeClearanceDetails: true }))
         .filter((entry) => {
-          const status = String(entry.status || "").toUpperCase();
-          const voted = Boolean(String(entry.viewerVote || "").trim());
-          if (scope === "pending") return status === "PENDING" && !voted;
-          if (scope === "voted") return voted && status !== "APPROVED";
-          if (scope === "cleared") return status === "APPROVED";
+          const status = String(entry?.status || "PENDING").toUpperCase();
+          const voted = Boolean(String(entry?.viewerVote || "").trim());
+          const progressBps = Number(entry?.approveWeightBps || 0);
+          const thresholdRaw = Number(entry?.approvalBpsTarget || 6667);
+          const thresholdBps = Number.isFinite(thresholdRaw) && thresholdRaw > 0 ? thresholdRaw : 6667;
+          const isCleared = status === "APPROVED" || progressBps >= thresholdBps;
+          const isPending = status === "PENDING" && !isCleared;
+          if (scope === "pending") return isPending && !voted;
+          if (scope === "voted") return isPending && voted;
+          if (scope === "cleared") return isCleared;
           return true;
         });
 
       const merged = mergeClearanceApprovalsByDerivative([...localEntries, ...remoteApprovals]);
+      const activeApprovalKeys = new Set(merged.map((entry) => approvalUiKey(entry)));
+      setReviewNoteMsgByApproval((prev) =>
+        Object.fromEntries(Object.entries(prev).filter(([key]) => activeApprovalKeys.has(key)))
+      );
+      setVoteMsgByApproval((prev) => Object.fromEntries(Object.entries(prev).filter(([key]) => activeApprovalKeys.has(key))));
       if (import.meta.env.DEV) {
         console.debug("clearance.loadApprovals.remote_merge", {
           scope,
@@ -2943,9 +2991,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const linkId = String(a?.linkId || "");
                 const hasLocalAuthorityLink = Boolean(linkId.trim());
                 const isRemoteApproval = !hasLocalAuthorityLink && Boolean(String(a?.remoteOrigin || "").trim());
-                const approvalKey = isRemoteApproval
-                  ? `remote:${String(a?.remoteAuthorizationId || a?.authorizationId || "")}`
-                  : `local:${linkId || String(a?.authorizationId || "")}`;
+                const approvalKey = approvalUiKey(a);
                 const clearance = linkId ? clearanceByLink[linkId] : null;
                 const progressBps = isRemoteApproval
                   ? Number(a?.approveWeightBps || 0)
@@ -2981,10 +3027,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const parentTitle = a?.parentTitle || a?.parentContentId || "Original work";
                 const childTitle = a?.childTitle || a?.childContentId || "Derivative";
                 const isLoading = linkId ? clearanceLoadingByLink[linkId] : false;
-                const isCleared = a?.status === "APPROVED";
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatusRaw = String(a?.clearanceRequest?.status || "").trim();
+                const status = String(a?.status || "").toUpperCase();
+                const isCleared =
+                  status === "APPROVED" ||
+                  requestStatusRaw.toUpperCase() === "CLEARED" ||
+                  (thresholdBps > 0 && progressBps >= thresholdBps);
                 const requestStatus = isCleared ? "CLEARED" : requestStatusRaw;
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
                 const reviewNotes = Array.isArray(clearance?.reviewNotes)
@@ -3010,9 +3060,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   String(a?.remoteOrigin || "").trim() &&
                     (remoteClearanceToken || (resolvedRemoteInviteToken && resolvedRemoteAuthorizationId))
                 );
-                const canLeaveReviewNote = !isCleared && (hasRemoteDecisionContext || Boolean(linkId));
-                const canUseRemoteVote = !isCleared && hasRemoteDecisionContext;
-                const canUseLocalVote = !isCleared && !canUseRemoteVote && Boolean(clearance?.viewer?.canVote);
+                const showActionControls = clearanceScope !== "cleared" && !isCleared;
+                const canLeaveReviewNote = showActionControls && (hasRemoteDecisionContext || Boolean(linkId));
+                const canUseRemoteVote = showActionControls && hasRemoteDecisionContext;
+                const canUseLocalVote = showActionControls && !canUseRemoteVote && Boolean(clearance?.viewer?.canVote);
                 const canVote = canUseRemoteVote || canUseLocalVote;
                 const remoteParentHref =
                   String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
@@ -3310,7 +3361,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </button>
                       </div>
                     ) : null}
-                    {isRemoteApproval && !canVote && !isCleared ? (
+                    {clearanceScope === "pending" && isRemoteApproval && !canVote && !viewerVote && !isCleared ? (
                       <div className="mt-2 text-[11px] text-amber-300">
                         Vote link not issued yet. Click Refresh to sync latest clearance routing.
                       </div>
