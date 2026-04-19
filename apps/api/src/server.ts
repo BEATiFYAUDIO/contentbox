@@ -22917,6 +22917,20 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
     where: { contentLinkId: link.id },
     orderBy: { createdAt: "desc" }
   }).catch(() => null);
+  let approvers: ApproverInfo[] = [];
+  let approverCount = 0;
+  try {
+    const authority = await getApproversForDerivativeLinkAuthority(
+      {
+        id: link.id,
+        parentContentId: link.parentContentId,
+        parentSplitVersionId: link.parentSplitVersionId || null
+      },
+      { logContext: "derivatives.remote_status", allowCurrentFallback: true }
+    );
+    approvers = authority.approvers;
+    approverCount = authority.approvers.length;
+  } catch {}
   return reply.send({
     linkId: link.id,
     parentContentId,
@@ -22931,7 +22945,17 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
           approveWeightBps: auth.approveWeightBps,
           rejectWeightBps: auth.rejectWeightBps,
           approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
-          approvedApprovers: auth.approvedApprovers
+          approvedApprovers: auth.approvedApprovers,
+          approverCount,
+          approvers: approvers.map((a) => ({
+            participantUserId: a.participantUserId || null,
+            participantEmail: a.participantEmail || null,
+            identityRef: a.identityRef || null,
+            displayName: a.displayName || null,
+            profilePath: a.profilePath || null,
+            role: a.role || null,
+            weightBps: a.weightBps || 0
+          }))
         }
       : null
   });
@@ -23298,6 +23322,8 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
   let progressBps = localProgressBps;
   let approvedApprovers = localApprovedApprovers;
   let threshold = thresholdBps;
+  let approverCount = approvers.length;
+  let displayApprovers = approvers;
   const parentShadow = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
     select: { repoPath: true, deletedReason: true, description: true }
@@ -23323,6 +23349,20 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
           progressBps = Number(data?.clearance?.approveWeightBps ?? progressBps);
           approvedApprovers = Number(data?.clearance?.approvedApprovers ?? approvedApprovers);
           threshold = Number(data?.clearance?.approvalBpsTarget ?? threshold);
+          approverCount = Number(data?.clearance?.approverCount ?? approverCount);
+          if (Array.isArray(data?.clearance?.approvers) && data.clearance.approvers.length > 0) {
+            displayApprovers = data.clearance.approvers.map((a: any) => ({
+              splitParticipantId: null,
+              participantUserId: asString(a?.participantUserId || "").trim() || null,
+              participantEmail: normalizeEmail(a?.participantEmail || "") || null,
+              identityRef: asString(a?.identityRef || "").trim() || null,
+              displayName: asString(a?.displayName || "").trim() || null,
+              profilePath: normalizePublicProfileHref(a?.profilePath || "") || null,
+              role: asString(a?.role || "").trim() || null,
+              weightBps: Math.max(0, Number(a?.weightBps || 0)),
+              accepted: true
+            }));
+          }
         }
       } finally {
         clearTimeout(timeout);
@@ -23341,11 +23381,11 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     parentSplitVersionId: link.parentSplitVersionId || null,
     upstreamBps: link.upstreamBps || 0,
     thresholdBps: threshold,
-    approvers,
+    approvers: displayApprovers,
     votes,
     progressBps,
     approvedApprovers,
-    approverCount: approvers.length,
+    approverCount,
     reviewGrantedAt: review?.reviewGrantedAt ? review.reviewGrantedAt.toISOString() : null,
     reviewNotes: await listClearanceReviewNotes(link.id),
     viewer: {
