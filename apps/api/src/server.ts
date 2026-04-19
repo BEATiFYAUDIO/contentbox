@@ -22412,23 +22412,59 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
     } catch {}
   }
 
+  const localApproverCount =
+    eligible.length > 0
+      ? eligible.length
+      : Number.isFinite(Number((auth as any)?.requiredApprovers))
+        ? Number((auth as any).requiredApprovers)
+        : 0;
+  const mergedClearance = remoteStatus?.clearance
+    ? {
+        ...remoteStatus.clearance,
+        approverCount:
+          Number.isFinite(Number(remoteStatus?.clearance?.approverCount)) && Number(remoteStatus.clearance.approverCount) > 0
+            ? Number(remoteStatus.clearance.approverCount)
+            : localApproverCount,
+        approvers:
+          Array.isArray(remoteStatus?.clearance?.approvers) && remoteStatus.clearance.approvers.length > 0
+            ? remoteStatus.clearance.approvers
+            : eligible.map((a) => ({
+                participantUserId: a.participantUserId || null,
+                participantEmail: a.participantEmail || null,
+                identityRef: a.identityRef || null,
+                displayName: a.displayName || null,
+                profilePath: a.profilePath || null,
+                role: a.role || null,
+                weightBps: a.weightBps || 0
+              }))
+      }
+    : auth
+      ? {
+          status: auth.status,
+          approveWeightBps: auth.approveWeightBps,
+          rejectWeightBps: auth.rejectWeightBps,
+          approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
+          approvedApprovers: auth.approvedApprovers,
+          approverCount: localApproverCount,
+          approvers: eligible.map((a) => ({
+            participantUserId: a.participantUserId || null,
+            participantEmail: a.participantEmail || null,
+            identityRef: a.identityRef || null,
+            displayName: a.displayName || null,
+            profilePath: a.profilePath || null,
+            role: a.role || null,
+            weightBps: a.weightBps || 0
+          }))
+        }
+      : null;
+
   return reply.send({
     linkId: link.id,
     relation: link.relation,
     upstreamBps: remoteStatus?.upstreamBps ?? link.upstreamBps,
     requiresApproval: link.requiresApproval,
     approvedAt: remoteStatus?.approvedAt || link.approvedAt || null,
-    clearance: remoteStatus?.clearance
-      ? remoteStatus.clearance
-      : auth
-      ? {
-          status: auth.status,
-          approveWeightBps: auth.approveWeightBps,
-          rejectWeightBps: auth.rejectWeightBps,
-          approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
-          approvedApprovers: auth.approvedApprovers
-        }
-      : null,
+    clearance: mergedClearance,
     parent: parent
       ? {
           id: parent.id,
@@ -23239,7 +23275,9 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
     orderBy: { createdAt: "desc" }
   }).catch(() => null);
   let approvers: ApproverInfo[] = [];
-  let approverCount = 0;
+  let approverCount = Number.isFinite(Number((auth as any)?.requiredApprovers))
+    ? Number((auth as any).requiredApprovers)
+    : 0;
   try {
     const authority = await getApproversForDerivativeLinkAuthority(
       {
@@ -23267,7 +23305,12 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
           rejectWeightBps: auth.rejectWeightBps,
           approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
           approvedApprovers: auth.approvedApprovers,
-          approverCount,
+          approverCount:
+            Number.isFinite(Number(approverCount)) && approverCount > 0
+              ? approverCount
+              : Number.isFinite(Number((auth as any)?.requiredApprovers))
+                ? Number((auth as any).requiredApprovers)
+                : 0,
           approvers: approvers.map((a) => ({
             participantUserId: a.participantUserId || null,
             participantEmail: a.participantEmail || null,
@@ -38889,8 +38932,9 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
     const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
     const approvalTokenModel = (prisma as any).approvalToken;
-    clearanceInbox = await Promise.all(
-      actionableAuths.map(async (auth) => {
+    clearanceInbox = (
+      await Promise.all(
+        actionableAuths.map(async (auth) => {
         const childOrigin = getRemoteOriginFromDescription(auth.derivativeLink?.childContent?.description || null);
         const latestReview = await prisma.clearanceRequest
           .findFirst({
@@ -38900,7 +38944,9 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           })
           .catch(() => null);
         let reviewGrantedAtIso = latestReview?.reviewGrantedAt ? latestReview.reviewGrantedAt.toISOString() : null;
-        if (!reviewGrantedAtIso && childOrigin) {
+        let remoteChildDeletedAtIso: string | null = null;
+        let remoteStatusChecked = false;
+        if (childOrigin && String(auth.status || "").toUpperCase() === "PENDING") {
           try {
             const ctrl = new AbortController();
             const timeout = setTimeout(() => ctrl.abort(), 5000);
@@ -38909,9 +38955,20 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
                 auth.parentContentId
               )}&childContentId=${encodeURIComponent(auth.derivativeLink?.childContentId || "")}`;
               const res = await fetch(statusUrl, { signal: ctrl.signal as any });
+              remoteStatusChecked = true;
+              if (res.status === 404) {
+                return null;
+              }
               const data: any = await res.json().catch(() => null);
-              if (res.ok && data?.reviewGrantedAt) {
-                reviewGrantedAtIso = new Date(String(data.reviewGrantedAt)).toISOString();
+              if (res.ok) {
+                if (!reviewGrantedAtIso && data?.reviewGrantedAt) {
+                  reviewGrantedAtIso = new Date(String(data.reviewGrantedAt)).toISOString();
+                }
+                const remoteDeletedAtRaw = asString(data?.childDeletedAt || "").trim();
+                if (remoteDeletedAtRaw) {
+                  remoteChildDeletedAtIso = remoteDeletedAtRaw;
+                  return null;
+                }
               }
             } finally {
               clearTimeout(timeout);
@@ -38962,6 +39019,8 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           childContentId: auth.derivativeLink?.childContentId || null,
           childTitle: auth.derivativeLink?.childContent?.title || null,
           childStatus: asString(auth.derivativeLink?.childContent?.status || "").trim().toLowerCase() || null,
+          childDeletedAt: remoteChildDeletedAtIso,
+          remoteStatusChecked,
           childOrigin,
           relation: auth.derivativeLink?.relation || "derivative",
           status: auth.status,
@@ -38985,8 +39044,9 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
               ? `${clearanceBase}/clearance/${clearanceToken}`
               : `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
         };
-      })
-    );
+        })
+      )
+    ).filter(Boolean) as any[];
     if (process.env.NODE_ENV !== "production") {
       const first = clearanceInbox[0] || null;
       app.log.info(
