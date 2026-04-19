@@ -37894,6 +37894,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
     const approvalTokenModel = (prisma as any).approvalToken;
     clearanceInbox = await Promise.all(
       actionableAuths.map(async (auth) => {
+        const childOrigin = getRemoteOriginFromDescription(auth.derivativeLink?.childContent?.description || null);
         const latestReview = await prisma.clearanceRequest
           .findFirst({
             where: { contentLinkId: auth.derivativeLinkId },
@@ -37901,6 +37902,25 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             select: { reviewGrantedAt: true, createdAt: true, status: true }
           })
           .catch(() => null);
+        let reviewGrantedAtIso = latestReview?.reviewGrantedAt ? latestReview.reviewGrantedAt.toISOString() : null;
+        if (!reviewGrantedAtIso && childOrigin) {
+          try {
+            const ctrl = new AbortController();
+            const timeout = setTimeout(() => ctrl.abort(), 5000);
+            try {
+              const statusUrl = `${childOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+                auth.parentContentId
+              )}&childContentId=${encodeURIComponent(auth.derivativeLink?.childContentId || "")}`;
+              const res = await fetch(statusUrl, { signal: ctrl.signal as any });
+              const data: any = await res.json().catch(() => null);
+              if (res.ok && data?.reviewGrantedAt) {
+                reviewGrantedAtIso = new Date(String(data.reviewGrantedAt)).toISOString();
+              }
+            } finally {
+              clearTimeout(timeout);
+            }
+          } catch {}
+        }
         const viewerVote = inviteUserId
           ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
           : null;
@@ -37925,7 +37945,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           childContentId: auth.derivativeLink?.childContentId || null,
           childTitle: auth.derivativeLink?.childContent?.title || null,
           childStatus: asString(auth.derivativeLink?.childContent?.status || "").trim().toLowerCase() || null,
-          childOrigin: getRemoteOriginFromDescription(auth.derivativeLink?.childContent?.description || null),
+          childOrigin,
           relation: auth.derivativeLink?.relation || "derivative",
           status: auth.status,
           viewerVote: viewerVote ? String(viewerVote).toLowerCase() : null,
@@ -37933,7 +37953,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             ? {
                 status: String(latestReview.status || "PENDING"),
                 requestedAt: latestReview.createdAt ? latestReview.createdAt.toISOString() : null,
-                reviewGrantedAt: latestReview.reviewGrantedAt ? latestReview.reviewGrantedAt.toISOString() : null
+                reviewGrantedAt: reviewGrantedAtIso
               }
             : null,
           reviewNotes: await listClearanceReviewNotes(auth.derivativeLinkId),
