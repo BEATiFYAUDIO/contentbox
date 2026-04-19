@@ -22612,7 +22612,6 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       const remoteInviteCandidates = await prisma.remoteInvite
         .findMany({
           where: {
-            userId,
             contentId: a.parentContentId,
             remoteOrigin: parentOrigin,
             contentDeletedAt: null,
