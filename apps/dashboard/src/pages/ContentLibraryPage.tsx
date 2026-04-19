@@ -1466,10 +1466,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               ? {
                   approveWeightBps: cs.progressBps || 0,
                   approvalBpsTarget: cs.thresholdBps || 6667,
-                  approvedApprovers: Array.isArray(cs.votes)
+                  approvedApprovers: Number.isFinite(Number(cs.approvedApprovers))
+                    ? Number(cs.approvedApprovers)
+                    : Array.isArray(cs.votes)
                     ? cs.votes.filter((v: any) => String(v.decision).toLowerCase() === "approve").length
                     : 0,
-                  approverCount: Array.isArray(cs.approvers) ? cs.approvers.length : 0,
+                  approverCount: Number.isFinite(Number(cs.approverCount))
+                    ? Number(cs.approverCount)
+                    : Array.isArray(cs.approvers)
+                    ? cs.approvers.length
+                    : 0,
                   approvers: Array.isArray(cs.approvers) ? cs.approvers : [],
                   votes: Array.isArray(cs.votes) ? cs.votes : [],
                   reviewNotes: Array.isArray(cs.reviewNotes) ? cs.reviewNotes : []
@@ -1537,7 +1543,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     approveWeightBps: cs.progressBps || 0,
                     approvalBpsTarget: cs.thresholdBps || 6667,
                     reviewGrantedAt: cs.reviewGrantedAt || null,
-                    approvedApprovers: Array.isArray(cs.votes)
+                    approvedApprovers: Number.isFinite(Number(cs.approvedApprovers))
+                      ? Number(cs.approvedApprovers)
+                      : Array.isArray(cs.votes)
                       ? cs.votes.filter((v: any) => {
                           if (String(v.decision).toLowerCase() !== "approve") return false;
                           const approvedRatePercent = cs.upstreamBps ? cs.upstreamBps / 100 : null;
@@ -1547,7 +1555,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           return Number(v.upstreamRatePercent) === Number(approvedRatePercent);
                         }).length
                       : 0,
-                    approverCount: Array.isArray(cs.approvers) ? cs.approvers.length : 0,
+                    approverCount: Number.isFinite(Number(cs.approverCount))
+                      ? Number(cs.approverCount)
+                      : Array.isArray(cs.approvers)
+                      ? cs.approvers.length
+                      : 0,
                     viewer: cs.viewer || null
                   }
                 : d.clearance
@@ -3658,10 +3670,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       const derivativeApproveBps = Number(parentLink?.clearance?.approveWeightBps || 0);
                       const derivativeTargetBps = Number(parentLink?.clearance?.approvalBpsTarget || 6667);
                       const derivativeApprovedApprovers = Number(parentLink?.clearance?.approvedApprovers || 0);
-                      const derivativeApproverCount =
-                        Array.isArray(parentLink?.clearance?.approvers) && parentLink?.clearance?.approvers.length > 0
-                          ? parentLink.clearance.approvers.length
-                          : null;
+                      const derivativeApproverCount = Number.isFinite(Number((parentLink?.clearance as any)?.approverCount))
+                        ? Number((parentLink?.clearance as any)?.approverCount)
+                        : Array.isArray(parentLink?.clearance?.approvers) && parentLink?.clearance?.approvers.length > 0
+                        ? parentLink.clearance.approvers.length
+                        : null;
                       return (
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>

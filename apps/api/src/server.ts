@@ -26852,6 +26852,17 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
       usedAt: new Date()
     }
   });
+  await prisma.approvalToken.updateMany({
+    where: {
+      contentLinkId: link.id,
+      approverEmail: approval.approverEmail,
+      tokenHash: { not: tokenHash },
+      usedAt: null,
+      decision: null,
+      expiresAt: { gt: new Date() }
+    },
+    data: { expiresAt: new Date() }
+  });
 
   // Recompute approval and rejection tallies so mirrored clearance rows stay in sync.
   const approved = await prisma.approvalToken.findMany({
@@ -38561,16 +38572,6 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
               Date.now() +
                 Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168))) * 60 * 60 * 1000
             );
-            await approvalTokenModel.updateMany({
-              where: {
-                contentLinkId: auth.derivativeLinkId,
-                approverEmail: emailEquals(approverEmailForToken),
-                usedAt: null,
-                decision: null,
-                expiresAt: { gt: new Date() }
-              },
-              data: { expiresAt: new Date() }
-            });
             await approvalTokenModel.create({
               data: {
                 contentLinkId: auth.derivativeLinkId,
