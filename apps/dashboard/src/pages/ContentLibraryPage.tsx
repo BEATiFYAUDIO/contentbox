@@ -3061,9 +3061,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     (remoteClearanceToken || (resolvedRemoteInviteToken && resolvedRemoteAuthorizationId))
                 );
                 const showActionControls = clearanceScope !== "cleared" && !isCleared;
-                const canLeaveReviewNote = showActionControls && (hasRemoteDecisionContext || Boolean(linkId));
-                const canUseRemoteVote = showActionControls && hasRemoteDecisionContext;
-                const canUseLocalVote = showActionControls && !canUseRemoteVote && Boolean(clearance?.viewer?.canVote);
+                const canLeaveReviewNote = showActionControls && (isRemoteApproval ? hasRemoteDecisionContext : Boolean(linkId));
+                const canUseRemoteVote = showActionControls && isRemoteApproval && hasRemoteDecisionContext;
+                const canUseLocalVote = showActionControls && !isRemoteApproval && Boolean(linkId) && Boolean(clearance?.viewer?.canVote);
                 const canVote = canUseRemoteVote || canUseLocalVote;
                 const remoteParentHref =
                   String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
@@ -3223,7 +3223,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 submitReviewNote({
                                   approvalKey,
                                   linkId,
-                                  isRemoteApproval: hasRemoteDecisionContext,
+                                  isRemoteApproval: isRemoteApproval && hasRemoteDecisionContext,
                                   remoteOrigin: String(a?.remoteOrigin || ""),
                                   remoteInviteToken: resolvedRemoteInviteToken,
                                   remoteAuthorizationId: resolvedRemoteAuthorizationId,
