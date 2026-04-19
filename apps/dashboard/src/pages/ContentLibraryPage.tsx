@@ -1793,7 +1793,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           const status = String(entry.status || "").toUpperCase();
           const voted = Boolean(String(entry.viewerVote || "").trim());
           if (scope === "pending") return status === "PENDING" && !voted;
-          if (scope === "voted") return voted;
+          if (scope === "voted") return voted && status !== "APPROVED";
           if (scope === "cleared") return status === "APPROVED";
           return true;
         });

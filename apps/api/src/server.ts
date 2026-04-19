@@ -22811,6 +22811,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       if (effectiveViewerVote) continue;
     } else if (scope === "voted") {
       if (!effectiveViewerVote) continue;
+      if (effectiveStatus === "APPROVED") continue;
     } else if (scope === "cleared") {
       if (effectiveStatus !== "APPROVED") continue;
       if (!isEligible && !effectiveViewerVote && !isRequester && !isParentOwner) continue;
