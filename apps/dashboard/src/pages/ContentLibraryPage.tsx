@@ -509,6 +509,8 @@ export default function ContentLibraryPage({
   const [reviewNoteDraftByApproval, setReviewNoteDraftByApproval] = React.useState<Record<string, string>>({});
   const [reviewNoteBusyByApproval, setReviewNoteBusyByApproval] = React.useState<Record<string, boolean>>({});
   const [reviewNoteMsgByApproval, setReviewNoteMsgByApproval] = React.useState<Record<string, string>>({});
+  const [voteBusyByApproval, setVoteBusyByApproval] = React.useState<Record<string, boolean>>({});
+  const [voteMsgByApproval, setVoteMsgByApproval] = React.useState<Record<string, string>>({});
   const [clearanceLoadError, setClearanceLoadError] = React.useState<string | null>(null);
   const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
@@ -1873,6 +1875,67 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
+  async function submitRemoteClearanceVote(input: {
+    approvalKey: string;
+    remoteOrigin?: string | null;
+    remoteInviteToken?: string | null;
+    remoteAuthorizationId?: string | null;
+    decision: "approve" | "reject";
+    upstreamRatePercent?: number | null;
+    reason?: string | null;
+  }) {
+    const approvalKey = String(input.approvalKey || "").trim();
+    const remoteOrigin = String(input.remoteOrigin || "").trim();
+    const inviteToken = String(input.remoteInviteToken || "").trim();
+    const remoteAuthorizationId = String(input.remoteAuthorizationId || "").trim();
+    if (!approvalKey) return;
+    if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
+      const msg = "Missing remote vote routing context.";
+      setVoteMsgByApproval((m) => ({ ...m, [approvalKey]: msg }));
+      setError(msg);
+      return;
+    }
+    setVoteBusyByApproval((m) => ({ ...m, [approvalKey]: true }));
+    setVoteMsgByApproval((m) => ({ ...m, [approvalKey]: "" }));
+    try {
+      await remoteClearanceRequest(
+        remoteOrigin,
+        `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/vote`,
+        {
+          method: "POST",
+          body:
+            input.decision === "approve"
+              ? {
+                  decision: "approve",
+                  upstreamRatePercent:
+                    Number.isFinite(Number(input.upstreamRatePercent)) && Number(input.upstreamRatePercent) >= 0
+                      ? Number(input.upstreamRatePercent)
+                      : 0
+                }
+              : {
+                  decision: "reject",
+                  reason: String(input.reason || "").trim() || undefined
+                }
+        }
+      );
+      if (input.decision === "reject") {
+        setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
+      }
+      setVoteMsgByApproval((m) => ({
+        ...m,
+        [approvalKey]: input.decision === "approve" ? "Permission granted." : "Rejected."
+      }));
+      await loadApprovals(clearanceScope);
+      await loadPendingClearanceCount();
+    } catch (e: any) {
+      const msg = e?.message || "Failed to submit vote.";
+      setVoteMsgByApproval((m) => ({ ...m, [approvalKey]: msg }));
+      setError(msg);
+    } finally {
+      setVoteBusyByApproval((m) => ({ ...m, [approvalKey]: false }));
+    }
+  }
+
   async function remoteClearanceRequest<T = any>(
     origin: string,
     path: string,
@@ -3093,61 +3156,38 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               type="button"
                               className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200"
                               onClick={async () => {
-                                const inviteToken = resolvedRemoteInviteToken;
-                                const remoteOrigin = String(a?.remoteOrigin || "").trim();
-                                const remoteAuthorizationId = resolvedRemoteAuthorizationId;
-                                if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
-                                  setError("Missing remote vote routing context.");
-                                  return;
-                                }
-                                await remoteClearanceRequest(
-                                  remoteOrigin,
-                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/vote`,
-                                  {
-                                    method: "POST",
-                                    body: {
-                                      decision: "approve",
-                                      upstreamRatePercent:
-                                        Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
-                                          ? Number(a.upstreamRatePercent)
-                                          : 0
-                                    }
-                                  }
-                                );
-                                await loadApprovals(clearanceScope);
-                                await loadPendingClearanceCount();
+                                await submitRemoteClearanceVote({
+                                  approvalKey,
+                                  remoteOrigin: String(a?.remoteOrigin || ""),
+                                  remoteInviteToken: resolvedRemoteInviteToken,
+                                  remoteAuthorizationId: resolvedRemoteAuthorizationId,
+                                  decision: "approve",
+                                  upstreamRatePercent:
+                                    Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
+                                      ? Number(a.upstreamRatePercent)
+                                      : 0
+                                });
                               }}
+                              disabled={voteBusyByApproval[approvalKey]}
                             >
-                              Grant permission
+                              {voteBusyByApproval[approvalKey] ? "Granting…" : "Grant permission"}
                             </button>
                             <button
                               type="button"
                               className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                               onClick={async () => {
-                                const inviteToken = resolvedRemoteInviteToken;
-                                const remoteOrigin = String(a?.remoteOrigin || "").trim();
-                                const remoteAuthorizationId = resolvedRemoteAuthorizationId;
-                                if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
-                                  setError("Missing remote vote routing context.");
-                                  return;
-                                }
-                                await remoteClearanceRequest(
-                                  remoteOrigin,
-                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/vote`,
-                                  {
-                                    method: "POST",
-                                    body: {
-                                      decision: "reject",
-                                      reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
-                                    }
-                                  }
-                                );
-                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
-                                await loadApprovals(clearanceScope);
-                                await loadPendingClearanceCount();
+                                await submitRemoteClearanceVote({
+                                  approvalKey,
+                                  remoteOrigin: String(a?.remoteOrigin || ""),
+                                  remoteInviteToken: resolvedRemoteInviteToken,
+                                  remoteAuthorizationId: resolvedRemoteAuthorizationId,
+                                  decision: "reject",
+                                  reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
+                                });
                               }}
+                              disabled={voteBusyByApproval[approvalKey]}
                             >
-                              Reject
+                              {voteBusyByApproval[approvalKey] ? "Submitting…" : "Reject"}
                             </button>
                           </>
                         ) : null}
@@ -3230,6 +3270,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ) : null}
                     {reviewNoteMsgByApproval[approvalKey] ? (
                       <div className="mt-2 text-[11px] text-sky-200">{reviewNoteMsgByApproval[approvalKey]}</div>
+                    ) : null}
+                    {voteMsgByApproval[approvalKey] ? (
+                      <div className="mt-2 text-[11px] text-sky-200">{voteMsgByApproval[approvalKey]}</div>
                     ) : null}
 
                     <div className="mt-2 h-2 rounded-full bg-neutral-900 border border-neutral-800 overflow-hidden">
