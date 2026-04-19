@@ -1838,12 +1838,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         if (!remoteOrigin || !inviteToken || !remoteAuthorizationId) {
           throw new Error("Missing review-note routing context.");
         }
-        await api(
-          `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
-            remoteAuthorizationId
-          )}/note?origin=${encodeURIComponent(remoteOrigin)}`,
-          "POST",
-          { note }
+        await remoteClearanceRequest(
+          remoteOrigin,
+          `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/note`,
+          { method: "POST", body: { note } }
         );
       } else {
         const linkId = String(input.linkId || "").trim();
@@ -1860,6 +1858,49 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     } finally {
       setReviewNoteBusyByApproval((m) => ({ ...m, [approvalKey]: false }));
     }
+  }
+
+  async function remoteClearanceRequest<T = any>(
+    origin: string,
+    path: string,
+    options: { method?: string; body?: any; headers?: Record<string, string> } = {}
+  ): Promise<T> {
+    const remoteOrigin = String(origin || "").trim().replace(/\/+$/, "");
+    if (!remoteOrigin) throw new Error("Missing remote authority origin.");
+    const token = getToken();
+    const method = String(options.method || "GET").toUpperCase().trim();
+    const headers: Record<string, string> = {
+      ...(options.headers || {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    };
+    const body = options.body;
+    const hasBody = body !== undefined && body !== null;
+    if (hasBody && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
+    const url = `${remoteOrigin}${path}`;
+    console.log("clearance request", { origin: remoteOrigin, url, method, body: hasBody ? body : null });
+    const res = await fetch(url, {
+      method,
+      headers,
+      credentials: "include",
+      body: hasBody ? (body instanceof FormData ? body : JSON.stringify(body)) : undefined
+    });
+    const text = await res.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = text;
+    }
+    if (!res.ok) {
+      const err = new Error((data && (data.error || data.message)) || text || `Request failed (${res.status})`) as Error & {
+        status?: number;
+        code?: string | null;
+      };
+      err.status = res.status;
+      err.code = data?.code || data?.error || null;
+      throw err;
+    }
+    return data as T;
   }
 
   async function updateStorefrontStatus(contentId: string, storefrontStatus: "DISABLED" | "UNLISTED" | "LISTED") {
@@ -3045,17 +3086,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setError("Missing remote vote routing context.");
                                   return;
                                 }
-                                await api(
-                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
-                                    remoteAuthorizationId
-                                  )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
-                                  "POST",
+                                await remoteClearanceRequest(
+                                  remoteOrigin,
+                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/vote`,
                                   {
-                                    decision: "approve",
-                                    upstreamRatePercent:
-                                      Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
-                                        ? Number(a.upstreamRatePercent)
-                                        : 0
+                                    method: "POST",
+                                    body: {
+                                      decision: "approve",
+                                      upstreamRatePercent:
+                                        Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
+                                          ? Number(a.upstreamRatePercent)
+                                          : 0
+                                    }
                                   }
                                 );
                                 await loadApprovals(clearanceScope);
@@ -3075,12 +3117,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setError("Missing remote vote routing context.");
                                   return;
                                 }
-                                await api(
-                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
-                                    remoteAuthorizationId
-                                  )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
-                                  "POST",
-                                  { decision: "reject", reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined }
+                                await remoteClearanceRequest(
+                                  remoteOrigin,
+                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/vote`,
+                                  {
+                                    method: "POST",
+                                    body: {
+                                      decision: "reject",
+                                      reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
+                                    }
+                                  }
                                 );
                                 setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
                                 await loadApprovals(clearanceScope);
