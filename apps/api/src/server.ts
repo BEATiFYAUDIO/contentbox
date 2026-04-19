@@ -22598,7 +22598,17 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
           const payload: any = await res.json().catch(() => null);
           const inbox = Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : [];
           remoteClearanceEntry =
-            inbox.find((entry: any) => String(entry?.authorizationId || "").trim() === String(a.id || "").trim()) || null;
+            inbox.find((entry: any) => {
+              const entryAuthId = String(entry?.authorizationId || "").trim();
+              const entryChildContentId = String(entry?.childContentId || "").trim();
+              const entryParentContentId = String(entry?.parentContentId || "").trim();
+              return (
+                (entryAuthId && entryAuthId === String(a.id || "").trim()) ||
+                (entryChildContentId &&
+                  entryChildContentId === String(a.derivativeLink?.childContentId || "").trim() &&
+                  entryParentContentId === String(a.parentContentId || "").trim())
+              );
+            }) || null;
         } finally {
           clearTimeout(timeout);
         }
