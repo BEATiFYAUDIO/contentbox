@@ -1393,7 +1393,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         setPublishMsg((m) => ({ ...m, [contentId]: "Checking clearance status..." }));
         return;
       }
-      if (parentLink?.requiresApproval && !parentLink?.approvedAt) {
+      const parentCleared =
+        Boolean(parentLink?.approvedAt) ||
+        String(parentLink?.clearance?.status || "").trim().toUpperCase() === "APPROVED";
+      if (parentLink?.requiresApproval && !parentCleared) {
         setPublishMsg((m) => ({ ...m, [contentId]: "Clearance is pending. Publish unlocks after rights-holder approval." }));
         return;
       }
@@ -2944,8 +2947,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   ? `remote:${String(a?.remoteAuthorizationId || a?.authorizationId || "")}`
                   : `local:${linkId || String(a?.authorizationId || "")}`;
                 const clearance = linkId ? clearanceByLink[linkId] : null;
-                const progressBps = isRemoteApproval ? Number(a?.approveWeightBps || 0) : (clearance?.progressBps || 0);
-                const thresholdBps = isRemoteApproval ? Number(a?.approvalBpsTarget || 6667) : (clearance?.thresholdBps || 6667);
+                const progressBps = isRemoteApproval
+                  ? Number(a?.approveWeightBps || 0)
+                  : Number.isFinite(Number(clearance?.progressBps))
+                    ? Number(clearance?.progressBps)
+                    : Number(a?.approveWeightBps || 0);
+                const thresholdBps = isRemoteApproval
+                  ? Number(a?.approvalBpsTarget || 6667)
+                  : Number.isFinite(Number(clearance?.thresholdBps))
+                    ? Number(clearance?.thresholdBps)
+                    : Number(a?.approvalBpsTarget || 6667);
                 const approvedApprovers =
                   Number.isFinite(Number(clearance?.approvedApprovers))
                     ? Number(clearance.approvedApprovers)
@@ -3433,8 +3444,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   : "Free access";
               const parentLink = parentLinkByContent[it.id] || null;
               const derivativeClearanceUnknown = isDerivativeType && parentLinkByContent[it.id] === undefined;
+              const parentCleared =
+                Boolean(parentLink?.approvedAt) ||
+                String(parentLink?.clearance?.status || "").trim().toUpperCase() === "APPROVED";
               const derivativeClearancePending =
-                isDerivativeType && Boolean(parentLink?.requiresApproval && !parentLink?.approvedAt);
+                isDerivativeType && Boolean(parentLink?.requiresApproval && !parentCleared);
               const derivativePublishBlocked = derivativeClearanceUnknown || derivativeClearancePending;
               const publishTitle = isBasicTier && isDerivativeType
                 ? "Derivatives require Advanced mode and clearance before publishing."

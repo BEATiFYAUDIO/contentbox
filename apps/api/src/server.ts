@@ -21477,6 +21477,34 @@ async function getWalletReceiveReady(userId: string, productTier?: string) {
   return Boolean(identity?.value);
 }
 
+async function resolveParentAuthorityOriginForLink(input: {
+  parentContentId: string;
+  parentDeletedReason?: string | null;
+  parentRepoPath?: string | null;
+  parentDescription?: string | null;
+}): Promise<string | null> {
+  const fromShadow =
+    input.parentDeletedReason === "hard" && !input.parentRepoPath
+      ? getRemoteOriginFromDescription(input.parentDescription || null)
+      : null;
+  if (fromShadow) return fromShadow.replace(/\/+$/, "");
+  const invite = await prisma.remoteInvite
+    .findFirst({
+      where: {
+        contentId: input.parentContentId,
+        contentDeletedAt: null,
+        revokedAt: null,
+        tombstonedAt: null,
+        OR: [{ acceptedAt: { not: null } }, { status: "accepted" }]
+      },
+      orderBy: { updatedAt: "desc" },
+      select: { remoteOrigin: true }
+    })
+    .catch(() => null);
+  const fromInvite = normalizeRemoteOrigin(invite?.remoteOrigin || "");
+  return fromInvite || null;
+}
+
 async function resolveDerivativeInfo(contentId: string, contentType: string | null) {
   const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(contentType || ""));
   const links = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
@@ -21490,10 +21518,14 @@ async function resolveDerivativeInfo(contentId: string, contentType: string | nu
       where: { id: link.parentContentId },
       select: { repoPath: true, deletedReason: true, description: true }
     });
-    const parentOrigin =
-      parentShadow && parentShadow.deletedReason === "hard" && !parentShadow.repoPath
-        ? getRemoteOriginFromDescription(parentShadow.description)
-        : null;
+    const parentOrigin = parentShadow
+      ? await resolveParentAuthorityOriginForLink({
+          parentContentId: link.parentContentId,
+          parentDeletedReason: parentShadow.deletedReason,
+          parentRepoPath: parentShadow.repoPath,
+          parentDescription: parentShadow.description
+        })
+      : null;
     if (parentOrigin) {
       try {
         const ctrl = new AbortController();
@@ -22065,10 +22097,14 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requireFeat
             where: { id: link.parentContentId },
             select: { repoPath: true, deletedReason: true, description: true }
           });
-          const parentOrigin =
-            parentShadow && parentShadow.deletedReason === "hard" && !parentShadow.repoPath
-              ? getRemoteOriginFromDescription(parentShadow.description)
-              : null;
+          const parentOrigin = parentShadow
+            ? await resolveParentAuthorityOriginForLink({
+                parentContentId: link.parentContentId,
+                parentDeletedReason: parentShadow.deletedReason,
+                parentRepoPath: parentShadow.repoPath,
+                parentDescription: parentShadow.description
+              })
+            : null;
           if (parentOrigin) {
             try {
               const ctrl = new AbortController();
@@ -22279,8 +22315,14 @@ app.get("/content/:id/parent-link", { preHandler: requireAuth }, async (req: any
   const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
   const parent = await prisma.contentItem.findUnique({ where: { id: link.parentContentId } });
   let remoteStatus: any = null;
-  const parentOrigin =
-    parent && parent.deletedReason === "hard" && !parent.repoPath ? getRemoteOriginFromDescription(parent.description) : null;
+  const parentOrigin = parent
+    ? await resolveParentAuthorityOriginForLink({
+        parentContentId: link.parentContentId,
+        parentDeletedReason: parent.deletedReason,
+        parentRepoPath: parent.repoPath,
+        parentDescription: parent.description
+      })
+    : null;
   if (parentOrigin) {
     try {
       const ctrl = new AbortController();
@@ -23791,10 +23833,14 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     where: { id: link.parentContentId },
     select: { repoPath: true, deletedReason: true, description: true }
   });
-  const parentOrigin =
-    parentShadow && parentShadow.deletedReason === "hard" && !parentShadow.repoPath
-      ? getRemoteOriginFromDescription(parentShadow.description)
-      : null;
+  const parentOrigin = parentShadow
+    ? await resolveParentAuthorityOriginForLink({
+        parentContentId: link.parentContentId,
+        parentDeletedReason: parentShadow.deletedReason,
+        parentRepoPath: parentShadow.repoPath,
+        parentDescription: parentShadow.description
+      })
+    : null;
   let remoteStatus: any = null;
   if (parentOrigin) {
     try {
