@@ -24822,23 +24822,58 @@ async function handlePublicAttribution(req: any, reply: any) {
     truncated: boolean;
   } | null = null;
   if (parentLinks.length > 0) {
+    const fetchRemoteParentAttribution = async (origin: string, parentContentId: string) => {
+      const normalizedOrigin = normalizeOrigin(asString(origin || "").trim());
+      if (!normalizedOrigin) return null;
+      const remoteUrl = `${normalizedOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(parentContentId)}/attribution`;
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 4000);
+      try {
+        const res = await fetch(remoteUrl, {
+          signal: ctrl.signal as any,
+          redirect: "follow"
+        });
+        if (!res.ok) return null;
+        return await res.json().catch(() => null);
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
+    };
+    const normalizeUpstreamProfilePath = (profilePathRaw: string | null | undefined, parentOrigin: string | null) => {
+      const normalized = normalizePublicProfileHref(profilePathRaw || "");
+      if (!normalized) return null;
+      if (/^https?:\/\//i.test(normalized)) return normalized;
+      return parentOrigin ? buildPublicUrlFromOrigin(parentOrigin, normalized) : normalized;
+    };
+    const dedupeAttributionPeople = <T extends { displayName?: string | null; handle?: string | null }>(rows: T[]): T[] => {
+      const seen = new Set<string>();
+      return rows.filter((entry) => {
+        const key = `${asString(entry.displayName || "").trim().toLowerCase()}|${asString(entry.handle || "").trim().toLowerCase()}`;
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    };
     const maxItems = 5;
     const items = await Promise.all(
       parentLinks.slice(0, maxItems).map(async (l) => {
         const parentContentId = asString(l.parentContentId || l.parentContent?.id || "").trim() || null;
         const parentSplitSnapshotId = asString(l.parentSplitVersionId || "").trim() || null;
+        const parentOrigin = getRemoteOriginFromDescription(l.parentContent?.description || null);
         const parentSplit =
           (parentSplitSnapshotId ? await getLockedSplitVersionById(parentSplitSnapshotId) : null) ||
           (parentContentId ? await getLockedSplitForContent(parentContentId) : null);
         const parentSnapshots = parentSplit ? await getLockedParticipantSnapshotsForSplitVersion(parentSplit.id) : [];
-        const shareholders = parentSnapshots
+        const localShareholders = parentSnapshots
           .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
           .map((snapshot) => {
             const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
             const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
             const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
             const safeProfilePath =
-              normalizePublicProfileHref(snapshot.profilePathSnapshot || "") ||
+              normalizeUpstreamProfilePath(snapshot.profilePathSnapshot || "", parentOrigin) ||
               (normalizedHandle && !looksLikeInternalUserId(normalizedHandle)
                 ? (snapshot.participantOrigin
                     ? `${snapshot.participantOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
@@ -24860,7 +24895,7 @@ async function handlePublicAttribution(req: any, reply: any) {
             verification: { badge: null as string | null }
           };
         const parentCreatorsSeed = [
-          ...shareholders.map((shareholder) => ({
+          ...localShareholders.map((shareholder) => ({
             displayName: shareholder.displayName,
             handle: shareholder.handle,
             profilePath: shareholder.profilePath
@@ -24871,14 +24906,53 @@ async function handlePublicAttribution(req: any, reply: any) {
             profilePath: null as string | null
           }
         ];
-        const parentCreatorsSeen = new Set<string>();
-        const parentCreators = parentCreatorsSeed.filter((entry) => {
-          const key = `${asString(entry.displayName || "").trim().toLowerCase()}|${asString(entry.handle || "").trim().toLowerCase()}`;
-          if (!key || parentCreatorsSeen.has(key)) return false;
-          parentCreatorsSeen.add(key);
-          return true;
-        });
-        const parentOrigin = getRemoteOriginFromDescription(l.parentContent?.description || null);
+        const remoteAttribution: any =
+          parentOrigin && parentContentId
+            ? await fetchRemoteParentAttribution(parentOrigin, parentContentId)
+            : null;
+        const remoteContributors = Array.isArray(remoteAttribution?.contributors)
+          ? remoteAttribution.contributors
+          : [];
+        const remotePrimaryCreator = remoteAttribution?.primaryCreator || null;
+        const remoteShareholders = remoteContributors
+          .map((entry: any) => {
+            const bps = Math.max(0, Math.round(Number(entry?.bps || 0)));
+            if (bps <= 0) return null;
+            const displayName = asString(entry?.displayName || entry?.name || "").trim() || "Contributor";
+            const normalizedHandle = normalizePublicProfileHandle(asString(entry?.handle || "").trim() || displayName);
+            const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
+            const safeProfilePath = normalizeUpstreamProfilePath(asString(entry?.profilePath || "").trim(), parentOrigin) ||
+              (normalizedHandle ? buildPublicUrlFromOrigin(parentOrigin, `/u/${encodeURIComponent(normalizedHandle)}`) : null);
+            return {
+              displayName,
+              handle: safeHandle,
+              profilePath: safeProfilePath,
+              bps
+            };
+          })
+          .filter(Boolean) as Array<{ displayName: string; handle: string | null; profilePath: string | null; bps: number }>;
+        const shareholders = (remoteShareholders.length >= localShareholders.length ? remoteShareholders : localShareholders)
+          .sort((a, b) => b.bps - a.bps);
+        const parentCreators = dedupeAttributionPeople([
+          ...shareholders.map((shareholder) => ({
+            displayName: shareholder.displayName,
+            handle: shareholder.handle,
+            profilePath: shareholder.profilePath
+          })),
+          ...parentCreatorsSeed,
+          ...(remotePrimaryCreator
+            ? [{
+                displayName: asString(remotePrimaryCreator.displayName || remotePrimaryCreator.name || "").trim() || "Creator",
+                handle: asString(remotePrimaryCreator.handle || "").trim() || null,
+                profilePath: normalizeUpstreamProfilePath(asString(remotePrimaryCreator.profilePath || "").trim(), parentOrigin)
+              }]
+            : []),
+          ...remoteContributors.map((entry: any) => ({
+            displayName: asString(entry?.displayName || entry?.name || "").trim() || "Contributor",
+            handle: asString(entry?.handle || "").trim() || null,
+            profilePath: normalizeUpstreamProfilePath(asString(entry?.profilePath || "").trim(), parentOrigin)
+          }))
+        ]);
         const parentContentUrl = parentContentId
           ? (parentOrigin
               ? buildPublicUrlFromOrigin(parentOrigin, `/buy/${encodeURIComponent(parentContentId)}`)
