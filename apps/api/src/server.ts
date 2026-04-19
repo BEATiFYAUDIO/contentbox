@@ -24195,7 +24195,7 @@ async function handleBuyPreviewRedirect(req: any, reply: any) {
   const rawUrl = asString(req?.raw?.url || req?.url || "");
   const qs = rawUrl.includes("?") ? rawUrl.split("?").slice(1).join("?") : "";
   const target = `/public/content/${encodeURIComponent(contentId)}/preview-file${qs ? `?${qs}` : ""}`;
-  return reply.redirect(302, target);
+  return reply.redirect(target, 302);
 }
 
 app.addHook("onRequest", (req: any, reply: any, done: any) => {
@@ -25873,8 +25873,8 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
   const childOrigin = getRemoteOriginFromDescription(child?.description || null);
   if (!child?.repoPath && childOrigin) {
     return reply.redirect(
-      302,
-      `${childOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(link.childContentId)}/preview-file`
+      `${childOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(link.childContentId)}/preview-file`,
+      302
     );
   }
   if (!reviewGrantedAt) {
