@@ -25913,10 +25913,33 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
   </div>
   <script>
     const msg = document.getElementById("msg");
+    const actionRow = document.querySelector(".action-row");
     const grantBtn = document.getElementById("grantBtn");
     const rejectBtn = document.getElementById("rejectBtn");
     const noteBtn = document.getElementById("noteBtn");
     const noteInput = document.getElementById("noteInput");
+    function setDecisionState(decision) {
+      if (decision === "approve") {
+        if (grantBtn) {
+          grantBtn.textContent = "Permission granted";
+          grantBtn.disabled = true;
+        }
+        if (rejectBtn) {
+          rejectBtn.textContent = "Reject";
+          rejectBtn.disabled = true;
+        }
+      } else if (decision === "reject") {
+        if (rejectBtn) {
+          rejectBtn.textContent = "Rejected";
+          rejectBtn.disabled = true;
+        }
+        if (grantBtn) {
+          grantBtn.textContent = "Grant clearance";
+          grantBtn.disabled = true;
+        }
+      }
+      if (actionRow) actionRow.setAttribute("data-decision", decision || "");
+    }
     function setBusy(busy) {
       [grantBtn, rejectBtn, noteBtn, noteInput].forEach((el) => {
         if (!el) return;
@@ -25946,11 +25969,17 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
         console.log("API response", { status: r.status, ok: r.ok, text });
         msg.textContent = text || (r.ok ? "Recorded." : "Failed.");
         if (r.ok && isNote && noteInput) noteInput.value = "";
+        if (r.ok && !isNote) setDecisionState(action);
       } catch (e) {
         console.error("submit failed", e);
         msg.textContent = "Failed to submit.";
       } finally {
-        setBusy(false);
+        if (!isNote && actionRow?.getAttribute("data-decision")) {
+          noteBtn && (noteBtn.disabled = false);
+          noteInput && (noteInput.disabled = false);
+        } else {
+          setBusy(false);
+        }
       }
     }
     grantBtn?.addEventListener("click", () => {
@@ -26321,10 +26350,33 @@ app.get("/clearance/:token", async (req: any, reply) => {
   </div>
   <script>
     const msg = document.getElementById("msg");
+    const actionRow = document.querySelector(".action-row");
     const grantBtn = document.getElementById("grantBtn");
     const rejectBtn = document.getElementById("rejectBtn");
     const noteBtn = document.getElementById("noteBtn");
     const noteInput = document.getElementById("noteInput");
+    function setDecisionState(decision) {
+      if (decision === "approve") {
+        if (grantBtn) {
+          grantBtn.textContent = "Permission granted";
+          grantBtn.disabled = true;
+        }
+        if (rejectBtn) {
+          rejectBtn.textContent = "Reject";
+          rejectBtn.disabled = true;
+        }
+      } else if (decision === "reject") {
+        if (rejectBtn) {
+          rejectBtn.textContent = "Rejected";
+          rejectBtn.disabled = true;
+        }
+        if (grantBtn) {
+          grantBtn.textContent = "Grant clearance";
+          grantBtn.disabled = true;
+        }
+      }
+      if (actionRow) actionRow.setAttribute("data-decision", decision || "");
+    }
     function setBusy(busy) {
       [grantBtn, rejectBtn, noteBtn, noteInput].forEach((el) => {
         if (!el) return;
@@ -26354,11 +26406,17 @@ app.get("/clearance/:token", async (req: any, reply) => {
         console.log("API response", { status: r.status, ok: r.ok, text });
         msg.textContent = text || (r.ok ? "Recorded." : "Failed.");
         if (r.ok && isNote && noteInput) noteInput.value = "";
+        if (r.ok && !isNote) setDecisionState(action);
       } catch (e) {
         console.error("submit failed", e);
         msg.textContent = "Failed to submit.";
       } finally {
-        setBusy(false);
+        if (!isNote && actionRow?.getAttribute("data-decision")) {
+          noteBtn && (noteBtn.disabled = false);
+          noteInput && (noteInput.disabled = false);
+        } else {
+          setBusy(false);
+        }
       }
     }
     grantBtn?.addEventListener("click", () => {
