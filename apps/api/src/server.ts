@@ -22480,13 +22480,15 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       })
       .catch(() => null);
     const childOrigin = getRemoteOriginFromDescription(a.derivativeLink.childContent?.description || null);
+    const parentOrigin =
+      isShadowRemote ? getRemoteOriginFromDescription(parent?.description || null) : null;
     const remoteInviteForViewer =
-      childOrigin
+      parentOrigin
         ? await prisma.remoteInvite.findFirst({
             where: {
               userId,
               contentId: a.parentContentId,
-              remoteOrigin: childOrigin,
+              remoteOrigin: parentOrigin,
               contentDeletedAt: null,
               revokedAt: null,
               tombstonedAt: null,
@@ -22496,6 +22498,26 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
             select: { inviteUrl: true }
           }).catch(() => null)
         : null;
+    const remoteInviteToken = extractInviteTokenFromUrl(remoteInviteForViewer?.inviteUrl || null);
+    let remoteClearanceEntry: any = null;
+    if (parentOrigin && remoteInviteToken) {
+      try {
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 5000);
+        try {
+          const res = await fetch(
+            `${parentOrigin.replace(/\/+$/, "")}/invites/${encodeURIComponent(remoteInviteToken)}/accounting`,
+            { signal: ctrl.signal as any }
+          );
+          const payload: any = await res.json().catch(() => null);
+          const inbox = Array.isArray(payload?.clearanceInbox) ? payload.clearanceInbox : [];
+          remoteClearanceEntry =
+            inbox.find((entry: any) => String(entry?.authorizationId || "").trim() === String(a.id || "").trim()) || null;
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch {}
+    }
     const isRequester = String(a.derivativeLink?.childContent?.ownerUserId || "").trim() === userId;
     const isParentOwner = String(parent?.ownerUserId || "").trim() === userId && !isShadowRemote;
     const isEligible =
@@ -22523,12 +22545,14 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       childContentId: a.derivativeLink.childContentId,
       childTitle: a.derivativeLink.childContent?.title || null,
       childOrigin: childOrigin,
-      remoteOrigin: childOrigin,
+      remoteOrigin: parentOrigin,
       remoteAuthorizationId: a.id,
-      remoteInviteToken: extractInviteTokenFromUrl(remoteInviteForViewer?.inviteUrl || null),
+      remoteInviteToken,
+      remoteClearanceToken: asString(remoteClearanceEntry?.clearanceToken || "").trim() || null,
+      remoteClearanceUrl: remoteClearanceEntry?.clearanceUrl || null,
       relation: a.derivativeLink.relation,
-      status: a.status,
-      viewerVote: existingVote?.decision || null,
+      status: String(remoteClearanceEntry?.status || a.status || "PENDING"),
+      viewerVote: existingVote?.decision || remoteClearanceEntry?.viewerVote || null,
       clearanceRequest: latestClearanceRequest
         ? {
             status: String(latestClearanceRequest.status || "PENDING"),
