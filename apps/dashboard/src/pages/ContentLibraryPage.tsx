@@ -159,6 +159,23 @@ function extractInviteClearanceRouteParts(url: string | null | undefined): { inv
   }
 }
 
+function extractApprovalTokenFromClearanceUrl(url: string | null | undefined): string | null {
+  const raw = String(url || "").trim();
+  if (!raw) return null;
+  const parsePath = (path: string) => {
+    const normalized = String(path || "").trim();
+    if (!/^\/clearance\/[^/?#]+$/i.test(normalized)) return null;
+    const m = normalized.match(/^\/clearance\/([^/?#]+)$/i);
+    return m?.[1] ? decodeURIComponent(m[1]) : null;
+  };
+  try {
+    const parsed = new URL(raw);
+    return parsePath(parsed.pathname);
+  } catch {
+    return parsePath(raw);
+  }
+}
+
 type SplitVersion = {
   id: string;
   contentId: string;
@@ -1835,6 +1852,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     remoteOrigin?: string | null;
     remoteInviteToken?: string | null;
     remoteAuthorizationId?: string | null;
+    remoteClearanceToken?: string | null;
   }) {
     const approvalKey = String(input.approvalKey || "").trim();
     const note = String(reviewNoteDraftByApproval[approvalKey] || "").trim();
@@ -1850,12 +1868,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         const remoteOrigin = String(input.remoteOrigin || "").trim();
         const inviteToken = String(input.remoteInviteToken || "").trim();
         const remoteAuthorizationId = String(input.remoteAuthorizationId || "").trim();
-        if (!remoteOrigin || !inviteToken || !remoteAuthorizationId) {
+        const remoteClearanceToken = String(input.remoteClearanceToken || "").trim();
+        if (!remoteOrigin || (!remoteClearanceToken && (!inviteToken || !remoteAuthorizationId))) {
           throw new Error("Missing review-note routing context.");
         }
         await remoteClearanceRequest(
           remoteOrigin,
-          `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/note`,
+          remoteClearanceToken
+            ? `/api/remote/clearance/${encodeURIComponent(remoteClearanceToken)}/note`
+            : `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/note`,
           { method: "POST", body: { note } }
         );
       } else {
@@ -1880,6 +1901,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     remoteOrigin?: string | null;
     remoteInviteToken?: string | null;
     remoteAuthorizationId?: string | null;
+    remoteClearanceToken?: string | null;
     decision: "approve" | "reject";
     upstreamRatePercent?: number | null;
     reason?: string | null;
@@ -1888,8 +1910,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     const remoteOrigin = String(input.remoteOrigin || "").trim();
     const inviteToken = String(input.remoteInviteToken || "").trim();
     const remoteAuthorizationId = String(input.remoteAuthorizationId || "").trim();
+    const remoteClearanceToken = String(input.remoteClearanceToken || "").trim();
     if (!approvalKey) return;
-    if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
+    if (!remoteOrigin || (!remoteClearanceToken && (!inviteToken || !remoteAuthorizationId))) {
       const msg = "Missing remote vote routing context.";
       setVoteMsgByApproval((m) => ({ ...m, [approvalKey]: msg }));
       setError(msg);
@@ -1900,7 +1923,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       await remoteClearanceRequest(
         remoteOrigin,
-        `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/vote`,
+        remoteClearanceToken
+          ? `/api/remote/clearance/${encodeURIComponent(remoteClearanceToken)}/vote`
+          : `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(remoteAuthorizationId)}/vote`,
         {
           method: "POST",
           body:
@@ -2934,12 +2959,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ? Number(clearance.upstreamBps) / 100
                     : null;
                 const clearanceRouteParts = extractInviteClearanceRouteParts(String(a?.remoteClearanceUrl || ""));
+                const remoteClearanceToken = extractApprovalTokenFromClearanceUrl(String(a?.remoteClearanceUrl || ""));
                 const resolvedRemoteInviteToken =
                   String(a?.remoteInviteToken || "").trim() || String(clearanceRouteParts.inviteToken || "").trim();
                 const resolvedRemoteAuthorizationId =
                   String(a?.remoteAuthorizationId || "").trim() || String(clearanceRouteParts.authorizationId || "").trim();
                 const canLeaveReviewNote = !isCleared && (isRemoteApproval
-                  ? Boolean(String(a?.remoteOrigin || "").trim() && resolvedRemoteInviteToken && resolvedRemoteAuthorizationId)
+                  ? Boolean(
+                      String(a?.remoteOrigin || "").trim() &&
+                        (remoteClearanceToken || (resolvedRemoteInviteToken && resolvedRemoteAuthorizationId))
+                    )
                   : Boolean(linkId));
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
@@ -3102,7 +3131,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   isRemoteApproval,
                                   remoteOrigin: String(a?.remoteOrigin || ""),
                                   remoteInviteToken: resolvedRemoteInviteToken,
-                                  remoteAuthorizationId: resolvedRemoteAuthorizationId
+                                  remoteAuthorizationId: resolvedRemoteAuthorizationId,
+                                  remoteClearanceToken
                                 })
                               }
                               disabled={!crossNodeAllowed || reviewNoteBusyByApproval[approvalKey]}
@@ -3132,6 +3162,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   remoteOrigin: String(a?.remoteOrigin || ""),
                                   remoteInviteToken: resolvedRemoteInviteToken,
                                   remoteAuthorizationId: resolvedRemoteAuthorizationId,
+                                  remoteClearanceToken,
                                   decision: "approve",
                                   upstreamRatePercent:
                                     Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
@@ -3152,6 +3183,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   remoteOrigin: String(a?.remoteOrigin || ""),
                                   remoteInviteToken: resolvedRemoteInviteToken,
                                   remoteAuthorizationId: resolvedRemoteAuthorizationId,
+                                  remoteClearanceToken,
                                   decision: "reject",
                                   reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
                                 });

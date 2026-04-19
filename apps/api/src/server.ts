@@ -16119,10 +16119,17 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
       10000
     );
     const text = await res.text();
+    let responsePayload: any = null;
+    try {
+      responsePayload = text ? JSON.parse(text) : null;
+    } catch {
+      responsePayload = null;
+    }
     if (!res.ok) {
+      if (responsePayload && typeof responsePayload === "object") return reply.code(res.status).send(responsePayload);
       return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
     }
-    return reply.send({ ok: true, message: text || "Recorded." });
+    return reply.send(responsePayload || { ok: true, message: text || "Recorded." });
   } catch (e: any) {
     return reply.code(502).send({ error: "Remote clearance vote failed", details: String(e?.message || e) });
   }
@@ -16160,16 +16167,104 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/note", { preHand
       10000
     );
     const text = await res.text();
-    let payload: any = null;
+    let responsePayload: any = null;
     try {
-      payload = text ? JSON.parse(text) : null;
+      responsePayload = text ? JSON.parse(text) : null;
     } catch {
-      payload = null;
+      responsePayload = null;
     }
     if (!res.ok) {
-      return reply.code(res.status).send(payload || { error: text || `HTTP_${res.status}` });
+      if (responsePayload && typeof responsePayload === "object") return reply.code(res.status).send(responsePayload);
+      return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
     }
-    return reply.send(payload || { ok: true });
+    return reply.send(responsePayload || { ok: true });
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote clearance note failed", details: String(e?.message || e) });
+  }
+});
+
+app.post("/api/remote/clearance/:token/vote", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
+  const token = asString((req.params as any).token);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!origin) return badRequest(reply, "invalid origin");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote invite host unreachable", origin });
+  }
+  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number | string | null; reason?: string | null };
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/clearance/${encodeURIComponent(token)}/vote`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/plain,application/json" } as any,
+        body: JSON.stringify(body)
+      } as any,
+      10000
+    );
+    const text = await res.text();
+    let responsePayload: any = null;
+    try {
+      responsePayload = text ? JSON.parse(text) : null;
+    } catch {
+      responsePayload = null;
+    }
+    if (!res.ok) {
+      if (responsePayload && typeof responsePayload === "object") return reply.code(res.status).send(responsePayload);
+      return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
+    }
+    return reply.send(responsePayload || { ok: true, message: text || "Recorded." });
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote clearance vote failed", details: String(e?.message || e) });
+  }
+});
+
+app.post("/api/remote/clearance/:token/note", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const inviteCtx = getCapabilityContext();
+  if (!canUseSplits(inviteCtx)) {
+    return reply.code(403).send({
+      code: "invite_not_allowed",
+      reason: capabilityReason(inviteCtx, "invite", capabilityReasonContext(inviteCtx))
+    });
+  }
+  const token = asString((req.params as any).token);
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  if (!token) return badRequest(reply, "token required");
+  if (!origin) return badRequest(reply, "invalid origin");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote invite host unreachable", origin });
+  }
+  const note = parseClearanceReviewNote(req.body);
+  if (!note) return badRequest(reply, "note required");
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/clearance/${encodeURIComponent(token)}/note`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" } as any,
+        body: JSON.stringify({ note })
+      } as any,
+      10000
+    );
+    const text = await res.text();
+    let responsePayload: any = null;
+    try {
+      responsePayload = text ? JSON.parse(text) : null;
+    } catch {
+      responsePayload = null;
+    }
+    if (!res.ok) {
+      if (responsePayload && typeof responsePayload === "object") return reply.code(res.status).send(responsePayload);
+      return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
+    }
+    return reply.send(responsePayload || { ok: true });
   } catch (e: any) {
     return reply.code(502).send({ error: "Remote clearance note failed", details: String(e?.message || e) });
   }
@@ -22557,6 +22652,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     const tokenHash = hashApprovalToken(token);
     await approvalTokenModel.create({
       data: {
+        authorizationId: auth.id,
         contentLinkId: linkId,
         tokenHash,
         approverEmail: email,
@@ -22731,6 +22827,7 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     const tokenHash = hashApprovalToken(token);
     await approvalTokenModel.create({
       data: {
+        authorizationId: auth.id,
         contentLinkId: link.id,
         tokenHash,
         approverEmail: email,
@@ -38141,19 +38238,31 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         const viewerVote = inviteUserId
           ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
           : null;
-        const clearanceToken =
-          approverEmailForToken && approvalTokenModel
-            ? await approvalTokenModel.findFirst({
-                where: {
-                  authorizationId: auth.id,
-                  approverEmail: emailEquals(approverEmailForToken),
-                  usedAt: null,
-                  expiresAt: { gt: new Date() }
-                },
-                orderBy: { createdAt: "desc" },
-                select: { token: true }
-              })
-            : null;
+        let clearanceToken = null as { token: string } | null;
+        if (approverEmailForToken && approvalTokenModel) {
+          clearanceToken = await approvalTokenModel.findFirst({
+            where: {
+              authorizationId: auth.id,
+              approverEmail: emailEquals(approverEmailForToken),
+              usedAt: null,
+              expiresAt: { gt: new Date() }
+            },
+            orderBy: { createdAt: "desc" },
+            select: { token: true }
+          });
+          if (!clearanceToken) {
+            clearanceToken = await approvalTokenModel.findFirst({
+              where: {
+                contentLinkId: auth.derivativeLinkId,
+                approverEmail: emailEquals(approverEmailForToken),
+                usedAt: null,
+                expiresAt: { gt: new Date() }
+              },
+              orderBy: { createdAt: "desc" },
+              select: { token: true }
+            });
+          }
+        }
         return {
           authorizationId: auth.id,
           linkId: auth.derivativeLinkId,
