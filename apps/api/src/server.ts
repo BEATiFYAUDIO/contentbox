@@ -10578,6 +10578,21 @@ function approvalTokenPrincipalMatchesParticipant(
   return false;
 }
 
+function approvalVotePrincipalForInternalVote(input: {
+  approverUserId?: string | null;
+  approverEmail?: string | null;
+  matchedApprover?: { participantEmail?: string | null; identityRef?: string | null; participantUserId?: string | null } | null;
+}): string | null {
+  const matched = input.matchedApprover || null;
+  const matchedPrincipal = matched ? approvalTokenPrincipalForApprover(matched) : null;
+  if (matchedPrincipal) return matchedPrincipal;
+  const email = normalizeEmail(input.approverEmail || "");
+  if (email) return email;
+  const approverUserId = asString(input.approverUserId || "").trim();
+  if (approverUserId) return `user:${approverUserId}`;
+  return null;
+}
+
 function remoteInviteSnapshotMatchesViewer(
   snapshot: any,
   userId: string,
@@ -23447,7 +23462,7 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
 
   const approvedRatePercent = link.upstreamBps ? link.upstreamBps / 100 : null;
 
-  const votes: any[] = [
+  const rawVotes: any[] = [
     ...internalVotes.map((v) => {
       const u = voteUserById.get(v.approverUserId);
       const email = (u?.email || "").toLowerCase();
@@ -23456,6 +23471,11 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
         kind: "internal",
         approverUserId: v.approverUserId,
         approverEmail: u?.email || null,
+        approverPrincipal: approvalVotePrincipalForInternalVote({
+          approverUserId: v.approverUserId,
+          approverEmail: u?.email || null,
+          matchedApprover: p || null
+        }),
         decision: v.decision,
         upstreamRatePercent: approvedRatePercent,
         weightBps: p?.weightBps || 0
@@ -23465,11 +23485,34 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
       kind: "external",
       approverUserId: null,
       approverEmail: v.approverEmail || null,
+      approverPrincipal: asString(v.approverEmail || "").trim() || null,
       decision: v.decision,
       upstreamRatePercent: v.upstreamRatePercent ?? null,
       weightBps: v.weightBps || 0
     }))
   ];
+  const votesByPrincipal = new Map<string, any>();
+  for (const vote of rawVotes) {
+    const principal = asString(vote?.approverPrincipal || "").trim();
+    const key =
+      principal ||
+      (vote?.approverUserId ? `user:${vote.approverUserId}` : "") ||
+      (vote?.approverEmail ? `email:${normalizeEmail(vote.approverEmail)}` : "") ||
+      `anon:${votesByPrincipal.size}`;
+    const existing = votesByPrincipal.get(key);
+    if (!existing) {
+      votesByPrincipal.set(key, vote);
+      continue;
+    }
+    if (existing.kind === "external" && vote.kind === "internal") {
+      votesByPrincipal.set(key, vote);
+      continue;
+    }
+    if (existing.kind === vote.kind && String(existing.decision).toLowerCase() !== "approve" && String(vote.decision).toLowerCase() === "approve") {
+      votesByPrincipal.set(key, vote);
+    }
+  }
+  const votes = Array.from(votesByPrincipal.values());
 
   const localApprovedApprovers = votes.filter((v) => {
     if (String(v.decision).toLowerCase() !== "approve") return false;
