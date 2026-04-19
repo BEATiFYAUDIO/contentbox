@@ -25873,12 +25873,24 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
   <title>Clearance / License for Release</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #0b0b0b; color: #eee; padding: 24px; }
-    .card { max-width: 680px; margin: 0 auto; background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; }
+    .card { max-width: 680px; margin: 0 auto; background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; box-sizing: border-box; }
     .muted { color: #9aa0a6; font-size: 13px; }
-    input { padding: 8px 10px; border-radius: 8px; border: 1px solid #333; background: #0e0e0e; color: #fff; }
-    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #333; background: #141414; color: #fff; cursor: pointer; }
+    input { padding: 8px 10px; border-radius: 8px; border: 1px solid #333; background: #0e0e0e; color: #fff; min-width: 0; width: 100%; box-sizing: border-box; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #333; background: #141414; color: #fff; cursor: pointer; box-sizing: border-box; }
     button.primary { border-color: #1b4d2b; background: #0f2a1a; }
     button.danger { border-color: #5b1a1a; background: #2a0f0f; }
+    .action-row { margin-top: 12px; display:flex; gap:10px; flex-wrap:wrap; }
+    .action-row > button { flex: 1 1 160px; }
+    .note-row { margin-top: 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .note-row > input { flex: 1 1 280px; }
+    .note-row > button { flex: 0 1 auto; }
+    @media (max-width: 640px) {
+      body { padding: 14px; }
+      .card { padding: 16px; }
+      .action-row > button,
+      .note-row > button { width: 100%; flex-basis: 100%; }
+      .note-row > input { flex-basis: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -25889,20 +25901,31 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
     <div class="muted">Progress: ${escHtml(progress)} bps</div>
     <p class="muted">Upstream royalty is fixed at derivative creation. Grant or reject clearance below.</p>
     <div class="muted">Upstream %: <strong>${upstreamDefault}%</strong></div>
-    <div style="margin-top: 12px; display:flex; gap:10px;">
+    <div class="action-row">
       <button class="primary" id="grantBtn" type="button">Grant clearance</button>
       <button class="danger" id="rejectBtn" type="button">Reject</button>
     </div>
-    <div style="margin-top: 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <input id="noteInput" type="text" placeholder="Suggest changes or leave a review note" style="min-width:280px;" />
+    <div class="note-row">
+      <input id="noteInput" type="text" placeholder="Suggest changes or leave a review note" />
       <button id="noteBtn" type="button">Suggest changes</button>
     </div>
     <div id="msg" class="muted" style="margin-top:10px;"></div>
   </div>
   <script>
     const msg = document.getElementById("msg");
+    const grantBtn = document.getElementById("grantBtn");
+    const rejectBtn = document.getElementById("rejectBtn");
+    const noteBtn = document.getElementById("noteBtn");
+    const noteInput = document.getElementById("noteInput");
+    function setBusy(busy) {
+      [grantBtn, rejectBtn, noteBtn, noteInput].forEach((el) => {
+        if (!el) return;
+        if ("disabled" in el) el.disabled = !!busy;
+      });
+    }
     async function submit(action) {
-      const note = document.getElementById("noteInput")?.value?.trim() || "";
+      console.log("SUBMISSION ACTION CLICK", { action });
+      const note = noteInput?.value?.trim() || "";
       const isNote = action === "note";
       const body = isNote ? { note } : { decision: action };
       if (isNote && !note) {
@@ -25910,21 +25933,35 @@ app.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: an
         return;
       }
       try {
-        const r = await fetch("/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/" + (isNote ? "note" : "vote"), {
+        const url = "/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/" + (isNote ? "note" : "vote");
+        console.log("calling API", { url, body });
+        setBusy(true);
+        msg.textContent = isNote ? "Submitting note…" : action === "approve" ? "Granting permission…" : "Rejecting…";
+        const r = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
         const text = await r.text();
+        console.log("API response", { status: r.status, ok: r.ok, text });
         msg.textContent = text || (r.ok ? "Recorded." : "Failed.");
-        if (r.ok && isNote) document.getElementById("noteInput").value = "";
+        if (r.ok && isNote && noteInput) noteInput.value = "";
       } catch (e) {
+        console.error("submit failed", e);
         msg.textContent = "Failed to submit.";
+      } finally {
+        setBusy(false);
       }
     }
-    document.getElementById("grantBtn").addEventListener("click", () => submit("approve"));
-    document.getElementById("rejectBtn").addEventListener("click", () => submit("reject"));
-    document.getElementById("noteBtn").addEventListener("click", () => submit("note"));
+    grantBtn?.addEventListener("click", () => {
+      console.log("GRANT CLICK");
+      submit("approve");
+    });
+    rejectBtn?.addEventListener("click", () => {
+      console.log("REJECT CLICK");
+      submit("reject");
+    });
+    noteBtn?.addEventListener("click", () => submit("note"));
   </script>
 </body>
 </html>`;
@@ -26245,12 +26282,24 @@ app.get("/clearance/:token", async (req: any, reply) => {
   <title>Clearance / License for Release</title>
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, sans-serif; background: #0b0b0b; color: #eee; padding: 24px; }
-    .card { max-width: 680px; margin: 0 auto; background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; }
+    .card { max-width: 680px; margin: 0 auto; background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; box-sizing: border-box; }
     .muted { color: #9aa0a6; font-size: 13px; }
-    input { padding: 8px 10px; border-radius: 8px; border: 1px solid #333; background: #0e0e0e; color: #fff; }
-    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #333; background: #141414; color: #fff; cursor: pointer; }
+    input { padding: 8px 10px; border-radius: 8px; border: 1px solid #333; background: #0e0e0e; color: #fff; min-width: 0; width: 100%; box-sizing: border-box; }
+    button { padding: 10px 14px; border-radius: 10px; border: 1px solid #333; background: #141414; color: #fff; cursor: pointer; box-sizing: border-box; }
     button.primary { border-color: #1b4d2b; background: #0f2a1a; }
     button.danger { border-color: #5b1a1a; background: #2a0f0f; }
+    .action-row { margin-top: 12px; display:flex; gap:10px; flex-wrap:wrap; }
+    .action-row > button { flex: 1 1 160px; }
+    .note-row { margin-top: 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .note-row > input { flex: 1 1 280px; }
+    .note-row > button { flex: 0 1 auto; }
+    @media (max-width: 640px) {
+      body { padding: 14px; }
+      .card { padding: 16px; }
+      .action-row > button,
+      .note-row > button { width: 100%; flex-basis: 100%; }
+      .note-row > input { flex-basis: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -26260,20 +26309,31 @@ app.get("/clearance/:token", async (req: any, reply) => {
     <div class="muted">Derivative: <strong>${child?.title || "Derivative"}</strong></div>
     <p class="muted">Upstream royalty is fixed at derivative creation. Grant or reject clearance below.</p>
     <div class="muted">Upstream %: <strong>${Math.max(0, (link.upstreamBps || 0) / 100)}%</strong></div>
-    <div style="margin-top: 12px; display:flex; gap:10px;">
+    <div class="action-row">
       <button class="primary" id="grantBtn" type="button">Grant clearance</button>
       <button class="danger" id="rejectBtn" type="button">Reject</button>
     </div>
-    <div style="margin-top: 12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-      <input id="noteInput" type="text" placeholder="Suggest changes or leave a review note" style="min-width:280px;" />
+    <div class="note-row">
+      <input id="noteInput" type="text" placeholder="Suggest changes or leave a review note" />
       <button id="noteBtn" type="button">Suggest changes</button>
     </div>
     <div id="msg" class="muted" style="margin-top:10px;"></div>
   </div>
   <script>
     const msg = document.getElementById("msg");
+    const grantBtn = document.getElementById("grantBtn");
+    const rejectBtn = document.getElementById("rejectBtn");
+    const noteBtn = document.getElementById("noteBtn");
+    const noteInput = document.getElementById("noteInput");
+    function setBusy(busy) {
+      [grantBtn, rejectBtn, noteBtn, noteInput].forEach((el) => {
+        if (!el) return;
+        if ("disabled" in el) el.disabled = !!busy;
+      });
+    }
     async function submit(action) {
-      const note = document.getElementById("noteInput")?.value?.trim() || "";
+      console.log("SUBMISSION ACTION CLICK", { action });
+      const note = noteInput?.value?.trim() || "";
       const isNote = action === "note";
       const body = isNote ? { note } : { decision: action };
       if (isNote && !note) {
@@ -26281,21 +26341,35 @@ app.get("/clearance/:token", async (req: any, reply) => {
         return;
       }
       try {
-        const r = await fetch("/clearance/${encodeURIComponent(token)}/" + (isNote ? "note" : "vote"), {
+        const url = "/clearance/${encodeURIComponent(token)}/" + (isNote ? "note" : "vote");
+        console.log("calling API", { url, body });
+        setBusy(true);
+        msg.textContent = isNote ? "Submitting note…" : action === "approve" ? "Granting permission…" : "Rejecting…";
+        const r = await fetch(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
         const text = await r.text();
+        console.log("API response", { status: r.status, ok: r.ok, text });
         msg.textContent = text || (r.ok ? "Recorded." : "Failed.");
-        if (r.ok && isNote) document.getElementById("noteInput").value = "";
+        if (r.ok && isNote && noteInput) noteInput.value = "";
       } catch (e) {
+        console.error("submit failed", e);
         msg.textContent = "Failed to submit.";
+      } finally {
+        setBusy(false);
       }
     }
-    document.getElementById("grantBtn").addEventListener("click", () => submit("approve"));
-    document.getElementById("rejectBtn").addEventListener("click", () => submit("reject"));
-    document.getElementById("noteBtn").addEventListener("click", () => submit("note"));
+    grantBtn?.addEventListener("click", () => {
+      console.log("GRANT CLICK");
+      submit("approve");
+    });
+    rejectBtn?.addEventListener("click", () => {
+      console.log("REJECT CLICK");
+      submit("reject");
+    });
+    noteBtn?.addEventListener("click", () => submit("note"));
   </script>
 </body>
 </html>`;
