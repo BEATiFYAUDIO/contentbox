@@ -38235,7 +38235,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             }
           } catch {}
         }
-        const viewerVote = inviteUserId
+        let viewerVote = inviteUserId
           ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
           : null;
         let clearanceToken = null as { token: string } | null;
@@ -38261,6 +38261,28 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
               orderBy: { createdAt: "desc" },
               select: { token: true }
             });
+          }
+          if (!viewerVote) {
+            const tokenVote =
+              (await approvalTokenModel.findFirst({
+                where: {
+                  authorizationId: auth.id,
+                  approverEmail: emailEquals(approverEmailForToken),
+                  decision: { not: null }
+                },
+                orderBy: [{ usedAt: "desc" }, { createdAt: "desc" }],
+                select: { decision: true }
+              })) ||
+              (await approvalTokenModel.findFirst({
+                where: {
+                  contentLinkId: auth.derivativeLinkId,
+                  approverEmail: emailEquals(approverEmailForToken),
+                  decision: { not: null }
+                },
+                orderBy: [{ usedAt: "desc" }, { createdAt: "desc" }],
+                select: { decision: true }
+              }));
+            viewerVote = tokenVote?.decision ? String(tokenVote.decision).toLowerCase() : null;
           }
         }
         return {
