@@ -27766,6 +27766,12 @@ async function handleBuyPage(req: any, reply: any) {
     if (cleanHandle && !looksInternalId(cleanHandle)) return "@" + cleanHandle;
     return fallbackLabel || "Contributor";
   }
+  function labelIncludesHandle(label, handle){
+    const labelNorm = normalizeHandleText(label).toLowerCase();
+    const handleNorm = normalizeHandleText(handle).toLowerCase();
+    if (!labelNorm || !handleNorm) return false;
+    return labelNorm === handleNorm;
+  }
   function resolveSafeProfilePath(profilePathRaw){
     const raw = String(profilePathRaw == null ? "" : profilePathRaw).trim();
     if (!raw) return "";
@@ -27829,7 +27835,7 @@ async function handleBuyPage(req: any, reply: any) {
     const contentboxHandle =
       contentboxHandleNormalized &&
       !looksInternalId(contentboxHandleNormalized) &&
-      creatorLabel.toLowerCase() !== ("@" + contentboxHandleNormalized).toLowerCase()
+      !labelIncludesHandle(creatorLabel, contentboxHandleNormalized)
         ? (" @" + esc(contentboxHandleNormalized))
         : "";
     const beatifyHandleRaw = String(primary.beatifyHandle || "").trim();
@@ -27852,7 +27858,7 @@ async function handleBuyPage(req: any, reply: any) {
           const ch =
             normalizedContributorHandle &&
             !looksInternalId(normalizedContributorHandle) &&
-            contributorLabel.toLowerCase() !== ("@" + normalizedContributorHandle).toLowerCase()
+            !labelIncludesHandle(contributorLabel, normalizedContributorHandle)
               ? ("(@" + esc(normalizedContributorHandle) + ")")
               : "";
           const roleRaw = String(c?.role || "").trim();
@@ -27880,10 +27886,13 @@ async function handleBuyPage(req: any, reply: any) {
           items.map((it) => {
             const t = it?.title ? (esc(it.title) + " — ") : "";
             const pc = it?.primaryCreator || {};
-            const pn = esc(pc.displayName || pc.name || pc.handle || "Creator");
+            const upstreamCreatorLabel = resolvePublicPersonLabel(pc.displayName || pc.name || "", pc.handle || "", "Creator");
+            const pn = esc(upstreamCreatorLabel);
             const phRaw = String(pc.handle || "").trim();
             const normalizedHandle = normalizeHandleText(phRaw);
-            const ph = normalizedHandle ? (" @" + esc(normalizedHandle)) : "";
+            const ph = normalizedHandle && !labelIncludesHandle(upstreamCreatorLabel, normalizedHandle)
+              ? (" @" + esc(normalizedHandle))
+              : "";
             const creatorProfileHref = normalizedHandle ? "/u/" + encodeURIComponent(normalizedHandle) : "";
             const creatorHtml = creatorProfileHref
               ? ("<a href=\\"" + esc(creatorProfileHref) + "\\" style=\\"text-decoration:underline;display:inline-block;padding:2px 0;\\">" + pn + ph + "</a>")
@@ -27893,13 +27902,16 @@ async function handleBuyPage(req: any, reply: any) {
               : "";
             const shareholders = Array.isArray(it?.shareholders) ? it.shareholders : [];
             const shareholdersHtml = shareholders.length > 0
-              ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\">Shareholders: " + shareholders
+                ? "<div class=\\"muted\\" style=\\"margin-top:2px;\\">Shareholders: " + shareholders
                   .slice(0, 6)
                   .map((s) => {
-                    const sn = esc(String(s?.displayName || "Shareholder"));
+                    const shareholderLabel = String(s?.displayName || "Shareholder");
+                    const sn = esc(shareholderLabel);
                     const shRaw = String(s?.handle || "").trim();
                     const shNorm = normalizeHandleText(shRaw);
-                    const shLabel = shNorm ? (sn + " @" + esc(shNorm)) : sn;
+                    const shLabel = shNorm && !labelIncludesHandle(shareholderLabel, shNorm)
+                      ? (sn + " @" + esc(shNorm))
+                      : sn;
                     const pct = Number.isFinite(Number(s?.bps)) ? (Number(s.bps) / 100).toFixed(2) + "%" : "";
                     const profileHref = String(s?.profilePath || "").trim();
                     const linked = profileHref
