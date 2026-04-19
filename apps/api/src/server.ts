@@ -23280,13 +23280,55 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     }))
   ];
 
-  const progressBps = votes.reduce((s, v) => {
+  const localApprovedApprovers = votes.filter((v) => {
+    if (String(v.decision).toLowerCase() !== "approve") return false;
+    if (approvedRatePercent === null || v.upstreamRatePercent === null || v.upstreamRatePercent === undefined) {
+      return true;
+    }
+    return Number(v.upstreamRatePercent) === Number(approvedRatePercent);
+  }).length;
+  const localProgressBps = votes.reduce((s, v) => {
     if (String(v.decision).toLowerCase() !== "approve") return s;
     if (approvedRatePercent !== null && v.upstreamRatePercent !== null && Number(v.upstreamRatePercent) !== Number(approvedRatePercent)) {
       return s;
     }
     return s + (v.weightBps || 0);
   }, 0);
+  let approvedAtIso = link.approvedAt ? link.approvedAt.toISOString() : null;
+  let progressBps = localProgressBps;
+  let approvedApprovers = localApprovedApprovers;
+  let threshold = thresholdBps;
+  const parentShadow = await prisma.contentItem.findUnique({
+    where: { id: link.parentContentId },
+    select: { repoPath: true, deletedReason: true, description: true }
+  });
+  const parentOrigin =
+    parentShadow && parentShadow.deletedReason === "hard" && !parentShadow.repoPath
+      ? getRemoteOriginFromDescription(parentShadow.description)
+      : null;
+  let remoteStatus: any = null;
+  if (parentOrigin) {
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        const url = `${parentOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+          link.parentContentId
+        )}&childContentId=${encodeURIComponent(link.childContentId)}`;
+        const res = await fetch(url, { signal: ctrl.signal as any });
+        const data: any = await res.json().catch(() => null);
+        if (res.ok && data) {
+          remoteStatus = data;
+          approvedAtIso = data?.approvedAt ? new Date(String(data.approvedAt)).toISOString() : approvedAtIso;
+          progressBps = Number(data?.clearance?.approveWeightBps ?? progressBps);
+          approvedApprovers = Number(data?.clearance?.approvedApprovers ?? approvedApprovers);
+          threshold = Number(data?.clearance?.approvalBpsTarget ?? threshold);
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {}
+  }
 
   const viewer = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
   const viewerEmail = (viewer?.email || "").toLowerCase();
@@ -23295,17 +23337,19 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
 
   return reply.send({
     requiresApproval: link.requiresApproval,
-    approvedAt: link.approvedAt ? link.approvedAt.toISOString() : null,
+    approvedAt: approvedAtIso,
     parentSplitVersionId: link.parentSplitVersionId || null,
     upstreamBps: link.upstreamBps || 0,
-    thresholdBps,
+    thresholdBps: threshold,
     approvers,
     votes,
     progressBps,
+    approvedApprovers,
+    approverCount: approvers.length,
     reviewGrantedAt: review?.reviewGrantedAt ? review.reviewGrantedAt.toISOString() : null,
     reviewNotes: await listClearanceReviewNotes(link.id),
     viewer: {
-      canVote: Boolean(viewerApprover) && !link.approvedAt,
+      canVote: Boolean(viewerApprover) && !(remoteStatus?.approvedAt || approvedAtIso),
       hasVoted: Boolean(viewerVote),
       decision: viewerVote ? viewerVote.decision : null,
       weightBps: viewerApprover?.weightBps || 0

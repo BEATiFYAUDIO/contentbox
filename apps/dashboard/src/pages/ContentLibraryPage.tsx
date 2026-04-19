@@ -2934,7 +2934,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const clearance = linkId ? clearanceByLink[linkId] : null;
                 const progressBps = isRemoteApproval ? Number(a?.approveWeightBps || 0) : (clearance?.progressBps || 0);
                 const thresholdBps = isRemoteApproval ? Number(a?.approvalBpsTarget || 6667) : (clearance?.thresholdBps || 6667);
-                const approvedApprovers = Array.isArray(clearance?.votes)
+                const approvedApprovers =
+                  Number.isFinite(Number(clearance?.approvedApprovers))
+                    ? Number(clearance.approvedApprovers)
+                    : Array.isArray(clearance?.votes)
                   ? clearance.votes.filter((v: any) => {
                       if (String(v.decision).toLowerCase() !== "approve") return false;
                       const approvedRatePercent = clearance?.upstreamBps ? clearance.upstreamBps / 100 : null;
@@ -2944,7 +2947,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       return Number(v.upstreamRatePercent) === Number(approvedRatePercent);
                     }).length
                   : Number(a?.approvedApprovers || 0);
-                const approverCount = Array.isArray(clearance?.approvers) ? clearance.approvers.length : Number(a?.approverCount || 0);
+                const approverCount =
+                  Number.isFinite(Number(clearance?.approverCount))
+                    ? Number(clearance.approverCount)
+                    : Array.isArray(clearance?.approvers)
+                    ? clearance.approvers.length
+                    : Number(a?.approverCount || 0);
                 const pct = thresholdBps > 0 ? Math.min(100, Math.round((progressBps / thresholdBps) * 100)) : 0;
                 const relation = titleCase(a?.relation || "Derivative");
                 const parentTitle = a?.parentTitle || a?.parentContentId || "Original work";
