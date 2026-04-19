@@ -9656,8 +9656,11 @@ app.register(cors, {
     if (allowedOrigins.includes(origin)) return cb(null, true);
     if (process.env.NODE_ENV !== "production") {
       const devAllowed = [
+        "http://localhost:4000",
+        "http://127.0.0.1:4000",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://192.168.100.109:4000",
         "http://192.168.100.109:5173"
       ];
       if (devAllowed.includes(origin)) return cb(null, true);
