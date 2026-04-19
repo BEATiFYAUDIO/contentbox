@@ -38444,36 +38444,8 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         let viewerVote = inviteUserId
           ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
           : null;
-        let clearanceToken = null as { token: string } | null;
+        let clearanceToken: string | null = null;
         if (approverEmailForToken && approvalTokenModel) {
-          clearanceToken = await approvalTokenModel.findFirst({
-            where: {
-              contentLinkId: auth.derivativeLinkId,
-              approverEmail: emailEquals(approverEmailForToken),
-              usedAt: null,
-              expiresAt: { gt: new Date() }
-            },
-            orderBy: { createdAt: "desc" },
-            select: { token: true }
-          });
-          if (!clearanceToken && auth.status === "PENDING") {
-            const token = makeApprovalToken();
-            const tokenHash = hashApprovalToken(token);
-            const expiresAt = new Date(
-              Date.now() +
-                Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168))) * 60 * 60 * 1000
-            );
-            await approvalTokenModel.create({
-              data: {
-                contentLinkId: auth.derivativeLinkId,
-                tokenHash,
-                approverEmail: approverEmailForToken,
-                weightBps: inviteApprover?.weightBps || 0,
-                expiresAt
-              }
-            });
-            clearanceToken = { token };
-          }
           if (!viewerVote) {
             const tokenVote = await approvalTokenModel.findFirst({
               where: {
@@ -38485,6 +38457,34 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
               select: { decision: true }
             });
             viewerVote = tokenVote?.decision ? String(tokenVote.decision).toLowerCase() : null;
+          }
+          if (auth.status === "PENDING") {
+            const token = makeApprovalToken();
+            const tokenHash = hashApprovalToken(token);
+            const expiresAt = new Date(
+              Date.now() +
+                Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168))) * 60 * 60 * 1000
+            );
+            await approvalTokenModel.updateMany({
+              where: {
+                contentLinkId: auth.derivativeLinkId,
+                approverEmail: emailEquals(approverEmailForToken),
+                usedAt: null,
+                decision: null,
+                expiresAt: { gt: new Date() }
+              },
+              data: { expiresAt: new Date() }
+            });
+            await approvalTokenModel.create({
+              data: {
+                contentLinkId: auth.derivativeLinkId,
+                tokenHash,
+                approverEmail: approverEmailForToken,
+                weightBps: inviteApprover?.weightBps || 0,
+                expiresAt
+              }
+            });
+            clearanceToken = token;
           }
         }
         return {
@@ -38512,10 +38512,10 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approvedApprovers: auth.approvedApprovers ?? 0,
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
-          clearanceToken: clearanceToken?.token || null,
+          clearanceToken,
           clearanceUrl:
-            clearanceToken?.token
-              ? `${clearanceBase}/clearance/${clearanceToken.token}`
+            clearanceToken
+              ? `${clearanceBase}/clearance/${clearanceToken}`
               : `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
         };
       })
