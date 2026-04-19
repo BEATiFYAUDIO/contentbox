@@ -1943,40 +1943,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   ): Promise<T> {
     const remoteOrigin = String(origin || "").trim().replace(/\/+$/, "");
     if (!remoteOrigin) throw new Error("Missing remote authority origin.");
-    const token = getToken();
     const method = String(options.method || "GET").toUpperCase().trim();
-    const headers: Record<string, string> = {
-      ...(options.headers || {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {})
-    };
     const body = options.body;
-    const hasBody = body !== undefined && body !== null;
-    if (hasBody && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
-    const url = `${remoteOrigin}${path}`;
-    console.log("clearance request", { origin: remoteOrigin, url, method, body: hasBody ? body : null });
-    const res = await fetch(url, {
-      method,
-      headers,
-      credentials: "include",
-      body: hasBody ? (body instanceof FormData ? body : JSON.stringify(body)) : undefined
-    });
-    const text = await res.text();
-    let data: any = null;
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = text;
-    }
-    if (!res.ok) {
-      const err = new Error((data && (data.error || data.message)) || text || `Request failed (${res.status})`) as Error & {
-        status?: number;
-        code?: string | null;
-      };
-      err.status = res.status;
-      err.code = data?.code || data?.error || null;
-      throw err;
-    }
-    return data as T;
+    const normalizedPath = `${path}${path.includes("?") ? "&" : "?"}origin=${encodeURIComponent(remoteOrigin)}`;
+    console.log("clearance request", { origin: remoteOrigin, url: normalizedPath, method, body: body ?? null });
+    return api<T>(normalizedPath, { method, body, headers: options.headers || {} });
   }
 
   async function updateStorefrontStatus(contentId: string, storefrontStatus: "DISABLED" | "UNLISTED" | "LISTED") {
