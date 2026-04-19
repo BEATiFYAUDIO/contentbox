@@ -24067,13 +24067,87 @@ async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const objectKeyRaw = asString((req.query || {})?.objectKey || "").trim();
   const shareToken = asString((req.query || {})?.share || "").trim();
+  console.log("PREVIEW HIT", { contentId });
+  const query = new URLSearchParams();
+  if (objectKeyRaw) query.set("objectKey", objectKeyRaw);
+  if (shareToken) query.set("share", shareToken);
 
-  const gated = await getPublicOfferGate(contentId, req, reply);
-  if (!gated.content) {
-    if (gated.tombstoned && !gated.entitled) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+  const proxyRemotePreview = async (origin: string) => {
+    const normalizedOrigin = normalizeOrigin(String(origin || "").trim());
+    if (!normalizedOrigin) return false;
+    console.log("preview remote fallback", { contentId, origin: normalizedOrigin });
+    const remoteUrl = `${normalizedOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(contentId)}/preview-file${
+      query.toString() ? `?${query.toString()}` : ""
+    }`;
+    console.log("PREVIEW: fetching remote", { remoteUrl });
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 15000);
+    try {
+      const res = await fetch(remoteUrl, {
+        signal: ctrl.signal as any,
+        redirect: "follow",
+        headers: req.headers.range ? { range: String(req.headers.range) } : undefined
+      });
+      console.log("PREVIEW: remote response", { status: res.status });
+      reply.code(res.status);
+      const headersToForward = [
+        "content-type",
+        "content-length",
+        "content-range",
+        "accept-ranges",
+        "cache-control"
+      ];
+      for (const name of headersToForward) {
+        const value = res.headers.get(name);
+        if (value) reply.header(name, value);
+      }
+      if (!res.body) return reply.send();
+      return reply.send(Readable.fromWeb(res.body as any));
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const resolvePreviewAuthorityOrigin = async (contentLike?: { description?: string | null } | null) => {
+    const direct = getRemoteOriginFromDescription(contentLike?.description || null);
+    if (direct) return direct;
+    const shadow = await prisma.contentItem
+      .findUnique({
+        where: { id: contentId },
+        select: { description: true }
+      })
+      .catch(() => null);
+    const shadowOrigin = getRemoteOriginFromDescription(shadow?.description || null);
+    if (shadowOrigin) return shadowOrigin;
+    const derivativeRow = await prisma.contentLink
+      .findFirst({
+        where: { childContentId: contentId },
+        include: {
+          childContent: { select: { description: true } }
+        },
+        orderBy: { id: "desc" }
+      })
+      .catch(() => null);
+    return getRemoteOriginFromDescription(derivativeRow?.childContent?.description || null);
+  };
+
+  const localContent = await prisma.contentItem
+    .findUnique({
+      where: { id: contentId },
+      include: { owner: { select: { displayName: true } } }
+    })
+    .catch(() => null);
+  console.log("LOCAL LOOKUP RESULT", { found: !!localContent });
+  if (!localContent) {
+    console.log("PREVIEW: local miss, attempting remote", { contentId });
+    const origin = await resolvePreviewAuthorityOrigin(null);
+    console.log("PREVIEW: resolved origin", { origin });
+    if (origin) return proxyRemotePreview(origin);
     return notFound(reply, "Content not found");
   }
-  const content = gated.content;
+  const gated = await getPublicOfferGate(contentId, req, reply);
+  if (gated.tombstoned && !gated.entitled) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+  const content = gated.content || localContent;
   const isBasic = resolveProductTier().productTier === "basic";
   if (!isBasic) {
     const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
@@ -24115,11 +24189,19 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     if (!objectKey) return notFound(reply, "preview not available");
   }
 
-  if (!content.repoPath) return notFound(reply, "Content not found");
+  if (!content.repoPath) {
+    const origin = await resolvePreviewAuthorityOrigin(content);
+    if (origin) return proxyRemotePreview(origin);
+    return notFound(reply, "Content not found");
+  }
   const repoRoot = path.resolve(content.repoPath);
   const absPath = path.resolve(repoRoot, objectKey);
   if (!absPath.startsWith(repoRoot)) return forbidden(reply);
-  if (!fsSync.existsSync(absPath)) return notFound(reply, "File not found");
+  if (!fsSync.existsSync(absPath)) {
+    const origin = await resolvePreviewAuthorityOrigin(content);
+    if (origin) return proxyRemotePreview(origin);
+    return notFound(reply, "File not found");
+  }
 
   const file = await prisma.contentFile.findFirst({ where: { contentId, objectKey } });
   const mime = file?.mime || "application/octet-stream";
