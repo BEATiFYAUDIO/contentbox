@@ -3309,7 +3309,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </button>
                       </div>
                     ) : null}
-                    {isRemoteApproval && !canVote ? (
+                    {isRemoteApproval && !canVote && !isCleared ? (
                       <div className="mt-2 text-[11px] text-amber-300">
                         Vote link not issued yet. Click Refresh to sync latest clearance routing.
                       </div>

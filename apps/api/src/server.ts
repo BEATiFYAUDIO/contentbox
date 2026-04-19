@@ -10593,6 +10593,21 @@ function approvalVotePrincipalForInternalVote(input: {
   return null;
 }
 
+function parseIsoDateOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" || typeof value === "number" || value instanceof Date) {
+    const d = new Date(value as any);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  }
+  return null;
+}
+
+function isRemoteClearanceApproved(remoteStatus: any): boolean {
+  const status = asString(remoteStatus?.clearance?.status || "").trim().toUpperCase();
+  if (status === "APPROVED") return true;
+  return Boolean(parseIsoDateOrNull(remoteStatus?.approvedAt));
+}
+
 function remoteInviteSnapshotMatchesViewer(
   snapshot: any,
   userId: string,
@@ -21536,8 +21551,8 @@ async function resolveDerivativeInfo(contentId: string, contentType: string | nu
           )}&childContentId=${encodeURIComponent(link.childContentId)}`;
           const res = await fetch(url, { signal: ctrl.signal as any });
           const data: any = await res.json().catch(() => null);
-          if (res.ok && data?.approvedAt) {
-            approvedAtEffective = new Date(String(data.approvedAt)).toISOString();
+          if (res.ok && isRemoteClearanceApproved(data)) {
+            approvedAtEffective = parseIsoDateOrNull(data?.approvedAt) || new Date().toISOString();
           }
         } finally {
           clearTimeout(timeout);
@@ -22115,8 +22130,8 @@ app.patch("/api/content/:id/storefront", { preHandler: [requireAuth, requireFeat
                 )}&childContentId=${encodeURIComponent(link.childContentId)}`;
                 const res = await fetch(url, { signal: ctrl.signal as any });
                 const data: any = await res.json().catch(() => null);
-                if (res.ok && data?.approvedAt) {
-                  approvedAtEffective = new Date(String(data.approvedAt)).toISOString();
+                if (res.ok && isRemoteClearanceApproved(data)) {
+                  approvedAtEffective = parseIsoDateOrNull(data?.approvedAt) || new Date().toISOString();
                 }
               } finally {
                 clearTimeout(timeout);
