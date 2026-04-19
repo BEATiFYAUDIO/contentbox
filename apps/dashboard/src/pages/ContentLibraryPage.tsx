@@ -1708,6 +1708,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
       remoteInviteId: inviteId,
       remoteInviteToken: inviteToken,
+      remoteClearanceToken: String(entry?.clearanceToken || "").trim() || null,
       remoteClearanceUrl: entry?.clearanceUrl || null,
       ...(includeClearanceDetails
         ? {
@@ -2959,7 +2960,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ? Number(clearance.upstreamBps) / 100
                     : null;
                 const clearanceRouteParts = extractInviteClearanceRouteParts(String(a?.remoteClearanceUrl || ""));
-                const remoteClearanceToken = extractApprovalTokenFromClearanceUrl(String(a?.remoteClearanceUrl || ""));
+                const remoteClearanceToken =
+                  String(a?.remoteClearanceToken || "").trim() ||
+                  extractApprovalTokenFromClearanceUrl(String(a?.remoteClearanceUrl || ""));
                 const resolvedRemoteInviteToken =
                   String(a?.remoteInviteToken || "").trim() || String(clearanceRouteParts.inviteToken || "").trim();
                 const resolvedRemoteAuthorizationId =

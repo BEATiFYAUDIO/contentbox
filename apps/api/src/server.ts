@@ -22652,7 +22652,6 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     const tokenHash = hashApprovalToken(token);
     await approvalTokenModel.create({
       data: {
-        authorizationId: auth.id,
         contentLinkId: linkId,
         tokenHash,
         approverEmail: email,
@@ -22827,7 +22826,6 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     const tokenHash = hashApprovalToken(token);
     await approvalTokenModel.create({
       data: {
-        authorizationId: auth.id,
         contentLinkId: link.id,
         tokenHash,
         approverEmail: email,
@@ -38242,7 +38240,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
         if (approverEmailForToken && approvalTokenModel) {
           clearanceToken = await approvalTokenModel.findFirst({
             where: {
-              authorizationId: auth.id,
+              contentLinkId: auth.derivativeLinkId,
               approverEmail: emailEquals(approverEmailForToken),
               usedAt: null,
               expiresAt: { gt: new Date() }
@@ -38250,38 +38248,16 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
             orderBy: { createdAt: "desc" },
             select: { token: true }
           });
-          if (!clearanceToken) {
-            clearanceToken = await approvalTokenModel.findFirst({
+          if (!viewerVote) {
+            const tokenVote = await approvalTokenModel.findFirst({
               where: {
                 contentLinkId: auth.derivativeLinkId,
                 approverEmail: emailEquals(approverEmailForToken),
-                usedAt: null,
-                expiresAt: { gt: new Date() }
+                decision: { not: null }
               },
-              orderBy: { createdAt: "desc" },
-              select: { token: true }
+              orderBy: [{ usedAt: "desc" }, { createdAt: "desc" }],
+              select: { decision: true }
             });
-          }
-          if (!viewerVote) {
-            const tokenVote =
-              (await approvalTokenModel.findFirst({
-                where: {
-                  authorizationId: auth.id,
-                  approverEmail: emailEquals(approverEmailForToken),
-                  decision: { not: null }
-                },
-                orderBy: [{ usedAt: "desc" }, { createdAt: "desc" }],
-                select: { decision: true }
-              })) ||
-              (await approvalTokenModel.findFirst({
-                where: {
-                  contentLinkId: auth.derivativeLinkId,
-                  approverEmail: emailEquals(approverEmailForToken),
-                  decision: { not: null }
-                },
-                orderBy: [{ usedAt: "desc" }, { createdAt: "desc" }],
-                select: { decision: true }
-              }));
             viewerVote = tokenVote?.decision ? String(tokenVote.decision).toLowerCase() : null;
           }
         }
@@ -38310,6 +38286,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approvedApprovers: auth.approvedApprovers ?? 0,
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
+          clearanceToken: clearanceToken?.token || null,
           clearanceUrl:
             clearanceToken?.token
               ? `${clearanceBase}/clearance/${clearanceToken.token}`
