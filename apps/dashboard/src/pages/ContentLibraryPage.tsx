@@ -3615,26 +3615,61 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </button>
                       </div>
                     ) : null}
+                    {(() => {
+                      const derivativeClearancePending =
+                        isDerivativeType && Boolean(parentLink?.requiresApproval && !parentLink?.approvedAt);
+                      const derivativeApproveBps = Number(parentLink?.clearance?.approveWeightBps || 0);
+                      const derivativeTargetBps = Number(parentLink?.clearance?.approvalBpsTarget || 6667);
+                      const derivativeApprovedApprovers = Number(parentLink?.clearance?.approvedApprovers || 0);
+                      const derivativeApproverCount =
+                        Array.isArray(parentLink?.clearance?.approvers) && parentLink?.clearance?.approvers.length > 0
+                          ? parentLink.clearance.approvers.length
+                          : null;
+                      return (
                     <div className="w-full text-[11px] text-neutral-400 space-y-0.5">
                       <div>
                         Network publish:{" "}
-                        <span className={networkPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {networkPublishAllowed ? "Ready" : "Not ready"}
+                        <span
+                          className={
+                            derivativeClearancePending
+                              ? "text-amber-300"
+                              : networkPublishAllowed
+                              ? "text-emerald-300"
+                              : "text-amber-300"
+                          }
+                        >
+                          {derivativeClearancePending ? "Awaiting clearance" : networkPublishAllowed ? "Ready" : "Not ready"}
                         </span>
                       </div>
-                      {!networkPublishAllowed ? (
+                      {derivativeClearancePending ? (
+                        <div className="text-amber-300">
+                          Rights holders approved: {derivativeApprovedApprovers} of {derivativeApproverCount ?? "?"} • Progress:{" "}
+                          {derivativeApproveBps}/{derivativeTargetBps} bps
+                        </div>
+                      ) : null}
+                      {!derivativeClearancePending && !networkPublishAllowed ? (
                         <div className="text-amber-300">{networkPublishReason}</div>
                       ) : null}
                       <div>
                         Public discovery:{" "}
-                        <span className={discoveryPublishAllowed ? "text-emerald-300" : "text-amber-300"}>
-                          {discoveryPublishAllowed ? "Ready" : "Not ready"}
+                        <span
+                          className={
+                            derivativeClearancePending
+                              ? "text-amber-300"
+                              : discoveryPublishAllowed
+                              ? "text-emerald-300"
+                              : "text-amber-300"
+                          }
+                        >
+                          {derivativeClearancePending ? "Awaiting clearance" : discoveryPublishAllowed ? "Ready" : "Not ready"}
                         </span>
                       </div>
-                      {!discoveryPublishAllowed ? (
+                      {!derivativeClearancePending && !discoveryPublishAllowed ? (
                         <div className="text-amber-300">{discoveryPublishReason}</div>
                       ) : null}
                     </div>
+                      );
+                    })()}
                   </div>
 
                   {!showTrash && !showTombstones && isOpen && (
