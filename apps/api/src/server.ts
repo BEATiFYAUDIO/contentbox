@@ -16162,7 +16162,50 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
     if (rejectReason) payload.reason = rejectReason;
   }
 
+  let remoteClearanceToken = "";
   try {
+    const accountingRes = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}/accounting`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      10000
+    );
+    const accountingText = await accountingRes.text();
+    let accountingPayload: any = null;
+    try {
+      accountingPayload = accountingText ? JSON.parse(accountingText) : null;
+    } catch {
+      accountingPayload = null;
+    }
+    const inbox = Array.isArray(accountingPayload?.clearanceInbox) ? accountingPayload.clearanceInbox : [];
+    const entry =
+      inbox.find((row: any) => String(row?.authorizationId || "").trim() === authorizationId) || null;
+    remoteClearanceToken = asString(entry?.clearanceToken || "").trim();
+  } catch {}
+
+  try {
+    if (remoteClearanceToken) {
+      const res = await fetchWithTimeout(
+        `${origin}/clearance/${encodeURIComponent(remoteClearanceToken)}/vote`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "text/plain,application/json" } as any,
+          body: JSON.stringify(payload)
+        } as any,
+        10000
+      );
+      const text = await res.text();
+      let responsePayload: any = null;
+      try {
+        responsePayload = text ? JSON.parse(text) : null;
+      } catch {
+        responsePayload = null;
+      }
+      if (!res.ok) {
+        if (responsePayload && typeof responsePayload === "object") return reply.code(res.status).send(responsePayload);
+        return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
+      }
+      return reply.send(responsePayload || { ok: true, message: text || "Recorded." });
+    }
     const res = await fetchWithTimeout(
       `${origin}/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/vote`,
       {
@@ -16210,7 +16253,50 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/note", { preHand
   const note = parseClearanceReviewNote(req.body);
   if (!note) return badRequest(reply, "note required");
 
+  let remoteClearanceToken = "";
   try {
+    const accountingRes = await fetchWithTimeout(
+      `${origin}/invites/${encodeURIComponent(token)}/accounting`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      10000
+    );
+    const accountingText = await accountingRes.text();
+    let accountingPayload: any = null;
+    try {
+      accountingPayload = accountingText ? JSON.parse(accountingText) : null;
+    } catch {
+      accountingPayload = null;
+    }
+    const inbox = Array.isArray(accountingPayload?.clearanceInbox) ? accountingPayload.clearanceInbox : [];
+    const entry =
+      inbox.find((row: any) => String(row?.authorizationId || "").trim() === authorizationId) || null;
+    remoteClearanceToken = asString(entry?.clearanceToken || "").trim();
+  } catch {}
+
+  try {
+    if (remoteClearanceToken) {
+      const res = await fetchWithTimeout(
+        `${origin}/clearance/${encodeURIComponent(remoteClearanceToken)}/note`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" } as any,
+          body: JSON.stringify({ note })
+        } as any,
+        10000
+      );
+      const text = await res.text();
+      let responsePayload: any = null;
+      try {
+        responsePayload = text ? JSON.parse(text) : null;
+      } catch {
+        responsePayload = null;
+      }
+      if (!res.ok) {
+        if (responsePayload && typeof responsePayload === "object") return reply.code(res.status).send(responsePayload);
+        return reply.code(res.status).send({ error: text || `HTTP_${res.status}` });
+      }
+      return reply.send(responsePayload || { ok: true });
+    }
     const res = await fetchWithTimeout(
       `${origin}/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(authorizationId)}/note`,
       {
