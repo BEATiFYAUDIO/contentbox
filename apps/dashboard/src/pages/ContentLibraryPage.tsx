@@ -446,6 +446,41 @@ function previewFileFor(previewUrl: string | null | undefined, files: any[] | nu
   }
 }
 
+function renderInlinePreview(previewUrl: string | null | undefined, mimeRaw: string | null | undefined, typeRaw: string | null | undefined) {
+  if (!previewUrl) return null;
+  const mime = String(mimeRaw || "").toLowerCase();
+  const type = String(typeRaw || "").toLowerCase();
+  const isVideo = mime.startsWith("video/") || type === "video";
+  const isAudio = mime.startsWith("audio/") || type === "song";
+  const isImage = mime.startsWith("image/");
+  const isPdf = mime === "application/pdf";
+  const isTextLike =
+    mime.startsWith("text/") ||
+    mime === "application/json" ||
+    mime === "application/xml" ||
+    mime === "application/javascript";
+
+  if (isVideo) return <video className="w-full rounded-md" controls src={previewUrl} />;
+  if (isAudio) return <audio className="w-full" controls src={previewUrl} />;
+  if (isImage) return <img className="w-full rounded-md object-contain bg-neutral-950 max-h-[28rem]" src={previewUrl} alt="Preview" loading="lazy" />;
+  if (isPdf || isTextLike) {
+    return (
+      <iframe
+        className="w-full min-h-[28rem] rounded-md border border-neutral-800 bg-neutral-950"
+        src={previewUrl}
+        title="Preview"
+      />
+    );
+  }
+  return (
+    <iframe
+      className="w-full min-h-[22rem] rounded-md border border-neutral-800 bg-neutral-950"
+      src={previewUrl}
+      title="Preview"
+    />
+  );
+}
+
 function formatDateLabel(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
@@ -3393,28 +3428,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           const pf = previewFileFor(previewUrl, derivativePreviewByChild[childId]?.files || []);
                           const mime = String(pf?.mime || "").toLowerCase();
                           const type = String(derivativePreviewByChild[childId]?.content?.type || "").toLowerCase();
-                          const isVideo = mime.startsWith("video/") || type === "video";
-                          const isAudio = mime.startsWith("audio/") || type === "song";
-                          if (previewUrl && isVideo) {
-                            return (
-                              <div className="mt-2">
-                                <video className="w-full rounded-md" controls src={previewUrl} />
-                              </div>
-                            );
-                          }
-                          if (previewUrl && isAudio) {
-                            return (
-                              <div className="mt-2">
-                                <audio className="w-full" controls src={previewUrl} />
-                              </div>
-                            );
-                          }
                           if (previewUrl) {
-                            return (
-                              <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                Open preview
-                              </a>
-                            );
+                            return <div className="mt-2">{renderInlinePreview(previewUrl, mime, type)}</div>;
                           }
                           return <div className="text-neutral-400">No preview available.</div>;
                         })()}
@@ -3795,7 +3810,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         const previewUrl = preview?.previewUrl || null;
                         const previewFile = previewFileFor(previewUrl, preview?.files || files);
                         const previewMime = String(previewFile?.mime || "");
-                        const isVideo = String(it.type || "").toLowerCase() === "video" || previewMime.startsWith("video/");
                         const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
                         const coverUrl = `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                           it.manifest?.sha256 ? `?v=${encodeURIComponent(it.manifest.sha256)}` : ""
@@ -3837,13 +3851,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   ) : null}
                                 </div>
                               ) : null}
-                              {previewUrl && isVideo ? <video className="w-full rounded-md" controls src={previewUrl} /> : null}
-                              {previewUrl && isAudio ? <audio className="w-full" controls src={previewUrl} /> : null}
-                              {previewUrl && !isAudio && !isVideo ? (
-                                <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                  Open preview
-                                </a>
-                              ) : null}
+                              {previewUrl ? renderInlinePreview(previewUrl, previewMime, String(it.type || "")) : null}
                               {!previewLoadingByContent[it.id] && !previewUrl && !preview?.error ? (
                                 <div className="text-xs text-neutral-500">No preview available yet.</div>
                               ) : null}
@@ -4373,28 +4381,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const pf = previewFileFor(previewUrl, derivativePreviewByChild[it.id]?.files || []);
                                     const mime = String(pf?.mime || "").toLowerCase();
                                     const type = String(derivativePreviewByChild[it.id]?.content?.type || "").toLowerCase();
-                                    const isVideo = mime.startsWith("video/") || type === "video";
-                                    const isAudio = mime.startsWith("audio/") || type === "song";
-                                    if (previewUrl && isVideo) {
-                                      return (
-                                        <div className="mt-2">
-                                          <video className="w-full rounded-md" controls src={previewUrl} />
-                                        </div>
-                                      );
-                                    }
-                                    if (previewUrl && isAudio) {
-                                      return (
-                                        <div className="mt-2">
-                                          <audio className="w-full" controls src={previewUrl} />
-                                        </div>
-                                      );
-                                    }
                                     if (previewUrl) {
-                                      return (
-                                        <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                          Open preview
-                                        </a>
-                                      );
+                                      return <div className="mt-2">{renderInlinePreview(previewUrl, mime, type)}</div>;
                                     }
                                     return <div className="text-neutral-400">No preview available.</div>;
                                   })()}
@@ -4641,28 +4629,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const pf = previewFileFor(previewUrl, derivativePreviewByChild[d.childContentId]?.files || []);
                                     const mime = String(pf?.mime || "").toLowerCase();
                                     const type = String(derivativePreviewByChild[d.childContentId]?.content?.type || "").toLowerCase();
-                                    const isVideo = mime.startsWith("video/") || type === "video";
-                                    const isAudio = mime.startsWith("audio/") || type === "song";
-                                    if (previewUrl && isVideo) {
-                                      return (
-                                        <div className="mt-2">
-                                          <video className="w-full rounded-md" controls src={previewUrl} />
-                                        </div>
-                                      );
-                                    }
-                                    if (previewUrl && isAudio) {
-                                      return (
-                                        <div className="mt-2">
-                                          <audio className="w-full" controls src={previewUrl} />
-                                        </div>
-                                      );
-                                    }
                                     if (previewUrl) {
-                                      return (
-                                        <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                          Open preview
-                                        </a>
-                                      );
+                                      return <div className="mt-2">{renderInlinePreview(previewUrl, mime, type)}</div>;
                                     }
                                     return <div className="text-neutral-400">No preview available.</div>;
                                   })()}
