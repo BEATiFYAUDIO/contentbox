@@ -25871,6 +25871,12 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
     select: { id: true, repoPath: true, description: true }
   });
   const childOrigin = getRemoteOriginFromDescription(child?.description || null);
+  if (!child?.repoPath && childOrigin) {
+    return reply.redirect(
+      302,
+      `${childOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(link.childContentId)}/preview-file`
+    );
+  }
   if (!reviewGrantedAt) {
     const siblingReview = await prisma.clearanceRequest.findFirst({
       where: {
@@ -25908,12 +25914,6 @@ app.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, r
     return reply.code(409).type("text/plain").send("Preview not granted yet.");
   }
 
-  if (!child?.repoPath && childOrigin) {
-    return reply.redirect(
-      302,
-      `${childOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(link.childContentId)}/preview-file`
-    );
-  }
   if (!child?.repoPath) return notFound(reply, "Not found");
 
   const manifest = await prisma.manifest.findUnique({ where: { contentId: child.id } });
