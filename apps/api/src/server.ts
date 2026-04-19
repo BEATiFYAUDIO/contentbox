@@ -30566,6 +30566,79 @@ app.post("/content/:id/restore", { preHandler: requireAuth }, async (req: any, r
   return reply.send({ ok: true });
 });
 
+async function purgeDerivativeClearanceStateForChildContent(contentId: string) {
+  const links = await prisma.contentLink.findMany({
+    where: { childContentId: contentId },
+    select: { id: true, parentContentId: true, childContentId: true, parentContent: { select: { description: true, repoPath: true, deletedReason: true } } }
+  });
+  const linkIds = links.map((link) => link.id);
+  const auths = linkIds.length
+    ? await prisma.derivativeAuthorization.findMany({
+        where: { derivativeLinkId: { in: linkIds } },
+        select: { id: true, derivativeLinkId: true }
+      })
+    : [];
+  const authIds = auths.map((auth) => auth.id);
+
+  if (authIds.length > 0) {
+    await prisma.derivativeApprovalVote.deleteMany({ where: { authorizationId: { in: authIds } } });
+  }
+  if (linkIds.length > 0) {
+    await prisma.approvalToken.deleteMany({ where: { contentLinkId: { in: linkIds } } }).catch(() => {});
+    await prisma.clearanceRequest.deleteMany({ where: { contentLinkId: { in: linkIds } } }).catch(() => {});
+  }
+  if (authIds.length > 0) {
+    await prisma.derivativeAuthorization.deleteMany({ where: { id: { in: authIds } } });
+  }
+  if (linkIds.length > 0) {
+    await prisma.contentLink.deleteMany({ where: { id: { in: linkIds } } });
+  }
+
+  return links;
+}
+
+app.post("/api/derivatives/remote-delete", async (req: any, reply: any) => {
+  const body = (req.body ?? {}) as { parentContentId?: string; childContentId?: string };
+  const parentContentId = asString(body.parentContentId || "").trim();
+  const childContentId = asString(body.childContentId || "").trim();
+  if (!parentContentId || !childContentId) {
+    return badRequest(reply, "parentContentId and childContentId are required");
+  }
+
+  const links = await prisma.contentLink.findMany({
+    where: { parentContentId, childContentId },
+    select: { id: true }
+  });
+  const linkIds = links.map((link) => link.id);
+  const auths = linkIds.length
+    ? await prisma.derivativeAuthorization.findMany({
+        where: { derivativeLinkId: { in: linkIds } },
+        select: { id: true }
+      })
+    : [];
+  const authIds = auths.map((auth) => auth.id);
+
+  if (authIds.length > 0) {
+    await prisma.derivativeApprovalVote.deleteMany({ where: { authorizationId: { in: authIds } } });
+  }
+  if (linkIds.length > 0) {
+    await prisma.approvalToken.deleteMany({ where: { contentLinkId: { in: linkIds } } }).catch(() => {});
+    await prisma.clearanceRequest.deleteMany({ where: { contentLinkId: { in: linkIds } } }).catch(() => {});
+    await prisma.derivativeAuthorization.deleteMany({ where: { derivativeLinkId: { in: linkIds } } });
+    await prisma.contentLink.deleteMany({ where: { id: { in: linkIds } } });
+  }
+
+  await prisma.contentItem.deleteMany({
+    where: {
+      id: childContentId,
+      deletedReason: "hard",
+      repoPath: null
+    }
+  }).catch(() => {});
+
+  return reply.send({ ok: true, removedLinks: linkIds.length });
+});
+
 // Permanently delete content and remove repo folder
 app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
@@ -30583,10 +30656,35 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
 
   const repoPath = content.repoPath;
   const deletedAt = content.deletedAt || new Date();
+  const purgedLinks = await purgeDerivativeClearanceStateForChildContent(contentId);
   await prisma.contentItem.update({
     where: { id: contentId },
     data: { deletedAt, deletedReason: "hard" }
   });
+
+  for (const link of purgedLinks) {
+    const parent = link.parentContent;
+    const remoteOrigin =
+      parent && parent.deletedReason === "hard" && !parent.repoPath ? getRemoteOriginFromDescription(parent.description) : null;
+    if (!remoteOrigin) continue;
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        await fetch(`${remoteOrigin}/api/derivatives/remote-delete`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            parentContentId: link.parentContentId,
+            childContentId: link.childContentId
+          }),
+          signal: ctrl.signal as any
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {}
+  }
 
   if (repoPath) {
     try {
@@ -30597,7 +30695,7 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
     }
   }
 
-  return reply.send({ ok: true });
+  return reply.send({ ok: true, purgedDerivativeLinks: purgedLinks.length });
 });
 
 // Return the latest split version for a content item (used by ContentLibraryPage)
