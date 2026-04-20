@@ -3305,6 +3305,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         const isVideo = String(it.type || "").toLowerCase() === "video" || previewMime.startsWith("video/");
                         const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
                         const isImage = previewMime.startsWith("image/");
+                        const isImageLikePreview = Boolean(
+                          previewUrl &&
+                            (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(previewUrl))
+                        );
                         const coverUrl = `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                           it.manifest?.sha256 ? `?v=${encodeURIComponent(it.manifest.sha256)}` : ""
                         }`;
@@ -3347,18 +3351,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
                               {previewUrl && isVideo ? <video className="w-full rounded-md" controls src={previewUrl} /> : null}
                               {previewUrl && isAudio ? <audio className="w-full" controls src={previewUrl} /> : null}
-                              {previewUrl && isImage ? (
+                              {previewUrl && isImageLikePreview ? (
                                 <img
-                                  className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                  className="block w-full h-72 rounded-md object-contain bg-neutral-950/60"
                                   src={previewUrl}
                                   alt={it.title || "Preview"}
                                   loading="lazy"
                                 />
                               ) : null}
-                              {previewUrl && !isAudio && !isVideo && !isImage ? (
+                              {previewUrl && !isAudio && !isVideo && !isImageLikePreview ? (
                                 <div>
                                   <iframe
-                                    className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                    className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
                                     src={previewUrl}
                                     title={`${it.title || "Content"} preview`}
                                     loading="lazy"
@@ -3874,6 +3878,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const isVideo = mime.startsWith("video/") || type === "video";
                                     const isAudio = mime.startsWith("audio/") || type === "song";
                                     const isImage = mime.startsWith("image/");
+                                    const isImageLikePreview = Boolean(
+                                      previewUrl &&
+                                        (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(previewUrl))
+                                    );
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
@@ -3888,11 +3896,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                         </div>
                                       );
                                     }
-                                    if (previewUrl && isImage) {
+                                    if (previewUrl && isImageLikePreview) {
                                       return (
                                         <div className="mt-2">
                                           <img
-                                            className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                            className="block w-full h-72 rounded-md object-contain bg-neutral-950/60"
                                             src={previewUrl}
                                             alt={it.title || "Preview"}
                                             loading="lazy"
@@ -3904,7 +3912,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       return (
                                         <div className="mt-2">
                                           <iframe
-                                            className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                            className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
                                             src={previewUrl}
                                             title={`${it.title || "Derivative"} preview`}
                                             loading="lazy"
@@ -4207,6 +4215,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const isVideo = mime.startsWith("video/") || type === "video";
                                     const isAudio = mime.startsWith("audio/") || type === "song";
                                     const isImage = mime.startsWith("image/");
+                                    const isImageLikePreview = Boolean(
+                                      previewUrl &&
+                                        (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(previewUrl))
+                                    );
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
@@ -4221,11 +4233,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                         </div>
                                       );
                                     }
-                                    if (previewUrl && isImage) {
+                                    if (previewUrl && isImageLikePreview) {
                                       return (
                                         <div className="mt-2">
                                           <img
-                                            className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                            className="block w-full h-72 rounded-md object-contain bg-neutral-950/60"
                                             src={previewUrl}
                                             alt={d.childTitle || "Preview"}
                                             loading="lazy"
@@ -4237,7 +4249,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       return (
                                         <div className="mt-2">
                                           <iframe
-                                            className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                            className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
                                             src={previewUrl}
                                             title={`${d.childTitle || "Derivative"} preview`}
                                             loading="lazy"

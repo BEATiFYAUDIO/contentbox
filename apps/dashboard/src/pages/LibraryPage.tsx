@@ -1027,6 +1027,10 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                       )
                                     : null;
                                 const effectivePreviewUrl = previewUrl || participantPreviewFallback;
+                                const isImageLikePreview = Boolean(
+                                  effectivePreviewUrl &&
+                                    (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(effectivePreviewUrl))
+                                );
                                 if (effectivePreviewUrl && isVideo) {
                                   return <video className="w-full rounded-md" controls src={effectivePreviewUrl} />;
                                 }
@@ -1036,16 +1040,16 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                 if (effectivePreviewUrl) {
                                   return (
                                     <div>
-                                      {isImage ? (
+                                      {isImageLikePreview ? (
                                         <img
-                                          className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                          className="block w-full h-72 rounded-md object-contain bg-neutral-950/60"
                                           src={effectivePreviewUrl}
                                           alt={it.title || "Preview"}
                                           loading="lazy"
                                         />
                                       ) : (
                                         <iframe
-                                          className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                          className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
                                           src={effectivePreviewUrl}
                                           title={`${it.title || "Content"} preview`}
                                           loading="lazy"
