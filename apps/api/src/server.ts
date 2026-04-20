@@ -21053,7 +21053,44 @@ async function resolveDerivativeInfo(contentId: string, contentType: string | nu
   if (!isDerivative) return { isDerivative: false, clearanceCleared: true, clearanceId: null, link: null };
   if (links.length !== 1) return { isDerivative: true, clearanceCleared: false, clearanceId: null, link: links[0] || null };
   const link = links[0];
-  const clearanceCleared = !link.requiresApproval || Boolean(link.approvedAt);
+  let clearanceCleared = !link.requiresApproval || Boolean(link.approvedAt);
+  if (!clearanceCleared && link.requiresApproval) {
+    const localAuth = await prisma.derivativeAuthorization.findFirst({
+      where: { derivativeLinkId: link.id },
+      select: { status: true }
+    }).catch(() => null);
+    clearanceCleared = String(localAuth?.status || "").toUpperCase() === "APPROVED";
+  }
+  if (!clearanceCleared && link.requiresApproval) {
+    const parent = await prisma.contentItem
+      .findUnique({
+        where: { id: link.parentContentId },
+        select: { description: true, deletedReason: true, repoPath: true }
+      })
+      .catch(() => null);
+    const remoteOrigin =
+      parent && parent.deletedReason === "hard" && !parent.repoPath
+        ? getRemoteOriginFromDescription(parent.description || null)
+        : null;
+    if (remoteOrigin) {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 3000);
+      try {
+        const url = `${remoteOrigin}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+          link.parentContentId
+        )}&childContentId=${encodeURIComponent(link.childContentId)}`;
+        const res = await fetch(url, { method: "GET", signal: ctrl.signal as any } as any);
+        const json: any = await res.json().catch(() => null);
+        const remoteApproved =
+          Boolean(json?.approvedAt) || String(json?.clearance?.status || "").toUpperCase() === "APPROVED";
+        if (res.ok && remoteApproved) clearanceCleared = true;
+      } catch {
+        // Fallback remains local-only when remote authority is unreachable.
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+  }
   let clearanceId: string | null = null;
   if (clearanceCleared) {
     const req = await prisma.clearanceRequest.findFirst({
