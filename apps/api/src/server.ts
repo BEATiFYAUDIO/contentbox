@@ -22533,6 +22533,13 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     normalizeOrigin(getPublicOrigin(req)) ||
     "";
   const childPublicOrigin = String(shareableChildOrigin || "").replace(/\/+$/, "");
+  if (remoteOrigin && !isShareablePublicOrigin(childPublicOrigin)) {
+    return reply.code(409).send({
+      error: "Child origin is not shareable for remote clearance forwarding",
+      code: "CHILD_ORIGIN_NOT_SHAREABLE",
+      childOrigin: childPublicOrigin || null
+    });
+  }
   if (remoteOrigin) {
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 8000);
@@ -22588,7 +22595,10 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           break;
         }
         const details =
-          asString(data?.message || "").trim() || asString(data?.error || "").trim() || `HTTP_${res.status}`;
+          asString(data?.code || "").trim() ||
+          asString(data?.message || "").trim() ||
+          asString(data?.error || "").trim() ||
+          `HTTP_${res.status}`;
         lastFailure = { status: res.status, details, origin: candidateOrigin };
         if (res.status !== 530) break;
       }
@@ -22679,32 +22689,48 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     const signedSig = asString((req.headers as any)?.["x-contentbox-forward-signature"] || "").trim();
     const signedNode = normalizeOrigin(asString((req.headers as any)?.["x-contentbox-forward-node"] || "").trim());
     if (!signedPayloadB64 || !signedSig || !signedNode) {
-      return reply.code(401).send({ error: "Unauthorized" });
+      return reply.code(401).send({
+        error: "Unauthorized",
+        code: "FORWARD_PROOF_MISSING"
+      });
     }
     let signedPayload: any = null;
     try {
       signedPayload = JSON.parse(base64UrlDecode(signedPayloadB64).toString("utf8"));
     } catch {
-      return reply.code(401).send({ error: "Unauthorized" });
+      return reply.code(401).send({
+        error: "Unauthorized",
+        code: "FORWARD_PAYLOAD_MISMATCH"
+      });
     }
     const payloadParent = asString(signedPayload?.parentContentId || "").trim();
     const payloadChild = asString(signedPayload?.childContentId || "").trim();
     const payloadOrigin = normalizeOrigin(asString(signedPayload?.childOrigin || "").trim());
     const payloadKind = asString(signedPayload?.kind || "").trim();
     const payloadTs = Date.parse(asString(signedPayload?.ts || "").trim());
-    if (
+    const tsDriftMs = Number.isFinite(payloadTs) ? Math.abs(Date.now() - payloadTs) : Number.POSITIVE_INFINITY;
+    const isExpired = Number.isFinite(payloadTs) && tsDriftMs > 15 * 60 * 1000;
+    const payloadMismatch =
       payloadKind !== "remote_clearance_request" ||
-      !Number.isFinite(payloadTs) ||
-      Math.abs(Date.now() - payloadTs) > 15 * 60 * 1000 ||
       payloadParent !== parentContentId ||
       payloadChild !== childContentId ||
       payloadOrigin !== normalizeOrigin(childOrigin) ||
-      payloadOrigin !== signedNode
+      payloadOrigin !== signedNode;
+    if (
+      !Number.isFinite(payloadTs) ||
+      isExpired ||
+      payloadMismatch
     ) {
-      return reply.code(401).send({ error: "Unauthorized" });
+      return reply.code(401).send({
+        error: "Unauthorized",
+        code: !Number.isFinite(payloadTs) || payloadMismatch ? "FORWARD_PAYLOAD_MISMATCH" : "FORWARD_PROOF_EXPIRED"
+      });
     }
     let remotePub = getCachedRemoteDiscoveryKey(signedNode);
+    let discoveryAttempted = false;
+    let discoveryReachable = false;
     if (!remotePub) {
+      discoveryAttempted = true;
       try {
         const disco = await fetchWithTimeout(
           `${signedNode}/.well-known/contentbox`,
@@ -22712,14 +22738,24 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
           4000
         );
         if (disco?.ok) {
+          discoveryReachable = true;
           const d: any = await disco.json().catch(() => null);
           remotePub = asString(d?.publicKeyPem || "").trim() || null;
           if (remotePub) setCachedRemoteDiscoveryKey(signedNode, remotePub);
         }
       } catch {}
     }
-    if (!remotePub || !verifyStablePayloadSignature(remotePub, signedPayload, signedSig)) {
-      return reply.code(401).send({ error: "Unauthorized" });
+    if (!remotePub) {
+      return reply.code(401).send({
+        error: "Unauthorized",
+        code: discoveryAttempted && !discoveryReachable ? "FORWARD_DISCOVERY_UNREACHABLE" : "FORWARD_SIGNATURE_INVALID"
+      });
+    }
+    if (!verifyStablePayloadSignature(remotePub, signedPayload, signedSig)) {
+      return reply.code(401).send({
+        error: "Unauthorized",
+        code: "FORWARD_SIGNATURE_INVALID"
+      });
     }
   }
 
