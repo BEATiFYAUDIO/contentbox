@@ -3627,6 +3627,18 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             ? (parentLink.upstreamBps / 100).toFixed(parentLink.upstreamBps % 100 ? 2 : 0)
                             : null;
                         if (parentLink && isDerivative) {
+                          const approvalTargetBps = Number(parentLink.clearance?.approvalBpsTarget || 6667);
+                          const approvalWeightBps = Number(parentLink.clearance?.approveWeightBps || 0);
+                          const clearanceStatus = String(parentLink.clearance?.status || "").trim().toUpperCase();
+                          const clearedEffective =
+                            Boolean(parentLink.approvedAt) ||
+                            clearanceStatus === "APPROVED" ||
+                            (approvalTargetBps > 0 && approvalWeightBps >= approvalTargetBps);
+                          const requestStatusRaw = String(parentLink.clearanceRequest?.status || "").trim().toUpperCase();
+                          const requestStatusEffective =
+                            requestStatusRaw === "CLEARED" || clearedEffective
+                              ? "CLEARED"
+                              : requestStatusRaw || "PENDING";
                           return (
                             <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 px-3 py-2">
                               <div className="flex items-center justify-between gap-2">
@@ -3669,12 +3681,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   <div className="text-[11px] font-medium text-neutral-200">Clearance / License for release</div>
                                   <span
                                     className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                                      parentLink.approvedAt
+                                      clearedEffective
                                         ? "border-emerald-900 bg-emerald-950/30 text-emerald-200"
                                         : "border-amber-900 bg-amber-950/30 text-amber-200"
                                     }`}
                                   >
-                                    {parentLink.approvedAt ? "Cleared" : "Pending clearance"}
+                                    {clearedEffective ? "Cleared" : "Pending clearance"}
                                   </span>
                                 </div>
                                 <div className="mt-1 text-[11px] text-neutral-400">
@@ -3725,7 +3737,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   {[
                                     { label: "Requested", done: true },
                                     { label: "Review", done: true },
-                                    { label: "Cleared", done: Boolean(parentLink.approvedAt) },
+                                    { label: "Cleared", done: Boolean(clearedEffective) },
                                     { label: "Public", done: it.storefrontStatus !== "DISABLED" }
                                   ].map((s) => (
                                     <div key={s.label} className="flex items-center gap-1">
@@ -3739,14 +3751,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   ))}
                                 </div>
                               </div>
-                              {!parentLink.approvedAt ? (
+                              {!clearedEffective ? (
                                 <div className="mt-1 text-[11px] text-neutral-500">
                                   You can share/sell privately now. To release publicly, request clearance from original rights holders.
                                 </div>
                               ) : null}
                               {parentLink.clearanceRequest ? (
                                 <div className="mt-1 text-[11px] text-neutral-400">
-                                  Clearance requested: {titleCase(String(parentLink.clearanceRequest.status || "pending"))}
+                                  Clearance requested: {titleCase(requestStatusEffective.toLowerCase())}
                                   {" "}•{" "}
                                   {formatDateLabel(parentLink.clearanceRequest.requestedAt)}
                                 </div>
@@ -3764,7 +3776,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
                               <div className="mt-2 flex items-center gap-2">
                                 {parentLink.requiresApproval &&
-                                !parentLink.approvedAt &&
+                                !clearedEffective &&
                                 isOwner &&
                                 (!parentLink.clearanceRequest || parentLink.clearanceRequest.status !== "PENDING") ? (
                                   <button
@@ -5151,17 +5163,37 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           <div className="mt-2 text-xs text-neutral-400">
                             Clearance for public release:{" "}
                             <span className="text-neutral-200">
-                              {parentLinkByContent[it.id]?.approvedAt ? "Cleared" : "Pending clearance"}
+                              {(() => {
+                                const pl = parentLinkByContent[it.id]!;
+                                const target = Number(pl.clearance?.approvalBpsTarget || 6667);
+                                const approve = Number(pl.clearance?.approveWeightBps || 0);
+                                const status = String(pl.clearance?.status || "").trim().toUpperCase();
+                                const isCleared = Boolean(pl.approvedAt) || status === "APPROVED" || (target > 0 && approve >= target);
+                                return isCleared ? "Cleared" : "Pending clearance";
+                              })()}
                             </span>
                           </div>
                         ) : null}
-                        {parentLinkByContent[it.id]?.requiresApproval && !parentLinkByContent[it.id]?.approvedAt ? (
+                        {parentLinkByContent[it.id]?.requiresApproval &&
+                        (() => {
+                          const pl = parentLinkByContent[it.id]!;
+                          const target = Number(pl.clearance?.approvalBpsTarget || 6667);
+                          const approve = Number(pl.clearance?.approveWeightBps || 0);
+                          const status = String(pl.clearance?.status || "").trim().toUpperCase();
+                          return !(Boolean(pl.approvedAt) || status === "APPROVED" || (target > 0 && approve >= target));
+                        })() ? (
                           <div className="mt-1 text-xs text-amber-300">
                             Public network release is locked until clearance. Private direct-link access still works.
                           </div>
                         ) : null}
                         {parentLinkByContent[it.id]?.requiresApproval &&
-                        !parentLinkByContent[it.id]?.approvedAt &&
+                        (() => {
+                          const pl = parentLinkByContent[it.id]!;
+                          const target = Number(pl.clearance?.approvalBpsTarget || 6667);
+                          const approve = Number(pl.clearance?.approveWeightBps || 0);
+                          const status = String(pl.clearance?.status || "").trim().toUpperCase();
+                          return !(Boolean(pl.approvedAt) || status === "APPROVED" || (target > 0 && approve >= target));
+                        })() &&
                         isOwner &&
                         (!parentLinkByContent[it.id]?.clearanceRequest ||
                           parentLinkByContent[it.id]?.clearanceRequest?.status !== "PENDING") ? (
@@ -5209,7 +5241,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             {parentLinkByContent[it.id]?.clearanceRequest ? (
                               <div className="text-[11px] text-neutral-400">
                                 Clearance requested:{" "}
-                                {titleCase(String(parentLinkByContent[it.id]!.clearanceRequest.status || "pending"))}
+                                {(() => {
+                                  const pl = parentLinkByContent[it.id]!;
+                                  const target = Number(pl.clearance?.approvalBpsTarget || 6667);
+                                  const approve = Number(pl.clearance?.approveWeightBps || 0);
+                                  const status = String(pl.clearance?.status || "").trim().toUpperCase();
+                                  const isCleared = Boolean(pl.approvedAt) || status === "APPROVED" || (target > 0 && approve >= target);
+                                  const reqStatus = String(pl.clearanceRequest?.status || "").trim().toUpperCase();
+                                  const effective = reqStatus === "CLEARED" || isCleared ? "CLEARED" : reqStatus || "PENDING";
+                                  return titleCase(effective.toLowerCase());
+                                })()}
                                 {" "}•{" "}
                                 {formatDateLabel(parentLinkByContent[it.id]!.clearanceRequest.requestedAt)}
                               </div>
