@@ -22553,34 +22553,52 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         forwardHeaders["x-contentbox-forward-signature"] = forwardProofSig;
         forwardHeaders["x-contentbox-forward-node"] = normalizeOrigin(childPublicOrigin || "");
       }
-      const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
-        method: "POST",
-        headers: forwardHeaders,
-        body: JSON.stringify({
-          parentContentId: link.parentContentId,
-          childContentId: link.childContentId,
-          childOrigin: childPublicOrigin,
-          relation: link.relation,
-          childTitle: child.title,
-          childType: child.type,
-          upstreamBps: link.upstreamBps
-        }),
-        signal: ctrl.signal as any
+      const requestBody = JSON.stringify({
+        parentContentId: link.parentContentId,
+        childContentId: link.childContentId,
+        childOrigin: childPublicOrigin,
+        relation: link.relation,
+        childTitle: child.title,
+        childType: child.type,
+        upstreamBps: link.upstreamBps
       });
-      const data: any = await res.json().catch(() => null);
-      if (!res.ok) {
-        return reply.code(res.status).send({
+      const originCandidates = getRemoteOriginCandidates(remoteOrigin);
+      let lastFailure: { status: number; details: string; origin: string } | null = null;
+      for (const candidateOrigin of originCandidates) {
+        const res = await fetch(`${candidateOrigin}/api/derivatives/remote-request`, {
+          method: "POST",
+          headers: forwardHeaders,
+          body: requestBody,
+          signal: ctrl.signal as any
+        });
+        const data: any = await res.json().catch(() => null);
+        if (res.ok) {
+          if (Array.isArray(data?.approvalUrls)) {
+            remoteApprovalUrls = data.approvalUrls;
+          }
+          if (candidateOrigin !== remoteOrigin) {
+            await prisma.contentItem
+              .update({
+                where: { id: link.parentContentId },
+                data: { description: `Remote origin: ${candidateOrigin}` }
+              })
+              .catch(() => null);
+          }
+          lastFailure = null;
+          break;
+        }
+        const details =
+          asString(data?.message || "").trim() || asString(data?.error || "").trim() || `HTTP_${res.status}`;
+        lastFailure = { status: res.status, details, origin: candidateOrigin };
+        if (res.status !== 530) break;
+      }
+      if (lastFailure) {
+        return reply.code(lastFailure.status).send({
           error: "Remote clearance request failed",
           code: "REMOTE_CLEARANCE_REQUEST_FAILED",
-          origin: remoteOrigin,
-          details:
-            asString(data?.message || "").trim() ||
-            asString(data?.error || "").trim() ||
-            `HTTP_${res.status}`
+          origin: lastFailure.origin,
+          details: lastFailure.details
         });
-      }
-      if (Array.isArray(data?.approvalUrls)) {
-        remoteApprovalUrls = data.approvalUrls;
       }
     } catch (e: any) {
       return reply.code(409).send({
@@ -32331,6 +32349,20 @@ function getRemoteOriginFromDescription(desc?: string | null): string | null {
   }
   const origin = d.slice(prefix.length).trim();
   return origin ? origin.replace(/\/+$/, "") : null;
+}
+
+function getRemoteOriginCandidates(originRaw?: string | null): string[] {
+  const base = normalizeOrigin(originRaw || "");
+  if (!base) return [];
+  const out = new Set<string>([base.replace(/\/+$/, "")]);
+  try {
+    const u = new URL(base);
+    const host = String(u.hostname || "").toLowerCase();
+    const mk = (h: string) => `${u.protocol}//${h}${u.port ? `:${u.port}` : ""}`.replace(/\/+$/, "");
+    if (host.startsWith("certifydlink.")) out.add(mk(host.replace(/^certifydlink\./, "certifyd.")));
+    if (host.startsWith("certifyd.")) out.add(mk(host.replace(/^certifyd\./, "certifydlink.")));
+  } catch {}
+  return Array.from(out);
 }
 
 async function getEligibleApproversForParent(parentContentId: string) {
