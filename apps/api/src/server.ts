@@ -22787,26 +22787,90 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     let remotePub = getCachedRemoteDiscoveryKey(signedNode);
     let discoveryAttempted = false;
     let discoveryReachable = false;
+    const discoveryUrl = `${signedNode}/.well-known/contentbox`;
+    let discoveryHttpStatus: number | null = null;
+    let discoveryErrorClass: "timeout" | "dns" | "tls" | "non_ok" | "unknown" | null = null;
+    let discoveryElapsedMs: number | null = null;
     if (!remotePub) {
       discoveryAttempted = true;
-      try {
-        const disco = await fetchWithTimeout(
-          `${signedNode}/.well-known/contentbox`,
-          { method: "GET", headers: { Accept: "application/json" } as any } as any,
-          4000
-        );
-        if (disco?.ok) {
+      const classifyDiscoveryError = (err: any): "timeout" | "dns" | "tls" | "unknown" => {
+        const msg = asString(err?.message || "").toLowerCase();
+        const code = asString(err?.code || "").toUpperCase();
+        if (code === "ABORT_ERR" || msg.includes("abort") || msg.includes("timeout")) return "timeout";
+        if (
+          code === "ENOTFOUND" ||
+          code === "EAI_AGAIN" ||
+          code === "ECONNREFUSED" ||
+          code === "ECONNRESET" ||
+          msg.includes("enotfound") ||
+          msg.includes("dns") ||
+          msg.includes("getaddrinfo") ||
+          msg.includes("econnrefused") ||
+          msg.includes("econnreset")
+        ) {
+          return "dns";
+        }
+        if (
+          code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+          code === "ERR_TLS_CERT_ALTNAME_INVALID" ||
+          msg.includes("certificate") ||
+          msg.includes("tls") ||
+          msg.includes("ssl")
+        ) {
+          return "tls";
+        }
+        return "unknown";
+      };
+      const attemptDiscovery = async (): Promise<boolean> => {
+        const startedAt = Date.now();
+        try {
+          const disco = await fetchWithTimeout(
+            discoveryUrl,
+            { method: "GET", headers: { Accept: "application/json" } as any } as any,
+            4000
+          );
+          discoveryElapsedMs = Date.now() - startedAt;
+          discoveryHttpStatus = Number((disco as any)?.status || 0) || null;
+          if (!disco?.ok) {
+            discoveryErrorClass = "non_ok";
+            return false;
+          }
           discoveryReachable = true;
           const d: any = await disco.json().catch(() => null);
           remotePub = asString(d?.publicKeyPem || "").trim() || null;
-          if (remotePub) setCachedRemoteDiscoveryKey(signedNode, remotePub);
+          if (remotePub) {
+            setCachedRemoteDiscoveryKey(signedNode, remotePub);
+            discoveryErrorClass = null;
+            return true;
+          }
+          discoveryErrorClass = "unknown";
+          return false;
+        } catch (err: any) {
+          discoveryElapsedMs = Date.now() - startedAt;
+          discoveryErrorClass = classifyDiscoveryError(err);
+          return false;
         }
-      } catch {}
+      };
+      const firstAttemptOk = await attemptDiscovery();
+      if (!firstAttemptOk) {
+        // One immediate retry for transient tunnel/edge flakiness.
+        await attemptDiscovery();
+      }
     }
     if (!remotePub) {
       return reply.code(401).send({
         error: "Unauthorized",
-        code: discoveryAttempted && !discoveryReachable ? "FORWARD_DISCOVERY_UNREACHABLE" : "FORWARD_SIGNATURE_INVALID"
+        code: discoveryAttempted && !discoveryReachable ? "FORWARD_DISCOVERY_UNREACHABLE" : "FORWARD_SIGNATURE_INVALID",
+        details:
+          discoveryAttempted && !discoveryReachable
+            ? {
+                signedNode,
+                discoveryUrl,
+                httpStatus: discoveryHttpStatus,
+                errorClass: discoveryErrorClass || "unknown",
+                elapsedMs: discoveryElapsedMs
+              }
+            : undefined
       });
     }
     let signatureValid = verifyStablePayloadSignature(remotePub, signedPayload, signedSig);
