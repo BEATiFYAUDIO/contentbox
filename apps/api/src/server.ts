@@ -736,6 +736,208 @@ async function fetchDiscoveredNodePubKey(originRaw: string | null | undefined): 
   }
 }
 
+type DiscoveryErrorClass = "timeout" | "dns" | "tls" | "non_ok" | "unknown";
+
+type DiscoveryFetchResult = {
+  publicKeyPem: string | null;
+  httpStatus: number | null;
+  errorClass: DiscoveryErrorClass | null;
+  elapsedMs: number;
+};
+
+function classifyDiscoveryFetchError(err: any): DiscoveryErrorClass {
+  const msg = asString(err?.message || "").toLowerCase();
+  const code = asString(err?.code || "").toUpperCase();
+  if (code === "ABORT_ERR" || msg.includes("abort") || msg.includes("timeout")) return "timeout";
+  if (
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "ECONNREFUSED" ||
+    code === "ECONNRESET" ||
+    msg.includes("enotfound") ||
+    msg.includes("dns") ||
+    msg.includes("getaddrinfo") ||
+    msg.includes("econnrefused") ||
+    msg.includes("econnreset")
+  ) {
+    return "dns";
+  }
+  if (
+    code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
+    code === "ERR_TLS_CERT_ALTNAME_INVALID" ||
+    msg.includes("certificate") ||
+    msg.includes("tls") ||
+    msg.includes("ssl")
+  ) {
+    return "tls";
+  }
+  return "unknown";
+}
+
+async function fetchDiscoveryPublicKeyWithDiagnostics(
+  originRaw: string | null | undefined,
+  timeoutMs = 4000
+): Promise<DiscoveryFetchResult> {
+  const origin = normalizeOrigin(originRaw || "");
+  const start = Date.now();
+  if (!origin) {
+    return { publicKeyPem: null, httpStatus: null, errorClass: "unknown", elapsedMs: Date.now() - start };
+  }
+  try {
+    const discoveryRes = await fetchWithTimeout(
+      `${origin}/.well-known/contentbox`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      timeoutMs
+    );
+    const elapsedMs = Date.now() - start;
+    const httpStatus = Number((discoveryRes as any)?.status || 0) || null;
+    if (!discoveryRes.ok) {
+      return { publicKeyPem: null, httpStatus, errorClass: "non_ok", elapsedMs };
+    }
+    const payload: any = await discoveryRes.json().catch(() => null);
+    const discoveredPub = asString(payload?.publicKeyPem || "").trim() || null;
+    return {
+      publicKeyPem: discoveredPub,
+      httpStatus,
+      errorClass: discoveredPub ? null : "unknown",
+      elapsedMs
+    };
+  } catch (err: any) {
+    return {
+      publicKeyPem: null,
+      httpStatus: null,
+      errorClass: classifyDiscoveryFetchError(err),
+      elapsedMs: Date.now() - start
+    };
+  }
+}
+
+function localSigningNodeIdentity(): { nodePubKey: string | null; fingerprint: string | null } {
+  const privPem = getLocalNodePrivatePem();
+  if (!privPem) return { nodePubKey: null, fingerprint: null };
+  try {
+    const privateKey = crypto.createPrivateKey(privPem);
+    const publicPem = crypto
+      .createPublicKey(privateKey)
+      .export({ type: "spki", format: "pem" })
+      .toString();
+    const derived = deriveNodeIdentityFromPublicKey(publicPem);
+    return {
+      nodePubKey: derived.nodePubKey,
+      fingerprint: asString(derived.nodeId || "").replace(/^node:/, "") || null
+    };
+  } catch {
+    return { nodePubKey: null, fingerprint: null };
+  }
+}
+
+function nodePubKeyFingerprint(nodePubKey: string | null | undefined): string | null {
+  const raw = asString(nodePubKey || "").trim();
+  if (!raw) return null;
+  try {
+    const der = base64UrlDecode(raw.replace(/^ed25519:/, ""));
+    return crypto.createHash("sha256").update(der).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+type CanonicalClearanceAuthorityResolution = {
+  ok: boolean;
+  origin: string | null;
+  reasonCode: string | null;
+  localSigningFingerprint: string | null;
+  discoveredFingerprint: string | null;
+  localSigningNodePubKey: string | null;
+  discoveredNodePubKey: string | null;
+  httpStatus: number | null;
+  errorClass: DiscoveryErrorClass | null;
+  elapsedMs: number | null;
+};
+
+async function resolveCanonicalClearanceAuthority(req: any): Promise<CanonicalClearanceAuthorityResolution> {
+  const publicStatus = getPublicStatus();
+  const canonicalOrigin =
+    normalizeOrigin(String(publicStatus.canonicalCommerceOrigin || "").trim()) ||
+    normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim()) ||
+    normalizeOrigin(getActivePublicOrigin() || "") ||
+    normalizeOrigin(getPublicOrigin(req)) ||
+    null;
+
+  const local = localSigningNodeIdentity();
+  if (!canonicalOrigin || !isShareablePublicOrigin(canonicalOrigin)) {
+    return {
+      ok: false,
+      origin: canonicalOrigin,
+      reasonCode: "CHILD_ORIGIN_NOT_SHAREABLE",
+      localSigningFingerprint: local.fingerprint,
+      discoveredFingerprint: null,
+      localSigningNodePubKey: local.nodePubKey,
+      discoveredNodePubKey: null,
+      httpStatus: null,
+      errorClass: null,
+      elapsedMs: null
+    };
+  }
+  if (!local.nodePubKey) {
+    return {
+      ok: false,
+      origin: canonicalOrigin,
+      reasonCode: "LOCAL_SIGNING_IDENTITY_UNAVAILABLE",
+      localSigningFingerprint: null,
+      discoveredFingerprint: null,
+      localSigningNodePubKey: null,
+      discoveredNodePubKey: null,
+      httpStatus: null,
+      errorClass: null,
+      elapsedMs: null
+    };
+  }
+
+  const disco = await fetchDiscoveryPublicKeyWithDiagnostics(canonicalOrigin, 4000);
+  const discoveredNodePubKey = disco.publicKeyPem ? deriveNodeIdentityFromPublicKey(disco.publicKeyPem).nodePubKey : null;
+  const discoveredFingerprint = nodePubKeyFingerprint(discoveredNodePubKey);
+  if (!discoveredNodePubKey) {
+    return {
+      ok: false,
+      origin: canonicalOrigin,
+      reasonCode: "CHILD_ORIGIN_DISCOVERY_UNREACHABLE",
+      localSigningFingerprint: local.fingerprint,
+      discoveredFingerprint: null,
+      localSigningNodePubKey: local.nodePubKey,
+      discoveredNodePubKey: null,
+      httpStatus: disco.httpStatus,
+      errorClass: disco.errorClass,
+      elapsedMs: disco.elapsedMs
+    };
+  }
+
+  const matched = discoveredNodePubKey === local.nodePubKey;
+  return {
+    ok: matched,
+    origin: canonicalOrigin,
+    reasonCode: matched ? null : "CHILD_ORIGIN_SIGNING_IDENTITY_MISMATCH",
+    localSigningFingerprint: local.fingerprint,
+    discoveredFingerprint,
+    localSigningNodePubKey: local.nodePubKey,
+    discoveredNodePubKey,
+    httpStatus: disco.httpStatus,
+    errorClass: disco.errorClass,
+    elapsedMs: disco.elapsedMs
+  };
+}
+
+let lastForwardVerificationFailure: {
+  code: string;
+  reason: string;
+  at: string;
+  signedNode: string | null;
+  discoveryUrl?: string | null;
+  httpStatus?: number | null;
+  errorClass?: string | null;
+  elapsedMs?: number | null;
+} | null = null;
+
 function getPublicOrigin(req: any): string {
   const envOrigin =
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
@@ -16661,6 +16863,31 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
   });
 });
 
+app.get("/api/diagnostics/clearance-authority", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const canonical = await resolveCanonicalClearanceAuthority(req);
+  const publicStatus = getPublicStatus();
+  return reply.send({
+    ok: canonical.ok,
+    canonicalOrigin: canonical.origin,
+    localSigningFingerprint: canonical.localSigningFingerprint,
+    discoveredFingerprint: canonical.discoveredFingerprint,
+    localSigningNodePubKey: canonical.localSigningNodePubKey,
+    discoveredNodePubKey: canonical.discoveredNodePubKey,
+    reasonCode: canonical.reasonCode,
+    discovery: {
+      httpStatus: canonical.httpStatus,
+      errorClass: canonical.errorClass,
+      elapsedMs: canonical.elapsedMs
+    },
+    lastForwardVerificationFailure,
+    publicStatus: {
+      canonicalOrigin: publicStatus.canonicalOrigin || null,
+      canonicalCommerceOrigin: publicStatus.canonicalCommerceOrigin || null,
+      publicOrigin: publicStatus.publicOrigin || null
+    }
+  });
+});
+
 function deriveNetworkVisibility(publicStatus: ReturnType<typeof getPublicStatus>): "DISABLED" | "UNLISTED" | "LISTED" {
   // Network v1 remains link-first. We only mark discoverable/listed when a persistent
   // named endpoint is online; quick/offline states are treated as hidden/direct-link posture.
@@ -22546,57 +22773,24 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const publicStatus = getPublicStatus();
-  const shareableChildOrigin =
-    (await resolveShareableInviteOrigin(req)) ||
-    normalizeOrigin(String(publicStatus.canonicalCommerceOrigin || "").trim()) ||
-    normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim()) ||
-    normalizeOrigin(getActivePublicOrigin() || "") ||
-    normalizeOrigin(getPublicOrigin(req)) ||
-    "";
-  let childPublicOrigin = String(shareableChildOrigin || "").replace(/\/+$/, "");
-  if (remoteOrigin && !isShareablePublicOrigin(childPublicOrigin)) {
-    return reply.code(409).send({
-      error: "Child origin is not shareable for remote clearance forwarding",
-      code: "CHILD_ORIGIN_NOT_SHAREABLE",
-      childOrigin: childPublicOrigin || null
-    });
-  }
+  let childPublicOrigin = String(normalizeOrigin(getPublicOrigin(req)) || "").replace(/\/+$/, "");
   if (remoteOrigin) {
-    const localPubPem = getLocalNodePublicPem();
-    const localNodePubKey = localPubPem ? deriveNodeIdentityFromPublicKey(localPubPem).nodePubKey : null;
-    if (localNodePubKey) {
-      const originCandidates = Array.from(
-        new Set(
-          [
-            childPublicOrigin,
-            normalizeOrigin(getActivePublicOrigin() || ""),
-            normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim()),
-            normalizeOrigin(getPublicOrigin(req))
-          ]
-            .map((v) => String(v || "").replace(/\/+$/, ""))
-            .filter((v) => isShareablePublicOrigin(v))
-        )
-      );
-      let matchingOrigin: string | null = null;
-      for (const candidate of originCandidates) {
-        const discoveredPub = await fetchDiscoveredNodePubKey(candidate);
-        if (!discoveredPub) continue;
-        const discoveredNodePubKey = deriveNodeIdentityFromPublicKey(discoveredPub).nodePubKey;
-        if (discoveredNodePubKey === localNodePubKey) {
-          matchingOrigin = candidate;
-          break;
+    const canonical = await resolveCanonicalClearanceAuthority(req);
+    if (!canonical.ok || !canonical.origin) {
+      return reply.code(409).send({
+        error: "Canonical clearance authority mismatch",
+        code: canonical.reasonCode || "CHILD_ORIGIN_SIGNING_IDENTITY_MISMATCH",
+        childOrigin: canonical.origin || null,
+        details: {
+          localSigningFingerprint: canonical.localSigningFingerprint,
+          discoveredFingerprint: canonical.discoveredFingerprint,
+          httpStatus: canonical.httpStatus,
+          errorClass: canonical.errorClass,
+          elapsedMs: canonical.elapsedMs
         }
-      }
-      if (!matchingOrigin) {
-        return reply.code(409).send({
-          error: "Child origin key does not match local signing identity",
-          code: "CHILD_ORIGIN_SIGNING_IDENTITY_MISMATCH",
-          childOrigin: childPublicOrigin || null
-        });
-      }
-      childPublicOrigin = matchingOrigin;
+      });
     }
+    childPublicOrigin = canonical.origin;
   }
   if (remoteOrigin) {
     const ctrl = new AbortController();
@@ -22747,6 +22941,12 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     const signedSig = asString((req.headers as any)?.["x-contentbox-forward-signature"] || "").trim();
     const signedNode = normalizeOrigin(asString((req.headers as any)?.["x-contentbox-forward-node"] || "").trim());
     if (!signedPayloadB64 || !signedSig || !signedNode) {
+      lastForwardVerificationFailure = {
+        code: "FORWARD_PROOF_MISSING",
+        reason: "Missing signed forward-proof headers",
+        at: new Date().toISOString(),
+        signedNode
+      };
       return reply.code(401).send({
         error: "Unauthorized",
         code: "FORWARD_PROOF_MISSING"
@@ -22756,6 +22956,12 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     try {
       signedPayload = JSON.parse(base64UrlDecode(signedPayloadB64).toString("utf8"));
     } catch {
+      lastForwardVerificationFailure = {
+        code: "FORWARD_PAYLOAD_MISMATCH",
+        reason: "Forward-proof payload JSON parse failed",
+        at: new Date().toISOString(),
+        signedNode
+      };
       return reply.code(401).send({
         error: "Unauthorized",
         code: "FORWARD_PAYLOAD_MISMATCH"
@@ -22779,9 +22985,16 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       isExpired ||
       payloadMismatch
     ) {
+      const code = !Number.isFinite(payloadTs) || payloadMismatch ? "FORWARD_PAYLOAD_MISMATCH" : "FORWARD_PROOF_EXPIRED";
+      lastForwardVerificationFailure = {
+        code,
+        reason: code === "FORWARD_PROOF_EXPIRED" ? "Forward-proof timestamp expired" : "Forward-proof payload mismatch",
+        at: new Date().toISOString(),
+        signedNode
+      };
       return reply.code(401).send({
         error: "Unauthorized",
-        code: !Number.isFinite(payloadTs) || payloadMismatch ? "FORWARD_PAYLOAD_MISMATCH" : "FORWARD_PROOF_EXPIRED"
+        code
       });
     }
     let remotePub = getCachedRemoteDiscoveryKey(signedNode);
@@ -22794,32 +23007,7 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     if (!remotePub) {
       discoveryAttempted = true;
       const classifyDiscoveryError = (err: any): "timeout" | "dns" | "tls" | "unknown" => {
-        const msg = asString(err?.message || "").toLowerCase();
-        const code = asString(err?.code || "").toUpperCase();
-        if (code === "ABORT_ERR" || msg.includes("abort") || msg.includes("timeout")) return "timeout";
-        if (
-          code === "ENOTFOUND" ||
-          code === "EAI_AGAIN" ||
-          code === "ECONNREFUSED" ||
-          code === "ECONNRESET" ||
-          msg.includes("enotfound") ||
-          msg.includes("dns") ||
-          msg.includes("getaddrinfo") ||
-          msg.includes("econnrefused") ||
-          msg.includes("econnreset")
-        ) {
-          return "dns";
-        }
-        if (
-          code === "UNABLE_TO_VERIFY_LEAF_SIGNATURE" ||
-          code === "ERR_TLS_CERT_ALTNAME_INVALID" ||
-          msg.includes("certificate") ||
-          msg.includes("tls") ||
-          msg.includes("ssl")
-        ) {
-          return "tls";
-        }
-        return "unknown";
+        return classifyDiscoveryFetchError(err);
       };
       const attemptDiscovery = async (): Promise<boolean> => {
         const startedAt = Date.now();
@@ -22858,9 +23046,20 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       }
     }
     if (!remotePub) {
+      const code = discoveryAttempted && !discoveryReachable ? "FORWARD_DISCOVERY_UNREACHABLE" : "FORWARD_SIGNATURE_INVALID";
+      lastForwardVerificationFailure = {
+        code,
+        reason: code === "FORWARD_DISCOVERY_UNREACHABLE" ? "Discovery fetch for signed node was not reachable" : "No discovery key available for signature verification",
+        at: new Date().toISOString(),
+        signedNode,
+        discoveryUrl,
+        httpStatus: discoveryHttpStatus,
+        errorClass: discoveryErrorClass,
+        elapsedMs: discoveryElapsedMs
+      };
       return reply.code(401).send({
         error: "Unauthorized",
-        code: discoveryAttempted && !discoveryReachable ? "FORWARD_DISCOVERY_UNREACHABLE" : "FORWARD_SIGNATURE_INVALID",
+        code,
         details:
           discoveryAttempted && !discoveryReachable
             ? {
@@ -22894,6 +23093,16 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       } catch {}
     }
     if (!signatureValid) {
+      lastForwardVerificationFailure = {
+        code: "FORWARD_SIGNATURE_INVALID",
+        reason: "Forward-proof signature verification failed after cache refresh retry",
+        at: new Date().toISOString(),
+        signedNode,
+        discoveryUrl,
+        httpStatus: null,
+        errorClass: null,
+        elapsedMs: null
+      };
       return reply.code(401).send({
         error: "Unauthorized",
         code: "FORWARD_SIGNATURE_INVALID"
