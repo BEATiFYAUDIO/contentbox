@@ -10674,6 +10674,9 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/.well-known/certifyd-node", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("GET", "/.well-known/certifyd-node", req, reply)
   );
+  appPublic.get("/.well-known/contentbox", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp("GET", "/.well-known/contentbox", req, reply)
+  );
   appPublic.get("/api/network/provider/capabilities", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("GET", "/api/network/provider/capabilities", req, reply)
   );
