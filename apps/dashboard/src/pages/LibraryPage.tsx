@@ -708,6 +708,22 @@ function normalizeAssetUrl(apiBase: string, raw: string | null | undefined): str
   }
 }
 
+function looksLikeImagePreviewUrl(rawUrl?: string | null): boolean {
+  const value = String(rawUrl || "").trim();
+  if (!value) return false;
+  const extRe = /\.(apng|avif|bmp|gif|heic|heif|ico|jpe?g|png|svg|webp)(?:[?#]|$)/i;
+  if (extRe.test(value)) return true;
+  try {
+    const parsed = new URL(value, window.location.origin);
+    const objectKey = decodeURIComponent(parsed.searchParams.get("objectKey") || "");
+    const key = decodeURIComponent(parsed.searchParams.get("key") || "");
+    const path = decodeURIComponent(parsed.pathname || "");
+    return [objectKey, key, path].some((candidate) => extRe.test(candidate));
+  } catch {
+    return false;
+  }
+}
+
 function isForbiddenPreviewError(message?: string | null): boolean {
   const text = String(message || "").toLowerCase();
   return text.includes("403") || text.includes("forbidden");
@@ -860,7 +876,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                         ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
                         : rawCoverUrl;
                     const isOpen = previewOpenById[it.id] ?? true;
-                    const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);
+                    const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && (isImage || looksLikeImagePreviewUrl(previewUrl)));
                     const hasMediaCard = Boolean(coverUrl || hasInlineImagePreview || participantVideoPreviewFallback);
                     const access = ACCESS_BADGE[(it.libraryAccess || "preview") as NonNullable<LibraryItem["libraryAccess"]>] || ACCESS_BADGE.preview;
                     const entitlement = entitlementByContentId[it.id] || null;
@@ -1028,8 +1044,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                     : null;
                                 const effectivePreviewUrl = previewUrl || participantPreviewFallback;
                                 const isImageLikePreview = Boolean(
-                                  effectivePreviewUrl &&
-                                    (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(effectivePreviewUrl))
+                                  effectivePreviewUrl && (isImage || looksLikeImagePreviewUrl(effectivePreviewUrl))
                                 );
                                 if (effectivePreviewUrl && isVideo) {
                                   return <video className="w-full rounded-md" controls src={effectivePreviewUrl} />;
@@ -1055,6 +1070,14 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                           loading="lazy"
                                         />
                                       )}
+                                      <a
+                                        href={effectivePreviewUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                      >
+                                        Open preview
+                                      </a>
                                     </div>
                                   );
                                 }

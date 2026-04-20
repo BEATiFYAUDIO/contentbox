@@ -407,6 +407,22 @@ function previewFileFor(previewUrl: string | null | undefined, files: any[] | nu
   }
 }
 
+function looksLikeImagePreviewUrl(rawUrl?: string | null): boolean {
+  const value = String(rawUrl || "").trim();
+  if (!value) return false;
+  const extRe = /\.(apng|avif|bmp|gif|heic|heif|ico|jpe?g|png|svg|webp)(?:[?#]|$)/i;
+  if (extRe.test(value)) return true;
+  try {
+    const parsed = new URL(value, window.location.origin);
+    const objectKey = decodeURIComponent(parsed.searchParams.get("objectKey") || "");
+    const key = decodeURIComponent(parsed.searchParams.get("key") || "");
+    const path = decodeURIComponent(parsed.pathname || "");
+    return [objectKey, key, path].some((candidate) => extRe.test(candidate));
+  } catch {
+    return false;
+  }
+}
+
 function formatDateLabel(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
@@ -3306,8 +3322,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
                         const isImage = previewMime.startsWith("image/");
                         const isImageLikePreview = Boolean(
-                          previewUrl &&
-                            (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(previewUrl))
+                          previewUrl && (isImage || looksLikeImagePreviewUrl(previewUrl))
                         );
                         const coverUrl = `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                           it.manifest?.sha256 ? `?v=${encodeURIComponent(it.manifest.sha256)}` : ""
@@ -3368,6 +3383,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     loading="lazy"
                                   />
                                 </div>
+                              ) : null}
+                              {previewUrl ? (
+                                <a
+                                  href={previewUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                >
+                                  Open preview
+                                </a>
                               ) : null}
                               {!previewLoadingByContent[it.id] && !previewUrl && !preview?.error ? (
                                 <div className="text-xs text-neutral-500">No preview available yet.</div>
@@ -3879,13 +3904,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const isAudio = mime.startsWith("audio/") || type === "song";
                                     const isImage = mime.startsWith("image/");
                                     const isImageLikePreview = Boolean(
-                                      previewUrl &&
-                                        (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(previewUrl))
+                                      previewUrl && (isImage || looksLikeImagePreviewUrl(previewUrl))
                                     );
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
                                           <video className="w-full rounded-md" controls src={previewUrl} />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
@@ -3893,6 +3925,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       return (
                                         <div className="mt-2">
                                           <audio className="w-full" controls src={previewUrl} />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
@@ -3905,6 +3945,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                             alt={it.title || "Preview"}
                                             loading="lazy"
                                           />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
@@ -3917,6 +3965,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                             title={`${it.title || "Derivative"} preview`}
                                             loading="lazy"
                                           />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
@@ -4216,13 +4272,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const isAudio = mime.startsWith("audio/") || type === "song";
                                     const isImage = mime.startsWith("image/");
                                     const isImageLikePreview = Boolean(
-                                      previewUrl &&
-                                        (isImage || /\.(apng|avif|bmp|gif|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(previewUrl))
+                                      previewUrl && (isImage || looksLikeImagePreviewUrl(previewUrl))
                                     );
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
                                           <video className="w-full rounded-md" controls src={previewUrl} />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
@@ -4230,6 +4293,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       return (
                                         <div className="mt-2">
                                           <audio className="w-full" controls src={previewUrl} />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
@@ -4242,6 +4313,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                             alt={d.childTitle || "Preview"}
                                             loading="lazy"
                                           />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
@@ -4254,6 +4333,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                             title={`${d.childTitle || "Derivative"} preview`}
                                             loading="lazy"
                                           />
+                                          <a
+                                            href={previewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
+                                          >
+                                            Open preview
+                                          </a>
                                         </div>
                                       );
                                     }
