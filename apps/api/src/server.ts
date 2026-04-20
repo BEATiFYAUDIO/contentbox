@@ -22524,7 +22524,15 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const childPublicOrigin = getPublicOrigin(req);
+  const publicStatus = getPublicStatus();
+  const shareableChildOrigin =
+    (await resolveShareableInviteOrigin(req)) ||
+    normalizeOrigin(String(publicStatus.canonicalCommerceOrigin || "").trim()) ||
+    normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim()) ||
+    normalizeOrigin(getActivePublicOrigin() || "") ||
+    normalizeOrigin(getPublicOrigin(req)) ||
+    "";
+  const childPublicOrigin = String(shareableChildOrigin || "").replace(/\/+$/, "");
   if (remoteOrigin) {
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 8000);
