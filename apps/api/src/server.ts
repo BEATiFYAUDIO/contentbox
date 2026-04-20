@@ -20933,7 +20933,111 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     });
   }
   if (!parent) return notFound(reply, "parent content not found");
-  const parentLockedSplit = await getLockedSplitForContent(parent.id);
+  async function ensureRemoteParentLockedSplitSnapshot(): Promise<any | null> {
+    const originBase = asString(parentOrigin || "").trim().replace(/\/+$/, "");
+    if (!originBase) return null;
+    try {
+      const [offerRes, attributionRes] = await Promise.all([
+        fetchWithTimeout(`${originBase}/buy/content/${encodeURIComponent(parent.id)}/offer`, { method: "GET" } as any, 5000),
+        fetchWithTimeout(
+          `${originBase}/public/content/${encodeURIComponent(parent.id)}/attribution`,
+          { method: "GET", headers: { Accept: "application/json" } as any } as any,
+          5000
+        )
+      ]);
+      if (!offerRes.ok && !attributionRes.ok) return null;
+      const attribution: any = attributionRes.ok ? await attributionRes.json().catch(() => null) : null;
+      const rawContributors = Array.isArray(attribution?.contributors) ? attribution.contributors : [];
+      const normalized = rawContributors
+        .map((row: any, idx: number) => {
+          const bps = Math.max(0, Math.floor(Number(row?.bps || 0)));
+          const handle = asString(row?.handle || "").trim().replace(/^@/, "");
+          const profilePath = asString(row?.profilePath || "").trim();
+          const role = asString(row?.role || "").trim() || "writer";
+          return {
+            idx,
+            bps,
+            role,
+            participantEmail: normalizeEmail(row?.email || ""),
+            targetType: "identity_ref",
+            targetValue:
+              profilePath ||
+              (handle ? `remote:${originBase}#profile:${handle}` : `remote:${originBase}#contributor:${idx + 1}`)
+          };
+        })
+        .filter((row: any) => row.bps > 0);
+
+      const participants =
+        normalized.length > 0
+          ? normalized
+          : [
+              {
+                idx: 0,
+                bps: 10000,
+                role: "writer",
+                participantEmail: "",
+                targetType: "identity_ref",
+                targetValue: `remote:${originBase}#content:${parent.id}`
+              }
+            ];
+
+      const total = participants.reduce((sum: number, p: any) => sum + p.bps, 0) || 0;
+      const normalizedBps =
+        total === 10000
+          ? participants.map((p: any) => p.bps)
+          : participants.map((p: any, idx: number) =>
+              idx === participants.length - 1
+                ? Math.max(0, 10000 - participants.slice(0, -1).reduce((sum: number, x: any) => sum + Math.floor((x.bps / total) * 10000), 0))
+                : Math.max(0, Math.floor((p.bps / total) * 10000))
+            );
+
+      const latest = await prisma.splitVersion.findFirst({
+        where: { contentId: parent.id },
+        orderBy: { versionNumber: "desc" },
+        select: { versionNumber: true }
+      });
+      const created = await prisma.$transaction(async (tx) => {
+        const split = await tx.splitVersion.create({
+          data: {
+            contentId: parent.id,
+            versionNumber: Number(latest?.versionNumber || 0) + 1,
+            createdByUserId: userId,
+            status: "locked",
+            lockedAt: new Date()
+          }
+        });
+        for (let i = 0; i < participants.length; i += 1) {
+          const p = participants[i];
+          const bps = Math.max(0, normalizedBps[i] || 0);
+          await tx.splitParticipant.create({
+            data: {
+              splitVersionId: split.id,
+              participantEmail: p.participantEmail || null,
+              role: p.role,
+              roleCode: "writer" as any,
+              percent: bps / 100,
+              bps,
+              targetType: p.targetType as any,
+              targetValue: p.targetValue
+            } as any
+          });
+        }
+        await tx.contentItem.update({
+          where: { id: parent.id },
+          data: { currentSplitId: split.id }
+        }).catch(() => {});
+        return split;
+      });
+      return getLockedSplitVersionById(created.id);
+    } catch {
+      return null;
+    }
+  }
+
+  let parentLockedSplit = await getLockedSplitForContent(parent.id);
+  if ((!parentLockedSplit || parentLockedSplit.status !== "locked") && parentOrigin) {
+    parentLockedSplit = await ensureRemoteParentLockedSplitSnapshot();
+  }
   if (!parentLockedSplit || parentLockedSplit.status !== "locked") {
     return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before creating derivative links." });
   }
