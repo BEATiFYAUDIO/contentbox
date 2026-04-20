@@ -1019,9 +1019,26 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                 }
                                 if (effectivePreviewUrl) {
                                   return (
-                                    <a className="text-xs text-emerald-300 underline" href={effectivePreviewUrl} target="_blank" rel="noreferrer">
-                                      Open preview
-                                    </a>
+                                    <div className="space-y-2">
+                                      {isImage ? (
+                                        <img
+                                          className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                          src={effectivePreviewUrl}
+                                          alt={it.title || "Preview"}
+                                          loading="lazy"
+                                        />
+                                      ) : (
+                                        <iframe
+                                          className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                          src={effectivePreviewUrl}
+                                          title={`${it.title || "Content"} preview`}
+                                          loading="lazy"
+                                        />
+                                      )}
+                                      <a className="text-xs text-emerald-300 underline" href={effectivePreviewUrl} target="_blank" rel="noreferrer">
+                                        Open in new tab
+                                      </a>
+                                    </div>
                                   );
                                 }
                                 return <div className="text-xs text-neutral-500">No preview available.</div>;

@@ -3304,6 +3304,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         const previewMime = String(previewFile?.mime || "");
                         const isVideo = String(it.type || "").toLowerCase() === "video" || previewMime.startsWith("video/");
                         const isAudio = String(it.type || "").toLowerCase() === "song" || previewMime.startsWith("audio/");
+                        const isImage = previewMime.startsWith("image/");
                         const coverUrl = `${apiBase}/public/content/${encodeURIComponent(it.id)}/cover${
                           it.manifest?.sha256 ? `?v=${encodeURIComponent(it.manifest.sha256)}` : ""
                         }`;
@@ -3346,10 +3347,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
                               {previewUrl && isVideo ? <video className="w-full rounded-md" controls src={previewUrl} /> : null}
                               {previewUrl && isAudio ? <audio className="w-full" controls src={previewUrl} /> : null}
-                              {previewUrl && !isAudio && !isVideo ? (
-                                <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                  Open preview
-                                </a>
+                              {previewUrl && isImage ? (
+                                <img
+                                  className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                  src={previewUrl}
+                                  alt={it.title || "Preview"}
+                                  loading="lazy"
+                                />
+                              ) : null}
+                              {previewUrl && !isAudio && !isVideo && !isImage ? (
+                                <div className="space-y-2">
+                                  <iframe
+                                    className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                    src={previewUrl}
+                                    title={`${it.title || "Content"} preview`}
+                                    loading="lazy"
+                                  />
+                                  <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
+                                    Open in new tab
+                                  </a>
+                                </div>
                               ) : null}
                               {!previewLoadingByContent[it.id] && !previewUrl && !preview?.error ? (
                                 <div className="text-xs text-neutral-500">No preview available yet.</div>
@@ -3847,6 +3864,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const type = String(derivativePreviewByChild[it.id]?.content?.type || "").toLowerCase();
                                     const isVideo = mime.startsWith("video/") || type === "video";
                                     const isAudio = mime.startsWith("audio/") || type === "song";
+                                    const isImage = mime.startsWith("image/");
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
@@ -3861,11 +3879,31 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                         </div>
                                       );
                                     }
+                                    if (previewUrl && isImage) {
+                                      return (
+                                        <div className="mt-2">
+                                          <img
+                                            className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                            src={previewUrl}
+                                            alt={it.title || "Preview"}
+                                            loading="lazy"
+                                          />
+                                        </div>
+                                      );
+                                    }
                                     if (previewUrl) {
                                       return (
-                                        <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                          Open preview
-                                        </a>
+                                        <div className="mt-2 space-y-2">
+                                          <iframe
+                                            className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                            src={previewUrl}
+                                            title={`${it.title || "Derivative"} preview`}
+                                            loading="lazy"
+                                          />
+                                          <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
+                                            Open in new tab
+                                          </a>
+                                        </div>
                                       );
                                     }
                                     return <div className="text-neutral-400">No preview available.</div>;
@@ -4162,6 +4200,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     const type = String(derivativePreviewByChild[d.childContentId]?.content?.type || "").toLowerCase();
                                     const isVideo = mime.startsWith("video/") || type === "video";
                                     const isAudio = mime.startsWith("audio/") || type === "song";
+                                    const isImage = mime.startsWith("image/");
                                     if (previewUrl && isVideo) {
                                       return (
                                         <div className="mt-2">
@@ -4176,11 +4215,31 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                         </div>
                                       );
                                     }
+                                    if (previewUrl && isImage) {
+                                      return (
+                                        <div className="mt-2">
+                                          <img
+                                            className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
+                                            src={previewUrl}
+                                            alt={d.childTitle || "Preview"}
+                                            loading="lazy"
+                                          />
+                                        </div>
+                                      );
+                                    }
                                     if (previewUrl) {
                                       return (
-                                        <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                          Open preview
-                                        </a>
+                                        <div className="mt-2 space-y-2">
+                                          <iframe
+                                            className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
+                                            src={previewUrl}
+                                            title={`${d.childTitle || "Derivative"} preview`}
+                                            loading="lazy"
+                                          />
+                                          <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
+                                            Open in new tab
+                                          </a>
+                                        </div>
                                       );
                                     }
                                     return <div className="text-neutral-400">No preview available.</div>;
