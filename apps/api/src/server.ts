@@ -22809,7 +22809,27 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
         code: discoveryAttempted && !discoveryReachable ? "FORWARD_DISCOVERY_UNREACHABLE" : "FORWARD_SIGNATURE_INVALID"
       });
     }
-    if (!verifyStablePayloadSignature(remotePub, signedPayload, signedSig)) {
+    let signatureValid = verifyStablePayloadSignature(remotePub, signedPayload, signedSig);
+    if (!signatureValid) {
+      // Cached discovery keys can become stale after node key rotation.
+      // Force one fresh discovery fetch and retry verification once.
+      try {
+        const disco = await fetchWithTimeout(
+          `${signedNode}/.well-known/contentbox`,
+          { method: "GET", headers: { Accept: "application/json" } as any } as any,
+          4000
+        );
+        if (disco?.ok) {
+          const d: any = await disco.json().catch(() => null);
+          const refreshedPub = asString(d?.publicKeyPem || "").trim() || null;
+          if (refreshedPub) {
+            setCachedRemoteDiscoveryKey(signedNode, refreshedPub);
+            signatureValid = verifyStablePayloadSignature(refreshedPub, signedPayload, signedSig);
+          }
+        }
+      } catch {}
+    }
+    if (!signatureValid) {
       return reply.code(401).send({
         error: "Unauthorized",
         code: "FORWARD_SIGNATURE_INVALID"
