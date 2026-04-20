@@ -1019,7 +1019,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                 }
                                 if (effectivePreviewUrl) {
                                   return (
-                                    <div className="space-y-2">
+                                    <div>
                                       {isImage ? (
                                         <img
                                           className="w-full max-h-80 rounded-md object-contain bg-neutral-950/60"
@@ -1035,9 +1035,6 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                           loading="lazy"
                                         />
                                       )}
-                                      <a className="text-xs text-emerald-300 underline" href={effectivePreviewUrl} target="_blank" rel="noreferrer">
-                                        Open in new tab
-                                      </a>
                                     </div>
                                   );
                                 }

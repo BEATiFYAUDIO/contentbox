@@ -3356,16 +3356,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 />
                               ) : null}
                               {previewUrl && !isAudio && !isVideo && !isImage ? (
-                                <div className="space-y-2">
+                                <div>
                                   <iframe
                                     className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
                                     src={previewUrl}
                                     title={`${it.title || "Content"} preview`}
                                     loading="lazy"
                                   />
-                                  <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                    Open in new tab
-                                  </a>
                                 </div>
                               ) : null}
                               {!previewLoadingByContent[it.id] && !previewUrl && !preview?.error ? (
@@ -3905,16 +3902,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     }
                                     if (previewUrl) {
                                       return (
-                                        <div className="mt-2 space-y-2">
+                                        <div className="mt-2">
                                           <iframe
                                             className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
                                             src={previewUrl}
                                             title={`${it.title || "Derivative"} preview`}
                                             loading="lazy"
                                           />
-                                          <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                            Open in new tab
-                                          </a>
                                         </div>
                                       );
                                     }
@@ -4241,16 +4235,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     }
                                     if (previewUrl) {
                                       return (
-                                        <div className="mt-2 space-y-2">
+                                        <div className="mt-2">
                                           <iframe
                                             className="w-full h-80 rounded-md border border-neutral-800 bg-neutral-950"
                                             src={previewUrl}
                                             title={`${d.childTitle || "Derivative"} preview`}
                                             loading="lazy"
                                           />
-                                          <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                            Open in new tab
-                                          </a>
                                         </div>
                                       );
                                     }
