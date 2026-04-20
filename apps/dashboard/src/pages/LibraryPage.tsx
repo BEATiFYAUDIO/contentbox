@@ -110,6 +110,7 @@ const LIBRARY_RELATIONSHIP_LABEL: Record<LibraryRelationshipFilter, string> = {
 };
 
 type LibraryRelationshipType = "authored_work" | "shared_splits" | "derivatives" | "other";
+type LibraryWorkGroup = "derivative" | "remix" | "collaboration" | "published_certifyd" | "other";
 
 type NormalizedLibraryItem = {
   item: LibraryItem;
@@ -180,6 +181,25 @@ function mapContentType(type: string | null | undefined): LibraryTypeFilter {
   if (normalized === "video") return "videos";
   if (normalized === "book") return "books";
   return "files";
+}
+
+const WORK_GROUP_LABEL: Record<LibraryWorkGroup, string> = {
+  derivative: "Derivatives",
+  remix: "Remix / Mashup",
+  collaboration: "Collaborations",
+  published_certifyd: "Published (Certifyd)",
+  other: "Other"
+};
+
+const WORK_GROUP_ORDER: LibraryWorkGroup[] = ["remix", "derivative", "collaboration", "published_certifyd", "other"];
+
+function classifyWorkGroup(entry: NormalizedLibraryItem): LibraryWorkGroup {
+  const type = String(entry.item.type || "").trim().toLowerCase();
+  if (type === "remix" || type === "mashup") return "remix";
+  if (entry.relationshipType === "derivatives" || type === "derivative") return "derivative";
+  if (entry.relationshipType === "shared_splits" || entry.relation === "participant") return "collaboration";
+  if (String(entry.item.status || "").trim().toLowerCase() === "published") return "published_certifyd";
+  return "other";
 }
 
 function normalizeRemoteParticipationContentStatus(value: string | null | undefined, inviteStatus?: string | null): string {
@@ -821,11 +841,21 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
             if (!list.length) return null;
             const label =
               key === "owned" ? "Owned" : key === "purchased" ? "Purchased" : key === "preview" ? "Preview" : "Shared splits";
+            const groupedByWorkType = WORK_GROUP_ORDER.map((workType) => ({
+              workType,
+              entries: list.filter((entry) => classifyWorkGroup(entry) === workType)
+            })).filter((group) => group.entries.length > 0);
             return (
               <div key={key} className="space-y-2">
                 <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  {list.map((entry) => {
+                <div className="space-y-3">
+                  {groupedByWorkType.map((group) => (
+                    <div key={`${key}-${group.workType}`} className="space-y-2">
+                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+                        {WORK_GROUP_LABEL[group.workType]}
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  {group.entries.map((entry) => {
                     const it = entry.item;
                     const participationInfo = entry.participation || participationByContentId[it.id] || null;
                     const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
@@ -1097,6 +1127,9 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                       </div>
                     );
                   })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
             );
