@@ -714,6 +714,28 @@ async function resolveShareableInviteOrigin(req: any): Promise<string | null> {
   return null;
 }
 
+async function fetchDiscoveredNodePubKey(originRaw: string | null | undefined): Promise<string | null> {
+  const origin = normalizeOrigin(originRaw || "");
+  if (!origin) return null;
+  const cached = getCachedRemoteDiscoveryKey(origin);
+  if (cached) return cached;
+  try {
+    const discoveryRes = await fetchWithTimeout(
+      `${origin}/.well-known/contentbox`,
+      { method: "GET", headers: { Accept: "application/json" } as any } as any,
+      4000
+    );
+    if (!discoveryRes.ok) return null;
+    const discoveryPayload: any = await discoveryRes.json().catch(() => null);
+    const discoveredPub = asString(discoveryPayload?.publicKeyPem || "").trim();
+    if (!discoveredPub) return null;
+    setCachedRemoteDiscoveryKey(origin, discoveredPub);
+    return discoveredPub;
+  } catch {
+    return null;
+  }
+}
+
 function getPublicOrigin(req: any): string {
   const envOrigin =
     normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
@@ -22532,13 +22554,49 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     normalizeOrigin(getActivePublicOrigin() || "") ||
     normalizeOrigin(getPublicOrigin(req)) ||
     "";
-  const childPublicOrigin = String(shareableChildOrigin || "").replace(/\/+$/, "");
+  let childPublicOrigin = String(shareableChildOrigin || "").replace(/\/+$/, "");
   if (remoteOrigin && !isShareablePublicOrigin(childPublicOrigin)) {
     return reply.code(409).send({
       error: "Child origin is not shareable for remote clearance forwarding",
       code: "CHILD_ORIGIN_NOT_SHAREABLE",
       childOrigin: childPublicOrigin || null
     });
+  }
+  if (remoteOrigin) {
+    const localPubPem = getLocalNodePublicPem();
+    const localNodePubKey = localPubPem ? deriveNodeIdentityFromPublicKey(localPubPem).nodePubKey : null;
+    if (localNodePubKey) {
+      const originCandidates = Array.from(
+        new Set(
+          [
+            childPublicOrigin,
+            normalizeOrigin(getActivePublicOrigin() || ""),
+            normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim()),
+            normalizeOrigin(getPublicOrigin(req))
+          ]
+            .map((v) => String(v || "").replace(/\/+$/, ""))
+            .filter((v) => isShareablePublicOrigin(v))
+        )
+      );
+      let matchingOrigin: string | null = null;
+      for (const candidate of originCandidates) {
+        const discoveredPub = await fetchDiscoveredNodePubKey(candidate);
+        if (!discoveredPub) continue;
+        const discoveredNodePubKey = deriveNodeIdentityFromPublicKey(discoveredPub).nodePubKey;
+        if (discoveredNodePubKey === localNodePubKey) {
+          matchingOrigin = candidate;
+          break;
+        }
+      }
+      if (!matchingOrigin) {
+        return reply.code(409).send({
+          error: "Child origin key does not match local signing identity",
+          code: "CHILD_ORIGIN_SIGNING_IDENTITY_MISMATCH",
+          childOrigin: childPublicOrigin || null
+        });
+      }
+      childPublicOrigin = matchingOrigin;
+    }
   }
   if (remoteOrigin) {
     const ctrl = new AbortController();
