@@ -22336,6 +22336,21 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       Boolean(parent?.deletedReason === "hard") &&
       !parent?.repoPath &&
       String(parent?.description || "").toLowerCase().startsWith("remote origin:");
+    const remoteOrigin = isShadowRemote ? getRemoteOriginFromDescription(parent?.description || null) : null;
+    let remoteStatus: any = null;
+    if (remoteOrigin && a?.derivativeLink?.childContentId) {
+      try {
+        const ctrl = new AbortController();
+        const timeout = setTimeout(() => ctrl.abort(), 3000);
+        const url = `${remoteOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+          a.parentContentId
+        )}&childContentId=${encodeURIComponent(a.derivativeLink.childContentId)}`;
+        const res = await fetch(url, { signal: ctrl.signal as any });
+        const data = await res.json().catch(() => null);
+        clearTimeout(timeout);
+        if (res.ok && data) remoteStatus = data;
+      } catch {}
+    }
     const existingVote = await prisma.derivativeApprovalVote.findUnique({
       where: { authorizationId_approverUserId: { authorizationId: a.id, approverUserId: userId } }
     });
@@ -22362,6 +22377,11 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     } else if (scope === "all") {
       if (!isEligible && !existingVote && !isRequester) continue;
     }
+    const resolvedApproverCount = Number(
+      remoteStatus?.clearance?.approverCount ??
+        a.requiredApprovers ??
+        (Array.isArray(eligible) ? eligible.length : 0)
+    );
     out.push({
       authorizationId: a.id,
       linkId: a.derivativeLink.id,
@@ -22371,8 +22391,12 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       childContentId: a.derivativeLink.childContentId,
       childTitle: a.derivativeLink.childContent?.title || null,
       relation: a.derivativeLink.relation,
-      status: a.status,
+      status: asString(remoteStatus?.clearance?.status || a.status).trim() || a.status,
       viewerVote: existingVote?.decision || null,
+      approvedApprovers: Number(remoteStatus?.clearance?.approvedApprovers ?? a.approvedApprovers ?? 0),
+      approverCount: Number.isFinite(resolvedApproverCount) ? Math.max(0, resolvedApproverCount) : 0,
+      approveWeightBps: Number(remoteStatus?.clearance?.approveWeightBps ?? a.approveWeightBps ?? 0),
+      approvalBpsTarget: Number(remoteStatus?.clearance?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667),
       clearanceRequest: latestClearanceRequest
         ? {
             status: String(latestClearanceRequest.status || "PENDING"),
@@ -22708,6 +22732,7 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
   if (!link) return notFound(reply, "link not found");
 
   const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  const { approvers } = await getApproversForParent(parentContentId).catch(() => ({ approvers: [] as any[] }));
   const clearanceReq = await prisma.clearanceRequest.findFirst({
     where: { contentLinkId: link.id },
     orderBy: { createdAt: "desc" }
@@ -22726,7 +22751,8 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
           approveWeightBps: auth.approveWeightBps,
           rejectWeightBps: auth.rejectWeightBps,
           approvalBpsTarget: auth.approvalBpsTarget ?? 6667,
-          approvedApprovers: auth.approvedApprovers
+          approvedApprovers: auth.approvedApprovers,
+          approverCount: Array.isArray(approvers) ? approvers.length : 0
         }
       : null
   });
