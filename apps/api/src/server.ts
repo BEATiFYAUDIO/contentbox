@@ -24524,14 +24524,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       base,
       `/public/content/${encodeURIComponent(params.contentId)}/cover`
     );
+    const safePreviewUrl = escHtml(previewUrl);
+    const safeCoverUrl = escHtml(coverUrl);
     if (type === "video") {
       return `<div class="featured-video-thumb-wrap">
-        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
-        <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
+        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${safeCoverUrl}" data-preview-src="${safePreviewUrl}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+        <div class="featured-image-fallback featured-video-fallback" style="display:none;">
+          <img src="${safeCoverUrl}" alt="${safeTitle} cover" class="featured-image" onerror="this.onerror=null; this.src='${safePreviewUrl}';" />
+        </div>
         <span class="featured-video-play" aria-hidden="true">▶</span>
       </div>`;
     }
-    return `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+    return `<img src="${safeCoverUrl}" alt="${safeTitle} cover" class="featured-image" onerror="this.onerror=null; this.src='${safePreviewUrl}'; this.nextElementSibling.style.display='none';" />
       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
   };
   const highlightedParticipationsHtml =
