@@ -10780,7 +10780,14 @@ function registerPublicRoutes(appPublic: any) {
     if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
       return reply.code(409).send({ error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED", message: "Provider relationship is not ready." });
     }
-    const delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+    let delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+    if (!delegated) {
+      delegated = ensureDelegatedPublishFromReceiptProof({
+        providerNodeId: providerAuthority.providerNodeId,
+        creatorNodeId,
+        contentId
+      });
+    }
     if (!delegated) {
       return reply.code(409).send({ error: "DELEGATED_PUBLISH_REQUIRED", message: "Delegated publish record is required." });
     }
@@ -14881,7 +14888,14 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
   if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
     return reply.code(409).send({ error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED", message: "Provider relationship is not ready." });
   }
-  const delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+  let delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+  if (!delegated) {
+    delegated = ensureDelegatedPublishFromReceiptProof({
+      providerNodeId: providerAuthority.providerNodeId,
+      creatorNodeId,
+      contentId
+    });
+  }
   if (!delegated) {
     return reply.code(409).send({ error: "DELEGATED_PUBLISH_REQUIRED", message: "Delegated publish record is required." });
   }
@@ -17970,9 +17984,16 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     });
   }
   if (contentId) {
-    const delegated = listProviderDelegatedPublishes().find(
+    let delegated = listProviderDelegatedPublishes().find(
       (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
     );
+    if (!delegated) {
+      delegated = ensureDelegatedPublishFromReceiptProof({
+        providerNodeId: provider.nodeId,
+        creatorNodeId,
+        contentId
+      });
+    }
     if (!delegated) {
       return reply.code(409).send({
         error: "DELEGATED_PUBLISH_REQUIRED",
@@ -18060,9 +18081,16 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     });
   }
   if (contentId) {
-    const delegated = listProviderDelegatedPublishes().find(
+    let delegated = listProviderDelegatedPublishes().find(
       (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
     );
+    if (!delegated) {
+      delegated = ensureDelegatedPublishFromReceiptProof({
+        providerNodeId: provider.nodeId,
+        creatorNodeId,
+        contentId
+      });
+    }
     if (!delegated) {
       return reply.code(409).send({
         error: "DELEGATED_PUBLISH_REQUIRED",
@@ -27546,6 +27574,43 @@ function findLatestContentPublishProofForContent(contentId: string, manifestHash
     };
   }
   return null;
+}
+
+function ensureDelegatedPublishFromReceiptProof(input: {
+  providerNodeId: string;
+  creatorNodeId: string;
+  contentId: string;
+}): ProviderDelegatedPublishRecord | null {
+  const providerNodeId = asString(input.providerNodeId || "").trim();
+  const creatorNodeId = asString(input.creatorNodeId || "").trim();
+  const contentId = asString(input.contentId || "").trim();
+  if (!providerNodeId || !creatorNodeId || !contentId) return null;
+
+  const existing = listProviderDelegatedPublishes().find(
+    (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
+  );
+  if (existing) return existing;
+
+  const proof = findLatestContentPublishProofForContent(contentId, null);
+  if (!proof) return null;
+  if (asString(proof.creatorNodeId || "").trim() !== creatorNodeId) return null;
+  if (asString(proof.providerNodeId || "").trim() !== providerNodeId) return null;
+
+  const manifestHash = asString(proof.manifestHash || "").trim();
+  if (!manifestHash) return null;
+
+  return createProviderDelegatedPublish({
+    providerNodeId,
+    creatorNodeId,
+    contentId,
+    title: null,
+    contentType: null,
+    manifestHash,
+    visibility: "UNLISTED",
+    publishReceiptId: proof.receiptId || null,
+    publishedAt: proof.publishedAt || new Date().toISOString(),
+    status: "published"
+  });
 }
 
 type PublicPaymentAccessProof = {
