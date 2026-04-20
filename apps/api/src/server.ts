@@ -21057,9 +21057,12 @@ async function resolveDerivativeInfo(contentId: string, contentType: string | nu
   if (!clearanceCleared && link.requiresApproval) {
     const localAuth = await prisma.derivativeAuthorization.findFirst({
       where: { derivativeLinkId: link.id },
-      select: { status: true }
+      select: { status: true, approveWeightBps: true, approvalBpsTarget: true }
     }).catch(() => null);
-    clearanceCleared = String(localAuth?.status || "").toUpperCase() === "APPROVED";
+    const localStatusApproved = String(localAuth?.status || "").toUpperCase() === "APPROVED";
+    const localApproveWeight = Number(localAuth?.approveWeightBps || 0);
+    const localTarget = Number(localAuth?.approvalBpsTarget || 6667);
+    clearanceCleared = localStatusApproved || (localTarget > 0 && localApproveWeight >= localTarget);
   }
   if (!clearanceCleared && link.requiresApproval) {
     const parent = await prisma.contentItem
