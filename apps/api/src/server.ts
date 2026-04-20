@@ -738,6 +738,28 @@ function getPublicOrigin(req: any): string {
     }
   } catch {}
 
+  // Local dev/runtime mapping: keep dashboard/API host (default :4000) separate
+  // from public endpoint host (default :4010) to avoid generating dashboard URLs
+  // for buy/preview/clearance links.
+  const requestHost = asString(req?.headers?.host || "").trim().toLowerCase();
+  if (requestHost) {
+    const hostNoPort = requestHost.replace(/:\d+$/, "");
+    const requestPort = Number((requestHost.match(/:(\d+)$/)?.[1] || "").trim());
+    const isLocalHost =
+      hostNoPort === "127.0.0.1" ||
+      hostNoPort === "localhost" ||
+      hostNoPort === "[::1]" ||
+      hostNoPort === "::1";
+    if (
+      isLocalHost &&
+      Number.isFinite(requestPort) &&
+      requestPort === NODE_HTTP_PORT &&
+      PUBLIC_HTTP_PORT !== NODE_HTTP_PORT
+    ) {
+      return `http://127.0.0.1:${PUBLIC_HTTP_PORT}`;
+    }
+  }
+
   const xfProtoRaw = asString(req?.headers?.["x-forwarded-proto"] || "");
   const xfHostRaw = asString(req?.headers?.["x-forwarded-host"] || "");
   const xfProto = xfProtoRaw.split(",")[0].trim().toLowerCase();
@@ -11004,6 +11026,52 @@ function registerPublicRoutes(appPublic: any) {
   appPublic.get("/invites/:token", handlePublicInviteLookup);
   appPublic.get("/invites/:token/accounting", async (req: any, reply: any) =>
     proxyPublicRouteToMainApp("GET", `/invites/${encodeURIComponent(asString((req.params as any)?.token || "").trim())}/accounting`, req, reply)
+  );
+  appPublic.get("/invites/:token/clearance/:authorizationId", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp(
+      "GET",
+      `/invites/${encodeURIComponent(asString((req.params as any)?.token || "").trim())}/clearance/${encodeURIComponent(
+        asString((req.params as any)?.authorizationId || "").trim()
+      )}`,
+      req,
+      reply
+    )
+  );
+  appPublic.get("/invites/:token/clearance/:authorizationId/preview", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp(
+      "GET",
+      `/invites/${encodeURIComponent(asString((req.params as any)?.token || "").trim())}/clearance/${encodeURIComponent(
+        asString((req.params as any)?.authorizationId || "").trim()
+      )}/preview`,
+      req,
+      reply
+    )
+  );
+  appPublic.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp(
+      "POST",
+      `/invites/${encodeURIComponent(asString((req.params as any)?.token || "").trim())}/clearance/${encodeURIComponent(
+        asString((req.params as any)?.authorizationId || "").trim()
+      )}/vote`,
+      req,
+      reply
+    )
+  );
+  appPublic.get("/clearance/:token", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp(
+      "GET",
+      `/clearance/${encodeURIComponent(asString((req.params as any)?.token || "").trim())}`,
+      req,
+      reply
+    )
+  );
+  appPublic.post("/clearance/:token/vote", async (req: any, reply: any) =>
+    proxyPublicRouteToMainApp(
+      "POST",
+      `/clearance/${encodeURIComponent(asString((req.params as any)?.token || "").trim())}/vote`,
+      req,
+      reply
+    )
   );
   appPublic.get("/invite/:token", handlePublicInvitePage);
   appPublic.post("/invites/:token/accept", handlePublicInviteAccept);
