@@ -186,12 +186,12 @@ function mapContentType(type: string | null | undefined): LibraryTypeFilter {
 const WORK_GROUP_LABEL: Record<LibraryWorkGroup, string> = {
   derivative: "Derivatives",
   remix: "Remix / Mashup",
-  collaboration: "Collaborations",
+  collaboration: "Shared splits",
   published_certifyd: "Published (Certifyd)",
   other: "Other"
 };
 
-const WORK_GROUP_ORDER: LibraryWorkGroup[] = ["remix", "derivative", "collaboration", "published_certifyd", "other"];
+const WORK_GROUP_ORDER: LibraryWorkGroup[] = ["published_certifyd", "collaboration", "derivative", "remix", "other"];
 
 function classifyWorkGroup(entry: NormalizedLibraryItem): LibraryWorkGroup {
   const type = String(entry.item.type || "").trim().toLowerCase();
@@ -851,7 +851,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                 <div className="space-y-3">
                   {groupedByWorkType.map((group) => (
                     <div key={`${key}-${group.workType}`} className="space-y-2">
-                      <div className="text-[11px] uppercase tracking-wide text-neutral-500">
+                      <div className="text-xs uppercase tracking-wide text-neutral-300 border-l-2 border-neutral-600 pl-2">
                         {WORK_GROUP_LABEL[group.workType]}
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
