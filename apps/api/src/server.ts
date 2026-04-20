@@ -7174,6 +7174,28 @@ function verifyStablePayloadSignature(nodePubKey: string, payload: unknown, sign
   }
 }
 
+type RemoteClearanceForwardPayload = {
+  kind: "remote_clearance_request";
+  parentContentId: string;
+  childContentId: string;
+  childOrigin: string;
+  ts: string;
+};
+
+function buildRemoteClearanceForwardPayload(input: {
+  parentContentId: string;
+  childContentId: string;
+  childOrigin: string;
+}): RemoteClearanceForwardPayload {
+  return {
+    kind: "remote_clearance_request",
+    parentContentId: asString(input.parentContentId || "").trim(),
+    childContentId: asString(input.childContentId || "").trim(),
+    childOrigin: normalizeOrigin(input.childOrigin || ""),
+    ts: new Date().toISOString()
+  };
+}
+
 function buildProviderAcknowledgmentPayload(input: {
   provider: ProviderAcknowledgmentResponse["provider"];
   client: ProviderAcknowledgmentResponse["client"];
@@ -22512,6 +22534,17 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
       if (authHeader) forwardHeaders.authorization = authHeader;
       const cookieHeader = asString((req.headers as any)?.cookie || "").trim();
       if (cookieHeader) forwardHeaders.cookie = cookieHeader;
+      const forwardProofPayload = buildRemoteClearanceForwardPayload({
+        parentContentId: link.parentContentId,
+        childContentId: link.childContentId,
+        childOrigin: childPublicOrigin
+      });
+      const forwardProofSig = signStablePayloadWithLocalNodeKey(forwardProofPayload);
+      if (forwardProofSig) {
+        forwardHeaders["x-contentbox-forward-payload"] = base64UrlEncode(JSON.stringify(forwardProofPayload));
+        forwardHeaders["x-contentbox-forward-signature"] = forwardProofSig;
+        forwardHeaders["x-contentbox-forward-node"] = normalizeOrigin(childPublicOrigin || "");
+      }
       const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
         method: "POST",
         headers: forwardHeaders,
@@ -22579,7 +22612,15 @@ app.post("/content-links/:linkId/request-clearance", { preHandler: requireAuth }
 });
 
 // Remote clearance request (child node -> parent node)
-app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/api/derivatives/remote-request", async (req: any, reply) => {
+  let authenticated = false;
+  try {
+    await req.jwtVerify();
+    authenticated = true;
+  } catch {
+    authenticated = false;
+  }
+
   const clearanceCtx = getCapabilityContext();
   if (sendAdvancedInactive(reply, clearanceCtx)) return;
   if (!canRequestClearance(clearanceCtx)) {
@@ -22606,6 +22647,56 @@ app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (
   if (!parentContentId || !childContentId || !childOrigin) {
     return badRequest(reply, "parentContentId, childContentId, childOrigin are required");
   }
+
+  if (!authenticated) {
+    const signedPayloadB64 = asString((req.headers as any)?.["x-contentbox-forward-payload"] || "").trim();
+    const signedSig = asString((req.headers as any)?.["x-contentbox-forward-signature"] || "").trim();
+    const signedNode = normalizeOrigin(asString((req.headers as any)?.["x-contentbox-forward-node"] || "").trim());
+    if (!signedPayloadB64 || !signedSig || !signedNode) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    let signedPayload: any = null;
+    try {
+      signedPayload = JSON.parse(base64UrlDecode(signedPayloadB64).toString("utf8"));
+    } catch {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    const payloadParent = asString(signedPayload?.parentContentId || "").trim();
+    const payloadChild = asString(signedPayload?.childContentId || "").trim();
+    const payloadOrigin = normalizeOrigin(asString(signedPayload?.childOrigin || "").trim());
+    const payloadKind = asString(signedPayload?.kind || "").trim();
+    const payloadTs = Date.parse(asString(signedPayload?.ts || "").trim());
+    if (
+      payloadKind !== "remote_clearance_request" ||
+      !Number.isFinite(payloadTs) ||
+      Math.abs(Date.now() - payloadTs) > 15 * 60 * 1000 ||
+      payloadParent !== parentContentId ||
+      payloadChild !== childContentId ||
+      payloadOrigin !== normalizeOrigin(childOrigin) ||
+      payloadOrigin !== signedNode
+    ) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+    let remotePub = getCachedRemoteDiscoveryKey(signedNode);
+    if (!remotePub) {
+      try {
+        const disco = await fetchWithTimeout(
+          `${signedNode}/.well-known/contentbox`,
+          { method: "GET", headers: { Accept: "application/json" } as any } as any,
+          4000
+        );
+        if (disco?.ok) {
+          const d: any = await disco.json().catch(() => null);
+          remotePub = asString(d?.publicKeyPem || "").trim() || null;
+          if (remotePub) setCachedRemoteDiscoveryKey(signedNode, remotePub);
+        }
+      } catch {}
+    }
+    if (!remotePub || !verifyStablePayloadSignature(remotePub, signedPayload, signedSig)) {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
+  }
+
   if (!hasExplicitUpstreamInput(body)) {
     return badRequest(
       reply,
