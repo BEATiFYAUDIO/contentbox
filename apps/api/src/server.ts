@@ -22507,9 +22507,14 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), 8000);
     try {
+      const forwardHeaders: Record<string, string> = { "Content-Type": "application/json" };
+      const authHeader = asString((req.headers as any)?.authorization || "").trim();
+      if (authHeader) forwardHeaders.authorization = authHeader;
+      const cookieHeader = asString((req.headers as any)?.cookie || "").trim();
+      if (cookieHeader) forwardHeaders.cookie = cookieHeader;
       const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: forwardHeaders,
         body: JSON.stringify({
           parentContentId: link.parentContentId,
           childContentId: link.childContentId,
