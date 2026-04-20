@@ -22480,9 +22480,9 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
   const childPublicOrigin = getPublicOrigin(req);
   if (remoteOrigin) {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 8000);
     try {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 8000);
       const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -22492,16 +22492,36 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           childOrigin: childPublicOrigin,
           relation: link.relation,
           childTitle: child.title,
-          childType: child.type
+          childType: child.type,
+          upstreamBps: link.upstreamBps
         }),
         signal: ctrl.signal as any
       });
       const data: any = await res.json().catch(() => null);
-      clearTimeout(timeout);
-      if (res.ok && Array.isArray(data?.approvalUrls)) {
+      if (!res.ok) {
+        return reply.code(res.status).send({
+          error: "Remote clearance request failed",
+          code: "REMOTE_CLEARANCE_REQUEST_FAILED",
+          origin: remoteOrigin,
+          details:
+            asString(data?.message || "").trim() ||
+            asString(data?.error || "").trim() ||
+            `HTTP_${res.status}`
+        });
+      }
+      if (Array.isArray(data?.approvalUrls)) {
         remoteApprovalUrls = data.approvalUrls;
       }
-    } catch {}
+    } catch (e: any) {
+      return reply.code(409).send({
+        error: "Remote invite host unreachable",
+        code: "REMOTE_CLEARANCE_REQUEST_UNREACHABLE",
+        origin: remoteOrigin,
+        details: asString(e?.message || "").trim() || null
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   return reply.send({ ok: true, authorization: auth, approvalUrls, remoteApprovalUrls, expiresAt });
