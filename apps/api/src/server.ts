@@ -22821,46 +22821,28 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         childType: child.type,
         upstreamBps: link.upstreamBps
       });
-      const originCandidates = getRemoteOriginCandidates(remoteOrigin);
-      let lastFailure: { status: number; details: string; origin: string } | null = null;
-      for (const candidateOrigin of originCandidates) {
-        const res = await fetch(`${candidateOrigin}/api/derivatives/remote-request`, {
-          method: "POST",
-          headers: forwardHeaders,
-          body: requestBody,
-          signal: ctrl.signal as any
-        });
-        const data: any = await res.json().catch(() => null);
-        if (res.ok) {
-          if (Array.isArray(data?.approvalUrls)) {
-            remoteApprovalUrls = data.approvalUrls;
-          }
-          if (candidateOrigin !== remoteOrigin) {
-            await prisma.contentItem
-              .update({
-                where: { id: link.parentContentId },
-                data: { description: `Remote origin: ${candidateOrigin}` }
-              })
-              .catch(() => null);
-          }
-          lastFailure = null;
-          break;
-        }
+      const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
+        method: "POST",
+        headers: forwardHeaders,
+        body: requestBody,
+        signal: ctrl.signal as any
+      });
+      const data: any = await res.json().catch(() => null);
+      if (!res.ok) {
         const details =
           asString(data?.code || "").trim() ||
           asString(data?.message || "").trim() ||
           asString(data?.error || "").trim() ||
           `HTTP_${res.status}`;
-        lastFailure = { status: res.status, details, origin: candidateOrigin };
-        if (res.status !== 530) break;
-      }
-      if (lastFailure) {
-        return reply.code(lastFailure.status).send({
+        return reply.code(res.status).send({
           error: "Remote clearance request failed",
           code: "REMOTE_CLEARANCE_REQUEST_FAILED",
-          origin: lastFailure.origin,
-          details: lastFailure.details
+          origin: remoteOrigin,
+          details
         });
+      }
+      if (Array.isArray(data?.approvalUrls)) {
+        remoteApprovalUrls = data.approvalUrls;
       }
     } catch (e: any) {
       return reply.code(409).send({
