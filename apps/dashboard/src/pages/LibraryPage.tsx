@@ -21,6 +21,7 @@ type LibraryItem = {
   archivedAt?: string | null;
   trashedAt?: string | null;
   deletedAt?: string | null;
+  deletedReason?: string | null;
   tombstonedAt?: string | null;
   storefrontStatus?: string | null;
   createdAt: string;
@@ -40,6 +41,7 @@ type LibraryParticipation = {
   contentType: string | null;
   contentStatus: string | null;
   contentDeletedAt: string | null;
+  contentDeletedReason?: string | null;
   splitParticipantId: string | null;
   remoteInviteId: string | null;
   remoteOrigin: string | null;
@@ -73,6 +75,7 @@ type RemoteRoyaltyParticipation = {
   contentType: string | null;
   contentStatus: string | null;
   contentDeletedAt?: string | null;
+  contentDeletedReason?: string | null;
   status: string | null;
   acceptedAt?: string | null;
   revokedAt?: string | null;
@@ -275,6 +278,7 @@ export default function LibraryPage() {
           contentType: row?.contentType || null,
           contentStatus: row?.contentStatus || null,
           contentDeletedAt: row?.contentDeletedAt || null,
+          contentDeletedReason: row?.contentDeletedReason || null,
           splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
             remoteInviteId: null,
             remoteOrigin: null,
@@ -314,6 +318,7 @@ export default function LibraryPage() {
             contentType: row.contentType || null,
             contentStatus: normalizeRemoteParticipationContentStatus(row.contentStatus, row.status),
             contentDeletedAt: row.contentDeletedAt || null,
+            contentDeletedReason: row.contentDeletedReason || null,
             splitParticipantId: null,
             remoteInviteId: String(row.id || "").trim() || null,
             remoteOrigin: String(row.remoteOrigin || "").replace(/\/+$/, "") || null,
@@ -426,7 +431,8 @@ export default function LibraryPage() {
               {
                 id: p.contentId,
                 status: p.contentStatus || "published",
-                deletedAt: p.contentDeletedAt || null
+                deletedAt: p.contentDeletedAt || null,
+                deletedReason: p.contentDeletedReason || null
               },
               "participant",
               p
@@ -438,7 +444,8 @@ export default function LibraryPage() {
               content: {
                 id: p.contentId,
                 status: p.contentStatus || "published",
-                deletedAt: p.contentDeletedAt || null
+                deletedAt: p.contentDeletedAt || null,
+                deletedReason: p.contentDeletedReason || null
               },
               included: active.visible,
               reason: active.visible ? "active_library_visible" : active.reason || "excluded"
@@ -451,6 +458,7 @@ export default function LibraryPage() {
             type: p.contentType || "file",
             status: p.contentStatus || "published",
             deletedAt: p.contentDeletedAt || null,
+            deletedReason: p.contentDeletedReason || null,
             createdAt: "",
             ownerUserId: p.creatorUserId || null,
             owner: {

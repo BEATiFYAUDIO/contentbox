@@ -70,6 +70,7 @@ type ContentItem = {
   publishedAt?: string | null;
   repoPath?: string | null;
   deletedAt?: string | null;
+  deletedReason?: string | null;
   tombstonedAt?: string | null;
   manifest?: { sha256: string };
   ownerUserId?: string | null;
@@ -169,6 +170,7 @@ type LibraryParticipation = {
   contentType: string | null;
   contentStatus: string | null;
   contentDeletedAt: string | null;
+  contentDeletedReason?: string | null;
   splitParticipantId: string | null;
   remoteInviteId: string | null;
   remoteOrigin: string | null;
@@ -664,10 +666,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           : baseList;
       const list = scopedList.filter((it: any) => {
         const deleted = Boolean(it?.deletedAt);
+        const hardDeleted = String(it?.deletedReason || "").trim().toLowerCase() === "hard";
         const status = String(it?.status || "").toLowerCase();
-        if (tombstoneMode) return deleted && status === "published";
+        const tombstoned = Boolean(it?.tombstoned) || ((deleted || hardDeleted) && status === "published");
+        if (tombstoneMode) return tombstoned;
         if (trashMode) return deleted && status !== "published";
-        return !deleted;
+        return !deleted && !tombstoned;
       });
       if (!Array.isArray(data)) {
         if (!isCurrent()) return;
@@ -696,6 +700,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             contentType: row?.contentType || null,
             contentStatus: row?.contentStatus || null,
             contentDeletedAt: row?.contentDeletedAt || null,
+            contentDeletedReason: row?.contentDeletedReason || null,
             splitParticipantId: String(row?.splitParticipantId || "").trim() || null,
             remoteInviteId: null,
             remoteOrigin: null,
@@ -712,6 +717,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             contentType: row?.contentType || null,
             contentStatus: row?.contentStatus || null,
             contentDeletedAt: row?.contentDeletedAt || null,
+            contentDeletedReason: row?.contentDeletedReason || null,
             splitParticipantId: null,
             remoteInviteId: String(row?.id || "").trim() || null,
             remoteOrigin: String(row?.remoteOrigin || "").replace(/\/+$/, "") || null,
@@ -728,7 +734,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               {
                 id: p.contentId,
                 status: p.contentStatus || null,
-                deletedAt: p.contentDeletedAt || null
+                deletedAt: p.contentDeletedAt || null,
+                deletedReason: p.contentDeletedReason || null
               },
               "participant",
               p
@@ -740,7 +747,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               content: {
                 id: p.contentId,
                 status: p.contentStatus || null,
-                deletedAt: p.contentDeletedAt || null
+                deletedAt: p.contentDeletedAt || null,
+                deletedReason: p.contentDeletedReason || null
               },
               included: active.visible,
               reason: active.visible ? "active_library_visible" : active.reason || "excluded"
@@ -780,6 +788,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
             type: ((p.contentType || "file") as ContentType),
             status: (String(p.contentStatus || "").trim().toLowerCase() === "published" ? "published" : "draft"),
             createdAt: "",
+            deletedReason: p.contentDeletedReason || null,
             ownerUserId: p.creatorUserId || null,
             owner:
               p.creatorDisplayName || p.creatorEmail

@@ -13460,6 +13460,7 @@ type ParticipationProjection = {
   contentType: string | null;
   contentStatus: string | null;
   contentDeletedAt: string | null;
+  contentDeletedReason: string | null;
   creatorUserId: string | null;
   creatorDisplayName: string | null;
   creatorEmail: string | null;
@@ -13614,6 +13615,7 @@ function buildParticipationProjection(input: {
     contentType: input.content?.type || null,
     contentStatus: input.content?.status || null,
     contentDeletedAt: input.content?.deletedAt ? new Date(input.content.deletedAt).toISOString() : null,
+    contentDeletedReason: asString(input.content?.deletedReason || "").trim() || null,
     creatorUserId: input.content?.ownerUserId || null,
     creatorDisplayName: input.content?.owner?.displayName || null,
     creatorEmail: input.content?.owner?.email || null,
@@ -13721,6 +13723,7 @@ async function listLockedParticipationsForUser(userId: string): Promise<Particip
     const splitVersion = row.splitVersion;
     const content = splitVersion?.content;
     if (!splitVersion || !content) continue;
+    if (asString((content as any)?.deletedReason || "").trim().toLowerCase() === "hard") continue;
     const lockedSplit = lockedSplitById.get(splitVersion.id) || null;
     if (!lockedSplit) continue;
     const lockedParticipant = (lockedSplit.participants || []).find((participant: any) => participant.id === row.id);
@@ -13782,6 +13785,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       let contentType = inv.contentType || null;
       let contentStatus = inv.contentStatus || null;
       let contentDeletedAt = inv.contentDeletedAt ? inv.contentDeletedAt.toISOString() : null;
+      let contentDeletedReason: string | null = null;
       let splitVersionNum = inv.splitVersionNum ?? null;
       let role = inv.role || null;
       let percent = percentToPrimitive(inv.percent ?? null);
@@ -13814,6 +13818,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
           contentType = asString(remoteContent?.type || "").trim() || contentType;
           contentStatus = asString(remoteContent?.status || "").trim() || contentStatus;
           contentDeletedAt = asString(remoteContent?.deletedAt || "").trim() || contentDeletedAt;
+          contentDeletedReason = asString(remoteContent?.deletedReason || "").trim() || contentDeletedReason;
           splitVersionNum = Number.isFinite(Number(remoteSplitVersion?.versionNumber))
             ? Number(remoteSplitVersion.versionNumber)
             : splitVersionNum;
@@ -13867,6 +13872,7 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       contentType,
       contentStatus: normalizedContentStatus,
       contentDeletedAt,
+      contentDeletedReason,
       splitVersionNum,
       role,
       percent,
@@ -20448,6 +20454,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           : requestedType === "files"
             ? { type: "file" as const }
             : {};
+  const activeLibraryWhere = {
+    deletedAt: null as any,
+    OR: [{ deletedReason: null as any }, { deletedReason: { not: "hard" as any } }]
+  };
   const stateWhere =
     tombstones
       ? {
@@ -20460,7 +20470,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             status: { not: "published" as const },
             deletedReason: { not: "hard" }
           }
-        : { deletedAt: null as any };
+        : activeLibraryWhere;
 
   const selectBase = {
     id: true,
@@ -20476,6 +20486,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     createdAt: true,
     repoPath: true,
     deletedAt: true,
+    deletedReason: true,
     ownerUserId: true,
     owner: { select: { displayName: true, email: true } },
     manifest: { select: { sha256: true } },
@@ -20507,7 +20518,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         where: {
           ownerUserId: userId,
           status: "published",
-          deletedAt: null,
+          ...activeLibraryWhere,
           ...contentTypeWhere
         },
         orderBy: { createdAt: "desc" },
@@ -20525,7 +20536,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         where: {
           storefrontStatus: { in: ["LISTED", "UNLISTED"] },
           status: "published",
-          deletedAt: null,
+          ...activeLibraryWhere,
           ...contentTypeWhere
         },
         orderBy: { createdAt: "desc" },
@@ -20561,7 +20572,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           where: {
             id: { in: participantIds },
             status: "published",
-            deletedAt: null,
+            ...activeLibraryWhere,
             ...contentTypeWhere
           },
           orderBy: { createdAt: "desc" },
@@ -20575,7 +20586,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             childContent: {
               is: {
                 status: "published",
-                deletedAt: null,
+                ...activeLibraryWhere,
                 ...contentTypeWhere
               } as any
             }

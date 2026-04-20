@@ -22,6 +22,7 @@ type ContentLike = {
   archivedAt?: string | null;
   trashedAt?: string | null;
   deletedAt?: string | null;
+  deletedReason?: string | null;
   tombstonedAt?: string | null;
 };
 
@@ -34,6 +35,7 @@ type ParticipationLike = {
   tombstonedAt?: string | null;
   contentStatus?: string | null;
   contentDeletedAt?: string | null;
+  contentDeletedReason?: string | null;
 };
 
 export type LibraryEligibilityDecision = {
@@ -60,6 +62,10 @@ function isArchivedStorefront(value: unknown): boolean {
   return normalizeStatus(value) === "archived";
 }
 
+function isHardDeleted(value: unknown): boolean {
+  return normalizeStatus(value) === "hard";
+}
+
 function isAcceptedParticipation(participation: ParticipationLike | null | undefined): boolean {
   if (!participation) return false;
   if (hasValue(participation.revokedAt) || hasValue(participation.tombstonedAt)) return false;
@@ -73,6 +79,7 @@ export function getContentExclusionReason(content: ContentLike | null | undefine
   if (isArchivedStorefront(content.storefrontStatus)) return "archived";
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
+  if (isHardDeleted(content.deletedReason)) return "deleted";
   if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
   if (!isPublished(content.status)) return "inactive";
   return null;
@@ -83,6 +90,7 @@ export function getAvailabilityState(content: ContentLike | null | undefined): A
   if (isArchivedStorefront(content.storefrontStatus)) return "archived";
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
+  if (isHardDeleted(content.deletedReason)) return "deleted";
   if (hasValue(content.deletedAt) || hasValue(content.tombstonedAt)) return "deleted";
   if (!isPublished(content.status)) return "inactive";
   return "active";
@@ -133,6 +141,7 @@ export function isEligibleSplitParticipation(participation: ParticipationLike | 
 } {
   if (!participation) return { eligible: false, reason: "orphaned" };
   if (!hasValue(participation.contentId)) return { eligible: false, reason: "orphaned" };
+  if (isHardDeleted(participation.contentDeletedReason)) return { eligible: false, reason: "deleted" };
   if (hasValue(participation.contentDeletedAt)) return { eligible: false, reason: "deleted" };
   if (!isPublished(participation.contentStatus)) return { eligible: false, reason: "inactive" };
   if (hasValue(participation.revokedAt) || hasValue(participation.tombstonedAt)) {
@@ -224,6 +233,7 @@ export function logVisibilityDecision(input: {
     archivedAt: content?.archivedAt || null,
     trashedAt: content?.trashedAt || null,
     deletedAt: content?.deletedAt || null,
+    deletedReason: content?.deletedReason || null,
     tombstonedAt: content?.tombstonedAt || null,
     availability: getAvailabilityState(content),
     included: input.included,
