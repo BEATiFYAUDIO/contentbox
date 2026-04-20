@@ -3384,14 +3384,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 />
                               ) : null}
                               {previewUrl && !isAudio && !isVideo && !isImageLikePreview ? (
-                                <div>
-                                  <iframe
-                                    className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
-                                    src={previewUrl}
-                                    title={`${it.title || "Content"} preview`}
-                                    loading="lazy"
-                                  />
-                                </div>
+                                <div className="text-xs text-neutral-500">Inline preview unavailable for this file type.</div>
                               ) : null}
                               {previewUrl ? (
                                 <a
@@ -3968,12 +3961,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     if (previewUrl) {
                                       return (
                                         <div className="mt-2">
-                                          <iframe
-                                            className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
-                                            src={previewUrl}
-                                            title={`${it.title || "Derivative"} preview`}
-                                            loading="lazy"
-                                          />
+                                          <div className="text-xs text-neutral-500">Inline preview unavailable for this file type.</div>
                                           <a
                                             href={previewUrl}
                                             target="_blank"
@@ -4336,12 +4324,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     if (previewUrl) {
                                       return (
                                         <div className="mt-2">
-                                          <iframe
-                                            className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
-                                            src={previewUrl}
-                                            title={`${d.childTitle || "Derivative"} preview`}
-                                            loading="lazy"
-                                          />
+                                          <div className="text-xs text-neutral-500">Inline preview unavailable for this file type.</div>
                                           <a
                                             href={previewUrl}
                                             target="_blank"

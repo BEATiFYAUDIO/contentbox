@@ -1100,14 +1100,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                           alt={it.title || "Preview"}
                                           loading="lazy"
                                         />
-                                      ) : (
-                                        <iframe
-                                          className="w-full h-72 rounded-md border border-neutral-800 bg-neutral-950"
-                                          src={effectivePreviewUrl}
-                                          title={`${it.title || "Content"} preview`}
-                                          loading="lazy"
-                                        />
-                                      )}
+                                      ) : null}
                                       <a
                                         href={effectivePreviewUrl}
                                         target="_blank"
