@@ -574,22 +574,38 @@ export default function LibraryPage() {
     participant: items.filter((e) => e.item.libraryAccess === "participant")
   };
 
-  async function loadPreview(contentId: string) {
+  async function loadPreview(contentId: string, entry?: NormalizedLibraryItem) {
     setPreviewLoading((m) => ({ ...m, [contentId]: true }));
     setPreviewError((m) => ({ ...m, [contentId]: "" }));
     try {
       const res = await api<any>(`/content/${contentId}/preview`, "GET");
       setPreviewById((m) => ({ ...m, [contentId]: res || null }));
     } catch (e: any) {
-      setPreviewById((m) => ({ ...m, [contentId]: null }));
-      setPreviewError((m) => ({ ...m, [contentId]: e?.message || "Preview failed" }));
+      const participation = entry?.participation || participationByContentId[contentId] || null;
+      const remoteOrigin = participation?.kind === "remote" ? participation.remoteOrigin : null;
+      const publicPreviewUrl = buildPublicAssetUrl(contentId, "preview-file", remoteOrigin);
+      const isForbidden = isForbiddenPreviewError(String(e?.message || ""));
+      if (publicPreviewUrl && (entry?.relation === "participant" || isForbidden)) {
+        setPreviewById((m) => ({
+          ...m,
+          [contentId]: {
+            content: { id: contentId },
+            manifest: null,
+            previewUrl: publicPreviewUrl,
+            files: []
+          }
+        }));
+      } else {
+        setPreviewById((m) => ({ ...m, [contentId]: null }));
+        setPreviewError((m) => ({ ...m, [contentId]: e?.message || "Preview failed" }));
+      }
     } finally {
       setPreviewLoading((m) => ({ ...m, [contentId]: false }));
     }
   }
 
   function handlePrimaryPreviewAction(entry: NormalizedLibraryItem) {
-    void loadPreview(entry.item.id);
+    void loadPreview(entry.item.id, entry);
   }
 
   async function setFeatureOnProfile(entry: NormalizedLibraryItem, next: boolean) {
