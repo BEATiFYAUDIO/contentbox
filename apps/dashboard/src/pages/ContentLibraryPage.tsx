@@ -3805,8 +3805,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div className="mt-2 flex items-center gap-2">
                                 {parentLink.requiresApproval &&
                                 !clearedEffective &&
-                                isOwner &&
-                                (!parentLink.clearanceRequest || parentLink.clearanceRequest.status !== "PENDING") ? (
+                                isOwner ? (
                                   <button
                                     type="button"
                                     className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -3814,7 +3813,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     disabled={!crossNodeAllowed}
                                     title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                                   >
-                                    {parentLink.clearanceRequest ? "Retry request" : "Request clearance"}
+                                    {parentLink.clearanceRequest ? "Resend clearance request" : "Request clearance"}
                                   </button>
                                 ) : null}
                                 <button
@@ -5276,9 +5275,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           const status = String(pl.clearance?.status || "").trim().toUpperCase();
                           return !(Boolean(pl.approvedAt) || status === "APPROVED" || (target > 0 && approve >= target));
                         })() &&
-                        isOwner &&
-                        (!parentLinkByContent[it.id]?.clearanceRequest ||
-                          parentLinkByContent[it.id]?.clearanceRequest?.status !== "PENDING") ? (
+                        isOwner ? (
                           <div className="mt-2 space-y-2 text-xs text-neutral-500">
                             <div className="flex items-center gap-2">
                               <button
@@ -5288,7 +5285,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 disabled={!crossNodeAllowed}
                                 title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                               >
-                                {parentLinkByContent[it.id]?.clearanceRequest ? "Retry request" : "Request clearance"}
+                                {parentLinkByContent[it.id]?.clearanceRequest ? "Resend clearance request" : "Request clearance"}
                               </button>
                               {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
                                 <button
