@@ -11414,14 +11414,26 @@ async function signInviteAcceptancePayload(
     )
   );
   let signingNodeUrl: string | null = null;
+  let fallbackShareableOrigin: string | null = null;
   const discoveryChecks: Array<{ origin: string; ok: boolean }> = [];
   for (const candidate of originCandidates) {
+    if (!isShareablePublicOrigin(candidate)) {
+      discoveryChecks.push({ origin: candidate, ok: false });
+      continue;
+    }
+    if (!fallbackShareableOrigin) fallbackShareableOrigin = candidate;
     const ok = await hasDiscoveryKey(candidate);
     discoveryChecks.push({ origin: candidate, ok });
     if (ok) {
       signingNodeUrl = candidate;
       break;
     }
+  }
+  if (!signingNodeUrl && fallbackShareableOrigin) {
+    // Best-effort fallback: keep invite acceptance operational even when local
+    // discovery preflight is temporarily unreachable. Remote node still verifies
+    // forwarded identity and signature context authoritatively.
+    signingNodeUrl = fallbackShareableOrigin;
   }
   if (!signingNodeUrl) {
     const err: any = new Error("INVITE_NODE_URL_UNREACHABLE");
