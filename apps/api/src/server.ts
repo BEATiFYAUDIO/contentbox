@@ -28074,6 +28074,12 @@ async function handleBuyPage(req: any, reply: any) {
         renderBasicOffer(offer);
         return;
       }
+      // Treat zero-priced listings as free/basic storefront presentation
+      // across all modes (inline preview + tips), while >=1 sat remains paid.
+      if (Number(offer?.priceSats || 0) <= 0) {
+        renderBasicOffer(offer);
+        return;
+      }
       if (!alreadyOwned) {
         await fetchOwnedEntitlement().catch(()=>{});
       }
