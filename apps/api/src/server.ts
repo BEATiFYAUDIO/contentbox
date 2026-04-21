@@ -22607,6 +22607,19 @@ app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth },
   return reply.send(updated);
 });
 
+async function rejectStalePrePublishClearanceByLink(linkId: string) {
+  await prisma.$transaction([
+    prisma.derivativeAuthorization.updateMany({
+      where: { derivativeLinkId: linkId, status: "PENDING" },
+      data: { status: "REJECTED" }
+    }),
+    prisma.clearanceRequest.updateMany({
+      where: { contentLinkId: linkId, status: "PENDING" },
+      data: { status: "REJECTED" }
+    })
+  ]);
+}
+
 app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const scopeRaw = asString((req.query || {})?.scope || "pending").toLowerCase();
@@ -22623,7 +22636,14 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const child = a.derivativeLink?.childContent;
     const childDeleted = Boolean(child?.deletedAt);
     const childDeletedReason = asString((child as any)?.deletedReason || "").trim().toLowerCase();
+    const childStatus = asString((child as any)?.status || "").trim().toLowerCase();
     const childDescription = asString(child?.description || "").trim().toLowerCase();
+    const childIsPublished = childStatus === "published";
+    const childIsHardDeleted = childDeleted && childDeletedReason === "hard";
+    if (childIsHardDeleted && !childIsPublished) {
+      if (a.status === "PENDING") await rejectStalePrePublishClearanceByLink(a.derivativeLink.id);
+      continue;
+    }
     const isRemoteShadowChild =
       childDeleted &&
       childDeletedReason === "hard" &&
@@ -37845,7 +37865,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       include: {
         derivativeLink: {
           include: {
-            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true } },
+            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true, deletedReason: true } },
             parentContent: { select: { id: true, title: true } }
           }
         },
@@ -37853,17 +37873,26 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       },
       orderBy: { createdAt: "desc" }
     });
-    const actionableAuths = auths.filter((auth) => {
+    const actionableAuths: typeof auths = [];
+    for (const auth of auths) {
       const child = auth.derivativeLink?.childContent;
       const childDeleted = Boolean(child?.deletedAt);
       const childDeletedReason = asString((child as any)?.deletedReason || "").trim().toLowerCase();
+      const childStatus = asString((child as any)?.status || "").trim().toLowerCase();
       const childDescription = asString(child?.description || "").trim().toLowerCase();
+      const childIsPublished = childStatus === "published";
+      const childIsHardDeleted = childDeleted && childDeletedReason === "hard";
+      if (childIsHardDeleted && !childIsPublished) {
+        if (auth.status === "PENDING") await rejectStalePrePublishClearanceByLink(auth.derivativeLinkId);
+        continue;
+      }
       const isRemoteShadowChild =
         childDeleted &&
         childDeletedReason === "hard" &&
         childDescription.startsWith("remote origin:");
-      return !childDeleted || isRemoteShadowChild;
-    });
+      if (childDeleted && !isRemoteShadowChild) continue;
+      actionableAuths.push(auth);
+    }
     const approverCount = eligible.length;
     const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;

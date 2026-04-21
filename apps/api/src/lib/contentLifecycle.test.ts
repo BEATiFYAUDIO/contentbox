@@ -61,10 +61,10 @@ test("action guards enforce publish/trash/archive/restore semantics", () => {
   assert.equal(coverUploadAllowedForPublished.ok, true);
 });
 
-test("delete mode for published with purchases becomes tombstone", () => {
+test("delete mode for published content is always archive tombstone", () => {
   assert.equal(shouldTombstoneOnDelete(activePublished, 1, 0), true);
   assert.equal(shouldTombstoneOnDelete(activePublished, 0, 1), true);
-  assert.equal(shouldTombstoneOnDelete(activePublished, 0, 0), false);
+  assert.equal(shouldTombstoneOnDelete(activePublished, 0, 0), true);
   assert.equal(shouldTombstoneOnDelete(activeDraft, 9, 9), false);
 });
 

@@ -106,7 +106,10 @@ export function assertCanRestore(item: ContentLike): GuardResult {
 
 export function shouldTombstoneOnDelete(item: ContentLike, entitlementsCount: number, paidCount: number): boolean {
   if (!isPublished(item)) return false;
-  return entitlementsCount > 0 || paidCount > 0;
+  void entitlementsCount;
+  void paidCount;
+  // Published releases are retained as archived records for buyer continuity.
+  return true;
 }
 
 export function evaluatePublicBuyAccess(item: ContentLike, entitled: boolean): "saleable" | "removed" | "not_found" {
