@@ -22807,6 +22807,16 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         childOrigin: childPublicOrigin
       });
       const forwardProofSig = signStablePayloadWithLocalNodeKey(forwardProofPayload);
+      app.log.info(
+        {
+          route: "/content-links/:linkId/request-approval",
+          childOrigin: childPublicOrigin,
+          forwardNode: normalizeOrigin(childPublicOrigin || ""),
+          signedPayload: stableStringify(forwardProofPayload),
+          signaturePrefix: asString(forwardProofSig || "").slice(0, 16)
+        },
+        "clearance.forward_proof.local_signed_payload"
+      );
       if (forwardProofSig) {
         forwardHeaders["x-contentbox-forward-payload"] = base64UrlEncode(JSON.stringify(forwardProofPayload));
         forwardHeaders["x-contentbox-forward-signature"] = forwardProofSig;
@@ -22962,6 +22972,21 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       payloadChild !== childContentId ||
       payloadOrigin !== normalizeOrigin(childOrigin) ||
       payloadOrigin !== signedNode;
+    app.log.info(
+      {
+        route: "/api/derivatives/remote-request",
+        signedNode,
+        reconstructedPayload: stableStringify(signedPayload),
+        payloadParent,
+        payloadChild,
+        payloadOrigin,
+        requestParentContentId: parentContentId,
+        requestChildContentId: childContentId,
+        requestChildOrigin: normalizeOrigin(childOrigin),
+        payloadMismatch
+      },
+      "clearance.forward_proof.remote_payload_reconstructed"
+    );
     if (
       !Number.isFinite(payloadTs) ||
       isExpired ||
@@ -22980,6 +23005,7 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       });
     }
     let remotePub = getCachedRemoteDiscoveryKey(signedNode);
+    let verificationKeySource: "cached" | "discovery" | "refreshed" | "none" = remotePub ? "cached" : "none";
     let discoveryAttempted = false;
     let discoveryReachable = false;
     const discoveryUrl = `${signedNode}/.well-known/contentbox`;
@@ -23010,6 +23036,7 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
           remotePub = asString(d?.publicKeyPem || "").trim() || null;
           if (remotePub) {
             setCachedRemoteDiscoveryKey(signedNode, remotePub);
+            verificationKeySource = "discovery";
             discoveryErrorClass = null;
             return true;
           }
@@ -23069,11 +23096,28 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
           const refreshedPub = asString(d?.publicKeyPem || "").trim() || null;
           if (refreshedPub) {
             setCachedRemoteDiscoveryKey(signedNode, refreshedPub);
+            verificationKeySource = "refreshed";
             signatureValid = verifyStablePayloadSignature(refreshedPub, signedPayload, signedSig);
+            remotePub = refreshedPub;
           }
         }
       } catch {}
     }
+    const remotePubFingerprint =
+      remotePub && asString(remotePub).trim()
+        ? nodePubKeyFingerprint(deriveNodeIdentityFromPublicKey(remotePub).nodePubKey)
+        : null;
+    app.log.info(
+      {
+        route: "/api/derivatives/remote-request",
+        signedNode,
+        discoveryUrl,
+        verificationKeySource,
+        discoveredPublicKeyFingerprint: remotePubFingerprint,
+        verificationResult: signatureValid
+      },
+      "clearance.forward_proof.remote_verification_result"
+    );
     if (!signatureValid) {
       lastForwardVerificationFailure = {
         code: "FORWARD_SIGNATURE_INVALID",
