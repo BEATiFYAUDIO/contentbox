@@ -104,3 +104,33 @@ export async function registerWitnessIdentity(prisma: PrismaClient, args: {
 
   return toDto(row);
 }
+
+export async function revokeWitnessIdentity(prisma: PrismaClient, userId: string): Promise<WitnessIdentityDto | null> {
+  const existing = await prisma.witnessIdentity.findUnique({
+    where: { userId },
+    select: {
+      id: true,
+      algorithm: true,
+      publicKey: true,
+      fingerprint: true,
+      createdAt: true,
+      revokedAt: true
+    }
+  });
+  if (!existing) return null;
+  if (existing.revokedAt) return toDto(existing);
+
+  const row = await prisma.witnessIdentity.update({
+    where: { userId },
+    data: { revokedAt: new Date() },
+    select: {
+      id: true,
+      algorithm: true,
+      publicKey: true,
+      fingerprint: true,
+      createdAt: true,
+      revokedAt: true
+    }
+  });
+  return toDto(row);
+}

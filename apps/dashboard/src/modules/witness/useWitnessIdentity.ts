@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchWitnessIdentity, registerWitnessPublicKey, type WitnessIdentity } from "./witnessClient";
+import { fetchWitnessIdentity, registerWitnessPublicKey, revokeWitnessIdentityKey, type WitnessIdentity } from "./witnessClient";
 
 export type CreateResult = {
   identity: WitnessIdentity;
@@ -157,6 +157,7 @@ export function useWitnessIdentity() {
   const [localKeyPublicKey, setLocalKeyPublicKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -200,6 +201,22 @@ export function useWitnessIdentity() {
     }
   }, [creating]);
 
+  const recoverIdentity = useCallback(async (): Promise<CreateResult | null> => {
+    if (recovering || creating) return null;
+    setRecovering(true);
+    setError(null);
+    try {
+      await revokeWitnessIdentityKey();
+      const result = await createIdentity();
+      return result;
+    } catch (e: any) {
+      setError(String(e?.message || "Failed to recover creator identity key."));
+      return null;
+    } finally {
+      setRecovering(false);
+    }
+  }, [recovering, creating, createIdentity]);
+
   const isServerIdentityPresent = Boolean(identity && !identity.revokedAt);
   const localMatchesServer = Boolean(
     isServerIdentityPresent &&
@@ -229,8 +246,10 @@ export function useWitnessIdentity() {
     localKeyPublicKey,
     loading,
     creating,
+    recovering,
     error,
     createIdentity,
+    recoverIdentity,
     refresh
   };
 }

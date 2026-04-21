@@ -12,7 +12,7 @@ type Props = {
 };
 
 export default function CreatorIdentityCard({ witness }: Props) {
-  const { state, identity, loading, creating, error, createIdentity } = witness;
+  const { state, identity, loading, creating, recovering, error, createIdentity, recoverIdentity } = witness;
   const isBrowser = typeof window !== "undefined";
   const isLocalDev = isBrowser && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
   const is4000Surface = isLocalDev && window.location.port === "4000";
@@ -81,6 +81,17 @@ export default function CreatorIdentityCard({ witness }: Props) {
             <div className="font-mono text-sm text-neutral-100 break-all">{shortFingerprint(identity.fingerprint)}</div>
             <div className="text-xs text-neutral-500">This account has a registered creator identity.</div>
             <div className="text-xs text-amber-300">This device does not hold the matching signing key.</div>
+            <button
+              type="button"
+              onClick={() => {
+                recoverIdentity().catch(() => {});
+              }}
+              disabled={recovering || keyOpsBlockedOnThisSurface}
+              className="text-sm rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200 hover:bg-amber-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {recovering ? "Recovering…" : "Recover Identity On This Device"}
+            </button>
+            <div className="text-xs text-neutral-500">This rotates your creator key to this device and revokes the previous active key.</div>
           </div>
         ) : null}
 

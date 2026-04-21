@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { getWitnessIdentity, registerWitnessIdentity } from "./witness.service.js";
+import { getWitnessIdentity, registerWitnessIdentity, revokeWitnessIdentity } from "./witness.service.js";
 import { registerWitnessProofRoutes } from "./proof.routes.js";
 import type { WitnessRegisterBody } from "./witness.types.js";
 
@@ -241,6 +241,25 @@ export function registerWitnessRoutes(app: any, deps: {
         });
       }
       req.log.error({ err: e }, "witness.register.failed");
+      return reply.code(500).send({ error: "INTERNAL_ERROR" });
+    }
+  });
+
+  app.post("/api/profile/verification/key/revoke", { preHandler: requireAuth }, async (req: any, reply: any) => {
+    const userId = String(req?.user?.sub || "").trim();
+    if (!userId) return reply.code(401).send({ error: "UNAUTHORIZED" });
+    try {
+      const identity = await revokeWitnessIdentity(prisma, userId);
+      return reply.send({ identity });
+    } catch (e: any) {
+      if (isWitnessStoreSchemaError(e)) {
+        req.log.warn({ err: e }, "witness.revoke.store_not_ready");
+        return reply.code(503).send({
+          error: "WITNESS_STORE_NOT_READY",
+          message: "Creator identity storage is not ready on this node. Run: npx prisma db push --schema prisma/schema.prisma"
+        });
+      }
+      req.log.error({ err: e }, "witness.revoke.failed");
       return reply.code(500).send({ error: "INTERNAL_ERROR" });
     }
   });

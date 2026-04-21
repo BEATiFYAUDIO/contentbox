@@ -122,6 +122,35 @@ export async function registerWitnessPublicKey(payload: {
   }
 }
 
+export async function revokeWitnessIdentityKey(): Promise<void> {
+  const currentBase = getApiBase();
+  witnessDebug("revoke.start", {
+    pageOrigin: typeof window !== "undefined" ? window.location.origin : null,
+    pageHostname: typeof window !== "undefined" ? window.location.hostname : null,
+    apiBase: currentBase,
+    requestPath: "/api/profile/verification/key/revoke"
+  });
+
+  try {
+    await api<{ identity: WitnessIdentity | null }>("/api/profile/verification/key/revoke", "POST");
+    witnessDebug("revoke.success", {
+      apiBase: currentBase,
+      requestPath: "/api/profile/verification/key/revoke"
+    });
+  } catch (e: any) {
+    const status = parseStatusFromApiError(e);
+    const url = parseUrlFromApiError(e);
+    witnessDebug("revoke.error", {
+      apiBase: currentBase,
+      requestPath: "/api/profile/verification/key/revoke",
+      requestUrl: url,
+      status,
+      error: String(e?.message || e)
+    });
+    throw new Error(status ? `Failed to revoke creator identity (HTTP ${status}).` : "Failed to revoke creator identity.");
+  }
+}
+
 export async function fetchProofRecords(): Promise<ProofRecord[]> {
   try {
     const res = await api<{ proofs: ProofRecord[] }>("/api/profile/verification/proofs", "GET");
