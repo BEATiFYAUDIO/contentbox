@@ -442,6 +442,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [providerSaving, setProviderSaving] = React.useState(false);
   const [providerMsg, setProviderMsg] = React.useState<string | null>(null);
   const [providerErr, setProviderErr] = React.useState<string | null>(null);
+  const [providerRebindLoading, setProviderRebindLoading] = React.useState(false);
+  const [providerRebindMsg, setProviderRebindMsg] = React.useState<string | null>(null);
+  const [providerRebindErr, setProviderRebindErr] = React.useState<string | null>(null);
   const [providerVerification, setProviderVerification] = React.useState<ProviderVerification | null>(null);
   const [providerVerificationLoading, setProviderVerificationLoading] = React.useState(false);
   const [providerHandshake, setProviderHandshake] = React.useState<ProviderHandshakeResult | null>(null);
@@ -796,6 +799,82 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     });
   }
 
+  function mapProviderConfig(saved: NetworkProviderConfig | null | undefined): NetworkProviderConfig {
+    return {
+      providerNodeId: saved?.providerNodeId || "",
+      providerProfileId: saved?.providerProfileId || "",
+      providerUrl: saved?.providerUrl || "",
+      providerPubKey: saved?.providerPubKey || "",
+      enabled: Boolean(saved?.enabled),
+      createdAt: saved?.createdAt || null,
+      updatedAt: saved?.updatedAt || null,
+      configured: Boolean(saved?.configured)
+    };
+  }
+
+  async function applyProviderConfigPatch(input: {
+    providerNodeId?: string | null;
+    providerProfileId?: string | null;
+    providerUrl?: string | null;
+    providerPubKey?: string | null;
+    enabled?: boolean;
+    clear?: boolean;
+  }) {
+    const saved = await api<NetworkProviderConfig>("/api/network/provider", "PUT", input);
+    setProviderConfig(mapProviderConfig(saved));
+    return saved;
+  }
+
+  async function adoptObservedProviderIdentity() {
+    const observedNodeId = String(providerVerification?.observed?.nodeId || "").trim();
+    const observedPubKey = String(providerVerification?.observed?.nodePubKey || "").trim();
+    const providerUrl = String(providerConfig?.providerUrl || providerVerification?.configured?.providerUrl || "").trim();
+    const providerProfileId = String(providerConfig?.providerProfileId || "").trim() || null;
+    if (!providerUrl) {
+      setProviderRebindErr("Provider URL is required before rebinding.");
+      return null;
+    }
+    if (!observedNodeId || !observedPubKey) {
+      setProviderRebindErr("Observed provider identity is unavailable. Run provider handshake first.");
+      return null;
+    }
+    setProviderRebindErr(null);
+    setProviderRebindMsg(null);
+    setProviderRebindLoading(true);
+    try {
+      await applyProviderConfigPatch({
+        enabled: true,
+        providerUrl,
+        providerProfileId,
+        providerNodeId: observedNodeId,
+        providerPubKey: observedPubKey
+      });
+      setProviderMsg("Provider configuration saved.");
+      let verification = await api<ProviderVerification>("/api/network/provider/verification", "GET");
+      setProviderVerification(verification || null);
+      const ackStatus = await api<ProviderAcknowledgmentResult>("/api/network/provider/acknowledgment/status", "GET");
+      setProviderAck(ackStatus || null);
+      const ackReadiness = await api<ProviderAcknowledgmentReadiness>("/api/network/provider/acknowledgment/readiness", "GET");
+      setProviderAckReadiness(ackReadiness || null);
+      const operationStatus = await api<ProviderOperationIntentResult>("/api/network/provider/operation-intent/status", "GET");
+      setProviderOperation(operationStatus || null);
+      const permitReadiness = await api<ProviderExecutionPermitReadiness>("/api/network/provider/operation-intent/readiness", "GET");
+      setProviderPermitReadiness(permitReadiness || null);
+      const executionReadiness = await api<ProviderExecutionChainReadiness>("/api/network/provider/execution/readiness", "GET");
+      setProviderExecutionReadiness(executionReadiness || null);
+      await refreshUserNetworkStatus();
+      await refreshProfileActivationStatus();
+      await refreshPublishReadiness();
+      setProviderRebindMsg("Provider identity rebound to observed node.");
+      return verification || null;
+    } catch (e: any) {
+      setProviderRebindErr(e?.message || "Failed to rebind provider identity.");
+      return null;
+    } finally {
+      setProviderRebindLoading(false);
+    }
+  }
+
   async function refreshUserNetworkStatus() {
     try {
       const status = await api<UserNetworkStatus>("/api/network/user-status", "GET");
@@ -928,21 +1007,12 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         providerPubKey: providerConfig.providerPubKey || null,
         enabled: Boolean(providerConfig.enabled)
       });
-      setProviderConfig({
-        providerNodeId: saved?.providerNodeId || "",
-        providerProfileId: saved?.providerProfileId || "",
-        providerUrl: saved?.providerUrl || "",
-        providerPubKey: saved?.providerPubKey || "",
-        enabled: Boolean(saved?.enabled),
-        createdAt: saved?.createdAt || null,
-        updatedAt: saved?.updatedAt || null,
-        configured: Boolean(saved?.configured)
-      });
+      setProviderConfig(mapProviderConfig(saved));
       setProviderMsg("Provider configuration saved.");
       const refreshed = await api<NetworkSummary>("/api/network/summary", "GET");
       setNetworkSummary(refreshed || null);
       setProviderVerificationLoading(true);
-      const verification = await api<ProviderVerification>("/api/network/provider/verification", "GET");
+      let verification = await api<ProviderVerification>("/api/network/provider/verification", "GET");
       setProviderVerification(verification || null);
       const ackStatus = await api<ProviderAcknowledgmentResult>("/api/network/provider/acknowledgment/status", "GET");
       setProviderAck(ackStatus || null);
@@ -1059,16 +1129,7 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         providerPubKey: providerConfig.providerPubKey || null,
         enabled: Boolean(providerConfig.enabled)
       });
-      setProviderConfig({
-        providerNodeId: saved?.providerNodeId || "",
-        providerProfileId: saved?.providerProfileId || "",
-        providerUrl: saved?.providerUrl || "",
-        providerPubKey: saved?.providerPubKey || "",
-        enabled: Boolean(saved?.enabled),
-        createdAt: saved?.createdAt || null,
-        updatedAt: saved?.updatedAt || null,
-        configured: Boolean(saved?.configured)
-      });
+      setProviderConfig(mapProviderConfig(saved));
       setProviderMsg("Provider configuration saved.");
 
       const refreshed = await api<NetworkSummary>("/api/network/summary", "GET");
@@ -1085,12 +1146,25 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       setGuidedSetupPhase("verifying");
       setGuidedSetupMessage("Checking provider...");
       setProviderVerificationLoading(true);
-      const verification = await api<ProviderVerification>("/api/network/provider/verification", "GET");
+      let verification = await api<ProviderVerification>("/api/network/provider/verification", "GET");
       setProviderVerification(verification || null);
       setProviderVerificationLoading(false);
       await refreshUserNetworkStatus();
       await refreshProfileActivationStatus();
       await refreshPublishReadiness();
+      if (
+        (verification?.verification?.status === "mismatch" ||
+          verification?.verification?.status === "pubkey_mismatch") &&
+        verification?.observed?.nodeId &&
+        verification?.observed?.nodePubKey
+      ) {
+        setGuidedSetupMessage("Provider identity changed. Rebinding to observed identity...");
+        const reboundVerification = await adoptObservedProviderIdentity();
+        if (reboundVerification?.verification?.status === "verified") {
+          verification = reboundVerification;
+        }
+      }
+
       if (verification?.verification?.status !== "verified") {
         setGuidedSetupPhase("error");
         setGuidedSetupMessage(guidedVerificationFailureMessage(verification?.verification?.status || "not_configured"));
@@ -2176,6 +2250,27 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <div>Last success: <span className="text-neutral-300">{providerVerification?.history?.lastSuccessAt ? new Date(providerVerification.history.lastSuccessAt).toLocaleString() : "—"}</span></div>
               <div>Last failure: <span className="text-neutral-300">{providerVerification?.history?.lastFailureAt ? new Date(providerVerification.history.lastFailureAt).toLocaleString() : "—"}</span></div>
             </div>
+            {(providerVerification?.verification?.status === "mismatch" ||
+              providerVerification?.verification?.status === "pubkey_mismatch") &&
+            providerVerification?.observed?.nodeId &&
+            providerVerification?.observed?.nodePubKey ? (
+              <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2">
+                <div className="text-xs text-amber-200">
+                  Stale provider identity binding detected. Rebind to observed provider identity from this URL.
+                </div>
+                <div className="mt-2 flex items-center gap-3">
+                  <button
+                    onClick={adoptObservedProviderIdentity}
+                    disabled={providerConfigLocked || providerRebindLoading || providerSaving || providerLoading}
+                    className="rounded-lg border border-amber-500/40 px-3 py-2 text-xs text-amber-200 hover:bg-amber-500/20 disabled:opacity-50"
+                  >
+                    {providerRebindLoading ? "Rebinding..." : "Adopt observed provider identity"}
+                  </button>
+                  {providerRebindMsg ? <div className="text-xs text-emerald-300">{providerRebindMsg}</div> : null}
+                  {providerRebindErr ? <div className="text-xs text-rose-300">{providerRebindErr}</div> : null}
+                </div>
+              </div>
+            ) : null}
             <div className="mt-3 flex items-center gap-3">
               <button
                 onClick={testProviderHandshake}
