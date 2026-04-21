@@ -724,6 +724,8 @@ function providerProfileUrlCandidates(
     push(`https://rumble.com/${account}`);
     push(`https://rumble.com/c/${account}`);
   } else if (provider === "reddit") {
+    push(`https://old.reddit.com/user/${account}/`);
+    push(`https://old.reddit.com/user/${account}`);
     push(`https://www.reddit.com/user/${account}`);
     push(`https://www.reddit.com/user/${account}/about`);
   } else if (provider === "substack") {
