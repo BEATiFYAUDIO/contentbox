@@ -855,7 +855,11 @@ type CanonicalClearanceAuthorityResolution = {
   elapsedMs: number | null;
 };
 
-async function resolveCanonicalClearanceAuthority(req: any): Promise<CanonicalClearanceAuthorityResolution> {
+async function resolveCanonicalClearanceAuthority(
+  req: any,
+  options?: { requireSigningIdentityMatch?: boolean }
+): Promise<CanonicalClearanceAuthorityResolution> {
+  const requireSigningIdentityMatch = options?.requireSigningIdentityMatch ?? true;
   const publicStatus = getPublicStatus();
   const canonicalOrigin =
     normalizeOrigin(String(publicStatus.canonicalCommerceOrigin || "").trim()) ||
@@ -873,6 +877,20 @@ async function resolveCanonicalClearanceAuthority(req: any): Promise<CanonicalCl
       localSigningFingerprint: local.fingerprint,
       discoveredFingerprint: null,
       localSigningNodePubKey: local.nodePubKey,
+      discoveredNodePubKey: null,
+      httpStatus: null,
+      errorClass: null,
+      elapsedMs: null
+    };
+  }
+  if (!requireSigningIdentityMatch) {
+    return {
+      ok: true,
+      origin: canonicalOrigin,
+      reasonCode: null,
+      localSigningFingerprint: null,
+      discoveredFingerprint: null,
+      localSigningNodePubKey: null,
       discoveredNodePubKey: null,
       httpStatus: null,
       errorClass: null,
@@ -3172,6 +3190,7 @@ function parseBooleanFlag(value: unknown, fallback: boolean): boolean {
   return fallback;
 }
 const DEFAULT_ALLOW_PROVIDER_FALLBACK = parseBooleanFlag(process.env.CERTIFYD_ALLOW_PROVIDER_FALLBACK, true);
+const DERIVATIVE_FORWARD_PROOF_REQUIRED = parseBooleanFlag(process.env.FORWARD_PROOF_REQUIRED, false);
 
 type ParticipantPayoutRuntimeConfig = {
   participantPayoutsEnabled: boolean;
@@ -22775,7 +22794,9 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
   let childPublicOrigin = String(normalizeOrigin(getPublicOrigin(req)) || "").replace(/\/+$/, "");
   if (remoteOrigin) {
-    const canonical = await resolveCanonicalClearanceAuthority(req);
+    const canonical = await resolveCanonicalClearanceAuthority(req, {
+      requireSigningIdentityMatch: DERIVATIVE_FORWARD_PROOF_REQUIRED
+    });
     if (!canonical.ok || !canonical.origin) {
       return reply.code(409).send({
         error: "Canonical clearance authority mismatch",
@@ -22807,16 +22828,6 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         childOrigin: childPublicOrigin
       });
       const forwardProofSig = signStablePayloadWithLocalNodeKey(forwardProofPayload);
-      app.log.info(
-        {
-          route: "/content-links/:linkId/request-approval",
-          childOrigin: childPublicOrigin,
-          forwardNode: normalizeOrigin(childPublicOrigin || ""),
-          signedPayload: stableStringify(forwardProofPayload),
-          signaturePrefix: asString(forwardProofSig || "").slice(0, 16)
-        },
-        "clearance.forward_proof.local_signed_payload"
-      );
       if (forwardProofSig) {
         forwardHeaders["x-contentbox-forward-payload"] = base64UrlEncode(JSON.stringify(forwardProofPayload));
         forwardHeaders["x-contentbox-forward-signature"] = forwardProofSig;
@@ -22922,13 +22933,17 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
   const parentContentId = asString(body.parentContentId || "").trim();
   const childContentId = asString(body.childContentId || "").trim();
   const childOrigin = asString(body.childOrigin || "").trim();
+  const normalizedChildOrigin = normalizeOrigin(childOrigin);
   const relationRaw = asString(body.relation || "derivative").trim().toLowerCase();
   const relation = (["remix", "mashup", "derivative"] as const).includes(relationRaw as any) ? (relationRaw as any) : "derivative";
   if (!parentContentId || !childContentId || !childOrigin) {
     return badRequest(reply, "parentContentId, childContentId, childOrigin are required");
   }
+  if (!normalizedChildOrigin || !isShareablePublicOrigin(normalizedChildOrigin)) {
+    return badRequest(reply, "childOrigin must be a shareable public origin");
+  }
 
-  if (!authenticated) {
+  if (!authenticated && DERIVATIVE_FORWARD_PROOF_REQUIRED) {
     const signedPayloadB64 = asString((req.headers as any)?.["x-contentbox-forward-payload"] || "").trim();
     const signedSig = asString((req.headers as any)?.["x-contentbox-forward-signature"] || "").trim();
     const signedNode = normalizeOrigin(asString((req.headers as any)?.["x-contentbox-forward-node"] || "").trim());
@@ -22970,23 +22985,8 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       payloadKind !== "remote_clearance_request" ||
       payloadParent !== parentContentId ||
       payloadChild !== childContentId ||
-      payloadOrigin !== normalizeOrigin(childOrigin) ||
+      payloadOrigin !== normalizedChildOrigin ||
       payloadOrigin !== signedNode;
-    app.log.info(
-      {
-        route: "/api/derivatives/remote-request",
-        signedNode,
-        reconstructedPayload: stableStringify(signedPayload),
-        payloadParent,
-        payloadChild,
-        payloadOrigin,
-        requestParentContentId: parentContentId,
-        requestChildContentId: childContentId,
-        requestChildOrigin: normalizeOrigin(childOrigin),
-        payloadMismatch
-      },
-      "clearance.forward_proof.remote_payload_reconstructed"
-    );
     if (
       !Number.isFinite(payloadTs) ||
       isExpired ||
@@ -23005,7 +23005,6 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
       });
     }
     let remotePub = getCachedRemoteDiscoveryKey(signedNode);
-    let verificationKeySource: "cached" | "discovery" | "refreshed" | "none" = remotePub ? "cached" : "none";
     let discoveryAttempted = false;
     let discoveryReachable = false;
     const discoveryUrl = `${signedNode}/.well-known/contentbox`;
@@ -23036,7 +23035,6 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
           remotePub = asString(d?.publicKeyPem || "").trim() || null;
           if (remotePub) {
             setCachedRemoteDiscoveryKey(signedNode, remotePub);
-            verificationKeySource = "discovery";
             discoveryErrorClass = null;
             return true;
           }
@@ -23096,28 +23094,12 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
           const refreshedPub = asString(d?.publicKeyPem || "").trim() || null;
           if (refreshedPub) {
             setCachedRemoteDiscoveryKey(signedNode, refreshedPub);
-            verificationKeySource = "refreshed";
             signatureValid = verifyStablePayloadSignature(refreshedPub, signedPayload, signedSig);
             remotePub = refreshedPub;
           }
         }
       } catch {}
     }
-    const remotePubFingerprint =
-      remotePub && asString(remotePub).trim()
-        ? nodePubKeyFingerprint(deriveNodeIdentityFromPublicKey(remotePub).nodePubKey)
-        : null;
-    app.log.info(
-      {
-        route: "/api/derivatives/remote-request",
-        signedNode,
-        discoveryUrl,
-        verificationKeySource,
-        discoveredPublicKeyFingerprint: remotePubFingerprint,
-        verificationResult: signatureValid
-      },
-      "clearance.forward_proof.remote_verification_result"
-    );
     if (!signatureValid) {
       lastForwardVerificationFailure = {
         code: "FORWARD_SIGNATURE_INVALID",
@@ -23166,15 +23148,15 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
         status: "published" as any,
         deletedAt: new Date(),
         deletedReason: "hard",
-        description: `Remote origin: ${childOrigin.replace(/\/+$/, "")}`
+        description: `Remote origin: ${normalizedChildOrigin.replace(/\/+$/, "")}`
       }
     });
   } else {
     const existingOrigin = getRemoteOriginFromDescription(child.description || null);
-    if (child.deletedAt && existingOrigin !== childOrigin.replace(/\/+$/, "")) {
+    if (child.deletedAt && existingOrigin !== normalizedChildOrigin.replace(/\/+$/, "")) {
       child = await prisma.contentItem.update({
         where: { id: childContentId },
-        data: { description: `Remote origin: ${childOrigin.replace(/\/+$/, "")}` }
+        data: { description: `Remote origin: ${normalizedChildOrigin.replace(/\/+$/, "")}` }
       });
     }
   }
