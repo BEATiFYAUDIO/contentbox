@@ -1190,69 +1190,6 @@ export default function ConfigPage({
         </div>
       </div>
 
-      {showAdvancedInfraPanels ? (
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
-        <div><b>API base</b>: {apiBase}</div>
-        <div><b>Build</b>: {buildInfo}</div>
-        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
-        <div style={{ marginTop: 10 }}>
-          <button
-            onClick={() => { clearToken(); window.location.reload(); }}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Clear token & reload
-          </button>
-        </div>
-      </div>
-      ) : null}
-
-      {showAdvancedInfraPanels ? (
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
-        <div style={{ opacity: 0.7, marginBottom: 8 }}>
-          Current API base: <b>{apiBase}</b>
-        </div>
-        {showAdvanced ? (
-          <>
-            <label htmlFor="api-base-override">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
-              <input
-                id="api-base-override"
-                name="apiBaseOverride"
-                value={apiBaseOverride}
-                onChange={(e) => setApiBaseOverride(e.target.value)}
-                placeholder="http://127.0.0.1:4000"
-                className={inputClass}
-                autoComplete="url"
-              />
-            </label>
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button
-                onClick={saveApiBaseOverride}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Save & reload
-              </button>
-              <button
-                onClick={clearApiBaseOverride}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Clear override
-              </button>
-            </div>
-            <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
-              If you see tunnels from another machine, your API base is pointing there.
-            </div>
-          </>
-        ) : (
-          <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
-            Advanced mode required to override API base.
-          </div>
-        )}
-      </div>
-      ) : null}
-
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>Step 1: Basic Creator tunnel setup</div>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>Tunnel & routing</div>
@@ -1906,6 +1843,69 @@ export default function ConfigPage({
           Open payments settings
         </button>
       </div>
+
+      {showAdvancedInfraPanels ? (
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
+        <div><b>API base</b>: {apiBase}</div>
+        <div><b>Build</b>: {buildInfo}</div>
+        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => { clearToken(); window.location.reload(); }}
+            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+          >
+            Clear token & reload
+          </button>
+        </div>
+      </div>
+      ) : null}
+
+      {showAdvancedInfraPanels ? (
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
+        <div style={{ opacity: 0.7, marginBottom: 8 }}>
+          Current API base: <b>{apiBase}</b>
+        </div>
+        {showAdvanced ? (
+          <>
+            <label htmlFor="api-base-override">
+              <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
+              <input
+                id="api-base-override"
+                name="apiBaseOverride"
+                value={apiBaseOverride}
+                onChange={(e) => setApiBaseOverride(e.target.value)}
+                placeholder="http://127.0.0.1:4000"
+                className={inputClass}
+                autoComplete="url"
+              />
+            </label>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                onClick={saveApiBaseOverride}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Save & reload
+              </button>
+              <button
+                onClick={clearApiBaseOverride}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Clear override
+              </button>
+            </div>
+            <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+              If you see tunnels from another machine, your API base is pointing there.
+            </div>
+          </>
+        ) : (
+          <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+            Advanced mode required to override API base.
+          </div>
+        )}
+      </div>
+      ) : null}
     </div>
   );
 }
