@@ -26109,7 +26109,16 @@ app.get("/u/:handle/proofs.json", handlePublicProofBundle);
 async function handlePublicProfileRedirect(req: any, reply: any) {
   const conf = await readBeatifyNodeProof();
   const beatifyHandle = normalizeBeatifyHandle(conf.beatifyHandle);
-  if (!beatifyHandle) return notFound(reply, "Not found");
+  if (!beatifyHandle) {
+    const hostHeader = String(req.headers?.host || "").trim().toLowerCase();
+    const host = hostHeader.split(":")[0] || "";
+    const isLocalDashboardHost = host === "localhost" || host === "127.0.0.1";
+    if (isLocalDashboardHost) {
+      const served = await tryServeIntegratedDashboard(req, reply);
+      if (served) return;
+    }
+    return notFound(reply, "Not found");
+  }
   return reply.redirect(302, `/u/${encodeURIComponent(beatifyHandle)}`);
 }
 

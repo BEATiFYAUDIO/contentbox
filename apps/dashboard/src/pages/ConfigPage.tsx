@@ -327,7 +327,8 @@ export default function ConfigPage({
           setTunnelDomain(domain);
           setTunnelName(name);
           const hasSavedNamedConfig = Boolean(String(provider || "").trim() || String(domain || "").trim() || String(name || "").trim());
-          if (hasSavedNamedConfig && !tunnelEnabled) {
+          const tunnelFieldsPref = readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED);
+          if (hasSavedNamedConfig && !tunnelEnabled && !tunnelFieldsPref) {
             setTunnelEnabled(true);
             writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, "1");
           }
@@ -550,7 +551,7 @@ export default function ConfigPage({
           : "Temporary link";
   const stopActionLabel = publicStatus?.mode === "named" ? "Stop named tunnel" : "Stop temporary link";
   const refreshRoutingLabel = "Refresh routing";
-  const localRoutingControlsDisabled = serviceManagedTokenMode && !publicStatus?.namedDisabled;
+  const localNamedLaunchControlsDisabled = serviceManagedTokenMode && !publicStatus?.namedDisabled;
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
   const creatorProgressionSteps = useMemo<ProgressStep[]>(() => {
     const selected = modeInfo?.selectedMode || modeInfo?.nodeMode;
@@ -1080,7 +1081,7 @@ export default function ConfigPage({
               type="radio"
               name="cfg-node-mode"
               checked={modeInfo?.nodeMode === "basic"}
-              disabled={!modeInfo || modeBusy || modeLocked}
+              disabled={!modeInfo || modeBusy || modeLocked || !sovereignCreatorEligible}
               onChange={() => updateNodeMode("basic")}
             />
             <span>
@@ -1357,7 +1358,7 @@ export default function ConfigPage({
             >
               Authority: {routingAuthorityLabel}
             </span>
-            {localRoutingControlsDisabled ? (
+            {localNamedLaunchControlsDisabled ? (
               <span
                 style={{
                   fontSize: 11,
@@ -1389,7 +1390,7 @@ export default function ConfigPage({
             onChange={async (e) => {
               const v = e.target.checked;
               setTunnelEnabled(v);
-              writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
+              writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "0");
               // UI preference only: do not clear persisted named-tunnel config when toggled off.
               if (!v && publicStatus?.mode === "named" && publicStatus?.status !== "offline") {
                 setPublicMsg("Named tunnel is still running. Click Stop sharing to shut it down.");
@@ -1414,7 +1415,7 @@ export default function ConfigPage({
         {token && (
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
-            {localRoutingControlsDisabled ? (
+            {localNamedLaunchControlsDisabled ? (
               <div style={{ fontSize: 12, color: "#fbbf24" }}>
                 Service-managed tunnel authority is active. Local fields below are reference-only on this machine.
               </div>
@@ -1454,7 +1455,7 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelProvider(e.target.value)}
                 placeholder="cloudflare"
                 className={inputClass}
-                disabled={!tunnelEnabled || !namedTunnelDetected || localRoutingControlsDisabled}
+                disabled={!tunnelEnabled || !namedTunnelDetected}
                 autoComplete="off"
               />
               {!namedTunnelDetected ? (
@@ -1472,7 +1473,7 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelDomain(e.target.value)}
                 placeholder="contentbox.link"
                 className={inputClass}
-                disabled={!tunnelEnabled || localRoutingControlsDisabled}
+                disabled={!tunnelEnabled}
                 autoComplete="off"
               />
               <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
@@ -1493,11 +1494,11 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelName(e.target.value)}
                 placeholder="contentbox"
                 className={inputClass}
-                disabled={!tunnelEnabled || localRoutingControlsDisabled}
+                disabled={!tunnelEnabled}
                 autoComplete="off"
               />
             </label>
-            {tunnelEnabled && tokenBootstrapRequired && !localRoutingControlsDisabled ? (
+            {tunnelEnabled && tokenBootstrapRequired && !localNamedLaunchControlsDisabled ? (
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
                 <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
@@ -1551,7 +1552,7 @@ export default function ConfigPage({
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={saveTunnelConfig}
-                disabled={tunnelLoading || !tunnelEnabled || localRoutingControlsDisabled}
+                disabled={tunnelLoading || !tunnelEnabled}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
                 Save tunnel config

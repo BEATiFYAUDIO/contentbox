@@ -1,0 +1,12 @@
+{
+  "provider": "cloudflare",
+  "domain": "certifyd.beatifygroup.com",
+  "tunnelName": "beatifygroup",
+  "publicOrigin": null,
+  "publicBuyOrigin": null,
+  "publicStudioOrigin": null,
+  "publicOriginFallback": null,
+  "publicBuyOriginFallback": null,
+  "publicStudioOriginFallback": null,
+  "updatedAt": "2026-04-21T15:58:16.824Z"
+}
