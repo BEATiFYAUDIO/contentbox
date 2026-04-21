@@ -444,6 +444,7 @@ export default function App() {
   }, [authNotice]);
 
   const syncRouteFromLocation = () => {
+    const parts = window.location.pathname.split("/").filter(Boolean);
     const tokenFromUrl = getInviteTokenFromLocation();
     const splitEditorContentId = getSplitEditorContentIdFromLocation();
     const royaltiesTermsContentId = getRoyaltiesTermsContentIdFromLocation();
@@ -491,10 +492,18 @@ export default function App() {
       return;
     }
 
+    if (parts[0] === "profile") {
+      setInviteToken(null);
+      setReceiptToken(null);
+      setSelectedContentId(null);
+      setPage("profile");
+      return;
+    }
+
     setInviteToken(null);
     setReceiptToken(null);
     setSelectedContentId(null);
-    setPage("content");
+    setPage("profile");
   };
 
 
@@ -506,9 +515,9 @@ export default function App() {
     const splitEditorContentId = getSplitEditorContentIdFromLocation();
     const royaltiesTermsContentId = getRoyaltiesTermsContentIdFromLocation();
     if (!tokenFromUrl && !receiptFromUrl && !financeTabFromUrl && !splitEditorContentId && !royaltiesTermsContentId) {
-      // Canonical refresh route: always land on Content unless this is an
-      // explicit deep-link surface (invite/receipt/split editor).
-      window.history.replaceState({}, "", "/");
+      // Canonical refresh route: always land on Profile unless this is an
+      // explicit deep-link surface (invite/receipt/split editor/royalties).
+      window.history.replaceState({}, "", "/profile");
     }
     syncRouteFromLocation();
     loadMe();  // Load user data
