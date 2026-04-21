@@ -511,12 +511,6 @@ export default function ContentLibraryPage({
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
   >({});
   const [clearanceRequestMsgByContent, setClearanceRequestMsgByContent] = React.useState<Record<string, string | null>>({});
-  const [clearanceLinksByContent, setClearanceLinksByContent] = React.useState<
-    Record<string, Array<{ email: string; url: string; weightBps?: number }> | null>
-  >({});
-  const [clearanceRequestMetaByContent, setClearanceRequestMetaByContent] = React.useState<
-    Record<string, { lastAttemptAt?: string | null; status?: "success" | "error" | "idle"; }>
-  >({});
 
   const [showTrash, setShowTrash] = React.useState(false);
   const [showTombstones, setShowTombstones] = React.useState(false);
@@ -1803,21 +1797,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
 
   async function requestClearanceForContent(contentId: string, linkId: string) {
     setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: null }));
-    setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "idle" } }));
     try {
-      const res: any = await api(`/content-links/${linkId}/request-approval`, "POST");
-      const links = (Array.isArray(res?.remoteApprovalUrls) && res.remoteApprovalUrls.length > 0)
-        ? res.remoteApprovalUrls
-        : Array.isArray(res?.approvalUrls)
-          ? res.approvalUrls
-          : [];
-      setClearanceLinksByContent((m) => ({ ...m, [contentId]: links }));
+      await api(`/content-links/${linkId}/request-approval`, "POST");
       setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: "Clearance requested." }));
-      setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "success" } }));
       await loadParentLink(contentId);
     } catch (e: any) {
       setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: e?.message || "Clearance request failed." }));
-      setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "error" } }));
     }
   }
 
