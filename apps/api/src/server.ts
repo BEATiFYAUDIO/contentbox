@@ -23813,6 +23813,114 @@ function normalizePublicProfileHandle(v: unknown): string | null {
   return clean || null;
 }
 
+type PublicProfileUserRow = {
+  id: string;
+  displayName: string | null;
+  email: string;
+  bio: string | null;
+  avatarUrl: string | null;
+  witnessIdentity: {
+    id: string;
+    revokedAt: Date | null;
+    algorithm: string;
+    publicKey: string;
+    fingerprint: string | null;
+  } | null;
+};
+
+const PUBLIC_PROFILE_USER_SELECT = {
+  id: true,
+  displayName: true,
+  email: true,
+  bio: true,
+  avatarUrl: true,
+  witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+} as const;
+
+const PUBLIC_PROFILE_USER_INDEX_TTL_MS = Math.max(
+  5000,
+  Number(process.env.PUBLIC_PROFILE_USER_INDEX_TTL_MS || "60000")
+);
+const PUBLIC_PROFILE_HTML_CACHE_TTL_MS = Math.max(
+  5000,
+  Number(process.env.PUBLIC_PROFILE_HTML_CACHE_TTL_MS || "15000")
+);
+
+let publicProfileUserIndexCache: { expiresAt: number; byHandle: Map<string, PublicProfileUserRow> } | null = null;
+let publicProfileUserIndexInflight: Promise<Map<string, PublicProfileUserRow>> | null = null;
+const publicProfileHtmlCache = new Map<string, { expiresAt: number; html: string; etag: string }>();
+
+function titleCaseWords(input: string): string {
+  return input
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => (w[0] ? `${w[0].toUpperCase()}${w.slice(1)}` : w))
+    .join(" ");
+}
+
+function buildPublicProfileHandleCandidates(user: PublicProfileUserRow): string[] {
+  const out = new Set<string>();
+  const byDisplay = normalizePublicProfileHandle(user.displayName || "");
+  if (byDisplay) out.add(byDisplay);
+  const byEmail = normalizedEmailLocalPart(user.email || "");
+  if (byEmail) out.add(byEmail);
+  return Array.from(out.values());
+}
+
+async function getPublicProfileUserIndex(): Promise<Map<string, PublicProfileUserRow>> {
+  const now = Date.now();
+  if (publicProfileUserIndexCache && publicProfileUserIndexCache.expiresAt > now) {
+    return publicProfileUserIndexCache.byHandle;
+  }
+  if (publicProfileUserIndexInflight) return publicProfileUserIndexInflight;
+  publicProfileUserIndexInflight = prisma.user
+    .findMany({ select: PUBLIC_PROFILE_USER_SELECT })
+    .then((rows) => {
+      const byHandle = new Map<string, PublicProfileUserRow>();
+      for (const row of rows as PublicProfileUserRow[]) {
+        for (const key of buildPublicProfileHandleCandidates(row)) {
+          if (!key || byHandle.has(key)) continue;
+          byHandle.set(key, row);
+        }
+      }
+      publicProfileUserIndexCache = {
+        expiresAt: Date.now() + PUBLIC_PROFILE_USER_INDEX_TTL_MS,
+        byHandle
+      };
+      return byHandle;
+    })
+    .finally(() => {
+      publicProfileUserIndexInflight = null;
+    });
+  return publicProfileUserIndexInflight;
+}
+
+async function resolvePublicProfileUser(requested: string): Promise<PublicProfileUserRow | null> {
+  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
+  const maybeNameTitle = titleCaseWords(maybeName);
+  const maybeNameOriginalCase = maybeName
+    .split(/\s+/)
+    .map((part) => (part ? `${part[0]}${part.slice(1)}` : part))
+    .join(" ");
+  const directDisplayCandidates = Array.from(
+    new Set([requested, maybeName, maybeNameTitle, maybeNameOriginalCase].map((v) => asString(v || "").trim()).filter(Boolean))
+  );
+
+  const direct = await prisma.user.findFirst({
+    where: {
+      OR: [
+        ...directDisplayCandidates.map((displayName) => ({ displayName: { equals: displayName } })),
+        { email: { startsWith: `${requested}@` } }
+      ]
+    },
+    select: PUBLIC_PROFILE_USER_SELECT
+  });
+  if (direct) return direct as PublicProfileUserRow;
+
+  const index = await getPublicProfileUserIndex();
+  return index.get(requested) || null;
+}
+
 function normalizePublicProfileHref(rawValue: unknown): string | null {
   const raw = asString(rawValue || "").trim();
   if (!raw) return null;
@@ -24680,66 +24788,54 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
 
-  const userSelect = {
-    id: true,
-    displayName: true,
-    email: true,
-    bio: true,
-    avatarUrl: true,
-    witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-  } as const;
-
-  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
-  let user =
-    await prisma.user.findFirst({
-      where: { displayName: { equals: requested } },
-      select: userSelect
-    }) ||
-    await prisma.user.findFirst({
-      where: { displayName: { equals: maybeName } },
-      select: userSelect
-    });
-
-  if (!user) {
-    const candidates = await prisma.user.findMany({
-      select: userSelect
-    });
-    user =
-      candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) ||
-      candidates.find((candidate) => normalizedEmailLocalPart(candidate.email || "") === requested) ||
-      null;
+  const requestHost = getPublicHostnameFromReq(req) || "local";
+  const cacheKey = `${requestHost}::${requested}`;
+  const cachedHtml = publicProfileHtmlCache.get(cacheKey);
+  if (cachedHtml && cachedHtml.expiresAt > Date.now()) {
+    reply.header("Cache-Control", "public, max-age=15, stale-while-revalidate=60");
+    reply.header("ETag", cachedHtml.etag);
+    if (asString(req?.headers?.["if-none-match"] || "").trim() === cachedHtml.etag) {
+      return reply.code(304).send();
+    }
+    return reply.type("text/html; charset=utf-8").send(cachedHtml.html);
   }
+
+  const user = await resolvePublicProfileUser(requested);
   if (!user) return notFound(reply, "Not found");
 
-  const verifiedProofs = await prisma.proofRecord.findMany({
-    where: {
-      userId: user.id,
-      status: "verified",
-      revokedAt: null
-    },
-    orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
-    select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
-  });
-  const featuredContent = await prisma.contentItem.findMany({
-    where: {
-      ownerUserId: user.id,
-      status: "published",
-      deletedAt: null,
-      featureOnProfile: true
-    },
-    orderBy: { createdAt: "desc" },
-    take: 12,
-    select: {
-      id: true,
-      title: true,
-      type: true,
-      priceSats: true,
-      deliveryMode: true,
-      manifest: { select: { json: true } }
-    }
-  });
+  const [verifiedProofs, featuredContent, wk, creatorSignalNodeDetails, profileServiceMode] = await Promise.all([
+    prisma.proofRecord.findMany({
+      where: {
+        userId: user.id,
+        status: "verified",
+        revokedAt: null
+      },
+      orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+      select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
+    }),
+    prisma.contentItem.findMany({
+      where: {
+        ownerUserId: user.id,
+        status: "published",
+        deletedAt: null,
+        featureOnProfile: true
+      },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      select: {
+        id: true,
+        title: true,
+        type: true,
+        priceSats: true,
+        deliveryMode: true,
+        manifest: { select: { json: true } }
+      }
+    }),
+    buildWellKnownContentboxPayload(req),
+    getCachedCreatorSignalNodeDetails(),
+    getCachedProfileServiceMode()
+  ]);
 
-  const wk = await buildWellKnownContentboxPayload(req);
   const nodeUrl = wk.nodeUrl || "";
   if (!nodeUrl) return notFound(reply, "Not found");
   const nodeSha = wk.publicKeyPemSha256 || null;
@@ -24835,10 +24931,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     if (subjectRaw.startsWith("nostr:")) return false;
     return true;
   });
-  const creatorSignalNodeDetails = await getCachedCreatorSignalNodeDetails();
   const creatorSignal = computeCreatorSignal(verifiedProofs as any, creatorSignalNodeDetails);
   const creatorSignalPercent = creatorSignal.percent;
-  const profileServiceMode = await getCachedProfileServiceMode();
   const profilePostureBadgeLabel =
     profileServiceMode === "sovereign_node"
       ? "Sovereign Node"
@@ -25926,6 +26020,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 </body>
 </html>`;
 
+  const htmlEtag = `"pp-${crypto.createHash("sha1").update(html).digest("hex").slice(0, 16)}"`;
+  publicProfileHtmlCache.set(cacheKey, {
+    expiresAt: Date.now() + PUBLIC_PROFILE_HTML_CACHE_TTL_MS,
+    html,
+    etag: htmlEtag
+  });
+  reply.header("Cache-Control", "public, max-age=15, stale-while-revalidate=60");
+  reply.header("ETag", htmlEtag);
   reply.type("text/html; charset=utf-8");
   return reply.send(html);
 }
