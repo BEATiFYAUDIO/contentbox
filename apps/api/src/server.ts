@@ -27578,7 +27578,8 @@ async function handleBuyPage(req: any, reply: any) {
 
   function renderOffer(offer, entitlement, owned){
     const already = Boolean(owned);
-    const price = offer.priceSats == null ? "Price unavailable" : offer.priceSats + " sats";
+    const hasListedPrice = offer.priceSats !== null && offer.priceSats !== undefined;
+    const price = hasListedPrice ? (offer.priceSats + " sats") : "Price unavailable";
     const isPaid = Number(offer.priceSats || 0) > 0;
     const requiresPayment = isPaid && (entitlement?.status !== "paid" && entitlement?.status !== "bypassed");
     const hasBuyer = Boolean(buyer && buyer.id);
@@ -28557,9 +28558,9 @@ async function handlePublicOffer(req: any, reply: any) {
 
   const authority = await resolveCommerceAuthorityForUser(content.ownerUserId);
   const rawPriceSats = content.priceSats ?? null;
-  const hasStoredPrice = rawPriceSats != null && rawPriceSats > 0n;
+  const hasStoredPrice = rawPriceSats != null;
   const paidCommerceActive = authority.authority;
-  const priceSats = hasStoredPrice && paidCommerceActive ? rawPriceSats : null;
+  const priceSats = hasStoredPrice && (rawPriceSats === 0n || paidCommerceActive) ? rawPriceSats : null;
   const hasPrice = priceSats != null && priceSats > 0n;
   let buyerId: string | null = null;
   let entitled = Boolean(gated.entitled);
