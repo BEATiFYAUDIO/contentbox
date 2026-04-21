@@ -22597,6 +22597,12 @@ app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth },
       data: { approvedAt: new Date(), approvedByUserId: userId, requiresApproval: true }
     });
   }
+  if (status === "APPROVED") {
+    await prisma.clearanceRequest.updateMany({
+      where: { contentLinkId: auth.derivativeLink.id, status: "PENDING" },
+      data: { status: "CLEARED" }
+    });
+  }
 
   return reply.send(updated);
 });
@@ -22614,8 +22620,17 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
 
   const out: any[] = [];
   for (const a of auths) {
-    const childDeleted = Boolean(a.derivativeLink?.childContent?.deletedAt);
-    if (childDeleted) continue;
+    const child = a.derivativeLink?.childContent;
+    const childDeleted = Boolean(child?.deletedAt);
+    const childDeletedReason = asString((child as any)?.deletedReason || "").trim().toLowerCase();
+    const childDescription = asString(child?.description || "").trim().toLowerCase();
+    const isRemoteShadowChild =
+      childDeleted &&
+      childDeletedReason === "hard" &&
+      childDescription.startsWith("remote origin:");
+    // Remote derivative children are represented as hard-deleted shadow rows.
+    // Keep them visible in approvals/pending workflow instead of treating them as archived local content.
+    if (childDeleted && !isRemoteShadowChild) continue;
 
     const { eligible } = await getEligibleApproversForParent(a.parentContentId);
     const parent = await prisma.contentItem.findUnique({
@@ -23423,6 +23438,12 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
         }
       });
     } catch {}
+  }
+  if (status === "APPROVED") {
+    await prisma.clearanceRequest.updateMany({
+      where: { contentLinkId: link.id, status: "PENDING" },
+      data: { status: "CLEARED" }
+    });
   }
 
   if (decision === "reject" && rejectReason) {
@@ -37832,7 +37853,17 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       },
       orderBy: { createdAt: "desc" }
     });
-    const actionableAuths = auths.filter((auth) => !auth.derivativeLink?.childContent?.deletedAt);
+    const actionableAuths = auths.filter((auth) => {
+      const child = auth.derivativeLink?.childContent;
+      const childDeleted = Boolean(child?.deletedAt);
+      const childDeletedReason = asString((child as any)?.deletedReason || "").trim().toLowerCase();
+      const childDescription = asString(child?.description || "").trim().toLowerCase();
+      const isRemoteShadowChild =
+        childDeleted &&
+        childDeletedReason === "hard" &&
+        childDescription.startsWith("remote origin:");
+      return !childDeleted || isRemoteShadowChild;
+    });
     const approverCount = eligible.length;
     const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
