@@ -1231,7 +1231,7 @@ export default function InvitePage({
 
         {/* If signed in, show invite history (tokens are shown only at creation time). */}
         {me && (myInvites || receivedInvites || remoteReceivedInvites) && (
-          <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900/10 p-3 space-y-4">
+          <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-900/10 p-3 space-y-4 flex flex-col">
             <div className="flex items-center justify-between">
               <div className="text-xs text-neutral-400">Invite lists</div>
               <button
@@ -1242,7 +1242,7 @@ export default function InvitePage({
                 {showHistory ? "Show active only" : "Show history"}
               </button>
             </div>
-            <div>
+            <div className="order-2">
               <div className="text-sm font-medium">Collaborators & invites</div>
               <div className="text-xs text-neutral-400">
                 One row per identity-targeted participant. Pending rows include the shareable invite artifact when available.
@@ -1324,7 +1324,7 @@ export default function InvitePage({
               )}
             </div>
 
-            <div>
+            <div className="order-1">
               <div className="text-sm font-medium">Received invites</div>
               <div className="text-xs text-neutral-400">Invites addressed to your account, including remote nodes.</div>
               <div className="mt-1 text-[11px] text-neutral-500">
