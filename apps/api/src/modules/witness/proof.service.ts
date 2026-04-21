@@ -716,6 +716,7 @@ function providerProfileUrlCandidates(
   } else if (provider === "instagram") {
     push(`https://www.instagram.com/${account}/`);
   } else if (provider === "tiktok") {
+    push(`https://www.tiktok.com/@${account}/`);
     push(`https://www.tiktok.com/@${account}`);
   } else if (provider === "rumble") {
     push(`https://rumble.com/user/${account}/about`);
