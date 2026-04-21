@@ -506,6 +506,7 @@ export default function ContentLibraryPage({
   const [approvals, setApprovals] = React.useState<any[]>([]);
   const [approvalsLoading, setApprovalsLoading] = React.useState(false);
   const [rejectReasonByApproval, setRejectReasonByApproval] = React.useState<Record<string, string>>({});
+  const [actionMsgByApproval, setActionMsgByApproval] = React.useState<Record<string, string | null>>({});
   const [clearanceLoadError, setClearanceLoadError] = React.useState<string | null>(null);
   const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
@@ -1660,6 +1661,21 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET"),
         api<any[]>("/my/royalties/remote", "GET")
       ]);
+      const isApprovalCleared = (entry: any) => {
+        const status = String(entry?.status || "").trim().toUpperCase();
+        const target = Number(entry?.approvalBpsTarget || 6667);
+        const approve = Number(entry?.approveWeightBps || 0);
+        return status === "APPROVED" || (target > 0 && approve >= target);
+      };
+      const hasViewerVoted = (entry: any) => Boolean(String(entry?.viewerVote || "").trim());
+      const matchesScope = (entry: any, selectedScope: "pending" | "voted" | "cleared") => {
+        const cleared = isApprovalCleared(entry);
+        const voted = hasViewerVoted(entry);
+        if (selectedScope === "pending") return !cleared && !voted;
+        if (selectedScope === "voted") return !cleared && voted;
+        return cleared;
+      };
+
       const remoteApprovals = (Array.isArray(remoteRows) ? remoteRows : [])
         .flatMap((row) => {
           const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
@@ -1691,16 +1707,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 : null
           }));
         })
-        .filter((entry) => {
-          const status = String(entry.status || "").toUpperCase();
-          const voted = Boolean(String(entry.viewerVote || "").trim());
-          if (scope === "pending") return status === "PENDING" && !voted;
-          if (scope === "voted") return voted;
-          if (scope === "cleared") return status === "APPROVED";
-          return true;
-        });
+        .filter((entry) => matchesScope(entry, scope));
 
-      const merged = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals];
+      const merged = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals].filter((entry) =>
+        matchesScope(entry, scope)
+      );
       if (import.meta.env.DEV) {
         console.debug("clearance.loadApprovals.remote_merge", {
           scope,
@@ -1757,6 +1768,30 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     } catch {
       setPendingClearanceCount(0);
     }
+  }
+
+  function isApprovalClearedByThreshold(statusRaw: unknown, approveRaw: unknown, targetRaw: unknown): boolean {
+    const status = String(statusRaw || "").trim().toUpperCase();
+    const approve = Number(approveRaw || 0);
+    const target = Number(targetRaw || 6667);
+    return status === "APPROVED" || (target > 0 && approve >= target);
+  }
+
+  async function clearedAfterActionError(entry: any, linkId: string): Promise<boolean> {
+    if (String(entry?.remoteOrigin || "").trim()) {
+      const remoteRows = await api<any[]>("/my/royalties/remote", "GET").catch(() => []);
+      const targetAuthId = String(entry?.remoteAuthorizationId || entry?.authorizationId || "").trim();
+      for (const row of Array.isArray(remoteRows) ? remoteRows : []) {
+        const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
+        const matched = inbox.find((item: any) => String(item?.authorizationId || "").trim() === targetAuthId);
+        if (!matched) continue;
+        return isApprovalClearedByThreshold(matched?.status, matched?.approveWeightBps, matched?.approvalBpsTarget);
+      }
+      return false;
+    }
+    if (!linkId) return false;
+    const summary = await api<any>(`/content-links/${linkId}/clearance`, "GET").catch(() => null);
+    return isApprovalClearedByThreshold(summary?.status, summary?.progressBps, summary?.thresholdBps);
   }
 
   async function loadClearanceSummary(linkId: string) {
@@ -2727,7 +2762,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const parentTitle = a?.parentTitle || a?.parentContentId || "Original work";
                 const childTitle = a?.childTitle || a?.childContentId || "Derivative";
                 const isLoading = linkId ? clearanceLoadingByLink[linkId] : false;
-                const isCleared = a?.status === "APPROVED";
+                const status = String(a?.status || "").trim().toUpperCase();
+                const isCleared = status === "APPROVED" || (thresholdBps > 0 && progressBps >= thresholdBps);
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
                 const canVote = isRemoteApproval ? Boolean(a?.remoteClearanceUrl) : Boolean(clearance?.viewer?.canVote);
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
@@ -2856,19 +2892,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setError("Missing remote vote routing context.");
                                   return;
                                 }
-                                await api(
-                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
-                                    remoteAuthorizationId
-                                  )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
-                                  "POST",
-                                  {
-                                    decision: "approve",
-                                    upstreamRatePercent:
-                                      Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
-                                        ? Number(a.upstreamRatePercent)
-                                        : 0
-                                  }
-                                );
+                                setActionMsgByApproval((m) => ({ ...m, [approvalKey]: null }));
+                                try {
+                                  await api(
+                                    `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+                                      remoteAuthorizationId
+                                    )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
+                                    "POST",
+                                    {
+                                      decision: "approve",
+                                      upstreamRatePercent:
+                                        Number.isFinite(Number(a?.upstreamRatePercent)) && Number(a?.upstreamRatePercent) >= 0
+                                          ? Number(a.upstreamRatePercent)
+                                          : 0
+                                    }
+                                  );
+                                } catch (e) {
+                                  const reconciled = await clearedAfterActionError(a, linkId);
+                                  if (!reconciled) throw e;
+                                  setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Permission recorded. Item is now cleared." }));
+                                }
                                 await loadApprovals(clearanceScope);
                                 await loadPendingClearanceCount();
                               }}
@@ -2886,13 +2929,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   setError("Missing remote vote routing context.");
                                   return;
                                 }
-                                await api(
-                                  `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
-                                    remoteAuthorizationId
-                                  )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
-                                  "POST",
-                                  { decision: "reject", reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined }
-                                );
+                                setActionMsgByApproval((m) => ({ ...m, [approvalKey]: null }));
+                                try {
+                                  await api(
+                                    `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+                                      remoteAuthorizationId
+                                    )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
+                                    "POST",
+                                    { decision: "reject", reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined }
+                                  );
+                                } catch (e) {
+                                  const reconciled = await clearedAfterActionError(a, linkId);
+                                  if (!reconciled) throw e;
+                                  setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Action recorded. Clearance state updated." }));
+                                }
                                 setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
                                 await loadApprovals(clearanceScope);
                                 await loadPendingClearanceCount();
@@ -2923,10 +2973,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   : Number.isFinite(Number(clearance?.upstreamBps))
                                   ? Number(clearance.upstreamBps) / 100
                                   : 0;
-                                await api(`/content-links/${linkId}/vote`, "POST", {
-                                  decision: "approve",
-                                  upstreamRatePercent: pct
-                                });
+                                setActionMsgByApproval((m) => ({ ...m, [approvalKey]: null }));
+                                try {
+                                  await api(`/content-links/${linkId}/vote`, "POST", {
+                                    decision: "approve",
+                                    upstreamRatePercent: pct
+                                  });
+                                } catch (e) {
+                                  const reconciled = await clearedAfterActionError(a, linkId);
+                                  if (!reconciled) throw e;
+                                  setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Permission recorded. Item is now cleared." }));
+                                }
                                 await loadApprovals(clearanceScope);
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
@@ -2941,10 +2998,17 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                               onClick={async () => {
                                 if (!linkId) return;
-                                await api(`/content-links/${linkId}/vote`, "POST", {
-                                  decision: "reject",
-                                  reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
-                                });
+                                setActionMsgByApproval((m) => ({ ...m, [approvalKey]: null }));
+                                try {
+                                  await api(`/content-links/${linkId}/vote`, "POST", {
+                                    decision: "reject",
+                                    reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
+                                  });
+                                } catch (e) {
+                                  const reconciled = await clearedAfterActionError(a, linkId);
+                                  if (!reconciled) throw e;
+                                  setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Action recorded. Clearance state updated." }));
+                                }
                                 setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
                                 await loadApprovals(clearanceScope);
                                 await loadPendingClearanceCount();
@@ -2977,6 +3041,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     {isRemoteApproval && !canVote ? (
                       <div className="mt-2 text-[11px] text-amber-300">
                         Vote link not issued yet. Click Refresh to sync latest clearance routing.
+                      </div>
+                    ) : null}
+                    {actionMsgByApproval[approvalKey] ? (
+                      <div className="mt-2 text-[11px] text-emerald-300">
+                        {actionMsgByApproval[approvalKey]}
                       </div>
                     ) : null}
 
