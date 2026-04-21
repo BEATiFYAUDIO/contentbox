@@ -599,12 +599,6 @@ export default function App() {
   const commerceStatusResolved = nodeModeSnapshot != null;
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
   const requireLocalLightning = nodeMode === "lan";
-  const localLightningDetected = Boolean(
-    nodeModeSnapshot?.modeReadiness?.localLndReady ||
-      lightningAdminSnapshot?.runtime?.canReceive ||
-      lightningAdminSnapshot?.runtime?.canSend ||
-      lightningAdminSnapshot?.configured
-  );
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
     commerceStatusResolved &&
@@ -678,7 +672,9 @@ export default function App() {
     return true;
   });
 
-  const nodeSettingsNav = localLightningDetected
+  const namedTunnelOnline = publicStatus?.mode === "named" && publicStatus?.status === "online";
+  const canAccessNodeLightning = Boolean(showAdvancedNav && namedTunnelOnline);
+  const nodeSettingsNav = canAccessNodeLightning
     ? [{ key: "node-lightning" as const, label: "Lightning", hint: "Node payments infrastructure" }]
     : [];
 
@@ -715,7 +711,7 @@ export default function App() {
     (lightningAdminSnapshot?.runtime?.canReceive || lightningAdminSnapshot?.runtime?.canSend || lightningAdminSnapshot?.configured) ?? null;
 
   function goToNodeLightning() {
-    if (!localLightningDetected) {
+    if (!canAccessNodeLightning) {
       setPage("config");
       return;
     }
@@ -730,10 +726,10 @@ export default function App() {
   }, [page, canSeeProviderConsole]);
 
   useEffect(() => {
-    if (page === "node-lightning" && !localLightningDetected) {
+    if (page === "node-lightning" && !canAccessNodeLightning) {
       setPage("config");
     }
-  }, [page, localLightningDetected]);
+  }, [page, canAccessNodeLightning]);
 
   // Show loading state or Auth page if not logged in
   if (loading) {
@@ -753,10 +749,8 @@ export default function App() {
   const logoHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : "/";
   const creatorProfileHref = creatorHandle ? `/u/${encodeURIComponent(creatorHandle)}` : null;
   const publicStatusOnline = publicStatus?.status === "online";
-  const namedTunnelCommerceReady =
-    productTier !== "basic" && publicStatus?.mode === "named" && publicStatusOnline;
   const providerCommerceReadyUi =
-    Boolean(sovereignCapabilities.canUseProviderBackedCommerce) || namedTunnelCommerceReady;
+    Boolean(sovereignCapabilities.canUseProviderBackedCommerce) || Boolean(nodeModeSnapshot?.providerCommerceConnected);
   const publicCreatorUrl =
     publicStatusOnline && publicStatus?.url
       ? new URL(creatorProfileHref || "/profile", String(publicStatus.url)).toString()
