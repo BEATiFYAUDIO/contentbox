@@ -1,5 +1,5 @@
 import React from "react";
-import { api, getApiBase } from "../lib/api";
+import { api } from "../lib/api";
 import { fetchIdentityDetail } from "../lib/identity";
 
 type NetworkSummary = {
@@ -279,6 +279,22 @@ type NodePresence = {
   };
 };
 
+type NodeIdentityDoc = {
+  nodeId: string;
+  nodePubKey: string;
+  capabilityLevel: "basic" | "advanced" | "lan";
+  serviceRoles: {
+    creator: boolean;
+    invoiceProvider: boolean;
+    hybrid: boolean;
+  };
+  endpoints: Array<{
+    url: string;
+    kind: "quick" | "named" | "custom";
+    active: boolean;
+  }>;
+};
+
 type UserNetworkStatus = {
   status: "ready" | "connecting" | "action_required" | "offline";
   title: "Ready" | "Connecting" | "Action Required" | "Offline";
@@ -378,30 +394,6 @@ type ReceiptVerifyResult = {
   type: LifecycleReceipt["type"] | null;
 };
 
-function guessApiBase() {
-  return getApiBase();
-}
-
-function isLikelyUrl(s: string) {
-  return /^https?:\/\//i.test(s.trim());
-}
-
-function extractReceiptToken(input: string): string | null {
-  const v = input.trim();
-  if (!v) return null;
-  if (v.length >= 16 && !v.includes("/") && !v.includes(" ")) return v;
-  const m = v.match(/\/public\/receipts\/([^/?#]+)/i);
-  if (m) return m[1];
-  return null;
-}
-
-function extractBuyUrl(input: string): string | null {
-  const v = input.trim();
-  if (!isLikelyUrl(v)) return null;
-  if (v.includes("/buy/")) return v;
-  return null;
-}
-
 function safeHost(value: string): string {
   try {
     return new URL(value).host;
@@ -430,10 +422,7 @@ function isTemporaryPublicOrigin(origin: string): boolean {
   return isPrivateHost(bareHost);
 }
 
-export default function StorePage(props: { onOpenReceipt: (token: string) => void }) {
-  const [input, setInput] = React.useState("");
-  const [nodeHost, setNodeHost] = React.useState(() => guessApiBase());
-  const [msg, setMsg] = React.useState<string | null>(null);
+export default function StorePage(_props: { onOpenReceipt: (token: string) => void }) {
   const [diagnostics, setDiagnostics] = React.useState<any | null>(null);
   const [identity, setIdentity] = React.useState<{ nodeMode?: string | null } | null>(null);
   const [networkSummary, setNetworkSummary] = React.useState<NetworkSummary | null>(null);
@@ -469,6 +458,8 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [showBasicDiagnostics, setShowBasicDiagnostics] = React.useState(false);
   const [showProviderAdvanced, setShowProviderAdvanced] = React.useState(false);
   const [nodePresence, setNodePresence] = React.useState<NodePresence | null>(null);
+  const [nodeIdentityDoc, setNodeIdentityDoc] = React.useState<NodeIdentityDoc | null>(null);
+  const [connectionCardMsg, setConnectionCardMsg] = React.useState<string | null>(null);
   const [userNetworkStatus, setUserNetworkStatus] = React.useState<UserNetworkStatus | null>(null);
   const [guidedSetupPhase, setGuidedSetupPhase] = React.useState<GuidedSetupPhase>("idle");
   const [guidedSetupMessage, setGuidedSetupMessage] = React.useState<string>("Use Connect provider to complete setup.");
@@ -628,6 +619,22 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       .catch(() => {
         if (!active) return;
         setNodePresence(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
+    api<NodeIdentityDoc>("/api/network/node-identity", "GET")
+      .then((d) => {
+        if (!active) return;
+        setNodeIdentityDoc(d || null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setNodeIdentityDoc(null);
       });
     return () => {
       active = false;
@@ -1322,33 +1329,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     }
   }
 
-  function onOpen() {
-    setMsg(null);
-    const buyUrl = extractBuyUrl(input);
-    if (buyUrl) {
-      window.location.assign(buyUrl);
-      return;
-    }
-
-    const token = extractReceiptToken(input);
-    if (token) {
-      props.onOpenReceipt(token);
-      return;
-    }
-
-    const contentId = input.trim();
-    if (!contentId) {
-      setMsg("Paste a link, receipt token, or content ID.");
-      return;
-    }
-    if (!nodeHost) {
-      setMsg("Enter a node endpoint to open this content.");
-      return;
-    }
-    const host = nodeHost.replace(/\/$/, "");
-    window.location.assign(`${host}/buy/${contentId}`);
-  }
-
   const productTier = String(diagnostics?.productTier || "basic").toLowerCase();
   const paymentMode = String(diagnostics?.paymentsMode || "wallet").toLowerCase();
   const reachabilityMode =
@@ -1559,7 +1539,14 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         ? "Degraded"
         : nodePresence?.runtime?.status === "stopped"
           ? "Stopped"
-          : runtimeStateLabel;
+        : runtimeStateLabel;
+  const connectionNodeId = nodeIdentityDoc?.nodeId || nodePresence?.node?.nodeId || "—";
+  const connectionNodePubKey = nodeIdentityDoc?.nodePubKey || "—";
+  const stableIdentityEndpoint =
+    nodeIdentityDoc?.endpoints?.find((e) => e.active && (e.kind === "named" || e.kind === "custom"))?.url ||
+    null;
+  const connectionProviderUrl = summaryCanonicalCommerceUrl || stableIdentityEndpoint || presenceEndpointUrl || "—";
+  const connectionIsProviderCapable = Boolean(nodeIdentityDoc?.serviceRoles?.invoiceProvider);
   const providerAckExecutionReadinessLabel =
     providerAckReadiness?.readiness === "ready"
       ? "Ready"
@@ -1739,6 +1726,21 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         ? "border-amber-800/70 bg-amber-900/20 text-amber-300"
         : "border-rose-800/70 bg-rose-900/20 text-rose-300";
 
+  async function copyConnectionValue(label: string, value: string) {
+    const text = String(value || "").trim();
+    if (!text || text === "—") return;
+    try {
+      if (typeof navigator !== "undefined" && navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      }
+      setConnectionCardMsg(`${label} copied.`);
+      setTimeout(() => setConnectionCardMsg(null), 1800);
+    } catch {
+      setConnectionCardMsg(`Copy failed for ${label}.`);
+      setTimeout(() => setConnectionCardMsg(null), 2200);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6">
@@ -1784,6 +1786,50 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 md:col-span-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider Connection Card</div>
+            <div className="mt-1 text-xs text-neutral-400">
+              Share these exact values with Sovereign Creators connecting to this node.
+            </div>
+            <div className="mt-2 grid gap-2 text-xs">
+              <div className="rounded border border-neutral-800 bg-neutral-950/70 p-2">
+                <div className="text-neutral-500">Provider URL</div>
+                <div className="mt-1 break-all text-neutral-200">{connectionProviderUrl}</div>
+                <button
+                  onClick={() => copyConnectionValue("Provider URL", connectionProviderUrl)}
+                  className="mt-2 rounded border border-neutral-700 px-2 py-1 text-[11px] hover:bg-neutral-900"
+                >
+                  Copy URL
+                </button>
+              </div>
+              <div className="rounded border border-neutral-800 bg-neutral-950/70 p-2">
+                <div className="text-neutral-500">Provider node ID</div>
+                <div className="mt-1 break-all font-mono text-neutral-200">{connectionNodeId}</div>
+                <button
+                  onClick={() => copyConnectionValue("Provider node ID", connectionNodeId)}
+                  className="mt-2 rounded border border-neutral-700 px-2 py-1 text-[11px] hover:bg-neutral-900"
+                >
+                  Copy node ID
+                </button>
+              </div>
+              <div className="rounded border border-neutral-800 bg-neutral-950/70 p-2">
+                <div className="text-neutral-500">Provider node pubkey</div>
+                <div className="mt-1 break-all font-mono text-neutral-200">{connectionNodePubKey}</div>
+                <button
+                  onClick={() => copyConnectionValue("Provider node pubkey", connectionNodePubKey)}
+                  className="mt-2 rounded border border-neutral-700 px-2 py-1 text-[11px] hover:bg-neutral-900"
+                >
+                  Copy pubkey
+                </button>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-neutral-500">
+              Provider role: <span className={connectionIsProviderCapable ? "text-emerald-300" : "text-amber-300"}>
+                {connectionIsProviderCapable ? "provider-capable" : "creator-only"}
+              </span>
+            </div>
+            {connectionCardMsg ? <div className="mt-1 text-xs text-emerald-300">{connectionCardMsg}</div> : null}
+          </div>
           <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 md:col-span-2">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Mode Summary</div>
             <div className="mt-1 text-sm text-neutral-200">Mode: {modeDelineationLabel}</div>
@@ -2543,48 +2589,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </div>
         )}
 
-        <div className="mt-4 space-y-2">
-          <label className="text-sm" htmlFor="store-buy-link">
-            Open by link / receipt / content ID
-          </label>
-          <input
-            id="store-buy-link"
-            name="storeBuyLink"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Paste a Certifyd Creator link, receipt link/token, or content ID"
-            className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
-            autoComplete="off"
-          />
-          <div className="text-xs text-neutral-500">
-            Examples: https://node.site/buy/CONTENT_ID · https://node.site/public/receipts/TOKEN · TOKEN
-          </div>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <div>
-              <label className="text-xs text-neutral-500" htmlFor="store-seller-host">
-                Node endpoint (if you pasted only a content ID)
-              </label>
-              <input
-                id="store-seller-host"
-                name="storeSellerHost"
-                value={nodeHost}
-                onChange={(e) => setNodeHost(e.target.value)}
-                placeholder="https://node.site"
-                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
-                autoComplete="url"
-              />
-            </div>
-            <div className="flex items-end">
-              <button
-                onClick={onOpen}
-                className="w-full text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
-              >
-                Open route
-              </button>
-            </div>
-          </div>
-          {msg ? <div className="text-xs text-amber-300">{msg}</div> : null}
-        </div>
       </div>
 
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6 opacity-80">
