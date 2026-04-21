@@ -723,8 +723,8 @@ function providerProfileUrlCandidates(
     push(`https://rumble.com/${account}`);
     push(`https://rumble.com/c/${account}`);
   } else if (provider === "reddit") {
-    push(`https://www.reddit.com/user/${account}/about`);
     push(`https://www.reddit.com/user/${account}`);
+    push(`https://www.reddit.com/user/${account}/about`);
   } else if (provider === "substack") {
     push(`https://${account}.substack.com/about`);
     push(`https://${account}.substack.com`);

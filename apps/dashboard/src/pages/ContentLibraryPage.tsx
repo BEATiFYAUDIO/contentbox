@@ -1755,16 +1755,25 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET").catch(() => []),
         api<any[]>("/my/royalties/remote", "GET").catch(() => [])
       ]);
+      const localPending = (Array.isArray(localData) ? localData : []).filter((entry: any) => {
+        const cleared = isApprovalClearedByThreshold(
+          entry?.status,
+          entry?.approveWeightBps ?? entry?.progressBps,
+          entry?.approvalBpsTarget ?? entry?.thresholdBps
+        );
+        const voted = Boolean(String(entry?.viewerVote || "").trim());
+        return !cleared && !voted;
+      }).length;
       const remotePending = (Array.isArray(remoteRows) ? remoteRows : []).reduce((sum, row) => {
         const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
         const mine = inbox.filter((entry: any) => {
-          const status = String(entry?.status || "").toUpperCase();
+          const cleared = isApprovalClearedByThreshold(entry?.status, entry?.approveWeightBps, entry?.approvalBpsTarget);
           const voted = Boolean(String(entry?.viewerVote || "").trim());
-          return status === "PENDING" && !voted;
+          return !cleared && !voted;
         }).length;
         return sum + mine;
       }, 0);
-      setPendingClearanceCount((Array.isArray(localData) ? localData.length : 0) + remotePending);
+      setPendingClearanceCount(localPending + remotePending);
     } catch {
       setPendingClearanceCount(0);
     }
