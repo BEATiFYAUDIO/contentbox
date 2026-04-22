@@ -24772,7 +24772,9 @@ async function handleBuyPreviewRedirect(req: any, reply: any) {
   const rawUrl = asString(req?.raw?.url || req?.url || "");
   const qs = rawUrl.includes("?") ? rawUrl.split("?").slice(1).join("?") : "";
   const target = `/public/content/${encodeURIComponent(contentId)}/preview-file${qs ? `?${qs}` : ""}`;
-  return reply.redirect(302, target);
+  reply.code(302);
+  reply.header("Location", target);
+  return reply.send();
 }
 
 app.addHook("onRequest", (req: any, reply: any, done: any) => {
