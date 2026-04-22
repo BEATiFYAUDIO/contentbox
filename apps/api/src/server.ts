@@ -31207,14 +31207,18 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   }
 
   const forcePublicPreview = String((req.query || {})?.public || "").trim() === "1";
+  const usePublicPreview = forcePublicPreview || access.reason === "parent_stakeholder";
   // Keep owner/participant preview local; only parent-stakeholder clearance preview is shareable/public.
   const previewBase =
-    forcePublicPreview || access.reason === "parent_stakeholder"
+    usePublicPreview
       ? normalizePublicOriginBase(getPublicOrigin(req)) || localApiBase
       : localApiBase;
+  const previewPath = usePublicPreview
+    ? `/buy/content/${encodeURIComponent(contentId)}/preview-file`
+    : `/content/${encodeURIComponent(contentId)}/preview-file`;
 
   const previewUrl = primaryObjectKey
-    ? `${previewBase}/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(
+    ? `${previewBase}${previewPath}?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(
         createPreviewToken(app, userId, contentId, primaryObjectKey)
       )}`
     : null;
