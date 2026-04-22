@@ -2730,12 +2730,8 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                     : "";
                 const remoteDirectPreviewHref = remotePreviewUrl;
                 const localDirectPreviewHref = String(a?.previewUrl || "").trim();
-                const remotePublicPreviewHref =
-                  previewOrigin && previewChildId
-                    ? `${previewOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(previewChildId)}/preview-file`
-                    : "";
                 const approvalPreviewHref =
-                  remoteDirectPreviewHref || localDirectPreviewHref || remoteInvitePreviewHref || remotePublicPreviewHref;
+                  remoteDirectPreviewHref || localDirectPreviewHref || remoteInvitePreviewHref;
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2847,7 +2843,8 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                                 setActionMsgByApproval((m) => ({
                                   ...m,
                                   [approvalKey]:
-                                    clearanceReason || "Remote preview route unavailable (missing origin/token context)."
+                                    clearanceReason ||
+                                    "Remote preview link is not ready yet. Refresh clearance to fetch the tokenized preview URL."
                                 }));
                                 return;
                               }
