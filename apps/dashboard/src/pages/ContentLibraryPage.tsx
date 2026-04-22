@@ -2778,6 +2778,8 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                 const canVote = isRemoteApproval
                   ? Boolean(a?.remoteClearanceUrl) || remoteVoteReady
                   : Boolean(clearance?.viewer?.canVote) || Boolean(linkId);
+                const canVoteLocalFallback =
+                  Boolean(linkId) && (Boolean(clearance?.viewer?.canVote) || !remoteVoteReady);
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
@@ -3056,7 +3058,7 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
                               }}
-                              disabled={!linkId || !crossNodeAllowed || isRemoteApproval}
+                              disabled={!linkId || !crossNodeAllowed}
                               title={!crossNodeAllowed ? clearanceReason : "Grant permission"}
                             >
                               Grant permission
@@ -3082,7 +3084,76 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                                 await loadPendingClearanceCount();
                                 await loadClearanceSummary(linkId);
                               }}
-                              disabled={!linkId || !crossNodeAllowed || isRemoteApproval}
+                              disabled={!linkId || !crossNodeAllowed}
+                              title={!crossNodeAllowed ? clearanceReason : "Reject"}
+                            >
+                              Reject
+                            </button>
+                          </>
+                        ) : null}
+                        {!isCleared && isRemoteApproval && !canVote && canVoteLocalFallback && !viewerVote ? (
+                          <>
+                            <input
+                              type="text"
+                              className="w-40 text-xs rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1"
+                              placeholder="Reject reason (optional)"
+                              value={rejectReasonByApproval[approvalKey] || ""}
+                              onChange={(e) =>
+                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: e.target.value }))
+                              }
+                            />
+                            <button
+                              type="button"
+                              className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                              onClick={async () => {
+                                if (!linkId) return;
+                                const pct = Number.isFinite(Number(a?.upstreamRatePercent))
+                                  ? Number(a.upstreamRatePercent)
+                                  : Number.isFinite(Number(clearance?.upstreamBps))
+                                  ? Number(clearance.upstreamBps) / 100
+                                  : 0;
+                                setActionMsgByApproval((m) => ({ ...m, [approvalKey]: null }));
+                                try {
+                                  await api(`/content-links/${linkId}/vote`, "POST", {
+                                    decision: "approve",
+                                    upstreamRatePercent: pct
+                                  });
+                                } catch (e) {
+                                  const reconciled = await clearedAfterActionError(a, linkId);
+                                  if (!reconciled) throw e;
+                                  setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Permission recorded. Item is now cleared." }));
+                                }
+                                await loadApprovals(clearanceScope);
+                                await loadPendingClearanceCount();
+                                await loadClearanceSummary(linkId);
+                              }}
+                              disabled={!linkId || !crossNodeAllowed}
+                              title={!crossNodeAllowed ? clearanceReason : "Grant permission"}
+                            >
+                              Grant permission
+                            </button>
+                            <button
+                              type="button"
+                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                              onClick={async () => {
+                                if (!linkId) return;
+                                setActionMsgByApproval((m) => ({ ...m, [approvalKey]: null }));
+                                try {
+                                  await api(`/content-links/${linkId}/vote`, "POST", {
+                                    decision: "reject",
+                                    reason: (rejectReasonByApproval[approvalKey] || "").trim() || undefined
+                                  });
+                                } catch (e) {
+                                  const reconciled = await clearedAfterActionError(a, linkId);
+                                  if (!reconciled) throw e;
+                                  setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Action recorded. Clearance state updated." }));
+                                }
+                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
+                                await loadApprovals(clearanceScope);
+                                await loadPendingClearanceCount();
+                                await loadClearanceSummary(linkId);
+                              }}
+                              disabled={!linkId || !crossNodeAllowed}
                               title={!crossNodeAllowed ? clearanceReason : "Reject"}
                             >
                               Reject
@@ -3106,7 +3177,7 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                         </button>
                       </div>
                     ) : null}
-                    {isRemoteApproval && !canVote ? (
+                    {isRemoteApproval && !canVote && !canVoteLocalFallback ? (
                       <div className="mt-2 text-[11px] text-amber-300">
                         Vote link not issued yet. Click Refresh to sync latest clearance routing.
                       </div>

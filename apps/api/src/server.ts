@@ -14177,15 +14177,10 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
           remoteUserId = asString(remoteInvitation?.acceptedByUserId || "").trim() || remoteUserId;
         }
       }
-      const shouldFetchRemoteAccounting = Boolean(
-        inviteToken &&
-          (
-            inviteStatus === "accepted" ||
-            acceptedAt ||
-            remoteUserId ||
-            inv.remoteVerified
-          )
-      );
+      // Always fetch accounting/clearance inbox when we have a token.
+      // Invite acceptance state can be stale locally; gating this fetch causes
+      // remote clearance requests to disappear from the parent's Clearance tab.
+      const shouldFetchRemoteAccounting = Boolean(inviteToken);
       const accounting = shouldFetchRemoteAccounting
         ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken!)
         : null;
