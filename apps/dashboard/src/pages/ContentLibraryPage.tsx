@@ -588,6 +588,17 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
   if (!popup) window.location.assign(target);
 }
 
+function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): boolean {
+  const target = String(url || "").trim();
+  if (!target) return false;
+  if (popupTarget && !popupTarget.closed) {
+    popupTarget.location.href = target;
+    return true;
+  }
+  const popup = window.open(target, "_blank", "noopener,noreferrer");
+  return Boolean(popup);
+}
+
   const openManifestEntry = Object.entries(manifestPreviewByContent).find(([, v]) => v?.open);
   const openManifestId = openManifestEntry?.[0] || null;
   const openManifest = openManifestEntry?.[1] || null;
@@ -2874,15 +2885,30 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                               if (!previewChildId) return;
                               if (isRemoteApproval) {
                                 if (remoteDirectPreviewHref) {
-                                  openPreviewUrl(remoteDirectPreviewHref);
+                                  if (!openPreviewUrlInNewTabOnly(remoteDirectPreviewHref)) {
+                                    setActionMsgByApproval((m) => ({
+                                      ...m,
+                                      [approvalKey]: "Popup blocked. Allow popups for this site, then retry Preview submission."
+                                    }));
+                                  }
                                   return;
                                 }
                                 if (remoteInvitePreviewHref) {
-                                  openPreviewUrl(remoteInvitePreviewHref);
+                                  if (!openPreviewUrlInNewTabOnly(remoteInvitePreviewHref)) {
+                                    setActionMsgByApproval((m) => ({
+                                      ...m,
+                                      [approvalKey]: "Popup blocked. Allow popups for this site, then retry Preview submission."
+                                    }));
+                                  }
                                   return;
                                 }
                                 if (remotePublicPreviewHref) {
-                                  openPreviewUrl(remotePublicPreviewHref);
+                                  if (!openPreviewUrlInNewTabOnly(remotePublicPreviewHref)) {
+                                    setActionMsgByApproval((m) => ({
+                                      ...m,
+                                      [approvalKey]: "Popup blocked. Allow popups for this site, then retry Preview submission."
+                                    }));
+                                  }
                                   return;
                                 }
                                 setActionMsgByApproval((m) => ({
@@ -2892,12 +2918,19 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                                 }));
                                 return;
                               }
-                              const previewWindow = window.open("", "_blank", "noopener");
+                              const previewWindow = window.open("", "_blank", "noopener,noreferrer");
+                              if (!previewWindow) {
+                                setDerivativePreviewError((m) => ({
+                                  ...m,
+                                  [previewChildId]: "Popup blocked. Allow popups for this site, then retry Preview submission."
+                                }));
+                                return;
+                              }
                               api<any>(`/content/${encodeURIComponent(previewChildId)}/preview?public=1`, "GET")
                                 .then((res) => {
                                   const url = String(res?.previewUrl || "").trim();
                                   if (url) {
-                                    openPreviewUrl(url, previewWindow || null);
+                                    openPreviewUrlInNewTabOnly(url, previewWindow || null);
                                     return;
                                   }
                                   if (previewWindow && !previewWindow.closed) previewWindow.close();
