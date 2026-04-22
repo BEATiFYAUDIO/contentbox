@@ -862,7 +862,7 @@ async function resolveCanonicalClearanceAuthority(
   const requireSigningIdentityMatch = options?.requireSigningIdentityMatch ?? true;
   const publicStatus = getPublicStatus();
   const canonicalOrigin =
-    normalizeOrigin(String(publicStatus.canonicalCommerceOrigin || "").trim()) ||
+    normalizeOrigin(String(publicStatus.canonicalBuyerOrigin || "").trim()) ||
     normalizeOrigin(String(publicStatus.canonicalOrigin || publicStatus.publicOrigin || "").trim()) ||
     normalizeOrigin(getActivePublicOrigin() || "") ||
     normalizeOrigin(getPublicOrigin(req)) ||
@@ -7434,7 +7434,7 @@ function buildRemoteClearanceForwardPayload(input: {
     kind: "remote_clearance_request",
     parentContentId: asString(input.parentContentId || "").trim(),
     childContentId: asString(input.childContentId || "").trim(),
-    childOrigin: normalizeOrigin(input.childOrigin || ""),
+    childOrigin: normalizeOrigin(input.childOrigin || "") || "",
     ts: new Date().toISOString()
   };
 }
@@ -11092,13 +11092,15 @@ function registerPublicRoutes(appPublic: any) {
     if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
       return reply.code(409).send({ error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED", message: "Provider relationship is not ready." });
     }
-    let delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+    let delegated: ProviderDelegatedPublishRecord | undefined = listProviderDelegatedPublishes().find(
+      (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
+    );
     if (!delegated) {
       delegated = ensureDelegatedPublishFromReceiptProof({
-        providerNodeId: providerAuthority.providerNodeId,
+        providerNodeId: providerAuthority.configuredProviderNodeId || providerAuthority.localNodeId || "",
         creatorNodeId,
         contentId
-      });
+      }) || undefined;
     }
     if (!delegated) {
       return reply.code(409).send({ error: "DELEGATED_PUBLISH_REQUIRED", message: "Delegated publish record is required." });
@@ -15259,13 +15261,15 @@ app.post("/public/provider/payment-intents", async (req: any, reply: any) => {
   if (!link || link.trustStatus !== "verified" || !link.executionAllowed) {
     return reply.code(409).send({ error: "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED", message: "Provider relationship is not ready." });
   }
-  let delegated = listProviderDelegatedPublishes().find((row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId);
+  let delegated: ProviderDelegatedPublishRecord | undefined = listProviderDelegatedPublishes().find(
+    (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
+  );
   if (!delegated) {
     delegated = ensureDelegatedPublishFromReceiptProof({
-      providerNodeId: providerAuthority.providerNodeId,
+      providerNodeId: providerAuthority.configuredProviderNodeId || providerAuthority.localNodeId || "",
       creatorNodeId,
       contentId
-    });
+    }) || undefined;
   }
   if (!delegated) {
     return reply.code(409).send({ error: "DELEGATED_PUBLISH_REQUIRED", message: "Delegated publish record is required." });
@@ -16918,7 +16922,7 @@ app.get("/api/diagnostics/clearance-authority", { preHandler: requireAuth }, asy
     lastForwardVerificationFailure,
     publicStatus: {
       canonicalOrigin: publicStatus.canonicalOrigin || null,
-      canonicalCommerceOrigin: publicStatus.canonicalCommerceOrigin || null,
+      canonicalCommerceOrigin: publicStatus.canonicalBuyerOrigin || null,
       publicOrigin: publicStatus.publicOrigin || null
     }
   });
@@ -18380,7 +18384,7 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
     });
   }
   if (contentId) {
-    let delegated = listProviderDelegatedPublishes().find(
+    let delegated: ProviderDelegatedPublishRecord | undefined = listProviderDelegatedPublishes().find(
       (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
     );
     if (!delegated) {
@@ -18388,7 +18392,7 @@ app.post("/api/provider/payment-intents", { preHandler: requireAuth }, async (re
         providerNodeId: provider.nodeId,
         creatorNodeId,
         contentId
-      });
+      }) || undefined;
     }
     if (!delegated) {
       return reply.code(409).send({
@@ -18477,7 +18481,7 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
     });
   }
   if (contentId) {
-    let delegated = listProviderDelegatedPublishes().find(
+    let delegated: ProviderDelegatedPublishRecord | undefined = listProviderDelegatedPublishes().find(
       (row) => row.contentId === contentId && row.creatorNodeId === creatorNodeId
     );
     if (!delegated) {
@@ -18485,7 +18489,7 @@ app.post("/api/provider/payments/intents", { preHandler: requireAuth }, async (r
         providerNodeId: provider.nodeId,
         creatorNodeId,
         contentId
-      });
+      }) || undefined;
     }
     if (!delegated) {
       return reply.code(409).send({
@@ -21241,14 +21245,15 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
     });
   }
   if (!parent) return notFound(reply, "parent content not found");
+  const ensuredParentId = parent.id;
   async function ensureRemoteParentLockedSplitSnapshot(): Promise<any | null> {
     const originBase = asString(parentOrigin || "").trim().replace(/\/+$/, "");
     if (!originBase) return null;
     try {
       const [offerRes, attributionRes] = await Promise.all([
-        fetchWithTimeout(`${originBase}/buy/content/${encodeURIComponent(parent.id)}/offer`, { method: "GET" } as any, 5000),
+        fetchWithTimeout(`${originBase}/buy/content/${encodeURIComponent(ensuredParentId)}/offer`, { method: "GET" } as any, 5000),
         fetchWithTimeout(
-          `${originBase}/public/content/${encodeURIComponent(parent.id)}/attribution`,
+          `${originBase}/public/content/${encodeURIComponent(ensuredParentId)}/attribution`,
           { method: "GET", headers: { Accept: "application/json" } as any } as any,
           5000
         )
@@ -21285,7 +21290,7 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
                 role: "writer",
                 participantEmail: "",
                 targetType: "identity_ref",
-                targetValue: `remote:${originBase}#content:${parent.id}`
+                targetValue: `remote:${originBase}#content:${ensuredParentId}`
               }
             ];
 
@@ -21300,14 +21305,14 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
             );
 
       const latest = await prisma.splitVersion.findFirst({
-        where: { contentId: parent.id },
+        where: { contentId: ensuredParentId },
         orderBy: { versionNumber: "desc" },
         select: { versionNumber: true }
       });
       const created = await prisma.$transaction(async (tx) => {
         const split = await tx.splitVersion.create({
           data: {
-            contentId: parent.id,
+            contentId: ensuredParentId,
             versionNumber: Number(latest?.versionNumber || 0) + 1,
             createdByUserId: userId,
             status: "locked",
@@ -21331,7 +21336,7 @@ app.post("/api/content/:parentId/derivative", { preHandler: [requireAuth, requir
           });
         }
         await tx.contentItem.update({
-          where: { id: parent.id },
+          where: { id: ensuredParentId },
           data: { currentSplitId: split.id }
         }).catch(() => {});
         return split;
@@ -22947,7 +22952,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
       if (forwardProofSig) {
         forwardHeaders["x-contentbox-forward-payload"] = base64UrlEncode(JSON.stringify(forwardProofPayload));
         forwardHeaders["x-contentbox-forward-signature"] = forwardProofSig;
-        forwardHeaders["x-contentbox-forward-node"] = normalizeOrigin(childPublicOrigin || "");
+        forwardHeaders["x-contentbox-forward-node"] = normalizeOrigin(childPublicOrigin || "") || "";
       }
       const requestBody = JSON.stringify({
         parentContentId: link.parentContentId,
@@ -23129,7 +23134,7 @@ app.post("/api/derivatives/remote-request", async (req: any, reply) => {
     let discoveryElapsedMs: number | null = null;
     if (!remotePub) {
       discoveryAttempted = true;
-      const classifyDiscoveryError = (err: any): "timeout" | "dns" | "tls" | "unknown" => {
+      const classifyDiscoveryError = (err: any): "timeout" | "dns" | "tls" | "non_ok" | "unknown" => {
         return classifyDiscoveryFetchError(err);
       };
       const attemptDiscovery = async (): Promise<boolean> => {
