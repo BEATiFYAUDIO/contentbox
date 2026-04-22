@@ -2733,6 +2733,7 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                   previewOrigin && previewChildId
                     ? `${previewOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(previewChildId)}/preview-file`
                     : "";
+                const remotePreviewHref = remoteDirectPreviewHref || remoteInvitePreviewHref || remotePublicPreviewHref;
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2818,37 +2819,26 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                             {isLoading ? "Loading…" : "Refresh"}
                           </button>
                         )}
-                        {previewChildId ? (
+                        {previewChildId && isRemoteApproval && remotePreviewHref ? (
+                          <a
+                            href={remotePreviewHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                            title="Preview submission"
+                          >
+                            Preview submission
+                          </a>
+                        ) : previewChildId ? (
                           <button
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                             onClick={() => {
                               if (!previewChildId) return;
                               if (isRemoteApproval) {
-                                if (remoteDirectPreviewHref) {
-                                  if (!openPreviewUrlInNewTabOnly(remoteDirectPreviewHref)) {
-                                    setActionMsgByApproval((m) => ({
-                                      ...m,
-                                      [approvalKey]: "Popup blocked. Allow popups for this site, then retry Preview submission."
-                                    }));
-                                  }
-                                  return;
-                                }
-                                if (remoteInvitePreviewHref) {
-                                  if (!openPreviewUrlInNewTabOnly(remoteInvitePreviewHref)) {
-                                    setActionMsgByApproval((m) => ({
-                                      ...m,
-                                      [approvalKey]: "Popup blocked. Allow popups for this site, then retry Preview submission."
-                                    }));
-                                  }
-                                  return;
-                                }
-                                if (remotePublicPreviewHref) {
-                                  if (!openPreviewUrlInNewTabOnly(remotePublicPreviewHref)) {
-                                    setActionMsgByApproval((m) => ({
-                                      ...m,
-                                      [approvalKey]: "Popup blocked. Allow popups for this site, then retry Preview submission."
-                                    }));
+                                if (remotePreviewHref) {
+                                  if (!openPreviewUrlInNewTabOnly(remotePreviewHref)) {
+                                    setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Popup blocked. Allow popups for this site." }));
                                   }
                                   return;
                                 }
