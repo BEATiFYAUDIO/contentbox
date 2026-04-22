@@ -22620,6 +22620,25 @@ async function rejectStalePrePublishClearanceByLink(linkId: string) {
   ]);
 }
 
+async function rejectPendingClearanceByChildContent(childContentId: string) {
+  const links = await prisma.contentLink.findMany({
+    where: { childContentId },
+    select: { id: true }
+  });
+  const linkIds = links.map((l) => String(l.id || "").trim()).filter(Boolean);
+  if (linkIds.length === 0) return;
+  await prisma.$transaction([
+    prisma.derivativeAuthorization.updateMany({
+      where: { derivativeLinkId: { in: linkIds }, status: "PENDING" },
+      data: { status: "REJECTED" }
+    }),
+    prisma.clearanceRequest.updateMany({
+      where: { contentLinkId: { in: linkIds }, status: "PENDING" },
+      data: { status: "REJECTED" }
+    })
+  ]);
+}
+
 app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature("derivative_work")] }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const scopeRaw = asString((req.query || {})?.scope || "pending").toLowerCase();
@@ -30873,6 +30892,7 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
       where: { id: contentId },
       data: { deletedAt, deletedReason: tombstone ? "tombstone" : "soft" }
     });
+    await rejectPendingClearanceByChildContent(contentId);
     try {
       await prisma.auditEvent.create({
         data: {
@@ -30895,6 +30915,7 @@ app.post("/content/:id/delete", { preHandler: requireAuth }, async (req: any, re
 
   const purgedDraftSplits = await purgeSplitDraftState();
   await prisma.contentItem.update({ where: { id: contentId }, data: { deletedAt, deletedReason: "soft" } });
+  await rejectPendingClearanceByChildContent(contentId);
   try {
     await prisma.auditEvent.create({
       data: {
@@ -30954,6 +30975,7 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
     where: { id: contentId },
     data: { deletedAt, deletedReason: "hard" }
   });
+  await rejectPendingClearanceByChildContent(contentId);
 
   if (repoPath) {
     try {

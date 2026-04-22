@@ -1630,6 +1630,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       };
       const hasViewerVoted = (entry: any) => Boolean(String(entry?.viewerVote || "").trim());
       const matchesScope = (entry: any, selectedScope: "pending" | "voted" | "cleared") => {
+        if (isApprovalTerminalStatus(entry?.status)) return false;
         const cleared = isApprovalCleared(entry);
         const voted = hasViewerVoted(entry);
         if (selectedScope === "pending") return !cleared && !voted;
@@ -1717,6 +1718,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         api<any[]>("/my/royalties/remote", "GET").catch(() => [])
       ]);
       const localPending = (Array.isArray(localData) ? localData : []).filter((entry: any) => {
+        if (isApprovalTerminalStatus(entry?.status)) return false;
         const cleared = isApprovalClearedByThreshold(
           entry?.status,
           entry?.approveWeightBps ?? entry?.progressBps,
@@ -1728,6 +1730,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       const remotePending = (Array.isArray(remoteRows) ? remoteRows : []).reduce((sum, row) => {
         const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
         const mine = inbox.filter((entry: any) => {
+          if (isApprovalTerminalStatus(entry?.status)) return false;
           const cleared = isApprovalClearedByThreshold(entry?.status, entry?.approveWeightBps, entry?.approvalBpsTarget);
           const voted = Boolean(String(entry?.viewerVote || "").trim());
           return !cleared && !voted;
@@ -1745,6 +1748,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     const approve = Number(approveRaw || 0);
     const target = Number(targetRaw || 6667);
     return status === "APPROVED" || (target > 0 && approve >= target);
+  }
+
+  function isApprovalTerminalStatus(statusRaw: unknown): boolean {
+    const status = String(statusRaw || "").trim().toUpperCase();
+    return status === "REJECTED" || status === "DECLINED" || status === "CANCELLED" || status === "EXPIRED";
   }
 
   async function clearedAfterActionError(entry: any, linkId: string): Promise<boolean> {
