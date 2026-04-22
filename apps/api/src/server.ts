@@ -31126,9 +31126,8 @@ async function canAccessReviewPreview(userId: string, contentId: string): Promis
 app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
-  // avoid logging raw objects here to prevent BigInt serialization errors
-  const apiBase =
-    (process.env.API_BASE_URL || (req.headers?.host ? `http://${req.headers.host}` : "http://127.0.0.1:4000")).replace(/\/$/, "");
+  // Use public/tunnel-aware origin for shareable preview links; fall back to API base only if needed.
+  const previewBase = normalizePublicOriginBase(getPublicOrigin(req)) || APP_BASE_URL.replace(/\/+$/, "");
 
   const access = await canAccessReviewPreview(userId, contentId);
   if (!access.ok || !access.content) {
@@ -31186,7 +31185,7 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   }
 
   const previewUrl = primaryObjectKey
-    ? `${apiBase}/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(
+    ? `${previewBase}/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(
         createPreviewToken(app, userId, contentId, primaryObjectKey)
       )}`
     : null;
