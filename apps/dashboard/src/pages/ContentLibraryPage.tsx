@@ -2892,9 +2892,21 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                                 }));
                                 return;
                               }
-                              const needsAsyncFetch = !String(previewOrigin || "").trim();
-                              const previewWindow = needsAsyncFetch ? window.open("", "_blank", "noopener") : null;
-                              loadDerivativePreview(previewChildId, previewOrigin || undefined, previewWindow || null);
+                              const previewWindow = window.open("", "_blank", "noopener");
+                              api<any>(`/content/${encodeURIComponent(previewChildId)}/preview?public=1`, "GET")
+                                .then((res) => {
+                                  const url = String(res?.previewUrl || "").trim();
+                                  if (url) {
+                                    openPreviewUrl(url, previewWindow || null);
+                                    return;
+                                  }
+                                  if (previewWindow && !previewWindow.closed) previewWindow.close();
+                                  setDerivativePreviewError((m) => ({ ...m, [previewChildId]: "No public preview URL available yet." }));
+                                })
+                                .catch((e: any) => {
+                                  if (previewWindow && !previewWindow.closed) previewWindow.close();
+                                  setDerivativePreviewError((m) => ({ ...m, [previewChildId]: e?.message || "Preview failed" }));
+                                });
                             }}
                             title="Preview submission"
                           >
