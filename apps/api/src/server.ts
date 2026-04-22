@@ -22785,7 +22785,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       approverCount: Number.isFinite(resolvedApproverCount) ? Math.max(0, resolvedApproverCount) : 0,
       approveWeightBps: Number(remoteStatus?.clearance?.approveWeightBps ?? a.approveWeightBps ?? 0),
       approvalBpsTarget: Number(remoteStatus?.clearance?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667),
-      previewUrl,
+      previewUrl: (remoteStatus?.previewUrl ? String(remoteStatus.previewUrl) : previewUrl) || null,
       clearanceRequest: effectiveClearanceRequest
     });
   }
@@ -23340,11 +23340,39 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
   if (!link) return notFound(reply, "link not found");
 
   const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  const child = await prisma.contentItem.findUnique({
+    where: { id: childContentId },
+    select: { id: true, ownerUserId: true }
+  });
   const { approvers } = await getApproversForParent(parentContentId).catch(() => ({ approvers: [] as any[] }));
   const clearanceReq = await prisma.clearanceRequest.findFirst({
     where: { contentLinkId: link.id },
     orderBy: { createdAt: "desc" }
   }).catch(() => null);
+  let previewUrl: string | null = null;
+  try {
+    const shareableOrigin = await resolveShareableInviteOrigin(req);
+    const base = normalizePublicOriginBase(shareableOrigin || getPublicOrigin(req));
+    if (base && child?.id && child?.ownerUserId) {
+      const manifest = await prisma.manifest.findUnique({ where: { contentId: child.id } }).catch(() => null);
+      const files = await prisma.contentFile
+        .findMany({ where: { contentId: child.id }, orderBy: { createdAt: "asc" }, take: 1 })
+        .catch(() => []);
+      const manifestJson = (manifest?.json || {}) as any;
+      const primaryObjectKey =
+        (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+        (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+        (Array.isArray(manifestJson?.files) && manifestJson.files[0]?.path) ||
+        files[0]?.objectKey ||
+        "";
+      if (primaryObjectKey) {
+        const token = createPreviewToken(app, child.ownerUserId, child.id, primaryObjectKey);
+        previewUrl =
+          `${base}/buy/content/${encodeURIComponent(child.id)}/preview-file` +
+          `?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(token)}`;
+      }
+    }
+  } catch {}
   return reply.send({
     linkId: link.id,
     parentContentId,
@@ -23353,6 +23381,7 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
     upstreamBps: link.upstreamBps,
     approvedAt: link.approvedAt || null,
     reviewGrantedAt: clearanceReq?.reviewGrantedAt || null,
+    previewUrl,
     clearance: auth
       ? {
           status: auth.status,
