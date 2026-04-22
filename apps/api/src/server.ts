@@ -33116,8 +33116,7 @@ async function getAcceptedInviteParticipantMapForUsers(parentContentId: string, 
   const rows = await prisma.invitation.findMany({
     where: {
       acceptedByUserId: { in: ids },
-      splitParticipantId: { not: null },
-      splitParticipant: { splitVersion: { contentId: parentContentId } }
+      splitParticipant: { is: { splitVersion: { contentId: parentContentId } } }
     },
     select: { acceptedByUserId: true, splitParticipantId: true }
   });
