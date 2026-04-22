@@ -1464,6 +1464,24 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
+  async function resolveParentLinkIdForAction(contentId: string, current?: ParentLinkInfo | null): Promise<string | null> {
+    const currentLinkId = String(current?.linkId || "").trim();
+    if (currentLinkId) return currentLinkId;
+    try {
+      const data = await api<ParentLinkInfo | { parentLink: null }>(`/content/${contentId}/parent-link`, "GET");
+      if ((data as any)?.parentLink === null) {
+        setParentLinkByContent((m) => ({ ...m, [contentId]: null }));
+        return null;
+      }
+      const resolved = data as ParentLinkInfo;
+      const resolvedLinkId = String((resolved as any)?.linkId || "").trim();
+      setParentLinkByContent((m) => ({ ...m, [contentId]: resolved }));
+      return resolvedLinkId || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function loadAudit(contentId: string) {
     setAuditLoading((m) => ({ ...m, [contentId]: true }));
     try {
@@ -3890,13 +3908,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   type="button"
                                   className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                   onClick={async () => {
-                                    if (!parentLink?.linkId) {
+                                    const linkId = await resolveParentLinkIdForAction(it.id, parentLink);
+                                    if (!linkId) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Missing parent link." }));
                                       return;
                                     }
                                     try {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "" }));
-                                      await api(`/content-links/${parentLink.linkId}/grant-review`, "POST");
+                                      await api(`/content-links/${linkId}/grant-review`, "POST");
+                                      await loadParentLink(it.id);
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access granted to OG." }));
                                     } catch (e: any) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Grant failed." }));
@@ -3911,13 +3931,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   type="button"
                                   className="text-[11px] rounded border border-red-900 bg-red-950/30 px-2 py-0.5 text-red-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                   onClick={async () => {
-                                    if (!parentLink?.linkId) {
+                                    const linkId = await resolveParentLinkIdForAction(it.id, parentLink);
+                                    if (!linkId) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Missing parent link." }));
                                       return;
                                     }
                                     try {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "" }));
-                                      await api(`/content-links/${parentLink.linkId}/revoke-review`, "POST");
+                                      await api(`/content-links/${linkId}/revoke-review`, "POST");
+                                      await loadParentLink(it.id);
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access revoked." }));
                                     } catch (e: any) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Revoke failed." }));
