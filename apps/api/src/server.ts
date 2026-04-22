@@ -22709,6 +22709,21 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         a.requiredApprovers ??
         (Array.isArray(eligible) ? eligible.length : 0)
     );
+    const effectiveClearanceRequest =
+      latestClearanceRequest || remoteStatus?.reviewGrantedAt
+        ? {
+            status: String(latestClearanceRequest?.status || a.status || "PENDING"),
+            requestedAt: latestClearanceRequest?.createdAt
+              ? latestClearanceRequest.createdAt.toISOString()
+              : null,
+            reviewGrantedAt: remoteStatus?.reviewGrantedAt
+              ? new Date(remoteStatus.reviewGrantedAt).toISOString()
+              : latestClearanceRequest?.reviewGrantedAt
+                ? latestClearanceRequest.reviewGrantedAt.toISOString()
+                : null
+          }
+        : null;
+
     out.push({
       authorizationId: a.id,
       linkId: a.derivativeLink.id,
@@ -22725,15 +22740,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       approverCount: Number.isFinite(resolvedApproverCount) ? Math.max(0, resolvedApproverCount) : 0,
       approveWeightBps: Number(remoteStatus?.clearance?.approveWeightBps ?? a.approveWeightBps ?? 0),
       approvalBpsTarget: Number(remoteStatus?.clearance?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667),
-      clearanceRequest: latestClearanceRequest
-        ? {
-            status: String(latestClearanceRequest.status || "PENDING"),
-            requestedAt: latestClearanceRequest.createdAt ? latestClearanceRequest.createdAt.toISOString() : null,
-            reviewGrantedAt: latestClearanceRequest.reviewGrantedAt
-              ? latestClearanceRequest.reviewGrantedAt.toISOString()
-              : null
-          }
-        : null
+      clearanceRequest: effectiveClearanceRequest
     });
   }
 
