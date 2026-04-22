@@ -24643,16 +24643,42 @@ async function handlePublicAttribution(req: any, reply: any) {
 async function handlePublicPreviewFile(req: any, reply: any) {
   const contentId = asString((req.params as any).id);
   const objectKeyRaw = asString((req.query || {})?.objectKey || "").trim();
+  const previewToken = asString((req.query || {})?.token || "").trim();
   const shareToken = asString((req.query || {})?.share || "").trim();
+  let objectKey = objectKeyRaw;
+  let content: any = null;
+  let tokenAuthorizedPreview = false;
 
-  const gated = await getPublicOfferGate(contentId, req, reply);
-  if (!gated.content) {
-    if (gated.tombstoned && !gated.entitled) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
-    return notFound(reply, "Content not found");
+  if (previewToken) {
+    try {
+      const decoded: any = await app.jwt.verify(previewToken);
+      if (decoded?.scope !== "preview") return reply.code(401).send({ error: "Unauthorized" });
+      if (String(decoded?.contentId || "") !== contentId) return reply.code(401).send({ error: "Unauthorized" });
+      const tokenObjectKey = String(decoded?.objectKey || "").trim();
+      if (objectKey && tokenObjectKey && objectKey !== tokenObjectKey) return reply.code(401).send({ error: "Unauthorized" });
+      if (!objectKey && tokenObjectKey) objectKey = tokenObjectKey;
+      const tokenUserId = String(decoded?.sub || "").trim();
+      if (!tokenUserId) return reply.code(401).send({ error: "Unauthorized" });
+      const access = await canAccessReviewPreview(tokenUserId, contentId);
+      if (!access.ok || !access.content) return reply.code(401).send({ error: "Unauthorized" });
+      content = access.content;
+      tokenAuthorizedPreview = true;
+    } catch {
+      return reply.code(401).send({ error: "Unauthorized" });
+    }
   }
-  const content = gated.content;
+
+  if (!content) {
+    const gated = await getPublicOfferGate(contentId, req, reply);
+    if (!gated.content) {
+      if (gated.tombstoned && !gated.entitled) return reply.code(410).send({ tombstoned: true, error: "Removed from store" });
+      return notFound(reply, "Content not found");
+    }
+    content = gated.content;
+  }
+
   const isBasic = resolveProductTier().productTier === "basic";
-  if (!isBasic) {
+  if (!isBasic && !tokenAuthorizedPreview) {
     const publicLinks = await prisma.contentLink.findMany({ where: { childContentId: contentId } });
     if (publicLinks.length > 1) return notFound(reply, "Not found");
     const isDerivativeType = ["derivative", "remix", "mashup"].includes(String(content.type || ""));
@@ -24677,7 +24703,6 @@ async function handlePublicPreviewFile(req: any, reply: any) {
     }
   }
 
-  let objectKey = objectKeyRaw;
   if (!objectKey) {
     const manifest = await prisma.manifest.findUnique({ where: { contentId } });
     const manifestJson = (manifest?.json || {}) as any;
