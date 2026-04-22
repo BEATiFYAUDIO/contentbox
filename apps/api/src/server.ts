@@ -31238,8 +31238,17 @@ async function canAccessReviewPreview(userId: string, contentId: string): Promis
 app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
-  // Keep local preview pinned to the authenticated node API port to avoid leaking to public listener base.
-  const localApiBase = `http://127.0.0.1:${NODE_HTTP_PORT}`;
+  // Keep owner/participant preview same-origin when accessed over a public host; otherwise use local API port.
+  const xfProto = asString((req?.headers as any)?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  const xfHost = asString((req?.headers as any)?.["x-forwarded-host"] || "").split(",")[0].trim();
+  const hostHeader = xfHost || asString((req?.headers as any)?.host || "").trim();
+  const hostNoPort = hostHeader.replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
+  const isLocalHost = hostNoPort === "localhost" || hostNoPort === "127.0.0.1" || hostNoPort === "::1";
+  const reqProto =
+    (xfProto === "https" || xfProto === "http" ? xfProto : "") ||
+    ((req as any)?.protocol || ((req as any)?.raw?.socket?.encrypted ? "https" : "http"));
+  const requestOrigin = hostHeader ? `${reqProto}://${hostHeader}`.replace(/\/+$/, "") : "";
+  const localApiBase = !isLocalHost && requestOrigin ? requestOrigin : `http://127.0.0.1:${NODE_HTTP_PORT}`;
 
   const access = await canAccessReviewPreview(userId, contentId);
   if (!access.ok || !access.content) {
