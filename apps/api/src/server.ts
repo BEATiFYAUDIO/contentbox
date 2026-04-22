@@ -9160,24 +9160,33 @@ function runWindowsCloudflaredProcessQuery(args: string[]): string {
   ];
   for (const cmd of candidates) {
     try {
-      const ps = spawnSync(cmd, args, { encoding: "utf8" });
-      if (!ps.error && String(ps.stdout || "").trim()) {
-        return String(ps.stdout || "");
-      }
+      const ps = spawnSync(cmd, args, { encoding: "utf8", timeout: 1200 });
+      if (!ps.error) return String(ps.stdout || "");
     } catch {}
   }
   try {
     const wmic = spawnSync(
       "wmic",
       ["process", "where", "name='cloudflared.exe'", "get", "CommandLine", "/format:list"],
-      { encoding: "utf8" }
+      { encoding: "utf8", timeout: 1200 }
     );
     if (!wmic.error) return String(wmic.stdout || "");
   } catch {}
   return "";
 }
 
-function detectTunnelControlMode() {
+const TUNNEL_CONTROL_MODE_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.TUNNEL_CONTROL_MODE_CACHE_TTL_MS || "10000")
+);
+let tunnelControlModeCache:
+  | {
+      expiresAt: number;
+      value: ReturnType<typeof detectTunnelControlModeUncached>;
+    }
+  | null = null;
+
+function detectTunnelControlModeUncached() {
   const serviceScriptPath = "/etc/init.d/cloudflared";
   const localConfigPath =
     String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() ||
@@ -9269,6 +9278,19 @@ function detectTunnelControlMode() {
     activeServiceTokenProcess,
     activeAppManagedTokenProcess
   };
+}
+
+function detectTunnelControlMode(force = false) {
+  const now = Date.now();
+  if (!force && tunnelControlModeCache && tunnelControlModeCache.expiresAt > now) {
+    return tunnelControlModeCache.value;
+  }
+  const value = detectTunnelControlModeUncached();
+  tunnelControlModeCache = {
+    expiresAt: now + TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
+    value
+  };
+  return value;
 }
 
 function shouldDeferNamedTunnelToServiceControl() {
