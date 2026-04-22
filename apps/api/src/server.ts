@@ -31236,10 +31236,10 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   const forcePublicPreview = String((req.query || {})?.public || "").trim() === "1";
   const usePublicPreview = forcePublicPreview || access.reason === "parent_stakeholder";
   // Keep owner/participant preview local; only parent-stakeholder clearance preview is shareable/public.
-  const previewBase =
-    usePublicPreview
-      ? normalizePublicOriginBase(getPublicOrigin(req)) || localApiBase
-      : localApiBase;
+  const shareableOrigin = usePublicPreview ? await resolveShareableInviteOrigin(req) : null;
+  const previewBase = usePublicPreview
+    ? normalizePublicOriginBase(shareableOrigin || getPublicOrigin(req)) || localApiBase
+    : localApiBase;
   const previewPath = usePublicPreview
     ? `/buy/content/${encodeURIComponent(contentId)}/preview-file`
     : `/content/${encodeURIComponent(contentId)}/preview-file`;
@@ -38081,7 +38081,8 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       actionableAuths.push(auth);
     }
     const approverCount = eligible.length;
-    const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
+    const shareableOrigin = await resolveShareableInviteOrigin(req);
+    const clearanceBase = String(shareableOrigin || getPublicOrigin(req)).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
     const approvalTokenModel = (prisma as any).approvalToken;
     clearanceInbox = await Promise.all(
