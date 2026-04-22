@@ -38052,7 +38052,9 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       include: {
         derivativeLink: {
           include: {
-            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true, deletedReason: true } },
+            childContent: {
+              select: { id: true, title: true, description: true, status: true, deletedAt: true, deletedReason: true, ownerUserId: true }
+            },
             parentContent: { select: { id: true, title: true } }
           }
         },
@@ -38103,6 +38105,32 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
                 select: { token: true }
               })
             : null;
+        const childContentId = asString(auth.derivativeLink?.childContentId || "").trim();
+        const previewTokenUserId = asString(auth.derivativeLink?.childContent?.ownerUserId || "").trim();
+        let previewUrl = "";
+        if (childContentId && previewTokenUserId && clearanceBase) {
+          const manifest = await prisma.manifest.findUnique({ where: { contentId: childContentId } }).catch(() => null);
+          const files = await prisma.contentFile
+            .findMany({
+              where: { contentId: childContentId },
+              orderBy: { createdAt: "asc" },
+              take: 1
+            })
+            .catch(() => []);
+          const manifestJson = (manifest?.json || {}) as any;
+          const primaryObjectKey =
+            (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+            (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+            (Array.isArray(manifestJson?.files) && manifestJson.files[0]?.path) ||
+            files[0]?.objectKey ||
+            "";
+          if (primaryObjectKey) {
+            const token = createPreviewToken(app, previewTokenUserId, childContentId, primaryObjectKey);
+            previewUrl =
+              `${clearanceBase}/buy/content/${encodeURIComponent(childContentId)}/preview-file` +
+              `?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(token)}`;
+          }
+        }
         return {
           authorizationId: auth.id,
           linkId: auth.derivativeLinkId,
@@ -38120,7 +38148,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approvedApprovers: auth.approvedApprovers ?? 0,
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
-          previewUrl: `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}/preview`,
+          previewUrl: previewUrl || `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}/preview`,
           clearanceUrl:
             clearanceToken?.token
               ? `${clearanceBase}/clearance/${clearanceToken.token}`
