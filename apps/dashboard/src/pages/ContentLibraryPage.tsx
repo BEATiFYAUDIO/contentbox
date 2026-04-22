@@ -2777,7 +2777,7 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                 );
                 const canVote = isRemoteApproval
                   ? Boolean(a?.remoteClearanceUrl) || remoteVoteReady
-                  : Boolean(clearance?.viewer?.canVote);
+                  : Boolean(clearance?.viewer?.canVote) || Boolean(linkId);
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
