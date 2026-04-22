@@ -577,9 +577,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   return payload as ContentPublishReceiptPayload;
 }
 
-function openPreviewUrl(url: string) {
+function openPreviewUrl(url: string, popupTarget?: Window | null) {
   const target = String(url || "").trim();
   if (!target) return;
+  if (popupTarget && !popupTarget.closed) {
+    popupTarget.location.href = target;
+    return;
+  }
   const popup = window.open(target, "_blank", "noopener,noreferrer");
   if (!popup) window.location.assign(target);
 }
@@ -1568,7 +1572,11 @@ function openPreviewUrl(url: string) {
     }
   }
 
-  async function loadDerivativePreview(childContentId: string, childOrigin?: string | null) {
+  async function loadDerivativePreview(
+    childContentId: string,
+    childOrigin?: string | null,
+    popupTarget?: Window | null
+  ) {
     if (!derivativesAllowed) return;
     setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
     setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
@@ -1590,17 +1598,20 @@ function openPreviewUrl(url: string) {
             files: []
           }
         }));
+        openPreviewUrl(previewUrl, popupTarget);
         return;
       }
       const res = await api<any>(`/content/${childContentId}/preview`, "GET");
       setDerivativePreviewByChild((m) => ({ ...m, [childContentId]: res || null }));
       const previewUrl = String(res?.previewUrl || "").trim();
       if (previewUrl) {
-        openPreviewUrl(previewUrl);
+        openPreviewUrl(previewUrl, popupTarget);
       } else {
+        if (popupTarget && !popupTarget.closed) popupTarget.close();
         setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
       }
     } catch (e: any) {
+      if (popupTarget && !popupTarget.closed) popupTarget.close();
       setDerivativePreviewByChild((m) => ({ ...m, [childContentId]: null }));
       setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Preview failed" }));
     } finally {
@@ -2873,7 +2884,8 @@ function openPreviewUrl(url: string) {
                                 }));
                                 return;
                               }
-                              loadDerivativePreview(previewChildId, previewOrigin || undefined);
+                              const previewWindow = window.open("", "_blank", "noopener");
+                              loadDerivativePreview(previewChildId, previewOrigin || undefined, previewWindow || null);
                             }}
                             title="Preview submission"
                           >
