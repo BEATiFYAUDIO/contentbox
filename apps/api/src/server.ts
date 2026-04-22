@@ -22734,8 +22734,14 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       })
       .catch(() => null);
     const isRequester = String(a.derivativeLink?.childContent?.ownerUserId || "").trim() === userId;
+    const inviteParticipantByUserId = await getAcceptedInviteParticipantMapForUsers(a.parentContentId, [userId]);
+    const inviteSplitParticipantId = inviteParticipantByUserId.get(userId) || null;
     const isEligible =
       eligible.some((p) => matchApproverToUser(p, userId, meEmail)) ||
+      Boolean(
+        inviteSplitParticipantId &&
+          eligible.some((p) => asString(p.splitParticipantId || "").trim() === asString(inviteSplitParticipantId || "").trim())
+      ) ||
       (parent?.ownerUserId === userId && !isShadowRemote);
 
     if (scope === "pending") {
