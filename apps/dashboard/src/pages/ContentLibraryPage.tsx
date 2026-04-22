@@ -2781,6 +2781,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
                 const previewChildId = String(a?.childContentId || "").trim();
                 const previewOrigin = String(a?.remoteChildOrigin || a?.childOrigin || a?.remoteOrigin || "").trim();
+                const previewBlockedByRouting = isRemoteApproval && !crossNodeAllowed;
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2871,6 +2872,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                             onClick={() => {
+                              if (previewBlockedByRouting) {
+                                setActionMsgByApproval((m) => ({
+                                  ...m,
+                                  [approvalKey]: clearanceReason || "Named tunnel/public routing is required for remote preview."
+                                }));
+                                return;
+                              }
                               if (!previewChildId) return;
                               if (isRemoteApproval) {
                                 const inviteToken = String(a?.remoteInviteToken || "").trim();
@@ -2886,8 +2894,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               }
                               loadDerivativePreview(previewChildId, previewOrigin || undefined);
                             }}
-                            disabled={isRemoteApproval && !crossNodeAllowed}
-                            title={isRemoteApproval && !crossNodeAllowed ? clearanceReason : "Preview submission"}
+                            title={previewBlockedByRouting ? clearanceReason : "Preview submission"}
                           >
                             {derivativePreviewLoading[previewChildId] ? "Loading…" : "Preview submission"}
                           </button>
