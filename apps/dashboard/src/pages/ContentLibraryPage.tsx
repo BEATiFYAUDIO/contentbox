@@ -1585,6 +1585,7 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
       if (childOrigin) {
         const base = String(childOrigin || "").replace(/\/+$/, "");
         if (!base) {
+          if (popupTarget && !popupTarget.closed) popupTarget.close();
           setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Remote origin not set." }));
           return;
         }
@@ -2891,7 +2892,8 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                                 }));
                                 return;
                               }
-                              const previewWindow = window.open("", "_blank", "noopener");
+                              const needsAsyncFetch = !String(previewOrigin || "").trim();
+                              const previewWindow = needsAsyncFetch ? window.open("", "_blank", "noopener") : null;
                               loadDerivativePreview(previewChildId, previewOrigin || undefined, previewWindow || null);
                             }}
                             title="Preview submission"
