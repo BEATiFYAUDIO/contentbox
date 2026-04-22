@@ -1663,6 +1663,12 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
         if (!remoteMatch) return entry;
         return {
           ...entry,
+          status: String(remoteMatch?.status || entry?.status || "PENDING"),
+          viewerVote: remoteMatch?.viewerVote || entry?.viewerVote || null,
+          approvedApprovers: Number(remoteMatch?.approvedApprovers ?? entry?.approvedApprovers ?? 0),
+          approveWeightBps: Number(remoteMatch?.approveWeightBps ?? entry?.approveWeightBps ?? 0),
+          approvalBpsTarget: Number(remoteMatch?.approvalBpsTarget ?? entry?.approvalBpsTarget ?? 6667),
+          approverCount: Number(remoteMatch?.approverCount ?? entry?.approverCount ?? 0),
           remoteOrigin: String(entry?.remoteOrigin || remoteMatch?.remoteOrigin || "").trim() || undefined,
           remoteChildOrigin: String(entry?.remoteChildOrigin || remoteMatch?.remoteChildOrigin || "").trim() || undefined,
           remoteInviteId: entry?.remoteInviteId || remoteMatch?.remoteInviteId || undefined,
@@ -2775,11 +2781,12 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                     String(a?.remoteAuthorizationId || "").trim() &&
                     String(a?.remoteOrigin || "").trim()
                 );
+                const viewerCanVote = Boolean(clearance?.viewer?.canVote ?? a?.viewerCanVote);
                 const canVote = isRemoteApproval
                   ? Boolean(a?.remoteClearanceUrl) || remoteVoteReady
-                  : Boolean(clearance?.viewer?.canVote) || Boolean(linkId);
+                  : viewerCanVote;
                 const canVoteLocalFallback =
-                  Boolean(linkId) && (Boolean(clearance?.viewer?.canVote) || !remoteVoteReady);
+                  Boolean(linkId) && viewerCanVote;
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
@@ -3022,7 +3029,7 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                             </button>
                           </>
                         ) : null}
-                        {!isCleared && !isRemoteApproval && !viewerVote && Boolean(linkId) ? (
+                        {!isCleared && canVote && !isRemoteApproval && !viewerVote ? (
                           <>
                             <input
                               type="text"

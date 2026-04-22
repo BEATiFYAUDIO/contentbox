@@ -22815,6 +22815,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       approverCount: Number.isFinite(resolvedApproverCount) ? Math.max(0, resolvedApproverCount) : 0,
       approveWeightBps: Number(remoteStatus?.clearance?.approveWeightBps ?? a.approveWeightBps ?? 0),
       approvalBpsTarget: Number(remoteStatus?.clearance?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667),
+      viewerCanVote: Boolean(isEligible) && String(a.status || "").trim().toUpperCase() !== "APPROVED",
       previewUrl: (remoteStatus?.previewUrl ? String(remoteStatus.previewUrl) : previewUrl) || null,
       clearanceRequest: effectiveClearanceRequest
     });
