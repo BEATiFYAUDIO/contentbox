@@ -674,9 +674,9 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
         const deleted = Boolean(it?.deletedAt);
         const hardDeleted = String(it?.deletedReason || "").trim().toLowerCase() === "hard";
         const status = String(it?.status || "").toLowerCase();
-        const tombstoned = Boolean(it?.tombstoned) || ((deleted || hardDeleted) && status === "published");
+        const tombstoned = Boolean(it?.tombstoned) || (deleted && !hardDeleted && status === "published");
         if (tombstoneMode) return tombstoned;
-        if (trashMode) return deleted && status !== "published";
+        if (trashMode) return deleted && !hardDeleted && status !== "published";
         return !deleted && !tombstoned;
       });
       if (!Array.isArray(data)) {

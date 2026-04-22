@@ -1,6 +1,7 @@
 export type ContentLike = {
   status?: string | null;
   deletedAt?: string | Date | null;
+  deletedReason?: string | null;
 };
 
 export type ContentLifecycleState = "active" | "trash" | "archived";
@@ -16,6 +17,10 @@ function hasDeletedAt(item: ContentLike): boolean {
   return Boolean(item?.deletedAt);
 }
 
+function isHardDeleted(item: ContentLike): boolean {
+  return String(item?.deletedReason || "").trim().toLowerCase() === "hard";
+}
+
 export function isPublished(item: ContentLike): boolean {
   return statusValue(item) === "published";
 }
@@ -25,11 +30,11 @@ export function isActive(item: ContentLike): boolean {
 }
 
 export function isTrashedDraft(item: ContentLike): boolean {
-  return hasDeletedAt(item) && !isPublished(item);
+  return hasDeletedAt(item) && !isHardDeleted(item) && !isPublished(item);
 }
 
 export function isArchivedPublished(item: ContentLike): boolean {
-  return hasDeletedAt(item) && isPublished(item);
+  return hasDeletedAt(item) && !isHardDeleted(item) && isPublished(item);
 }
 
 export function isSaleable(item: ContentLike): boolean {

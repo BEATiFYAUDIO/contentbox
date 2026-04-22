@@ -20835,12 +20835,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     tombstones
       ? {
           deletedAt: { not: null as any },
-          status: "published" as const
+          status: "published" as const,
+          deletedReason: { not: "hard" as any }
         }
       : trash
         ? {
-            deletedAt: { not: null as any },
-            status: { not: "published" as const },
+          deletedAt: { not: null as any },
+          status: { not: "published" as const },
             deletedReason: { not: "hard" }
           }
         : activeLibraryWhere;
