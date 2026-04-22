@@ -31148,8 +31148,8 @@ async function canAccessReviewPreview(userId: string, contentId: string): Promis
 app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
   const contentId = asString((req.params as any).id);
-  // Use public/tunnel-aware origin for shareable preview links; fall back to API base only if needed.
-  const previewBase = normalizePublicOriginBase(getPublicOrigin(req)) || APP_BASE_URL.replace(/\/+$/, "");
+  const localApiBase =
+    (process.env.API_BASE_URL || (req.headers?.host ? `http://${req.headers.host}` : "http://127.0.0.1:4000")).replace(/\/+$/, "");
 
   const access = await canAccessReviewPreview(userId, contentId);
   if (!access.ok || !access.content) {
@@ -31205,6 +31205,12 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
   if (!primaryObjectKey) {
     return reply.code(400).send({ error: "Upload a master file to preview." });
   }
+
+  // Keep owner/participant preview local; only parent-stakeholder clearance preview is shareable/public.
+  const previewBase =
+    access.reason === "parent_stakeholder"
+      ? normalizePublicOriginBase(getPublicOrigin(req)) || localApiBase
+      : localApiBase;
 
   const previewUrl = primaryObjectKey
     ? `${previewBase}/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(
