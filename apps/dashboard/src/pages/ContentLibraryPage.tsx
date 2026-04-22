@@ -1677,6 +1677,7 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
             remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
             remoteInviteId: inviteId,
             remoteInviteToken: extractInviteTokenFromUrl(String(row?.inviteUrl || "")),
+            remotePreviewUrl: String(entry?.previewUrl || "").trim() || null,
             remoteClearanceUrl: entry?.clearanceUrl || null,
             approveWeightBps: Number(entry?.approveWeightBps || 0),
             approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
@@ -2774,6 +2775,7 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                   previewOrigin && previewInviteToken && previewAuthorizationId
                     ? `${previewOrigin.replace(/\/+$/, "")}/invites/${encodeURIComponent(previewInviteToken)}/clearance/${encodeURIComponent(previewAuthorizationId)}/preview`
                     : "";
+                const remoteDirectPreviewHref = String(a?.remotePreviewUrl || "").trim();
                 const remotePublicPreviewHref =
                   previewOrigin && previewChildId
                     ? `${previewOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(previewChildId)}/preview-file`
@@ -2870,6 +2872,10 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                             onClick={() => {
                               if (!previewChildId) return;
                               if (isRemoteApproval) {
+                                if (remoteDirectPreviewHref) {
+                                  openPreviewUrl(remoteDirectPreviewHref);
+                                  return;
+                                }
                                 if (remoteInvitePreviewHref) {
                                   openPreviewUrl(remoteInvitePreviewHref);
                                   return;

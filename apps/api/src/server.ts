@@ -38119,6 +38119,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approvedApprovers: auth.approvedApprovers ?? 0,
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
+          previewUrl: `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}/preview`,
           clearanceUrl:
             clearanceToken?.token
               ? `${clearanceBase}/clearance/${clearanceToken.token}`
