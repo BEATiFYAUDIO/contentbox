@@ -38146,11 +38146,42 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
     const clearanceBase = String(shareableOrigin || getPublicOrigin(req)).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
     const approvalTokenModel = (prisma as any).approvalToken;
+    const voteUserIds = Array.from(
+      new Set(
+        actionableAuths.flatMap((auth) =>
+          Array.isArray(auth.votes)
+            ? auth.votes
+                .map((v) => asString((v as any)?.approverUserId || "").trim())
+                .filter(Boolean)
+            : []
+        )
+      )
+    );
+    const voteUsers = voteUserIds.length
+      ? await prisma.user
+          .findMany({
+            where: { id: { in: voteUserIds } },
+            select: { id: true, email: true }
+          })
+          .catch(() => [])
+      : [];
+    const voteEmailByUserId = new Map<string, string>(
+      (Array.isArray(voteUsers) ? voteUsers : []).map((u: any) => [asString(u?.id || "").trim(), normalizeEmail(u?.email || "")])
+    );
+
     clearanceInbox = await Promise.all(
       actionableAuths.map(async (auth) => {
-        const viewerVote = inviteUserId
+        let viewerVote = inviteUserId
           ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
           : null;
+        if (!viewerVote && approverEmailForToken) {
+          const matchedByEmail = auth.votes.find((v) => {
+            const voterId = asString((v as any)?.approverUserId || "").trim();
+            if (!voterId) return false;
+            return normalizeEmail(voteEmailByUserId.get(voterId) || "") === approverEmailForToken;
+          });
+          viewerVote = matchedByEmail?.decision || null;
+        }
         const clearanceToken =
           approverEmailForToken && approvalTokenModel
             ? await approvalTokenModel.findFirst({
