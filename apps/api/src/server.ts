@@ -22686,11 +22686,12 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       String(parent?.description || "").toLowerCase().startsWith("remote origin:");
     const remoteOrigin = isShadowRemote ? getRemoteOriginFromDescription(parent?.description || null) : null;
     let remoteStatus: any = null;
-    if (remoteOrigin && a?.derivativeLink?.childContentId) {
+    const statusOrigin = String(remoteOrigin || childOrigin || "").trim();
+    if (statusOrigin && a?.derivativeLink?.childContentId) {
       try {
         const ctrl = new AbortController();
         const timeout = setTimeout(() => ctrl.abort(), 3000);
-        const url = `${remoteOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
+        const url = `${statusOrigin.replace(/\/+$/, "")}/api/derivatives/remote-status?parentContentId=${encodeURIComponent(
           a.parentContentId
         )}&childContentId=${encodeURIComponent(a.derivativeLink.childContentId)}`;
         const res = await fetch(url, { signal: ctrl.signal as any });
