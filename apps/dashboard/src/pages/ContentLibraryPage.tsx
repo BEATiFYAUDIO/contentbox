@@ -577,6 +577,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   return payload as ContentPublishReceiptPayload;
 }
 
+function openPreviewUrl(url: string) {
+  const target = String(url || "").trim();
+  if (!target) return;
+  const popup = window.open(target, "_blank", "noopener,noreferrer");
+  if (!popup) window.location.assign(target);
+}
+
   const openManifestEntry = Object.entries(manifestPreviewByContent).find(([, v]) => v?.open);
   const openManifestId = openManifestEntry?.[0] || null;
   const openManifest = openManifestEntry?.[1] || null;
@@ -1589,7 +1596,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       setDerivativePreviewByChild((m) => ({ ...m, [childContentId]: res || null }));
       const previewUrl = String(res?.previewUrl || "").trim();
       if (previewUrl) {
-        window.open(previewUrl, "_blank", "noopener,noreferrer");
+        openPreviewUrl(previewUrl);
       } else {
         setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
       }
@@ -2852,11 +2859,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               if (!previewChildId) return;
                               if (isRemoteApproval) {
                                 if (remoteInvitePreviewHref) {
-                                  window.open(remoteInvitePreviewHref, "_blank", "noopener,noreferrer");
+                                  openPreviewUrl(remoteInvitePreviewHref);
                                   return;
                                 }
                                 if (remotePublicPreviewHref) {
-                                  window.open(remotePublicPreviewHref, "_blank", "noopener,noreferrer");
+                                  openPreviewUrl(remotePublicPreviewHref);
                                   return;
                                 }
                                 setActionMsgByApproval((m) => ({
