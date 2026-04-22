@@ -1643,9 +1643,57 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
         })
         .filter((entry) => matchesScope(entry, scope));
 
-      const merged = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals].filter((entry) =>
-        matchesScope(entry, scope)
-      );
+      const localApprovals = Array.isArray(localData) ? localData : [];
+      const remoteByPair = new Map<string, any>();
+      const remoteByChild = new Map<string, any>();
+      for (const entry of remoteApprovals) {
+        const parentId = String(entry?.parentContentId || "").trim();
+        const childId = String(entry?.childContentId || "").trim();
+        if (parentId && childId) remoteByPair.set(`${parentId}::${childId}`, entry);
+        if (childId && !remoteByChild.has(childId)) remoteByChild.set(childId, entry);
+      }
+
+      const enrichedLocalApprovals = localApprovals.map((entry: any) => {
+        const parentId = String(entry?.parentContentId || "").trim();
+        const childId = String(entry?.childContentId || "").trim();
+        const remoteMatch =
+          (parentId && childId ? remoteByPair.get(`${parentId}::${childId}`) : null) ||
+          (childId ? remoteByChild.get(childId) : null) ||
+          null;
+        if (!remoteMatch) return entry;
+        return {
+          ...entry,
+          remoteOrigin: String(entry?.remoteOrigin || remoteMatch?.remoteOrigin || "").trim() || undefined,
+          remoteChildOrigin: String(entry?.remoteChildOrigin || remoteMatch?.remoteChildOrigin || "").trim() || undefined,
+          remoteInviteId: entry?.remoteInviteId || remoteMatch?.remoteInviteId || undefined,
+          remoteInviteToken: String(entry?.remoteInviteToken || remoteMatch?.remoteInviteToken || "").trim() || undefined,
+          remotePreviewUrl: String(entry?.remotePreviewUrl || remoteMatch?.remotePreviewUrl || "").trim() || undefined,
+          remoteClearanceUrl: entry?.remoteClearanceUrl || remoteMatch?.remoteClearanceUrl || undefined,
+          remoteAuthorizationId:
+            String(entry?.remoteAuthorizationId || remoteMatch?.remoteAuthorizationId || "").trim() || undefined
+        };
+      });
+
+      const pickBestEntry = (a: any, b: any) => {
+        const score = (x: any) =>
+          (String(x?.remoteInviteToken || "").trim() ? 8 : 0) +
+          (String(x?.remoteAuthorizationId || "").trim() ? 4 : 0) +
+          (x?.remoteClearanceUrl ? 2 : 0) +
+          (String(x?.remotePreviewUrl || "").trim() ? 1 : 0);
+        return score(b) > score(a) ? b : a;
+      };
+
+      const deduped = new Map<string, any>();
+      for (const entry of [...enrichedLocalApprovals, ...remoteApprovals].filter((item) => matchesScope(item, scope))) {
+        const key = [
+          String(entry?.remoteAuthorizationId || entry?.authorizationId || "").trim(),
+          String(entry?.parentContentId || "").trim(),
+          String(entry?.childContentId || "").trim()
+        ].join("::");
+        const prev = deduped.get(key);
+        deduped.set(key, prev ? pickBestEntry(prev, entry) : entry);
+      }
+      const merged = Array.from(deduped.values());
       if (import.meta.env.DEV) {
         console.debug("clearance.loadApprovals.remote_merge", {
           scope,
@@ -2690,7 +2738,13 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
               {approvals.map((a) => {
                 const linkId = String(a?.linkId || "");
                 const remotePreviewUrl = String(a?.remotePreviewUrl || "").trim();
-                const isRemoteApproval = Boolean(String(a?.remoteOrigin || "").trim() || remotePreviewUrl);
+                const isRemoteApproval = Boolean(
+                  String(a?.remoteOrigin || "").trim() ||
+                    String(a?.remoteInviteToken || "").trim() ||
+                    String(a?.remoteAuthorizationId || "").trim() ||
+                    String(a?.childOrigin || "").trim() ||
+                    remotePreviewUrl
+                );
                 const approvalKey = isRemoteApproval
                   ? `remote:${String(a?.remoteAuthorizationId || a?.authorizationId || "")}`
                   : `local:${linkId || String(a?.authorizationId || "")}`;
