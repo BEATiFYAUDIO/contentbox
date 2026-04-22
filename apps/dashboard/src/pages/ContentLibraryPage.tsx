@@ -577,17 +577,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   return payload as ContentPublishReceiptPayload;
 }
 
-function openPreviewUrl(url: string, popupTarget?: Window | null) {
-  const target = String(url || "").trim();
-  if (!target) return;
-  if (popupTarget && !popupTarget.closed) {
-    popupTarget.location.href = target;
-    return;
-  }
-  const popup = window.open(target, "_blank", "noopener,noreferrer");
-  if (!popup) window.location.assign(target);
-}
-
 function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): boolean {
   const target = String(url || "").trim();
   if (!target) return false;
@@ -630,7 +619,6 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
   const [derivativesLoading, setDerivativesLoading] = React.useState<Record<string, boolean>>({});
   const [derivativeGroupOpen, setDerivativeGroupOpen] = React.useState<Record<string, boolean>>({});
   const [derivativeShowTombstones, setDerivativeShowTombstones] = React.useState<Record<string, boolean>>({});
-  const [, setDerivativePreviewByChild] = React.useState<Record<string, any | null>>({});
   const [derivativePreviewLoading, setDerivativePreviewLoading] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewError, setDerivativePreviewError] = React.useState<Record<string, string>>({});
   const [reviewGrantMsgByContent, setReviewGrantMsgByContent] = React.useState<Record<string, string>>({});
@@ -1581,54 +1569,6 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
       setDerivativesByContent((m) => ({ ...m, [contentId]: [] }));
     } finally {
       setDerivativesLoading((m) => ({ ...m, [contentId]: false }));
-    }
-  }
-
-  async function loadDerivativePreview(
-    childContentId: string,
-    childOrigin?: string | null,
-    popupTarget?: Window | null
-  ) {
-    if (!derivativesAllowed) return;
-    setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
-    setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
-    try {
-      if (childOrigin) {
-        const base = String(childOrigin || "").replace(/\/+$/, "");
-        if (!base) {
-          if (popupTarget && !popupTarget.closed) popupTarget.close();
-          setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Remote origin not set." }));
-          return;
-        }
-        // Avoid cross-origin fetch for remote preview metadata (CORS on /offer is not guaranteed).
-        // The public preview endpoint resolves the preview object server-side.
-        const previewUrl = `${base}/public/content/${encodeURIComponent(childContentId)}/preview-file`;
-        setDerivativePreviewByChild((m) => ({
-          ...m,
-          [childContentId]: {
-            content: { id: childContentId, title: null, type: null, status: "published" },
-            previewUrl,
-            files: []
-          }
-        }));
-        openPreviewUrl(previewUrl, popupTarget);
-        return;
-      }
-      const res = await api<any>(`/content/${childContentId}/preview`, "GET");
-      setDerivativePreviewByChild((m) => ({ ...m, [childContentId]: res || null }));
-      const previewUrl = String(res?.previewUrl || "").trim();
-      if (previewUrl) {
-        openPreviewUrl(previewUrl, popupTarget);
-      } else {
-        if (popupTarget && !popupTarget.closed) popupTarget.close();
-        setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
-      }
-    } catch (e: any) {
-      if (popupTarget && !popupTarget.closed) popupTarget.close();
-      setDerivativePreviewByChild((m) => ({ ...m, [childContentId]: null }));
-      setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Preview failed" }));
-    } finally {
-      setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
     }
   }
 
@@ -2926,6 +2866,8 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                                 }));
                                 return;
                               }
+                              setDerivativePreviewLoading((m) => ({ ...m, [previewChildId]: true }));
+                              setDerivativePreviewError((m) => ({ ...m, [previewChildId]: "" }));
                               api<any>(`/content/${encodeURIComponent(previewChildId)}/preview?public=1`, "GET")
                                 .then((res) => {
                                   const url = String(res?.previewUrl || "").trim();
@@ -2939,6 +2881,9 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                                 .catch((e: any) => {
                                   if (previewWindow && !previewWindow.closed) previewWindow.close();
                                   setDerivativePreviewError((m) => ({ ...m, [previewChildId]: e?.message || "Preview failed" }));
+                                })
+                                .finally(() => {
+                                  setDerivativePreviewLoading((m) => ({ ...m, [previewChildId]: false }));
                                 });
                             }}
                             title="Preview submission"
