@@ -26397,11 +26397,27 @@ async function resolveInviteClearanceContext(token: string, authorizationId: str
   });
   if (!inviteApprover) return null;
 
+  let voterUserId = asString(inviteApprover.participantUserId || "").trim();
+  if (!voterUserId) {
+    const approverEmail = normalizeEmail(inviteApprover.participantEmail || approverEmailForToken || "");
+    if (approverEmail) {
+      const approverUser = await prisma.user
+        .findFirst({
+          where: { email: emailEquals(approverEmail) },
+          select: { id: true }
+        })
+        .catch(() => null);
+      voterUserId = asString(approverUser?.id || "").trim();
+    }
+  }
+  if (!voterUserId) return null;
+
   return {
     inv,
     auth,
     parentContentId,
     inviteUserId,
+    voterUserId,
     inviteApprover,
     approverEmailForToken
   };
@@ -26575,10 +26591,16 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     }
   }
 
+  if (ctx.inviteUserId && ctx.inviteUserId !== ctx.voterUserId) {
+    await prisma.derivativeApprovalVote.deleteMany({
+      where: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId }
+    });
+  }
+
   await prisma.derivativeApprovalVote.upsert({
-    where: { authorizationId_approverUserId: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId } },
+    where: { authorizationId_approverUserId: { authorizationId: ctx.auth.id, approverUserId: ctx.voterUserId } },
     update: { decision },
-    create: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId, decision }
+    create: { authorizationId: ctx.auth.id, approverUserId: ctx.voterUserId, decision }
   });
 
   const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: ctx.auth.id } });
@@ -26617,7 +26639,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   if (status === "APPROVED" && !link.approvedAt) {
     await prisma.contentLink.update({
       where: { id: link.id },
-      data: { approvedAt: new Date(), approvedByUserId: ctx.inviteUserId, requiresApproval: true }
+      data: { approvedAt: new Date(), approvedByUserId: ctx.voterUserId, requiresApproval: true }
     });
     await prisma.clearanceRequest.updateMany({
       where: { contentLinkId: link.id, status: "PENDING" },
@@ -26629,7 +26651,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     try {
       await prisma.auditEvent.create({
         data: {
-          userId: ctx.inviteUserId,
+          userId: ctx.voterUserId,
           action: "clearance.reject",
           entityType: "ContentLink",
           entityId: link.id,
