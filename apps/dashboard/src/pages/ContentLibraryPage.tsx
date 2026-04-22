@@ -2778,6 +2778,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
+                const previewChildId = String(a?.childContentId || "").trim();
+                const previewOrigin = String(a?.remoteChildOrigin || a?.childOrigin || a?.remoteOrigin || "").trim();
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2863,20 +2865,30 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             {isLoading ? "Loading…" : "Refresh"}
                           </button>
                         )}
-                        {isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.childContentId || "").trim() ? (
+                        {previewChildId ? (
                           <button
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                            onClick={() =>
-                              openRemoteInviteClearancePreview(
-                                String(a?.remoteOrigin || ""),
-                                String(a?.remoteInviteToken || ""),
-                                String(a?.remoteAuthorizationId || ""),
-                                String(a?.childContentId || "")
-                              )
-                            }
+                            onClick={() => {
+                              if (!previewChildId) return;
+                              if (isRemoteApproval) {
+                                const inviteToken = String(a?.remoteInviteToken || "").trim();
+                                const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                                if (inviteToken && remoteAuthorizationId && previewOrigin) {
+                                  openRemoteInviteClearancePreview(previewOrigin, inviteToken, remoteAuthorizationId, previewChildId);
+                                  return;
+                                }
+                                if (previewOrigin) {
+                                  openRemoteDerivativePreview(previewOrigin, previewChildId);
+                                  return;
+                                }
+                              }
+                              loadDerivativePreview(previewChildId, previewOrigin || undefined);
+                            }}
+                            disabled={isRemoteApproval && !crossNodeAllowed}
+                            title={isRemoteApproval && !crossNodeAllowed ? clearanceReason : "Preview submission"}
                           >
-                            Preview submission
+                            {derivativePreviewLoading[previewChildId] ? "Loading…" : "Preview submission"}
                           </button>
                         ) : null}
                         {!isCleared && isRemoteApproval && canVote && !viewerVote ? (
@@ -3055,6 +3067,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     {actionMsgByApproval[approvalKey] ? (
                       <div className="mt-2 text-[11px] text-emerald-300">
                         {actionMsgByApproval[approvalKey]}
+                      </div>
+                    ) : null}
+                    {previewChildId && derivativePreviewError[previewChildId] ? (
+                      <div className="mt-2 text-[11px] text-amber-300">
+                        {derivativePreviewError[previewChildId]}
                       </div>
                     ) : null}
 
@@ -4210,27 +4227,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       >
                                         {clearanceHistoryOpen[d.linkId] ? "Hide history" : "History"}
                                       </button>
-                                      {d.childOrigin ? (
-                                        <button
-                                          type="button"
-                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                                          onClick={() => openRemoteDerivativePreview(d.childOrigin, d.childContentId)}
-                                          disabled={!crossNodeAllowed}
-                                          title={!crossNodeAllowed ? clearanceReason : "Preview submission"}
-                                        >
-                                          {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
-                                        </button>
-                                      ) : (
-                                        <button
-                                          type="button"
-                                          className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                                          onClick={() => loadDerivativePreview(d.childContentId)}
-                                          disabled={!crossNodeAllowed}
-                                          title={!crossNodeAllowed ? clearanceReason : "Preview submission"}
-                                        >
-                                          {derivativePreviewLoading[d.childContentId] ? "Loading…" : "Preview submission"}
-                                        </button>
-                                      )}
                                       {(() => {
                                         const viewer = d.clearance?.viewer || null;
                                         const hasVoted = Boolean(viewer?.hasVoted);
@@ -4314,104 +4310,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     {" "}•{" "}Progress: {d.clearance.approveWeightBps}/{d.clearance.approvalBpsTarget} bps
                                   </div>
                                 ) : null}
-                                {derivativePreviewError[d.childContentId] ? (
-                                  <div className="mt-2 text-[11px] text-amber-300">
-                                    {derivativePreviewError[d.childContentId]}
-                                  </div>
-                                ) : null}
-                              {derivativePreviewByChild[d.childContentId] ? (
-                                <div className="mt-2 rounded-md border border-neutral-800 bg-neutral-950/60 p-2 text-[11px] text-neutral-300">
-                                  <div className="font-medium text-neutral-200">Preview</div>
-                                  {(() => {
-                                    const previewUrl = derivativePreviewByChild[d.childContentId]?.previewUrl || null;
-                                    const pf = previewFileFor(previewUrl, derivativePreviewByChild[d.childContentId]?.files || []);
-                                    const mime = String(pf?.mime || "").toLowerCase();
-                                    const type = String(derivativePreviewByChild[d.childContentId]?.content?.type || "").toLowerCase();
-                                    const isVideo = mime.startsWith("video/") || type === "video";
-                                    const isAudio = mime.startsWith("audio/") || type === "song";
-                                    const isImage = mime.startsWith("image/");
-                                    const isImageLikePreview = Boolean(
-                                      previewUrl && (isImage || looksLikeImagePreviewUrl(previewUrl))
-                                    );
-                                    if (previewUrl && isVideo) {
-                                      return (
-                                        <div className="mt-2">
-                                          <video className="w-full rounded-md" controls src={previewUrl} />
-                                          <a
-                                            href={previewUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
-                                          >
-                                            Open preview
-                                          </a>
-                                        </div>
-                                      );
-                                    }
-                                    if (previewUrl && isAudio) {
-                                      return (
-                                        <div className="mt-2">
-                                          <audio className="w-full" controls src={previewUrl} />
-                                          <a
-                                            href={previewUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
-                                          >
-                                            Open preview
-                                          </a>
-                                        </div>
-                                      );
-                                    }
-                                    if (previewUrl && isImageLikePreview) {
-                                      return (
-                                        <div className="mt-2">
-                                          <img
-                                            className="block w-full h-72 rounded-md object-contain bg-neutral-950/60"
-                                            src={previewUrl}
-                                            alt={d.childTitle || "Preview"}
-                                            loading="lazy"
-                                          />
-                                          <a
-                                            href={previewUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
-                                          >
-                                            Open preview
-                                          </a>
-                                        </div>
-                                      );
-                                    }
-                                    if (previewUrl) {
-                                      return (
-                                        <div className="mt-2">
-                                          <div className="text-xs text-neutral-500">Inline preview unavailable for this file type.</div>
-                                          <a
-                                            href={previewUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="mt-2 inline-flex text-xs text-emerald-300 underline underline-offset-2 hover:text-emerald-200"
-                                          >
-                                            Open preview
-                                          </a>
-                                        </div>
-                                      );
-                                    }
-                                    return <div className="text-neutral-400">No preview available.</div>;
-                                  })()}
-                                  {Array.isArray(derivativePreviewByChild[d.childContentId]?.files) &&
-                                  derivativePreviewByChild[d.childContentId].files.length > 0 ? (
-                                    <div className="mt-2 space-y-1">
-                                      {derivativePreviewByChild[d.childContentId].files.map((f: any) => (
-                                        <div key={f.id} className="text-neutral-400">
-                                          {f.originalName || f.objectKey} • {formatBytes(f.sizeBytes || 0)}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              ) : null}
                               {clearanceHistoryOpen[d.linkId] ? (
                                 <div className="mt-2">
                                   <HistoryFeed
