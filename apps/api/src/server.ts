@@ -23426,6 +23426,7 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   const user = await prisma.user.findUnique({ where: { id: userId } });
   const userEmail = (user?.email || "").toLowerCase();
   const { eligible, approvers } = await getEligibleApproversForParent(link.parentContentId);
+  const inviteParticipantByUserId = await getAcceptedInviteParticipantMapForUsers(link.parentContentId, [userId]);
   const parent = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
     select: { ownerUserId: true }
@@ -23440,6 +23441,11 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   function resolveApprover(uId: string, uEmail: string) {
     const direct = eligible.find((p) => matchApproverToUser(p, uId, uEmail));
     if (direct) return direct;
+    const viaInviteSplitParticipantId = inviteParticipantByUserId.get(uId);
+    if (viaInviteSplitParticipantId) {
+      const byInviteParticipant = eligible.find((p) => asString(p.splitParticipantId || "") === viaInviteSplitParticipantId);
+      if (byInviteParticipant) return byInviteParticipant;
+    }
     if (parent?.ownerUserId === uId) {
       const candidates = eligible.filter(
         (p) => p.participantEmail && !emailsWithUsers.has(p.participantEmail.toLowerCase())
@@ -23499,6 +23505,10 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   const voteUsers = voteUserIds.length
     ? await prisma.user.findMany({ where: { id: { in: voteUserIds } }, select: { id: true, email: true } })
     : [];
+  const voteInviteParticipantByUserId = await getAcceptedInviteParticipantMapForUsers(link.parentContentId, voteUserIds);
+  for (const [k, v] of voteInviteParticipantByUserId.entries()) {
+    if (!inviteParticipantByUserId.has(k)) inviteParticipantByUserId.set(k, v);
+  }
   const voteUserEmailById = new Map(voteUsers.map((u) => [u.id, (u.email || "").toLowerCase()]));
   let approveBps = 0;
   let rejectBps = 0;
@@ -23584,6 +23594,7 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
 
   const thresholdBps = 6667;
   const { approvers, eligible } = await getEligibleApproversForParent(link.parentContentId);
+  const viewerInviteParticipantByUserId = await getAcceptedInviteParticipantMapForUsers(link.parentContentId, [userId]);
   const parent = await prisma.contentItem.findUnique({
     where: { id: link.parentContentId },
     select: { ownerUserId: true }
@@ -23598,6 +23609,11 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
   function resolveApprover(uId: string, uEmail: string) {
     const direct = eligible.find((p) => matchApproverToUser(p, uId, uEmail));
     if (direct) return direct;
+    const viaInviteSplitParticipantId = viewerInviteParticipantByUserId.get(uId);
+    if (viaInviteSplitParticipantId) {
+      const byInviteParticipant = eligible.find((p) => asString(p.splitParticipantId || "") === viaInviteSplitParticipantId);
+      if (byInviteParticipant) return byInviteParticipant;
+    }
     if (parent?.ownerUserId === uId) {
       const candidates = eligible.filter(
         (p) => p.participantEmail && !emailsWithUsers.has(p.participantEmail.toLowerCase())
@@ -23625,6 +23641,10 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
   const voteUsers = voteUserIds.length
     ? await prisma.user.findMany({ where: { id: { in: voteUserIds } }, select: { id: true, email: true, displayName: true } })
     : [];
+  const voteInviteParticipantByUserId = await getAcceptedInviteParticipantMapForUsers(link.parentContentId, voteUserIds);
+  for (const [k, v] of voteInviteParticipantByUserId.entries()) {
+    if (!viewerInviteParticipantByUserId.has(k)) viewerInviteParticipantByUserId.set(k, v);
+  }
   const voteUserById = new Map(voteUsers.map((u) => [u.id, u]));
 
   const externalVotes = await prisma.approvalToken.findMany({
@@ -33075,6 +33095,27 @@ async function getEligibleApproversForParent(parentContentId: string) {
     (a) => a.role === "owner" || a.accepted || a.participantUserId || a.participantEmail
   );
   return { split, approvers, eligible };
+}
+
+async function getAcceptedInviteParticipantMapForUsers(parentContentId: string, userIds: string[]): Promise<Map<string, string>> {
+  const ids = Array.from(new Set((userIds || []).map((u) => asString(u || "").trim()).filter(Boolean)));
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.invitation.findMany({
+    where: {
+      acceptedByUserId: { in: ids },
+      splitParticipantId: { not: null },
+      splitParticipant: { splitVersion: { contentId: parentContentId } }
+    },
+    select: { acceptedByUserId: true, splitParticipantId: true }
+  });
+  const out = new Map<string, string>();
+  for (const row of rows || []) {
+    const userId = asString((row as any)?.acceptedByUserId || "").trim();
+    const splitParticipantId = asString((row as any)?.splitParticipantId || "").trim();
+    if (!userId || !splitParticipantId || out.has(userId)) continue;
+    out.set(userId, splitParticipantId);
+  }
+  return out;
 }
 
 async function computeContentParticipantAllocations(input: {
