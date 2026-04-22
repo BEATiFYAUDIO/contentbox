@@ -22637,7 +22637,9 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const childDeleted = Boolean(child?.deletedAt);
     const childDeletedReason = asString((child as any)?.deletedReason || "").trim().toLowerCase();
     const childStatus = asString((child as any)?.status || "").trim().toLowerCase();
-    const childDescription = asString(child?.description || "").trim().toLowerCase();
+    const childDescriptionRaw = asString(child?.description || "").trim();
+    const childDescription = childDescriptionRaw.toLowerCase();
+    const childOrigin = getRemoteOriginFromDescription(childDescriptionRaw || null);
     const childIsPublished = childStatus === "published";
     const childIsHardDeleted = childDeleted && childDeletedReason === "hard";
     if (childIsHardDeleted && !childIsPublished) {
@@ -22715,6 +22717,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       parentTitle: a.derivativeLink.parentContent?.title || null,
       childContentId: a.derivativeLink.childContentId,
       childTitle: a.derivativeLink.childContent?.title || null,
+      childOrigin: childOrigin || null,
       relation: a.derivativeLink.relation,
       status: asString(remoteStatus?.clearance?.status || a.status).trim() || a.status,
       viewerVote: existingVote?.decision || null,
