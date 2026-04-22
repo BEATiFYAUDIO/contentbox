@@ -31206,9 +31206,10 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
     return reply.code(400).send({ error: "Upload a master file to preview." });
   }
 
+  const forcePublicPreview = String((req.query || {})?.public || "").trim() === "1";
   // Keep owner/participant preview local; only parent-stakeholder clearance preview is shareable/public.
   const previewBase =
-    access.reason === "parent_stakeholder"
+    forcePublicPreview || access.reason === "parent_stakeholder"
       ? normalizePublicOriginBase(getPublicOrigin(req)) || localApiBase
       : localApiBase;
 

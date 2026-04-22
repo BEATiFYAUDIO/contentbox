@@ -639,13 +639,6 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
   const loadRequestRef = React.useRef(0);
 
-  function buildPublicClearancePreviewUrl(contentId: string): string {
-    const activeOrigin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
-    const base = (activeOrigin || publicOriginFromApi || publicBuyOrigin || "").replace(/\/+$/, "");
-    if (!base) return "";
-    return `${base}/public/content/${encodeURIComponent(contentId)}/preview-file`;
-  }
-
   const [testPurchaseFor, setTestPurchaseFor] = React.useState<{
     contentId: string;
     manifestSha256: string;
@@ -3919,7 +3912,8 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                                       setReviewGrantLinkByContent((m) => ({ ...m, [it.id]: "" }));
                                       await api(`/content-links/${linkId}/grant-review`, "POST");
                                       await loadParentLink(it.id);
-                                      const previewUrl = buildPublicClearancePreviewUrl(it.id);
+                                      const previewRes = await api<any>(`/content/${encodeURIComponent(it.id)}/preview?public=1`, "GET");
+                                      const previewUrl = String(previewRes?.previewUrl || "").trim();
                                       if (previewUrl) {
                                         setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access granted to OG. Public preview link ready." }));
                                         setReviewGrantLinkByContent((m) => ({ ...m, [it.id]: previewUrl }));
@@ -3927,7 +3921,7 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                                         setReviewGrantMsgByContent((m) => ({
                                           ...m,
                                           [it.id]:
-                                            "Preview access granted to OG, but no public origin is configured yet. Set your named tunnel/public origin in Config."
+                                            "Preview access granted to OG, but signed public preview URL is unavailable. Check named tunnel/public origin in Config."
                                         }));
                                       }
                                     } catch (e: any) {
