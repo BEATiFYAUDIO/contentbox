@@ -1601,52 +1601,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
-  async function openRemoteDerivativePreview(origin: string, childContentId: string) {
-    const base = String(origin || "").replace(/\/+$/, "");
-    if (!base) {
-      setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Remote origin not set." }));
-      return;
-    }
-    setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
-    setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
-    try {
-      // Open the remote public preview endpoint directly to avoid CORS preflight/fetch failures.
-      const url = `${base}/public/content/${encodeURIComponent(childContentId)}/preview-file`;
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
-    } finally {
-      setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
-    }
-  }
-
-  async function openRemoteInviteClearancePreview(
-    origin: string,
-    inviteToken: string,
-    remoteAuthorizationId: string,
-    childContentId: string
-  ) {
-    const base = String(origin || "").replace(/\/+$/, "");
-    const token = String(inviteToken || "").trim();
-    const authorizationId = String(remoteAuthorizationId || "").trim();
-    if (!base || !token || !authorizationId) {
-      setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Missing preview routing context." }));
-      return;
-    }
-    setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
-    setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
-    try {
-      const url = `${base}/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(
-        authorizationId
-      )}/preview`;
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
-    } finally {
-      setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
-    }
-  }
-
   async function loadCredits(contentId: string) {
     setCreditsLoading((m) => ({ ...m, [contentId]: true }));
     try {
@@ -2787,7 +2741,16 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
                 const previewChildId = String(a?.childContentId || "").trim();
                 const previewOrigin = String(a?.remoteChildOrigin || a?.childOrigin || a?.remoteOrigin || "").trim();
-                const previewBlockedByRouting = isRemoteApproval && !crossNodeAllowed;
+                const previewInviteToken = String(a?.remoteInviteToken || "").trim();
+                const previewAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
+                const remoteInvitePreviewHref =
+                  previewOrigin && previewInviteToken && previewAuthorizationId
+                    ? `${previewOrigin.replace(/\/+$/, "")}/invites/${encodeURIComponent(previewInviteToken)}/clearance/${encodeURIComponent(previewAuthorizationId)}/preview`
+                    : "";
+                const remotePublicPreviewHref =
+                  previewOrigin && previewChildId
+                    ? `${previewOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(previewChildId)}/preview-file`
+                    : "";
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2878,29 +2841,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             type="button"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
                             onClick={() => {
-                              if (previewBlockedByRouting) {
+                              if (!previewChildId) return;
+                              if (isRemoteApproval) {
+                                if (remoteInvitePreviewHref) {
+                                  window.open(remoteInvitePreviewHref, "_blank", "noopener,noreferrer");
+                                  return;
+                                }
+                                if (remotePublicPreviewHref) {
+                                  window.open(remotePublicPreviewHref, "_blank", "noopener,noreferrer");
+                                  return;
+                                }
                                 setActionMsgByApproval((m) => ({
                                   ...m,
-                                  [approvalKey]: clearanceReason || "Named tunnel/public routing is required for remote preview."
+                                  [approvalKey]:
+                                    clearanceReason || "Remote preview route unavailable (missing origin/token context)."
                                 }));
                                 return;
                               }
-                              if (!previewChildId) return;
-                              if (isRemoteApproval) {
-                                const inviteToken = String(a?.remoteInviteToken || "").trim();
-                                const remoteAuthorizationId = String(a?.remoteAuthorizationId || "").trim();
-                                if (inviteToken && remoteAuthorizationId && previewOrigin) {
-                                  openRemoteInviteClearancePreview(previewOrigin, inviteToken, remoteAuthorizationId, previewChildId);
-                                  return;
-                                }
-                                if (previewOrigin) {
-                                  openRemoteDerivativePreview(previewOrigin, previewChildId);
-                                  return;
-                                }
-                              }
                               loadDerivativePreview(previewChildId, previewOrigin || undefined);
                             }}
-                            title={previewBlockedByRouting ? clearanceReason : "Preview submission"}
+                            title="Preview submission"
                           >
                             {derivativePreviewLoading[previewChildId] ? "Loading…" : "Preview submission"}
                           </button>
