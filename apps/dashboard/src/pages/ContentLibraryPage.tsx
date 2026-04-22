@@ -3022,7 +3022,7 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                             </button>
                           </>
                         ) : null}
-                        {!isCleared && canVote && !isRemoteApproval && !viewerVote ? (
+                        {!isCleared && !isRemoteApproval && !viewerVote && Boolean(linkId) ? (
                           <>
                             <input
                               type="text"
