@@ -38331,19 +38331,8 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           });
           viewerVote = matchedByEmail?.decision || null;
         }
-        const clearanceToken =
-          approverEmailForToken && approvalTokenModel
-            ? await approvalTokenModel.findFirst({
-                where: {
-                  authorizationId: auth.id,
-                  approverEmail: emailEquals(approverEmailForToken),
-                  usedAt: null,
-                  expiresAt: { gt: new Date() }
-                },
-                orderBy: { createdAt: "desc" },
-                select: { token: true }
-              })
-            : null;
+        // ApprovalToken stores only tokenHash in SQLite schema, so we cannot reconstruct
+        // public /clearance/:token links here. Use invite-scoped clearance URL path.
         const childContentId = asString(auth.derivativeLink?.childContentId || "").trim();
         const previewTokenUserId = asString(auth.derivativeLink?.childContent?.ownerUserId || "").trim();
         let previewUrl = "";
@@ -38388,10 +38377,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
           previewUrl: previewUrl || `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}/preview`,
-          clearanceUrl:
-            clearanceToken?.token
-              ? `${clearanceBase}/clearance/${clearanceToken.token}`
-              : `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
+          clearanceUrl: `${inviteClearanceBase}/${encodeURIComponent(String(auth.id || ""))}`
         };
       })
     );
