@@ -2689,7 +2689,8 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
             <div className="space-y-2">
               {approvals.map((a) => {
                 const linkId = String(a?.linkId || "");
-                const isRemoteApproval = Boolean(String(a?.remoteOrigin || "").trim());
+                const remotePreviewUrl = String(a?.remotePreviewUrl || "").trim();
+                const isRemoteApproval = Boolean(String(a?.remoteOrigin || "").trim() || remotePreviewUrl);
                 const approvalKey = isRemoteApproval
                   ? `remote:${String(a?.remoteAuthorizationId || a?.authorizationId || "")}`
                   : `local:${linkId || String(a?.authorizationId || "")}`;
@@ -2727,7 +2728,7 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                   previewOrigin && previewInviteToken && previewAuthorizationId
                     ? `${previewOrigin.replace(/\/+$/, "")}/invites/${encodeURIComponent(previewInviteToken)}/clearance/${encodeURIComponent(previewAuthorizationId)}/preview`
                     : "";
-                const remoteDirectPreviewHref = String(a?.remotePreviewUrl || "").trim();
+                const remoteDirectPreviewHref = remotePreviewUrl;
                 const remotePublicPreviewHref =
                   previewOrigin && previewChildId
                     ? `${previewOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(previewChildId)}/preview-file`
@@ -2858,28 +2859,24 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                                 }));
                                 return;
                               }
-                              const previewWindow = window.open("", "_blank", "noopener,noreferrer");
-                              if (!previewWindow) {
-                                setDerivativePreviewError((m) => ({
-                                  ...m,
-                                  [previewChildId]: "Popup blocked. Allow popups for this site, then retry Preview submission."
-                                }));
-                                return;
-                              }
                               setDerivativePreviewLoading((m) => ({ ...m, [previewChildId]: true }));
                               setDerivativePreviewError((m) => ({ ...m, [previewChildId]: "" }));
                               api<any>(`/content/${encodeURIComponent(previewChildId)}/preview?public=1`, "GET")
                                 .then((res) => {
                                   const url = String(res?.previewUrl || "").trim();
                                   if (url) {
-                                    openPreviewUrlInNewTabOnly(url, previewWindow || null);
+                                    if (!openPreviewUrlInNewTabOnly(url)) {
+                                      setDerivativePreviewError((m) => ({
+                                        ...m,
+                                        [previewChildId]:
+                                          "Popup blocked. Allow popups for this site, then retry Preview submission."
+                                      }));
+                                    }
                                     return;
                                   }
-                                  if (previewWindow && !previewWindow.closed) previewWindow.close();
                                   setDerivativePreviewError((m) => ({ ...m, [previewChildId]: "No public preview URL available yet." }));
                                 })
                                 .catch((e: any) => {
-                                  if (previewWindow && !previewWindow.closed) previewWindow.close();
                                   setDerivativePreviewError((m) => ({ ...m, [previewChildId]: e?.message || "Preview failed" }));
                                 })
                                 .finally(() => {
