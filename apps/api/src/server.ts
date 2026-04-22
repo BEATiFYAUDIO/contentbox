@@ -26619,8 +26619,16 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
 
   await prisma.derivativeApprovalVote.upsert({
     where: { authorizationId_approverUserId: { authorizationId: ctx.auth.id, approverUserId: ctx.voterUserId } },
-    update: { decision },
-    create: { authorizationId: ctx.auth.id, approverUserId: ctx.voterUserId, decision }
+    update: {
+      decision,
+      approverSplitParticipantId: asString(ctx.inviteApprover?.splitParticipantId || "").trim() || null
+    },
+    create: {
+      authorizationId: ctx.auth.id,
+      approverUserId: ctx.voterUserId,
+      approverSplitParticipantId: asString(ctx.inviteApprover?.splitParticipantId || "").trim() || null,
+      decision
+    }
   });
 
   const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: ctx.auth.id } });
@@ -26636,6 +26644,11 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
   for (const v of votes) {
     const vEmail = voteUserEmailById.get(v.approverUserId) || "";
     const p = eligible.find((candidate) => {
+      const bySplitParticipantId = Boolean(
+        asString((v as any)?.approverSplitParticipantId || "").trim() &&
+          asString(candidate.splitParticipantId || "").trim() === asString((v as any)?.approverSplitParticipantId || "").trim()
+      );
+      if (bySplitParticipantId) return true;
       const byUserId = Boolean(candidate.participantUserId && candidate.participantUserId === v.approverUserId);
       const byEmail = Boolean(vEmail && normalizeEmail(candidate.participantEmail || "") === vEmail);
       return byUserId || byEmail;
