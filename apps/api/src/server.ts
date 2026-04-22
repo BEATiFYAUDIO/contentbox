@@ -39465,18 +39465,20 @@ async function start() {
 
     app.log.info({ count: methods.length }, "ensurePayoutMethods.start");
     try {
-      for (const m of methods) {
-        await prisma.payoutMethod.upsert({
-          where: { code: m.code },
-          update: {
-            displayName: m.displayName,
-            isEnabled: m.isEnabled,
-            isVisible: m.isVisible,
-            sortOrder: m.sortOrder
-          },
-          create: m
-        });
-      }
+      await Promise.all(
+        methods.map((m) =>
+          prisma.payoutMethod.upsert({
+            where: { code: m.code },
+            update: {
+              displayName: m.displayName,
+              isEnabled: m.isEnabled,
+              isVisible: m.isVisible,
+              sortOrder: m.sortOrder
+            },
+            create: m
+          })
+        )
+      );
     } catch (err) {
       app.log.error({ err }, "ensurePayoutMethods.failed");
       throw err;
@@ -39485,30 +39487,11 @@ async function start() {
   }
 
   await ensureNodeKeys();
-  await ensurePayoutMethods();
-  // Refresh provider verification posture on boot so connected-provider state
-  // rehydrates automatically after restart when config is already present.
-  await (async () => {
-    const cfg = getNetworkProviderConfig();
-    if (!isNetworkProviderConfigured(cfg)) return;
-    try {
-      const refreshed = await verifyConfiguredProvider(cfg);
-      persistProviderVerificationPosture(refreshed);
-    } catch (err: any) {
-      app.log.warn(
-        { err: String(err?.message || err) },
-        "providerConnection.startup_refresh.failed"
-      );
-    }
-  })();
   await preflightPrismaReadiness();
   await preflightDb();
   scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
-  await reconcileStaleForwardingRemittancesOnStartup().catch((err) => {
-    app.log.warn({ err: String((err as any)?.message || err) }, "providerRemittance.startup_reconcile.failed");
-  });
   persistRuntimeHealthFromApi({
     apiReady: true,
     reason: "normal_start",
@@ -39523,6 +39506,31 @@ async function start() {
       "Integrated dashboard build not found; API-only surface active on this runtime"
     );
   }
+  // Non-critical startup work runs after API is already listening to reduce
+  // perceived startup latency and avoid blocking local dashboard reconnect.
+  setTimeout(() => {
+    ensurePayoutMethods().catch((err) => {
+      app.log.warn({ err: String((err as any)?.message || err) }, "ensurePayoutMethods.deferred_failed");
+    });
+    // Refresh provider verification posture on boot so connected-provider
+    // state rehydrates automatically after restart when config is present.
+    (async () => {
+      const cfg = getNetworkProviderConfig();
+      if (!isNetworkProviderConfigured(cfg)) return;
+      try {
+        const refreshed = await verifyConfiguredProvider(cfg);
+        persistProviderVerificationPosture(refreshed);
+      } catch (err: any) {
+        app.log.warn(
+          { err: String(err?.message || err) },
+          "providerConnection.startup_refresh.failed"
+        );
+      }
+    })();
+    reconcileStaleForwardingRemittancesOnStartup().catch((err) => {
+      app.log.warn({ err: String((err as any)?.message || err) }, "providerRemittance.startup_reconcile.failed");
+    });
+  }, 10);
   const state = getPublicLinkState();
   if (state.mode !== "off") {
     const host = getPublicBindHost(state.mode);
