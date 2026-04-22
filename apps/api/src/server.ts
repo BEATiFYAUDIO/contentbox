@@ -22649,6 +22649,8 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     where: scope === "cleared" ? { status: "APPROVED" } : {},
     include: { derivativeLink: { include: { childContent: true, parentContent: true } } }
   });
+  const shareableOrigin = await resolveShareableInviteOrigin(req);
+  const publicPreviewBase = normalizePublicOriginBase(shareableOrigin || getPublicOrigin(req));
 
   const out: any[] = [];
   for (const a of auths) {
@@ -22742,6 +22744,30 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
                 : null
           }
         : null;
+    let previewUrl: string | null = null;
+    try {
+      const childContentId = asString(a.derivativeLink?.childContentId || "").trim();
+      const childOwnerUserId = asString(a.derivativeLink?.childContent?.ownerUserId || "").trim();
+      if (childContentId && childOwnerUserId && publicPreviewBase) {
+        const manifest = await prisma.manifest.findUnique({ where: { contentId: childContentId } }).catch(() => null);
+        const files = await prisma.contentFile
+          .findMany({ where: { contentId: childContentId }, orderBy: { createdAt: "asc" }, take: 1 })
+          .catch(() => []);
+        const manifestJson = (manifest?.json || {}) as any;
+        const primaryObjectKey =
+          (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+          (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+          (Array.isArray(manifestJson?.files) && manifestJson.files[0]?.path) ||
+          files[0]?.objectKey ||
+          "";
+        if (primaryObjectKey) {
+          const token = createPreviewToken(app, childOwnerUserId, childContentId, primaryObjectKey);
+          previewUrl =
+            `${publicPreviewBase}/buy/content/${encodeURIComponent(childContentId)}/preview-file` +
+            `?objectKey=${encodeURIComponent(primaryObjectKey)}&token=${encodeURIComponent(token)}`;
+        }
+      }
+    } catch {}
 
     out.push({
       authorizationId: a.id,
@@ -22759,6 +22785,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       approverCount: Number.isFinite(resolvedApproverCount) ? Math.max(0, resolvedApproverCount) : 0,
       approveWeightBps: Number(remoteStatus?.clearance?.approveWeightBps ?? a.approveWeightBps ?? 0),
       approvalBpsTarget: Number(remoteStatus?.clearance?.approvalBpsTarget ?? a.approvalBpsTarget ?? 6667),
+      previewUrl,
       clearanceRequest: effectiveClearanceRequest
     });
   }

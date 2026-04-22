@@ -2729,11 +2729,13 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                     ? `${previewOrigin.replace(/\/+$/, "")}/invites/${encodeURIComponent(previewInviteToken)}/clearance/${encodeURIComponent(previewAuthorizationId)}/preview`
                     : "";
                 const remoteDirectPreviewHref = remotePreviewUrl;
+                const localDirectPreviewHref = String(a?.previewUrl || "").trim();
                 const remotePublicPreviewHref =
                   previewOrigin && previewChildId
                     ? `${previewOrigin.replace(/\/+$/, "")}/public/content/${encodeURIComponent(previewChildId)}/preview-file`
                     : "";
-                const remotePreviewHref = remoteDirectPreviewHref || remoteInvitePreviewHref || remotePublicPreviewHref;
+                const approvalPreviewHref =
+                  remoteDirectPreviewHref || localDirectPreviewHref || remoteInvitePreviewHref || remotePublicPreviewHref;
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2819,9 +2821,9 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                             {isLoading ? "Loading…" : "Refresh"}
                           </button>
                         )}
-                        {previewChildId && isRemoteApproval && remotePreviewHref ? (
+                        {previewChildId && approvalPreviewHref ? (
                           <a
-                            href={remotePreviewHref}
+                            href={approvalPreviewHref}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
@@ -2836,8 +2838,8 @@ function openPreviewUrlInNewTabOnly(url: string, popupTarget?: Window | null): b
                             onClick={() => {
                               if (!previewChildId) return;
                               if (isRemoteApproval) {
-                                if (remotePreviewHref) {
-                                  if (!openPreviewUrlInNewTabOnly(remotePreviewHref)) {
+                                if (approvalPreviewHref) {
+                                  if (!openPreviewUrlInNewTabOnly(approvalPreviewHref)) {
                                     setActionMsgByApproval((m) => ({ ...m, [approvalKey]: "Popup blocked. Allow popups for this site." }));
                                   }
                                   return;
