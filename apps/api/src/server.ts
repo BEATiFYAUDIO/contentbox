@@ -22731,18 +22731,24 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         a.requiredApprovers ??
         (Array.isArray(eligible) ? eligible.length : 0)
     );
+    const safeIsoOrNull = (raw: unknown): string | null => {
+      if (!raw) return null;
+      try {
+        const d = raw instanceof Date ? raw : new Date(raw as any);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString();
+      } catch {
+        return null;
+      }
+    };
     const effectiveClearanceRequest =
       latestClearanceRequest || remoteStatus?.reviewGrantedAt
         ? {
             status: String(latestClearanceRequest?.status || a.status || "PENDING"),
-            requestedAt: latestClearanceRequest?.createdAt
-              ? latestClearanceRequest.createdAt.toISOString()
-              : null,
-            reviewGrantedAt: remoteStatus?.reviewGrantedAt
-              ? new Date(remoteStatus.reviewGrantedAt).toISOString()
-              : latestClearanceRequest?.reviewGrantedAt
-                ? latestClearanceRequest.reviewGrantedAt.toISOString()
-                : null
+            requestedAt: safeIsoOrNull(latestClearanceRequest?.createdAt),
+            reviewGrantedAt:
+              safeIsoOrNull(remoteStatus?.reviewGrantedAt) ||
+              safeIsoOrNull(latestClearanceRequest?.reviewGrantedAt)
           }
         : null;
     let previewUrl: string | null = null;
