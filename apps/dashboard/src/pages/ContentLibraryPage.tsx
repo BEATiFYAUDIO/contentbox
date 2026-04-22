@@ -623,6 +623,7 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
   const [derivativePreviewLoading, setDerivativePreviewLoading] = React.useState<Record<string, boolean>>({});
   const [derivativePreviewError, setDerivativePreviewError] = React.useState<Record<string, string>>({});
   const [reviewGrantMsgByContent, setReviewGrantMsgByContent] = React.useState<Record<string, string>>({});
+  const [reviewGrantLinkByContent, setReviewGrantLinkByContent] = React.useState<Record<string, string>>({});
   const [creditsByContent, setCreditsByContent] = React.useState<Record<string, ContentCredit[] | null>>({});
   const [creditsLoading, setCreditsLoading] = React.useState<Record<string, boolean>>({});
   const [creditNameDraft, setCreditNameDraft] = React.useState<Record<string, string>>({});
@@ -637,6 +638,13 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
   const [nodeModeSnapshot, setNodeModeSnapshot] = React.useState<NodeModeSnapshot | null>(null);
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
   const loadRequestRef = React.useRef(0);
+
+  function buildPublicClearancePreviewUrl(contentId: string): string {
+    const activeOrigin = String(publicStatus?.canonicalOrigin || publicStatus?.publicOrigin || "").trim();
+    const base = (activeOrigin || publicOriginFromApi || publicBuyOrigin || "").replace(/\/+$/, "");
+    if (!base) return "";
+    return `${base}/public/content/${encodeURIComponent(contentId)}/preview-file`;
+  }
 
   const [testPurchaseFor, setTestPurchaseFor] = React.useState<{
     contentId: string;
@@ -3908,9 +3916,20 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                                     }
                                     try {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "" }));
+                                      setReviewGrantLinkByContent((m) => ({ ...m, [it.id]: "" }));
                                       await api(`/content-links/${linkId}/grant-review`, "POST");
                                       await loadParentLink(it.id);
-                                      setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access granted to OG." }));
+                                      const previewUrl = buildPublicClearancePreviewUrl(it.id);
+                                      if (previewUrl) {
+                                        setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access granted to OG. Public preview link ready." }));
+                                        setReviewGrantLinkByContent((m) => ({ ...m, [it.id]: previewUrl }));
+                                      } else {
+                                        setReviewGrantMsgByContent((m) => ({
+                                          ...m,
+                                          [it.id]:
+                                            "Preview access granted to OG, but no public origin is configured yet. Set your named tunnel/public origin in Config."
+                                        }));
+                                      }
                                     } catch (e: any) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Grant failed." }));
                                     }
@@ -3933,6 +3952,7 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "" }));
                                       await api(`/content-links/${linkId}/revoke-review`, "POST");
                                       await loadParentLink(it.id);
+                                      setReviewGrantLinkByContent((m) => ({ ...m, [it.id]: "" }));
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: "Preview access revoked." }));
                                     } catch (e: any) {
                                       setReviewGrantMsgByContent((m) => ({ ...m, [it.id]: e?.message || "Revoke failed." }));
@@ -3961,6 +3981,28 @@ function openPreviewUrl(url: string, popupTarget?: Window | null) {
                               ) : null}
                               {reviewGrantMsgByContent[it.id] ? (
                                 <div className="mt-2 text-[11px] text-neutral-300">{reviewGrantMsgByContent[it.id]}</div>
+                              ) : null}
+                              {reviewGrantLinkByContent[it.id] ? (
+                                <div className="mt-2 rounded border border-neutral-800 bg-neutral-950/40 px-2 py-1.5">
+                                  <div className="text-[10px] text-neutral-500">Public preview URL (share with remote parent if needed)</div>
+                                  <div className="mt-1 flex items-center gap-2">
+                                    <a
+                                      href={reviewGrantLinkByContent[it.id]}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-[11px] text-sky-300 underline break-all"
+                                    >
+                                      {reviewGrantLinkByContent[it.id]}
+                                    </a>
+                                    <button
+                                      type="button"
+                                      className="text-[10px] rounded border border-neutral-700 px-2 py-0.5 hover:bg-neutral-900"
+                                      onClick={() => copyText(reviewGrantLinkByContent[it.id])}
+                                    >
+                                      Copy
+                                    </button>
+                                  </div>
+                                </div>
                               ) : null}
                               {clearanceRequestMsgByContent[it.id] ? (
                                 <div className="mt-2 text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
