@@ -1564,33 +1564,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
-  async function openRemoteInviteClearancePreview(
-    origin: string,
-    inviteToken: string,
-    remoteAuthorizationId: string,
-    childContentId: string
-  ) {
-    const base = String(origin || "").replace(/\/+$/, "");
-    const token = String(inviteToken || "").trim();
-    const authorizationId = String(remoteAuthorizationId || "").trim();
-    if (!base || !token || !authorizationId) {
-      setDerivativePreviewError((m) => ({ ...m, [childContentId]: "Missing preview routing context." }));
-      return;
-    }
-    setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
-    setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
-    try {
-      const url = `${base}/invites/${encodeURIComponent(token)}/clearance/${encodeURIComponent(
-        authorizationId
-      )}/preview`;
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e: any) {
-      setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
-    } finally {
-      setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
-    }
-  }
-
   function normalizeClearanceStatus(raw: unknown): "PENDING" | "REJECTED" | "APPROVED" {
     const status = String(raw || "").trim().toUpperCase();
     if (status === "APPROVED") return "APPROVED";
@@ -1686,17 +1659,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         }
         return;
       }
-      const remoteOrigin = String(approval?.remoteOrigin || "");
-      const inviteToken = String(approval?.remoteInviteToken || "");
-      const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "");
       const childContentId = String(approval?.childContentId || "");
-      if (inviteToken.trim() && remoteAuthorizationId.trim()) {
-        await openRemoteInviteClearancePreview(remoteOrigin, inviteToken, remoteAuthorizationId, childContentId);
-      } else {
-        const msg = "Missing remote clearance preview routing (invite token + authorization id required).";
-        setDerivativePreviewError((m) => ({ ...m, [childContentId]: msg }));
-        setError(msg);
-      }
+      const msg = "Missing remote direct review preview URL.";
+      setDerivativePreviewError((m) => ({ ...m, [childContentId]: msg }));
+      setError(msg);
       return;
     }
     const childContentId = String(approval?.childContentId || "").trim();

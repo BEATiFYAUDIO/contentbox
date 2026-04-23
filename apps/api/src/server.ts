@@ -22362,7 +22362,6 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   }
 
   const localRows: any[] = [];
-  const approvalTokenModel = (prisma as any).approvalToken;
   for (const a of latestLocalAuthByLink.values()) {
     const link = a.derivativeLink;
     if (!link || !isActionableDerivativeChildForClearanceInbox(link?.childContent)) continue;
@@ -22435,41 +22434,9 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     });
 
     const remoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(link?.childContent?.description || null));
+    const remoteReviewPreviewUrl = asString(getRemoteReviewPreviewUrlFromDescription(link?.childContent?.description || null) || "").trim() || null;
     const shouldHydrateRemoteRouting = Boolean(remoteOrigin) && (status === "PENDING" || status === "REJECTED");
-    let remoteInviteToken: string | null = null;
-    if (shouldHydrateRemoteRouting && approvalTokenModel) {
-      const approverEmail =
-        normalizeEmail(asString(principalResolution.ok ? principalResolution.principal?.participantEmail : "").trim()) ||
-        normalizeEmail(meEmail);
-      if (approverEmail) {
-        const tokenRow = await approvalTokenModel
-          .findFirst({
-            where: {
-              contentLinkId: link.id,
-              approverEmail: emailEquals(approverEmail),
-              usedAt: null,
-              expiresAt: { gt: new Date() }
-            },
-            orderBy: { createdAt: "desc" },
-            select: { token: true }
-          })
-          .catch(() => null);
-        remoteInviteToken = asString(tokenRow?.token || "").trim() || null;
-      }
-    }
     const remoteAuthorizationId = shouldHydrateRemoteRouting ? asString(a.id || "").trim() || null : null;
-    const remoteReviewPreviewUrl =
-      shouldHydrateRemoteRouting && remoteInviteToken && remoteAuthorizationId
-        ? `${remoteOrigin}/invites/${encodeURIComponent(remoteInviteToken)}/clearance/${encodeURIComponent(
-            remoteAuthorizationId
-          )}/preview`
-        : null;
-    const remoteClearanceUrl =
-      shouldHydrateRemoteRouting && remoteInviteToken && remoteAuthorizationId
-        ? `${remoteOrigin}/invites/${encodeURIComponent(remoteInviteToken)}/clearance/${encodeURIComponent(
-            remoteAuthorizationId
-          )}`
-        : null;
 
     localRows.push({
       authorizationId: a.id,
@@ -22499,9 +22466,9 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
           }
         : null,
       remoteOrigin,
-      remoteInviteToken,
+      remoteInviteToken: null,
       remoteAuthorizationId,
-      remoteClearanceUrl,
+      remoteClearanceUrl: null,
       remoteReviewPreviewUrl
     });
   }
@@ -22732,10 +22699,36 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     });
   }
 
+  const childOriginCandidates = [
+    await resolveShareableInviteOrigin(req),
+    normalizeOrigin(String(getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || "").trim()),
+    normalizeOrigin(getActivePublicOrigin()),
+    normalizeOrigin(getRemoteOriginFromDescription(child.description || null)),
+    normalizeOrigin(getPublicOrigin(req))
+  ].filter(Boolean) as string[];
+  const childPublicOrigin = pickShareableOrigin(...childOriginCandidates);
+  let childReviewPreviewUrl: string | null = null;
+  if (childPublicOrigin) {
+    const childManifest = await prisma.manifest.findUnique({ where: { contentId: child.id } }).catch(() => null);
+    const childFiles = await prisma.contentFile.findMany({ where: { contentId: child.id }, orderBy: { createdAt: "asc" } }).catch(() => []);
+    const manifestJson = (childManifest?.json || {}) as any;
+    const primaryObjectKey =
+      (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
+      (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
+      (Array.isArray(manifestJson?.files) && manifestJson.files[0]?.path) ||
+      childFiles[0]?.objectKey ||
+      null;
+    if (primaryObjectKey) {
+      const previewToken = createPreviewToken(app, userId, child.id, primaryObjectKey);
+      childReviewPreviewUrl = `${childPublicOrigin}/content/${encodeURIComponent(child.id)}/preview-file?objectKey=${encodeURIComponent(
+        primaryObjectKey
+      )}&token=${encodeURIComponent(previewToken)}`;
+    }
+  }
   // Generate external approval tokens for parent stakeholders (email-based)
   const ttlHours = Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168)));
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
-  const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
+  const approvalUrls: Array<{ email: string; url: string; weightBps: number; reviewPreviewUrl?: string | null }> = [];
 
   const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
@@ -22753,18 +22746,10 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         expiresAt
       }
     });
-    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
+    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps, reviewPreviewUrl: childReviewPreviewUrl });
   }
 
-  let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const childOriginCandidates = [
-    await resolveShareableInviteOrigin(req),
-    normalizeOrigin(String(getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || "").trim()),
-    normalizeOrigin(getActivePublicOrigin()),
-    normalizeOrigin(getRemoteOriginFromDescription(child.description || null)),
-    normalizeOrigin(getPublicOrigin(req))
-  ].filter(Boolean) as string[];
-  const childPublicOrigin = pickShareableOrigin(...childOriginCandidates);
+  let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number; reviewPreviewUrl?: string | null }> | null = null;
   if (remoteOrigin) {
     if (!childPublicOrigin) {
       return reply.code(409).send({
@@ -22788,6 +22773,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           parentContentId: link.parentContentId,
           childContentId: link.childContentId,
           childOrigin: childPublicOrigin,
+          childReviewPreviewUrl,
           mode,
           relation: link.relation,
           childTitle: child.title,
@@ -22863,6 +22849,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
     parentContentId?: string;
     childContentId?: string;
     childOrigin?: string;
+    childReviewPreviewUrl?: string;
     mode?: string;
     relation?: string;
     childTitle?: string;
@@ -22879,6 +22866,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
   const childOriginRaw = asString(body.childOrigin || "").trim();
   const childOriginNormalized = normalizeOrigin(childOriginRaw);
   const childOrigin = childOriginNormalized ? childOriginNormalized.replace(/\/+$/, "") : "";
+  const childReviewPreviewUrl = asString(body.childReviewPreviewUrl || "").trim() || null;
   const relationRaw = asString(body.relation || "derivative").trim().toLowerCase();
   const relation = (["remix", "mashup", "derivative"] as const).includes(relationRaw as any) ? (relationRaw as any) : "derivative";
   if (!parentContentId || !childContentId || !childOrigin) {
@@ -22908,6 +22896,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
 
   let child = await prisma.contentItem.findUnique({ where: { id: childContentId } });
   const canonicalChildOrigin = childOrigin.replace(/\/+$/, "");
+  const canonicalChildDescription = buildRemoteDescription(canonicalChildOrigin, childReviewPreviewUrl);
   if (!child) {
     const title = asString(body.childTitle || "").trim() || `Remote child ${childContentId}`;
     const typeRaw = asString(body.childType || "").trim().toLowerCase();
@@ -22921,15 +22910,16 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
         status: "published" as any,
         deletedAt: new Date(),
         deletedReason: "hard",
-        description: `Remote origin: ${canonicalChildOrigin}`
+        description: canonicalChildDescription
       }
     });
   } else {
     const existingOrigin = getRemoteOriginFromDescription(child.description || null);
-    if (existingOrigin !== canonicalChildOrigin) {
+    const existingPreview = asString(getRemoteReviewPreviewUrlFromDescription(child.description || null) || "").trim() || null;
+    if (existingOrigin !== canonicalChildOrigin || existingPreview !== childReviewPreviewUrl) {
       child = await prisma.contentItem.update({
         where: { id: childContentId },
-        data: { description: `Remote origin: ${canonicalChildOrigin}` }
+        data: { description: canonicalChildDescription }
       });
     }
   }
@@ -23013,7 +23003,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
 
   const ttlHours = Math.max(1, Math.min(24 * 30, num(process.env.CLEARANCE_TOKEN_TTL_HOURS || 168)));
   const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
-  const approvalUrls: Array<{ email: string; url: string; weightBps: number }> = [];
+  const approvalUrls: Array<{ email: string; url: string; weightBps: number; reviewPreviewUrl?: string | null }> = [];
 
   const clearanceBase = getPublicOrigin(req);
   for (const p of approvers) {
@@ -23031,7 +23021,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
         expiresAt
       }
     });
-    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps });
+    approvalUrls.push({ email, url: `${clearanceBase}/clearance/${token}`, weightBps, reviewPreviewUrl: childReviewPreviewUrl });
   }
 
   return reply.send({ ok: true, authorization: auth, approvalUrls, expiresAt });
@@ -32778,17 +32768,52 @@ async function getApproversForParent(parentContentId: string): Promise<{
   return { split, approvers: unique };
 }
 
-function getRemoteOriginFromDescription(desc?: string | null): string | null {
-  const d = String(desc || "").trim();
-  const lower = d.toLowerCase();
-  let prefix = "remote origin:";
-  if (lower.startsWith("remote child origin:")) {
-    prefix = "remote child origin:";
-  } else if (!lower.startsWith("remote origin:")) {
-    return null;
+function parseRemoteDescriptionMetadata(desc?: string | null): { origin: string | null; reviewPreviewUrl: string | null } {
+  const raw = String(desc || "").trim();
+  if (!raw) return { origin: null, reviewPreviewUrl: null };
+  const lines = raw
+    .split(/\r?\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  let origin: string | null = null;
+  let reviewPreviewUrl: string | null = null;
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    if (!origin && (lower.startsWith("remote origin:") || lower.startsWith("remote child origin:"))) {
+      const candidate = line.slice(line.indexOf(":") + 1).trim();
+      origin = candidate ? candidate.replace(/\/+$/, "") : null;
+      continue;
+    }
+    if (!reviewPreviewUrl && lower.startsWith("remote review preview:")) {
+      const candidate = line.slice("remote review preview:".length).trim();
+      reviewPreviewUrl = candidate || null;
+    }
   }
-  const origin = d.slice(prefix.length).trim();
-  return origin ? origin.replace(/\/+$/, "") : null;
+  // Backward compatibility with single-line legacy markers.
+  if (!origin) {
+    const legacy = raw.toLowerCase();
+    if (legacy.startsWith("remote origin:") || legacy.startsWith("remote child origin:")) {
+      const candidate = raw.slice(raw.indexOf(":") + 1).trim();
+      const firstToken = candidate.split(/\s+/)[0] || "";
+      origin = firstToken ? firstToken.replace(/\/+$/, "") : null;
+    }
+  }
+  return { origin, reviewPreviewUrl };
+}
+
+function buildRemoteDescription(origin: string, reviewPreviewUrl?: string | null): string {
+  const lines = [`Remote origin: ${String(origin || "").replace(/\/+$/, "")}`];
+  const review = asString(reviewPreviewUrl || "").trim();
+  if (review) lines.push(`Remote review preview: ${review}`);
+  return lines.join("\n");
+}
+
+function getRemoteOriginFromDescription(desc?: string | null): string | null {
+  return parseRemoteDescriptionMetadata(desc).origin;
+}
+
+function getRemoteReviewPreviewUrlFromDescription(desc?: string | null): string | null {
+  return parseRemoteDescriptionMetadata(desc).reviewPreviewUrl;
 }
 
 function isActionableDerivativeChildForClearanceInbox(
