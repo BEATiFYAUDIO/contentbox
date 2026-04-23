@@ -19,6 +19,23 @@ is_pid_alive() {
   [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1
 }
 
+kill_pid_tree() {
+  local pid="$1"
+  [[ -n "${pid}" ]] || return 0
+  if ! is_pid_alive "${pid}"; then
+    return 0
+  fi
+  local children
+  children="$(pgrep -P "${pid}" 2>/dev/null || true)"
+  if [[ -n "${children}" ]]; then
+    while IFS= read -r child; do
+      [[ -n "${child}" ]] || continue
+      kill_pid_tree "${child}"
+    done <<< "${children}"
+  fi
+  kill "${pid}" >/dev/null 2>&1 || true
+}
+
 read_pid_file() {
   local file="$1"
   [[ -f "${file}" ]] || return 1
@@ -52,7 +69,7 @@ kill_pid_from_file() {
   pid="$(read_pid_file "${file}" || true)"
   if [[ -n "${pid}" ]] && is_pid_alive "${pid}"; then
     echo "[dev-runtime] Stopping ${name} (pid ${pid})"
-    kill "${pid}" >/dev/null 2>&1 || true
+    kill_pid_tree "${pid}"
     for _ in {1..20}; do
       if ! is_pid_alive "${pid}"; then
         break
@@ -75,9 +92,15 @@ kill_stale_repo_processes() {
     echo "[dev-runtime] Cleaning stale repo processes: ${matches//$'\n'/ }"
     while IFS= read -r pid; do
       [[ -n "${pid}" ]] || continue
-      kill "${pid}" >/dev/null 2>&1 || true
+      kill_pid_tree "${pid}"
     done <<< "${matches}"
     sleep 0.6
+    while IFS= read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      if is_pid_alive "${pid}"; then
+        kill -9 "${pid}" >/dev/null 2>&1 || true
+      fi
+    done <<< "${matches}"
   fi
 }
 
@@ -168,7 +191,7 @@ show_status() {
     echo "[dev-runtime] Dashboard: n/a (served by API build on :4000)"
   fi
   echo "[dev-runtime] Watchers on ports:"
-  ss -ltnp 2>/dev/null | rg -n ":(4000|5173)\\b|LISTEN" || true
+  ss -ltnp 2>/dev/null | rg -n ":(4000|4010|5173)\\b" || true
 }
 
 stop_all() {

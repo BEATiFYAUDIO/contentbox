@@ -39685,23 +39685,48 @@ async function start() {
 
     app.log.info({ count: methods.length }, "ensurePayoutMethods.start");
     try {
+      const existing = await prisma.payoutMethod.findMany({
+        where: { code: { in: methods.map((m) => m.code) } },
+        select: {
+          code: true,
+          displayName: true,
+          isEnabled: true,
+          isVisible: true,
+          sortOrder: true
+        }
+      });
+      const byCode = new Map(existing.map((row) => [row.code, row]));
+      let created = 0;
+      let updated = 0;
       for (const m of methods) {
-        await prisma.payoutMethod.upsert({
+        const row = byCode.get(m.code);
+        if (!row) {
+          await prisma.payoutMethod.create({ data: m });
+          created += 1;
+          continue;
+        }
+        const needsUpdate =
+          row.displayName !== m.displayName ||
+          row.isEnabled !== m.isEnabled ||
+          row.isVisible !== m.isVisible ||
+          row.sortOrder !== m.sortOrder;
+        if (!needsUpdate) continue;
+        await prisma.payoutMethod.update({
           where: { code: m.code },
-          update: {
+          data: {
             displayName: m.displayName,
             isEnabled: m.isEnabled,
             isVisible: m.isVisible,
             sortOrder: m.sortOrder
-          },
-          create: m
+          }
         });
+        updated += 1;
       }
+      app.log.info({ count: methods.length, created, updated }, "ensurePayoutMethods.ok");
     } catch (err) {
       app.log.error({ err }, "ensurePayoutMethods.failed");
       throw err;
     }
-    app.log.info({ count: methods.length }, "ensurePayoutMethods.ok");
   }
 
   await ensureNodeKeys();
@@ -39725,9 +39750,11 @@ async function start() {
         );
       });
   }, 25);
-  await reconcileStaleForwardingRemittancesOnStartup().catch((err) => {
-    app.log.warn({ err: String((err as any)?.message || err) }, "providerRemittance.startup_reconcile.failed");
-  });
+  setTimeout(() => {
+    reconcileStaleForwardingRemittancesOnStartup().catch((err) => {
+      app.log.warn({ err: String((err as any)?.message || err) }, "providerRemittance.startup_reconcile.failed");
+    });
+  }, 25);
   persistRuntimeHealthFromApi({
     apiReady: true,
     reason: "normal_start",

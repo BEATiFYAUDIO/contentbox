@@ -2,6 +2,7 @@
   "name": "certifyd-workspace",
   "private": true,
   "scripts": {
+    "dev": "npm run dev:up",
     "dev:dashboard": "npm --prefix apps/dashboard run dev",
     "dev:api": "npm --prefix apps/api run dev",
     "dev:api:safe": "bash ./scripts/dev-api.sh",
