@@ -23150,35 +23150,25 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
     actorUserId: userId
   });
 
-  const tallied = await tallyApprovalBps(auth.id);
-  await prisma.derivativeAuthorization.update({
-    where: { id: auth.id },
-    data: {
-      approvedApprovers: tallied.approvedApprovers,
-      approveWeightBps: tallied.approveWeightBps,
-      rejectWeightBps: tallied.rejectWeightBps,
-      status: tallied.status
-    }
+  const { tallied, link: finalizedLink } = await applyDerivativeAuthorizationFinalization({
+    authorizationId: auth.id,
+    actorUserId: userId
   });
 
-  if (tallied.status === "APPROVED" && !link.approvedAt) {
-    if (link.upstreamBps !== upstreamRateBps) {
+  if (tallied.status === "APPROVED" && finalizedLink) {
+    if (finalizedLink.upstreamBps !== upstreamRateBps) {
       return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must match the fixed upstream rate." });
     }
-    const updated = await prisma.contentLink.update({
-      where: { id: link.id },
-      data: { approvedAt: new Date(), approvedByUserId: userId, requiresApproval: true }
-    });
     try {
       await prisma.auditEvent.create({
         data: {
           userId,
           action: "clearance.grant",
           entityType: "ContentLink",
-          entityId: updated.id,
+          entityId: finalizedLink.id,
           payloadJson: {
-            upstreamBps: updated.upstreamBps,
-            approvedAt: updated.approvedAt
+            upstreamBps: finalizedLink.upstreamBps,
+            approvedAt: finalizedLink.approvedAt
           } as any
         }
       });
@@ -26094,27 +26084,10 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     actorUserId: ctx.inviteUserId || `invite:${principal.splitParticipantId}`
   });
 
-  const tallied = await tallyApprovalBps(ctx.auth.id);
-  await prisma.derivativeAuthorization.update({
-    where: { id: ctx.auth.id },
-    data: {
-      approvedApprovers: tallied.approvedApprovers,
-      approveWeightBps: tallied.approveWeightBps,
-      rejectWeightBps: tallied.rejectWeightBps,
-      status: tallied.status
-    }
+  const { tallied, link: finalizedLink } = await applyDerivativeAuthorizationFinalization({
+    authorizationId: ctx.auth.id,
+    actorUserId: ctx.inviteUserId || null
   });
-
-  if (tallied.status === "APPROVED" && !link.approvedAt) {
-    await prisma.contentLink.update({
-      where: { id: link.id },
-      data: { approvedAt: new Date(), approvedByUserId: ctx.inviteUserId || null, requiresApproval: true }
-    });
-    await prisma.clearanceRequest.updateMany({
-      where: { contentLinkId: link.id, status: "PENDING" },
-      data: { status: "CLEARED" }
-    });
-  }
 
   if (decision === "reject" && rejectReason) {
     try {
@@ -26123,7 +26096,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
           userId: ctx.inviteUserId || "invite",
           action: "clearance.reject",
           entityType: "ContentLink",
-          entityId: link.id,
+          entityId: finalizedLink?.id || link.id,
           payloadJson: { reason: rejectReason, via: "invite_clearance" } as any
         }
       });
@@ -26301,42 +26274,26 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     actorUserId: emailUser?.id || `clearance:${principal.splitParticipantId}`
   });
 
-  const tallied = await tallyApprovalBps(auth.id);
-  await prisma.derivativeAuthorization.update({
-    where: { id: auth.id },
-    data: {
-      approvedApprovers: tallied.approvedApprovers,
-      approveWeightBps: tallied.approveWeightBps,
-      rejectWeightBps: tallied.rejectWeightBps,
-      status: tallied.status
-    }
+  const { tallied, link: finalizedLink } = await applyDerivativeAuthorizationFinalization({
+    authorizationId: auth.id,
+    actorUserId: emailUser?.id || null
   });
 
   if (process.env.NODE_ENV !== "production") {
     app.log.info({ linkId: link.id, approvedWeight: tallied.approveWeightBps }, "clearance.vote");
   }
 
-  if (tallied.status === "APPROVED") {
-    const updated = await prisma.contentLink.update({
-      where: { id: link.id },
-      data: { approvedAt: new Date(), approvedByUserId: emailUser?.id || null }
-    });
-
-    await prisma.clearanceRequest.updateMany({
-      where: { contentLinkId: link.id, status: "PENDING" },
-      data: { status: "CLEARED" }
-    });
-
+  if (tallied.status === "APPROVED" && finalizedLink) {
     try {
       await prisma.auditEvent.create({
         data: {
           userId: emailUser?.id || "external",
           action: "clearance.grant",
           entityType: "ContentLink",
-          entityId: updated.id,
+          entityId: finalizedLink.id,
           payloadJson: {
-            upstreamBps: updated.upstreamBps,
-            approvedAt: updated.approvedAt
+            upstreamBps: finalizedLink.upstreamBps,
+            approvedAt: finalizedLink.approvedAt
           } as any
         }
       });
@@ -32700,6 +32657,65 @@ async function tallyApprovalBps(authorizationId: string): Promise<{
   if (approveWeightBps >= target) status = "APPROVED";
   else if (rejectWeightBps >= target) status = "REJECTED";
   return { approveWeightBps, rejectWeightBps, approvedApprovers, status };
+}
+
+async function applyDerivativeAuthorizationFinalization(input: {
+  authorizationId: string;
+  actorUserId?: string | null;
+}): Promise<{
+  tallied: {
+    approveWeightBps: number;
+    rejectWeightBps: number;
+    approvedApprovers: number;
+    status: "PENDING" | "APPROVED" | "REJECTED";
+  };
+  link: { id: string; approvedAt: Date | null; upstreamBps: number | null } | null;
+}> {
+  const auth = await prisma.derivativeAuthorization.findUnique({
+    where: { id: input.authorizationId },
+    include: {
+      derivativeLink: {
+        select: { id: true, approvedAt: true, upstreamBps: true }
+      }
+    }
+  });
+  if (!auth || !auth.derivativeLink) throw new Error("Authorization not found");
+
+  const tallied = await tallyApprovalBps(auth.id);
+  await prisma.derivativeAuthorization.update({
+    where: { id: auth.id },
+    data: {
+      approvedApprovers: tallied.approvedApprovers,
+      approveWeightBps: tallied.approveWeightBps,
+      rejectWeightBps: tallied.rejectWeightBps,
+      status: tallied.status
+    }
+  });
+
+  let updatedLink: { id: string; approvedAt: Date | null; upstreamBps: number | null } | null = null;
+  if (tallied.status === "APPROVED") {
+    if (!auth.derivativeLink.approvedAt) {
+      updatedLink = await prisma.contentLink.update({
+        where: { id: auth.derivativeLink.id },
+        data: {
+          approvedAt: new Date(),
+          approvedByUserId: input.actorUserId || null,
+          requiresApproval: true
+        },
+        select: { id: true, approvedAt: true, upstreamBps: true }
+      });
+    } else {
+      updatedLink = auth.derivativeLink;
+    }
+    await prisma.clearanceRequest
+      .updateMany({
+        where: { contentLinkId: auth.derivativeLink.id, status: "PENDING" },
+        data: { status: "CLEARED" }
+      })
+      .catch(() => null);
+  }
+
+  return { tallied, link: updatedLink };
 }
 
 async function getApproversForParent(parentContentId: string): Promise<{
