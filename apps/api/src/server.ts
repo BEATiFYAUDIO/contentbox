@@ -22659,7 +22659,7 @@ app.post("/content-links/:linkId/request-clearance", { preHandler: requireAuth }
 });
 
 // Remote clearance request (child node -> parent node)
-app.post("/api/derivatives/remote-request", { preHandler: requireAuth }, async (req: any, reply) => {
+app.post("/api/derivatives/remote-request", { preHandler: requireFeature("derivative_work") }, async (req: any, reply) => {
   const clearanceCtx = getCapabilityContext();
   if (sendAdvancedInactive(reply, clearanceCtx)) return;
   if (!canRequestClearance(clearanceCtx)) {
