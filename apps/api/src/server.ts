@@ -33081,9 +33081,9 @@ function isActionableDerivativeChildForClearanceInbox(
   if (!child.deletedAt) return true;
   const deletedReason = asString(child.deletedReason || "").trim().toLowerCase();
   const remoteOrigin = getRemoteOriginFromDescription(child.description || null);
-  const hasLocalRepo = Boolean(asString(child.repoPath || "").trim());
-  // Keep true only for remote-shadow derivative records (hard-deleted + remote marker + no local repo).
-  return deletedReason === "hard" && Boolean(remoteOrigin) && !hasLocalRepo;
+  // Treat hard-deleted rows with a remote-origin marker as actionable remote-shadow records,
+  // even if a repoPath exists due local mirror/sync artifacts.
+  return deletedReason === "hard" && Boolean(remoteOrigin);
 }
 
 type CanonicalDerivativeWorkflowRow = {
