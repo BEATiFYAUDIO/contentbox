@@ -22495,8 +22495,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
     where: { id: link.parentContentId },
     select: { description: true, repoPath: true, deletedReason: true }
   });
-  const remoteOrigin =
-    parent && parent.deletedReason === "hard" && !parent.repoPath ? getRemoteOriginFromDescription(parent.description) : null;
+  const remoteOrigin = parent ? getRemoteOriginFromDescription(parent.description) : null;
   if (!remoteOrigin) {
     const parentSplit = await getLockedSplitForContent(link.parentContentId);
     if (!parentSplit || parentSplit.status !== "locked") {
@@ -22583,12 +22582,18 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
   const childPublicOrigin = getPublicOrigin(req);
   if (remoteOrigin) {
+    const authHeader = asString(req?.headers?.authorization || "").trim();
+    const cookieHeader = asString(req?.headers?.cookie || "").trim();
     try {
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 8000);
       const res = await fetch(`${remoteOrigin}/api/derivatives/remote-request`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(authHeader ? { Authorization: authHeader } : {}),
+          ...(cookieHeader ? { Cookie: cookieHeader } : {})
+        },
         body: JSON.stringify({
           parentContentId: link.parentContentId,
           childContentId: link.childContentId,
@@ -22605,8 +22610,27 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
       clearTimeout(timeout);
       if (res.ok && Array.isArray(data?.approvalUrls)) {
         remoteApprovalUrls = data.approvalUrls;
+      } else {
+        app.log.warn(
+          {
+            linkId,
+            remoteOrigin,
+            statusCode: res.status,
+            response: data
+          },
+          "derivatives.remote_request.failed"
+        );
       }
-    } catch {}
+    } catch (err: any) {
+      app.log.warn(
+        {
+          linkId,
+          remoteOrigin,
+          error: String(err?.message || err || "unknown_error")
+        },
+        "derivatives.remote_request.error"
+      );
+    }
   }
 
   return reply.send({ ok: true, authorization: auth, approvalUrls, remoteApprovalUrls, expiresAt });
