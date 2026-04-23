@@ -22284,6 +22284,33 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     if (parentContentId && childContentId) return `pair:${parentContentId}:${childContentId}`;
     return `auth:${asString(row?.authorizationId || "").trim()}`;
   };
+  const normalizeWorkflowTitle = (raw: unknown) => asString(raw || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const activeWorkflowKey = (row: any) => {
+    const parentContentId = asString(row?.parentContentId || "").trim();
+    const parentSplitVersionId = asString(row?.parentSplitVersionId || "").trim();
+    const relation = asString(row?.relation || "").trim().toLowerCase();
+    const childTitle = normalizeWorkflowTitle(row?.childTitle || "");
+    const upstreamBpsNum = Number(row?.upstreamBps);
+    const upstreamBps = Number.isFinite(upstreamBpsNum) ? Math.max(0, Math.round(upstreamBpsNum)) : 0;
+    return `${parentContentId}::${parentSplitVersionId}::${relation}::${childTitle}::${upstreamBps}`;
+  };
+  const isActiveStatus = (status: unknown) => {
+    const normalized = normalizeStatus(status);
+    return normalized === "PENDING" || normalized === "REJECTED";
+  };
+  const hasActionableRoute = (row: any) => {
+    const remoteClearanceUrl = asString(row?.remoteClearanceUrl || "").trim();
+    const remoteAuthorizationId = asString(row?.remoteAuthorizationId || "").trim();
+    const remoteOrigin = normalizeRemoteOrigin(row?.remoteOrigin || "");
+    const linkId = asString(row?.linkId || "").trim();
+    return Boolean(remoteClearanceUrl || (remoteAuthorizationId && remoteOrigin) || linkId);
+  };
+  const activeWorkflowRowRank = (row: any) => {
+    const requestedAtTs = Date.parse(String(row?.clearanceRequest?.requestedAt || "")) || 0;
+    const canVote = row?.canVote ? 1 : 0;
+    const actionable = hasActionableRoute(row) ? 1 : 0;
+    return requestedAtTs * 100 + canVote * 10 + actionable;
+  };
 
   const auths = await prisma.derivativeAuthorization.findMany({
     include: { derivativeLink: { include: { childContent: true, parentContent: true } } },
@@ -22494,7 +22521,37 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const bTs = Date.parse(String(b?.clearanceRequest?.requestedAt || "")) || 0;
     return bTs - aTs;
   });
-  return reply.send(out);
+
+  // Inbox-only workflow dedupe for active derivative clearance rows.
+  // Keeps one active row per logical workflow while preserving underlying data.
+  const applyActiveWorkflowDedupe = scope === "pending" || scope === "all";
+  if (!applyActiveWorkflowDedupe) return reply.send(out);
+
+  const inactiveRows: any[] = [];
+  const activeByWorkflow = new Map<string, any>();
+  for (const row of out) {
+    if (!isActiveStatus(row?.status)) {
+      inactiveRows.push(row);
+      continue;
+    }
+    const key = activeWorkflowKey(row);
+    const existing = activeByWorkflow.get(key);
+    if (!existing) {
+      activeByWorkflow.set(key, row);
+      continue;
+    }
+    const winner = activeWorkflowRowRank(row) >= activeWorkflowRowRank(existing) ? row : existing;
+    const loser = winner === row ? existing : row;
+    activeByWorkflow.set(key, mergeRows(winner, loser));
+  }
+
+  const dedupedActiveRows = Array.from(activeByWorkflow.values());
+  const finalOut = [...dedupedActiveRows, ...inactiveRows].sort((a, b) => {
+    const aTs = Date.parse(String(a?.clearanceRequest?.requestedAt || "")) || 0;
+    const bTs = Date.parse(String(b?.clearanceRequest?.requestedAt || "")) || 0;
+    return bTs - aTs;
+  });
+  return reply.send(finalOut);
 });
 
 app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth }, async (req: any, reply) => {
