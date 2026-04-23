@@ -22238,8 +22238,8 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     isRequester?: boolean;
   }) => {
     const hasViewerVote = Boolean(asString(input.viewerVote || "").trim());
-    if (scope === "pending") return (input.status === "PENDING" || input.status === "REJECTED") && (!hasViewerVote || Boolean(input.isRequester));
-    if (scope === "voted") return hasViewerVote;
+    if (scope === "pending") return (input.status === "PENDING" || input.status === "REJECTED") && !hasViewerVote;
+    if (scope === "voted") return hasViewerVote && input.status !== "APPROVED";
     if (scope === "cleared") return input.status === "APPROVED" && (input.isEligible || hasViewerVote || Boolean(input.isRequester));
     return input.isEligible || hasViewerVote || Boolean(input.isRequester);
   };
