@@ -22572,6 +22572,24 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     remoteStatusByPair.set(key, work);
     return work;
   };
+  const userDisplayCache = new Map<string, { displayName: string | null; email: string | null }>();
+  const getUserDisplayMapCached = async (
+    userIds: string[]
+  ): Promise<Map<string, { displayName: string | null; email: string | null }>> => {
+    const ids = Array.from(new Set((userIds || []).map((id) => asString(id || "").trim()).filter(Boolean)));
+    if (!ids.length) return new Map();
+    const missing = ids.filter((id) => !userDisplayCache.has(id));
+    if (missing.length) {
+      const fetched = await buildUserDisplayMap(missing);
+      for (const [id, value] of fetched.entries()) userDisplayCache.set(id, value);
+    }
+    const out = new Map<string, { displayName: string | null; email: string | null }>();
+    for (const id of ids) {
+      const value = userDisplayCache.get(id);
+      if (value) out.set(id, value);
+    }
+    return out;
+  };
 
   const auths = await prisma.derivativeAuthorization.findMany({
     include: { derivativeLink: { include: { childContent: true, parentContent: true } } },
@@ -22583,9 +22601,19 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     if (!linkId || latestLocalAuthByLink.has(linkId)) continue;
     latestLocalAuthByLink.set(linkId, auth);
   }
+  const localAuthRows = Array.from(latestLocalAuthByLink.values());
+  for (const auth of localAuthRows) {
+    const link = auth.derivativeLink;
+    if (!link || !isActionableDerivativeChildForClearanceInbox(link?.childContent)) continue;
+    const parentRemoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(link?.parentContent?.description || null));
+    if (!parentRemoteOrigin) continue;
+    const status = normalizeStatus(auth.status);
+    if (!(isActiveStatus(status) || status === "APPROVED")) continue;
+    void fetchRemoteWorkflowStatus(parentRemoteOrigin, auth.parentContentId, link.childContentId);
+  }
 
   const localRows: any[] = [];
-  for (const a of latestLocalAuthByLink.values()) {
+  for (const a of localAuthRows) {
     const link = a.derivativeLink;
     if (!link || !isActionableDerivativeChildForClearanceInbox(link?.childContent)) continue;
 
@@ -22650,7 +22678,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
           .filter(Boolean)
       )
     );
-    const userDisplayMap = await buildUserDisplayMap(participantUserIds);
+    const userDisplayMap = await getUserDisplayMapCached(participantUserIds);
     const shareholders = principalCtx.principals.map((principal) => {
       const userMeta = principal.participantUserId ? userDisplayMap.get(principal.participantUserId) : null;
       const displayName =
