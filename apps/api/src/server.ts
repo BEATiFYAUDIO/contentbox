@@ -22312,11 +22312,11 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   const normalizeWorkflowTitle = (raw: unknown) => asString(raw || "").trim().toLowerCase().replace(/\s+/g, " ");
   const activeWorkflowKey = (row: any) => {
     const parentContentId = asString(row?.parentContentId || "").trim();
-    const parentSplitVersionId = asString(row?.parentSplitVersionId || "").trim();
+    const childContentId = asString(row?.childContentId || "").trim();
     const relation = asString(row?.relation || "").trim().toLowerCase();
     const upstreamBpsNum = Number(row?.upstreamBps);
     const upstreamBps = Number.isFinite(upstreamBpsNum) ? Math.max(0, Math.round(upstreamBpsNum)) : 0;
-    return `${parentContentId}::${parentSplitVersionId}::${relation}::${upstreamBps}`;
+    return `${parentContentId}::${childContentId}::${relation}::${upstreamBps}`;
   };
   const isActiveStatus = (status: unknown) => {
     const normalized = normalizeStatus(status);
