@@ -22470,7 +22470,7 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
     where: { derivativeLinkId: linkId },
     orderBy: { createdAt: "asc" }
   });
-  const parentSplit = await getParentLockedSplitSnapshotForDerivative({
+  const parentSplit = await getParentLockedSplitSnapshotForDerivativeApprovals({
     id: link.id,
     parentContentId: link.parentContentId,
     parentSplitVersionId: link.parentSplitVersionId || null
@@ -25625,7 +25625,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     }
   });
 
-  const parentSplit = await getParentLockedSplitSnapshotForDerivative({
+  const parentSplit = await getParentLockedSplitSnapshotForDerivativeApprovals({
     id: link.id,
     parentContentId: link.parentContentId,
     parentSplitVersionId: link.parentSplitVersionId || null
@@ -31356,6 +31356,25 @@ async function getParentLockedSplitSnapshotForDerivative(link: {
   return parentSplit;
 }
 
+async function getParentLockedSplitSnapshotForDerivativeApprovals(link: {
+  id?: string | null;
+  parentContentId: string;
+  parentSplitVersionId?: string | null;
+}) {
+  const parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
+  const parentSplit = await prisma.splitVersion.findUnique({
+    where: { id: parentSplitVersionId },
+    include: { participants: true }
+  });
+  if (!parentSplit || parentSplit.status !== "locked") {
+    const err: any = new Error("PARENT_SPLIT_NOT_LOCKED");
+    err.code = "PARENT_SPLIT_NOT_LOCKED";
+    err.statusCode = 409;
+    throw err;
+  }
+  return parentSplit;
+}
+
 function inferLockedParticipantIdentityRef(participant: any): string | null {
   const acceptedIdentityRef = asString(participant?.invitation?.acceptedIdentityRef || "").trim();
   if (acceptedIdentityRef) return acceptedIdentityRef;
@@ -31802,7 +31821,7 @@ async function getDerivativeApproverPrincipalsForAuthorization(input: {
   derivativeLinkId: string | null;
   parentSplitVersionId: string | null;
 }) {
-  const parentSplit = await getParentLockedSplitSnapshotForDerivative({
+  const parentSplit = await getParentLockedSplitSnapshotForDerivativeApprovals({
     id: input.derivativeLinkId,
     parentContentId: input.parentContentId,
     parentSplitVersionId: input.parentSplitVersionId
@@ -31980,7 +31999,17 @@ async function getApproversForParent(parentContentId: string): Promise<{
   split: any | null;
   approvers: ApproverInfo[];
 }> {
-  const split = await getLockedSplitForContent(parentContentId);
+  const versions = await prisma.splitVersion.findMany({
+    where: { contentId: parentContentId },
+    orderBy: { versionNumber: "desc" },
+    include: { participants: true }
+  });
+  const content = await prisma.contentItem.findUnique({ where: { id: parentContentId } });
+  const selected = pickLockedSplitVersionForCommerce(
+    versions as Array<{ id: string; versionNumber: number; status: string; participants: any[] }>,
+    content?.currentSplitId || null
+  );
+  const split = selected ? versions.find((row) => row.id === selected.id) || null : null;
   const participants = split?.participants || [];
 
   const acceptedRefs = await prisma.splitParticipant.findMany({
