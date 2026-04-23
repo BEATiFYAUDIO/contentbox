@@ -1677,7 +1677,22 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
     const childContentId = String(approval?.childContentId || "").trim();
     if (!childContentId) return;
-    await loadDerivativePreview(childContentId);
+    setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
+    setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
+    try {
+      const res = await api<any>(`/content/${encodeURIComponent(childContentId)}/preview`, "GET");
+      setDerivativePreviewByChild((m) => ({ ...m, [childContentId]: res || null }));
+      const previewUrl = String(res?.previewUrl || "").trim();
+      if (previewUrl) {
+        window.open(previewUrl, "_blank", "noopener,noreferrer");
+      } else {
+        await loadDerivativePreview(childContentId);
+      }
+    } catch (e: any) {
+      setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Preview failed" }));
+    } finally {
+      setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
+    }
   }
 
   async function loadCredits(contentId: string) {
@@ -2692,6 +2707,8 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const isCleared = status === "APPROVED";
                 const isRejected = status === "REJECTED";
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
+                const viewerVoteLabel =
+                  viewerVote === "approve" ? "approved" : viewerVote === "reject" ? "rejected" : viewerVote;
                 const hasRemoteVoteRouting = Boolean(String(a?.remoteVoteRoute || "").trim());
                 const hasLocalVoteRouting = Boolean(linkId);
                 const canVote = Boolean(a?.canVote) && (hasLocalVoteRouting || hasRemoteVoteRouting);
@@ -2701,7 +2718,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const voteBlockedReason = !crossNodeAllowed
                   ? clearanceReason
                   : !canVote
-                    ? isRemoteApproval
+                    ? viewerVote
+                      ? `You ${viewerVoteLabel}.`
+                      : isRemoteApproval
                       ? "Vote route not available yet. Click Refresh to sync latest clearance routing."
                       : "You are not an eligible approver for this clearance request."
                     : "";
@@ -2744,7 +2763,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         <div className="text-[11px] text-neutral-500 mt-1">
                           Clearance: {isCleared ? "Cleared" : isRejected ? "Needs changes" : "Pending"} • Rights holders approved: {approvedApprovers} of{" "}
                           {approverCount || "?"}
-                          {viewerVote ? ` • You ${viewerVote}` : ""}
+                          {viewerVote ? ` • You ${viewerVoteLabel}` : ""}
                         </div>
                         {shareholderLabels.length > 0 ? (
                           <div className="text-[11px] text-neutral-400 mt-1">
@@ -2851,9 +2870,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       </div>
                     ) : null}
                     {isRemoteApproval && !canVote ? (
+                      !viewerVote && !isCleared ? (
                       <div className="mt-2 text-[11px] text-amber-300">
                         Vote route not available yet. Click Refresh to sync latest clearance routing.
                       </div>
+                      ) : null
                     ) : null}
 
                     <div className="mt-2 h-2 rounded-full bg-neutral-900 border border-neutral-800 overflow-hidden">

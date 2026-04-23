@@ -37913,9 +37913,26 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
     const approvalTokenModel = (prisma as any).approvalToken;
     clearanceInbox = await Promise.all(
       actionableAuths.map(async (auth) => {
-        const viewerVote = inviteUserId
+        let viewerVote = inviteUserId
           ? auth.votes.find((v) => String(v.approverUserId || "") === inviteUserId)?.decision || null
           : null;
+        if (!viewerVote && approverEmailForToken) {
+          const principalCtx = await getDerivativeApproverPrincipalsForAuthorization({
+            authorizationId: auth.id,
+            parentContentId: auth.parentContentId,
+            derivativeLinkId: asString(auth.derivativeLink?.id || "").trim() || null,
+            parentSplitVersionId: asString(auth.derivativeLink?.parentSplitVersionId || "").trim() || null
+          }).catch(() => null);
+          const emailPrincipal = principalCtx?.principals?.find(
+            (p) => normalizeEmail(asString(p?.participantEmail || "")) === approverEmailForToken
+          );
+          if (emailPrincipal) {
+            viewerVote =
+              auth.votes.find(
+                (v) => asString(v.approverSplitParticipantId || "").trim() === asString(emailPrincipal.splitParticipantId || "").trim()
+              )?.decision || null;
+          }
+        }
         const clearanceToken =
           approverEmailForToken && approvalTokenModel
             ? await approvalTokenModel.findFirst({
