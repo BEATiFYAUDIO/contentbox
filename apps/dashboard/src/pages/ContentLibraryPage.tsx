@@ -128,19 +128,6 @@ function isLoopbackUrl(u?: string | null): boolean {
   }
 }
 
-function extractInviteTokenFromUrl(url: string | null | undefined): string | null {
-  const raw = String(url || "").trim();
-  if (!raw) return null;
-  try {
-    const parsed = new URL(raw);
-    const m = parsed.pathname.match(/\/invite\/([^/?#]+)/i);
-    return m?.[1] ? decodeURIComponent(m[1]) : null;
-  } catch {
-    const m = raw.match(/\/invite\/([^/?#]+)/i);
-    return m?.[1] ? decodeURIComponent(m[1]) : null;
-  }
-}
-
 type SplitVersion = {
   id: string;
   contentId: string;
@@ -488,6 +475,8 @@ export default function ContentLibraryPage({
   const [approvals, setApprovals] = React.useState<any[]>([]);
   const [approvalsLoading, setApprovalsLoading] = React.useState(false);
   const [rejectReasonByApproval, setRejectReasonByApproval] = React.useState<Record<string, string>>({});
+  const [clearanceSubmittingByApproval, setClearanceSubmittingByApproval] = React.useState<Record<string, boolean>>({});
+  const clearanceSubmittingRef = React.useRef<Record<string, boolean>>({});
   const [clearanceLoadError, setClearanceLoadError] = React.useState<string | null>(null);
   const [manifestPreviewByContent, setManifestPreviewByContent] = React.useState<
     Record<string, { open: boolean; loading: boolean; data?: any; error?: string | null }>
@@ -608,8 +597,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
   const [networkPublishByContent, setNetworkPublishByContent] = React.useState<Record<string, NetworkPublishState | null>>({});
   const [pendingOpenContentId, setPendingOpenContentId] = React.useState<string | null>(null);
-  const [clearanceByLink, setClearanceByLink] = React.useState<Record<string, any | null>>({});
-  const [clearanceLoadingByLink, setClearanceLoadingByLink] = React.useState<Record<string, boolean>>({});
   const [nodeModeSnapshot, setNodeModeSnapshot] = React.useState<NodeModeSnapshot | null>(null);
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
   const loadRequestRef = React.useRef(0);
@@ -1122,16 +1109,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, derivativesAllowed, meId, parentLinkByContent]);
 
-  React.useEffect(() => {
-    if (!showClearance || approvals.length === 0) return;
-    approvals.forEach((a) => {
-      const linkId = String(a?.linkId || "");
-      if (!linkId) return;
-      if (!clearanceLoadingByLink[linkId]) loadClearanceSummary(linkId);
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showClearance, approvals]);
-
   async function loadFiles(contentId: string) {
     setFilesLoading((m) => ({ ...m, [contentId]: true }));
     try {
@@ -1627,142 +1604,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     return "PENDING";
   }
 
-  function buildRemoteApprovalRows(
-    remoteRows: any[],
-    scope: "pending" | "voted" | "cleared"
-  ): any[] {
-    return (Array.isArray(remoteRows) ? remoteRows : [])
-      .flatMap((row) => {
-        const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
-        const inviteId = String(row?.id || "").trim();
-        const inviteToken = extractInviteTokenFromUrl(String(row?.inviteUrl || ""));
-        const inviteStatus = String(row?.status || "").trim().toLowerCase();
-        const tombstonedAt = String(row?.tombstonedAt || "").trim();
-        const revokedAt = String(row?.revokedAt || "").trim();
-        const contentDeletedAt = String(row?.contentDeletedAt || "").trim();
-        const staleInvite =
-          Boolean(tombstonedAt) ||
-          Boolean(revokedAt) ||
-          Boolean(contentDeletedAt) ||
-          inviteStatus === "revoked" ||
-          inviteStatus === "tombstoned";
-        if (staleInvite) return [];
-        const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
-        return inbox
-          .map((entry: any) => {
-            const remoteAuthorizationId = String(entry?.authorizationId || "").trim();
-            const parentContentId = String(entry?.parentContentId || "").trim();
-            const childContentId = String(entry?.childContentId || "").trim();
-            if (!remoteAuthorizationId || !parentContentId || !childContentId || !remoteOrigin || !inviteToken) return null;
-            return {
-              authorizationId: `remote:${remoteOrigin}:${remoteAuthorizationId}`,
-              remoteAuthorizationId,
-              linkId: "",
-              parentContentId,
-              parentTitle: entry?.parentTitle || null,
-              childContentId,
-              childTitle: entry?.childTitle || null,
-              relation: entry?.relation || "derivative",
-              status: normalizeClearanceStatus(entry?.status),
-              viewerVote: entry?.viewerVote || null,
-              remoteOrigin,
-              remoteChildOrigin: String(entry?.childOrigin || "").trim() || null,
-              remoteInviteId: inviteId,
-              remoteInviteToken: inviteToken,
-              remoteClearanceUrl: entry?.clearanceUrl || null,
-              approveWeightBps: Number(entry?.approveWeightBps || 0),
-              approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
-              approvedApprovers: Number(entry?.approvedApprovers || 0),
-              approverCount: Number(entry?.approverCount || 0),
-              upstreamRatePercent:
-                Number.isFinite(Number(entry?.upstreamRatePercent))
-                  ? Number(entry.upstreamRatePercent)
-                  : null,
-              clearanceRequest: {
-                status: String(entry?.requestStatus || "PENDING"),
-                requestedAt: String(entry?.requestedAt || "").trim() || null,
-                reviewGrantedAt: String(entry?.reviewGrantedAt || "").trim() || null
-              }
-            };
-          })
-          .filter(Boolean)
-          .filter((entry: any) => {
-            const status = normalizeClearanceStatus(entry.status);
-            const voted = Boolean(String(entry.viewerVote || "").trim());
-            if (scope === "pending") return (status === "PENDING" || status === "REJECTED") && !voted;
-            if (scope === "voted") return voted;
-            if (scope === "cleared") return status === "APPROVED";
-            return true;
-          });
-      });
-  }
-
-  function dedupeApprovals(rows: any[]): any[] {
-    const keyForRow = (row: any) => {
-      const remoteAuthorizationId = String(row?.remoteAuthorizationId || "").trim();
-      const remoteOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "");
-      if (remoteAuthorizationId && remoteOrigin) return `remote:${remoteOrigin}:${remoteAuthorizationId}`;
-      const linkId = String(row?.linkId || "").trim();
-      if (linkId) return `local:${linkId}`;
-      const parentContentId = String(row?.parentContentId || "").trim();
-      const childContentId = String(row?.childContentId || "").trim();
-      if (parentContentId && childContentId) return `pair:${parentContentId}:${childContentId}`;
-      return `auth:${String(row?.authorizationId || "").trim()}`;
-    };
-    const scoreRow = (row: any) => {
-      const status = normalizeClearanceStatus(row?.status);
-      const statusScore = status === "APPROVED" ? 3 : status === "REJECTED" ? 2 : 1;
-      const approvedBps = Number(row?.approveWeightBps || 0);
-      const approvedApprovers = Number(row?.approvedApprovers || 0);
-      const requestTs = Date.parse(String(row?.clearanceRequest?.requestedAt || "")) || 0;
-      const previewTs = Date.parse(String(row?.clearanceRequest?.reviewGrantedAt || "")) || 0;
-      const hasVote = String(row?.viewerVote || "").trim() ? 1 : 0;
-      return (
-        statusScore * 1_000_000_000 +
-        approvedBps * 1_000_000 +
-        approvedApprovers * 10_000 +
-        hasVote * 1_000 +
-        Math.max(requestTs, previewTs)
-      );
-    };
-    const mergeRows = (best: any, incoming: any) => {
-      const merged = { ...best };
-      const takeIfMissing = (field: string) => {
-        const current = merged[field];
-        const next = incoming?.[field];
-        if ((current === null || current === undefined || current === "") && next !== null && next !== undefined && next !== "") {
-          merged[field] = next;
-        }
-      };
-      takeIfMissing("remoteOrigin");
-      takeIfMissing("remoteInviteToken");
-      takeIfMissing("remoteAuthorizationId");
-      takeIfMissing("remoteChildOrigin");
-      takeIfMissing("remoteClearanceUrl");
-      takeIfMissing("linkId");
-      takeIfMissing("parentTitle");
-      takeIfMissing("childTitle");
-      if (!Array.isArray(merged.shareholders) || merged.shareholders.length === 0) {
-        if (Array.isArray(incoming?.shareholders) && incoming.shareholders.length > 0) merged.shareholders = incoming.shareholders;
-      }
-      if (!Array.isArray(merged.approvers) || merged.approvers.length === 0) {
-        if (Array.isArray(incoming?.approvers) && incoming.approvers.length > 0) merged.approvers = incoming.approvers;
-      }
-      return merged;
-    };
-    const dedupedMap = new Map<string, any>();
-    for (const row of rows) {
-      const key = keyForRow(row);
-      const existing = dedupedMap.get(key);
-      if (!existing) {
-        dedupedMap.set(key, row);
-        continue;
-      }
-      const winner = scoreRow(row) >= scoreRow(existing) ? row : existing;
-      const loser = winner === row ? existing : row;
-      dedupedMap.set(key, mergeRows(winner, loser));
-    }
-    return Array.from(dedupedMap.values());
+  function clearanceApprovalKey(approval: any): string {
+    const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "").trim();
+    const remoteOrigin = String(approval?.remoteOrigin || "").replace(/\/+$/, "");
+    if (remoteAuthorizationId && remoteOrigin) return `remote:${remoteOrigin}:${remoteAuthorizationId}`;
+    const linkId = String(approval?.linkId || "").trim();
+    if (linkId) return `local:${linkId}`;
+    const authorizationId = String(approval?.authorizationId || "").trim();
+    if (authorizationId) return `auth:${authorizationId}`;
+    return "unknown";
   }
 
   async function submitClearanceDecision(
@@ -1770,46 +1620,59 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     decision: "approve" | "reject",
     note: string
   ) {
-    const isRemoteApproval = Boolean(String(approval?.remoteOrigin || "").trim());
-    if (isRemoteApproval) {
-      const inviteToken = String(approval?.remoteInviteToken || "").trim();
-      const remoteOrigin = String(approval?.remoteOrigin || "").trim();
-      const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "").trim();
-      if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
-        setError("Missing remote vote routing context.");
-        return;
-      }
-      await api(
-        `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
-          remoteAuthorizationId
-        )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
-        "POST",
-        {
-          decision,
-          reason: note || undefined,
-          upstreamRatePercent:
-            Number.isFinite(Number(approval?.upstreamRatePercent)) && Number(approval?.upstreamRatePercent) >= 0
-              ? Number(approval.upstreamRatePercent)
-              : 0
+    const approvalKey = clearanceApprovalKey(approval);
+    if (clearanceSubmittingRef.current[approvalKey]) return;
+    clearanceSubmittingRef.current[approvalKey] = true;
+    setClearanceSubmittingByApproval((m) => ({ ...m, [approvalKey]: true }));
+    try {
+      const isRemoteApproval = Boolean(String(approval?.remoteOrigin || "").trim());
+      if (isRemoteApproval) {
+        const inviteToken = String(approval?.remoteInviteToken || "").trim();
+        const remoteOrigin = String(approval?.remoteOrigin || "").trim();
+        const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "").trim();
+        if (!inviteToken || !remoteOrigin || !remoteAuthorizationId) {
+          setError("Missing remote vote routing context.");
+          return;
         }
-      );
-    } else {
-      const linkId = String(approval?.linkId || "").trim();
-      if (!linkId) return;
-      const clearance = clearanceByLink[linkId];
-      const pct = Number.isFinite(Number(approval?.upstreamRatePercent))
-        ? Number(approval.upstreamRatePercent)
-        : Number.isFinite(Number(clearance?.upstreamBps))
-        ? Number(clearance.upstreamBps) / 100
-        : 0;
-      await api(`/content-links/${linkId}/vote`, "POST", {
-        decision,
-        upstreamRatePercent: pct,
-        reason: note || undefined
+        await api(
+          `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+            remoteAuthorizationId
+          )}/vote?origin=${encodeURIComponent(remoteOrigin)}`,
+          "POST",
+          {
+            decision,
+            reason: note || undefined,
+            upstreamRatePercent:
+              Number.isFinite(Number(approval?.upstreamRatePercent)) && Number(approval?.upstreamRatePercent) >= 0
+                ? Number(approval.upstreamRatePercent)
+                : 0
+          }
+        );
+      } else {
+        const linkId = String(approval?.linkId || "").trim();
+        if (!linkId) return;
+        const pct = Number.isFinite(Number(approval?.upstreamRatePercent))
+          ? Number(approval.upstreamRatePercent)
+          : Number.isFinite(Number(approval?.upstreamBps))
+          ? Number(approval.upstreamBps) / 100
+          : 0;
+        await api(`/content-links/${linkId}/vote`, "POST", {
+          decision,
+          upstreamRatePercent: pct,
+          reason: note || undefined
+        });
+      }
+      await loadApprovals(clearanceScope);
+      await loadPendingClearanceCount();
+    } finally {
+      clearanceSubmittingRef.current[approvalKey] = false;
+      setClearanceSubmittingByApproval((m) => {
+        if (!m[approvalKey]) return m;
+        const next = { ...m };
+        delete next[approvalKey];
+        return next;
       });
     }
-    await loadApprovals(clearanceScope);
-    await loadPendingClearanceCount();
   }
 
   async function openApprovalPreview(approval: any) {
@@ -1845,39 +1708,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     setApprovalsLoading(true);
     setClearanceLoadError(null);
     try {
-      const [localData, remoteRows] = await Promise.all([
-        api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET"),
-        api<any[]>("/my/royalties/remote", "GET")
-      ]);
-      const remoteApprovals = buildRemoteApprovalRows(Array.isArray(remoteRows) ? remoteRows : [], scope);
-      const merged = [...(Array.isArray(localData) ? localData : []), ...remoteApprovals].map((row) => ({
+      const rows = await api<any[]>(`/api/derivatives/approvals?scope=${encodeURIComponent(scope)}`, "GET");
+      const normalized = (Array.isArray(rows) ? rows : []).map((row) => ({
         ...row,
         status: normalizeClearanceStatus(row?.status)
       }));
-      const deduped = dedupeApprovals(merged);
-      if (import.meta.env.DEV) {
-        console.debug("clearance.loadApprovals.remote_merge", {
-          scope,
-          localCount: Array.isArray(localData) ? localData.length : 0,
-          remoteRowsCount: Array.isArray(remoteRows) ? remoteRows.length : 0,
-          remoteApprovalsCount: remoteApprovals.length,
-          mergedCount: merged.length,
-          dedupedCount: deduped.length,
-          firstRemoteApproval: remoteApprovals[0]
-            ? {
-                authorizationId: remoteApprovals[0].authorizationId,
-                parentContentId: remoteApprovals[0].parentContentId,
-                childContentId: remoteApprovals[0].childContentId,
-                status: remoteApprovals[0].status,
-                viewerVote: remoteApprovals[0].viewerVote,
-                remoteOrigin: remoteApprovals[0].remoteOrigin,
-                hasClearanceUrl: Boolean(remoteApprovals[0].remoteClearanceUrl)
-              }
-            : null
-        });
-      }
-      setApprovals(deduped);
-      if (scope === "pending") setPendingClearanceCount(deduped.length);
+      setApprovals(normalized);
+      if (scope === "pending") setPendingClearanceCount(normalized.length);
     } catch (e: any) {
       const raw = String(e?.message || "Failed to load clearance approvals.");
       const isAuth = raw.includes(" 401 ") || raw.toLowerCase().includes("unauthorized");
@@ -1895,27 +1732,10 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   async function loadPendingClearanceCount() {
     if (!derivativesAllowed) return;
     try {
-      const [localData, remoteRows] = await Promise.all([
-        api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET").catch(() => []),
-        api<any[]>("/my/royalties/remote", "GET").catch(() => [])
-      ]);
-      const remotePendingRows = buildRemoteApprovalRows(Array.isArray(remoteRows) ? remoteRows : [], "pending");
-      const deduped = dedupeApprovals([...(Array.isArray(localData) ? localData : []), ...remotePendingRows]);
-      setPendingClearanceCount(deduped.length);
+      const rows = await api<any[]>(`/api/derivatives/approvals?scope=pending`, "GET").catch(() => []);
+      setPendingClearanceCount(Array.isArray(rows) ? rows.length : 0);
     } catch {
       setPendingClearanceCount(0);
-    }
-  }
-
-  async function loadClearanceSummary(linkId: string) {
-    setClearanceLoadingByLink((m) => ({ ...m, [linkId]: true }));
-    try {
-      const res: any = await api(`/content-links/${linkId}/clearance`, "GET");
-      setClearanceByLink((m) => ({ ...m, [linkId]: res || null }));
-    } catch {
-      setClearanceByLink((m) => ({ ...m, [linkId]: null }));
-    } finally {
-      setClearanceLoadingByLink((m) => ({ ...m, [linkId]: false }));
     }
   }
 
@@ -2862,28 +2682,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
               {approvals.map((a) => {
                 const linkId = String(a?.linkId || "");
                 const isRemoteApproval = Boolean(String(a?.remoteOrigin || "").trim());
-                const approvalKey = isRemoteApproval
-                  ? `remote:${String(a?.remoteAuthorizationId || a?.authorizationId || "")}`
-                  : `local:${linkId || String(a?.authorizationId || "")}`;
-                const clearance = linkId ? clearanceByLink[linkId] : null;
-                const progressBps = isRemoteApproval ? Number(a?.approveWeightBps || 0) : (clearance?.progressBps || 0);
-                const thresholdBps = isRemoteApproval ? Number(a?.approvalBpsTarget || 6667) : (clearance?.thresholdBps || 6667);
-                const approvedApprovers = Array.isArray(clearance?.votes)
-                  ? clearance.votes.filter((v: any) => {
-                      if (String(v.decision).toLowerCase() !== "approve") return false;
-                      const approvedRatePercent = clearance?.upstreamBps ? clearance.upstreamBps / 100 : null;
-                      if (approvedRatePercent === null || v.upstreamRatePercent === null || v.upstreamRatePercent === undefined) {
-                        return true;
-                      }
-                      return Number(v.upstreamRatePercent) === Number(approvedRatePercent);
-                    }).length
-                  : Number(a?.approvedApprovers || 0);
-                const approverCount = Array.isArray(clearance?.approvers) ? clearance.approvers.length : Number(a?.approverCount || 0);
+                const approvalKey = clearanceApprovalKey(a);
+                const progressBps = Number(a?.approveWeightBps || 0);
+                const thresholdBps = Number(a?.approvalBpsTarget || 6667);
+                const approvedApprovers = Number(a?.approvedApprovers || 0);
+                const approverCount = Number(a?.approverCount || 0);
                 const pct = thresholdBps > 0 ? Math.min(100, Math.round((progressBps / thresholdBps) * 100)) : 0;
                 const relation = titleCase(a?.relation || "Derivative");
                 const parentTitle = a?.parentTitle || a?.parentContentId || "Original work";
                 const childTitle = a?.childTitle || a?.childContentId || "Derivative";
-                const isLoading = linkId ? clearanceLoadingByLink[linkId] : false;
                 const status = normalizeClearanceStatus(a?.status);
                 const isCleared = status === "APPROVED";
                 const isRejected = status === "REJECTED";
@@ -2892,7 +2699,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   Boolean(String(a?.remoteInviteToken || "").trim()) &&
                   Boolean(String(a?.remoteOrigin || "").trim()) &&
                   Boolean(String(a?.remoteAuthorizationId || "").trim());
-                const canVote = isRemoteApproval ? hasRemoteVoteRouting : Boolean(clearance?.viewer?.canVote);
+                const canVote = Boolean(a?.canVote) && (!isRemoteApproval || hasRemoteVoteRouting);
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
@@ -2903,10 +2710,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       ? "Vote link not issued yet. Click Refresh to sync latest clearance routing."
                       : "You are not an eligible approver for this clearance request."
                     : "";
-                const actionDisabled = !crossNodeAllowed || !canVote || Boolean(viewerVote) || isCleared;
-                const shareholderLabels = Array.isArray(clearance?.approvers) && clearance.approvers.length > 0
-                  ? clearance.approvers.map((p: any) => p.displayName || p.participantEmail || p.participantUserId || "Unknown")
-                  : Array.isArray(a?.shareholders) && a.shareholders.length > 0
+                const isSubmitting = Boolean(clearanceSubmittingByApproval[approvalKey]);
+                const actionDisabled = !crossNodeAllowed || !canVote || Boolean(viewerVote) || isCleared || isSubmitting;
+                const shareholderLabels = Array.isArray(a?.shareholders) && a.shareholders.length > 0
                     ? a.shareholders.map((p: any) => p.displayName || p.participantEmail || p.participantUserId || p.handle || "Unknown")
                     : Array.isArray(a?.approvers) && a.approvers.length > 0
                       ? a.approvers.map((p: any) => p.displayName || p.participantEmail || p.participantUserId || "Unknown")
@@ -2978,24 +2784,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                           onClick={async () => {
-                            if (isRemoteApproval) {
-                              await loadApprovals(clearanceScope);
-                              await loadPendingClearanceCount();
-                            } else if (linkId) {
-                              await loadClearanceSummary(linkId);
-                            }
+                            await loadApprovals(clearanceScope);
+                            await loadPendingClearanceCount();
                           }}
-                          disabled={!isRemoteApproval && !linkId}
+                          disabled={approvalsLoading || isSubmitting}
                         >
-                          {isLoading ? "Loading…" : "Refresh"}
+                          {approvalsLoading ? "Loading…" : "Refresh"}
                         </button>
                         <button
                           type="button"
                           className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                           onClick={() => openApprovalPreview(a)}
-                          disabled={!crossNodeAllowed}
+                          disabled={!crossNodeAllowed || isSubmitting}
                           title={!crossNodeAllowed ? clearanceReason : "Preview submission"}
                         >
                           Preview submission
@@ -3019,9 +2821,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                             await submitClearanceDecision(a, "approve", note);
                           }}
                           disabled={actionDisabled}
-                          title={actionDisabled ? voteBlockedReason || "Grant permission unavailable" : "Grant permission"}
+                          title={actionDisabled ? voteBlockedReason || "Approve unavailable" : "Approve"}
                         >
-                          Grant permission
+                          {isSubmitting ? "Submitting…" : "Approve"}
                         </button>
                         <button
                           type="button"
@@ -3034,7 +2836,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           disabled={actionDisabled}
                           title={actionDisabled ? voteBlockedReason || "Reject unavailable" : "Reject"}
                         >
-                          Reject
+                          {isSubmitting ? "Submitting…" : "Reject"}
                         </button>
                       </div>
                     </div>
@@ -4130,9 +3932,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                               await loadDerivativesForParent(it.id);
                                             }}
                                             disabled={!crossNodeAllowed}
-                                            title={!crossNodeAllowed ? clearanceReason : "Grant permission"}
+                                            title={!crossNodeAllowed ? clearanceReason : "Approve"}
                                           >
-                                            Grant permission
+                                            Approve
                                           </button>
                                         );
                                       })()}
