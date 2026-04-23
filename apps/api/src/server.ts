@@ -22331,7 +22331,8 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const requestedAtTs = Date.parse(String(row?.clearanceRequest?.requestedAt || "")) || 0;
     const canVote = row?.canVote ? 1 : 0;
     const actionable = hasActionableRoute(row) ? 1 : 0;
-    return requestedAtTs * 100 + canVote * 10 + actionable;
+    const hasRemoteOrigin = isShareablePublicOrigin(row?.remoteOrigin) ? 1 : 0;
+    return requestedAtTs * 1000 + hasRemoteOrigin * 100 + canVote * 10 + actionable;
   };
 
   const auths = await prisma.derivativeAuthorization.findMany({
@@ -22850,6 +22851,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
   const fixedUpstreamBps = parseFixedUpstreamBps(body);
 
   let child = await prisma.contentItem.findUnique({ where: { id: childContentId } });
+  const canonicalChildOrigin = childOrigin.replace(/\/+$/, "");
   if (!child) {
     const title = asString(body.childTitle || "").trim() || `Remote child ${childContentId}`;
     const typeRaw = asString(body.childType || "").trim().toLowerCase();
@@ -22863,15 +22865,15 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
         status: "published" as any,
         deletedAt: new Date(),
         deletedReason: "hard",
-        description: `Remote origin: ${childOrigin.replace(/\/+$/, "")}`
+        description: `Remote origin: ${canonicalChildOrigin}`
       }
     });
   } else {
     const existingOrigin = getRemoteOriginFromDescription(child.description || null);
-    if (child.deletedAt && existingOrigin !== childOrigin.replace(/\/+$/, "")) {
+    if (existingOrigin !== canonicalChildOrigin) {
       child = await prisma.contentItem.update({
         where: { id: childContentId },
-        data: { description: `Remote origin: ${childOrigin.replace(/\/+$/, "")}` }
+        data: { description: `Remote origin: ${canonicalChildOrigin}` }
       });
     }
   }
