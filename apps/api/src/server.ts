@@ -24866,48 +24866,93 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     await prisma.user.findFirst({
       where: { displayName: { equals: maybeName } },
       select: userSelect
+    }) ||
+    await prisma.user.findFirst({
+      where: { email: { startsWith: `${requested}@` } },
+      select: userSelect
     });
 
   if (!user) {
+    const handleHints = Array.from(
+      new Set(
+        requested
+          .split(/[-_.]+/g)
+          .map((part) => part.trim())
+          .filter((part) => part.length >= 2)
+      )
+    );
     const candidates = await prisma.user.findMany({
-      select: userSelect
+      where:
+        handleHints.length > 0
+          ? {
+              OR: [
+                ...handleHints.map((hint) => ({ displayName: { contains: hint } })),
+                ...handleHints.map((hint) => ({ email: { startsWith: hint } }))
+              ]
+            }
+          : undefined,
+      select: {
+        id: true,
+        displayName: true,
+        email: true
+      },
+      take: 300
     });
-    user =
+    const matchedCandidate =
       candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) ||
       candidates.find((candidate) => normalizedEmailLocalPart(candidate.email || "") === requested) ||
       null;
+    if (matchedCandidate?.id) {
+      user = await prisma.user.findUnique({
+        where: { id: matchedCandidate.id },
+        select: userSelect
+      });
+    }
   }
   if (!user) return notFound(reply, "Not found");
 
-  const verifiedProofs = await prisma.proofRecord.findMany({
-    where: {
-      userId: user.id,
-      status: "verified",
-      revokedAt: null
-    },
-    orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
-    select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
-  });
-  const featuredContent = await prisma.contentItem.findMany({
-    where: {
-      ownerUserId: user.id,
-      status: "published",
-      deletedAt: null,
-      featureOnProfile: true
-    },
-    orderBy: { createdAt: "desc" },
-    take: 12,
-    select: {
-      id: true,
-      title: true,
-      type: true,
-      priceSats: true,
-      deliveryMode: true,
-      manifest: { select: { json: true } }
-    }
-  });
+  const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
+  const [
+    verifiedProofs,
+    featuredContent,
+    wk,
+    creatorSignalNodeDetails,
+    profileServiceMode,
+    lockedParticipations
+  ] = await Promise.all([
+    prisma.proofRecord.findMany({
+      where: {
+        userId: user.id,
+        status: "verified",
+        revokedAt: null
+      },
+      orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+      select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
+    }),
+    prisma.contentItem.findMany({
+      where: {
+        ownerUserId: user.id,
+        status: "published",
+        deletedAt: null,
+        featureOnProfile: true
+      },
+      orderBy: { createdAt: "desc" },
+      take: 12,
+      select: {
+        id: true,
+        title: true,
+        type: true,
+        priceSats: true,
+        deliveryMode: true,
+        manifest: { select: { json: true } }
+      }
+    }),
+    buildWellKnownContentboxPayload(req),
+    getCachedCreatorSignalNodeDetails(),
+    getCachedProfileServiceMode(),
+    listLockedParticipationsForUser(user.id)
+  ]);
 
-  const wk = await buildWellKnownContentboxPayload(req);
   const nodeUrl = wk.nodeUrl || "";
   if (!nodeUrl) return notFound(reply, "Not found");
   const nodeSha = wk.publicKeyPemSha256 || null;
@@ -25003,10 +25048,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     if (subjectRaw.startsWith("nostr:")) return false;
     return true;
   });
-  const creatorSignalNodeDetails = await getCachedCreatorSignalNodeDetails();
   const creatorSignal = computeCreatorSignal(verifiedProofs as any, creatorSignalNodeDetails);
   const creatorSignalPercent = creatorSignal.percent;
-  const profileServiceMode = await getCachedProfileServiceMode();
   const profilePostureBadgeLabel =
     profileServiceMode === "sovereign_node"
       ? "Sovereign Node"
@@ -25323,10 +25366,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
           .join("")
       : "";
-  const highlightedParticipations = (await listLockedParticipationsForUser(user.id))
+  const highlightedParticipations = lockedParticipations
     .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
     .slice(0, 12);
-  const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
   const highlightedRemoteParticipationIds = new Set(highlightedRemoteParticipationRecords.map((row) => row.remoteInviteId));
   const highlightedRemoteParticipations = await (async () => {
     const highlightedRows = highlightedRemoteParticipationIds.size
