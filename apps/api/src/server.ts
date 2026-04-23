@@ -22393,16 +22393,6 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   for (const a of latestLocalAuthByLink.values()) {
     const link = a.derivativeLink;
     if (!link || !isActionableDerivativeChildForClearanceInbox(link?.childContent)) continue;
-    const childDeletedReason = asString(link?.childContent?.deletedReason || "").trim().toLowerCase();
-    const childRemoteOriginMarker = getRemoteOriginFromDescription(link?.childContent?.description || null);
-    const childHasLocalRepo = Boolean(asString(link?.childContent?.repoPath || "").trim());
-    const isRemoteShadowChild =
-      Boolean(link?.childContent?.deletedAt) &&
-      childDeletedReason === "hard" &&
-      Boolean(childRemoteOriginMarker) &&
-      !childHasLocalRepo;
-    // Remote-shadow local rows are transport mirrors; voting/preview must use the remote inbox row.
-    if (isRemoteShadowChild) continue;
 
     const principalCtx = await getDerivativeApproverPrincipalsForAuthorization({
       authorizationId: a.id,
