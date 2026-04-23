@@ -22221,6 +22221,19 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     if (scope === "cleared") return input.status === "APPROVED" && (input.isEligible || hasViewerVote || Boolean(input.isRequester));
     return input.isEligible || hasViewerVote || Boolean(input.isRequester);
   };
+  const isActionableRemoteClearanceEntry = (input: {
+    status: "PENDING" | "REJECTED" | "APPROVED";
+    clearanceUrl?: string | null;
+    remoteAuthorizationId?: string | null;
+    remoteOrigin?: string | null;
+  }) => {
+    const activeStatus = input.status === "PENDING" || input.status === "REJECTED";
+    const clearanceUrl = asString(input.clearanceUrl || "").trim();
+    const remoteAuthorizationId = asString(input.remoteAuthorizationId || "").trim();
+    const remoteOrigin = normalizeRemoteOrigin(input.remoteOrigin || "");
+    const hasTarget = Boolean(clearanceUrl) || Boolean(remoteAuthorizationId && remoteOrigin);
+    return activeStatus && hasTarget;
+  };
   const scoreRow = (row: any) => {
     const status = normalizeStatus(row?.status);
     const statusScore = status === "APPROVED" ? 3 : status === "REJECTED" ? 2 : 1;
@@ -22396,7 +22409,6 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   for (const invite of remoteInvites) {
     const inviteStatus = normalizeRemoteInviteStatusForList(invite as any);
     if (inviteStatus !== "accepted" && inviteStatus !== "pending") continue;
-    if (invite.contentDeletedAt) continue;
     const remoteOrigin = normalizeRemoteOrigin(invite.remoteOrigin || "");
     const inviteToken = extractInviteTokenFromUrl(invite.inviteUrl || null);
     if (!remoteOrigin || !inviteToken) continue;
@@ -22409,9 +22421,18 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       if (!remoteAuthorizationId || !parentContentId || !childContentId) continue;
 
       const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
-      if (["deleted", "archived", "tombstoned"].includes(childStatus)) continue;
-
       const status = normalizeStatus(entry?.status);
+      const clearanceUrl = asString(entry?.clearanceUrl || "").trim() || null;
+      const actionableRemoteEntry = isActionableRemoteClearanceEntry({
+        status,
+        clearanceUrl,
+        remoteAuthorizationId,
+        remoteOrigin
+      });
+      if (!actionableRemoteEntry) {
+        if (invite.contentDeletedAt) continue;
+        if (["deleted", "archived", "tombstoned"].includes(childStatus)) continue;
+      }
       const viewerVote = asString(entry?.viewerVote || "").trim().toLowerCase() || null;
       const isEligible = true;
       if (!shouldInclude({ status, viewerVote, isEligible, isRequester: false })) continue;
@@ -22446,7 +22467,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         remoteOrigin,
         remoteInviteToken: inviteToken,
         remoteInviteId: invite.id,
-        remoteClearanceUrl: asString(entry?.clearanceUrl || "").trim() || null
+        remoteClearanceUrl: clearanceUrl
       });
     }
   }
