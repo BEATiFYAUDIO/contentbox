@@ -22314,10 +22314,9 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const parentContentId = asString(row?.parentContentId || "").trim();
     const parentSplitVersionId = asString(row?.parentSplitVersionId || "").trim();
     const relation = asString(row?.relation || "").trim().toLowerCase();
-    const childTitle = normalizeWorkflowTitle(row?.childTitle || "");
     const upstreamBpsNum = Number(row?.upstreamBps);
     const upstreamBps = Number.isFinite(upstreamBpsNum) ? Math.max(0, Math.round(upstreamBpsNum)) : 0;
-    return `${parentContentId}::${parentSplitVersionId}::${relation}::${childTitle}::${upstreamBps}`;
+    return `${parentContentId}::${parentSplitVersionId}::${relation}::${upstreamBps}`;
   };
   const isActiveStatus = (status: unknown) => {
     const normalized = normalizeStatus(status);
@@ -22578,7 +22577,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
 
   // Inbox-only workflow dedupe for active derivative clearance rows.
   // Keeps one active row per logical workflow while preserving underlying data.
-  const applyActiveWorkflowDedupe = scope === "pending" || scope === "all";
+  const applyActiveWorkflowDedupe = scope === "pending" || scope === "voted" || scope === "all";
   if (!applyActiveWorkflowDedupe) return reply.send(out);
 
   const inactiveRows: any[] = [];
