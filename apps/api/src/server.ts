@@ -22285,6 +22285,8 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     takeIfMissing("remoteOrigin");
     takeIfMissing("remoteInviteToken");
     takeIfMissing("remoteAuthorizationId");
+    takeIfMissing("remoteClearanceUrl");
+    takeIfMissing("remoteReviewPreviewUrl");
     takeIfMissing("upstreamRatePercent");
     takeIfMissing("upstreamBps");
     if (!Array.isArray(merged.shareholders) || merged.shareholders.length === 0) {
@@ -22334,6 +22336,19 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const hasRemoteOrigin = isShareablePublicOrigin(row?.remoteOrigin) ? 1 : 0;
     return requestedAtTs * 1000 + hasRemoteOrigin * 100 + canVote * 10 + actionable;
   };
+  const toRemoteReviewPreviewUrl = (clearanceUrlRaw: unknown): string | null => {
+    const clearanceUrl = asString(clearanceUrlRaw || "").trim();
+    if (!clearanceUrl) return null;
+    try {
+      const parsed = new URL(clearanceUrl);
+      const pathname = parsed.pathname.replace(/\/+$/, "");
+      if (!/\/invites\/[^/]+\/clearance\/[^/]+$/i.test(pathname)) return null;
+      parsed.pathname = `${pathname}/preview`;
+      return parsed.toString();
+    } catch {
+      return null;
+    }
+  };
 
   const auths = await prisma.derivativeAuthorization.findMany({
     include: { derivativeLink: { include: { childContent: true, parentContent: true } } },
@@ -22347,6 +22362,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   }
 
   const localRows: any[] = [];
+  const approvalTokenModel = (prisma as any).approvalToken;
   for (const a of latestLocalAuthByLink.values()) {
     const link = a.derivativeLink;
     if (!link || !isActionableDerivativeChildForClearanceInbox(link?.childContent)) continue;
@@ -22418,6 +22434,43 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       };
     });
 
+    const remoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(link?.childContent?.description || null));
+    const shouldHydrateRemoteRouting = Boolean(remoteOrigin) && (status === "PENDING" || status === "REJECTED");
+    let remoteInviteToken: string | null = null;
+    if (shouldHydrateRemoteRouting && approvalTokenModel) {
+      const approverEmail =
+        normalizeEmail(asString(principalResolution.ok ? principalResolution.principal?.participantEmail : "").trim()) ||
+        normalizeEmail(meEmail);
+      if (approverEmail) {
+        const tokenRow = await approvalTokenModel
+          .findFirst({
+            where: {
+              contentLinkId: link.id,
+              approverEmail: emailEquals(approverEmail),
+              usedAt: null,
+              expiresAt: { gt: new Date() }
+            },
+            orderBy: { createdAt: "desc" },
+            select: { token: true }
+          })
+          .catch(() => null);
+        remoteInviteToken = asString(tokenRow?.token || "").trim() || null;
+      }
+    }
+    const remoteAuthorizationId = shouldHydrateRemoteRouting ? asString(a.id || "").trim() || null : null;
+    const remoteReviewPreviewUrl =
+      shouldHydrateRemoteRouting && remoteInviteToken && remoteAuthorizationId
+        ? `${remoteOrigin}/invites/${encodeURIComponent(remoteInviteToken)}/clearance/${encodeURIComponent(
+            remoteAuthorizationId
+          )}/preview`
+        : null;
+    const remoteClearanceUrl =
+      shouldHydrateRemoteRouting && remoteInviteToken && remoteAuthorizationId
+        ? `${remoteOrigin}/invites/${encodeURIComponent(remoteInviteToken)}/clearance/${encodeURIComponent(
+            remoteAuthorizationId
+          )}`
+        : null;
+
     localRows.push({
       authorizationId: a.id,
       linkId: link.id,
@@ -22445,9 +22498,11 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
             reviewGrantedAt: latestClearanceRequest.reviewGrantedAt ? latestClearanceRequest.reviewGrantedAt.toISOString() : null
           }
         : null,
-      remoteOrigin: pickShareableOrigin(getRemoteOriginFromDescription(link?.childContent?.description || null)),
-      remoteInviteToken: null,
-      remoteAuthorizationId: null
+      remoteOrigin,
+      remoteInviteToken,
+      remoteAuthorizationId,
+      remoteClearanceUrl,
+      remoteReviewPreviewUrl
     });
   }
 
@@ -22523,7 +22578,8 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         remoteOrigin: entryRemoteOrigin || remoteOrigin,
         remoteInviteToken: inviteToken,
         remoteInviteId: invite.id,
-        remoteClearanceUrl: clearanceUrl
+        remoteClearanceUrl: clearanceUrl,
+        remoteReviewPreviewUrl: toRemoteReviewPreviewUrl(clearanceUrl)
       });
     }
   }

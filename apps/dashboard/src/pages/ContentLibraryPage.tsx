@@ -1672,6 +1672,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   async function openApprovalPreview(approval: any) {
     const isRemoteApproval = Boolean(String(approval?.remoteOrigin || "").trim());
     if (isRemoteApproval) {
+      const directPreviewUrl = String(approval?.remoteReviewPreviewUrl || "").trim();
+      if (directPreviewUrl) {
+        const childContentId = String(approval?.childContentId || "");
+        setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
+        setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
+        try {
+          window.open(directPreviewUrl, "_blank", "noopener,noreferrer");
+        } catch (e: any) {
+          setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
+        } finally {
+          setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: false }));
+        }
+        return;
+      }
       const remoteOrigin = String(approval?.remoteOrigin || "");
       const inviteToken = String(approval?.remoteInviteToken || "");
       const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "");
