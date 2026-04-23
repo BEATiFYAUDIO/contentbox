@@ -22342,6 +22342,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
           userEmail: userMeta?.email || null,
           participantEmail: principal.participantEmail || null
         }) ||
+        principal.displayHint ||
         principal.participantEmail ||
         principal.participantUserId ||
         "Unknown";
@@ -31737,7 +31738,20 @@ async function getParentLockedSplitSnapshotForDerivativeApprovals(link: {
   const parentSplitVersionId = requireDerivativeParentSplitSnapshotId(link);
   const parentSplit = await prisma.splitVersion.findUnique({
     where: { id: parentSplitVersionId },
-    include: { participants: true }
+    include: {
+      participants: {
+        include: {
+          invitation: {
+            select: {
+              acceptedByUserId: true,
+              acceptedIdentityRef: true,
+              targetType: true,
+              targetValue: true
+            }
+          }
+        }
+      }
+    }
   });
   if (!parentSplit || parentSplit.status !== "locked") {
     const err: any = new Error("PARENT_SPLIT_NOT_LOCKED");
@@ -32186,7 +32200,17 @@ type DerivativeApproverPrincipal = {
   bps: number;
   participantUserId: string | null;
   participantEmail: string | null;
+  identityHandle: string | null;
+  displayHint: string | null;
 };
+
+function extractIdentityHandleFromTarget(targetValue: string | null | undefined): string | null {
+  const raw = asString(targetValue || "").trim();
+  if (!raw) return null;
+  const userPathMatch = raw.match(/(?:^|\/)u\/([^/?#]+)/i);
+  if (userPathMatch?.[1]) return normalizePublicProfileHandle(decodeURIComponent(userPathMatch[1]));
+  return normalizePublicProfileHandle(raw);
+}
 
 async function getDerivativeApproverPrincipalsForAuthorization(input: {
   authorizationId: string;
@@ -32200,12 +32224,37 @@ async function getDerivativeApproverPrincipalsForAuthorization(input: {
     parentSplitVersionId: input.parentSplitVersionId
   });
   const principals: DerivativeApproverPrincipal[] = (parentSplit?.participants || [])
-    .map((participant: any) => ({
-      splitParticipantId: asString(participant?.id || "").trim(),
-      bps: Math.max(0, toBps(participant || { percent: 0 })),
-      participantUserId: asString(participant?.participantUserId || "").trim() || null,
-      participantEmail: normalizeEmail(participant?.participantEmail || "") || null
-    }))
+    .map((participant: any) => {
+      const splitParticipantId = asString(participant?.id || "").trim();
+      const bps = Math.max(0, toBps(participant || { percent: 0 }));
+      const invitationAcceptedByUserId = asString(participant?.invitation?.acceptedByUserId || "").trim() || null;
+      const invitationAcceptedIdentityRef = asString(participant?.invitation?.acceptedIdentityRef || "").trim() || null;
+      const invitationAcceptedIdentityUserId = parseUserIdFromParticipantRef(invitationAcceptedIdentityRef);
+      const participantUserId =
+        asString(participant?.participantUserId || "").trim() ||
+        invitationAcceptedByUserId ||
+        invitationAcceptedIdentityUserId ||
+        null;
+      const targetType = normalizeInviteTargetType(participant?.targetType || participant?.invitation?.targetType || null);
+      const targetValue = asString(participant?.targetValue || participant?.invitation?.targetValue || "").trim();
+      const participantEmail =
+        normalizeEmail(participant?.participantEmail || "") ||
+        (targetType === "email" ? normalizeEmail(targetValue || "") : null) ||
+        null;
+      const identityHandle =
+        targetType === "identity_ref" || targetType === "local_user"
+          ? extractIdentityHandleFromTarget(targetValue)
+          : null;
+      const displayHint = participantEmail || identityHandle || null;
+      return {
+        splitParticipantId,
+        bps,
+        participantUserId,
+        participantEmail,
+        identityHandle,
+        displayHint
+      };
+    })
     .filter((row) => Boolean(row.splitParticipantId));
   const bySplitParticipantId = new Map(principals.map((row) => [row.splitParticipantId, row]));
   return { parentSplit, principals, bySplitParticipantId };
@@ -32256,6 +32305,37 @@ async function resolveApproverPrincipal(
   }
   if (matchesByEmail.length > 1) {
     return { ok: false, code: "APPROVER_PRINCIPAL_AMBIGUOUS", message: "Approver principal mapping is ambiguous for this email." };
+  }
+
+  // Narrow fallback for legacy locked participants that were never bound to user/email
+  // but do carry an identity_ref/local_user target handle.
+  if (userId || email) {
+    const viewer = userId
+      ? await prisma.user.findUnique({
+          where: { id: userId },
+          select: { displayName: true, email: true }
+        })
+      : null;
+    const viewerHandles = new Set<string>();
+    const fromDisplayName = normalizePublicProfileHandle(asString(viewer?.displayName || "").trim());
+    if (fromDisplayName) viewerHandles.add(fromDisplayName);
+    const fromEmail = normalizedEmailLocalPart(email || viewer?.email || "");
+    if (fromEmail) viewerHandles.add(fromEmail);
+    if (viewerHandles.size > 0) {
+      const matchesByHandle = principalCtx.principals.filter((row) =>
+        row.identityHandle ? viewerHandles.has(row.identityHandle) : false
+      );
+      if (matchesByHandle.length === 1) {
+        return { ok: true, splitParticipantId: matchesByHandle[0].splitParticipantId, principal: matchesByHandle[0] };
+      }
+      if (matchesByHandle.length > 1) {
+        return {
+          ok: false,
+          code: "APPROVER_PRINCIPAL_AMBIGUOUS",
+          message: "Approver principal mapping is ambiguous for this viewer identity."
+        };
+      }
+    }
   }
 
   return {
