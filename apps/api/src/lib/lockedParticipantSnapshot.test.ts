@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import {
   isTopologyNeutralLockedSnapshotEligible,
   resolveLockedSnapshotAccountingState,
-  resolveLockedSnapshotAttributionLabel
+  resolveLockedSnapshotAttributionLabel,
+  resolveLockedSnapshotDisplayLabel
 } from "./lockedParticipantSnapshot.js";
 
 test("locked participant snapshot eligibility is topology-neutral", () => {
@@ -53,7 +54,32 @@ test("attribution prefers snapshot identity labels over generic fallback", () =>
       participantEmail: "test@example.com",
       identityRef: "user:cmmabc123"
     }),
-    "Contributor"
+    "test"
+  );
+});
+
+test("display label uses entity/person priority for buyer attribution", () => {
+  assert.equal(
+    resolveLockedSnapshotDisplayLabel({
+      lockedDisplayName: null,
+      entityDisplayName: "Beatify Group",
+      creatorDisplayName: "Darryl Hillock",
+      userDisplayName: "darryl",
+      handleHint: "darryl",
+      participantEmail: "darryl@beatifygroup.com"
+    }),
+    "Beatify Group"
+  );
+  assert.equal(
+    resolveLockedSnapshotDisplayLabel({
+      lockedDisplayName: null,
+      entityDisplayName: null,
+      creatorDisplayName: "Darryl Hillock",
+      userDisplayName: null,
+      handleHint: "darryl-hillock",
+      participantEmail: "darrylhillock@gmail.com"
+    }),
+    "Darryl Hillock"
   );
 });
 
