@@ -22286,7 +22286,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   const localRows: any[] = [];
   for (const a of latestLocalAuthByLink.values()) {
     const link = a.derivativeLink;
-    if (!link || Boolean(link?.childContent?.deletedAt)) continue;
+    if (!link || !isActionableDerivativeChildForClearanceInbox(link?.childContent)) continue;
 
     const principalCtx = await getDerivativeApproverPrincipalsForAuthorization({
       authorizationId: a.id,
@@ -32606,6 +32606,16 @@ function getRemoteOriginFromDescription(desc?: string | null): string | null {
   return origin ? origin.replace(/\/+$/, "") : null;
 }
 
+function isActionableDerivativeChildForClearanceInbox(
+  child: { deletedAt?: Date | null; deletedReason?: string | null; description?: string | null } | null | undefined
+): boolean {
+  if (!child) return false;
+  if (!child.deletedAt) return true;
+  const deletedReason = asString(child.deletedReason || "").trim().toLowerCase();
+  const remoteOrigin = getRemoteOriginFromDescription(child.description || null);
+  return deletedReason === "hard" && Boolean(remoteOrigin);
+}
+
 async function getEligibleApproversForParent(parentContentId: string) {
   const { split, approvers } = await getApproversForParent(parentContentId);
   const eligible = approvers.filter(
@@ -37670,7 +37680,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       include: {
         derivativeLink: {
           include: {
-            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true } },
+            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true, deletedReason: true } },
             parentContent: { select: { id: true, title: true } }
           }
         },
@@ -37678,7 +37688,9 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       },
       orderBy: { createdAt: "desc" }
     });
-    const actionableAuths = auths.filter((auth) => !auth.derivativeLink?.childContent?.deletedAt);
+    const actionableAuths = auths.filter((auth) =>
+      isActionableDerivativeChildForClearanceInbox(auth.derivativeLink?.childContent)
+    );
     const approverCount = eligible.length;
     const clearanceBase = getPublicOrigin(req).replace(/\/+$/, "");
     const inviteClearanceBase = `${clearanceBase}/invites/${encodeURIComponent(token)}/clearance`;
