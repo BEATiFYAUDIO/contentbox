@@ -10,6 +10,7 @@ API_LOG="${LOG_DIR}/api-dev.log"
 DASH_LOG="${LOG_DIR}/dashboard-dev.log"
 API_URL="http://127.0.0.1:4000/health"
 DASH_URL="http://localhost:5173"
+ENABLE_DASHBOARD_WATCHER="${DEV_RUNTIME_DASHBOARD_WATCHER:-0}"
 
 mkdir -p "${STATE_DIR}" "${LOG_DIR}"
 
@@ -108,8 +109,8 @@ start_api() {
     echo "[dev-runtime] API already responding on :4000"
     return 0
   fi
-  echo "[dev-runtime] Starting API watcher"
-  (cd "${ROOT_DIR}" && nohup npm run dev:api > "${API_LOG}" 2>&1 & echo $! > "${API_PID_FILE}")
+  echo "[dev-runtime] Starting API (stable mode)"
+  (cd "${ROOT_DIR}" && nohup npm --prefix apps/api run start:api > "${API_LOG}" 2>&1 & echo $! > "${API_PID_FILE}")
   wait_for_url "${API_URL}" 45 "API" || {
     echo "[dev-runtime] API log tail:"
     tail -n 60 "${API_LOG}" || true
@@ -118,6 +119,10 @@ start_api() {
 }
 
 start_dashboard() {
+  if [[ "${ENABLE_DASHBOARD_WATCHER}" != "1" ]]; then
+    echo "[dev-runtime] Skipping dashboard watcher (set DEV_RUNTIME_DASHBOARD_WATCHER=1 to enable)."
+    return 0
+  fi
   rm_pid_file_if_dead "${DASH_PID_FILE}"
   local existing
   existing="$(read_pid_file "${DASH_PID_FILE}" || true)"
@@ -147,15 +152,20 @@ show_status() {
 
   echo "[dev-runtime] API pid: ${api_pid:-none}"
   echo "[dev-runtime] Dashboard pid: ${dash_pid:-none}"
+  echo "[dev-runtime] Dashboard watcher enabled: ${ENABLE_DASHBOARD_WATCHER}"
   if curl -fsS "${API_URL}" >/dev/null 2>&1; then
     echo "[dev-runtime] API health: UP"
   else
     echo "[dev-runtime] API health: DOWN"
   fi
-  if curl -fsS "${DASH_URL}" >/dev/null 2>&1; then
-    echo "[dev-runtime] Dashboard: UP"
+  if [[ "${ENABLE_DASHBOARD_WATCHER}" == "1" ]]; then
+    if curl -fsS "${DASH_URL}" >/dev/null 2>&1; then
+      echo "[dev-runtime] Dashboard: UP"
+    else
+      echo "[dev-runtime] Dashboard: DOWN"
+    fi
   else
-    echo "[dev-runtime] Dashboard: DOWN"
+    echo "[dev-runtime] Dashboard: n/a (served by API build on :4000)"
   fi
   echo "[dev-runtime] Watchers on ports:"
   ss -ltnp 2>/dev/null | rg -n ":(4000|5173)\\b|LISTEN" || true

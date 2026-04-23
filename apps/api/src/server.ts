@@ -9004,8 +9004,12 @@ const TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS = Math.max(
   Number(process.env.TUNNEL_OWNERSHIP_CONFLICT_FAIL_HARD_MS || "20000")
 );
 const SERVICE_MANAGED_NAMED_STARTUP_GRACE_MS = Math.max(
-  5_000,
-  Number(process.env.SERVICE_MANAGED_NAMED_STARTUP_GRACE_MS || "15000")
+  2_000,
+  Number(process.env.SERVICE_MANAGED_NAMED_STARTUP_GRACE_MS || "5000")
+);
+const NAMED_HEALTH_REFRESH_INTERVAL_MS = Math.max(
+  1_000,
+  Number(process.env.NAMED_HEALTH_REFRESH_INTERVAL_MS || "3000")
 );
 let tunnelConflictGuardState: TunnelConflictGuardState = {
   firstDetectedAtMs: null,
@@ -9115,7 +9119,7 @@ function getPublicLinkState(): PublicLinkState {
   });
 
   if (state.mode === "named" && state.canonicalOrigin) {
-    if (!namedHealthCache.checkedAt || Date.now() - namedHealthCache.checkedAt > 15000) {
+    if (!namedHealthCache.checkedAt || Date.now() - namedHealthCache.checkedAt > NAMED_HEALTH_REFRESH_INTERVAL_MS) {
       refreshNamedHealth(state.canonicalOrigin).catch(() => {});
     }
   }
@@ -9325,11 +9329,11 @@ function getPublicStatus() {
 
 const PUBLIC_STATUS_CACHE_TTL_MS = Math.max(
   1000,
-  Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || "8000")
+  Number(process.env.PUBLIC_STATUS_CACHE_TTL_MS || "2500")
 );
 const PUBLIC_STATUS_STALE_TTL_MS = Math.max(
   PUBLIC_STATUS_CACHE_TTL_MS,
-  Number(process.env.PUBLIC_STATUS_STALE_TTL_MS || "45000")
+  Number(process.env.PUBLIC_STATUS_STALE_TTL_MS || "12000")
 );
 let publicStatusCache:
   | {
