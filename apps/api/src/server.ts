@@ -22824,6 +22824,10 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
 
   const childOriginCandidates = [
     await resolveShareableInviteOrigin(req),
+    normalizeOrigin(String(getNamedTunnelConfig()?.publicOrigin || "").trim()),
+    normalizeOrigin(process.env.PUBLIC_INVITE_ORIGIN || ""),
+    normalizeOrigin(process.env.PUBLIC_BASE_ORIGIN || ""),
+    normalizeOrigin(process.env.PUBLIC_ORIGIN || ""),
     normalizeOrigin(String(getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || "").trim()),
     normalizeOrigin(getActivePublicOrigin()),
     normalizeOrigin(getRemoteOriginFromDescription(child.description || null)),
