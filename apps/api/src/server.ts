@@ -32934,12 +32934,18 @@ async function applyDerivativeAuthorizationFinalization(input: {
 
   let updatedLink: { id: string; approvedAt: Date | null; upstreamBps: number | null } | null = null;
   if (tallied.status === "APPROVED") {
+    let approvedByUserId: string | null = null;
+    const actorUserId = asString(input.actorUserId || "").trim();
+    if (actorUserId) {
+      const actor = await prisma.user.findUnique({ where: { id: actorUserId }, select: { id: true } }).catch(() => null);
+      approvedByUserId = actor?.id || null;
+    }
     if (!auth.derivativeLink.approvedAt) {
       updatedLink = await prisma.contentLink.update({
         where: { id: auth.derivativeLink.id },
         data: {
           approvedAt: new Date(),
-          approvedByUserId: input.actorUserId || null,
+          approvedByUserId,
           requiresApproval: true
         },
         select: { id: true, approvedAt: true, upstreamBps: true }
