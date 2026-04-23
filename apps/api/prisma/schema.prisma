@@ -438,15 +438,16 @@ model DerivativeApprovalVote {
   id                      String   @id @default(cuid())
   authorizationId         String
   approverUserId          String
-  approverSplitParticipantId String?
+  approverSplitParticipantId String
   decision                String
   createdAt               DateTime @default(now())
 
   authorization DerivativeAuthorization @relation(fields: [authorizationId], references: [id], onDelete: Cascade)
 
-  @@unique([authorizationId, approverUserId])
+  @@unique([authorizationId, approverSplitParticipantId])
   @@index([authorizationId])
   @@index([approverUserId])
+  @@index([approverSplitParticipantId])
 }
 
 model SplitVersion {

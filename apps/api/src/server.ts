@@ -21999,43 +21999,37 @@ app.post("/api/derivative-authorizations/:id/vote", { preHandler: requireAuth },
     });
   }
 
-  const participants = await getParentLockedParticipantsForVote(auth.parentContentId);
-  const voter = participants.find((p) => p.userId === userId);
-  if (!voter) return reply.code(403).send({ code: "NOT_ELIGIBLE", message: "Not eligible to vote." });
-
-  await prisma.derivativeApprovalVote.upsert({
-    where: { authorizationId_approverUserId: { authorizationId: auth.id, approverUserId: userId } },
-    update: { decision },
-    create: { authorizationId: auth.id, approverUserId: userId, approverSplitParticipantId: voter.splitParticipantId, decision }
-  });
-
-  const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: auth.id } });
-  const approveVotes = votes.filter((v) => v.decision === "APPROVE");
-  if (decision === "APPROVE" && approveVotes.length > 0 && auth.derivativeLink.upstreamBps !== upstreamRateBps) {
-    return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must match the fixed upstream rate." });
+  const voter = await resolveApproverPrincipal(
+    { userId },
+    {
+      id: auth.id,
+      parentContentId: auth.parentContentId,
+      derivativeLink: { id: auth.derivativeLink?.id || null, parentSplitVersionId: auth.derivativeLink?.parentSplitVersionId || null }
+    }
+  );
+  if (!voter.ok) {
+    return reply.code(403).send({ code: voter.code, message: voter.message });
   }
 
-  const approveWeightBps = votes
-    .filter((v) => v.decision === "APPROVE")
-    .map((v) => participants.find((p) => p.userId === v.approverUserId)?.bps || 0)
-    .reduce((s, b) => s + b, 0);
-  const rejectWeightBps = votes
-    .filter((v) => v.decision === "REJECT")
-    .map((v) => participants.find((p) => p.userId === v.approverUserId)?.bps || 0)
-    .reduce((s, b) => s + b, 0);
-  const approvedApprovers = votes.filter((v) => v.decision === "APPROVE").length;
-
-  let status = "PENDING";
-  const target = auth.approvalBpsTarget ?? 6667;
-  if (approveWeightBps >= target) status = "APPROVED";
-  else if (rejectWeightBps >= target) status = "REJECTED";
-
-  const updated = await prisma.derivativeAuthorization.update({
-    where: { id: auth.id },
-    data: { approveWeightBps, rejectWeightBps, approvedApprovers, status }
+  await recordDerivativeApprovalVote({
+    authorizationId: auth.id,
+    approverSplitParticipantId: voter.splitParticipantId,
+    decision: decision === "APPROVE" ? "approve" : "reject",
+    actorUserId: userId
   });
 
-  if (status === "APPROVED" && !auth.derivativeLink.approvedAt) {
+  const tallied = await tallyApprovalBps(auth.id);
+  const updated = await prisma.derivativeAuthorization.update({
+    where: { id: auth.id },
+    data: {
+      approveWeightBps: tallied.approveWeightBps,
+      rejectWeightBps: tallied.rejectWeightBps,
+      approvedApprovers: tallied.approvedApprovers,
+      status: tallied.status
+    }
+  });
+
+  if (tallied.status === "APPROVED" && !auth.derivativeLink.approvedAt) {
     await prisma.contentLink.update({
       where: { id: auth.derivativeLink.id },
       data: { approvedAt: new Date(), approvedByUserId: userId, requiresApproval: true }
@@ -22061,18 +22055,23 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const childDeleted = Boolean(a.derivativeLink?.childContent?.deletedAt);
     if (childDeleted) continue;
 
-    const { eligible } = await getEligibleApproversForParent(a.parentContentId);
-    const parent = await prisma.contentItem.findUnique({
-      where: { id: a.parentContentId },
-      select: { ownerUserId: true, repoPath: true, deletedReason: true, description: true }
-    });
-    const isShadowRemote =
-      Boolean(parent?.deletedReason === "hard") &&
-      !parent?.repoPath &&
-      String(parent?.description || "").toLowerCase().startsWith("remote origin:");
-    const existingVote = await prisma.derivativeApprovalVote.findUnique({
-      where: { authorizationId_approverUserId: { authorizationId: a.id, approverUserId: userId } }
-    });
+    const principalResolution = await resolveApproverPrincipal(
+      { userId, email: meEmail },
+      {
+        id: a.id,
+        parentContentId: a.parentContentId,
+        derivativeLink: { id: a.derivativeLink.id, parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null }
+      }
+    );
+    const existingVote = principalResolution.ok
+      ? await prisma.derivativeApprovalVote.findFirst({
+          where: {
+            authorizationId: a.id,
+            approverSplitParticipantId: principalResolution.splitParticipantId
+          },
+          orderBy: { createdAt: "desc" }
+        })
+      : null;
     const latestClearanceRequest = await prisma.clearanceRequest
       .findFirst({
         where: { contentLinkId: a.derivativeLink.id },
@@ -22081,13 +22080,11 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       })
       .catch(() => null);
     const isRequester = String(a.derivativeLink?.childContent?.ownerUserId || "").trim() === userId;
-    const isEligible =
-      eligible.some((p) => matchApproverToUser(p, userId, meEmail)) ||
-      (parent?.ownerUserId === userId && !isShadowRemote);
+    const isEligible = principalResolution.ok;
 
     if (scope === "pending") {
       if (!isEligible && !isRequester) continue;
-      if (a.status !== "PENDING") continue;
+      if (a.status !== "PENDING" && a.status !== "REJECTED") continue;
     } else if (scope === "voted") {
       if (!existingVote) continue;
     } else if (scope === "cleared") {
@@ -22466,42 +22463,17 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
   const link = await prisma.contentLink.findUnique({ where: { id: linkId } });
   if (!link) return notFound(reply, "Content link not found");
 
-  const parentSplit = await getLockedSplitForContent(link.parentContentId);
-  if (!parentSplit || parentSplit.status !== "locked") {
-    return reply.code(409).send({ code: "PARENT_SPLIT_NOT_LOCKED", message: "Parent split must be locked before voting." });
-  }
-
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  const userEmail = (user?.email || "").toLowerCase();
-  const { eligible, approvers } = await getEligibleApproversForParent(link.parentContentId);
-  const parent = await prisma.contentItem.findUnique({
-    where: { id: link.parentContentId },
-    select: { ownerUserId: true }
-  });
-  const emails = approvers
-    .map((a) => (a.participantEmail || "").toLowerCase())
-    .filter(Boolean);
-  const emailUsers = emails.length
-    ? await prisma.user.findMany({ where: { email: emailIn(emails) }, select: { email: true } })
-    : [];
-  const emailsWithUsers = new Set(emailUsers.map((u) => (u.email || "").toLowerCase()));
-  function resolveApprover(uId: string, uEmail: string) {
-    const direct = eligible.find((p) => matchApproverToUser(p, uId, uEmail));
-    if (direct) return direct;
-    if (parent?.ownerUserId === uId) {
-      const candidates = eligible.filter(
-        (p) => p.participantEmail && !emailsWithUsers.has(p.participantEmail.toLowerCase())
-      );
-      if (candidates.length === 1) return candidates[0];
-    }
-    return null;
-  }
-  const ok = Boolean(resolveApprover(userId, userEmail));
-  if (!ok) return forbidden(reply);
+  const userEmail = normalizeEmail(user?.email || "");
 
   const existingAuths = await prisma.derivativeAuthorization.findMany({
     where: { derivativeLinkId: linkId },
     orderBy: { createdAt: "asc" }
+  });
+  const parentSplit = await getParentLockedSplitSnapshotForDerivative({
+    id: link.id,
+    parentContentId: link.parentContentId,
+    parentSplitVersionId: link.parentSplitVersionId || null
   });
   const auth =
     existingAuths[0] ||
@@ -22509,7 +22481,7 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
       data: {
         derivativeLinkId: linkId,
         parentContentId: link.parentContentId,
-        requiredApprovers: parentSplit.participants.length,
+        requiredApprovers: (parentSplit?.participants || []).length,
         approvedApprovers: 0,
         approveWeightBps: 0,
         rejectWeightBps: 0,
@@ -22531,48 +22503,37 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
     });
   }
 
-  await prisma.derivativeApprovalVote.upsert({
-    where: { authorizationId_approverUserId: { authorizationId: auth.id, approverUserId: userId } },
-    update: { decision },
-    create: { authorizationId: auth.id, approverUserId: userId, decision }
+  const principal = await resolveApproverPrincipal(
+    { userId, email: userEmail },
+    {
+      id: auth.id,
+      parentContentId: auth.parentContentId,
+      derivativeLink: { id: link.id, parentSplitVersionId: link.parentSplitVersionId || null }
+    }
+  );
+  if (!principal.ok) {
+    return reply.code(403).send({ code: principal.code, message: principal.message });
+  }
+
+  await recordDerivativeApprovalVote({
+    authorizationId: auth.id,
+    approverSplitParticipantId: principal.splitParticipantId,
+    decision: decision as "approve" | "reject",
+    actorUserId: userId
   });
 
-  const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: auth.id } });
-  const approveVotes = votes.filter((v) => String(v.decision).toLowerCase() === "approve");
-  if (decision === "approve" && approveVotes.length > 0 && link.upstreamBps !== upstreamRateBps) {
-    return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must match the fixed upstream rate." });
-  }
-
-  const voteUserIds = votes.map((v) => v.approverUserId);
-  const voteUsers = voteUserIds.length
-    ? await prisma.user.findMany({ where: { id: { in: voteUserIds } }, select: { id: true, email: true } })
-    : [];
-  const voteUserEmailById = new Map(voteUsers.map((u) => [u.id, (u.email || "").toLowerCase()]));
-  let approveBps = 0;
-  let rejectBps = 0;
-  for (const v of votes) {
-    const vEmail = voteUserEmailById.get(v.approverUserId) || "";
-    const p = resolveApprover(v.approverUserId, vEmail);
-    const bps = p ? p.weightBps : 0;
-    if (String(v.decision).toLowerCase() === "approve") approveBps += bps;
-    if (String(v.decision).toLowerCase() === "reject") rejectBps += bps;
-  }
-
-  let status: string = "PENDING";
-  if (approveBps >= (auth.approvalBpsTarget ?? 6667)) status = "APPROVED";
-  // v1: keep rejections as PENDING
-
+  const tallied = await tallyApprovalBps(auth.id);
   await prisma.derivativeAuthorization.update({
     where: { id: auth.id },
     data: {
-      approvedApprovers: votes.filter((v) => String(v.decision).toLowerCase() === "approve").length,
-      approveWeightBps: approveBps,
-      rejectWeightBps: rejectBps,
-      status
+      approvedApprovers: tallied.approvedApprovers,
+      approveWeightBps: tallied.approveWeightBps,
+      rejectWeightBps: tallied.rejectWeightBps,
+      status: tallied.status
     }
   });
 
-  if (status === "APPROVED" && !link.approvedAt) {
+  if (tallied.status === "APPROVED" && !link.approvedAt) {
     if (link.upstreamBps !== upstreamRateBps) {
       return reply.code(409).send({ code: "UPSTREAM_RATE_MISMATCH", message: "Approve votes must match the fixed upstream rate." });
     }
@@ -22610,7 +22571,12 @@ app.post("/content-links/:linkId/vote", { preHandler: requireAuth }, async (req:
     } catch {}
   }
 
-  return reply.send({ ok: true, status, approveWeightBps: approveBps, rejectWeightBps: rejectBps });
+  return reply.send({
+    ok: true,
+    status: tallied.status,
+    approveWeightBps: tallied.approveWeightBps,
+    rejectWeightBps: tallied.rejectWeightBps
+  });
 });
 
 // Clearance summary for UI (approvers + votes + progress)
@@ -22649,8 +22615,21 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     return null;
   }
 
+  const viewer = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+  const viewerEmail = normalizeEmail(viewer?.email || "");
   const auths = await prisma.derivativeAuthorization.findMany({ where: { derivativeLinkId: linkId } });
   const authIds = auths.map((a) => a.id);
+  const activeAuth = auths[0] || null;
+  const principalResolution = activeAuth
+    ? await resolveApproverPrincipal(
+        { userId, email: viewerEmail },
+        {
+          id: activeAuth.id,
+          parentContentId: activeAuth.parentContentId,
+          derivativeLink: { id: link.id, parentSplitVersionId: link.parentSplitVersionId || null }
+        }
+      )
+    : null;
   const internalVotesRaw =
     authIds.length > 0
       ? await prisma.derivativeApprovalVote.findMany({
@@ -22660,7 +22639,8 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
       : [];
   const voteByUserId = new Map<string, typeof internalVotesRaw[number]>();
   for (const v of internalVotesRaw) {
-    voteByUserId.set(v.approverUserId, v);
+    const key = asString(v.approverSplitParticipantId || "").trim() || `user:${v.approverUserId}`;
+    voteByUserId.set(key, v);
   }
   const internalVotes = Array.from(voteByUserId.values());
   const voteUserIds = internalVotes.map((v) => v.approverUserId);
@@ -22699,18 +22679,13 @@ app.get("/content-links/:linkId/clearance", { preHandler: requireAuth }, async (
     }))
   ];
 
-  const progressBps = votes.reduce((s, v) => {
-    if (String(v.decision).toLowerCase() !== "approve") return s;
-    if (approvedRatePercent !== null && v.upstreamRatePercent !== null && Number(v.upstreamRatePercent) !== Number(approvedRatePercent)) {
-      return s;
-    }
-    return s + (v.weightBps || 0);
-  }, 0);
-
-  const viewer = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  const viewerEmail = (viewer?.email || "").toLowerCase();
-  const viewerApprover = resolveApprover(userId, viewerEmail);
-  const viewerVote = internalVotes.find((v) => v.approverUserId === userId) || null;
+  const progressBps = activeAuth?.approveWeightBps ?? 0;
+  const viewerVote = principalResolution?.ok
+    ? internalVotes.find((v) => asString(v.approverSplitParticipantId || "").trim() === principalResolution.splitParticipantId) || null
+    : null;
+  const viewerApprover = principalResolution?.ok
+    ? approvers.find((a) => asString(a.splitParticipantId || "").trim() === principalResolution.splitParticipantId) || null
+    : null;
 
   return reply.send({
     requiresApproval: link.requiresApproval,
@@ -25266,12 +25241,12 @@ async function resolveInviteClearanceContext(token: string, authorizationId: str
   });
   if (!auth || String(auth.parentContentId || "") !== parentContentId) return null;
 
+  const inviteSplitParticipantId = asString(inv?.splitParticipantId || "").trim();
   const acceptedIdentityRef = asString(inv?.acceptedIdentityRef || "").trim();
   const acceptedIdentityUserId = parseUserIdFromParticipantRef(acceptedIdentityRef);
   const inviteUserId = asString(
     inv?.acceptedByUserId || acceptedIdentityUserId || inv?.splitParticipant?.participantUserId || ""
   ).trim();
-  if (!inviteUserId) return null;
 
   const inviteTargetType = normalizeInviteTargetType(inv?.targetType);
   const inviteEmail = normalizeEmail(
@@ -25279,30 +25254,20 @@ async function resolveInviteClearanceContext(token: string, authorizationId: str
       (inviteTargetType === "email" ? asString(inv?.targetValue || "") : "") ||
       ""
   );
-  const inviteUser = await prisma.user
-    .findUnique({ where: { id: inviteUserId }, select: { email: true } })
-    .catch(() => null);
+  const inviteUser = inviteUserId
+    ? await prisma.user
+        .findUnique({ where: { id: inviteUserId }, select: { email: true } })
+        .catch(() => null)
+    : null;
   const inviteUserEmail = normalizeEmail(inviteUser?.email || "");
   const approverEmailForToken = inviteEmail || inviteUserEmail;
-
-  const { eligible } = await getEligibleApproversForParent(parentContentId);
-  const inviteApprover = eligible.find((a) => {
-    const byUserId = Boolean(inviteUserId && a.participantUserId === inviteUserId);
-    const byEmail = Boolean(
-      approverEmailForToken &&
-        normalizeEmail(a.participantEmail || "") &&
-        normalizeEmail(a.participantEmail || "") === approverEmailForToken
-    );
-    return byUserId || byEmail;
-  });
-  if (!inviteApprover) return null;
 
   return {
     inv,
     auth,
     parentContentId,
-    inviteUserId,
-    inviteApprover,
+    inviteUserId: inviteUserId || null,
+    inviteSplitParticipantId: inviteSplitParticipantId || null,
     approverEmailForToken
   };
 }
@@ -25475,49 +25440,47 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     }
   }
 
-  await prisma.derivativeApprovalVote.upsert({
-    where: { authorizationId_approverUserId: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId } },
-    update: { decision },
-    create: { authorizationId: ctx.auth.id, approverUserId: ctx.inviteUserId, decision }
-  });
-
-  const votes = await prisma.derivativeApprovalVote.findMany({ where: { authorizationId: ctx.auth.id } });
-  const voteUserIds = votes.map((v) => v.approverUserId);
-  const voteUsers = voteUserIds.length
-    ? await prisma.user.findMany({ where: { id: { in: voteUserIds } }, select: { id: true, email: true } })
-    : [];
-  const voteUserEmailById = new Map(voteUsers.map((u) => [u.id, normalizeEmail(u.email || "")]));
-
-  const { eligible } = await getEligibleApproversForParent(ctx.parentContentId);
-  let approveBps = 0;
-  let rejectBps = 0;
-  for (const v of votes) {
-    const vEmail = voteUserEmailById.get(v.approverUserId) || "";
-    const p = eligible.find((candidate) => {
-      const byUserId = Boolean(candidate.participantUserId && candidate.participantUserId === v.approverUserId);
-      const byEmail = Boolean(vEmail && normalizeEmail(candidate.participantEmail || "") === vEmail);
-      return byUserId || byEmail;
-    });
-    const bps = p ? p.weightBps : 0;
-    if (String(v.decision).toLowerCase() === "approve") approveBps += bps;
-    if (String(v.decision).toLowerCase() === "reject") rejectBps += bps;
+  const principal = await resolveApproverPrincipal(
+    {
+      userId: ctx.inviteUserId || null,
+      email: ctx.approverEmailForToken || null,
+      invitationSplitParticipantId: ctx.inviteSplitParticipantId || null
+    },
+    {
+      id: ctx.auth.id,
+      parentContentId: ctx.auth.parentContentId,
+      derivativeLink: {
+        id: ctx.auth.derivativeLink?.id || null,
+        parentSplitVersionId: ctx.auth.derivativeLink?.parentSplitVersionId || null
+      }
+    }
+  );
+  if (!principal.ok) {
+    return reply.code(403).type("text/plain").send(principal.message);
   }
 
-  const status = approveBps >= (ctx.auth.approvalBpsTarget ?? 6667) ? "APPROVED" : "PENDING";
+  await recordDerivativeApprovalVote({
+    authorizationId: ctx.auth.id,
+    approverSplitParticipantId: principal.splitParticipantId,
+    decision: decision as "approve" | "reject",
+    actorUserId: ctx.inviteUserId || `invite:${principal.splitParticipantId}`
+  });
+
+  const tallied = await tallyApprovalBps(ctx.auth.id);
   await prisma.derivativeAuthorization.update({
     where: { id: ctx.auth.id },
     data: {
-      approvedApprovers: votes.filter((v) => String(v.decision).toLowerCase() === "approve").length,
-      approveWeightBps: approveBps,
-      rejectWeightBps: rejectBps,
-      status
+      approvedApprovers: tallied.approvedApprovers,
+      approveWeightBps: tallied.approveWeightBps,
+      rejectWeightBps: tallied.rejectWeightBps,
+      status: tallied.status
     }
   });
 
-  if (status === "APPROVED" && !link.approvedAt) {
+  if (tallied.status === "APPROVED" && !link.approvedAt) {
     await prisma.contentLink.update({
       where: { id: link.id },
-      data: { approvedAt: new Date(), approvedByUserId: ctx.inviteUserId, requiresApproval: true }
+      data: { approvedAt: new Date(), approvedByUserId: ctx.inviteUserId || null, requiresApproval: true }
     });
     await prisma.clearanceRequest.updateMany({
       where: { contentLinkId: link.id, status: "PENDING" },
@@ -25529,7 +25492,7 @@ app.post("/invites/:token/clearance/:authorizationId/vote", async (req: any, rep
     try {
       await prisma.auditEvent.create({
         data: {
-          userId: ctx.inviteUserId,
+          userId: ctx.inviteUserId || "invite",
           action: "clearance.reject",
           entityType: "ContentLink",
           entityId: link.id,
@@ -25662,37 +25625,73 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     }
   });
 
-  // Recompute approval weight (fallback to parent split if token weight is missing/zero)
-  const approved = await prisma.approvalToken.findMany({
-    where: { contentLinkId: link.id, decision: "approve" }
+  const parentSplit = await getParentLockedSplitSnapshotForDerivative({
+    id: link.id,
+    parentContentId: link.parentContentId,
+    parentSplitVersionId: link.parentSplitVersionId || null
   });
-  const parentSplit = await getLockedSplitForContent(link.parentContentId);
-  const approvedWeight = approved.reduce((s, a) => {
-    const base = a.weightBps || 0;
-    if (base > 0) return s + base;
-    if (parentSplit && a.approverEmail) {
-      const email = String(a.approverEmail).toLowerCase();
-      const p = parentSplit.participants.find(
-        (pp) => pp.participantEmail && pp.participantEmail.toLowerCase() === email
-      );
-      if (p) return s + toBps(p);
-    }
-    return s;
-  }, 0);
+  const existingAuth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  const auth =
+    existingAuth ||
+    (await prisma.derivativeAuthorization.create({
+      data: {
+        derivativeLinkId: link.id,
+        parentContentId: link.parentContentId,
+        requiredApprovers: (parentSplit?.participants || []).length,
+        approvedApprovers: 0,
+        approveWeightBps: 0,
+        rejectWeightBps: 0,
+        approvalPolicy: "WEIGHTED_BPS",
+        approvalBpsTarget: 6667,
+        status: "PENDING"
+      }
+    }));
 
-  if (process.env.NODE_ENV !== "production") {
-    app.log.info({ linkId: link.id, approvedWeight }, "clearance.vote");
+  const approverEmail = normalizeEmail(approval.approverEmail || "");
+  const emailUser = approverEmail
+    ? await prisma.user.findFirst({ where: { email: emailEquals(approverEmail) }, select: { id: true } })
+    : null;
+  const principal = await resolveApproverPrincipal(
+    { userId: emailUser?.id || null, email: approverEmail },
+    {
+      id: auth.id,
+      parentContentId: auth.parentContentId,
+      derivativeLink: {
+        id: link.id,
+        parentSplitVersionId: link.parentSplitVersionId || null
+      }
+    }
+  );
+  if (!principal.ok) {
+    return reply.code(403).send({ error: principal.message, code: principal.code });
   }
 
-  if (approvedWeight >= 6667) {
+  await recordDerivativeApprovalVote({
+    authorizationId: auth.id,
+    approverSplitParticipantId: principal.splitParticipantId,
+    decision: decision as "approve" | "reject",
+    actorUserId: emailUser?.id || `clearance:${principal.splitParticipantId}`
+  });
+
+  const tallied = await tallyApprovalBps(auth.id);
+  await prisma.derivativeAuthorization.update({
+    where: { id: auth.id },
+    data: {
+      approvedApprovers: tallied.approvedApprovers,
+      approveWeightBps: tallied.approveWeightBps,
+      rejectWeightBps: tallied.rejectWeightBps,
+      status: tallied.status
+    }
+  });
+
+  if (process.env.NODE_ENV !== "production") {
+    app.log.info({ linkId: link.id, approvedWeight: tallied.approveWeightBps }, "clearance.vote");
+  }
+
+  if (tallied.status === "APPROVED") {
     const updated = await prisma.contentLink.update({
       where: { id: link.id },
-      data: { approvedAt: new Date() }
-    });
-
-    await prisma.derivativeAuthorization.updateMany({
-      where: { derivativeLinkId: link.id },
-      data: { status: "APPROVED" }
+      data: { approvedAt: new Date(), approvedByUserId: emailUser?.id || null }
     });
 
     await prisma.clearanceRequest.updateMany({
@@ -25703,7 +25702,7 @@ app.post("/clearance/:token/vote", async (req: any, reply) => {
     try {
       await prisma.auditEvent.create({
         data: {
-          userId: updated.approvedByUserId || "external",
+          userId: emailUser?.id || "external",
           action: "clearance.grant",
           entityType: "ContentLink",
           entityId: updated.id,
@@ -31775,17 +31774,6 @@ async function isAcceptedParticipant(userId: string, contentId: string) {
   return Boolean(mirrored);
 }
 
-async function getParentLockedParticipantsForVote(parentContentId: string) {
-  const { eligible } = await getEligibleApproversForParent(parentContentId);
-  return eligible
-    .filter((p) => p.participantUserId)
-    .map((p) => ({
-      splitParticipantId: p.splitParticipantId || null,
-      userId: p.participantUserId as string,
-      bps: p.weightBps || 0
-    }));
-}
-
 type ApproverInfo = {
   splitParticipantId?: string | null;
   participantUserId: string | null;
@@ -31799,6 +31787,193 @@ function matchApproverToUser(approver: ApproverInfo, userId: string, userEmail: 
   if (approver.participantUserId && approver.participantUserId === userId) return true;
   if (approver.participantEmail && userEmail && approver.participantEmail.toLowerCase() === userEmail) return true;
   return false;
+}
+
+type DerivativeApproverPrincipal = {
+  splitParticipantId: string;
+  bps: number;
+  participantUserId: string | null;
+  participantEmail: string | null;
+};
+
+async function getDerivativeApproverPrincipalsForAuthorization(input: {
+  authorizationId: string;
+  parentContentId: string;
+  derivativeLinkId: string | null;
+  parentSplitVersionId: string | null;
+}) {
+  const parentSplit = await getParentLockedSplitSnapshotForDerivative({
+    id: input.derivativeLinkId,
+    parentContentId: input.parentContentId,
+    parentSplitVersionId: input.parentSplitVersionId
+  });
+  const principals: DerivativeApproverPrincipal[] = (parentSplit?.participants || [])
+    .map((participant: any) => ({
+      splitParticipantId: asString(participant?.id || "").trim(),
+      bps: Math.max(0, toBps(participant || { percent: 0 })),
+      participantUserId: asString(participant?.participantUserId || "").trim() || null,
+      participantEmail: normalizeEmail(participant?.participantEmail || "") || null
+    }))
+    .filter((row) => Boolean(row.splitParticipantId));
+  const bySplitParticipantId = new Map(principals.map((row) => [row.splitParticipantId, row]));
+  return { parentSplit, principals, bySplitParticipantId };
+}
+
+async function resolveApproverPrincipal(
+  input: {
+    userId?: string | null;
+    email?: string | null;
+    invitationSplitParticipantId?: string | null;
+  },
+  authorization: {
+    id: string;
+    parentContentId: string;
+    derivativeLink?: { id?: string | null; parentSplitVersionId?: string | null } | null;
+  }
+): Promise<{ ok: true; splitParticipantId: string; principal: DerivativeApproverPrincipal } | { ok: false; code: string; message: string }> {
+  const userId = asString(input.userId || "").trim();
+  const email = normalizeEmail(input.email || "");
+  const invitationSplitParticipantId = asString(input.invitationSplitParticipantId || "").trim();
+  const principalCtx = await getDerivativeApproverPrincipalsForAuthorization({
+    authorizationId: authorization.id,
+    parentContentId: authorization.parentContentId,
+    derivativeLinkId: asString(authorization.derivativeLink?.id || "").trim() || null,
+    parentSplitVersionId: asString(authorization.derivativeLink?.parentSplitVersionId || "").trim() || null
+  });
+
+  if (invitationSplitParticipantId) {
+    const direct = principalCtx.bySplitParticipantId.get(invitationSplitParticipantId);
+    if (direct) return { ok: true, splitParticipantId: direct.splitParticipantId, principal: direct };
+  }
+
+  const matchesByUser = userId
+    ? principalCtx.principals.filter((row) => row.participantUserId === userId)
+    : [];
+  if (matchesByUser.length === 1) {
+    return { ok: true, splitParticipantId: matchesByUser[0].splitParticipantId, principal: matchesByUser[0] };
+  }
+  if (matchesByUser.length > 1) {
+    return { ok: false, code: "APPROVER_PRINCIPAL_AMBIGUOUS", message: "Approver principal mapping is ambiguous for this user." };
+  }
+
+  const matchesByEmail = email
+    ? principalCtx.principals.filter((row) => row.participantEmail === email)
+    : [];
+  if (matchesByEmail.length === 1) {
+    return { ok: true, splitParticipantId: matchesByEmail[0].splitParticipantId, principal: matchesByEmail[0] };
+  }
+  if (matchesByEmail.length > 1) {
+    return { ok: false, code: "APPROVER_PRINCIPAL_AMBIGUOUS", message: "Approver principal mapping is ambiguous for this email." };
+  }
+
+  return {
+    ok: false,
+    code: "APPROVER_PRINCIPAL_NOT_FOUND",
+    message: "No eligible approver principal found in the locked parent split snapshot."
+  };
+}
+
+async function recordDerivativeApprovalVote(input: {
+  authorizationId: string;
+  approverSplitParticipantId: string;
+  decision: "approve" | "reject";
+  actorUserId?: string | null;
+}) {
+  const authorizationId = asString(input.authorizationId || "").trim();
+  const approverSplitParticipantId = asString(input.approverSplitParticipantId || "").trim();
+  const decision = input.decision;
+  const actorUserId = asString(input.actorUserId || "").trim();
+
+  const existingByPrincipal = await prisma.derivativeApprovalVote.findFirst({
+    where: { authorizationId, approverSplitParticipantId },
+    orderBy: { createdAt: "desc" }
+  });
+  if (existingByPrincipal) {
+    await prisma.derivativeApprovalVote.update({
+      where: { id: existingByPrincipal.id },
+      data: { decision, approverSplitParticipantId }
+    });
+    return;
+  }
+
+  if (actorUserId) {
+    const existingByUser = await prisma.derivativeApprovalVote.findFirst({
+      where: { authorizationId, approverUserId: actorUserId },
+      orderBy: { createdAt: "desc" }
+    });
+    if (existingByUser) {
+      await prisma.derivativeApprovalVote.update({
+        where: { id: existingByUser.id },
+        data: { decision, approverSplitParticipantId }
+      });
+      return;
+    }
+  }
+
+  await prisma.derivativeApprovalVote.create({
+    data: {
+      authorizationId,
+      approverUserId: actorUserId || `principal:${approverSplitParticipantId}`,
+      approverSplitParticipantId,
+      decision
+    }
+  });
+}
+
+async function tallyApprovalBps(authorizationId: string): Promise<{
+  approveWeightBps: number;
+  rejectWeightBps: number;
+  approvedApprovers: number;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+}> {
+  const auth = await prisma.derivativeAuthorization.findUnique({
+    where: { id: authorizationId },
+    include: {
+      derivativeLink: {
+        select: { id: true, parentSplitVersionId: true }
+      }
+    }
+  });
+  if (!auth) throw new Error("Authorization not found");
+
+  const principalCtx = await getDerivativeApproverPrincipalsForAuthorization({
+    authorizationId: auth.id,
+    parentContentId: auth.parentContentId,
+    derivativeLinkId: auth.derivativeLink?.id || null,
+    parentSplitVersionId: auth.derivativeLink?.parentSplitVersionId || null
+  });
+  const votes = await prisma.derivativeApprovalVote.findMany({
+    where: { authorizationId: auth.id },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+  });
+
+  const latestByPrincipal = new Map<string, { decision: string }>();
+  for (const vote of votes) {
+    const splitParticipantId = asString(vote.approverSplitParticipantId || "").trim();
+    if (!splitParticipantId) continue;
+    if (!principalCtx.bySplitParticipantId.has(splitParticipantId)) continue;
+    latestByPrincipal.set(splitParticipantId, { decision: String(vote.decision || "").toLowerCase() });
+  }
+
+  let approveWeightBps = 0;
+  let rejectWeightBps = 0;
+  let approvedApprovers = 0;
+  for (const [splitParticipantId, vote] of latestByPrincipal.entries()) {
+    const principal = principalCtx.bySplitParticipantId.get(splitParticipantId);
+    const bps = principal?.bps || 0;
+    if (vote.decision === "approve") {
+      approveWeightBps += bps;
+      approvedApprovers += 1;
+    } else if (vote.decision === "reject") {
+      rejectWeightBps += bps;
+    }
+  }
+
+  const target = auth.approvalBpsTarget ?? 6667;
+  let status: "PENDING" | "APPROVED" | "REJECTED" = "PENDING";
+  if (approveWeightBps >= target) status = "APPROVED";
+  else if (rejectWeightBps >= target) status = "REJECTED";
+  return { approveWeightBps, rejectWeightBps, approvedApprovers, status };
 }
 
 async function getApproversForParent(parentContentId: string): Promise<{
