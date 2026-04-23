@@ -12,6 +12,11 @@ import {
   type LibraryRelation,
   type LibrarySection
 } from "../lib/libraryEligibility";
+import {
+  buildLibraryRightsSummary,
+  deriveSplitStateFromLatestVersion,
+  type LibraryRightsSummary
+} from "../lib/libraryRightsSummary";
 
 type LibraryItem = {
   id: string;
@@ -23,6 +28,7 @@ type LibraryItem = {
   deletedAt?: string | null;
   tombstonedAt?: string | null;
   storefrontStatus?: string | null;
+  priceSats?: string | null;
   createdAt: string;
   updatedAt?: string | null;
   ownerUserId?: string | null;
@@ -52,6 +58,14 @@ type LibraryParticipation = {
   creatorUserId: string | null;
   creatorDisplayName: string | null;
   creatorEmail: string | null;
+  participantRole?: string | null;
+  participantBps?: number | null;
+  participantPercent?: number | null;
+  derivativeContext?: {
+    parentContentId?: string | null;
+    parentSplitVersionId?: string | null;
+    upstreamBps?: number | null;
+  } | null;
 };
 
 type EntitlementInventoryRow = {
@@ -117,6 +131,27 @@ type NormalizedLibraryItem = {
   relation: LibraryRelation;
   publicPageUrl: string | null;
   participation: LibraryParticipation | null;
+};
+
+type DerivativeApprovalRow = {
+  authorizationId: string;
+  linkId?: string | null;
+  childContentId: string;
+  parentContentId?: string | null;
+  parentTitle?: string | null;
+  status?: string | null;
+  approvedApprovers?: number | null;
+  approverCount?: number | null;
+  approveWeightBps?: number | null;
+  approvalBpsTarget?: number | null;
+  clearanceRequest?: {
+    requestedAt?: string | null;
+  } | null;
+};
+
+type SplitVersionSummary = {
+  status: string | null;
+  participantCount: number | null;
 };
 
 const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: string; cls: string }> = {
@@ -219,6 +254,9 @@ export default function LibraryPage() {
   const apiBase = getApiBase();
   const [items, setItems] = React.useState<NormalizedLibraryItem[]>([]);
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
+  const [derivativeApprovalByChildId, setDerivativeApprovalByChildId] = React.useState<Record<string, DerivativeApprovalRow>>({});
+  const [ownedSplitSummaryByContentId, setOwnedSplitSummaryByContentId] = React.useState<Record<string, SplitVersionSummary>>({});
+  const splitSummaryLoadingRef = React.useRef<Set<string>>(new Set());
   const [featureBusyById, setFeatureBusyById] = React.useState<Record<string, boolean>>({});
   const [featureMsgById, setFeatureMsgById] = React.useState<Record<string, string>>({});
   const [msg, setMsg] = React.useState<string | null>(null);
@@ -240,14 +278,29 @@ export default function LibraryPage() {
             ...i,
             libraryAccess: i.libraryAccess || (i.ownerUserId ? "owned" : "preview")
           }));
-        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes] = await Promise.all([
+        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes, derivativeApprovalsRes] = await Promise.all([
           api<LibraryItem[]>(`/content?scope=library`, "GET").catch(() => []),
           api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => []),
           api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
           api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[]),
           api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null),
-          api<EntitlementInventoryRow[]>("/me/entitlements", "GET").catch(() => [] as EntitlementInventoryRow[])
+          api<EntitlementInventoryRow[]>("/me/entitlements", "GET").catch(() => [] as EntitlementInventoryRow[]),
+          api<DerivativeApprovalRow[]>("/api/derivatives/approvals?scope=all", "GET").catch(() => [] as DerivativeApprovalRow[])
         ]);
+        const nextDerivativeApprovalByChildId: Record<string, DerivativeApprovalRow> = {};
+        for (const row of Array.isArray(derivativeApprovalsRes) ? derivativeApprovalsRes : []) {
+          const childContentId = String(row?.childContentId || "").trim();
+          if (!childContentId) continue;
+          const existing = nextDerivativeApprovalByChildId[childContentId];
+          if (!existing) {
+            nextDerivativeApprovalByChildId[childContentId] = row;
+            continue;
+          }
+          const existingRequestedAt = Date.parse(String(existing?.clearanceRequest?.requestedAt || "")) || 0;
+          const incomingRequestedAt = Date.parse(String(row?.clearanceRequest?.requestedAt || "")) || 0;
+          if (incomingRequestedAt >= existingRequestedAt) nextDerivativeApprovalByChildId[childContentId] = row;
+        }
+        setDerivativeApprovalByChildId(nextDerivativeApprovalByChildId);
         const nextEntitlementByContentId: Record<string, EntitlementInventoryRow> = {};
         for (const row of Array.isArray(entitlementsRes) ? entitlementsRes : []) {
           const contentId = String(row?.contentId || "").trim();
@@ -286,7 +339,11 @@ export default function LibraryPage() {
             highlightedOnProfile: Boolean(row?.highlightedOnProfile),
             creatorUserId: row?.creatorUserId || null,
             creatorDisplayName: row?.creatorDisplayName || null,
-          creatorEmail: row?.creatorEmail || null
+            creatorEmail: row?.creatorEmail || null,
+            participantRole: row?.participantRole || null,
+            participantBps: Number.isFinite(Number(row?.participantBps)) ? Number(row?.participantBps) : null,
+            participantPercent: Number.isFinite(Number(row?.participantPercent)) ? Number(row?.participantPercent) : null,
+            derivativeContext: row?.derivativeContext || null
         }));
         const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
         const remoteOriginByParentContentId = new Map<string, string>();
@@ -544,6 +601,45 @@ export default function LibraryPage() {
   }, [libraryTypeFilter, libraryRelationshipFilter]);
 
   React.useEffect(() => {
+    const ownedIds = Array.from(
+      new Set(
+        items
+          .filter((entry) => entry.relation === "owner")
+          .map((entry) => String(entry.item.id || "").trim())
+          .filter(Boolean)
+      )
+    ).filter((id) => !ownedSplitSummaryByContentId[id] && !splitSummaryLoadingRef.current.has(id));
+    if (!ownedIds.length) return;
+
+    for (const id of ownedIds) splitSummaryLoadingRef.current.add(id);
+    (async () => {
+      const entries = await Promise.all(
+        ownedIds.map(async (contentId) => {
+          try {
+            const versions = await api<any[]>(`/content/${encodeURIComponent(contentId)}/split-versions`, "GET");
+            const latest = Array.isArray(versions) && versions.length > 0 ? versions[0] : null;
+            return [
+              contentId,
+              {
+                status: latest?.status || null,
+                participantCount: Array.isArray(latest?.participants) ? latest.participants.length : null
+              } as SplitVersionSummary
+            ] as const;
+          } catch {
+            return [contentId, { status: null, participantCount: null } as SplitVersionSummary] as const;
+          }
+        })
+      );
+      setOwnedSplitSummaryByContentId((prev) => {
+        const next = { ...prev };
+        for (const [contentId, summary] of entries) next[contentId] = summary;
+        return next;
+      });
+      for (const id of ownedIds) splitSummaryLoadingRef.current.delete(id);
+    })();
+  }, [items, ownedSplitSummaryByContentId]);
+
+  React.useEffect(() => {
     const onPopState = () => {
       setLibraryTypeFilter(readLibraryTypeFromUrl());
       setLibraryRelationshipFilter(readLibraryRelationshipFromUrl());
@@ -697,6 +793,36 @@ function isForbiddenPreviewError(message?: string | null): boolean {
   return text.includes("403") || text.includes("forbidden");
 }
 
+function readinessLabel(readiness: LibraryRightsSummary["commercialReadiness"]): string {
+  if (readiness === "ready") return "Ready to sell";
+  if (readiness === "needs_split") return "Needs split setup";
+  if (readiness === "not_published") return "Not published";
+  if (readiness === "missing_payment_config") return "No price/payment config";
+  if (readiness === "awaiting_clearance") return "Awaiting clearance";
+  return "Readiness unknown";
+}
+
+function clearanceStatusLabel(status: NonNullable<LibraryRightsSummary["derivative"]>["clearanceStatus"]): string {
+  if (status === "awaiting") return "Awaiting clearance";
+  if (status === "partial") return "Partially approved";
+  if (status === "cleared") return "Cleared";
+  if (status === "rejected") return "Rejected / needs changes";
+  if (status === "blocked") return "Blocked";
+  return "Clearance unknown";
+}
+
+function splitSummaryLabel(summary: LibraryRightsSummary): string {
+  if (summary.ownershipKind !== "owned") return "Shared split";
+  if (summary.splitState === "solo") return "100% owner";
+  if (summary.splitState === "shared") {
+    const count = Number.isFinite(Number(summary.participantCount)) ? Number(summary.participantCount) : null;
+    return count && count > 0 ? `Shared split • ${count} participants` : "Shared split";
+  }
+  if (summary.splitState === "draft_incomplete") return "Split draft incomplete";
+  if (summary.splitState === "missing") return "Needs split setup";
+  return "Split state unknown";
+}
+
 function buildPublicPageUrl(contentId: string, remoteOrigin?: string | null): string {
   const origin = String(remoteOrigin || "").trim().replace(/\/+$/, "");
   if (origin) return `${origin}/p/${encodeURIComponent(contentId)}`;
@@ -812,6 +938,11 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                     const pf = previewFileFor(previewUrl, preview?.files || []);
                     const mime = String(pf?.mime || "").toLowerCase();
                     const type = String(it.type || "").toLowerCase();
+                    const derivativeLinked =
+                      entry.relationshipTags.includes("derivatives") ||
+                      type === "derivative" ||
+                      type === "remix" ||
+                      type === "mashup";
                     const isVideo = mime.startsWith("video/") || type === "video";
                     const isAudio = mime.startsWith("audio/") || type === "song";
                     const isImage = mime.startsWith("image/");
@@ -853,9 +984,73 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                         ? "Stream + download"
                         : entitlement?.accessMode === "download_only"
                           ? "Download only"
-                          : entitlement?.accessMode === "stream_only"
-                            ? "Stream only"
-                            : null;
+                        : entitlement?.accessMode === "stream_only"
+                          ? "Stream only"
+                          : null;
+                    const derivativeApproval = derivativeApprovalByChildId[it.id] || null;
+                    const splitSummary = ownedSplitSummaryByContentId[it.id] || null;
+                    const splitState =
+                      entry.relation === "owner"
+                        ? deriveSplitStateFromLatestVersion({
+                            latestVersionStatus: splitSummary?.status || null,
+                            participantCount: splitSummary?.participantCount ?? null
+                          })
+                        : entry.relation === "participant"
+                          ? "shared"
+                          : "unknown";
+                    const mySplitBps =
+                      Number.isFinite(Number(participationInfo?.participantBps))
+                        ? Number(participationInfo?.participantBps)
+                        : Number.isFinite(Number(participationInfo?.participantPercent))
+                          ? Math.round(Number(participationInfo?.participantPercent) * 100)
+                          : null;
+                    const rightsSummary = buildLibraryRightsSummary({
+                      isOwner: entry.relation === "owner",
+                      isCollaboration: entry.relation === "participant" && !derivativeLinked,
+                      isDerivative: derivativeLinked,
+                      contentStatus: it.status,
+                      storefrontStatus: it.storefrontStatus,
+                      priceSats: it.priceSats,
+                      splitState,
+                      participantCount:
+                        splitSummary?.participantCount ??
+                        (entry.relation === "participant" ? 2 : null),
+                      myRole: participationInfo?.participantRole || null,
+                      mySplitBps,
+                      derivative: derivativeLinked
+                        ? {
+                            parentContentId: derivativeApproval?.parentContentId || participationInfo?.derivativeContext?.parentContentId || null,
+                            parentTitle: derivativeApproval?.parentTitle || null,
+                            status: derivativeApproval?.status || null,
+                            approvedApprovers: derivativeApproval?.approvedApprovers ?? null,
+                            requiredApprovers: derivativeApproval?.approverCount ?? null,
+                            approvedWeightBps: derivativeApproval?.approveWeightBps ?? null,
+                            approvalBpsTarget: derivativeApproval?.approvalBpsTarget ?? null
+                          }
+                        : null
+                    });
+                    const showManageSplit = rightsSummary.ownershipKind === "owned";
+                    const showViewEarnings =
+                      rightsSummary.ownershipKind === "collaboration" ||
+                      rightsSummary.ownershipKind === "derivative";
+                    const showClearanceAction = rightsSummary.ownershipKind === "derivative";
+                    const earningsHref = `/earnings-v2?contentId=${encodeURIComponent(it.id)}&title=${encodeURIComponent(it.title || "")}`;
+                    const rightsBadgeLabel =
+                      rightsSummary.ownershipKind === "owned"
+                        ? "Owned work"
+                        : rightsSummary.ownershipKind === "collaboration"
+                          ? "Collaboration"
+                          : rightsSummary.ownershipKind === "derivative"
+                            ? "Derivative"
+                            : "Unknown";
+                    const rightsBadgeClass =
+                      rightsSummary.ownershipKind === "owned"
+                        ? "border-emerald-600/40 bg-emerald-500/10 text-emerald-300"
+                        : rightsSummary.ownershipKind === "collaboration"
+                          ? "border-fuchsia-600/40 bg-fuchsia-500/10 text-fuchsia-300"
+                          : rightsSummary.ownershipKind === "derivative"
+                            ? "border-amber-600/40 bg-amber-500/10 text-amber-200"
+                            : "border-neutral-700 bg-neutral-700/20 text-neutral-300";
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
                         {hasMediaCard ? (
@@ -899,6 +1094,9 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                             <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${access.cls}`}>
                               {access.label}
                             </span>
+                            <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${rightsBadgeClass}`}>
+                              {rightsBadgeLabel}
+                            </span>
                             <span className="text-[11px] text-neutral-500">Created {formatDateLabel(it.createdAt)}</span>
                           </div>
                           {it.owner?.displayName || it.owner?.email ? (
@@ -909,6 +1107,40 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                           <div className="mt-1 text-[11px] text-neutral-500">
                             Relationship: {LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType]}
                           </div>
+                          <div className="mt-1 text-[11px] text-neutral-400">{splitSummaryLabel(rightsSummary)}</div>
+                          {rightsSummary.myRole ? (
+                            <div className="text-[11px] text-neutral-400">
+                              My role: {rightsSummary.myRole}
+                              {Number.isFinite(Number(rightsSummary.mySplitBps))
+                                ? ` • ${(Number(rightsSummary.mySplitBps) / 100).toFixed(2)}%`
+                                : ""}
+                            </div>
+                          ) : null}
+                          <div className="mt-1 text-[11px] text-neutral-300">
+                            Readiness: {readinessLabel(rightsSummary.commercialReadiness)}
+                          </div>
+                          {rightsSummary.ownershipKind === "derivative" && rightsSummary.derivative ? (
+                            <div className="mt-1 space-y-1 text-[11px] text-neutral-400">
+                              <div>
+                                Source: {rightsSummary.derivative.parentTitle || rightsSummary.derivative.parentContentId || "Unknown parent"}
+                              </div>
+                              <div>Clearance: {clearanceStatusLabel(rightsSummary.derivative.clearanceStatus)}</div>
+                              <div>
+                                Rights holders approved: {Number(rightsSummary.derivative.approvedApprovers || 0)} of{" "}
+                                {Number(rightsSummary.derivative.requiredApprovers || 0)}
+                              </div>
+                              <div>
+                                Progress: {Number(rightsSummary.derivative.approvedWeightBps || 0)}/
+                                {Number(rightsSummary.derivative.approvalBpsTarget || 6667)} bps
+                              </div>
+                              {rightsSummary.commercialReadiness === "awaiting_clearance" ? (
+                                <>
+                                  <div>Network publish: Awaiting clearance</div>
+                                  <div>Public discovery: Awaiting clearance</div>
+                                </>
+                              ) : null}
+                            </div>
+                          ) : null}
                           {entitlement ? (
                             <div className="mt-1 text-[11px] text-neutral-500">
                               Unlocked: {formatDateLabel(entitlement.unlockedAt || entitlement.grantedAt)}
@@ -945,6 +1177,30 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                             >
                               {previewLoading[it.id] ? "Loading…" : "Load preview"}
                             </button>
+                            {showManageSplit ? (
+                              <a
+                                className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                href={`/content/${encodeURIComponent(it.id)}/splits`}
+                              >
+                                Manage split
+                              </a>
+                            ) : null}
+                            {showViewEarnings ? (
+                              <a
+                                className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                href={earningsHref}
+                              >
+                                View earnings
+                              </a>
+                            ) : null}
+                            {showClearanceAction ? (
+                              <a
+                                className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
+                                href="/content-library"
+                              >
+                                View clearance
+                              </a>
+                            ) : null}
                             {entry.relation === "participant" ? (
                               <a
                                 className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
