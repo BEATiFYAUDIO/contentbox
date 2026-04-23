@@ -22360,6 +22360,23 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       return null;
     }
   };
+  const parseInviteClearanceRouteFromUrl = (
+    raw: unknown
+  ): { token: string; authorizationId: string } | null => {
+    const value = asString(raw || "").trim();
+    if (!value) return null;
+    try {
+      const parsed = new URL(value);
+      const match = parsed.pathname.match(/\/invites\/([^/]+)\/clearance\/([^/]+)(?:\/preview)?\/?$/i);
+      if (!match) return null;
+      const token = asString(match[1] || "").trim();
+      const authorizationId = asString(match[2] || "").trim();
+      if (!token || !authorizationId) return null;
+      return { token, authorizationId };
+    } catch {
+      return null;
+    }
+  };
 
   const auths = await prisma.derivativeAuthorization.findMany({
     include: { derivativeLink: { include: { childContent: true, parentContent: true } } },
@@ -22376,6 +22393,16 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   for (const a of latestLocalAuthByLink.values()) {
     const link = a.derivativeLink;
     if (!link || !isActionableDerivativeChildForClearanceInbox(link?.childContent)) continue;
+    const childDeletedReason = asString(link?.childContent?.deletedReason || "").trim().toLowerCase();
+    const childRemoteOriginMarker = getRemoteOriginFromDescription(link?.childContent?.description || null);
+    const childHasLocalRepo = Boolean(asString(link?.childContent?.repoPath || "").trim());
+    const isRemoteShadowChild =
+      Boolean(link?.childContent?.deletedAt) &&
+      childDeletedReason === "hard" &&
+      Boolean(childRemoteOriginMarker) &&
+      !childHasLocalRepo;
+    // Remote-shadow local rows are transport mirrors; voting/preview must use the remote inbox row.
+    if (isRemoteShadowChild) continue;
 
     const principalCtx = await getDerivativeApproverPrincipalsForAuthorization({
       authorizationId: a.id,
@@ -22447,7 +22474,16 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const remoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(link?.childContent?.description || null));
     const remoteReviewPreviewUrl = asString(getRemoteReviewPreviewUrlFromDescription(link?.childContent?.description || null) || "").trim() || null;
     const shouldHydrateRemoteRouting = Boolean(remoteOrigin) && (status === "PENDING" || status === "REJECTED");
-    const remoteAuthorizationId = shouldHydrateRemoteRouting ? asString(a.id || "").trim() || null : null;
+    const parsedRemotePreviewRoute = parseInviteClearanceRouteFromUrl(remoteReviewPreviewUrl);
+    const remoteAuthorizationId = shouldHydrateRemoteRouting
+      ? asString(parsedRemotePreviewRoute?.authorizationId || a.id || "").trim() || null
+      : null;
+    const remoteVoteRoute =
+      shouldHydrateRemoteRouting && parsedRemotePreviewRoute?.token && remoteAuthorizationId && remoteOrigin
+        ? `/api/remote/invites/${encodeURIComponent(parsedRemotePreviewRoute.token)}/clearance/${encodeURIComponent(
+            remoteAuthorizationId
+          )}/vote?origin=${encodeURIComponent(remoteOrigin)}`
+        : null;
 
     localRows.push({
       authorizationId: a.id,
@@ -22481,7 +22517,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       remoteAuthorizationId,
       remoteClearanceUrl: null,
       remoteReviewPreviewUrl,
-      remoteVoteRoute: null
+      remoteVoteRoute
     });
   }
 
@@ -22940,10 +22976,9 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
     }
   }
 
+  const canonical = await pickCanonicalDerivativeWorkflowLinkByPair({ parentContentId, childContentId });
   const link =
-    (await prisma.contentLink.findFirst({
-      where: { parentContentId, childContentId }
-    })) ||
+    canonical.link ||
     (await prisma.contentLink.create({
       data: {
         parentContentId,
@@ -22956,7 +22991,7 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
     }));
 
   const { approvers } = await getApproversForParent(parentContentId);
-  const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  const existing = canonical.auth || (await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } }));
   let auth = existing;
   if (auth) {
     if (isResubmit || mode === "request") {
@@ -23051,12 +23086,11 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
     return badRequest(reply, "parentContentId and childContentId are required");
   }
 
-  const link = await prisma.contentLink.findFirst({
-    where: { parentContentId, childContentId }
-  });
+  const canonical = await pickCanonicalDerivativeWorkflowLinkByPair({ parentContentId, childContentId });
+  const link = canonical.link;
   if (!link) return notFound(reply, "link not found");
 
-  const auth = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
+  const auth = canonical.auth || (await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } }));
   const clearanceReq = await prisma.clearanceRequest.findFirst({
     where: { contentLinkId: link.id },
     orderBy: { createdAt: "desc" }
@@ -30505,6 +30539,23 @@ app.delete("/content/:id", { preHandler: requireAuth }, async (req: any, reply) 
 
   const repoPath = content.repoPath;
   const deletedAt = content.deletedAt || new Date();
+  const pendingDerivativeLinkIds = (
+    await prisma.contentLink.findMany({
+      where: {
+        childContentId: contentId,
+        approvedAt: null,
+        requiresApproval: true
+      },
+      select: { id: true }
+    })
+  ).map((row) => row.id);
+
+  if (pendingDerivativeLinkIds.length > 0) {
+    // Purge draft derivative clearance workflows for this child on hard delete.
+    // This removes stale pending/voted cards after repeated test iterations.
+    await prisma.contentLink.deleteMany({ where: { id: { in: pendingDerivativeLinkIds } } });
+  }
+
   await prisma.contentItem.update({
     where: { id: contentId },
     data: { deletedAt, deletedReason: "hard" }
@@ -32849,13 +32900,99 @@ function getRemoteReviewPreviewUrlFromDescription(desc?: string | null): string 
 }
 
 function isActionableDerivativeChildForClearanceInbox(
-  child: { deletedAt?: Date | null; deletedReason?: string | null; description?: string | null } | null | undefined
+  child: { deletedAt?: Date | null; deletedReason?: string | null; description?: string | null; repoPath?: string | null } | null | undefined
 ): boolean {
   if (!child) return false;
   if (!child.deletedAt) return true;
   const deletedReason = asString(child.deletedReason || "").trim().toLowerCase();
   const remoteOrigin = getRemoteOriginFromDescription(child.description || null);
-  return deletedReason === "hard" && Boolean(remoteOrigin);
+  const hasLocalRepo = Boolean(asString(child.repoPath || "").trim());
+  // Keep true only for remote-shadow derivative records (hard-deleted + remote marker + no local repo).
+  return deletedReason === "hard" && Boolean(remoteOrigin) && !hasLocalRepo;
+}
+
+type CanonicalDerivativeWorkflowRow = {
+  id: string;
+  parentContentId: string;
+  childContentId: string;
+  parentSplitVersionId: string | null;
+  relation: string;
+  upstreamBps: number;
+  requiresApproval: boolean;
+  approvedAt: Date | null;
+  approvedByUserId: string | null;
+};
+
+async function pickCanonicalDerivativeWorkflowLinkByPair(input: {
+  parentContentId: string;
+  childContentId: string;
+}): Promise<{
+  link: CanonicalDerivativeWorkflowRow | null;
+  auth: {
+    id: string;
+    derivativeLinkId: string;
+    status: string;
+    approveWeightBps: number;
+    rejectWeightBps: number;
+    approvalBpsTarget: number | null;
+    approvedApprovers: number;
+    updatedAt: Date;
+    createdAt: Date;
+  } | null;
+}> {
+  const links = await prisma.contentLink.findMany({
+    where: { parentContentId: input.parentContentId, childContentId: input.childContentId },
+    select: {
+      id: true,
+      parentContentId: true,
+      childContentId: true,
+      parentSplitVersionId: true,
+      relation: true,
+      upstreamBps: true,
+      requiresApproval: true,
+      approvedAt: true,
+      approvedByUserId: true
+    }
+  });
+  if (links.length === 0) return { link: null, auth: null };
+
+  const authRows = await prisma.derivativeAuthorization.findMany({
+    where: { derivativeLinkId: { in: links.map((row) => row.id) } },
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    select: {
+      id: true,
+      derivativeLinkId: true,
+      status: true,
+      approveWeightBps: true,
+      rejectWeightBps: true,
+      approvalBpsTarget: true,
+      approvedApprovers: true,
+      updatedAt: true,
+      createdAt: true
+    }
+  });
+  const authByLinkId = new Map<string, (typeof authRows)[number]>();
+  for (const row of authRows) {
+    if (!authByLinkId.has(row.derivativeLinkId)) authByLinkId.set(row.derivativeLinkId, row);
+  }
+
+  const ranked = links
+    .map((link) => ({ link, auth: authByLinkId.get(link.id) || null }))
+    .sort((a, b) => {
+      const aApproved = asString(a.auth?.status || "").trim().toUpperCase() === "APPROVED" ? 1 : 0;
+      const bApproved = asString(b.auth?.status || "").trim().toUpperCase() === "APPROVED" ? 1 : 0;
+      if (aApproved !== bApproved) return bApproved - aApproved;
+      const aWeight = Number(a.auth?.approveWeightBps || 0);
+      const bWeight = Number(b.auth?.approveWeightBps || 0);
+      if (aWeight !== bWeight) return bWeight - aWeight;
+      const aUpdated = Date.parse(String(a.auth?.updatedAt || "")) || 0;
+      const bUpdated = Date.parse(String(b.auth?.updatedAt || "")) || 0;
+      if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+      return String(b.link.id).localeCompare(String(a.link.id));
+    });
+
+  const winner = ranked[0] || null;
+  return { link: winner?.link || null, auth: winner?.auth || null };
 }
 
 async function getEligibleApproversForParent(parentContentId: string) {
@@ -37922,7 +38059,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
       include: {
         derivativeLink: {
           include: {
-            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true, deletedReason: true } },
+            childContent: { select: { id: true, title: true, description: true, status: true, deletedAt: true, deletedReason: true, repoPath: true } },
             parentContent: { select: { id: true, title: true } }
           }
         },
