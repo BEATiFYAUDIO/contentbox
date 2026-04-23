@@ -1795,6 +1795,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
+  function deriveClearanceRequestMode(parentLink: any): "request" | "resend" | "resubmit" {
+    const clearanceStatus = String(parentLink?.clearance?.status || "").toUpperCase();
+    const requestStatus = String(parentLink?.clearanceRequest?.status || "").toUpperCase();
+    const approvedApprovers = Number(parentLink?.clearance?.approvedApprovers || 0);
+    const rejectWeightBps = Number(parentLink?.clearance?.rejectWeightBps || 0);
+    if (clearanceStatus === "REJECTED") return "resubmit";
+    if (requestStatus === "PENDING") {
+      const hasVotes = approvedApprovers > 0 || rejectWeightBps > 0;
+      return hasVotes ? "resubmit" : "resend";
+    }
+    return "request";
+  }
+
+  function clearanceRequestActionLabel(parentLink: any): string {
+    const mode = deriveClearanceRequestMode(parentLink);
+    if (mode === "resubmit") return "Resubmit for approval";
+    if (mode === "resend") return "Resend request";
+    return "Request clearance";
+  }
+
   async function createContent(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
@@ -3663,21 +3683,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                       requestClearanceForContent(
                                         it.id,
                                         parentLink.linkId,
-                                        String(parentLink?.clearance?.status || "").toUpperCase() === "REJECTED"
-                                          ? "resubmit"
-                                          : parentLink.clearanceRequest?.status === "PENDING"
-                                            ? "resend"
-                                            : "request"
+                                        deriveClearanceRequestMode(parentLink)
                                       )
                                     }
                                     disabled={!crossNodeAllowed}
                                     title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                                   >
-                                    {String(parentLink?.clearance?.status || "").toUpperCase() === "REJECTED"
-                                      ? "Resubmit for approval"
-                                      : parentLink.clearanceRequest?.status === "PENDING"
-                                        ? "Resend request"
-                                        : "Request clearance"}
+                                    {clearanceRequestActionLabel(parentLink)}
                                   </button>
                                 ) : null}
                                 <button
@@ -4975,21 +4987,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                   requestClearanceForContent(
                                     it.id,
                                     parentLinkByContent[it.id]!.linkId,
-                                    String(parentLinkByContent[it.id]?.clearance?.status || "").toUpperCase() === "REJECTED"
-                                      ? "resubmit"
-                                      : parentLinkByContent[it.id]?.clearanceRequest?.status === "PENDING"
-                                        ? "resend"
-                                        : "request"
+                                    deriveClearanceRequestMode(parentLinkByContent[it.id])
                                   )
                                 }
                                 disabled={!crossNodeAllowed}
                                 title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                               >
-                                {String(parentLinkByContent[it.id]?.clearance?.status || "").toUpperCase() === "REJECTED"
-                                  ? "Resubmit for approval"
-                                  : parentLinkByContent[it.id]?.clearanceRequest?.status === "PENDING"
-                                    ? "Resend request"
-                                    : "Request clearance"}
+                                {clearanceRequestActionLabel(parentLinkByContent[it.id])}
                               </button>
                               {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
                                 <button
@@ -4999,11 +5003,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                     requestClearanceForContent(
                                       it.id,
                                       parentLinkByContent[it.id]!.linkId,
-                                      String(parentLinkByContent[it.id]?.clearance?.status || "").toUpperCase() === "REJECTED"
-                                        ? "resubmit"
-                                        : parentLinkByContent[it.id]?.clearanceRequest?.status === "PENDING"
-                                          ? "resend"
-                                          : "request"
+                                      deriveClearanceRequestMode(parentLinkByContent[it.id])
                                     )
                                   }
                                   disabled={!crossNodeAllowed}
