@@ -1679,7 +1679,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
       if (inviteToken.trim() && remoteAuthorizationId.trim()) {
         await openRemoteInviteClearancePreview(remoteOrigin, inviteToken, remoteAuthorizationId, childContentId);
       } else {
-        await openRemoteDerivativePreview(remoteOrigin, childContentId);
+        const msg = "Missing remote clearance preview routing (invite token + authorization id required).";
+        setDerivativePreviewError((m) => ({ ...m, [childContentId]: msg }));
+        setError(msg);
       }
       return;
     }
