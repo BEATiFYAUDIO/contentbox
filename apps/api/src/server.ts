@@ -4956,6 +4956,149 @@ async function resolvePayoutExecutionRuntime(userId: string | null): Promise<{
   return { executionState: "ready", blockReason: null };
 }
 
+const RUNTIME_SIGNAL_CACHE_TTL_MS = Math.max(
+  500,
+  Number(process.env.RUNTIME_SIGNAL_CACHE_TTL_MS || "2500")
+);
+const RUNTIME_SIGNAL_STALE_TTL_MS = Math.max(
+  RUNTIME_SIGNAL_CACHE_TTL_MS,
+  Number(process.env.RUNTIME_SIGNAL_STALE_TTL_MS || "15000")
+);
+
+type RuntimeSignalCacheEntry<T> = {
+  expiresAt: number;
+  staleExpiresAt: number;
+  value: T;
+};
+
+const lightningRuntimeCache = new Map<string, RuntimeSignalCacheEntry<Awaited<ReturnType<typeof resolveLightningCapabilityRuntime>>>>();
+const lightningRuntimeInflight = new Map<string, Promise<Awaited<ReturnType<typeof resolveLightningCapabilityRuntime>>>>();
+const paymentsReadinessCache = new Map<string, RuntimeSignalCacheEntry<Awaited<ReturnType<typeof getPaymentsReadiness>>>>();
+const paymentsReadinessInflight = new Map<string, Promise<Awaited<ReturnType<typeof getPaymentsReadiness>>>>();
+const payoutExecutionRuntimeCache = new Map<string, RuntimeSignalCacheEntry<Awaited<ReturnType<typeof resolvePayoutExecutionRuntime>>>>();
+const payoutExecutionRuntimeInflight = new Map<string, Promise<Awaited<ReturnType<typeof resolvePayoutExecutionRuntime>>>>();
+
+function runtimeSignalCacheKey(userId: string | null) {
+  return String(userId || "__none__");
+}
+
+async function resolveLightningCapabilityRuntimeCached(userId: string | null, force = false) {
+  const key = runtimeSignalCacheKey(userId);
+  const now = Date.now();
+  const cached = lightningRuntimeCache.get(key);
+  if (!force && cached && cached.expiresAt > now) return cached.value;
+  if (!force && cached && cached.staleExpiresAt > now) {
+    if (!lightningRuntimeInflight.has(key)) {
+      lightningRuntimeInflight.set(
+        key,
+        resolveLightningCapabilityRuntime(userId)
+          .then((value) => {
+            lightningRuntimeCache.set(key, {
+              expiresAt: Date.now() + RUNTIME_SIGNAL_CACHE_TTL_MS,
+              staleExpiresAt: Date.now() + RUNTIME_SIGNAL_STALE_TTL_MS,
+              value
+            });
+            return value;
+          })
+          .finally(() => lightningRuntimeInflight.delete(key))
+      );
+    }
+    return cached.value;
+  }
+  const inflight = lightningRuntimeInflight.get(key);
+  if (!force && inflight) return inflight;
+  const work = resolveLightningCapabilityRuntime(userId)
+    .then((value) => {
+      lightningRuntimeCache.set(key, {
+        expiresAt: Date.now() + RUNTIME_SIGNAL_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + RUNTIME_SIGNAL_STALE_TTL_MS,
+        value
+      });
+      return value;
+    })
+    .finally(() => lightningRuntimeInflight.delete(key));
+  lightningRuntimeInflight.set(key, work);
+  return work;
+}
+
+async function getPaymentsReadinessCached(userId: string, force = false) {
+  const key = runtimeSignalCacheKey(userId);
+  const now = Date.now();
+  const cached = paymentsReadinessCache.get(key);
+  if (!force && cached && cached.expiresAt > now) return cached.value;
+  if (!force && cached && cached.staleExpiresAt > now) {
+    if (!paymentsReadinessInflight.has(key)) {
+      paymentsReadinessInflight.set(
+        key,
+        getPaymentsReadiness(userId)
+          .then((value) => {
+            paymentsReadinessCache.set(key, {
+              expiresAt: Date.now() + RUNTIME_SIGNAL_CACHE_TTL_MS,
+              staleExpiresAt: Date.now() + RUNTIME_SIGNAL_STALE_TTL_MS,
+              value
+            });
+            return value;
+          })
+          .finally(() => paymentsReadinessInflight.delete(key))
+      );
+    }
+    return cached.value;
+  }
+  const inflight = paymentsReadinessInflight.get(key);
+  if (!force && inflight) return inflight;
+  const work = getPaymentsReadiness(userId)
+    .then((value) => {
+      paymentsReadinessCache.set(key, {
+        expiresAt: Date.now() + RUNTIME_SIGNAL_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + RUNTIME_SIGNAL_STALE_TTL_MS,
+        value
+      });
+      return value;
+    })
+    .finally(() => paymentsReadinessInflight.delete(key));
+  paymentsReadinessInflight.set(key, work);
+  return work;
+}
+
+async function resolvePayoutExecutionRuntimeCached(userId: string | null, force = false) {
+  const key = runtimeSignalCacheKey(userId);
+  const now = Date.now();
+  const cached = payoutExecutionRuntimeCache.get(key);
+  if (!force && cached && cached.expiresAt > now) return cached.value;
+  if (!force && cached && cached.staleExpiresAt > now) {
+    if (!payoutExecutionRuntimeInflight.has(key)) {
+      payoutExecutionRuntimeInflight.set(
+        key,
+        resolvePayoutExecutionRuntime(userId)
+          .then((value) => {
+            payoutExecutionRuntimeCache.set(key, {
+              expiresAt: Date.now() + RUNTIME_SIGNAL_CACHE_TTL_MS,
+              staleExpiresAt: Date.now() + RUNTIME_SIGNAL_STALE_TTL_MS,
+              value
+            });
+            return value;
+          })
+          .finally(() => payoutExecutionRuntimeInflight.delete(key))
+      );
+    }
+    return cached.value;
+  }
+  const inflight = payoutExecutionRuntimeInflight.get(key);
+  if (!force && inflight) return inflight;
+  const work = resolvePayoutExecutionRuntime(userId)
+    .then((value) => {
+      payoutExecutionRuntimeCache.set(key, {
+        expiresAt: Date.now() + RUNTIME_SIGNAL_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + RUNTIME_SIGNAL_STALE_TTL_MS,
+        value
+      });
+      return value;
+    })
+    .finally(() => payoutExecutionRuntimeInflight.delete(key));
+  payoutExecutionRuntimeInflight.set(key, work);
+  return work;
+}
+
 type LndSendContext = {
   entrypoint: "participant_payout" | "creator_remittance";
   providerPaymentIntentId?: string | null;
@@ -8073,7 +8216,7 @@ async function deriveUserNetworkStatus(): Promise<UserNetworkStatus> {
   const runtime = getRuntimeHealthStatus();
   const modeStatus = getNodeModeStatus();
   const providerConnection = deriveProviderCommerceConnectionState();
-  const sovereignReadiness = await getLocalSovereignReadiness();
+  const sovereignReadiness = await getLocalSovereignReadinessCached();
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: sovereignReadiness.localCommerceReady,
     localSovereignReady: sovereignReadiness.ready,
@@ -8125,7 +8268,7 @@ async function evaluatePublishReadiness(): Promise<PublishReadiness> {
   }
   const ctx = getCapabilityContext();
   const providerConnection = deriveProviderCommerceConnectionState();
-  const sovereignReadiness = await getLocalSovereignReadiness();
+  const sovereignReadiness = await getLocalSovereignReadinessCached();
   const serviceProfile = resolveProviderServiceProfile({
     hasLocalInvoiceMinting: sovereignReadiness.localCommerceReady,
     localSovereignReady: sovereignReadiness.ready,
@@ -16493,9 +16636,9 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
   const productTierInfo = resolveProductTier();
   const ctx = getCapabilityContext();
   const userId = (req.user as JwtUser).sub;
-  const paymentsReadiness = await getPaymentsReadiness(userId);
-  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
-  const payoutExecutionRuntime = await resolvePayoutExecutionRuntime(userId).catch(() => null);
+  const paymentsReadiness = await getPaymentsReadinessCached(userId);
+  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
+  const payoutExecutionRuntime = await resolvePayoutExecutionRuntimeCached(userId).catch(() => null);
   return reply.send({
     bootId: BOOT_ID,
     startedAt: STARTED_AT,
@@ -16532,10 +16675,10 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const ctx = getCapabilityContext();
   const providerConfig = getNetworkProviderConfig();
   const providerConnection = deriveProviderCommerceConnectionState(providerConfig);
-  const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
-  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
-  const payoutExecutionRuntime = await resolvePayoutExecutionRuntime(userId).catch(() => null);
-  const sovereignReadiness = await getLocalSovereignReadiness();
+  const paymentsReadiness = await getPaymentsReadinessCached(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
+  const payoutExecutionRuntime = await resolvePayoutExecutionRuntimeCached(userId).catch(() => null);
+  const sovereignReadiness = await getLocalSovereignReadinessCached();
 
   const localInvoiceMinting =
     ctx.paymentsMode === "node" &&
@@ -16648,8 +16791,8 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
 app.get("/api/network/payout-destination", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
-  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const paymentsReadiness = await getPaymentsReadinessCached(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
   const localLndReady = Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready);
   const destination = await resolveEffectivePayoutDestination(userId, {
     localLndReady,
@@ -16677,8 +16820,8 @@ app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (
     providerRemitMode
   });
 
-  const paymentsReadiness = await getPaymentsReadiness(userId).catch(() => null);
-  const lightningRuntime = await resolveLightningCapabilityRuntime(userId).catch(() => null);
+  const paymentsReadiness = await getPaymentsReadinessCached(userId).catch(() => null);
+  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
   const destination = await resolveEffectivePayoutDestination(userId, {
     localLndReady: Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     paymentsReadiness
@@ -18291,7 +18434,7 @@ app.get("/api/network/provider/diagnostics", { preHandler: requireAuth }, async 
   const permit = getProviderOperationIntentStatus(cfg);
   const trust = getProviderExecutionTrustReadiness(verification);
   const chain = evaluateProviderExecutionChainReadiness();
-  const localSovereign = await getLocalSovereignReadiness();
+  const localSovereign = await getLocalSovereignReadinessCached();
   const authority = await resolveCommerceAuthorityForUser(userId);
   const providerConnection = deriveProviderCommerceConnectionState(cfg);
   return reply.send({
@@ -33328,7 +33471,7 @@ app.get("/api/admin/lightning", { preHandler: [requireAuth, requireAdvancedTier(
   try {
     const userId = (_req.user as JwtUser).sub;
     const meta = await getLightningNodeConfigMeta(prisma as any);
-    const runtime = await resolveLightningCapabilityRuntime(userId);
+    const runtime = await resolveLightningCapabilityRuntimeCached(userId);
     return reply.send({
       ...meta,
       runtime: {
@@ -33504,7 +33647,7 @@ app.get("/api/admin/lightning/config/status", { preHandler: [requireAuth, requir
   try {
     const userId = (_req.user as JwtUser).sub;
     const status = await getLightningNodeConfigStatus(prisma as any);
-    const runtime = await resolveLightningCapabilityRuntime(userId);
+    const runtime = await resolveLightningCapabilityRuntimeCached(userId);
     return reply.send({
       configured: status.configured,
       hasTlsCert: status.hasTlsCert,
@@ -33551,7 +33694,7 @@ app.get("/api/admin/lightning/readiness", { preHandler: [requireAuth, requireAdv
   try {
     const userId = (_req.user as JwtUser).sub;
     const readiness = await getLightningReadiness(prisma as any);
-    const runtime = await resolveLightningCapabilityRuntime(userId);
+    const runtime = await resolveLightningCapabilityRuntimeCached(userId);
     return reply.send({
       ...readiness,
       runtime: {
