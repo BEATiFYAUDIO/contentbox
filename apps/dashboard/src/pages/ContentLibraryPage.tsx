@@ -1594,7 +1594,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     try {
       const linkId = String(approval?.linkId || "").trim();
       const remoteVoteRoute = String(approval?.remoteVoteRoute || "").trim();
-      const useRemoteVote = !linkId && Boolean(remoteVoteRoute);
+      const useRemoteVote = Boolean(remoteVoteRoute);
       if (useRemoteVote) {
         await api(remoteVoteRoute, "POST", {
           decision,
