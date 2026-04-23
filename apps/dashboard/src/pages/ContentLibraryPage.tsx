@@ -3025,18 +3025,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         </button>
                         <button
                           type="button"
-                          className="text-xs rounded-md border border-emerald-900 bg-emerald-950/20 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                          onClick={async () => {
-                            const note = (rejectReasonByApproval[approvalKey] || "").trim();
-                            await submitClearanceDecision(a, "approve", note);
-                          }}
-                          disabled={actionDisabled}
-                          title={actionDisabled ? voteBlockedReason || "Approve unavailable" : "Approve"}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
                           className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
                           onClick={async () => {
                             const note = (rejectReasonByApproval[approvalKey] || "").trim();
