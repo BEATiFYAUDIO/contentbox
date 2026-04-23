@@ -6,6 +6,10 @@
     "dev:api": "npm --prefix apps/api run dev",
     "dev:api:safe": "bash ./scripts/dev-api.sh",
     "dev:api:safe:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-api.ps1",
-    "dev:node": "npm --prefix apps/dashboard run build && npm --prefix apps/api run dev"
+    "dev:node": "npm --prefix apps/dashboard run build && npm --prefix apps/api run dev",
+    "dev:up": "bash ./scripts/dev-runtime.sh start",
+    "dev:down": "bash ./scripts/dev-runtime.sh stop",
+    "dev:status": "bash ./scripts/dev-runtime.sh status",
+    "dev:restart": "bash ./scripts/dev-runtime.sh restart"
   }
 }

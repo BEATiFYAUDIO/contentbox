@@ -38335,26 +38335,25 @@ async function start() {
 
   await ensureNodeKeys();
   await ensurePayoutMethods();
-  // Refresh provider verification posture on boot so connected-provider state
-  // rehydrates automatically after restart when config is already present.
-  await (async () => {
-    const cfg = getNetworkProviderConfig();
-    if (!isNetworkProviderConfigured(cfg)) return;
-    try {
-      const refreshed = await verifyConfiguredProvider(cfg);
-      persistProviderVerificationPosture(refreshed);
-    } catch (err: any) {
-      app.log.warn(
-        { err: String(err?.message || err) },
-        "providerConnection.startup_refresh.failed"
-      );
-    }
-  })();
   await preflightPrismaReadiness();
   await preflightDb();
   scheduleReceiptIdBackfillBestEffort();
   const port = Number(process.env.PORT || 4000);
   await app.listen({ port, host: "0.0.0.0" });
+  // Run provider verification in the background so startup/health becomes
+  // available immediately even when remote provider endpoints are slow.
+  setTimeout(() => {
+    const cfg = getNetworkProviderConfig();
+    if (!isNetworkProviderConfigured(cfg)) return;
+    verifyConfiguredProvider(cfg)
+      .then((refreshed) => persistProviderVerificationPosture(refreshed))
+      .catch((err: any) => {
+        app.log.warn(
+          { err: String(err?.message || err) },
+          "providerConnection.startup_refresh.failed"
+        );
+      });
+  }, 25);
   await reconcileStaleForwardingRemittancesOnStartup().catch((err) => {
     app.log.warn({ err: String((err as any)?.message || err) }, "providerRemittance.startup_reconcile.failed");
   });

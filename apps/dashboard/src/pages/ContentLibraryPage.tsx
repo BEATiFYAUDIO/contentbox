@@ -3821,13 +3821,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                                 ) : null}
                                 <button
                                   type="button"
-                                  className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900"
-                                  onClick={() => loadDerivativePreview(it.id, it.childOrigin)}
-                                >
-                                  {derivativePreviewLoading[it.id] ? "Loading…" : "Load preview"}
-                                </button>
-                                <button
-                                  type="button"
                                   className="text-[11px] rounded border border-emerald-900 bg-emerald-950/30 px-2 py-0.5 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
                                   onClick={async () => {
                                     if (!parentLink?.linkId) {
@@ -3889,57 +3882,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               ) : null}
                               {clearanceRequestMsgByContent[it.id] ? (
                                 <div className="mt-2 text-[11px] text-amber-300">{clearanceRequestMsgByContent[it.id]}</div>
-                              ) : null}
-                              {derivativePreviewError[it.id] ? (
-                                <div className="mt-2 text-[11px] text-amber-300">
-                                  {derivativePreviewError[it.id]}
-                                </div>
-                              ) : null}
-                              {derivativePreviewByChild[it.id] ? (
-                                <div className="mt-3 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3 text-[11px] text-neutral-300">
-                                  <div className="text-sm font-semibold text-neutral-100">Preview</div>
-                                  <div className="text-[11px] text-neutral-400 mt-1">Read-only playback of your submission.</div>
-                                  {(() => {
-                                    const previewUrl = derivativePreviewByChild[it.id]?.previewUrl || null;
-                                    const pf = previewFileFor(previewUrl, derivativePreviewByChild[it.id]?.files || []);
-                                    const mime = String(pf?.mime || "").toLowerCase();
-                                    const type = String(derivativePreviewByChild[it.id]?.content?.type || "").toLowerCase();
-                                    const isVideo = mime.startsWith("video/") || type === "video";
-                                    const isAudio = mime.startsWith("audio/") || type === "song";
-                                    if (previewUrl && isVideo) {
-                                      return (
-                                        <div className="mt-2">
-                                          <video className="w-full rounded-md" controls src={previewUrl} />
-                                        </div>
-                                      );
-                                    }
-                                    if (previewUrl && isAudio) {
-                                      return (
-                                        <div className="mt-2">
-                                          <audio className="w-full" controls src={previewUrl} />
-                                        </div>
-                                      );
-                                    }
-                                    if (previewUrl) {
-                                      return (
-                                        <a className="text-emerald-300 underline" href={previewUrl} target="_blank" rel="noreferrer">
-                                          Open preview
-                                        </a>
-                                      );
-                                    }
-                                    return <div className="text-neutral-400">No preview available.</div>;
-                                  })()}
-                                  {Array.isArray(derivativePreviewByChild[it.id]?.files) &&
-                                  derivativePreviewByChild[it.id].files.length > 0 ? (
-                                    <div className="mt-2 space-y-1">
-                                      {derivativePreviewByChild[it.id].files.map((f: any) => (
-                                        <div key={f.id} className="text-neutral-400">
-                                          {f.originalName || f.objectKey} • {formatBytes(f.sizeBytes || 0)}
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : null}
-                                </div>
                               ) : null}
                             </div>
                           );
