@@ -22336,6 +22336,11 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     const hasRemoteOrigin = isShareablePublicOrigin(row?.remoteOrigin) ? 1 : 0;
     return requestedAtTs * 1000 + hasRemoteOrigin * 100 + canVote * 10 + actionable;
   };
+  const hasCanonicalRemoteActionableRoute = (row: any) => {
+    const remoteVoteRoute = asString(row?.remoteVoteRoute || "").trim();
+    const remoteAuthorizationId = asString(row?.remoteAuthorizationId || "").trim();
+    return Boolean(remoteVoteRoute && remoteAuthorizationId);
+  };
   const toRemoteReviewPreviewUrl = (clearanceUrlRaw: unknown): string | null => {
     const clearanceUrl = asString(clearanceUrlRaw || "").trim();
     if (!clearanceUrl) return null;
@@ -22593,7 +22598,14 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       activeByWorkflow.set(key, row);
       continue;
     }
-    const winner = activeWorkflowRowRank(row) >= activeWorkflowRowRank(existing) ? row : existing;
+    const rowIsCanonicalRemote = hasCanonicalRemoteActionableRoute(row);
+    const existingIsCanonicalRemote = hasCanonicalRemoteActionableRoute(existing);
+    let winner: any;
+    if (rowIsCanonicalRemote !== existingIsCanonicalRemote) {
+      winner = rowIsCanonicalRemote ? row : existing;
+    } else {
+      winner = activeWorkflowRowRank(row) >= activeWorkflowRowRank(existing) ? row : existing;
+    }
     const loser = winner === row ? existing : row;
     activeByWorkflow.set(key, mergeRows(winner, loser));
   }
