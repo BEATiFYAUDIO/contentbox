@@ -2896,6 +2896,14 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
+                const voteBlockedReason = !crossNodeAllowed
+                  ? clearanceReason
+                  : !canVote
+                    ? isRemoteApproval
+                      ? "Vote link not issued yet. Click Refresh to sync latest clearance routing."
+                      : "You are not an eligible approver for this clearance request."
+                    : "";
+                const actionDisabled = !crossNodeAllowed || !canVote || Boolean(viewerVote) || isCleared;
                 const shareholderLabels = Array.isArray(clearance?.approvers) && clearance.approvers.length > 0
                   ? clearance.approvers.map((p: any) => p.displayName || p.participantEmail || p.participantUserId || "Unknown")
                   : Array.isArray(a?.shareholders) && a.shareholders.length > 0
@@ -2992,56 +3000,54 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         >
                           Preview submission
                         </button>
-                        {!isCleared && canVote && !viewerVote ? (
-                          <>
-                            <input
-                              type="text"
-                              className="w-40 text-xs rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1"
-                              placeholder="Note / reason (optional)"
-                              value={rejectReasonByApproval[approvalKey] || ""}
-                              onChange={(e) =>
-                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: e.target.value }))
-                              }
-                            />
-                            <button
-                              type="button"
-                              className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                              onClick={async () => {
-                                const note = (rejectReasonByApproval[approvalKey] || "").trim();
-                                await submitClearanceDecision(a, "approve", note);
-                              }}
-                              disabled={!crossNodeAllowed}
-                              title={!crossNodeAllowed ? clearanceReason : "Grant permission"}
-                            >
-                              Grant permission
-                            </button>
-                            <button
-                              type="button"
-                              className="text-xs rounded-md border border-emerald-900 bg-emerald-950/20 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                              onClick={async () => {
-                                const note = (rejectReasonByApproval[approvalKey] || "").trim();
-                                await submitClearanceDecision(a, "approve", note);
-                              }}
-                              disabled={!crossNodeAllowed}
-                              title={!crossNodeAllowed ? clearanceReason : "Approve"}
-                            >
-                              Approve
-                            </button>
-                            <button
-                              type="button"
-                              className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                              onClick={async () => {
-                                const note = (rejectReasonByApproval[approvalKey] || "").trim();
-                                await submitClearanceDecision(a, "reject", note);
-                                setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
-                              }}
-                              disabled={!crossNodeAllowed}
-                              title={!crossNodeAllowed ? clearanceReason : "Reject"}
-                            >
-                              Reject
-                            </button>
-                          </>
-                        ) : null}
+                        <input
+                          type="text"
+                          className="w-40 text-xs rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 disabled:opacity-60"
+                          placeholder="Note / reason (optional)"
+                          value={rejectReasonByApproval[approvalKey] || ""}
+                          onChange={(e) =>
+                            setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: e.target.value }))
+                          }
+                          disabled={actionDisabled}
+                          title={actionDisabled ? voteBlockedReason || "Action unavailable" : "Note / reason (optional)"}
+                        />
+                        <button
+                          type="button"
+                          className="text-xs rounded-md border border-emerald-900 bg-emerald-950/30 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          onClick={async () => {
+                            const note = (rejectReasonByApproval[approvalKey] || "").trim();
+                            await submitClearanceDecision(a, "approve", note);
+                          }}
+                          disabled={actionDisabled}
+                          title={actionDisabled ? voteBlockedReason || "Grant permission unavailable" : "Grant permission"}
+                        >
+                          Grant permission
+                        </button>
+                        <button
+                          type="button"
+                          className="text-xs rounded-md border border-emerald-900 bg-emerald-950/20 px-2 py-1 text-emerald-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                          onClick={async () => {
+                            const note = (rejectReasonByApproval[approvalKey] || "").trim();
+                            await submitClearanceDecision(a, "approve", note);
+                          }}
+                          disabled={actionDisabled}
+                          title={actionDisabled ? voteBlockedReason || "Approve unavailable" : "Approve"}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          className="text-xs rounded-md border border-neutral-800 px-2 py-1 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
+                          onClick={async () => {
+                            const note = (rejectReasonByApproval[approvalKey] || "").trim();
+                            await submitClearanceDecision(a, "reject", note);
+                            setRejectReasonByApproval((m) => ({ ...m, [approvalKey]: "" }));
+                          }}
+                          disabled={actionDisabled}
+                          title={actionDisabled ? voteBlockedReason || "Reject unavailable" : "Reject"}
+                        >
+                          Reject
+                        </button>
                       </div>
                     </div>
                     {!crossNodeAllowed ? (
