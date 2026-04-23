@@ -1763,18 +1763,26 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     }
   }
 
-  async function requestClearanceForContent(contentId: string, linkId: string) {
+  async function requestClearanceForContent(contentId: string, linkId: string, mode: "request" | "resend" | "resubmit" = "request") {
     setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: null }));
     setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "idle" } }));
     try {
-      const res: any = await api(`/content-links/${linkId}/request-approval`, "POST");
+      const res: any = await api(`/content-links/${linkId}/request-approval`, "POST", { mode });
       const links = (Array.isArray(res?.remoteApprovalUrls) && res.remoteApprovalUrls.length > 0)
         ? res.remoteApprovalUrls
         : Array.isArray(res?.approvalUrls)
           ? res.approvalUrls
           : [];
       setClearanceLinksByContent((m) => ({ ...m, [contentId]: links }));
-      setClearanceRequestMsgByContent((m) => ({ ...m, [contentId]: "Clearance requested." }));
+      setClearanceRequestMsgByContent((m) => ({
+        ...m,
+        [contentId]:
+          mode === "resubmit"
+            ? "Clearance resubmitted."
+            : mode === "resend"
+              ? "Clearance request resent."
+              : "Clearance requested."
+      }));
       setClearanceRequestMetaByContent((m) => ({ ...m, [contentId]: { lastAttemptAt: new Date().toISOString(), status: "success" } }));
       await loadParentLink(contentId);
     } catch (e: any) {
@@ -3639,16 +3647,29 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                               <div className="mt-2 flex items-center gap-2">
                                 {parentLink.requiresApproval &&
                                 !parentLink.approvedAt &&
-                                isOwner &&
-                                (!parentLink.clearanceRequest || parentLink.clearanceRequest.status !== "PENDING") ? (
+                                isOwner ? (
                                   <button
                                     type="button"
                                     className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    onClick={() => requestClearanceForContent(it.id, parentLink.linkId)}
+                                    onClick={() =>
+                                      requestClearanceForContent(
+                                        it.id,
+                                        parentLink.linkId,
+                                        String(parentLink?.clearance?.status || "").toUpperCase() === "REJECTED"
+                                          ? "resubmit"
+                                          : parentLink.clearanceRequest?.status === "PENDING"
+                                            ? "resend"
+                                            : "request"
+                                      )
+                                    }
                                     disabled={!crossNodeAllowed}
                                     title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                                   >
-                                    {parentLink.clearanceRequest ? "Retry request" : "Request clearance"}
+                                    {String(parentLink?.clearance?.status || "").toUpperCase() === "REJECTED"
+                                      ? "Resubmit for approval"
+                                      : parentLink.clearanceRequest?.status === "PENDING"
+                                        ? "Resend request"
+                                        : "Request clearance"}
                                   </button>
                                 ) : null}
                                 <button
@@ -4936,25 +4957,47 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                         ) : null}
                         {parentLinkByContent[it.id]?.requiresApproval &&
                         !parentLinkByContent[it.id]?.approvedAt &&
-                        isOwner &&
-                        (!parentLinkByContent[it.id]?.clearanceRequest ||
-                          parentLinkByContent[it.id]?.clearanceRequest?.status !== "PENDING") ? (
+                        isOwner ? (
                           <div className="mt-2 space-y-2 text-xs text-neutral-500">
                             <div className="flex items-center gap-2">
                               <button
                                 type="button"
                                 className="text-[11px] rounded border border-neutral-800 px-2 py-0.5 hover:bg-neutral-900 disabled:opacity-50 disabled:cursor-not-allowed"
-                                onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
+                                onClick={() =>
+                                  requestClearanceForContent(
+                                    it.id,
+                                    parentLinkByContent[it.id]!.linkId,
+                                    String(parentLinkByContent[it.id]?.clearance?.status || "").toUpperCase() === "REJECTED"
+                                      ? "resubmit"
+                                      : parentLinkByContent[it.id]?.clearanceRequest?.status === "PENDING"
+                                        ? "resend"
+                                        : "request"
+                                  )
+                                }
                                 disabled={!crossNodeAllowed}
                                 title={!crossNodeAllowed ? clearanceReason : "Request clearance"}
                               >
-                                {parentLinkByContent[it.id]?.clearanceRequest ? "Retry request" : "Request clearance"}
+                                {String(parentLinkByContent[it.id]?.clearance?.status || "").toUpperCase() === "REJECTED"
+                                  ? "Resubmit for approval"
+                                  : parentLinkByContent[it.id]?.clearanceRequest?.status === "PENDING"
+                                    ? "Resend request"
+                                    : "Request clearance"}
                               </button>
                               {clearanceRequestMetaByContent[it.id]?.status === "error" ? (
                                 <button
                                   type="button"
                                   className="text-[11px] rounded border border-amber-900 px-2 py-0.5 text-amber-200 hover:bg-amber-950/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                                  onClick={() => requestClearanceForContent(it.id, parentLinkByContent[it.id]!.linkId)}
+                                  onClick={() =>
+                                    requestClearanceForContent(
+                                      it.id,
+                                      parentLinkByContent[it.id]!.linkId,
+                                      String(parentLinkByContent[it.id]?.clearance?.status || "").toUpperCase() === "REJECTED"
+                                        ? "resubmit"
+                                        : parentLinkByContent[it.id]?.clearanceRequest?.status === "PENDING"
+                                          ? "resend"
+                                          : "request"
+                                    )
+                                  }
                                   disabled={!crossNodeAllowed}
                                   title={!crossNodeAllowed ? clearanceReason : "Retry request"}
                                 >

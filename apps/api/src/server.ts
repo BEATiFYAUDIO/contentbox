@@ -22475,6 +22475,10 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
 app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth }, async (req: any, reply) => {
   const userId = (req.user as JwtUser).sub;
   const linkId = asString((req.params as any).linkId);
+  const modeRaw = asString((req.body as any)?.mode || "request").trim().toLowerCase();
+  const mode = modeRaw === "resend" || modeRaw === "resubmit" ? modeRaw : "request";
+  const isResend = mode === "resend";
+  const isResubmit = mode === "resubmit";
   const clearanceCtx = getCapabilityContext();
   if (sendAdvancedInactive(reply, clearanceCtx)) return;
   if (!canRequestClearance(clearanceCtx)) {
@@ -22506,23 +22510,25 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: linkId } });
   let auth = existing;
   if (auth) {
-    await prisma.derivativeApprovalVote.deleteMany({ where: { authorizationId: auth.id } });
-    auth = await prisma.derivativeAuthorization.update({
-      where: { id: auth.id },
-      data: {
-        requiredApprovers: approvers.length,
-        approvedApprovers: 0,
-        approveWeightBps: 0,
-        rejectWeightBps: 0,
-        approvalPolicy: "WEIGHTED_BPS",
-        approvalBpsTarget: 6667,
-        status: "PENDING"
-      }
-    });
-    await prisma.contentLink.update({
-      where: { id: link.id },
-      data: { approvedAt: null, approvedByUserId: null, requiresApproval: true }
-    });
+    if (isResubmit || mode === "request") {
+      await prisma.derivativeApprovalVote.deleteMany({ where: { authorizationId: auth.id } });
+      auth = await prisma.derivativeAuthorization.update({
+        where: { id: auth.id },
+        data: {
+          requiredApprovers: approvers.length,
+          approvedApprovers: 0,
+          approveWeightBps: 0,
+          rejectWeightBps: 0,
+          approvalPolicy: "WEIGHTED_BPS",
+          approvalBpsTarget: 6667,
+          status: "PENDING"
+        }
+      });
+      await prisma.contentLink.update({
+        where: { id: link.id },
+        data: { approvedAt: null, approvedByUserId: null, requiresApproval: true }
+      });
+    }
   } else {
     auth = await prisma.derivativeAuthorization.create({
       data: {
@@ -22549,7 +22555,15 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   const existingReq = await clearanceModel.findFirst({
     where: { contentLinkId: linkId, status: "PENDING" }
   });
-  if (!existingReq) {
+  if (isResend || isResubmit) {
+    await clearanceModel.updateMany({
+      where: { contentLinkId: linkId, status: "PENDING" },
+      data: { status: isResubmit ? "SUPERSEDED" : "RESENT" }
+    });
+    await clearanceModel.create({
+      data: { contentLinkId: linkId, requestedByUserId: userId, status: "PENDING" }
+    });
+  } else if (!existingReq) {
     await clearanceModel.create({
       data: { contentLinkId: linkId, requestedByUserId: userId, status: "PENDING" }
     });
@@ -22598,6 +22612,7 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           parentContentId: link.parentContentId,
           childContentId: link.childContentId,
           childOrigin: childPublicOrigin,
+          mode,
           relation: link.relation,
           childTitle: child.title,
           childType: child.type,
@@ -22672,12 +22687,17 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
     parentContentId?: string;
     childContentId?: string;
     childOrigin?: string;
+    mode?: string;
     relation?: string;
     childTitle?: string;
     childType?: string;
     upstreamRatePercent?: number;
     upstreamBps?: number;
   };
+  const modeRaw = asString(body.mode || "request").trim().toLowerCase();
+  const mode = modeRaw === "resend" || modeRaw === "resubmit" ? modeRaw : "request";
+  const isResend = mode === "resend";
+  const isResubmit = mode === "resubmit";
   const parentContentId = asString(body.parentContentId || "").trim();
   const childContentId = asString(body.childContentId || "").trim();
   const childOrigin = asString(body.childOrigin || "").trim();
@@ -22746,9 +22766,29 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
 
   const { approvers } = await getApproversForParent(parentContentId);
   const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: link.id } });
-  const auth =
-    existing ||
-    (await prisma.derivativeAuthorization.create({
+  let auth = existing;
+  if (auth) {
+    if (isResubmit || mode === "request") {
+      await prisma.derivativeApprovalVote.deleteMany({ where: { authorizationId: auth.id } });
+      auth = await prisma.derivativeAuthorization.update({
+        where: { id: auth.id },
+        data: {
+          requiredApprovers: approvers.length,
+          approvedApprovers: 0,
+          approveWeightBps: 0,
+          rejectWeightBps: 0,
+          approvalPolicy: "WEIGHTED_BPS",
+          approvalBpsTarget: 6667,
+          status: "PENDING"
+        }
+      });
+      await prisma.contentLink.update({
+        where: { id: link.id },
+        data: { approvedAt: null, approvedByUserId: null, requiresApproval: true }
+      });
+    }
+  } else {
+    auth = await prisma.derivativeAuthorization.create({
       data: {
         derivativeLinkId: link.id,
         parentContentId,
@@ -22760,7 +22800,8 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
         approvalBpsTarget: 6667,
         status: "PENDING"
       }
-    }));
+    });
+  }
 
   const clearanceModel = (prisma as any).clearanceRequest;
   const approvalTokenModel = (prisma as any).approvalToken;
@@ -22771,7 +22812,15 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
   const existingReq = await clearanceModel.findFirst({
     where: { contentLinkId: link.id, status: "PENDING" }
   });
-  if (!existingReq) {
+  if (isResend || isResubmit) {
+    await clearanceModel.updateMany({
+      where: { contentLinkId: link.id, status: "PENDING" },
+      data: { status: isResubmit ? "SUPERSEDED" : "RESENT" }
+    });
+    await clearanceModel.create({
+      data: { contentLinkId: link.id, requestedByUserId: parent.ownerUserId, status: "PENDING" }
+    });
+  } else if (!existingReq) {
     await clearanceModel.create({
       data: { contentLinkId: link.id, requestedByUserId: parent.ownerUserId, status: "PENDING" }
     });
