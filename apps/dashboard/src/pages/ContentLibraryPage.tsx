@@ -1592,8 +1592,19 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     clearanceSubmittingRef.current[approvalKey] = true;
     setClearanceSubmittingByApproval((m) => ({ ...m, [approvalKey]: true }));
     try {
-      const isRemoteApproval = Boolean(String(approval?.remoteOrigin || "").trim());
-      if (isRemoteApproval) {
+      const linkId = String(approval?.linkId || "").trim();
+      const remoteVoteRoute = String(approval?.remoteVoteRoute || "").trim();
+      const useRemoteVote = !linkId && Boolean(remoteVoteRoute);
+      if (useRemoteVote) {
+        await api(remoteVoteRoute, "POST", {
+          decision,
+          reason: note || undefined,
+          upstreamRatePercent:
+            Number.isFinite(Number(approval?.upstreamRatePercent)) && Number(approval?.upstreamRatePercent) >= 0
+              ? Number(approval.upstreamRatePercent)
+              : 0
+        });
+      } else if (Boolean(String(approval?.remoteOrigin || "").trim()) && !linkId) {
         const inviteToken = String(approval?.remoteInviteToken || "").trim();
         const remoteOrigin = String(approval?.remoteOrigin || "").trim();
         const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "").trim();
@@ -1616,7 +1627,6 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
           }
         );
       } else {
-        const linkId = String(approval?.linkId || "").trim();
         if (!linkId) return;
         const pct = Number.isFinite(Number(approval?.upstreamRatePercent))
           ? Number(approval.upstreamRatePercent)
@@ -2682,11 +2692,9 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const isCleared = status === "APPROVED";
                 const isRejected = status === "REJECTED";
                 const viewerVote = String(a?.viewerVote || "").toLowerCase();
-                const hasRemoteVoteRouting =
-                  Boolean(String(a?.remoteInviteToken || "").trim()) &&
-                  Boolean(String(a?.remoteOrigin || "").trim()) &&
-                  Boolean(String(a?.remoteAuthorizationId || "").trim());
-                const canVote = Boolean(a?.canVote) && (!isRemoteApproval || hasRemoteVoteRouting);
+                const hasRemoteVoteRouting = Boolean(String(a?.remoteVoteRoute || "").trim());
+                const hasLocalVoteRouting = Boolean(linkId);
+                const canVote = Boolean(a?.canVote) && (hasLocalVoteRouting || hasRemoteVoteRouting);
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
@@ -2694,7 +2702,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                   ? clearanceReason
                   : !canVote
                     ? isRemoteApproval
-                      ? "Vote link not issued yet. Click Refresh to sync latest clearance routing."
+                      ? "Vote route not available yet. Click Refresh to sync latest clearance routing."
                       : "You are not an eligible approver for this clearance request."
                     : "";
                 const isSubmitting = Boolean(clearanceSubmittingByApproval[approvalKey]);
@@ -2844,7 +2852,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                     ) : null}
                     {isRemoteApproval && !canVote ? (
                       <div className="mt-2 text-[11px] text-amber-300">
-                        Vote link not issued yet. Click Refresh to sync latest clearance routing.
+                        Vote route not available yet. Click Refresh to sync latest clearance routing.
                       </div>
                     ) : null}
 

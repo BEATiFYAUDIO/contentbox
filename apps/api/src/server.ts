@@ -22287,6 +22287,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     takeIfMissing("remoteAuthorizationId");
     takeIfMissing("remoteClearanceUrl");
     takeIfMissing("remoteReviewPreviewUrl");
+    takeIfMissing("remoteVoteRoute");
     takeIfMissing("upstreamRatePercent");
     takeIfMissing("upstreamBps");
     if (!Array.isArray(merged.shareholders) || merged.shareholders.length === 0) {
@@ -22469,7 +22470,8 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       remoteInviteToken: null,
       remoteAuthorizationId,
       remoteClearanceUrl: null,
-      remoteReviewPreviewUrl
+      remoteReviewPreviewUrl,
+      remoteVoteRoute: null
     });
   }
 
@@ -22546,7 +22548,10 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         remoteInviteToken: inviteToken,
         remoteInviteId: invite.id,
         remoteClearanceUrl: clearanceUrl,
-        remoteReviewPreviewUrl: toRemoteReviewPreviewUrl(clearanceUrl)
+        remoteReviewPreviewUrl: toRemoteReviewPreviewUrl(clearanceUrl),
+        remoteVoteRoute: `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
+          remoteAuthorizationId
+        )}/vote?origin=${encodeURIComponent(entryRemoteOrigin || remoteOrigin)}`
       });
     }
   }
