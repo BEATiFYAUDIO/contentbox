@@ -22497,6 +22497,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
       const status = normalizeStatus(entry?.status);
       const clearanceUrl = asString(entry?.clearanceUrl || "").trim() || null;
+      const reviewPreviewUrl = asString(entry?.reviewPreviewUrl || "").trim() || null;
       const entryRemoteOrigin = pickShareableOrigin(
         remoteOrigin,
         asString(entry?.remoteOrigin || "").trim(),
@@ -22548,7 +22549,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
         remoteInviteToken: inviteToken,
         remoteInviteId: invite.id,
         remoteClearanceUrl: clearanceUrl,
-        remoteReviewPreviewUrl: toRemoteReviewPreviewUrl(clearanceUrl),
+        remoteReviewPreviewUrl: reviewPreviewUrl || toRemoteReviewPreviewUrl(clearanceUrl),
         remoteVoteRoute: `/api/remote/invites/${encodeURIComponent(inviteToken)}/clearance/${encodeURIComponent(
           remoteAuthorizationId
         )}/vote?origin=${encodeURIComponent(entryRemoteOrigin || remoteOrigin)}`
@@ -37945,6 +37946,7 @@ app.get("/invites/:token/accounting", async (req: any, reply: any) => {
           approvedApprovers: auth.approvedApprovers ?? 0,
           approverCount,
           upstreamRatePercent: Number(auth.derivativeLink?.upstreamBps || 0) / 100,
+          reviewPreviewUrl: getRemoteReviewPreviewUrlFromDescription(auth.derivativeLink?.childContent?.description || null),
           clearanceUrl:
             clearanceToken?.token
               ? `${clearanceBase}/clearance/${clearanceToken.token}`
