@@ -661,6 +661,28 @@ function isShareablePublicOrigin(value: string | null | undefined): boolean {
   }
 }
 
+function extractShareableOriginFromUrl(value: string | null | undefined): string | null {
+  const raw = asString(value || "").trim();
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    const origin = normalizeOrigin(parsed.origin);
+    return isShareablePublicOrigin(origin) ? origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function pickShareableOrigin(...candidates: Array<string | null | undefined>): string | null {
+  for (const candidate of candidates) {
+    const normalized = normalizeOrigin(candidate);
+    if (isShareablePublicOrigin(normalized)) return normalized;
+    const fromUrl = extractShareableOriginFromUrl(candidate);
+    if (fromUrl) return fromUrl;
+  }
+  return null;
+}
+
 const originReachabilityCache = new Map<string, { reachable: boolean; checkedAt: number }>();
 const originReachabilityInflight = new Map<string, Promise<boolean>>();
 
@@ -22422,11 +22444,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
             reviewGrantedAt: latestClearanceRequest.reviewGrantedAt ? latestClearanceRequest.reviewGrantedAt.toISOString() : null
           }
         : null,
-      remoteOrigin:
-        Boolean(link?.childContent?.deletedAt) &&
-        asString(link?.childContent?.deletedReason || "").trim().toLowerCase() === "hard"
-          ? getRemoteOriginFromDescription(link?.childContent?.description || null)
-          : null,
+      remoteOrigin: pickShareableOrigin(getRemoteOriginFromDescription(link?.childContent?.description || null)),
       remoteInviteToken: null,
       remoteAuthorizationId: null
     });
@@ -22440,7 +22458,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   for (const invite of remoteInvites) {
     const inviteStatus = normalizeRemoteInviteStatusForList(invite as any);
     if (inviteStatus !== "accepted" && inviteStatus !== "pending") continue;
-    const remoteOrigin = normalizeRemoteOrigin(invite.remoteOrigin || "");
+    const remoteOrigin = pickShareableOrigin(invite.remoteOrigin || "", invite.inviteUrl || null);
     const inviteToken = extractInviteTokenFromUrl(invite.inviteUrl || null);
     if (!remoteOrigin || !inviteToken) continue;
     const accounting = await fetchRemoteInviteAccounting(remoteOrigin, inviteToken);
@@ -22454,11 +22472,17 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
       const status = normalizeStatus(entry?.status);
       const clearanceUrl = asString(entry?.clearanceUrl || "").trim() || null;
+      const entryRemoteOrigin = pickShareableOrigin(
+        remoteOrigin,
+        asString(entry?.remoteOrigin || "").trim(),
+        asString(entry?.childOrigin || "").trim(),
+        clearanceUrl
+      );
       const actionableRemoteEntry = isActionableRemoteClearanceEntry({
         status,
         clearanceUrl,
         remoteAuthorizationId,
-        remoteOrigin
+        remoteOrigin: entryRemoteOrigin
       });
       if (!actionableRemoteEntry) {
         if (invite.contentDeletedAt) continue;
@@ -22471,7 +22495,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       const upstreamRatePercent = Number(entry?.upstreamRatePercent);
       const upstreamBps = Number.isFinite(upstreamRatePercent) ? Math.max(0, Math.round(upstreamRatePercent * 100)) : 0;
       remoteRows.push({
-        authorizationId: `remote:${remoteOrigin}:${remoteAuthorizationId}`,
+        authorizationId: `remote:${entryRemoteOrigin || remoteOrigin}:${remoteAuthorizationId}`,
         remoteAuthorizationId,
         linkId: asString(entry?.linkId || "").trim() || "",
         parentContentId,
@@ -22495,7 +22519,7 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
           requestedAt: asString(entry?.requestedAt || "").trim() || null,
           reviewGrantedAt: asString(entry?.reviewGrantedAt || "").trim() || null
         },
-        remoteOrigin,
+        remoteOrigin: entryRemoteOrigin || remoteOrigin,
         remoteInviteToken: inviteToken,
         remoteInviteId: invite.id,
         remoteClearanceUrl: clearanceUrl
@@ -22676,8 +22700,21 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   let remoteApprovalUrls: Array<{ email: string; url: string; weightBps: number }> | null = null;
-  const childPublicOrigin = getPublicOrigin(req);
+  const childOriginCandidates = [
+    await resolveShareableInviteOrigin(req),
+    normalizeOrigin(String(getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || "").trim()),
+    normalizeOrigin(getActivePublicOrigin()),
+    normalizeOrigin(getRemoteOriginFromDescription(child.description || null)),
+    normalizeOrigin(getPublicOrigin(req))
+  ].filter(Boolean) as string[];
+  const childPublicOrigin = pickShareableOrigin(...childOriginCandidates);
   if (remoteOrigin) {
+    if (!childPublicOrigin) {
+      return reply.code(409).send({
+        code: "CHILD_PUBLIC_ORIGIN_REQUIRED",
+        message: "A public/tunnel child origin is required for remote clearance preview routing."
+      });
+    }
     const authHeader = asString(req?.headers?.authorization || "").trim();
     const cookieHeader = asString(req?.headers?.cookie || "").trim();
     try {
@@ -22782,11 +22819,19 @@ app.post("/api/derivatives/remote-request", { preHandler: requireFeature("deriva
   const isResubmit = mode === "resubmit";
   const parentContentId = asString(body.parentContentId || "").trim();
   const childContentId = asString(body.childContentId || "").trim();
-  const childOrigin = asString(body.childOrigin || "").trim();
+  const childOriginRaw = asString(body.childOrigin || "").trim();
+  const childOriginNormalized = normalizeOrigin(childOriginRaw);
+  const childOrigin = childOriginNormalized ? childOriginNormalized.replace(/\/+$/, "") : "";
   const relationRaw = asString(body.relation || "derivative").trim().toLowerCase();
   const relation = (["remix", "mashup", "derivative"] as const).includes(relationRaw as any) ? (relationRaw as any) : "derivative";
   if (!parentContentId || !childContentId || !childOrigin) {
     return badRequest(reply, "parentContentId, childContentId, childOrigin are required");
+  }
+  if (!isShareablePublicOrigin(childOrigin)) {
+    return reply.code(409).send({
+      code: "CHILD_ORIGIN_NOT_SHAREABLE",
+      message: "childOrigin must be a public/tunnel origin (not localhost)."
+    });
   }
   if (!hasExplicitUpstreamInput(body)) {
     return badRequest(
