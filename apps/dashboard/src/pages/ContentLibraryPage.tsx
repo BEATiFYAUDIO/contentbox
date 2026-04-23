@@ -1555,13 +1555,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     setDerivativePreviewLoading((m) => ({ ...m, [childContentId]: true }));
     setDerivativePreviewError((m) => ({ ...m, [childContentId]: "" }));
     try {
-      const offer = await fetch(`${base}/public/content/${childContentId}/offer`).then((r) => r.json());
-      const objectKey = offer?.previewObjectKey || offer?.primaryFileId || null;
-      if (!objectKey) {
-        setDerivativePreviewError((m) => ({ ...m, [childContentId]: "No preview available yet." }));
-        return;
-      }
-      const url = `${base}/public/content/${childContentId}/preview-file?objectKey=${encodeURIComponent(objectKey)}`;
+      const url = `${base}/buy/content/${childContentId}/preview-file`;
       window.open(url, "_blank", "noopener,noreferrer");
     } catch (e: any) {
       setDerivativePreviewError((m) => ({ ...m, [childContentId]: e?.message || "Remote preview failed" }));
