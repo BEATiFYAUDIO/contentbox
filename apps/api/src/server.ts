@@ -16177,6 +16177,79 @@ app.post("/api/remote/invites/:token/clearance/:authorizationId/vote", { preHand
   }
 });
 
+// Proxy derivative vote to remote parent authority (server-to-server; avoids local split tally divergence).
+app.post("/api/remote/derivatives/vote", { preHandler: requireAuth }, async (req: any, reply: any) => {
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
+
+  const origin = normalizeRemoteOrigin(asString((req.query as any)?.origin || ""));
+  const parentContentId = asString((req.query as any)?.parentContentId || "").trim();
+  const childContentId = asString((req.query as any)?.childContentId || "").trim();
+  if (!origin) return badRequest(reply, "invalid origin");
+  if (!parentContentId || !childContentId) return badRequest(reply, "parentContentId and childContentId are required");
+  if (!(await isOriginReachable(origin))) {
+    return reply.code(409).send({ error: "Remote host unreachable", origin });
+  }
+
+  const body = (req.body ?? {}) as { decision?: string; upstreamRatePercent?: number | string | null; reason?: string | null };
+  const decision = asString(body.decision || "").trim().toLowerCase();
+  if (!decision || !["approve", "reject"].includes(decision)) {
+    return badRequest(reply, "decision must be approve|reject");
+  }
+
+  const localUserId = asString((req.user as JwtUser)?.sub || "").trim();
+  const localUser = localUserId
+    ? await prisma.user.findUnique({ where: { id: localUserId }, select: { email: true } }).catch(() => null)
+    : null;
+  const voterEmail = normalizeEmail(localUser?.email || "");
+
+  const payload: any = {
+    parentContentId,
+    childContentId,
+    decision,
+    voterUserId: localUserId || null,
+    voterEmail: voterEmail || null
+  };
+  if (decision === "approve" && body.upstreamRatePercent !== undefined && body.upstreamRatePercent !== null) {
+    payload.upstreamRatePercent = body.upstreamRatePercent;
+  }
+  if (decision === "reject") {
+    const rejectReason = parseRejectReason(body);
+    if (rejectReason) payload.reason = rejectReason;
+  }
+
+  try {
+    const res = await fetchWithTimeout(
+      `${origin}/api/derivatives/remote-vote`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json,text/plain" } as any,
+        body: JSON.stringify(payload)
+      } as any,
+      10_000
+    );
+    const text = await res.text();
+    let json: any = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    if (!res.ok) {
+      return reply.code(res.status).send(json || { error: text || `HTTP_${res.status}` });
+    }
+    return reply.send(json || { ok: true });
+  } catch (e: any) {
+    return reply.code(502).send({ error: "Remote derivative vote failed", details: String(e?.message || e) });
+  }
+});
+
 // Proxy remote invite accept to avoid browser CORS (auth required)
 app.get("/api/remote/invites/:token/accept", { preHandler: requireAuth }, async (_req: any, reply: any) => {
   return reply.code(405).send({
@@ -22462,18 +22535,26 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
     });
 
     const remoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(link?.childContent?.description || null));
+    const parentRemoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(link?.parentContent?.description || null));
     const remoteReviewPreviewUrl = asString(getRemoteReviewPreviewUrlFromDescription(link?.childContent?.description || null) || "").trim() || null;
     const shouldHydrateRemoteRouting = Boolean(remoteOrigin) && (status === "PENDING" || status === "REJECTED");
     const parsedRemotePreviewRoute = parseInviteClearanceRouteFromUrl(remoteReviewPreviewUrl);
     const remoteAuthorizationId = shouldHydrateRemoteRouting
       ? asString(parsedRemotePreviewRoute?.authorizationId || a.id || "").trim() || null
       : null;
-    const remoteVoteRoute =
+    const inviteTokenVoteRoute =
       shouldHydrateRemoteRouting && parsedRemotePreviewRoute?.token && remoteAuthorizationId && remoteOrigin
         ? `/api/remote/invites/${encodeURIComponent(parsedRemotePreviewRoute.token)}/clearance/${encodeURIComponent(
             remoteAuthorizationId
           )}/vote?origin=${encodeURIComponent(remoteOrigin)}`
         : null;
+    const parentAuthorityVoteRoute =
+      parentRemoteOrigin && (status === "PENDING" || status === "REJECTED")
+        ? `/api/remote/derivatives/vote?origin=${encodeURIComponent(parentRemoteOrigin)}&parentContentId=${encodeURIComponent(
+            a.parentContentId
+          )}&childContentId=${encodeURIComponent(link.childContentId)}`
+        : null;
+    const remoteVoteRoute = inviteTokenVoteRoute || parentAuthorityVoteRoute;
 
     localRows.push({
       authorizationId: a.id,
@@ -23102,6 +23183,110 @@ app.get("/api/derivatives/remote-status", async (req: any, reply) => {
           approvedApprovers: auth.approvedApprovers
         }
       : null
+  });
+});
+
+// Remote parent authority vote ingestion (server-to-server).
+app.post("/api/derivatives/remote-vote", { preHandler: requireFeature("derivative_work") }, async (req: any, reply) => {
+  const clearanceCtx = getCapabilityContext();
+  if (sendAdvancedInactive(reply, clearanceCtx)) return;
+  if (!canRequestClearance(clearanceCtx)) {
+    return reply.code(403).send({
+      code: "clearance_not_allowed",
+      reason: capabilityReason(clearanceCtx, "clearance", capabilityReasonContext(clearanceCtx))
+    });
+  }
+
+  const body = (req.body ?? {}) as {
+    parentContentId?: string;
+    childContentId?: string;
+    decision?: string;
+    upstreamRatePercent?: number | string | null;
+    reason?: string | null;
+    voterUserId?: string | null;
+    voterEmail?: string | null;
+  };
+  const parentContentId = asString(body.parentContentId || "").trim();
+  const childContentId = asString(body.childContentId || "").trim();
+  const decision = asString(body.decision || "").trim().toLowerCase();
+  if (!parentContentId || !childContentId) return badRequest(reply, "parentContentId and childContentId are required");
+  if (!decision || !["approve", "reject"].includes(decision)) return badRequest(reply, "decision must be approve|reject");
+
+  const canonical = await pickCanonicalDerivativeWorkflowLinkByPair({ parentContentId, childContentId });
+  const link = canonical.link;
+  if (!link) return notFound(reply, "link not found");
+
+  const auth =
+    canonical.auth ||
+    (await prisma.derivativeAuthorization.findFirst({
+      where: { derivativeLinkId: link.id },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+    }));
+  if (!auth) return notFound(reply, "authorization not found");
+
+  const fixedUpstreamRatePercent = Math.max(0, Number(link.upstreamBps || 0) / 100);
+  if (decision === "approve" && body.upstreamRatePercent !== undefined && body.upstreamRatePercent !== null) {
+    const pct = Number(String(body.upstreamRatePercent).trim());
+    if (!Number.isFinite(pct)) return badRequest(reply, "upstreamRatePercent must be numeric");
+    if (pct < 0 || pct > 100) return badRequest(reply, "upstreamRatePercent must be 0-100");
+    if (Math.abs(pct - fixedUpstreamRatePercent) > 0.0001) {
+      return reply.code(409).send({ code: "UPSTREAM_RATE_IMMUTABLE", message: "Upstream rate is fixed at derivative creation time." });
+    }
+  }
+
+  const voterUserId = asString(body.voterUserId || "").trim() || null;
+  const voterEmail = normalizeEmail(asString(body.voterEmail || "").trim());
+  const principal = await resolveApproverPrincipal(
+    { userId: voterUserId, email: voterEmail || null },
+    {
+      id: auth.id,
+      parentContentId,
+      derivativeLink: {
+        id: link.id,
+        parentSplitVersionId: link.parentSplitVersionId || null
+      }
+    }
+  );
+  if (!principal.ok) {
+    return reply.code(403).send({ code: principal.code, message: principal.message });
+  }
+
+  const rejectReason = decision === "reject" ? parseRejectReason(body) : null;
+  await recordDerivativeApprovalVote({
+    authorizationId: auth.id,
+    approverSplitParticipantId: principal.splitParticipantId,
+    decision: decision as "approve" | "reject",
+    actorUserId: voterUserId || `remote:${principal.splitParticipantId}`
+  });
+
+  const { tallied, link: finalizedLink } = await applyDerivativeAuthorizationFinalization({
+    authorizationId: auth.id,
+    actorUserId: voterUserId || null
+  });
+
+  if (decision === "reject" && rejectReason) {
+    try {
+      await prisma.auditEvent.create({
+        data: {
+          userId: voterUserId || "remote",
+          action: "clearance.reject",
+          entityType: "ContentLink",
+          entityId: finalizedLink?.id || link.id,
+          payloadJson: { reason: rejectReason, via: "remote_derivative_vote" } as any
+        }
+      });
+    } catch {}
+  }
+
+  return reply.send({
+    ok: true,
+    authorizationId: auth.id,
+    linkId: link.id,
+    status: tallied.status,
+    approveWeightBps: tallied.approveWeightBps,
+    rejectWeightBps: tallied.rejectWeightBps,
+    approvedApprovers: tallied.approvedApprovers,
+    approvalBpsTarget: auth.approvalBpsTarget ?? 6667
   });
 });
 
