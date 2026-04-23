@@ -22090,9 +22090,12 @@ app.post("/api/content-links/:id/authorization/request", { preHandler: requireAu
         where: { id: existingAuth.id },
         data: {
           status: "PENDING",
-          approvalPolicy: "BPS_MAJORITY",
+          approvalPolicy: "WEIGHTED_BPS",
           approvalBpsTarget: 6667,
-          requiredApprovers: approvers.length
+          requiredApprovers: approvers.length,
+          approvedApprovers: 0,
+          approveWeightBps: 0,
+          rejectWeightBps: 0
         }
       })
     : await prisma.derivativeAuthorization.create({
@@ -22103,11 +22106,18 @@ app.post("/api/content-links/:id/authorization/request", { preHandler: requireAu
           approvedApprovers: 0,
           approveWeightBps: 0,
           rejectWeightBps: 0,
-          approvalPolicy: "BPS_MAJORITY",
+          approvalPolicy: "WEIGHTED_BPS",
           approvalBpsTarget: 6667,
           status: "PENDING"
         }
       });
+  if (existingAuth) {
+    await prisma.derivativeApprovalVote.deleteMany({ where: { authorizationId: existingAuth.id } });
+    await prisma.contentLink.update({
+      where: { id: link.id },
+      data: { approvedAt: null, approvedByUserId: null, requiresApproval: true }
+    });
+  }
 
   return reply.send(auth);
 });
@@ -22191,23 +22201,107 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
   const scopeRaw = asString((req.query || {})?.scope || "pending").toLowerCase();
   const scope = ["pending", "voted", "cleared", "all"].includes(scopeRaw) ? scopeRaw : "pending";
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
-  const meEmail = (me?.email || "").toLowerCase();
-  const auths = await prisma.derivativeAuthorization.findMany({
-    where: scope === "cleared" ? { status: "APPROVED" } : {},
-    include: { derivativeLink: { include: { childContent: true, parentContent: true } } }
-  });
+  const meEmail = normalizeEmail(me?.email || "");
 
-  const out: any[] = [];
-  for (const a of auths) {
-    const childDeleted = Boolean(a.derivativeLink?.childContent?.deletedAt);
-    if (childDeleted) continue;
+  const normalizeStatus = (raw: unknown): "PENDING" | "REJECTED" | "APPROVED" => {
+    const status = asString(raw || "").trim().toUpperCase();
+    if (status === "APPROVED") return "APPROVED";
+    if (status === "REJECTED") return "REJECTED";
+    return "PENDING";
+  };
+  const shouldInclude = (input: {
+    status: "PENDING" | "REJECTED" | "APPROVED";
+    viewerVote?: string | null;
+    isEligible: boolean;
+    isRequester?: boolean;
+  }) => {
+    const hasViewerVote = Boolean(asString(input.viewerVote || "").trim());
+    if (scope === "pending") return (input.status === "PENDING" || input.status === "REJECTED") && (!hasViewerVote || Boolean(input.isRequester));
+    if (scope === "voted") return hasViewerVote;
+    if (scope === "cleared") return input.status === "APPROVED" && (input.isEligible || hasViewerVote || Boolean(input.isRequester));
+    return input.isEligible || hasViewerVote || Boolean(input.isRequester);
+  };
+  const scoreRow = (row: any) => {
+    const status = normalizeStatus(row?.status);
+    const statusScore = status === "APPROVED" ? 3 : status === "REJECTED" ? 2 : 1;
+    const approvedBps = Number(row?.approveWeightBps || 0);
+    const approvedApprovers = Number(row?.approvedApprovers || 0);
+    const requestTs = Date.parse(String(row?.clearanceRequest?.requestedAt || "")) || 0;
+    const previewTs = Date.parse(String(row?.clearanceRequest?.reviewGrantedAt || "")) || 0;
+    const hasVote = asString(row?.viewerVote || "").trim() ? 1 : 0;
+    const canVote = row?.canVote ? 1 : 0;
+    return statusScore * 1_000_000_000 + approvedBps * 1_000_000 + approvedApprovers * 10_000 + hasVote * 1_000 + canVote * 100 + Math.max(requestTs, previewTs);
+  };
+  const mergeRows = (best: any, incoming: any) => {
+    const merged = { ...best };
+    const takeIfMissing = (field: string) => {
+      const current = merged[field];
+      const next = incoming?.[field];
+      if ((current === null || current === undefined || current === "") && next !== null && next !== undefined && next !== "") {
+        merged[field] = next;
+      }
+    };
+    takeIfMissing("linkId");
+    takeIfMissing("parentContentId");
+    takeIfMissing("parentTitle");
+    takeIfMissing("childContentId");
+    takeIfMissing("childTitle");
+    takeIfMissing("relation");
+    takeIfMissing("remoteOrigin");
+    takeIfMissing("remoteInviteToken");
+    takeIfMissing("remoteAuthorizationId");
+    takeIfMissing("upstreamRatePercent");
+    takeIfMissing("upstreamBps");
+    if (!Array.isArray(merged.shareholders) || merged.shareholders.length === 0) {
+      if (Array.isArray(incoming?.shareholders) && incoming.shareholders.length > 0) merged.shareholders = incoming.shareholders;
+    }
+    if (!merged.clearanceRequest && incoming?.clearanceRequest) merged.clearanceRequest = incoming.clearanceRequest;
+    if (!merged.canVote && incoming?.canVote) merged.canVote = true;
+    if (!merged.viewerVote && incoming?.viewerVote) merged.viewerVote = incoming.viewerVote;
+    return merged;
+  };
+  const rowKey = (row: any) => {
+    const remoteAuthorizationId = asString(row?.remoteAuthorizationId || "").trim();
+    const remoteOrigin = normalizeRemoteOrigin(row?.remoteOrigin || "");
+    if (remoteAuthorizationId && remoteOrigin) return `remote:${remoteOrigin}:${remoteAuthorizationId}`;
+    const linkId = asString(row?.linkId || "").trim();
+    if (linkId) return `local:${linkId}`;
+    const parentContentId = asString(row?.parentContentId || "").trim();
+    const childContentId = asString(row?.childContentId || "").trim();
+    if (parentContentId && childContentId) return `pair:${parentContentId}:${childContentId}`;
+    return `auth:${asString(row?.authorizationId || "").trim()}`;
+  };
+
+  const auths = await prisma.derivativeAuthorization.findMany({
+    include: { derivativeLink: { include: { childContent: true, parentContent: true } } },
+    orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }]
+  });
+  const latestLocalAuthByLink = new Map<string, typeof auths[number]>();
+  for (const auth of auths) {
+    const linkId = asString(auth?.derivativeLink?.id || "").trim();
+    if (!linkId || latestLocalAuthByLink.has(linkId)) continue;
+    latestLocalAuthByLink.set(linkId, auth);
+  }
+
+  const localRows: any[] = [];
+  for (const a of latestLocalAuthByLink.values()) {
+    const link = a.derivativeLink;
+    if (!link || Boolean(link?.childContent?.deletedAt)) continue;
+
+    const principalCtx = await getDerivativeApproverPrincipalsForAuthorization({
+      authorizationId: a.id,
+      parentContentId: a.parentContentId,
+      derivativeLinkId: asString(link.id || "").trim() || null,
+      parentSplitVersionId: asString(link.parentSplitVersionId || "").trim() || null
+    }).catch(() => null);
+    if (!principalCtx) continue;
 
     const principalResolution = await resolveApproverPrincipal(
       { userId, email: meEmail },
       {
         id: a.id,
         parentContentId: a.parentContentId,
-        derivativeLink: { id: a.derivativeLink.id, parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null }
+        derivativeLink: { id: link.id, parentSplitVersionId: link.parentSplitVersionId || null }
       }
     );
     const existingVote = principalResolution.ok
@@ -22221,48 +22315,159 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
       : null;
     const latestClearanceRequest = await prisma.clearanceRequest
       .findFirst({
-        where: { contentLinkId: a.derivativeLink.id },
+        where: { contentLinkId: link.id },
         orderBy: { createdAt: "desc" },
         select: { reviewGrantedAt: true, createdAt: true, status: true }
       })
       .catch(() => null);
-    const isRequester = String(a.derivativeLink?.childContent?.ownerUserId || "").trim() === userId;
+    const status = normalizeStatus(a.status);
+    const viewerVote = existingVote?.decision || null;
+    const isRequester = asString(link?.childContent?.ownerUserId || "").trim() === userId;
     const isEligible = principalResolution.ok;
+    if (!shouldInclude({ status, viewerVote, isEligible, isRequester })) continue;
 
-    if (scope === "pending") {
-      if (!isEligible && !isRequester) continue;
-      if (a.status !== "PENDING" && a.status !== "REJECTED") continue;
-    } else if (scope === "voted") {
-      if (!existingVote) continue;
-    } else if (scope === "cleared") {
-      if (a.status !== "APPROVED") continue;
-      if (!isEligible && !existingVote && !isRequester) continue;
-    } else if (scope === "all") {
-      if (!isEligible && !existingVote && !isRequester) continue;
-    }
-    out.push({
+    const participantUserIds = Array.from(
+      new Set(
+        principalCtx.principals
+          .map((principal) => asString(principal.participantUserId || "").trim())
+          .filter(Boolean)
+      )
+    );
+    const userDisplayMap = await buildUserDisplayMap(participantUserIds);
+    const shareholders = principalCtx.principals.map((principal) => {
+      const userMeta = principal.participantUserId ? userDisplayMap.get(principal.participantUserId) : null;
+      const displayName =
+        resolveBestHumanDisplayLabel({
+          userDisplayName: userMeta?.displayName || null,
+          userEmail: userMeta?.email || null,
+          participantEmail: principal.participantEmail || null
+        }) ||
+        principal.participantEmail ||
+        principal.participantUserId ||
+        "Unknown";
+      return {
+        splitParticipantId: principal.splitParticipantId,
+        participantUserId: principal.participantUserId,
+        participantEmail: principal.participantEmail,
+        displayName,
+        weightBps: principal.bps
+      };
+    });
+
+    localRows.push({
       authorizationId: a.id,
-      linkId: a.derivativeLink.id,
+      linkId: link.id,
       parentContentId: a.parentContentId,
-      parentSplitVersionId: a.derivativeLink.parentSplitVersionId || null,
-      parentTitle: a.derivativeLink.parentContent?.title || null,
-      childContentId: a.derivativeLink.childContentId,
-      childTitle: a.derivativeLink.childContent?.title || null,
-      relation: a.derivativeLink.relation,
-      status: a.status,
-      viewerVote: existingVote?.decision || null,
+      parentSplitVersionId: link.parentSplitVersionId || null,
+      parentTitle: link.parentContent?.title || null,
+      childContentId: link.childContentId,
+      childTitle: link.childContent?.title || null,
+      relation: link.relation,
+      status,
+      viewerVote,
+      canVote: Boolean(isEligible) && !viewerVote && status !== "APPROVED",
+      approveWeightBps: Number(a.approveWeightBps || 0),
+      rejectWeightBps: Number(a.rejectWeightBps || 0),
+      approvalBpsTarget: Number(a.approvalBpsTarget || 6667),
+      approvedApprovers: Number(a.approvedApprovers || 0),
+      approverCount: principalCtx.principals.length,
+      shareholders,
+      upstreamBps: Number(link.upstreamBps || 0),
+      upstreamRatePercent: Number(link.upstreamBps || 0) / 100,
       clearanceRequest: latestClearanceRequest
         ? {
-            status: String(latestClearanceRequest.status || "PENDING"),
+            status: asString(latestClearanceRequest.status || "PENDING").trim().toUpperCase(),
             requestedAt: latestClearanceRequest.createdAt ? latestClearanceRequest.createdAt.toISOString() : null,
-            reviewGrantedAt: latestClearanceRequest.reviewGrantedAt
-              ? latestClearanceRequest.reviewGrantedAt.toISOString()
-              : null
+            reviewGrantedAt: latestClearanceRequest.reviewGrantedAt ? latestClearanceRequest.reviewGrantedAt.toISOString() : null
           }
-        : null
+        : null,
+      remoteOrigin: null,
+      remoteInviteToken: null,
+      remoteAuthorizationId: null
     });
   }
 
+  const remoteInvites = await prisma.remoteInvite.findMany({
+    where: { userId, revokedAt: null, tombstonedAt: null },
+    orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }]
+  });
+  const remoteRows: any[] = [];
+  for (const invite of remoteInvites) {
+    const inviteStatus = normalizeRemoteInviteStatusForList(invite as any);
+    if (inviteStatus !== "accepted" && inviteStatus !== "pending") continue;
+    if (invite.contentDeletedAt) continue;
+    const remoteOrigin = normalizeRemoteOrigin(invite.remoteOrigin || "");
+    const inviteToken = extractInviteTokenFromUrl(invite.inviteUrl || null);
+    if (!remoteOrigin || !inviteToken) continue;
+    const accounting = await fetchRemoteInviteAccounting(remoteOrigin, inviteToken);
+    const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
+    for (const entry of inbox) {
+      const remoteAuthorizationId = asString(entry?.authorizationId || "").trim();
+      const parentContentId = asString(entry?.parentContentId || "").trim();
+      const childContentId = asString(entry?.childContentId || "").trim();
+      if (!remoteAuthorizationId || !parentContentId || !childContentId) continue;
+
+      const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
+      if (["deleted", "archived", "tombstoned"].includes(childStatus)) continue;
+
+      const status = normalizeStatus(entry?.status);
+      const viewerVote = asString(entry?.viewerVote || "").trim().toLowerCase() || null;
+      const isEligible = true;
+      if (!shouldInclude({ status, viewerVote, isEligible, isRequester: false })) continue;
+
+      const upstreamRatePercent = Number(entry?.upstreamRatePercent);
+      const upstreamBps = Number.isFinite(upstreamRatePercent) ? Math.max(0, Math.round(upstreamRatePercent * 100)) : 0;
+      remoteRows.push({
+        authorizationId: `remote:${remoteOrigin}:${remoteAuthorizationId}`,
+        remoteAuthorizationId,
+        linkId: asString(entry?.linkId || "").trim() || "",
+        parentContentId,
+        parentTitle: asString(entry?.parentTitle || "").trim() || null,
+        childContentId,
+        childTitle: asString(entry?.childTitle || "").trim() || null,
+        relation: asString(entry?.relation || "derivative").trim().toLowerCase() || "derivative",
+        status,
+        viewerVote,
+        canVote: !viewerVote && status !== "APPROVED",
+        approveWeightBps: Number(entry?.approveWeightBps || 0),
+        rejectWeightBps: Number(entry?.rejectWeightBps || 0),
+        approvalBpsTarget: Number(entry?.approvalBpsTarget || 6667),
+        approvedApprovers: Number(entry?.approvedApprovers || 0),
+        approverCount: Number(entry?.approverCount || 0),
+        shareholders: Array.isArray(entry?.shareholders) ? entry.shareholders : [],
+        upstreamBps,
+        upstreamRatePercent: Number.isFinite(upstreamRatePercent) ? upstreamRatePercent : null,
+        clearanceRequest: {
+          status: asString(entry?.requestStatus || "PENDING").trim().toUpperCase(),
+          requestedAt: asString(entry?.requestedAt || "").trim() || null,
+          reviewGrantedAt: asString(entry?.reviewGrantedAt || "").trim() || null
+        },
+        remoteOrigin,
+        remoteInviteToken: inviteToken,
+        remoteInviteId: invite.id,
+        remoteClearanceUrl: asString(entry?.clearanceUrl || "").trim() || null
+      });
+    }
+  }
+
+  const deduped = new Map<string, any>();
+  for (const row of [...localRows, ...remoteRows]) {
+    const key = rowKey(row);
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, row);
+      continue;
+    }
+    const winner = scoreRow(row) >= scoreRow(existing) ? row : existing;
+    const loser = winner === row ? existing : row;
+    deduped.set(key, mergeRows(winner, loser));
+  }
+
+  const out = Array.from(deduped.values()).sort((a, b) => {
+    const aTs = Date.parse(String(a?.clearanceRequest?.requestedAt || "")) || 0;
+    const bTs = Date.parse(String(b?.clearanceRequest?.requestedAt || "")) || 0;
+    return bTs - aTs;
+  });
   return reply.send(out);
 });
 
@@ -22299,9 +22504,27 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
   }
 
   const existing = await prisma.derivativeAuthorization.findFirst({ where: { derivativeLinkId: linkId } });
-  const auth =
-    existing ||
-    (await prisma.derivativeAuthorization.create({
+  let auth = existing;
+  if (auth) {
+    await prisma.derivativeApprovalVote.deleteMany({ where: { authorizationId: auth.id } });
+    auth = await prisma.derivativeAuthorization.update({
+      where: { id: auth.id },
+      data: {
+        requiredApprovers: approvers.length,
+        approvedApprovers: 0,
+        approveWeightBps: 0,
+        rejectWeightBps: 0,
+        approvalPolicy: "WEIGHTED_BPS",
+        approvalBpsTarget: 6667,
+        status: "PENDING"
+      }
+    });
+    await prisma.contentLink.update({
+      where: { id: link.id },
+      data: { approvedAt: null, approvedByUserId: null, requiresApproval: true }
+    });
+  } else {
+    auth = await prisma.derivativeAuthorization.create({
       data: {
         derivativeLinkId: linkId,
         parentContentId: link.parentContentId,
@@ -22313,7 +22536,8 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
         approvalBpsTarget: 6667,
         status: "PENDING"
       }
-    }));
+    });
+  }
 
   // Create a clearance request record (idempotent on PENDING)
   const clearanceModel = (prisma as any).clearanceRequest;
