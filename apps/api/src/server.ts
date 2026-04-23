@@ -22395,7 +22395,11 @@ app.get("/api/derivatives/approvals", { preHandler: [requireAuth, requireFeature
             reviewGrantedAt: latestClearanceRequest.reviewGrantedAt ? latestClearanceRequest.reviewGrantedAt.toISOString() : null
           }
         : null,
-      remoteOrigin: null,
+      remoteOrigin:
+        Boolean(link?.childContent?.deletedAt) &&
+        asString(link?.childContent?.deletedReason || "").trim().toLowerCase() === "hard"
+          ? getRemoteOriginFromDescription(link?.childContent?.description || null)
+          : null,
       remoteInviteToken: null,
       remoteAuthorizationId: null
     });

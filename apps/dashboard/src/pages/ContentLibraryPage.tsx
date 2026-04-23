@@ -1678,12 +1678,15 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   async function openApprovalPreview(approval: any) {
     const isRemoteApproval = Boolean(String(approval?.remoteOrigin || "").trim());
     if (isRemoteApproval) {
-      await openRemoteInviteClearancePreview(
-        String(approval?.remoteOrigin || ""),
-        String(approval?.remoteInviteToken || ""),
-        String(approval?.remoteAuthorizationId || ""),
-        String(approval?.childContentId || "")
-      );
+      const remoteOrigin = String(approval?.remoteOrigin || "");
+      const inviteToken = String(approval?.remoteInviteToken || "");
+      const remoteAuthorizationId = String(approval?.remoteAuthorizationId || "");
+      const childContentId = String(approval?.childContentId || "");
+      if (inviteToken.trim() && remoteAuthorizationId.trim()) {
+        await openRemoteInviteClearancePreview(remoteOrigin, inviteToken, remoteAuthorizationId, childContentId);
+      } else {
+        await openRemoteDerivativePreview(remoteOrigin, childContentId);
+      }
       return;
     }
     const childContentId = String(approval?.childContentId || "").trim();
