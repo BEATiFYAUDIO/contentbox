@@ -22223,7 +22223,9 @@ app.post("/content-links/:linkId/request-approval", { preHandler: requireAuth },
           childOrigin: childPublicOrigin,
           relation: link.relation,
           childTitle: child.title,
-          childType: child.type
+          childType: child.type,
+          upstreamBps: link.upstreamBps ?? 0,
+          upstreamRatePercent: Number(link.upstreamBps ?? 0) / 100
         }),
         signal: ctrl.signal as any
       });

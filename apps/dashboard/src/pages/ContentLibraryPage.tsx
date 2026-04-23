@@ -1725,11 +1725,42 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
         Math.max(requestTs, previewTs)
       );
     };
+    const mergeRows = (best: any, incoming: any) => {
+      const merged = { ...best };
+      const takeIfMissing = (field: string) => {
+        const current = merged[field];
+        const next = incoming?.[field];
+        if ((current === null || current === undefined || current === "") && next !== null && next !== undefined && next !== "") {
+          merged[field] = next;
+        }
+      };
+      takeIfMissing("remoteOrigin");
+      takeIfMissing("remoteInviteToken");
+      takeIfMissing("remoteAuthorizationId");
+      takeIfMissing("remoteChildOrigin");
+      takeIfMissing("remoteClearanceUrl");
+      takeIfMissing("linkId");
+      takeIfMissing("parentTitle");
+      takeIfMissing("childTitle");
+      if (!Array.isArray(merged.shareholders) || merged.shareholders.length === 0) {
+        if (Array.isArray(incoming?.shareholders) && incoming.shareholders.length > 0) merged.shareholders = incoming.shareholders;
+      }
+      if (!Array.isArray(merged.approvers) || merged.approvers.length === 0) {
+        if (Array.isArray(incoming?.approvers) && incoming.approvers.length > 0) merged.approvers = incoming.approvers;
+      }
+      return merged;
+    };
     const dedupedMap = new Map<string, any>();
     for (const row of rows) {
       const key = keyForRow(row);
       const existing = dedupedMap.get(key);
-      if (!existing || scoreRow(row) >= scoreRow(existing)) dedupedMap.set(key, row);
+      if (!existing) {
+        dedupedMap.set(key, row);
+        continue;
+      }
+      const winner = scoreRow(row) >= scoreRow(existing) ? row : existing;
+      const loser = winner === row ? existing : row;
+      dedupedMap.set(key, mergeRows(winner, loser));
     }
     return Array.from(dedupedMap.values());
   }
@@ -2865,6 +2896,13 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                 const previewGrantedAt = String(a?.clearanceRequest?.reviewGrantedAt || "").trim();
                 const requestStatus = String(a?.clearanceRequest?.status || "").trim();
                 const requestedAt = String(a?.clearanceRequest?.requestedAt || "").trim();
+                const shareholderLabels = Array.isArray(clearance?.approvers) && clearance.approvers.length > 0
+                  ? clearance.approvers.map((p: any) => p.displayName || p.participantEmail || p.participantUserId || "Unknown")
+                  : Array.isArray(a?.shareholders) && a.shareholders.length > 0
+                    ? a.shareholders.map((p: any) => p.displayName || p.participantEmail || p.participantUserId || p.handle || "Unknown")
+                    : Array.isArray(a?.approvers) && a.approvers.length > 0
+                      ? a.approvers.map((p: any) => p.displayName || p.participantEmail || p.participantUserId || "Unknown")
+                      : [];
                 const remoteParentHref =
                   isRemoteApproval && String(a?.remoteOrigin || "").trim() && String(a?.parentContentId || "").trim()
                     ? `${String(a.remoteOrigin).replace(/\/+$/, "")}/content/${encodeURIComponent(String(a.parentContentId))}/splits`
@@ -2899,13 +2937,11 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
                           {approverCount || "?"}
                           {viewerVote ? ` • You ${viewerVote}` : ""}
                         </div>
-                        {Array.isArray(clearance?.approvers) && clearance.approvers.length > 0 ? (
+                        {shareholderLabels.length > 0 ? (
                           <div className="text-[11px] text-neutral-400 mt-1">
                             Shareholders:{" "}
                             <span className="text-neutral-200">
-                              {clearance.approvers
-                                .map((p: any) => p.displayName || p.participantEmail || p.participantUserId || "Unknown")
-                                .join(", ")}
+                              {shareholderLabels.join(", ")}
                             </span>
                           </div>
                         ) : null}
