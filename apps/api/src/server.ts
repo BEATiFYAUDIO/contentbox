@@ -10280,9 +10280,26 @@ async function ensurePreviewFile(content: any, files: any[]) {
   try {
     if (!content?.repoPath) return null;
     if (!Array.isArray(files) || files.length === 0) return null;
-    const primary = files[files.length - 1];
-    const mime = String(primary?.mime || "").toLowerCase();
-    if (!mime.startsWith("video/") && !mime.startsWith("audio/")) return null;
+    const pickPreviewSourceFile = (rows: any[]): any | null => {
+      const media = rows.filter((row) => {
+        const mime = String(row?.mime || "").toLowerCase();
+        return mime.startsWith("video/") || mime.startsWith("audio/");
+      });
+      if (!media.length) return null;
+      // Avoid derived assets as preview inputs; prefer original uploaded media.
+      const nonDerived = media.find((row) => {
+        const key = asString(row?.objectKey || "").trim().toLowerCase();
+        if (!key) return false;
+        if (key.includes("/previews/") || key.startsWith("previews/")) return false;
+        if (/-(preview|cover)\.(mp4|mp3|jpg|jpeg|webp|png)$/i.test(key)) return false;
+        return true;
+      });
+      return nonDerived || media[0];
+    };
+
+    const source = pickPreviewSourceFile(files);
+    const mime = String(source?.mime || "").toLowerCase();
+    if (!source || (!mime.startsWith("video/") && !mime.startsWith("audio/"))) return null;
 
     const previewExt = mime.startsWith("video/") ? "mp4" : "mp3";
     const previewDir = "previews";
@@ -10293,7 +10310,7 @@ async function ensurePreviewFile(content: any, files: any[]) {
     const previewAbs = path.resolve(repoRoot, previewObjectKey);
     if (fsSync.existsSync(previewAbs)) return previewObjectKey;
 
-    const inputAbs = path.resolve(repoRoot, primary.objectKey || "");
+    const inputAbs = path.resolve(repoRoot, source.objectKey || "");
     if (!inputAbs.startsWith(repoRoot)) return null;
     if (!fsSync.existsSync(inputAbs)) return null;
 
@@ -25671,7 +25688,7 @@ async function handlePublicPreviewFile(req: any, reply: any) {
         where: { contentId },
         orderBy: { createdAt: "asc" }
       });
-      const generatedPreview = await withSoftTimeout(ensurePreviewFileOnce(content, files), 3500, null);
+      const generatedPreview = await withSoftTimeout(ensurePreviewFileOnce(content, files), 12000, null);
       if (generatedPreview) {
         objectKey = generatedPreview;
         if (generatedPreview !== previewFromManifest) {
