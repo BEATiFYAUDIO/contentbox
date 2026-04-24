@@ -25016,13 +25016,17 @@ async function handlePublicAttribution(req: any, reply: any) {
         const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
         const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
         const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
+        const identityOrigin = parseRemoteIdentityRef(asString(snapshot.identityRef || "").trim() || null).origin;
+        const canonicalOrigin = asString(identityOrigin || snapshot.participantOrigin || "").trim() || null;
+        const normalizedProfilePath = normalizePublicProfileHref(snapshot.profilePathSnapshot || "");
         const safeProfilePath =
-          normalizePublicProfileHref(snapshot.profilePathSnapshot || "") ||
-          (normalizedHandle && !looksLikeInternalUserId(normalizedHandle)
-            ? (snapshot.participantOrigin
-                ? `${snapshot.participantOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
-                : `/u/${encodeURIComponent(normalizedHandle)}`)
-            : null);
+          (normalizedProfilePath && /^https?:\/\//i.test(normalizedProfilePath))
+            ? normalizedProfilePath
+            : (normalizedProfilePath && normalizedProfilePath.startsWith("/") && canonicalOrigin
+                ? `${canonicalOrigin.replace(/\/$/, "")}${normalizedProfilePath}`
+                : (normalizedHandle && !looksLikeInternalUserId(normalizedHandle) && canonicalOrigin
+                    ? `${canonicalOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
+                    : null));
         return {
           displayName,
           handle: safeHandle,
@@ -25068,13 +25072,17 @@ async function handlePublicAttribution(req: any, reply: any) {
             const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
             const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
             const safeHandle = normalizedHandle && !looksLikeInternalUserId(normalizedHandle) ? `@${normalizedHandle}` : null;
+            const identityOrigin = parseRemoteIdentityRef(asString(snapshot.identityRef || "").trim() || null).origin;
+            const canonicalOrigin = asString(identityOrigin || snapshot.participantOrigin || "").trim() || null;
+            const normalizedProfilePath = normalizePublicProfileHref(snapshot.profilePathSnapshot || "");
             const safeProfilePath =
-              normalizePublicProfileHref(snapshot.profilePathSnapshot || "") ||
-              (normalizedHandle && !looksLikeInternalUserId(normalizedHandle)
-                ? (snapshot.participantOrigin
-                    ? `${snapshot.participantOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
-                    : `/u/${encodeURIComponent(normalizedHandle)}`)
-                : null);
+              (normalizedProfilePath && /^https?:\/\//i.test(normalizedProfilePath))
+                ? normalizedProfilePath
+                : (normalizedProfilePath && normalizedProfilePath.startsWith("/") && canonicalOrigin
+                    ? `${canonicalOrigin.replace(/\/$/, "")}${normalizedProfilePath}`
+                    : (normalizedHandle && !looksLikeInternalUserId(normalizedHandle) && canonicalOrigin
+                        ? `${canonicalOrigin.replace(/\/$/, "")}/u/${encodeURIComponent(normalizedHandle)}`
+                        : null));
             return {
               displayName,
               handle: safeHandle,
