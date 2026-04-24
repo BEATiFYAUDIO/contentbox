@@ -377,6 +377,51 @@ export default function ConfigPage({
   }, [apiBase, token]);
 
   useEffect(() => {
+    if (!token) return;
+    let stopped = false;
+    const headers = { Authorization: `Bearer ${token}` };
+
+    const tick = async () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      try {
+        const [publicRes, modeRes, diagnosticsRes] = await Promise.all([
+          fetch(`${apiBase}/api/public/status`, { method: "GET", headers }),
+          fetch(`${apiBase}/api/node/mode`, { method: "GET", headers }),
+          fetch(`${apiBase}/api/diagnostics/status`, { method: "GET", headers })
+        ]);
+        const [publicJson, modeJson, diagnosticsJson] = await Promise.all([
+          publicRes.json().catch(() => null),
+          modeRes.json().catch(() => null),
+          diagnosticsRes.json().catch(() => null)
+        ]);
+        if (stopped) return;
+        if (publicRes.ok && publicJson) {
+          setPublicStatus(publicJson);
+          discoverTunnels({ silent: true }).catch(() => {});
+        }
+        if (modeRes.ok && modeJson) setModeInfo(modeJson as NodeModeStatus);
+        if (diagnosticsRes.ok && diagnosticsJson) setDiagnosticsStatus(diagnosticsJson);
+      } catch {
+        // Keep last-known snapshots on transient failures.
+      }
+    };
+
+    tick().catch(() => {});
+    const id = window.setInterval(() => {
+      tick().catch(() => {});
+    }, 15000);
+    const onFocus = () => {
+      tick().catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [apiBase, token, tunnelEnabled]);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!token) {
@@ -896,6 +941,12 @@ export default function ConfigPage({
         json?.namedTunnelDetected && json?.discoveredTunnelName ? String(json.discoveredTunnelName) : null
       );
       if (json?.namedTunnelDetected && json?.discoveredTunnelName) {
+        const detectedName = String(json.discoveredTunnelName).trim();
+        if (detectedName && !String(tunnelName || "").trim()) {
+          setTunnelName(detectedName);
+        }
+      }
+      if (json?.namedTunnelDetected && json?.discoveredTunnelName) {
         setNamedTokenMsg(`Existing named tunnel detected (${json.discoveredTunnelName}). Token bootstrap is not required.`);
         if (!opts?.silent) setTunnelActionMsg(`Named tunnel detected: ${json.discoveredTunnelName}`);
       } else if (json?.configuredTunnelName) {
@@ -912,11 +963,10 @@ export default function ConfigPage({
   };
 
   useEffect(() => {
-    if (!token || !tunnelEnabled) return;
-    if (!configuredTunnelName) return;
+    if (!token) return;
     discoverTunnels({ silent: true }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, tunnelEnabled, configuredTunnelName]);
+  }, [token, tunnelEnabled]);
 
   const saveNamedToken = async (autoStart?: boolean) => {
     if (!token) return;
@@ -1256,69 +1306,6 @@ export default function ConfigPage({
           })}
         </div>
       </div>
-
-      {showAdvancedInfraPanels ? (
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
-        <div><b>API base</b>: {apiBase}</div>
-        <div><b>Build</b>: {buildInfo}</div>
-        <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
-        <div style={{ marginTop: 10 }}>
-          <button
-            onClick={() => { clearToken(); window.location.reload(); }}
-            style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-          >
-            Clear token & reload
-          </button>
-        </div>
-      </div>
-      ) : null}
-
-      {showAdvancedInfraPanels ? (
-      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
-        <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
-        <div style={{ opacity: 0.7, marginBottom: 8 }}>
-          Current API base: <b>{apiBase}</b>
-        </div>
-        {showAdvanced ? (
-          <>
-            <label htmlFor="api-base-override">
-              <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
-              <input
-                id="api-base-override"
-                name="apiBaseOverride"
-                value={apiBaseOverride}
-                onChange={(e) => setApiBaseOverride(e.target.value)}
-                placeholder="http://127.0.0.1:4000"
-                className={inputClass}
-                autoComplete="url"
-              />
-            </label>
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button
-                onClick={saveApiBaseOverride}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Save & reload
-              </button>
-              <button
-                onClick={clearApiBaseOverride}
-                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
-              >
-                Clear override
-              </button>
-            </div>
-            <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
-              If you see tunnels from another machine, your API base is pointing there.
-            </div>
-          </>
-        ) : (
-          <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
-            Advanced mode required to override API base.
-          </div>
-        )}
-      </div>
-      ) : null}
 
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontSize: 12, opacity: 0.75, marginBottom: 8 }}>Step 1: Basic Creator tunnel setup</div>
@@ -1977,6 +1964,70 @@ export default function ConfigPage({
           Open payments settings
         </button>
       </div>
+
+      {showAdvancedInfraPanels ? (
+      <details style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Advanced system controls (hidden by default)</summary>
+        <div style={{ marginTop: 12, border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 12 }}>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
+          <div><b>API base</b>: {apiBase}</div>
+          <div><b>Build</b>: {buildInfo}</div>
+          <div><b>Token</b>: {token ? `present (${token.slice(0, 10)}…)` : "not set"}</div>
+          <div style={{ marginTop: 10 }}>
+            <button
+              onClick={() => { clearToken(); window.location.reload(); }}
+              style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+            >
+              Clear token & reload
+            </button>
+          </div>
+        </div>
+
+        <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14 }}>
+          <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
+          <div style={{ opacity: 0.7, marginBottom: 8 }}>
+            Current API base: <b>{apiBase}</b>
+          </div>
+          {showAdvanced ? (
+            <>
+              <label htmlFor="api-base-override">
+                <div style={{ opacity: 0.7, marginBottom: 4 }}>API base override (advanced)</div>
+                <input
+                  id="api-base-override"
+                  name="apiBaseOverride"
+                  value={apiBaseOverride}
+                  onChange={(e) => setApiBaseOverride(e.target.value)}
+                  placeholder="http://127.0.0.1:4000"
+                  className={inputClass}
+                  autoComplete="url"
+                />
+              </label>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button
+                  onClick={saveApiBaseOverride}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Save & reload
+                </button>
+                <button
+                  onClick={clearApiBaseOverride}
+                  style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+                >
+                  Clear override
+                </button>
+              </div>
+              <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+                If you see tunnels from another machine, your API base is pointing there.
+              </div>
+            </>
+          ) : (
+            <div style={{ opacity: 0.6, marginTop: 6, fontSize: 12 }}>
+              Advanced mode required to override API base.
+            </div>
+          )}
+        </div>
+      </details>
+      ) : null}
     </div>
   );
 }
