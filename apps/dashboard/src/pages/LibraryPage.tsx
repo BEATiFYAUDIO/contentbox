@@ -916,9 +916,7 @@ export default function LibraryPage() {
     setFeatureMsgById((m) => ({ ...m, [contentId]: "" }));
     try {
       const participation = entry.participation || participationByContentId[contentId] || null;
-      const shouldUseParticipationHighlight =
-        Boolean(participation) &&
-        (entry.relation === "participant" || participation?.kind === "remote");
+      const shouldUseParticipationHighlight = shouldUseParticipationFeatureHighlight(entry, participation);
 
       if (shouldUseParticipationHighlight) {
         if (!participation) throw new Error("Participation info not found.");
@@ -995,6 +993,18 @@ function previewFileFor(previewUrl: string | null | undefined, files: any[] | nu
 function asNonEmptyString(value: unknown): string | null {
   const normalized = String(value || "").trim();
   return normalized ? normalized : null;
+}
+
+function shouldUseParticipationFeatureHighlight(
+  entry: NormalizedLibraryItem,
+  participation: LibraryParticipation | null | undefined
+): boolean {
+  if (!participation) return false;
+  if (participation.kind === "remote") return true;
+  const access = String(entry.item?.libraryAccess || "").trim().toLowerCase();
+  if (access === "participant" || access === "shared") return true;
+  if (entry.relation === "participant") return true;
+  return Array.isArray(entry.relationshipTags) && entry.relationshipTags.includes("shared_splits");
 }
 
 function formatDateLabel(value?: string | null) {
@@ -1197,9 +1207,10 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                     const participationInfo = entry.participation || participationByContentId[it.id] || null;
                     const participationFeatured = Boolean(participationInfo?.highlightedOnProfile);
                     const ownerFeatured = Boolean(it.featureOnProfile);
-                    const shouldUseParticipationHighlight =
-                      Boolean(participationInfo) &&
-                      (entry.relation === "participant" || participationInfo?.kind === "remote");
+                    const shouldUseParticipationHighlight = shouldUseParticipationFeatureHighlight(
+                      entry,
+                      participationInfo
+                    );
                     const featureAllowed = canFeatureOnProfile({
                       item: {
                         ...it,
