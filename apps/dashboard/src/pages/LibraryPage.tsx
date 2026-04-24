@@ -36,6 +36,9 @@ type LibraryItem = {
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
   appearsBecause?: string[] | null;
   coverUrl?: string | null;
+  attributionUrl?: string | null;
+  buyUrl?: string | null;
+  remoteOrigin?: string | null;
   manifest?: { sha256?: string | null } | null;
   featureOnProfile?: boolean;
   _count?: { files: number };
@@ -56,6 +59,8 @@ type LibraryParticipation = {
   revokedAt?: string | null;
   tombstonedAt?: string | null;
   highlightedOnProfile: boolean;
+  attributionUrl?: string | null;
+  buyUrl?: string | null;
   creatorUserId: string | null;
   creatorDisplayName: string | null;
   creatorEmail: string | null;
@@ -369,6 +374,8 @@ export default function LibraryPage() {
             revokedAt: row?.revokedAt || null,
             tombstonedAt: row?.tombstonedAt || null,
             highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+            attributionUrl: String(row?.attributionUrl || "").trim() || null,
+            buyUrl: String(row?.buyUrl || "").trim() || null,
             creatorUserId: row?.creatorUserId || null,
             creatorDisplayName: row?.creatorDisplayName || null,
             creatorEmail: row?.creatorEmail || null,
@@ -396,26 +403,32 @@ export default function LibraryPage() {
         const remoteParticipations: LibraryParticipation[] = remoteParticipationsRaw
           .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
           .filter((row) => Boolean(String(row?.contentId || "").trim()))
-          .map((row) => ({
-            kind: "remote",
-            contentId: String(row.contentId || "").trim(),
-            contentTitle: row.contentTitle || null,
-            contentType: row.contentType || null,
-            contentStatus: normalizeRemoteParticipationContentStatus(row.contentStatus, row.status),
-            contentDeletedAt: row.contentDeletedAt || null,
-            splitParticipantId: null,
-            remoteInviteId: String(row.id || "").trim() || null,
-            remoteOrigin: String(row.remoteOrigin || "").replace(/\/+$/, "") || null,
-            status: row.status || null,
-            acceptedAt: row.acceptedAt || null,
-            verifiedAt: null,
-            revokedAt: row.revokedAt || null,
-            tombstonedAt: row.tombstonedAt || null,
-            highlightedOnProfile: Boolean(row.highlightedOnProfile),
-            creatorUserId: null,
-            creatorDisplayName: null,
-            creatorEmail: null
-          }));
+          .map((row) => {
+            const remoteOrigin = String(row.remoteOrigin || "").replace(/\/+$/, "") || null;
+            const contentId = String(row.contentId || "").trim();
+            return {
+              kind: "remote",
+              contentId,
+              contentTitle: row.contentTitle || null,
+              contentType: row.contentType || null,
+              contentStatus: normalizeRemoteParticipationContentStatus(row.contentStatus, row.status),
+              contentDeletedAt: row.contentDeletedAt || null,
+              splitParticipantId: null,
+              remoteInviteId: String(row.id || "").trim() || null,
+              remoteOrigin,
+              status: row.status || null,
+              acceptedAt: row.acceptedAt || null,
+              verifiedAt: null,
+              revokedAt: row.revokedAt || null,
+              tombstonedAt: row.tombstonedAt || null,
+              highlightedOnProfile: Boolean(row.highlightedOnProfile),
+              attributionUrl: remoteOrigin ? `${remoteOrigin}/public/content/${encodeURIComponent(contentId)}/attribution` : null,
+              buyUrl: remoteOrigin ? `${remoteOrigin}/buy/${encodeURIComponent(contentId)}` : null,
+              creatorUserId: null,
+              creatorDisplayName: null,
+              creatorEmail: null
+            };
+          });
         const remoteDerivativeParticipations: LibraryParticipation[] = remoteParticipationsRaw
           .filter((row) => String(row?.status || "").toLowerCase() === "accepted")
           .flatMap((row) => {
@@ -464,6 +477,12 @@ export default function LibraryPage() {
                   revokedAt: row?.revokedAt || null,
                   tombstonedAt: row?.tombstonedAt || null,
                   highlightedOnProfile: Boolean(row?.highlightedOnProfile),
+                  attributionUrl: (String(entry?.childOrigin || "").replace(/\/+$/, "") || defaultOrigin)
+                    ? `${(String(entry?.childOrigin || "").replace(/\/+$/, "") || defaultOrigin)}/public/content/${encodeURIComponent(childContentId)}/attribution`
+                    : null,
+                  buyUrl: (String(entry?.childOrigin || "").replace(/\/+$/, "") || defaultOrigin)
+                    ? `${(String(entry?.childOrigin || "").replace(/\/+$/, "") || defaultOrigin)}/buy/${encodeURIComponent(childContentId)}`
+                    : null,
                   creatorUserId: null,
                   creatorDisplayName: null,
                   creatorEmail: null
@@ -503,6 +522,10 @@ export default function LibraryPage() {
               revokedAt: null,
               tombstonedAt: null,
               highlightedOnProfile: Boolean(remoteInviteMeta?.highlightedOnProfile),
+              attributionUrl: origin
+                ? `${origin}/public/content/${encodeURIComponent(childContentId)}/attribution`
+                : null,
+              buyUrl: origin ? `${origin}/buy/${encodeURIComponent(childContentId)}` : null,
               creatorUserId: null,
               creatorDisplayName: null,
               creatorEmail: null
@@ -513,7 +536,29 @@ export default function LibraryPage() {
           const contentId = String(p?.contentId || "").trim();
           if (!contentId) continue;
           const existing = participationByContentId.get(contentId);
-          if (!existing || p.kind === "local") participationByContentId.set(contentId, p);
+          if (!existing) {
+            participationByContentId.set(contentId, p);
+            continue;
+          }
+          if (existing.kind === "local" && p.kind === "remote") {
+            participationByContentId.set(contentId, {
+              ...existing,
+              remoteInviteId: existing.remoteInviteId || p.remoteInviteId,
+              remoteOrigin: existing.remoteOrigin || p.remoteOrigin,
+              attributionUrl: existing.attributionUrl || p.attributionUrl,
+              buyUrl: existing.buyUrl || p.buyUrl
+            });
+            continue;
+          }
+          if (existing.kind !== "local" && p.kind === "local") {
+            participationByContentId.set(contentId, {
+              ...p,
+              remoteInviteId: p.remoteInviteId || existing.remoteInviteId,
+              remoteOrigin: p.remoteOrigin || existing.remoteOrigin,
+              attributionUrl: p.attributionUrl || existing.attributionUrl,
+              buyUrl: p.buyUrl || existing.buyUrl
+            });
+          }
         }
         const nextParticipationByContentId: Record<string, LibraryParticipation> = {};
         for (const [contentId, participation] of participationByContentId.entries()) {
@@ -563,7 +608,10 @@ export default function LibraryPage() {
               displayName: p.creatorDisplayName || null,
               email: p.creatorEmail || null
             },
-            libraryAccess: "participant"
+            libraryAccess: "participant",
+            attributionUrl: p.attributionUrl || null,
+            buyUrl: p.buyUrl || null,
+            remoteOrigin: p.remoteOrigin || null
           }));
         const combined = [...baseList, ...participationOnlyItems];
         const normalized: NormalizedLibraryItem[] = [];
@@ -653,7 +701,7 @@ export default function LibraryPage() {
             isDerivativeParent,
             availabilityState: getAvailabilityState(normalizedItem),
             relation,
-            publicPageUrl: buildPublicPageUrl(contentId, participation?.remoteOrigin || null),
+            publicPageUrl: asNonEmptyString(normalizedItem.buyUrl) || buildPublicPageUrl(contentId, participation?.remoteOrigin || normalizedItem.remoteOrigin || null),
             participation
           });
         }
@@ -749,11 +797,22 @@ export default function LibraryPage() {
       const updates = await Promise.all(
         missingEntries.map(async (entry) => {
           const contentId = String(entry.item.id || "").trim();
+          const explicitAttributionUrl = asNonEmptyString(entry.item.attributionUrl);
+          if (explicitAttributionUrl) {
+            try {
+              const res = await fetch(explicitAttributionUrl, { method: "GET", credentials: "omit" });
+              if (!res.ok) return [contentId, null] as const;
+              const payload = (await res.json()) as PublicAttributionPayload;
+              return [contentId, payload || null] as const;
+            } catch {
+              return [contentId, null] as const;
+            }
+          }
           const participation = entry.participation || participationByContentId[contentId] || null;
           const baseOrigin =
             participation?.kind === "remote" && participation.remoteOrigin
               ? String(participation.remoteOrigin).replace(/\/+$/, "")
-              : apiBase.replace(/\/+$/, "");
+              : asNonEmptyString(entry.item.remoteOrigin) || apiBase.replace(/\/+$/, "");
           const url = `${baseOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`;
           try {
             const res = await fetch(url, { method: "GET", credentials: "omit" });
@@ -871,7 +930,7 @@ export default function LibraryPage() {
     }
   }
 
-  function previewFileFor(previewUrl: string | null | undefined, files: any[] | null | undefined) {
+function previewFileFor(previewUrl: string | null | undefined, files: any[] | null | undefined) {
     if (!previewUrl || !Array.isArray(files) || files.length === 0) return null;
     try {
       const u = new URL(previewUrl, window.location.origin);
@@ -882,6 +941,11 @@ export default function LibraryPage() {
       return null;
     }
   }
+
+function asNonEmptyString(value: unknown): string | null {
+  const normalized = String(value || "").trim();
+  return normalized ? normalized : null;
+}
 
 function formatDateLabel(value?: string | null) {
   if (!value) return "—";

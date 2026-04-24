@@ -20773,6 +20773,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const selectBase = {
     id: true,
     title: true,
+    description: true,
     type: true,
     status: true,
     previousVersionContentId: true,
@@ -21013,18 +21014,32 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   }
   const unique = Array.from(deduped.values());
 
-  return unique.map((i: any) => ({
-    ...i,
-    priceSats:
-      i.ownerUserId === userId && !commerceAuthority.authority
-        ? null
-        : i.priceSats != null
-          ? i.priceSats.toString()
-          : null,
-    coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(i.id)}/cover`,
-    featureOnProfile: Boolean(i.featureOnProfile),
-    tombstoned: isArchivedPublished(i)
-  }));
+  return unique.map((i: any) => {
+    const description = asString(i?.description || "").trim() || null;
+    const explicitRemoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(description));
+    const localOrigin = normalizeOrigin(APP_BASE_URL) || asString(APP_BASE_URL || "").trim().replace(/\/+$/, "") || null;
+    const preferredPublicOrigin = explicitRemoteOrigin || localOrigin;
+    const canonicalPublicOrigin = preferredPublicOrigin ? preferredPublicOrigin.replace(/\/+$/, "") : null;
+    const contentId = asString(i?.id || "").trim();
+    const { description: _description, ...rest } = i;
+    return {
+      ...rest,
+      priceSats:
+        i.ownerUserId === userId && !commerceAuthority.authority
+          ? null
+          : i.priceSats != null
+            ? i.priceSats.toString()
+            : null,
+      coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(contentId)}/cover`,
+      attributionUrl: canonicalPublicOrigin
+        ? `${canonicalPublicOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`
+        : null,
+      buyUrl: canonicalPublicOrigin ? `${canonicalPublicOrigin}/buy/${encodeURIComponent(contentId)}` : null,
+      remoteOrigin: explicitRemoteOrigin,
+      featureOnProfile: Boolean(i.featureOnProfile),
+      tombstoned: isArchivedPublished(i)
+    };
+  });
 });
 
 // Create a new content item and initialize a repo for it
