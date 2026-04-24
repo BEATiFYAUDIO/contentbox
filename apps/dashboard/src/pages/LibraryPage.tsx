@@ -272,6 +272,7 @@ export default function LibraryPage() {
   const autoLoadedRef = React.useRef(false);
 
   React.useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
         const normalize = (list: LibraryItem[]) =>
@@ -279,15 +280,71 @@ export default function LibraryPage() {
             ...i,
             libraryAccess: i.libraryAccess || (i.ownerUserId ? "owned" : "preview")
           }));
-        const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes, derivativeApprovalsRes] = await Promise.all([
+        const [lib, mine] = await Promise.all([
           api<LibraryItem[]>(`/content?scope=library`, "GET").catch(() => []),
-          api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => []),
+          api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => [])
+        ]);
+        if (cancelled) return;
+
+        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
+        const baseList = normalize(baseListRaw || []);
+        const quickNormalized: NormalizedLibraryItem[] = [];
+        for (const item of baseList) {
+          const contentId = String(item.id || "").trim();
+          const relation: LibraryRelation =
+            item.libraryAccess === "owned"
+              ? "owner"
+              : item.libraryAccess === "purchased"
+                ? "buyer"
+                : item.libraryAccess === "participant"
+                  ? "participant"
+                  : item.libraryAccess === "preview"
+                    ? "preview"
+                    : "unknown";
+          const decision = classifyLibraryEligibility({
+            item,
+            participation: null
+          });
+          if (!decision.included) continue;
+          const section = decision.section as Exclude<LibrarySection, "excluded">;
+          const normalizedItem: LibraryItem = {
+            ...item,
+            libraryAccess: section
+          };
+          const derivativeByType = ["derivative", "remix", "mashup"].includes(String(normalizedItem.type || "").toLowerCase());
+          const relationshipTags: LibraryRelationshipFilter[] = [];
+          if (section === "owned") relationshipTags.push("authored_work");
+          if (section === "participant") relationshipTags.push("shared_splits");
+          if (derivativeByType) relationshipTags.push("derivatives");
+          const relationshipType: LibraryRelationshipType = relationshipTags.includes("derivatives")
+            ? "derivatives"
+            : relationshipTags.includes("shared_splits")
+              ? "shared_splits"
+              : relationshipTags.includes("authored_work")
+                ? "authored_work"
+                : "other";
+          quickNormalized.push({
+            item: normalizedItem,
+            contentType: mapContentType(normalizedItem.type),
+            relationshipType,
+            relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
+            availabilityState: getAvailabilityState(normalizedItem),
+            relation,
+            publicPageUrl: buildPublicPageUrl(contentId),
+            participation: null
+          });
+        }
+        setItems(applyLibraryFilters(quickNormalized, libraryTypeFilter, libraryRelationshipFilter));
+
+        const [localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes, derivativeApprovalsRes] = await Promise.all([
           api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
           api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[]),
           api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null),
           api<EntitlementInventoryRow[]>("/me/entitlements", "GET").catch(() => [] as EntitlementInventoryRow[]),
           api<DerivativeApprovalRow[]>("/api/derivatives/approvals?scope=all", "GET").catch(() => [] as DerivativeApprovalRow[])
         ]);
+        if (cancelled) return;
+
         const nextDerivativeApprovalByChildId: Record<string, DerivativeApprovalRow> = {};
         for (const row of Array.isArray(derivativeApprovalsRes) ? derivativeApprovalsRes : []) {
           const childContentId = String(row?.childContentId || "").trim();
@@ -316,8 +373,6 @@ export default function LibraryPage() {
           if (childContentId) derivativeLinkedContentIds.add(childContentId);
         }
 
-        const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
-        const baseList = normalize(baseListRaw || []);
         const knownContentIds = new Set(baseList.map((it) => String(it.id || "").trim()).filter(Boolean));
         const participationByContentId = new Map<string, LibraryParticipation>();
 
@@ -599,6 +654,9 @@ export default function LibraryPage() {
         setMsg(err.includes("INVALID_TYPE") ? "Invalid type filter." : err);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [libraryTypeFilter, libraryRelationshipFilter]);
 
   React.useEffect(() => {

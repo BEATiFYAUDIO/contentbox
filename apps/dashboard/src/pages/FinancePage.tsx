@@ -74,7 +74,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
   }, [tab, isBasic]);
 
   useEffect(() => {
-    const showRailsOps = financePosture === "sovereign_node";
+    const showRailsOps = financePosture === "sovereign_node" && tab !== "overview";
     if (!showRailsOps) return;
     let active = true;
     (async () => {
@@ -92,7 +92,7 @@ export default function FinancePage({ initialTab = "overview", nodeMode, posture
     return () => {
       active = false;
     };
-  }, [summaryRefresh, financePosture]);
+  }, [summaryRefresh, financePosture, tab]);
 
   const allTabs = useMemo(
     () => [

@@ -15725,6 +15725,32 @@ async function getLocalSovereignReadinessCached(force = false): Promise<LocalSov
   return localSovereignReadinessInflight;
 }
 
+const LOCAL_SOVEREIGN_READINESS_FAST_TIMEOUT_MS = Math.max(
+  200,
+  Number(process.env.LOCAL_SOVEREIGN_READINESS_FAST_TIMEOUT_MS || "1800")
+);
+
+function buildFallbackLocalSovereignReadiness(): LocalSovereignReadiness {
+  if (localSovereignReadinessCache?.value) return localSovereignReadinessCache.value;
+  const namedTunnelDetected = hasDetectedNamedTunnel();
+  const blockers: string[] = [];
+  if (!namedTunnelDetected) blockers.push("named_tunnel_required");
+  blockers.push("local_bitcoin_node_required", "local_lnd_required", "local_commerce_service_required");
+  return {
+    namedTunnelDetected,
+    localBitcoinReady: false,
+    localLndReady: false,
+    localCommerceReady: false,
+    ready: false,
+    blockers
+  };
+}
+
+async function getLocalSovereignReadinessFast(): Promise<LocalSovereignReadiness> {
+  const fallback = buildFallbackLocalSovereignReadiness();
+  return withSoftTimeout(getLocalSovereignReadinessCached(), LOCAL_SOVEREIGN_READINESS_FAST_TIMEOUT_MS, fallback);
+}
+
 async function resolveCommerceAuthorityForUser(
   userId: string,
   input?: {
@@ -15796,7 +15822,7 @@ app.get("/api/node/mode", { preHandler: requireAuth }, async (req: any, reply: a
   const userId = (req.user as JwtUser).sub;
   const modeStatus = getNodeModeStatus();
   const providerConnection = deriveProviderCommerceConnectionState();
-  const readiness = await getLocalSovereignReadinessCached();
+  const readiness = await getLocalSovereignReadinessFast();
   const authority = await resolveCommerceAuthorityForUser(userId, {
     providerConnection,
     sovereignReadiness: readiness

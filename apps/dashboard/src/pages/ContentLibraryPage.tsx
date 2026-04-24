@@ -173,6 +173,8 @@ type ContentLibraryPageProps = {
   capabilities?: CapabilitySet;
   capabilityReasons?: Record<string, string>;
   productTier?: "basic" | "advanced" | "lan";
+  publicStatusSnapshot?: any | null;
+  nodeModeSnapshot?: NodeModeSnapshot | null;
   currentUserEmail?: string | null;
   onOpenSplits?: (contentId: string) => void;
 };
@@ -414,7 +416,9 @@ export default function ContentLibraryPage({
   capabilities,
   capabilityReasons,
   currentUserEmail,
-  productTier
+  productTier,
+  publicStatusSnapshot,
+  nodeModeSnapshot: nodeModeSnapshotProp
 }: ContentLibraryPageProps) {
   const resolvedProductTier = productTier || "basic";
   const isBasicTier = resolvedProductTier === "basic";
@@ -568,7 +572,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [shareBusy, setShareBusy] = React.useState<Record<string, boolean>>({});
   const [shareP2PLink, setShareP2PLink] = React.useState<Record<string, string>>({});
   const [shareLinkByContent, setShareLinkByContent] = React.useState<Record<string, any | null>>({});
-  const [publicStatus, setPublicStatus] = React.useState<any | null>(null);
+  const [publicStatus, setPublicStatus] = React.useState<any | null>(publicStatusSnapshot || null);
   const [publicBusy, setPublicBusy] = React.useState(false);
   const [publicMsg, setPublicMsg] = React.useState<string | null>(null);
   const [publicAdvancedOpen, setPublicAdvancedOpen] = React.useState(false);
@@ -597,7 +601,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   const [publishMsg, setPublishMsg] = React.useState<Record<string, string>>({});
   const [networkPublishByContent, setNetworkPublishByContent] = React.useState<Record<string, NetworkPublishState | null>>({});
   const [pendingOpenContentId, setPendingOpenContentId] = React.useState<string | null>(null);
-  const [nodeModeSnapshot, setNodeModeSnapshot] = React.useState<NodeModeSnapshot | null>(null);
+  const [nodeModeSnapshot, setNodeModeSnapshot] = React.useState<NodeModeSnapshot | null>(nodeModeSnapshotProp || null);
   const [participationByContentId, setParticipationByContentId] = React.useState<Record<string, LibraryParticipation>>({});
   const loadRequestRef = React.useRef(0);
 
@@ -851,6 +855,12 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   }, []);
 
   React.useEffect(() => {
+    if (nodeModeSnapshotProp === undefined) return;
+    setNodeModeSnapshot(nodeModeSnapshotProp || null);
+  }, [nodeModeSnapshotProp]);
+
+  React.useEffect(() => {
+    if (nodeModeSnapshotProp !== undefined) return;
     const token = getToken();
     if (!token) return;
     let cancelled = false;
@@ -865,7 +875,7 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [nodeModeSnapshotProp]);
 
   React.useEffect(() => {
     const targets = items.filter((it) => expanded[it.id] && it.status === "published" && !networkPublishByContent[it.id]);
@@ -1012,18 +1022,20 @@ function readContentPublishPayload(payload: unknown): ContentPublishReceiptPaylo
   }
 
   React.useEffect(() => {
-    refreshPublicStatus();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!publicStatusSnapshot) return;
+    setPublicStatus((prev: any | null) => {
+      const incoming = publicStatusSnapshot || null;
+      if (!incoming) return prev;
+      if (!prev) return incoming;
+      return { ...prev, ...incoming };
+    });
+  }, [publicStatusSnapshot]);
 
   React.useEffect(() => {
-    const timer = setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      refreshPublicStatus();
-    }, 60000);
-    return () => clearInterval(timer);
+    if (publicStatusSnapshot) return;
+    refreshPublicStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [publicStatusSnapshot]);
 
   async function confirmPublicConsent() {
     try {

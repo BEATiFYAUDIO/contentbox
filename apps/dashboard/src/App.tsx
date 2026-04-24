@@ -61,18 +61,8 @@ type NodeModeSnapshot = {
   localSovereignReady?: boolean;
   modeReadiness?: {
     localLndReady?: boolean;
-  };
-};
-
-type LightningAdminSnapshot = {
-  configured: boolean;
-  runtime?: {
-    connected?: boolean;
-    canReceive?: boolean;
-    canSend?: boolean;
-    capabilityState?: string;
-    sendFailureReason?: string | null;
-    source?: string;
+    namedTunnelDetected?: boolean;
+    blockers?: string[];
   };
 };
 
@@ -219,6 +209,8 @@ export default function App() {
   const whoamiProbeEnabled = Boolean((import.meta as any).env?.VITE_ENABLE_WHOAMI);
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
+  const appBootStartedAtRef = useRef(typeof performance !== "undefined" ? performance.now() : Date.now());
+  const firstUsefulRenderLoggedRef = useRef(false);
   const [authNotice] = useState<string | null>(() => {
     try {
       return window.localStorage.getItem("contentbox.authNotice") || null;
@@ -243,13 +235,11 @@ export default function App() {
     }
   });
   const [publicStatus, setPublicStatus] = useState<any | null>(null);
-  const [diagnosticsStatus, setDiagnosticsStatus] = useState<any | null>(null);
   const [whoamiInfo, setWhoamiInfo] = useState<WhoamiInfo | null>(null);
   const [whoamiStatus, setWhoamiStatus] = useState<"idle" | "disabled" | "ok" | "error">(
     whoamiProbeEnabled ? "idle" : "disabled"
   );
   const [nodeModeSnapshot, setNodeModeSnapshot] = useState<NodeModeSnapshot | null>(null);
-  const [lightningAdminSnapshot, setLightningAdminSnapshot] = useState<LightningAdminSnapshot | null>(null);
   const appRefreshInFlightRef = useRef(false);
   const appRefreshLastAtRef = useRef(0);
   const [showAdvancedNav, setShowAdvancedNav] = useState<boolean>(() => {
@@ -271,15 +261,11 @@ export default function App() {
     }
     if (hasStoredPreference) return;
 
-    const inferredTier =
-      diagnosticsStatus?.productTier ||
-      identityDetail?.productTier ||
-      identityDetail?.nodeMode ||
-      null;
+    const inferredTier = identityDetail?.productTier || identityDetail?.nodeMode || null;
     if (inferredTier === "advanced" || inferredTier === "lan") {
       setShowAdvancedNav(true);
     }
-  }, [diagnosticsStatus?.productTier, identityDetail?.nodeMode, identityDetail?.productTier]);
+  }, [identityDetail?.nodeMode, identityDetail?.productTier]);
 
   useEffect(() => {
     const hash = window.location.hash || "";
@@ -342,11 +328,11 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (loading) return;
     const token = getToken();
     if (!token) {
       setIdentityDetail(null);
       setPublicStatus(null);
-      setLightningAdminSnapshot(null);
       return;
     }
     let alive = true;
@@ -361,10 +347,9 @@ export default function App() {
       appRefreshInFlightRef.current = true;
       appRefreshLastAtRef.current = now;
       try {
-        const [identityRes, modeRes, diagnosticsRes, runtimePublicRes] = await Promise.allSettled([
+        const modePromise = api<NodeModeSnapshot>("/api/node/mode", "GET");
+        const [identityRes, runtimePublicRes] = await Promise.allSettled([
           fetchIdentityDetail(),
-          api<NodeModeSnapshot>("/api/node/mode", "GET"),
-          api<any>("/api/diagnostics/status", "GET"),
           api<any>("/api/public/status", "GET")
         ]);
 
@@ -377,44 +362,28 @@ export default function App() {
           } catch {}
         }
 
-        let canUseLightningAdmin = false;
-        if (modeRes.status === "fulfilled") {
-          const modeSnapshot = modeRes.value || null;
-          setNodeModeSnapshot(modeSnapshot);
-          canUseLightningAdmin = Boolean(modeSnapshot?.commerceAuthorityAvailable);
-        } else {
-          setNodeModeSnapshot(null);
-        }
+        modePromise
+          .then((modeSnapshot) => {
+            if (!alive) return;
+            setNodeModeSnapshot(modeSnapshot || null);
+          })
+          .catch(() => {
+            if (!alive) return;
+            setNodeModeSnapshot(null);
+          });
 
-        const diagnosticsPayload = diagnosticsRes.status === "fulfilled" ? diagnosticsRes.value || null : null;
         const runtimePublicPayload = runtimePublicRes.status === "fulfilled" ? runtimePublicRes.value || null : null;
-        setDiagnosticsStatus(diagnosticsPayload);
-        if (diagnosticsPayload || runtimePublicPayload) {
-          const diagnosticsPublic = diagnosticsPayload?.publicStatus || null;
+        if (runtimePublicPayload) {
           setPublicStatus({
-            ...diagnosticsPublic,
             ...runtimePublicPayload,
             url:
               runtimePublicPayload?.canonicalOrigin ||
               runtimePublicPayload?.publicOrigin ||
-              diagnosticsPublic?.url ||
+              runtimePublicPayload?.url ||
               null
           });
         } else {
           setPublicStatus(null);
-        }
-
-        if (canUseLightningAdmin) {
-          try {
-            const ln = await api<LightningAdminSnapshot>("/api/admin/lightning", "GET");
-            if (!alive) return;
-            setLightningAdminSnapshot(ln || null);
-          } catch {
-            if (!alive) return;
-            setLightningAdminSnapshot(null);
-          }
-        } else if (alive) {
-          setLightningAdminSnapshot(null);
         }
       } finally {
         appRefreshInFlightRef.current = false;
@@ -434,7 +403,20 @@ export default function App() {
       window.clearInterval(t);
       window.removeEventListener("focus", onFocus);
     };
-  }, [me?.id]);
+  }, [me?.id, loading]);
+
+  useEffect(() => {
+    if (loading || firstUsefulRenderLoggedRef.current) return;
+    firstUsefulRenderLoggedRef.current = true;
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const elapsedMs = Math.max(0, now - appBootStartedAtRef.current);
+    // eslint-disable-next-line no-console
+    console.info("[perf] app.first_useful_render", {
+      elapsedMs: Number(elapsedMs.toFixed(1)),
+      authenticated: Boolean(me),
+      page
+    });
+  }, [loading, me, page]);
 
   useEffect(() => {
     if (!authNotice) return;
@@ -565,7 +547,6 @@ export default function App() {
     multi_user: "Feature locked in this mode."
   };
   const productTier =
-    diagnosticsStatus?.productTier ||
     identityDetail?.productTier ||
     (nodeMode === "advanced" ? "advanced" : nodeMode === "lan" ? "lan" : "basic");
   const capabilities = identityDetail?.capabilities || {
@@ -590,12 +571,7 @@ export default function App() {
   const commerceStatusResolved = nodeModeSnapshot != null;
   const commerceEnabled = Boolean(nodeModeSnapshot?.commerceAuthorityAvailable);
   const requireLocalLightning = nodeMode === "lan";
-  const localLightningDetected = Boolean(
-    nodeModeSnapshot?.modeReadiness?.localLndReady ||
-      lightningAdminSnapshot?.runtime?.canReceive ||
-      lightningAdminSnapshot?.runtime?.canSend ||
-      lightningAdminSnapshot?.configured
-  );
+  const localLightningDetected = Boolean(nodeModeSnapshot?.modeReadiness?.localLndReady);
   const commerceLockedReason = "Connect a commerce provider or run a sovereign node to unlock this.";
   const isCommerceLockedPage =
     commerceStatusResolved &&
@@ -702,8 +678,7 @@ export default function App() {
   const isOperatorPage = page === "config" || page === "diagnostics" || page === "provider-console";
   const tunnelActive = publicStatus?.status === "online";
   const identityVerified = identityDetail?.level === "PERSISTENT";
-  const lightningConfigured =
-    (lightningAdminSnapshot?.runtime?.canReceive || lightningAdminSnapshot?.runtime?.canSend || lightningAdminSnapshot?.configured) ?? null;
+  const lightningConfigured = nodeModeSnapshot?.modeReadiness?.localLndReady ?? null;
 
   function goToNodeLightning() {
     if (!localLightningDetected) {
@@ -1101,7 +1076,7 @@ export default function App() {
                       {advancedInactive ? " (inactive)" : ""}
                     </span>
                     <span className="text-neutral-500">•</span>
-                    <span>Payments: {diagnosticsStatus?.paymentsMode || identityDetail?.paymentsMode || (productTier === "advanced" || productTier === "lan" ? "node" : "wallet")}</span>
+                    <span>Payments: {identityDetail?.paymentsMode || (productTier === "advanced" || productTier === "lan" ? "node" : "wallet")}</span>
                     <span className="text-neutral-500">•</span>
                     <span>Storage: {identityDetail?.storage || "unknown"}</span>
                     <span className="text-neutral-500">•</span>
@@ -1303,6 +1278,8 @@ export default function App() {
                   capabilities={capabilities}
                   capabilityReasons={capabilityReasons}
                   productTier={productTier}
+                  publicStatusSnapshot={publicStatus}
+                  nodeModeSnapshot={nodeModeSnapshot}
                   currentUserEmail={me?.email || null}
                   onOpenSplits={(contentId) => {
                     window.history.pushState({}, "", `/content/${encodeURIComponent(contentId)}/splits`);
