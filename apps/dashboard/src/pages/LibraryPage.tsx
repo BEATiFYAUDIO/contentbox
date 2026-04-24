@@ -657,20 +657,38 @@ export default function LibraryPage() {
         for (const item of combined) {
           const contentId = String(item.id || "").trim();
           const participation = participationByContentId.get(contentId) || null;
+          const appearsBecause = new Set(
+            (Array.isArray(item.appearsBecause) ? item.appearsBecause : [])
+              .map((value) => String(value || "").trim().toLowerCase())
+              .filter(Boolean)
+          );
+          const hasParticipantReason =
+            appearsBecause.has("split_participant") ||
+            appearsBecause.has("shared_with_me") ||
+            appearsBecause.has("remote_mirror");
+          const explicitOwnedReason = appearsBecause.has("owned");
+          const normalizedAccess: LibraryItem["libraryAccess"] =
+            hasParticipantReason && !explicitOwnedReason
+              ? "participant"
+              : (item.libraryAccess as LibraryItem["libraryAccess"]);
+          const normalizedItemForEligibility: LibraryItem = {
+            ...item,
+            libraryAccess: normalizedAccess
+          };
           const relation: LibraryRelation =
-            item.libraryAccess === "owned"
+            normalizedAccess === "owned"
               ? "owner"
-              : item.libraryAccess === "purchased"
+              : normalizedAccess === "purchased"
                 ? "buyer"
-                : item.libraryAccess === "participant" || item.libraryAccess === "shared"
+                : normalizedAccess === "participant" || normalizedAccess === "shared"
                   ? "participant"
-                  : item.libraryAccess === "preview"
+                  : normalizedAccess === "preview"
                     ? "preview"
                     : "unknown";
-          const activeVisibility = isActiveLibraryVisible(item, relation, participation);
-          const entitlementVisibility = isEntitlementHistoryVisible(item, relation, participation);
+          const activeVisibility = isActiveLibraryVisible(normalizedItemForEligibility, relation, participation);
+          const entitlementVisibility = isEntitlementHistoryVisible(normalizedItemForEligibility, relation, participation);
           const decision = classifyLibraryEligibility({
-            item,
+            item: normalizedItemForEligibility,
             participation
           });
           logLibraryEligibilityDecision({
@@ -699,18 +717,17 @@ export default function LibraryPage() {
           if (!decision.included) continue;
           const section = decision.section as Exclude<LibrarySection, "excluded">;
           const normalizedItem: LibraryItem = {
-            ...item,
+            ...normalizedItemForEligibility,
             libraryAccess: section
           };
           const contentType = mapContentType(normalizedItem.type);
           const derivativeByType = ["derivative", "remix", "mashup"].includes(String(normalizedItem.type || "").toLowerCase());
-          const appearsBecause = new Set(
-            (Array.isArray(normalizedItem.appearsBecause) ? normalizedItem.appearsBecause : [])
-              .map((value) => String(value || "").trim().toLowerCase())
-              .filter(Boolean)
-          );
           const viewerOwnsItem = section === "owned" || appearsBecause.has("owned");
           const viewerParticipatesInSplit = section === "participant" || appearsBecause.has("split_participant");
+          const explicitSharedMembership =
+            appearsBecause.has("split_participant") ||
+            appearsBecause.has("shared_with_me") ||
+            appearsBecause.has("remote_mirror");
           const isDerivativeChild =
             derivativeByType ||
             derivativeChildContentIds.has(contentId) ||
@@ -720,7 +737,8 @@ export default function LibraryPage() {
             derivativeParentContentIds.has(contentId) ||
             appearsBecause.has("derivative_parent");
           const derivativeLinked = isDerivativeChild || isDerivativeParent;
-          const hasSharedSplitMembership = viewerParticipatesInSplit && !viewerOwnsItem;
+          const hasSharedSplitMembership =
+            explicitSharedMembership || (viewerParticipatesInSplit && !viewerOwnsItem);
           const relationshipTagSet = new Set<LibraryRelationshipFilter>();
           if (section === "owned") relationshipTagSet.add("authored_work");
           if (hasSharedSplitMembership) relationshipTagSet.add("shared_splits");
@@ -1091,12 +1109,14 @@ function songCoverUrl(
   itemCoverUrl?: string | null,
   preferredOrigin?: string | null
 ): string | null {
+  const coverObjectKey = String(preview?.manifest?.cover || "").trim();
+  if (coverObjectKey) {
+    const root = String(preferredOrigin || apiBase || "").trim().replace(/\/+$/, "");
+    return `${root}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
+  }
   const preferred = normalizeAssetUrl(apiBase, String(itemCoverUrl || "").trim(), preferredOrigin);
   if (preferred) return preferred;
-  const coverObjectKey = String(preview?.manifest?.cover || "").trim();
-  if (!coverObjectKey) return null;
-  const root = String(preferredOrigin || apiBase || "").trim().replace(/\/+$/, "");
-  return `${root}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
+  return null;
 }
 
   return (
@@ -1199,40 +1219,46 @@ function songCoverUrl(
                       String(preview?.manifest?.sha256 || "").trim() ||
                       String(it.updatedAt || "").trim() ||
                       String(it.createdAt || "").trim();
+                    const remoteAssetOrigin =
+                      (participationInfo?.kind === "remote"
+                        ? participationInfo.remoteOrigin
+                        : null) || asNonEmptyString(it.remoteOrigin) || null;
                     const participantCoverFallback =
-                      entry.relation === "participant"
-                        ? buildPublicAssetUrl(
-                            it.id,
-                            "cover",
-                            participationInfo?.kind === "remote" ? participationInfo.remoteOrigin : null
-                          )
+                      entry.relation === "participant" && remoteAssetOrigin
+                        ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin)
                         : null;
-                    const cardAssetOrigin =
-                      entry.relation === "participant"
-                        ? (participationInfo?.kind === "remote"
-                            ? participationInfo.remoteOrigin
-                            : (asNonEmptyString(it.remoteOrigin) || null))
-                        : null;
+                    const remoteCoverFallback = remoteAssetOrigin
+                      ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin)
+                      : null;
+                    const cardAssetOrigin = remoteAssetOrigin;
                     const participantPreviewFallback =
                       entry.relation === "participant"
                         ? buildPublicAssetUrl(
                             it.id,
                             "preview-file",
-                            participationInfo?.kind === "remote" ? participationInfo.remoteOrigin : null
+                            remoteAssetOrigin
                           )
                         : null;
                     const participantVideoPreviewFallback =
                       entry.relation === "participant" && isVideo ? participantPreviewFallback : null;
+                    const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
                     const rawCoverUrl = isAudio
-                      ? songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin) || participantCoverFallback
-                      : normalizeAssetUrl(apiBase, it.coverUrl || null, cardAssetOrigin) || participantCoverFallback;
+                      ? prioritizedParticipantCover ||
+                        songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin) ||
+                        remoteCoverFallback ||
+                        participantCoverFallback
+                      : prioritizedParticipantCover ||
+                        normalizeAssetUrl(apiBase, it.coverUrl || null, cardAssetOrigin) ||
+                        remoteCoverFallback ||
+                        participantCoverFallback;
                     const coverUrl =
                       rawCoverUrl && version
                         ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
                         : rawCoverUrl;
+                    const coverRenderable = Boolean(coverUrl && !coverLoadErrorById[it.id]);
                     const isOpen = previewOpenById[it.id] ?? true;
                     const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);
-                    const hasMediaCard = Boolean(coverUrl || hasInlineImagePreview || participantVideoPreviewFallback);
+                    const hasMediaCard = Boolean(coverRenderable || hasInlineImagePreview || participantVideoPreviewFallback);
                     const access = ACCESS_BADGE[(it.libraryAccess || "preview") as NonNullable<LibraryItem["libraryAccess"]>] || ACCESS_BADGE.preview;
                     const entitlement = entitlementByContentId[it.id] || null;
                     const accessModeLabel =
@@ -1316,18 +1342,14 @@ function songCoverUrl(
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
                         {hasMediaCard ? (
                           <div className="w-full aspect-video rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
-                            {coverUrl ? (
+                            {coverRenderable ? (
                               <img
                                 className="w-full h-full object-contain object-center bg-black"
-                                src={coverUrl}
+                                src={coverUrl || undefined}
                                 alt={`${it.title || "Content"} cover`}
                                 loading="lazy"
-                                onError={(e) => {
+                                onError={() => {
                                   setCoverLoadErrorById((m) => ({ ...m, [it.id]: true }));
-                                  const el = e.currentTarget;
-                                  const parent = el.parentElement;
-                                  if (!parent) return;
-                                  parent.style.display = "none";
                                 }}
                                 onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
                               />
@@ -1528,13 +1550,21 @@ function songCoverUrl(
                                   );
                                 }
                                 if (effectivePreviewUrl && isAudio) {
-                                  return <audio className="w-full" controls src={effectivePreviewUrl} />;
-                                }
-                                if (effectivePreviewUrl) {
                                   return (
-                                    <a className="text-xs text-emerald-300 underline" href={effectivePreviewUrl} target="_blank" rel="noreferrer">
-                                      Open preview
-                                    </a>
+                                    <div className="w-full rounded-md border border-neutral-800 bg-black/60 p-2">
+                                      <audio className="w-full" controls src={effectivePreviewUrl} />
+                                    </div>
+                                  );
+                                }
+                                if (effectivePreviewUrl && isImage) {
+                                  return (
+                                    <div className="w-full aspect-video rounded-md border border-neutral-800 bg-black overflow-hidden flex items-center justify-center">
+                                      <img
+                                        className="w-full h-full object-contain object-center bg-black"
+                                        src={effectivePreviewUrl}
+                                        alt={it.title || "Preview"}
+                                      />
+                                    </div>
                                   );
                                 }
                                 return <div className="text-xs text-neutral-500">No preview available.</div>;
