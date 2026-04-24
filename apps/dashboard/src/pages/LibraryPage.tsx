@@ -33,7 +33,7 @@ type LibraryItem = {
   updatedAt?: string | null;
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
-  libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
+  libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant" | "shared";
   appearsBecause?: string[] | null;
   coverUrl?: string | null;
   attributionUrl?: string | null;
@@ -208,6 +208,7 @@ const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: s
   purchased: { label: "Purchased", cls: "border-sky-600/40 bg-sky-500/10 text-sky-300" },
   preview: { label: "Preview only", cls: "border-amber-600/40 bg-amber-500/10 text-amber-300" },
   local: { label: "Local", cls: "border-neutral-700 bg-neutral-700/20 text-neutral-300" },
+  shared: { label: "Shared", cls: "border-fuchsia-600/40 bg-fuchsia-500/10 text-fuchsia-300" },
   participant: { label: "Shared", cls: "border-fuchsia-600/40 bg-fuchsia-500/10 text-fuchsia-300" }
 };
 
@@ -661,7 +662,7 @@ export default function LibraryPage() {
               ? "owner"
               : item.libraryAccess === "purchased"
                 ? "buyer"
-                : item.libraryAccess === "participant"
+                : item.libraryAccess === "participant" || item.libraryAccess === "shared"
                   ? "participant"
                   : item.libraryAccess === "preview"
                     ? "preview"
@@ -879,7 +880,7 @@ export default function LibraryPage() {
     owned: items.filter((e) => e.item.libraryAccess === "owned"),
     purchased: items.filter((e) => e.item.libraryAccess === "purchased"),
     preview: items.filter((e) => e.item.libraryAccess === "preview"),
-    participant: items.filter((e) => e.item.libraryAccess === "participant")
+    participant: items.filter((e) => e.item.libraryAccess === "participant" || e.item.libraryAccess === "shared")
   };
 
   async function loadPreview(contentId: string) {

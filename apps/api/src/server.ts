@@ -20805,9 +20805,19 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   } as const;
 
   const items: any[] = [];
+  const matchesRequestedType = (contentType: unknown): boolean => {
+    if (requestedType === "all") return true;
+    const normalized = asString(contentType || "").trim().toLowerCase();
+    if (requestedType === "songs") return normalized === "song";
+    if (requestedType === "videos") return normalized === "video";
+    if (requestedType === "books") return normalized === "book";
+    if (requestedType === "files") return normalized === "file";
+    return true;
+  };
   const accessPriority = (access: unknown) => {
     const normalized = asString(access || "").trim().toLowerCase();
     if (normalized === "owned") return 5;
+    if (normalized === "shared") return 4;
     if (normalized === "participant") return 4;
     if (normalized === "purchased") return 3;
     if (normalized === "preview") return 2;
@@ -20816,7 +20826,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   };
   const appendLibraryItem = (
     item: any,
-    libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant",
+    libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant" | "shared",
     reason: string
   ) => {
     items.push({
@@ -20860,7 +20870,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         ].filter((value): value is string => Boolean(value))
       )
     );
-    const [owned, purchased, publicPreview, participantLinks] = await prisma.$transaction([
+    const [owned, purchased, publicPreview, participantLinks, mirroredRemoteInvites] = await prisma.$transaction([
       prisma.contentItem.findMany({
         where: {
           ownerUserId: userId,
@@ -20923,6 +20933,28 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         },
         select: {
           splitVersion: { select: { contentId: true } }
+        }
+      }),
+      prisma.remoteInvite.findMany({
+        where: {
+          userId,
+          contentId: { not: null },
+          contentDeletedAt: null
+        },
+        orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
+        select: {
+          remoteOrigin: true,
+          inviteUrl: true,
+          contentId: true,
+          contentTitle: true,
+          contentType: true,
+          contentStatus: true,
+          acceptedAt: true,
+          status: true,
+          expiresAt: true,
+          revokedAt: true,
+          tombstonedAt: true,
+          createdAt: true
         }
       })
     ]);
@@ -20999,6 +21031,46 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       }
     }
 
+    const mirroredSharedRows = mirroredRemoteInvites
+      .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
+      .filter((inv: any) => {
+        const status = asString(inv?.contentStatus || "").trim().toLowerCase();
+        if (!status) return true;
+        return status === "published";
+      })
+      .filter((inv: any) => matchesRequestedType(inv?.contentType))
+      .map((inv: any) => {
+        const contentId = asString(inv?.contentId || "").trim();
+        const remoteOrigin = pickShareableOrigin(inv?.remoteOrigin || null, inv?.inviteUrl || null);
+        return {
+          id: contentId,
+          title: asString(inv?.contentTitle || "").trim() || "Untitled",
+          description: remoteOrigin ? buildRemoteDescription(remoteOrigin) : null,
+          type: asString(inv?.contentType || "").trim() || "file",
+          status: "published",
+          previousVersionContentId: null,
+          previousVersion: null,
+          featureOnProfile: false,
+          storefrontStatus: "UNLISTED",
+          deliveryMode: null,
+          priceSats: null,
+          createdAt: inv?.acceptedAt || inv?.createdAt || new Date().toISOString(),
+          repoPath: null,
+          deletedAt: null,
+          ownerUserId: null,
+          owner: null,
+          manifest: null,
+          _count: { files: 0, entitlements: 0 },
+          remoteOrigin
+        };
+      })
+      .filter((row: any) => Boolean(asString(row?.id || "").trim()));
+    for (const row of mirroredSharedRows) {
+      appendLibraryItem(row, "shared", "split_participant");
+      appendLibraryItem(row, "shared", "shared_with_me");
+      appendLibraryItem(row, "shared", "remote_mirror");
+    }
+
     // Keep preview-only rows last so attributed participant rows win de-dupe.
     for (const i of publicPreview) appendLibraryItem(i, "preview", "preview_access");
   }
@@ -21031,7 +21103,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 
   return unique.map((i: any) => {
     const description = asString(i?.description || "").trim() || null;
-    const explicitRemoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(description));
+    const explicitRemoteOrigin = pickShareableOrigin(
+      asString(i?.remoteOrigin || "").trim() || null,
+      getRemoteOriginFromDescription(description)
+    );
     const localOrigin = normalizeOrigin(APP_BASE_URL) || asString(APP_BASE_URL || "").trim().replace(/\/+$/, "") || null;
     const preferredPublicOrigin = explicitRemoteOrigin || localOrigin;
     const canonicalPublicOrigin = preferredPublicOrigin ? preferredPublicOrigin.replace(/\/+$/, "") : null;
