@@ -1423,36 +1423,12 @@ let cloudflaredStatusCache:
       value: { available: boolean; managedPath: string | null; version: string | null };
     }
   | null = null;
-let cloudflaredStatusRefreshScheduled = false;
-function refreshCloudflaredStatusInBackground() {
-  if (cloudflaredStatusRefreshScheduled) return;
-  cloudflaredStatusRefreshScheduled = true;
-  setTimeout(() => {
-    try {
-      const resolved = resolveCloudflaredCmd();
-      const next = !resolved
-        ? { available: false, managedPath: null, version: null }
-        : {
-            available: true,
-            managedPath: resolved === "cloudflared" ? null : resolved,
-            version: readCloudflaredVersionSync(resolved)
-          };
-      cloudflaredStatusCache = {
-        expiresAt: Date.now() + CLOUDFLARED_STATUS_CACHE_TTL_MS,
-        staleExpiresAt: Date.now() + CLOUDFLARED_STATUS_STALE_TTL_MS,
-        value: next
-      };
-    } catch {}
-    cloudflaredStatusRefreshScheduled = false;
-  }, 0);
-}
 function getCloudflaredStatus(): { available: boolean; managedPath: string | null; version: string | null } {
   const now = Date.now();
   if (cloudflaredStatusCache && cloudflaredStatusCache.expiresAt > now) {
     return cloudflaredStatusCache.value;
   }
   if (cloudflaredStatusCache && cloudflaredStatusCache.staleExpiresAt > now) {
-    refreshCloudflaredStatusInBackground();
     return cloudflaredStatusCache.value;
   }
   const resolved = resolveCloudflaredCmdFast();
@@ -1468,7 +1444,6 @@ function getCloudflaredStatus(): { available: boolean; managedPath: string | nul
     staleExpiresAt: now + CLOUDFLARED_STATUS_STALE_TTL_MS,
     value
   };
-  refreshCloudflaredStatusInBackground();
   return value;
 }
 
@@ -9301,7 +9276,6 @@ let tunnelControlModeCache:
       value: ReturnType<typeof detectTunnelControlMode>;
     }
   | null = null;
-let tunnelControlModeRefreshScheduled = false;
 function getTunnelControlModeFallback(): ReturnType<typeof detectTunnelControlMode> {
   const serviceScriptPath = "/etc/init.d/cloudflared";
   const localConfigPath =
@@ -9320,32 +9294,15 @@ function getTunnelControlModeFallback(): ReturnType<typeof detectTunnelControlMo
     activeAppManagedTokenProcess: false
   };
 }
-function refreshTunnelControlModeInBackground() {
-  if (tunnelControlModeRefreshScheduled) return;
-  tunnelControlModeRefreshScheduled = true;
-  setTimeout(() => {
-    try {
-      const value = detectTunnelControlMode();
-      tunnelControlModeCache = {
-        expiresAt: Date.now() + TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
-        staleExpiresAt: Date.now() + TUNNEL_CONTROL_MODE_STALE_TTL_MS,
-        value
-      };
-    } catch {}
-    tunnelControlModeRefreshScheduled = false;
-  }, 0);
-}
 function getTunnelControlModeCached(force = false): ReturnType<typeof detectTunnelControlMode> {
   const now = Date.now();
   if (!force && tunnelControlModeCache && tunnelControlModeCache.expiresAt > now) {
     return tunnelControlModeCache.value;
   }
   if (!force && tunnelControlModeCache && tunnelControlModeCache.staleExpiresAt > now) {
-    refreshTunnelControlModeInBackground();
     return tunnelControlModeCache.value;
   }
   if (!force) {
-    refreshTunnelControlModeInBackground();
     return tunnelControlModeCache?.value || getTunnelControlModeFallback();
   }
   const value = detectTunnelControlMode();
@@ -9818,6 +9775,7 @@ async function warmStartupRuntimeCaches() {
   const startedAtMs = Date.now();
   const tasks: Array<Promise<unknown>> = [
     Promise.resolve().then(() => getPublicStatusCached(true)),
+    Promise.resolve().then(() => getTunnelControlModeCached(true)),
     Promise.resolve().then(() => getCapabilityContextCached(true)),
     getLocalSovereignReadinessCached(true),
     getCachedCreatorSignalNodeDetails(),
