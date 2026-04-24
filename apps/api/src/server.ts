@@ -563,6 +563,35 @@ async function withSoftTimeout<T>(work: Promise<T>, timeoutMs: number, fallback:
   }
 }
 
+async function withSoftTimeoutKeepRunning<T>(
+  workFactory: () => Promise<T>,
+  timeoutMs: number,
+  fallback: T,
+  onSuccess?: (value: T) => void
+): Promise<T> {
+  const safeTimeoutMs = Math.max(50, Math.floor(Number(timeoutMs || 0)));
+  let timer: NodeJS.Timeout | null = null;
+  const work = Promise.resolve()
+    .then(() => workFactory())
+    .then((value) => {
+      try {
+        onSuccess?.(value);
+      } catch {}
+      return value;
+    })
+    .catch(() => fallback);
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), safeTimeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function lndHealthCheck() {
   const cfg = await getStoredLndConfig(prisma).catch(() => null);
   if (!cfg) {
@@ -24790,6 +24819,50 @@ const PROFILE_RUNTIME_STALE_TTL_MS = Math.max(
   PROFILE_RUNTIME_CACHE_TTL_MS,
   Number(process.env.PROFILE_RUNTIME_STALE_TTL_MS || "60000")
 );
+const PROFILE_PUBLIC_RENDER_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.PROFILE_PUBLIC_RENDER_CACHE_TTL_MS || "45000")
+);
+const PROFILE_CORE_STEP_TIMEOUT_MS = Math.max(
+  150,
+  Number(process.env.PROFILE_CORE_STEP_TIMEOUT_MS || "900")
+);
+const PROFILE_REMOTE_ENRICHMENT_BUDGET_MS = Math.max(
+  100,
+  Number(process.env.PROFILE_REMOTE_ENRICHMENT_BUDGET_MS || "800")
+);
+const PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS = Math.max(
+  150,
+  Number(process.env.PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS || "450")
+);
+const PROFILE_REMOTE_ACCOUNTING_FAST_TIMEOUT_MS = Math.max(
+  50,
+  Number(process.env.PROFILE_REMOTE_ACCOUNTING_FAST_TIMEOUT_MS || "120")
+);
+type PublicWellKnownPayload = {
+  nodeUrl: string;
+  version: string;
+  publicKeyPem?: string;
+  publicKeyPemSha256?: string;
+};
+type TimedCacheEntry<T> = { expiresAt: number; value: T };
+const profilePublicProofsCache = new Map<string, TimedCacheEntry<any[]>>();
+const profilePublicFeaturedCache = new Map<string, TimedCacheEntry<any[]>>();
+const profilePublicWellKnownCache = new Map<string, TimedCacheEntry<PublicWellKnownPayload>>();
+const profilePublicRemoteParticipationsCache = new Map<string, TimedCacheEntry<any[]>>();
+const profilePublicLockedParticipationsCache = new Map<string, TimedCacheEntry<ParticipationProjection[]>>();
+function getFreshTimedCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string): T | null {
+  const hit = cache.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) return null;
+  return hit.value;
+}
+function setTimedCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string, value: T): void {
+  cache.set(key, {
+    expiresAt: Date.now() + PROFILE_PUBLIC_RENDER_CACHE_TTL_MS,
+    value
+  });
+}
 let creatorSignalNodeDetailsCache:
   | { expiresAt: number; staleExpiresAt: number; value: CreatorSignalNodeDetails }
   | null = null;
@@ -25431,6 +25504,87 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   if (!user) return notFound(reply, "Not found");
 
   const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
+  const maybeCachedProofs = getFreshTimedCache(profilePublicProofsCache, user.id);
+  const cachedProofs = maybeCachedProofs || [];
+  const maybeCachedFeatured = getFreshTimedCache(profilePublicFeaturedCache, user.id);
+  const cachedFeatured = maybeCachedFeatured || [];
+  const maybeCachedLockedParticipations = getFreshTimedCache(profilePublicLockedParticipationsCache, user.id);
+  const cachedLockedParticipations = maybeCachedLockedParticipations || [];
+  const wfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
+  const wfProtocol = wfProto === "http" || wfProto === "https" ? wfProto : "https";
+  const wfHost = getPublicHostnameFromReq(req);
+  const wkCacheKey = `${wfProtocol}://${wfHost || "hostless"}|${asString(req?.headers?.host || "").trim().toLowerCase()}`;
+  const maybeCachedWellKnown = getFreshTimedCache(profilePublicWellKnownCache, wkCacheKey);
+  const cachedWellKnown = maybeCachedWellKnown || null;
+  const wellKnownFallbackNodeUrl =
+    normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.PUBLIC_ORIGIN) ||
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN) ||
+    (wfHost ? `${wfProtocol}://${wfHost}` : null) ||
+    "https://contentbox.local";
+  const wellKnownFallback: PublicWellKnownPayload = cachedWellKnown || {
+    nodeUrl: wellKnownFallbackNodeUrl,
+    version: "1"
+  };
+  const refreshProofsInBackground = () => {
+    void withSoftTimeoutKeepRunning(
+      () =>
+        prisma.proofRecord.findMany({
+          where: {
+            userId: user.id,
+            status: "verified",
+            revokedAt: null
+          },
+          orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+          select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
+        }),
+      PROFILE_CORE_STEP_TIMEOUT_MS,
+      cachedProofs,
+      (value) => setTimedCache(profilePublicProofsCache, user.id, value as any[])
+    );
+  };
+  const refreshFeaturedInBackground = () => {
+    void withSoftTimeoutKeepRunning(
+      () =>
+        prisma.contentItem.findMany({
+          where: {
+            ownerUserId: user.id,
+            status: "published",
+            deletedAt: null,
+            featureOnProfile: true
+          },
+          orderBy: { createdAt: "desc" },
+          take: 12,
+          select: {
+            id: true,
+            title: true,
+            type: true,
+            priceSats: true,
+            deliveryMode: true,
+            manifest: { select: { json: true } }
+          }
+        }),
+      PROFILE_CORE_STEP_TIMEOUT_MS,
+      cachedFeatured,
+      (value) => setTimedCache(profilePublicFeaturedCache, user.id, value as any[])
+    );
+  };
+  const refreshWellKnownInBackground = () => {
+    void withSoftTimeoutKeepRunning(
+      () => buildWellKnownContentboxPayload(req),
+      PROFILE_CORE_STEP_TIMEOUT_MS,
+      wellKnownFallback,
+      (value) => setTimedCache(profilePublicWellKnownCache, wkCacheKey, value as PublicWellKnownPayload)
+    );
+  };
+  const refreshLockedParticipationsInBackground = () => {
+    void withSoftTimeoutKeepRunning(
+      () => listLockedParticipationsForUser(user.id),
+      1200,
+      cachedLockedParticipations,
+      (value) => setTimedCache(profilePublicLockedParticipationsCache, user.id, value as ParticipationProjection[])
+    );
+  };
   const creatorSignalNodeDetailsFallback: CreatorSignalNodeDetails = {
     hasPublicTunnel: false,
     hasLightningConfigured: false,
@@ -25447,38 +25601,64 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   ] = await Promise.all([
     timedProfileStep(
       "proofs",
-      prisma.proofRecord.findMany({
-      where: {
-        userId: user.id,
-        status: "verified",
-        revokedAt: null
-      },
-      orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
-      select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
-    })
+      maybeCachedProofs
+        ? (refreshProofsInBackground(), Promise.resolve(cachedProofs))
+        : withSoftTimeoutKeepRunning(
+            () =>
+              prisma.proofRecord.findMany({
+                where: {
+                  userId: user.id,
+                  status: "verified",
+                  revokedAt: null
+                },
+                orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
+                select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
+              }),
+            PROFILE_CORE_STEP_TIMEOUT_MS,
+            cachedProofs,
+            (value) => setTimedCache(profilePublicProofsCache, user.id, value as any[])
+          )
     ),
     timedProfileStep(
       "featured_content",
-      prisma.contentItem.findMany({
-      where: {
-        ownerUserId: user.id,
-        status: "published",
-        deletedAt: null,
-        featureOnProfile: true
-      },
-      orderBy: { createdAt: "desc" },
-      take: 12,
-      select: {
-        id: true,
-        title: true,
-        type: true,
-        priceSats: true,
-        deliveryMode: true,
-        manifest: { select: { json: true } }
-      }
-    })
+      maybeCachedFeatured
+        ? (refreshFeaturedInBackground(), Promise.resolve(cachedFeatured))
+        : withSoftTimeoutKeepRunning(
+            () =>
+              prisma.contentItem.findMany({
+                where: {
+                  ownerUserId: user.id,
+                  status: "published",
+                  deletedAt: null,
+                  featureOnProfile: true
+                },
+                orderBy: { createdAt: "desc" },
+                take: 12,
+                select: {
+                  id: true,
+                  title: true,
+                  type: true,
+                  priceSats: true,
+                  deliveryMode: true,
+                  manifest: { select: { json: true } }
+                }
+              }),
+            PROFILE_CORE_STEP_TIMEOUT_MS,
+            cachedFeatured,
+            (value) => setTimedCache(profilePublicFeaturedCache, user.id, value as any[])
+          )
     ),
-    timedProfileStep("well_known", buildWellKnownContentboxPayload(req)),
+    timedProfileStep(
+      "well_known",
+      maybeCachedWellKnown
+        ? (refreshWellKnownInBackground(), Promise.resolve(wellKnownFallback))
+        : withSoftTimeoutKeepRunning(
+            () => buildWellKnownContentboxPayload(req),
+            PROFILE_CORE_STEP_TIMEOUT_MS,
+            wellKnownFallback,
+            (value) => setTimedCache(profilePublicWellKnownCache, wkCacheKey, value as PublicWellKnownPayload)
+          )
+    ),
     timedProfileStep(
       "creator_signal",
       withSoftTimeout(getCachedCreatorSignalNodeDetails(), 1200, creatorSignalNodeDetailsFallback)
@@ -25486,7 +25666,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     timedProfileStep("profile_mode", getCachedProfileServiceMode({ nonBlocking: true })),
     timedProfileStep(
       "locked_participations",
-      withSoftTimeout(listLockedParticipationsForUser(user.id), 1200, [] as ParticipationProjection[])
+      maybeCachedLockedParticipations
+        ? (refreshLockedParticipationsInBackground(), Promise.resolve(cachedLockedParticipations))
+        : withSoftTimeoutKeepRunning(
+            () => listLockedParticipationsForUser(user.id),
+            1200,
+            cachedLockedParticipations,
+            (value) => setTimedCache(profilePublicLockedParticipationsCache, user.id, value as ParticipationProjection[])
+          )
     )
   ]);
 
@@ -25685,10 +25872,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     return "";
   };
   const currentPublicOrigin = normalizePublicOriginBase(nodeUrl);
-  const elapsedProfileMs = Date.now() - profileStartMs;
-  if (elapsedProfileMs >= 600) {
-    app.log.warn({ reqId, handle: requested, durationMs: elapsedProfileMs }, "publicProfile.slow_total");
-  }
   const canonicalCommerceOrigin =
     resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin ||
     currentPublicOrigin;
@@ -25912,7 +26095,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
     .slice(0, 12);
   const highlightedRemoteParticipationIds = new Set(highlightedRemoteParticipationRecords.map((row) => row.remoteInviteId));
-  const highlightedRemoteParticipations = await (async () => {
+  const cachedRemoteParticipations = getFreshTimedCache(profilePublicRemoteParticipationsCache, user.id) || [];
+  const shouldAttemptRemoteEnrichment = Date.now() - profileStartMs < PROFILE_REMOTE_ENRICHMENT_BUDGET_MS;
+  const highlightedRemoteParticipations = shouldAttemptRemoteEnrichment
+    ? await timedProfileStep(
+        "remote_participations",
+        withSoftTimeoutKeepRunning(
+          async () => {
     const highlightedRows = highlightedRemoteParticipationIds.size
       ? await prisma.remoteInvite.findMany({
           where: {
@@ -25957,7 +26146,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         const hasUnscopedHighlight = selectedRecords.some((entry) => !asString(entry.contentId || "").trim());
         const token = extractInviteTokenFromUrl(row.inviteUrl || null);
         // Public profile should render fast; remote accounting enrichment is best-effort.
-        const accounting = token ? await fetchRemoteInviteAccountingFastForProfile(row.remoteOrigin, token) : null;
+        const accounting = token
+          ? await fetchRemoteInviteAccountingFastForProfile(
+              row.remoteOrigin,
+              token,
+              PROFILE_REMOTE_ACCOUNTING_FAST_TIMEOUT_MS
+            )
+          : null;
         const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
 
         if (selectedContentIds.length > 0) {
@@ -26032,11 +26227,64 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       unique.set(key, item);
     }
     return Array.from(unique.values()).slice(0, 12) as any[];
-  })();
+          },
+          PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS,
+          cachedRemoteParticipations,
+          (value) => setTimedCache(profilePublicRemoteParticipationsCache, user.id, value as any[])
+        )
+      )
+    : cachedRemoteParticipations;
+  const resolvedHighlightedRemoteParticipations =
+    highlightedRemoteParticipations.length > 0
+      ? highlightedRemoteParticipations
+      : highlightedRemoteParticipationRecords.length > 0
+        ? await timedProfileStep(
+            "remote_participations_minimal",
+            withSoftTimeout(
+              (async () => {
+                const ids = Array.from(
+                  new Set(
+                    highlightedRemoteParticipationRecords
+                      .map((row) => asString(row.remoteInviteId || "").trim())
+                      .filter(Boolean)
+                  )
+                );
+                if (ids.length === 0) return [] as any[];
+                const rows = await prisma.remoteInvite.findMany({
+                  where: { userId: user.id, id: { in: ids } },
+                  orderBy: [{ acceptedAt: "desc" }, { createdAt: "desc" }],
+                  take: 16
+                });
+                return rows
+                  .filter((row: any) => normalizeRemoteInviteStatusForList(row as any) === "accepted")
+                  .map((row: any) => {
+                    const contentId = asString(row.contentId || "").trim();
+                    if (!contentId) return null;
+                    const status = asString(row.contentStatus || "").trim().toLowerCase();
+                    const deletedAt = asString(row.contentDeletedAt || "").trim();
+                    if (status !== "published" || deletedAt) return null;
+                    return {
+                      ...row,
+                      parentContentId: null,
+                      contentId,
+                      contentTitle: asString(row.contentTitle || "").trim() || "Untitled",
+                      contentType: asString(row.contentType || "").trim() || "participation",
+                      derivativeParentTitle: null,
+                      derivativeRelation: null
+                    };
+                  })
+                  .filter(Boolean)
+                  .slice(0, 12) as any[];
+              })(),
+              250,
+              [] as any[]
+            )
+          )
+        : [];
   app.log.info(
     {
       userId: user.id,
-      highlightedCount: highlightedParticipations.length + highlightedRemoteParticipations.length
+      highlightedCount: highlightedParticipations.length + resolvedHighlightedRemoteParticipations.length
     },
     "participationProjection.profile_list"
   );
@@ -26078,7 +26326,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
   };
   const highlightedParticipationsHtml =
-    highlightedParticipations.length > 0 || highlightedRemoteParticipations.length > 0
+    highlightedParticipations.length > 0 || resolvedHighlightedRemoteParticipations.length > 0
       ? [
           ...highlightedParticipations.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
@@ -26120,7 +26368,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               </div>
             </article>`;
           }),
-          ...highlightedRemoteParticipations.map((item) => {
+          ...resolvedHighlightedRemoteParticipations.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.role || "participant"));
             const relation = asString((item as any).derivativeRelation || "").trim().toLowerCase();
@@ -26720,6 +26968,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 </body>
 </html>`;
 
+  const elapsedProfileMs = Date.now() - profileStartMs;
+  if (elapsedProfileMs >= 600) {
+    app.log.warn({ reqId, handle: requested, durationMs: elapsedProfileMs }, "publicProfile.slow_total");
+  }
   const timingParts: string[] = [];
   for (const [step, durationMs] of profileStepDurations.entries()) {
     const safeStep = step.replace(/[^a-zA-Z0-9_-]/g, "_");
