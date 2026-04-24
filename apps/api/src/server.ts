@@ -20791,6 +20791,27 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   } as const;
 
   const items: any[] = [];
+  const accessPriority = (access: unknown) => {
+    const normalized = asString(access || "").trim().toLowerCase();
+    if (normalized === "owned") return 5;
+    if (normalized === "participant") return 4;
+    if (normalized === "purchased") return 3;
+    if (normalized === "preview") return 2;
+    if (normalized === "local") return 1;
+    return 0;
+  };
+  const appendLibraryItem = (
+    item: any,
+    libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant",
+    reason: string
+  ) => {
+    items.push({
+      ...item,
+      ...toVersionSummary(item),
+      libraryAccess,
+      appearsBecause: [reason]
+    });
+  };
 
   if (scope === "local") {
     const local = await prisma.contentItem.findMany({
@@ -20798,14 +20819,21 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
-    items.push(...local.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: i.ownerUserId === userId ? "owned" : "local" })));
+    items.push(
+      ...local.map((i) => ({
+        ...i,
+        ...toVersionSummary(i),
+        libraryAccess: i.ownerUserId === userId ? "owned" : "local",
+        appearsBecause: [i.ownerUserId === userId ? "owned" : "local"]
+      }))
+    );
   } else if (scope === "mine") {
     const owned = await prisma.contentItem.findMany({
       where: { ownerUserId: userId, ...stateWhere, ...contentTypeWhere },
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
-    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned" })));
+    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned", appearsBecause: ["owned"] })));
   } else {
     // library: owned + purchased (entitlements) + public preview
     const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
@@ -20849,11 +20877,34 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       }),
       prisma.splitParticipant.findMany({
         where: {
-          acceptedAt: { not: null },
+          splitVersion: {
+            status: "locked",
+            content: {
+              status: "published",
+              deletedAt: null,
+              ...contentTypeWhere
+            } as any
+          },
           OR: [
-            { participantUserId: userId },
-            meEmail ? { participantEmail: emailEquals(meEmail) } : undefined
-          ].filter(Boolean) as any
+            {
+              AND: [
+                {
+                  OR: [
+                    { participantUserId: userId },
+                    meEmail ? { participantEmail: emailEquals(meEmail) } : undefined
+                  ].filter(Boolean) as any
+                },
+                {
+                  OR: [
+                    { acceptedAt: { not: null } },
+                    { verifiedAt: { not: null } },
+                    { invitations: { some: { status: "accepted" as any } } }
+                  ]
+                }
+              ]
+            },
+            { invitations: { some: { status: "accepted" as any, acceptedByUserId: userId } } }
+          ] as any
         },
         select: {
           splitVersion: { select: { contentId: true } }
@@ -20889,12 +20940,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         })
       : [];
 
-    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned" })));
-    items.push(
-      ...purchased
-        .filter((p) => p.content)
-        .map((p) => ({ ...p.content, ...toVersionSummary(p.content), libraryAccess: "purchased" }))
-    );
+    for (const i of owned) appendLibraryItem(i, "owned", "owned");
+    for (const p of purchased.filter((p) => p.content)) appendLibraryItem(p.content, "purchased", "purchased");
 
     const combinedParticipantLinks = [...participantLinks, ...identityTargetedLinks];
 
@@ -20913,7 +20960,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           orderBy: { createdAt: "desc" },
           select: selectBase
         });
-        items.push(...participantContent.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "participant" })));
+        for (const i of participantContent) appendLibraryItem(i, "participant", "split_participant");
 
         const derivativeChildren = await prisma.contentLink.findMany({
           where: {
@@ -20930,26 +20977,41 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             childContent: { select: selectBase }
           }
         });
-        items.push(
-          ...derivativeChildren
-            .map((link) => link.childContent)
-            .filter(Boolean)
-            .map((i: any) => ({ ...i, ...toVersionSummary(i), libraryAccess: "participant" }))
-        );
+        for (const i of derivativeChildren.map((link) => link.childContent).filter(Boolean)) {
+          appendLibraryItem(i as any, "participant", "derivative_child");
+        }
       }
     }
 
     // Keep preview-only rows last so attributed participant rows win de-dupe.
-    items.push(...publicPreview.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "preview" })));
+    for (const i of publicPreview) appendLibraryItem(i, "preview", "preview_access");
   }
 
-  // de-dupe by content id (keep first)
-  const seen = new Set<string>();
-  const unique = items.filter((i) => {
-    if (seen.has(i.id)) return false;
-    seen.add(i.id);
-    return true;
-  });
+  // de-dupe by content id while preserving membership reasons.
+  const deduped = new Map<string, any>();
+  for (const row of items) {
+    const contentId = asString(row?.id || "").trim();
+    if (!contentId) continue;
+    const existing = deduped.get(contentId);
+    if (!existing) {
+      deduped.set(contentId, row);
+      continue;
+    }
+    const mergedReasons = Array.from(
+      new Set([
+        ...(Array.isArray(existing.appearsBecause) ? existing.appearsBecause : []),
+        ...(Array.isArray(row.appearsBecause) ? row.appearsBecause : [])
+      ])
+    );
+    const existingPriority = accessPriority(existing.libraryAccess);
+    const incomingPriority = accessPriority(row.libraryAccess);
+    const preferred = incomingPriority > existingPriority ? row : existing;
+    deduped.set(contentId, {
+      ...preferred,
+      appearsBecause: mergedReasons
+    });
+  }
+  const unique = Array.from(deduped.values());
 
   return unique.map((i: any) => ({
     ...i,

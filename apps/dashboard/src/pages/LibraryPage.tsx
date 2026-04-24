@@ -34,6 +34,7 @@ type LibraryItem = {
   ownerUserId?: string | null;
   owner?: { displayName?: string | null; email?: string | null } | null;
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant";
+  appearsBecause?: string[] | null;
   coverUrl?: string | null;
   manifest?: { sha256?: string | null } | null;
   featureOnProfile?: boolean;
@@ -129,6 +130,8 @@ type NormalizedLibraryItem = {
   contentType: LibraryTypeFilter;
   relationshipType: LibraryRelationshipType;
   relationshipTags: LibraryRelationshipFilter[];
+  isDerivativeChild: boolean;
+  isDerivativeParent: boolean;
   availabilityState: ReturnType<typeof getAvailabilityState>;
   relation: LibraryRelation;
   publicPageUrl: string | null;
@@ -307,8 +310,13 @@ export default function LibraryPage() {
           api<DerivativeApprovalRow[]>("/api/derivatives/approvals?scope=all", "GET").catch(() => [] as DerivativeApprovalRow[])
         ]);
         const nextDerivativeApprovalByChildId: Record<string, DerivativeApprovalRow> = {};
+        const derivativeChildContentIds = new Set<string>();
+        const derivativeParentContentIds = new Set<string>();
         for (const row of Array.isArray(derivativeApprovalsRes) ? derivativeApprovalsRes : []) {
           const childContentId = String(row?.childContentId || "").trim();
+          const parentContentId = String(row?.parentContentId || "").trim();
+          if (childContentId) derivativeChildContentIds.add(childContentId);
+          if (parentContentId) derivativeParentContentIds.add(parentContentId);
           if (!childContentId) continue;
           const existing = nextDerivativeApprovalByChildId[childContentId];
           if (!existing) {
@@ -327,11 +335,16 @@ export default function LibraryPage() {
           nextEntitlementByContentId[contentId] = row;
         }
         setEntitlementByContentId(nextEntitlementByContentId);
-        const derivativeLinkedContentIds = new Set<string>();
+        const upstreamDerivativeChildContentIds = new Set<string>();
         const upstreamRows = Array.isArray(royaltiesRes?.upstreamIncome) ? royaltiesRes.upstreamIncome : [];
         for (const row of upstreamRows) {
           const childContentId = String(row?.childContentId || "").trim();
-          if (childContentId) derivativeLinkedContentIds.add(childContentId);
+          const parentContentId = String(row?.parentContentId || "").trim();
+          if (childContentId) {
+            derivativeChildContentIds.add(childContentId);
+            upstreamDerivativeChildContentIds.add(childContentId);
+          }
+          if (parentContentId) derivativeParentContentIds.add(parentContentId);
         }
 
         const baseListRaw = Array.isArray(lib) && lib.length > 0 ? lib : mine;
@@ -409,6 +422,16 @@ export default function LibraryPage() {
             const inviteId = String(row?.id || "").trim() || null;
             const defaultOrigin = String(row?.remoteOrigin || "").replace(/\/+$/, "") || null;
             const inbox = Array.isArray(row?.clearanceInbox) ? row.clearanceInbox : [];
+            for (const entry of inbox) {
+              const status = String(entry?.status || "").trim().toLowerCase();
+              const parentContentId = String((entry as any)?.parentContentId || "").trim();
+              const childContentId = String(entry?.childContentId || "").trim();
+              if (!parentContentId || !childContentId) continue;
+              if (["pending", "rejected", "approved", "cleared"].includes(status)) {
+                derivativeParentContentIds.add(parentContentId);
+                derivativeChildContentIds.add(childContentId);
+              }
+            }
             return inbox
               .filter((entry) => {
                 const status = String(entry?.status || "").toLowerCase();
@@ -594,11 +617,26 @@ export default function LibraryPage() {
           };
           const contentType = mapContentType(normalizedItem.type);
           const derivativeByType = ["derivative", "remix", "mashup"].includes(String(normalizedItem.type || "").toLowerCase());
-          const derivativeLinked = derivativeByType || derivativeLinkedContentIds.has(contentId);
-          const relationshipTags: LibraryRelationshipFilter[] = [];
-          if (section === "owned") relationshipTags.push("authored_work");
-          if (section === "participant" && !derivativeLinked) relationshipTags.push("shared_splits");
-          if (derivativeLinked) relationshipTags.push("derivatives");
+          const appearsBecause = new Set(
+            (Array.isArray(normalizedItem.appearsBecause) ? normalizedItem.appearsBecause : [])
+              .map((value) => String(value || "").trim().toLowerCase())
+              .filter(Boolean)
+          );
+          const isDerivativeChild =
+            derivativeByType ||
+            derivativeChildContentIds.has(contentId) ||
+            upstreamDerivativeChildContentIds.has(contentId) ||
+            appearsBecause.has("derivative_child");
+          const isDerivativeParent =
+            derivativeParentContentIds.has(contentId) ||
+            appearsBecause.has("derivative_parent");
+          const derivativeLinked = isDerivativeChild || isDerivativeParent;
+          const hasSharedSplitMembership = section === "participant" || appearsBecause.has("split_participant");
+          const relationshipTagSet = new Set<LibraryRelationshipFilter>();
+          if (section === "owned") relationshipTagSet.add("authored_work");
+          if (hasSharedSplitMembership) relationshipTagSet.add("shared_splits");
+          if (derivativeLinked) relationshipTagSet.add("derivatives");
+          const relationshipTags = Array.from(relationshipTagSet);
           const relationshipType: LibraryRelationshipType = relationshipTags.includes("derivatives")
             ? "derivatives"
             : relationshipTags.includes("shared_splits")
@@ -611,6 +649,8 @@ export default function LibraryPage() {
             contentType,
             relationshipType,
             relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
+            isDerivativeChild,
+            isDerivativeParent,
             availabilityState: getAvailabilityState(normalizedItem),
             relation,
             publicPageUrl: buildPublicPageUrl(contentId, participation?.remoteOrigin || null),
@@ -1016,11 +1056,8 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                     const pf = previewFileFor(previewUrl, preview?.files || []);
                     const mime = String(pf?.mime || "").toLowerCase();
                     const type = String(it.type || "").toLowerCase();
-                    const derivativeLinked =
-                      entry.relationshipTags.includes("derivatives") ||
-                      type === "derivative" ||
-                      type === "remix" ||
-                      type === "mashup";
+                    const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
+                    const derivativeParentOnly = entry.isDerivativeParent && !entry.isDerivativeChild;
                     const isVideo = mime.startsWith("video/") || type === "video";
                     const isAudio = mime.startsWith("audio/") || type === "song";
                     const isImage = mime.startsWith("image/");
@@ -1118,7 +1155,9 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                     const showClearanceAction = rightsSummary.ownershipKind === "derivative";
                     const earningsHref = `/earnings-v2?contentId=${encodeURIComponent(it.id)}&title=${encodeURIComponent(it.title || "")}`;
                     const rightsBadgeLabel =
-                      rightsSummary.ownershipKind === "owned"
+                      derivativeParentOnly
+                        ? "Parent of derivative"
+                        : rightsSummary.ownershipKind === "owned"
                         ? "Owned work"
                         : rightsSummary.ownershipKind === "collaboration"
                           ? "Collaboration"
