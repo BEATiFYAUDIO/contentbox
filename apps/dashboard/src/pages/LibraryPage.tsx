@@ -597,7 +597,7 @@ export default function LibraryPage() {
           const derivativeLinked = derivativeByType || derivativeLinkedContentIds.has(contentId);
           const relationshipTags: LibraryRelationshipFilter[] = [];
           if (section === "owned") relationshipTags.push("authored_work");
-          if (section === "participant") relationshipTags.push("shared_splits");
+          if (section === "participant" && !derivativeLinked) relationshipTags.push("shared_splits");
           if (derivativeLinked) relationshipTags.push("derivatives");
           const relationshipType: LibraryRelationshipType = relationshipTags.includes("derivatives")
             ? "derivatives"
