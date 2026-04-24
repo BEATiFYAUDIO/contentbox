@@ -24917,6 +24917,21 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const matchedHandle = asString((req.params as any).handle || "").trim();
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
+  const profileStartMs = Date.now();
+  const reqId = asString((req as any)?.id || "");
+  const profileStepDurations = new Map<string, number>();
+  const timedProfileStep = async <T>(step: string, work: Promise<T>): Promise<T> => {
+    const startedAt = Date.now();
+    try {
+      return await work;
+    } finally {
+      const durationMs = Date.now() - startedAt;
+      profileStepDurations.set(step, durationMs);
+      if (durationMs >= 250) {
+        app.log.warn({ reqId, handle: requested, step, durationMs }, "publicProfile.slow_step");
+      }
+    }
+  };
 
   const userSelect = {
     id: true,
@@ -24996,7 +25011,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     profileServiceMode,
     lockedParticipations
   ] = await Promise.all([
-    prisma.proofRecord.findMany({
+    timedProfileStep(
+      "proofs",
+      prisma.proofRecord.findMany({
       where: {
         userId: user.id,
         status: "verified",
@@ -25004,8 +25021,11 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       },
       orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
       select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
-    }),
-    prisma.contentItem.findMany({
+    })
+    ),
+    timedProfileStep(
+      "featured_content",
+      prisma.contentItem.findMany({
       where: {
         ownerUserId: user.id,
         status: "published",
@@ -25022,11 +25042,18 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         deliveryMode: true,
         manifest: { select: { json: true } }
       }
-    }),
-    buildWellKnownContentboxPayload(req),
-    withSoftTimeout(getCachedCreatorSignalNodeDetails(), 1200, creatorSignalNodeDetailsFallback),
-    getCachedProfileServiceMode({ nonBlocking: true }),
-    withSoftTimeout(listLockedParticipationsForUser(user.id), 1200, [] as ParticipationProjection[])
+    })
+    ),
+    timedProfileStep("well_known", buildWellKnownContentboxPayload(req)),
+    timedProfileStep(
+      "creator_signal",
+      withSoftTimeout(getCachedCreatorSignalNodeDetails(), 1200, creatorSignalNodeDetailsFallback)
+    ),
+    timedProfileStep("profile_mode", getCachedProfileServiceMode({ nonBlocking: true })),
+    timedProfileStep(
+      "locked_participations",
+      withSoftTimeout(listLockedParticipationsForUser(user.id), 1200, [] as ParticipationProjection[])
+    )
   ]);
 
   const nodeUrl = wk.nodeUrl || "";
@@ -25224,6 +25251,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     return "";
   };
   const currentPublicOrigin = normalizePublicOriginBase(nodeUrl);
+  const elapsedProfileMs = Date.now() - profileStartMs;
+  if (elapsedProfileMs >= 600) {
+    app.log.warn({ reqId, handle: requested, durationMs: elapsedProfileMs }, "publicProfile.slow_total");
+  }
   const canonicalCommerceOrigin =
     resolveProviderServiceProfile({ hasLocalInvoiceMinting: false }).canonicalCommerceOrigin ||
     currentPublicOrigin;
@@ -26208,6 +26239,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 </body>
 </html>`;
 
+  const timingParts: string[] = [];
+  for (const [step, durationMs] of profileStepDurations.entries()) {
+    const safeStep = step.replace(/[^a-zA-Z0-9_-]/g, "_");
+    timingParts.push(`${safeStep};dur=${Math.max(0, Math.round(durationMs))}`);
+  }
+  timingParts.push(`profile_total;dur=${Math.max(0, Math.round(elapsedProfileMs))}`);
+  reply.header("Server-Timing", timingParts.join(", "));
+  reply.header("X-Profile-Total-Ms", String(Math.max(0, Math.round(elapsedProfileMs))));
   reply.type("text/html; charset=utf-8");
   return reply.send(html);
 }
