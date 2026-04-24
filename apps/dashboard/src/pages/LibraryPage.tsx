@@ -1000,8 +1000,11 @@ function shouldUseParticipationFeatureHighlight(
   participation: LibraryParticipation | null | undefined
 ): boolean {
   if (!participation) return false;
-  if (participation.kind === "remote") return true;
   const access = String(entry.item?.libraryAccess || "").trim().toLowerCase();
+  // Owned content must always toggle the owner feature flag, even when the
+  // owner is also a split participant.
+  if (entry.relation === "owner" || access === "owned") return false;
+  if (participation.kind === "remote") return true;
   if (access === "participant" || access === "shared") return true;
   if (entry.relation === "participant") return true;
   return Array.isArray(entry.relationshipTags) && entry.relationshipTags.includes("shared_splits");
