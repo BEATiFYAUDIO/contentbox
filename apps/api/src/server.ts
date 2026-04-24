@@ -16843,14 +16843,49 @@ app.get("/api/diagnostics/backups", { preHandler: requireAuth }, async (_req: an
   }
 });
 
+const READINESS_SOFT_TIMEOUT_MS = Math.max(
+  200,
+  Number(process.env.READINESS_SOFT_TIMEOUT_MS || "1200")
+);
+
+async function resolveReadinessWithSoftTimeout<T>(
+  promise: Promise<T>,
+  fallback: T,
+  timeoutMs = READINESS_SOFT_TIMEOUT_MS
+): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race<T>([
+      promise.catch(() => fallback),
+      new Promise<T>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(fallback), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+}
+
 app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const runtime = resolveRuntimeConfig();
   const productTierInfo = resolveProductTier();
   const ctx = getCapabilityContext();
   const userId = (req.user as JwtUser).sub;
-  const paymentsReadiness = await getPaymentsReadinessCached(userId);
-  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
-  const payoutExecutionRuntime = await resolvePayoutExecutionRuntimeCached(userId).catch(() => null);
+  const providerConfig = getNetworkProviderConfig();
+  const providerConnection = deriveProviderCommerceConnectionState(providerConfig);
+  const providerConfigured = isNetworkProviderConfigured(providerConfig);
+  const [paymentsReadiness, lightningRuntime, payoutExecutionRuntime] = await Promise.all([
+    resolveReadinessWithSoftTimeout(getPaymentsReadinessCached(userId), null),
+    resolveReadinessWithSoftTimeout(resolveLightningCapabilityRuntimeCached(userId), null),
+    resolveReadinessWithSoftTimeout(resolvePayoutExecutionRuntimeCached(userId), null)
+  ]);
+
+  const providerStatus: "not_configured" | "checking" | "unavailable" | "ready" = !providerConfigured
+    ? "not_configured"
+    : providerConnection.providerConnected
+      ? "ready"
+      : "unavailable";
+
   return reply.send({
     bootId: BOOT_ID,
     startedAt: STARTED_AT,
@@ -16866,6 +16901,14 @@ app.get("/api/diagnostics/status", { preHandler: requireAuth }, async (req: any,
       namedConfigured: Boolean(ctx.publicStatus.namedConfigured)
     },
     paymentsMode: ctx.paymentsMode,
+    provider: {
+      status: providerStatus,
+      paymentsEnabled: providerStatus === "ready",
+      reason:
+        providerStatus === "ready"
+          ? null
+          : "Provider relationship required before payments can be accepted."
+    },
     paymentsReadiness,
     lightningRuntime,
     payoutExecutionRuntime,
@@ -16887,9 +16930,11 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
   const ctx = getCapabilityContext();
   const providerConfig = getNetworkProviderConfig();
   const providerConnection = deriveProviderCommerceConnectionState(providerConfig);
-  const paymentsReadiness = await getPaymentsReadinessCached(userId).catch(() => null);
-  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
-  const payoutExecutionRuntime = await resolvePayoutExecutionRuntimeCached(userId).catch(() => null);
+  const [paymentsReadiness, lightningRuntime, payoutExecutionRuntime] = await Promise.all([
+    resolveReadinessWithSoftTimeout(getPaymentsReadinessCached(userId), null),
+    resolveReadinessWithSoftTimeout(resolveLightningCapabilityRuntimeCached(userId), null),
+    resolveReadinessWithSoftTimeout(resolvePayoutExecutionRuntimeCached(userId), null)
+  ]);
   const sovereignReadiness = await getLocalSovereignReadinessCached();
 
   const localInvoiceMinting =
@@ -17003,8 +17048,10 @@ app.get("/api/network/summary", { preHandler: requireAuth }, async (req: any, re
 
 app.get("/api/network/payout-destination", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
-  const paymentsReadiness = await getPaymentsReadinessCached(userId).catch(() => null);
-  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
+  const [paymentsReadiness, lightningRuntime] = await Promise.all([
+    resolveReadinessWithSoftTimeout(getPaymentsReadinessCached(userId), null),
+    resolveReadinessWithSoftTimeout(resolveLightningCapabilityRuntimeCached(userId), null)
+  ]);
   const localLndReady = Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready);
   const destination = await resolveEffectivePayoutDestination(userId, {
     localLndReady,
@@ -17032,8 +17079,10 @@ app.post("/api/network/payout-destination", { preHandler: requireAuth }, async (
     providerRemitMode
   });
 
-  const paymentsReadiness = await getPaymentsReadinessCached(userId).catch(() => null);
-  const lightningRuntime = await resolveLightningCapabilityRuntimeCached(userId).catch(() => null);
+  const [paymentsReadiness, lightningRuntime] = await Promise.all([
+    resolveReadinessWithSoftTimeout(getPaymentsReadinessCached(userId), null),
+    resolveReadinessWithSoftTimeout(resolveLightningCapabilityRuntimeCached(userId), null)
+  ]);
   const destination = await resolveEffectivePayoutDestination(userId, {
     localLndReady: Boolean(lightningRuntime?.canReceive ?? paymentsReadiness?.lightning?.ready),
     paymentsReadiness

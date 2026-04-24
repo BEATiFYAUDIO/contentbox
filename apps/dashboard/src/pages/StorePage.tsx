@@ -488,6 +488,7 @@ export default function StorePage() {
   }, []);
 
   React.useEffect(() => {
+    if (!showProviderAdvanced) return;
     let active = true;
     setProviderVerificationLoading(true);
     api<ProviderVerification>("/api/network/provider/verification/status", "GET")
@@ -506,9 +507,10 @@ export default function StorePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [showProviderAdvanced]);
 
   React.useEffect(() => {
+    if (!showProviderAdvanced) return;
     let active = true;
     api<ProviderAcknowledgmentResult>("/api/network/provider/acknowledgment/status", "GET")
       .then((d) => {
@@ -522,9 +524,10 @@ export default function StorePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [showProviderAdvanced]);
 
   React.useEffect(() => {
+    if (!showProviderAdvanced) return;
     let active = true;
     api<ProviderAcknowledgmentReadiness>("/api/network/provider/acknowledgment/readiness", "GET")
       .then((d) => {
@@ -538,9 +541,10 @@ export default function StorePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [showProviderAdvanced]);
 
   React.useEffect(() => {
+    if (!showProviderAdvanced) return;
     let active = true;
     api<ProviderOperationIntentResult>("/api/network/provider/operation-intent/status", "GET")
       .then((d) => {
@@ -554,9 +558,10 @@ export default function StorePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [showProviderAdvanced]);
 
   React.useEffect(() => {
+    if (!showProviderAdvanced) return;
     let active = true;
     api<ProviderExecutionPermitReadiness>("/api/network/provider/operation-intent/readiness", "GET")
       .then((d) => {
@@ -570,9 +575,10 @@ export default function StorePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [showProviderAdvanced]);
 
   React.useEffect(() => {
+    if (!showProviderAdvanced) return;
     let active = true;
     api<ProviderExecutionChainReadiness>("/api/network/provider/execution/readiness", "GET")
       .then((d) => {
@@ -586,7 +592,7 @@ export default function StorePage() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [showProviderAdvanced]);
 
   React.useEffect(() => {
     let active = true;
@@ -1270,10 +1276,17 @@ export default function StorePage() {
     ""
   ).trim();
   const hasDetectedNamedTunnel =
-    diagnostics?.publicStatus?.mode === "named" &&
-    diagnostics?.publicStatus?.status === "online" &&
-    Boolean(namedTunnelOriginCandidate) &&
-    !isTemporaryPublicOrigin(namedTunnelOriginCandidate);
+    (
+      diagnostics?.publicStatus?.mode === "named" &&
+      diagnostics?.publicStatus?.status === "online" &&
+      Boolean(namedTunnelOriginCandidate) &&
+      !isTemporaryPublicOrigin(namedTunnelOriginCandidate)
+    ) ||
+    (
+      Boolean(networkSummary?.reachability?.tunnel) &&
+      Boolean(networkSummary?.reachability?.publicUrl) &&
+      !isTemporaryPublicOrigin(String(networkSummary?.reachability?.publicUrl || ""))
+    );
   const providerConfigLocked = !hasDetectedNamedTunnel;
   const participationModeFromSummary = networkSummary?.modeProfile?.participationMode;
   const isBasicParticipation =
