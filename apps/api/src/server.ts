@@ -1944,6 +1944,8 @@ const CREATOR_PAYOUT_DESTINATIONS_FILE = path.join(RUNTIME_STATE_DIR, "creator-p
 const PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "participation-profile-highlights.json");
 const REMOTE_PARTICIPATION_PROFILE_HIGHLIGHTS_FILE = path.join(RUNTIME_STATE_DIR, "remote-participation-profile-highlights.json");
 const LOCKED_PARTICIPANT_SNAPSHOTS_FILE = path.join(RUNTIME_STATE_DIR, "locked-participant-snapshots.json");
+const PROFILE_PUBLIC_HANDLE_MAP_FILE = path.join(RUNTIME_STATE_DIR, "profile-public-handle-map.json");
+const PROFILE_PUBLIC_RENDER_SNAPSHOTS_FILE = path.join(RUNTIME_STATE_DIR, "profile-public-render-snapshots.json");
 
 type ProviderTrustStatus = "unknown" | "verified" | "blocked";
 type ProviderHandshakeStatus = "none" | "accepted" | "failed";
@@ -24821,23 +24823,29 @@ const PROFILE_RUNTIME_STALE_TTL_MS = Math.max(
 );
 const PROFILE_PUBLIC_RENDER_CACHE_TTL_MS = Math.max(
   1000,
-  Number(process.env.PROFILE_PUBLIC_RENDER_CACHE_TTL_MS || "45000")
+  Number(process.env.PROFILE_PUBLIC_RENDER_CACHE_TTL_MS || "3600000")
 );
-const PROFILE_CORE_STEP_TIMEOUT_MS = Math.max(
-  150,
-  Number(process.env.PROFILE_CORE_STEP_TIMEOUT_MS || "900")
+const clampMs = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, value));
+const PROFILE_CORE_STEP_TIMEOUT_MS = clampMs(Number(process.env.PROFILE_CORE_STEP_TIMEOUT_MS || "900"), 150, 1200);
+const PROFILE_CORE_STEP_COLD_TIMEOUT_MS = clampMs(
+  Number(process.env.PROFILE_CORE_STEP_COLD_TIMEOUT_MS || "1500"),
+  PROFILE_CORE_STEP_TIMEOUT_MS,
+  2200
 );
-const PROFILE_REMOTE_ENRICHMENT_BUDGET_MS = Math.max(
+const PROFILE_REMOTE_ENRICHMENT_BUDGET_MS = clampMs(
+  Number(process.env.PROFILE_REMOTE_ENRICHMENT_BUDGET_MS || "800"),
   100,
-  Number(process.env.PROFILE_REMOTE_ENRICHMENT_BUDGET_MS || "800")
+  1200
 );
-const PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS = Math.max(
+const PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS = clampMs(
+  Number(process.env.PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS || "450"),
   150,
-  Number(process.env.PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS || "450")
+  900
 );
-const PROFILE_REMOTE_ACCOUNTING_FAST_TIMEOUT_MS = Math.max(
+const PROFILE_REMOTE_ACCOUNTING_FAST_TIMEOUT_MS = clampMs(
+  Number(process.env.PROFILE_REMOTE_ACCOUNTING_FAST_TIMEOUT_MS || "120"),
   50,
-  Number(process.env.PROFILE_REMOTE_ACCOUNTING_FAST_TIMEOUT_MS || "120")
+  300
 );
 type PublicWellKnownPayload = {
   nodeUrl: string;
@@ -24846,11 +24854,267 @@ type PublicWellKnownPayload = {
   publicKeyPemSha256?: string;
 };
 type TimedCacheEntry<T> = { expiresAt: number; value: T };
+type ProfileRenderSnapshot = {
+  featuredContent: any[];
+  highlightedParticipations: ParticipationProjection[];
+  highlightedRemoteParticipations: any[];
+};
 const profilePublicProofsCache = new Map<string, TimedCacheEntry<any[]>>();
 const profilePublicFeaturedCache = new Map<string, TimedCacheEntry<any[]>>();
 const profilePublicWellKnownCache = new Map<string, TimedCacheEntry<PublicWellKnownPayload>>();
 const profilePublicRemoteParticipationsCache = new Map<string, TimedCacheEntry<any[]>>();
 const profilePublicLockedParticipationsCache = new Map<string, TimedCacheEntry<ParticipationProjection[]>>();
+const profilePublicRenderSnapshotCache = new Map<string, TimedCacheEntry<ProfileRenderSnapshot>>();
+const profilePublicUserCache = new Map<string, TimedCacheEntry<any>>();
+type PublicProfileHandleMapRow = {
+  handle: string;
+  userId: string;
+  updatedAt: string;
+};
+type PublicProfileRenderSnapshotRow = {
+  userId: string;
+  featuredContent: any[];
+  highlightedParticipations: ParticipationProjection[];
+  highlightedRemoteParticipations: any[];
+  updatedAt: string;
+};
+let profilePublicHandleMapLoaded = false;
+const profilePublicHandleUserIdMap = new Map<string, string>();
+let profilePublicHandleMapFlushTimer: NodeJS.Timeout | null = null;
+let profilePublicRenderSnapshotFileLoaded = false;
+const profilePublicRenderSnapshotFileCache = new Map<string, ProfileRenderSnapshot>();
+let profilePublicRenderSnapshotFlushTimer: NodeJS.Timeout | null = null;
+function loadProfilePublicHandleMapFromDisk(): void {
+  if (profilePublicHandleMapLoaded) return;
+  profilePublicHandleMapLoaded = true;
+  const rows = readJsonArrayState<PublicProfileHandleMapRow>(PROFILE_PUBLIC_HANDLE_MAP_FILE);
+  for (const row of rows) {
+    const handle = normalizePublicProfileHandle(row?.handle || "");
+    const userId = asString(row?.userId || "").trim();
+    if (!handle || !userId) continue;
+    profilePublicHandleUserIdMap.set(handle, userId);
+  }
+}
+function flushProfilePublicHandleMapToDisk(): void {
+  profilePublicHandleMapFlushTimer = null;
+  const rows: PublicProfileHandleMapRow[] = Array.from(profilePublicHandleUserIdMap.entries()).map(([handle, userId]) => ({
+    handle,
+    userId,
+    updatedAt: new Date().toISOString()
+  }));
+  writeJsonArrayState(PROFILE_PUBLIC_HANDLE_MAP_FILE, rows);
+}
+function scheduleProfilePublicHandleMapFlush(): void {
+  if (profilePublicHandleMapFlushTimer) return;
+  profilePublicHandleMapFlushTimer = setTimeout(flushProfilePublicHandleMapToDisk, 120);
+}
+function getMappedPublicProfileUserId(handleRaw: unknown): string | null {
+  loadProfilePublicHandleMapFromDisk();
+  const handle = normalizePublicProfileHandle(handleRaw || "");
+  if (!handle) return null;
+  const userId = asString(profilePublicHandleUserIdMap.get(handle) || "").trim();
+  return userId || null;
+}
+function rememberPublicProfileUserHandleAlias(handleRaw: unknown, userIdRaw: unknown): void {
+  loadProfilePublicHandleMapFromDisk();
+  const handle = normalizePublicProfileHandle(handleRaw || "");
+  const userId = asString(userIdRaw || "").trim();
+  if (!handle || !userId) return;
+  const prev = asString(profilePublicHandleUserIdMap.get(handle) || "").trim();
+  if (prev === userId) return;
+  profilePublicHandleUserIdMap.set(handle, userId);
+  scheduleProfilePublicHandleMapFlush();
+}
+function rememberPublicProfileUserHandleAliases(
+  user: { id?: string | null; displayName?: string | null; email?: string | null },
+  requestedHandle?: string | null
+): void {
+  const userId = asString(user?.id || "").trim();
+  if (!userId) return;
+  if (requestedHandle) rememberPublicProfileUserHandleAlias(requestedHandle, userId);
+  const displayHandle = normalizePublicProfileHandle(user?.displayName || "");
+  if (displayHandle) rememberPublicProfileUserHandleAlias(displayHandle, userId);
+  const emailHandle = normalizedEmailLocalPart(user?.email || "");
+  if (emailHandle) rememberPublicProfileUserHandleAlias(emailHandle, userId);
+}
+function loadProfilePublicRenderSnapshotsFromDisk(): void {
+  if (profilePublicRenderSnapshotFileLoaded) return;
+  profilePublicRenderSnapshotFileLoaded = true;
+  const rows = readJsonArrayState<PublicProfileRenderSnapshotRow>(PROFILE_PUBLIC_RENDER_SNAPSHOTS_FILE);
+  for (const row of rows) {
+    const userId = asString(row?.userId || "").trim();
+    if (!userId) continue;
+    profilePublicRenderSnapshotFileCache.set(userId, {
+      featuredContent: Array.isArray(row?.featuredContent) ? row.featuredContent : [],
+      highlightedParticipations: Array.isArray(row?.highlightedParticipations) ? row.highlightedParticipations : [],
+      highlightedRemoteParticipations: Array.isArray(row?.highlightedRemoteParticipations)
+        ? row.highlightedRemoteParticipations
+        : []
+    });
+  }
+}
+function flushProfilePublicRenderSnapshotsToDisk(): void {
+  profilePublicRenderSnapshotFlushTimer = null;
+  const rows: PublicProfileRenderSnapshotRow[] = Array.from(profilePublicRenderSnapshotFileCache.entries()).map(
+    ([userId, snapshot]) => ({
+      userId,
+      featuredContent: Array.isArray(snapshot?.featuredContent) ? snapshot.featuredContent : [],
+      highlightedParticipations: Array.isArray(snapshot?.highlightedParticipations)
+        ? snapshot.highlightedParticipations
+        : [],
+      highlightedRemoteParticipations: Array.isArray(snapshot?.highlightedRemoteParticipations)
+        ? snapshot.highlightedRemoteParticipations
+        : [],
+      updatedAt: new Date().toISOString()
+    })
+  );
+  writeJsonArrayState(PROFILE_PUBLIC_RENDER_SNAPSHOTS_FILE, rows);
+}
+function scheduleProfilePublicRenderSnapshotsFlush(): void {
+  if (profilePublicRenderSnapshotFlushTimer) return;
+  profilePublicRenderSnapshotFlushTimer = setTimeout(flushProfilePublicRenderSnapshotsToDisk, 150);
+}
+function getPersistedProfilePublicRenderSnapshot(userIdRaw: unknown): ProfileRenderSnapshot | null {
+  loadProfilePublicRenderSnapshotsFromDisk();
+  const userId = asString(userIdRaw || "").trim();
+  if (!userId) return null;
+  const snapshot = profilePublicRenderSnapshotFileCache.get(userId);
+  if (!snapshot) return null;
+  return {
+    featuredContent: Array.isArray(snapshot.featuredContent) ? snapshot.featuredContent : [],
+    highlightedParticipations: Array.isArray(snapshot.highlightedParticipations) ? snapshot.highlightedParticipations : [],
+    highlightedRemoteParticipations: Array.isArray(snapshot.highlightedRemoteParticipations)
+      ? snapshot.highlightedRemoteParticipations
+      : []
+  };
+}
+function setPersistedProfilePublicRenderSnapshot(userIdRaw: unknown, snapshot: ProfileRenderSnapshot): void {
+  loadProfilePublicRenderSnapshotsFromDisk();
+  const userId = asString(userIdRaw || "").trim();
+  if (!userId) return;
+  profilePublicRenderSnapshotFileCache.set(userId, {
+    featuredContent: Array.isArray(snapshot?.featuredContent) ? snapshot.featuredContent : [],
+    highlightedParticipations: Array.isArray(snapshot?.highlightedParticipations) ? snapshot.highlightedParticipations : [],
+    highlightedRemoteParticipations: Array.isArray(snapshot?.highlightedRemoteParticipations)
+      ? snapshot.highlightedRemoteParticipations
+      : []
+  });
+  scheduleProfilePublicRenderSnapshotsFlush();
+}
+function titleCaseWords(value: string): string {
+  return value
+    .split(/\s+/g)
+    .map((part) => (part ? `${part.slice(0, 1).toUpperCase()}${part.slice(1)}` : ""))
+    .join(" ")
+    .trim();
+}
+async function findPublicProfileUserIdByNormalizedHandleSqlite(requested: string): Promise<string | null> {
+  try {
+    const rows = await prisma.$queryRawUnsafe<Array<{ id?: string | null }>>(
+      `SELECT id
+       FROM User
+       WHERE LOWER(TRIM(REPLACE(REPLACE(REPLACE(COALESCE(displayName, ''), ' ', '-'), '_', '-'), '.', '-'))) = ?
+          OR LOWER(TRIM(REPLACE(REPLACE(REPLACE(COALESCE(SUBSTR(email, 1, CASE WHEN INSTR(email, '@') > 0 THEN INSTR(email, '@') - 1 ELSE LENGTH(email) END), ''), ' ', '-'), '_', '-'), '.', '-'))) = ?
+       ORDER BY updatedAt DESC
+       LIMIT 1`,
+      requested,
+      requested
+    );
+    const userId = asString(rows?.[0]?.id || "").trim();
+    return userId || null;
+  } catch {
+    return null;
+  }
+}
+async function resolvePublicProfileUserByHandle(requested: string, userSelect: any): Promise<any | null> {
+  const mappedUserId = getMappedPublicProfileUserId(requested);
+  if (mappedUserId) {
+    const mappedUser = await withSoftTimeout(
+      prisma.user.findUnique({
+        where: { id: mappedUserId },
+        select: userSelect
+      }),
+      450,
+      null as any
+    );
+    if (mappedUser) return mappedUser;
+  }
+
+  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
+  const maybeTitleName = titleCaseWords(maybeName);
+  const direct =
+    (await prisma.user.findFirst({
+      where: { displayName: { equals: requested } },
+      select: userSelect
+    })) ||
+    (maybeName
+      ? await prisma.user.findFirst({
+          where: { displayName: { equals: maybeName } },
+          select: userSelect
+        })
+      : null) ||
+    (maybeTitleName
+      ? await prisma.user.findFirst({
+          where: { displayName: { equals: maybeTitleName } },
+          select: userSelect
+        })
+      : null) ||
+    (await prisma.user.findFirst({
+      where: { email: { startsWith: `${requested}@` } },
+      select: userSelect
+    }));
+  if (direct) return direct;
+
+  const sqliteMatchedUserId = await withSoftTimeout(
+    findPublicProfileUserIdByNormalizedHandleSqlite(requested),
+    700,
+    null
+  );
+  if (sqliteMatchedUserId) {
+    const byId = await prisma.user.findUnique({
+      where: { id: sqliteMatchedUserId },
+      select: userSelect
+    });
+    if (byId) return byId;
+  }
+
+  const handleHints = Array.from(
+    new Set(
+      requested
+        .split(/[-_.]+/g)
+        .map((part) => part.trim())
+        .filter((part) => part.length >= 2)
+    )
+  );
+  if (!handleHints.length) return null;
+  const candidates = await withSoftTimeout(
+    prisma.user.findMany({
+      where: {
+        OR: [
+          ...handleHints.map((hint) => ({ displayName: { contains: hint } })),
+          ...handleHints.map((hint) => ({ email: { startsWith: hint } }))
+        ]
+      },
+      select: {
+        id: true,
+        displayName: true,
+        email: true
+      },
+      take: 120
+    }),
+    350,
+    [] as Array<{ id: string; displayName: string | null; email: string | null }>
+  );
+  const matchedCandidate =
+    candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) ||
+    candidates.find((candidate) => normalizedEmailLocalPart(candidate.email || "") === requested) ||
+    null;
+  if (!matchedCandidate?.id) return null;
+  return prisma.user.findUnique({
+    where: { id: matchedCandidate.id },
+    select: userSelect
+  });
+}
 function getFreshTimedCache<T>(cache: Map<string, TimedCacheEntry<T>>, key: string): T | null {
   const hit = cache.get(key);
   if (!hit) return null;
@@ -25425,6 +25689,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
   const profileStartMs = Date.now();
+  const userLookupStartMs = Date.now();
   const reqId = asString((req as any)?.id || "");
   const profileStepDurations = new Map<string, number>();
   const timedProfileStep = async <T>(step: string, work: Promise<T>): Promise<T> => {
@@ -25449,59 +25714,24 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
   } as const;
 
-  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
-  let user =
-    await prisma.user.findFirst({
-      where: { displayName: { equals: requested } },
-      select: userSelect
-    }) ||
-    await prisma.user.findFirst({
-      where: { displayName: { equals: maybeName } },
-      select: userSelect
-    }) ||
-    await prisma.user.findFirst({
-      where: { email: { startsWith: `${requested}@` } },
-      select: userSelect
-    });
-
+  let user = getFreshTimedCache(profilePublicUserCache, requested);
   if (!user) {
-    const handleHints = Array.from(
-      new Set(
-        requested
-          .split(/[-_.]+/g)
-          .map((part) => part.trim())
-          .filter((part) => part.length >= 2)
-      )
-    );
-    const candidates = await prisma.user.findMany({
-      where:
-        handleHints.length > 0
-          ? {
-              OR: [
-                ...handleHints.map((hint) => ({ displayName: { contains: hint } })),
-                ...handleHints.map((hint) => ({ email: { startsWith: hint } }))
-              ]
-            }
-          : undefined,
-      select: {
-        id: true,
-        displayName: true,
-        email: true
-      },
-      take: 300
-    });
-    const matchedCandidate =
-      candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName) === requested) ||
-      candidates.find((candidate) => normalizedEmailLocalPart(candidate.email || "") === requested) ||
-      null;
-    if (matchedCandidate?.id) {
-      user = await prisma.user.findUnique({
-        where: { id: matchedCandidate.id },
-        select: userSelect
-      });
-    }
+    user = await resolvePublicProfileUserByHandle(requested, userSelect);
   }
   if (!user) return notFound(reply, "Not found");
+  setTimedCache(profilePublicUserCache, requested, user);
+  const normalizedDisplayHandle = normalizePublicProfileHandle(user.displayName);
+  if (normalizedDisplayHandle) setTimedCache(profilePublicUserCache, normalizedDisplayHandle, user);
+  const normalizedEmailHandle = normalizedEmailLocalPart(user.email || "");
+  if (normalizedEmailHandle) setTimedCache(profilePublicUserCache, normalizedEmailHandle, user);
+  rememberPublicProfileUserHandleAliases(user, requested);
+  const userLookupMs = Date.now() - userLookupStartMs;
+  profileStepDurations.set("user_lookup", userLookupMs);
+  if (userLookupMs >= 2000) {
+    app.log.error({ reqId, handle: requested, durationMs: userLookupMs }, "publicProfile.slow_user_lookup_critical");
+  } else if (userLookupMs >= 500) {
+    app.log.warn({ reqId, handle: requested, durationMs: userLookupMs }, "publicProfile.slow_user_lookup");
+  }
 
   const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
   const maybeCachedProofs = getFreshTimedCache(profilePublicProofsCache, user.id);
@@ -25510,6 +25740,15 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const cachedFeatured = maybeCachedFeatured || [];
   const maybeCachedLockedParticipations = getFreshTimedCache(profilePublicLockedParticipationsCache, user.id);
   const cachedLockedParticipations = maybeCachedLockedParticipations || [];
+  const cachedRenderSnapshot =
+    getFreshTimedCache(profilePublicRenderSnapshotCache, user.id) ||
+    getPersistedProfilePublicRenderSnapshot(user.id);
+  const proofsStepTimeoutMs = maybeCachedProofs ? PROFILE_CORE_STEP_TIMEOUT_MS : PROFILE_CORE_STEP_COLD_TIMEOUT_MS;
+  const featuredStepTimeoutMs = maybeCachedFeatured ? PROFILE_CORE_STEP_TIMEOUT_MS : PROFILE_CORE_STEP_COLD_TIMEOUT_MS;
+  const wellKnownStepTimeoutMs = PROFILE_CORE_STEP_TIMEOUT_MS;
+  const lockedParticipationsStepTimeoutMs = maybeCachedLockedParticipations
+    ? PROFILE_CORE_STEP_TIMEOUT_MS
+    : PROFILE_CORE_STEP_COLD_TIMEOUT_MS;
   const wfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
   const wfProtocol = wfProto === "http" || wfProto === "https" ? wfProto : "https";
   const wfHost = getPublicHostnameFromReq(req);
@@ -25538,7 +25777,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
           select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
         }),
-      PROFILE_CORE_STEP_TIMEOUT_MS,
+      proofsStepTimeoutMs,
       cachedProofs,
       (value) => setTimedCache(profilePublicProofsCache, user.id, value as any[])
     );
@@ -25564,7 +25803,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             manifest: { select: { json: true } }
           }
         }),
-      PROFILE_CORE_STEP_TIMEOUT_MS,
+      featuredStepTimeoutMs,
       cachedFeatured,
       (value) => setTimedCache(profilePublicFeaturedCache, user.id, value as any[])
     );
@@ -25572,7 +25811,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const refreshWellKnownInBackground = () => {
     void withSoftTimeoutKeepRunning(
       () => buildWellKnownContentboxPayload(req),
-      PROFILE_CORE_STEP_TIMEOUT_MS,
+      wellKnownStepTimeoutMs,
       wellKnownFallback,
       (value) => setTimedCache(profilePublicWellKnownCache, wkCacheKey, value as PublicWellKnownPayload)
     );
@@ -25580,7 +25819,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const refreshLockedParticipationsInBackground = () => {
     void withSoftTimeoutKeepRunning(
       () => listLockedParticipationsForUser(user.id),
-      1200,
+      lockedParticipationsStepTimeoutMs,
       cachedLockedParticipations,
       (value) => setTimedCache(profilePublicLockedParticipationsCache, user.id, value as ParticipationProjection[])
     );
@@ -25602,7 +25841,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     timedProfileStep(
       "proofs",
       maybeCachedProofs
-        ? (refreshProofsInBackground(), Promise.resolve(cachedProofs))
+        ? Promise.resolve(cachedProofs)
         : withSoftTimeoutKeepRunning(
             () =>
               prisma.proofRecord.findMany({
@@ -25614,7 +25853,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 orderBy: [{ verifiedAt: "desc" }, { createdAt: "desc" }],
                 select: { id: true, proofType: true, subject: true, claimJson: true, location: true }
               }),
-            PROFILE_CORE_STEP_TIMEOUT_MS,
+            proofsStepTimeoutMs,
             cachedProofs,
             (value) => setTimedCache(profilePublicProofsCache, user.id, value as any[])
           )
@@ -25622,7 +25861,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     timedProfileStep(
       "featured_content",
       maybeCachedFeatured
-        ? (refreshFeaturedInBackground(), Promise.resolve(cachedFeatured))
+        ? Promise.resolve(cachedFeatured)
         : withSoftTimeoutKeepRunning(
             () =>
               prisma.contentItem.findMany({
@@ -25643,7 +25882,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   manifest: { select: { json: true } }
                 }
               }),
-            PROFILE_CORE_STEP_TIMEOUT_MS,
+            featuredStepTimeoutMs,
             cachedFeatured,
             (value) => setTimedCache(profilePublicFeaturedCache, user.id, value as any[])
           )
@@ -25651,10 +25890,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     timedProfileStep(
       "well_known",
       maybeCachedWellKnown
-        ? (refreshWellKnownInBackground(), Promise.resolve(wellKnownFallback))
+        ? Promise.resolve(wellKnownFallback)
         : withSoftTimeoutKeepRunning(
             () => buildWellKnownContentboxPayload(req),
-            PROFILE_CORE_STEP_TIMEOUT_MS,
+            wellKnownStepTimeoutMs,
             wellKnownFallback,
             (value) => setTimedCache(profilePublicWellKnownCache, wkCacheKey, value as PublicWellKnownPayload)
           )
@@ -25667,10 +25906,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     timedProfileStep(
       "locked_participations",
       maybeCachedLockedParticipations
-        ? (refreshLockedParticipationsInBackground(), Promise.resolve(cachedLockedParticipations))
+        ? Promise.resolve(cachedLockedParticipations)
         : withSoftTimeoutKeepRunning(
             () => listLockedParticipationsForUser(user.id),
-            1200,
+            lockedParticipationsStepTimeoutMs,
             cachedLockedParticipations,
             (value) => setTimedCache(profilePublicLockedParticipationsCache, user.id, value as ParticipationProjection[])
           )
@@ -26006,9 +26245,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         <span class="signal-chip">Node +${escHtml(String(creatorSignal.nodeScore))}</span>
       </div>`;
   const profilePostureBadgeHtml = `<div class="line"><span class="${escHtml(profilePostureBadgeClass)}">${escHtml(profilePostureBadgeLabel)}</span></div>`;
-  const featuredContentHtml =
+  const featuredContentForRender =
     featuredContent.length > 0
       ? featuredContent
+      : (cachedRenderSnapshot?.featuredContent || []);
+  const featuredContentHtml =
+    featuredContentForRender.length > 0
+      ? featuredContentForRender
           .map((item) => {
             const safeTitle = escHtml(asString(item.title || "").trim() || "Untitled");
             const type = asString(item.type || "").trim().toLowerCase();
@@ -26054,7 +26297,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
-                    <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(videoPreviewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+                    <img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image featured-video-poster" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                    <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(videoPreviewUrl)}" style="display:none;" onloadeddata="this.style.display='block'; if(this.previousElementSibling) this.previousElementSibling.style.display='none';" onerror="this.style.display='none'; if(this.previousElementSibling) this.previousElementSibling.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
                     <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
                     <span class="featured-video-play" aria-hidden="true">▶</span>
                   </div>`
@@ -26094,6 +26338,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const highlightedParticipations = lockedParticipations
     .filter((row) => row.highlightedOnProfile && row.contentStatus === "published" && !row.contentDeletedAt)
     .slice(0, 12);
+  const highlightedParticipationsForRender =
+    highlightedParticipations.length > 0
+      ? highlightedParticipations
+      : (cachedRenderSnapshot?.highlightedParticipations || []);
   const highlightedRemoteParticipationIds = new Set(highlightedRemoteParticipationRecords.map((row) => row.remoteInviteId));
   const cachedRemoteParticipations = getFreshTimedCache(profilePublicRemoteParticipationsCache, user.id) || [];
   const shouldAttemptRemoteEnrichment = Date.now() - profileStartMs < PROFILE_REMOTE_ENRICHMENT_BUDGET_MS;
@@ -26281,10 +26529,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             )
           )
         : [];
+  const highlightedRemoteParticipationsForRender =
+    resolvedHighlightedRemoteParticipations.length > 0
+      ? resolvedHighlightedRemoteParticipations
+      : (cachedRenderSnapshot?.highlightedRemoteParticipations || []);
   app.log.info(
     {
       userId: user.id,
-      highlightedCount: highlightedParticipations.length + resolvedHighlightedRemoteParticipations.length
+      highlightedCount: highlightedParticipationsForRender.length + highlightedRemoteParticipationsForRender.length
     },
     "participationProjection.profile_list"
   );
@@ -26317,7 +26569,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     );
     if (type === "video") {
       return `<div class="featured-video-thumb-wrap">
-        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+        <img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image featured-video-poster" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" style="display:none;" onloadeddata="this.style.display='block'; if(this.previousElementSibling) this.previousElementSibling.style.display='none';" onerror="this.style.display='none'; if(this.previousElementSibling) this.previousElementSibling.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
         <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
         <span class="featured-video-play" aria-hidden="true">▶</span>
       </div>`;
@@ -26326,9 +26579,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">${escHtml(type || "Participation")}</span></div>`;
   };
   const highlightedParticipationsHtml =
-    highlightedParticipations.length > 0 || resolvedHighlightedRemoteParticipations.length > 0
+    highlightedParticipationsForRender.length > 0 || highlightedRemoteParticipationsForRender.length > 0
       ? [
-          ...highlightedParticipations.map((item) => {
+          ...highlightedParticipationsForRender.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.participantRole || "participant"));
             const safeType = escHtml(asString(item.contentType || "Participation"));
@@ -26368,7 +26621,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               </div>
             </article>`;
           }),
-          ...resolvedHighlightedRemoteParticipations.map((item) => {
+          ...highlightedRemoteParticipationsForRender.map((item) => {
             const safeTitle = escHtml(asString(item.contentTitle || "").trim() || "Untitled");
             const safeRole = escHtml(asString(item.role || "participant"));
             const relation = asString((item as any).derivativeRelation || "").trim().toLowerCase();
@@ -26423,6 +26676,31 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           })
         ].join("")
       : "";
+  const snapshotFeaturedContent =
+    featuredContent.length > 0
+      ? featuredContent
+      : (cachedRenderSnapshot?.featuredContent || []);
+  const snapshotHighlightedParticipations =
+    highlightedParticipations.length > 0
+      ? highlightedParticipations
+      : (cachedRenderSnapshot?.highlightedParticipations || []);
+  const snapshotHighlightedRemoteParticipations =
+    resolvedHighlightedRemoteParticipations.length > 0
+      ? resolvedHighlightedRemoteParticipations
+      : (cachedRenderSnapshot?.highlightedRemoteParticipations || []);
+  if (
+    snapshotFeaturedContent.length > 0 ||
+    snapshotHighlightedParticipations.length > 0 ||
+    snapshotHighlightedRemoteParticipations.length > 0
+  ) {
+    const nextSnapshot: ProfileRenderSnapshot = {
+      featuredContent: snapshotFeaturedContent,
+      highlightedParticipations: snapshotHighlightedParticipations,
+      highlightedRemoteParticipations: snapshotHighlightedRemoteParticipations
+    };
+    setTimedCache(profilePublicRenderSnapshotCache, user.id, nextSnapshot);
+    setPersistedProfilePublicRenderSnapshot(user.id, nextSnapshot);
+  }
   const creatorProfileFaviconDataUri = (() => {
     const iconPath = resolveTabIconPath();
     if (!iconPath) return null;
@@ -26437,6 +26715,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const safeCreatorProfileFaviconDataUri = creatorProfileFaviconDataUri ? escHtml(creatorProfileFaviconDataUri) : "";
   const creatorProfileFaviconHref = safeCreatorProfileFaviconDataUri || "/certifyd-tab-icon.png?v=20260404g";
 
+  const profileMarkupStartMs = Date.now();
   const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -26967,6 +27246,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   </div>
 </body>
 </html>`;
+  const profileMarkupMs = Date.now() - profileMarkupStartMs;
+  profileStepDurations.set("markup", profileMarkupMs);
+  if (profileMarkupMs >= 2000) {
+    app.log.error({ reqId, handle: requested, durationMs: profileMarkupMs }, "publicProfile.slow_markup_critical");
+  } else if (profileMarkupMs >= 500) {
+    app.log.warn({ reqId, handle: requested, durationMs: profileMarkupMs }, "publicProfile.slow_markup");
+  }
 
   const elapsedProfileMs = Date.now() - profileStartMs;
   if (elapsedProfileMs >= 600) {
@@ -26990,25 +27276,16 @@ async function handlePublicProofBundle(req: any, reply: any) {
   const requested = normalizePublicProfileHandle(matchedHandle);
   if (!requested) return notFound(reply, "Not found");
 
-  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
-  const user =
-    await prisma.user.findFirst({
-      where: { displayName: { equals: requested } },
-      select: {
-        id: true,
-        displayName: true,
-        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-      }
-    }) ||
-    await prisma.user.findFirst({
-      where: { displayName: { equals: maybeName } },
-      select: {
-        id: true,
-        displayName: true,
-        witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
-      }
-    });
+  const user = await resolvePublicProfileUserByHandle(requested, {
+    id: true,
+    displayName: true,
+    email: true,
+    bio: true,
+    avatarUrl: true,
+    witnessIdentity: { select: { id: true, revokedAt: true, algorithm: true, publicKey: true, fingerprint: true } }
+  });
   if (!user) return notFound(reply, "Not found");
+  rememberPublicProfileUserHandleAliases(user, requested);
 
   const wk = await buildWellKnownContentboxPayload(req);
   const nodeUrl = asString(wk.nodeUrl || "").trim();
@@ -33383,45 +33660,14 @@ async function resolveLocalDisplayNameFromPublicHandle(handleValue: string | nul
   const requested = normalizePublicProfileHandle(handleValue || "");
   if (!requested || looksLikeInternalUserId(requested)) return null;
 
-  const maybeName = requested.replace(/[-_.]+/g, " ").trim();
-  const direct = await prisma.user.findFirst({
-    where: {
-      OR: [
-        { displayName: { equals: requested } },
-        ...(maybeName ? [{ displayName: { equals: maybeName } }] : []),
-        { email: { startsWith: `${requested}@` } }
-      ]
-    },
-    select: { displayName: true, email: true }
+  const matched = await resolvePublicProfileUserByHandle(requested, {
+    id: true,
+    displayName: true,
+    email: true
   });
-  const directDisplay = asString(direct?.displayName || "").trim();
-  if (directDisplay && !looksLikeInternalUserId(directDisplay)) return directDisplay;
-
-  const handleHints = Array.from(
-    new Set(
-      requested
-        .split(/[-_.]+/g)
-        .map((part) => part.trim())
-        .filter((part) => part.length >= 2)
-    )
-  );
-  if (!handleHints.length) return null;
-
-  const candidates = await prisma.user.findMany({
-    where: {
-      OR: [
-        ...handleHints.map((hint) => ({ displayName: { contains: hint } })),
-        ...handleHints.map((hint) => ({ email: { startsWith: hint } }))
-      ]
-    },
-    select: { displayName: true, email: true },
-    take: 200
-  });
-  const matched =
-    candidates.find((candidate) => normalizePublicProfileHandle(candidate.displayName || "") === requested) ||
-    candidates.find((candidate) => normalizedEmailLocalPart(candidate.email || "") === requested) ||
-    null;
-  const matchedDisplay = asString(matched?.displayName || "").trim();
+  if (!matched) return null;
+  rememberPublicProfileUserHandleAliases(matched, requested);
+  const matchedDisplay = asString(matched.displayName || "").trim();
   if (matchedDisplay && !looksLikeInternalUserId(matchedDisplay)) return matchedDisplay;
   return null;
 }
