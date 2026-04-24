@@ -151,6 +151,19 @@ function safeHost(value: string): string {
   }
 }
 
+function deriveBaseDomain(hostname: string): string {
+  const host = String(hostname || "").trim().toLowerCase();
+  if (!host) return "";
+  const parts = host.split(".").filter(Boolean);
+  if (parts.length <= 2) return host;
+  const lastTwo = parts.slice(-2).join(".");
+  const secondLevelTlds = new Set(["co.uk", "org.uk", "com.au", "co.nz"]);
+  if (secondLevelTlds.has(lastTwo) && parts.length >= 3) {
+    return parts.slice(-3).join(".");
+  }
+  return parts.slice(-2).join(".");
+}
+
 export default function ConfigPage({
   showAdvanced,
   onOpenPayments,
@@ -374,6 +387,16 @@ export default function ConfigPage({
         setLightningWalletError(null);
         return;
       }
+      const mode = modeInfo?.nodeMode || modeInfo?.selectedMode || null;
+      const lightningScopeEnabled = mode === "advanced" || mode === "lan";
+      if (mode && !lightningScopeEnabled) {
+        if (cancelled) return;
+        setLightningAdmin(null);
+        setLightningReadiness(null);
+        setLightningBalances(null);
+        setLightningWalletError("Lightning diagnostics are available in Sovereign Creator / Sovereign Node mode.");
+        return;
+      }
       try {
         setLightningWalletError(null);
         const headers = { Authorization: `Bearer ${token}` };
@@ -397,7 +420,12 @@ export default function ConfigPage({
         if (!adminRes.ok && !readinessRes.ok && !balancesRes.ok) {
           const permissionBlocked = [adminRes.status, readinessRes.status, balancesRes.status].every((code) => code === 401 || code === 403);
           if (permissionBlocked) {
-            setLightningWalletError("Local LND wallet details are available in sovereign/provider mode.");
+            const localLndKnownReady = Boolean(modeInfo?.modeReadiness?.localLndReady);
+            setLightningWalletError(
+              localLndKnownReady
+                ? "Local LND appears online, but detailed channel/runtime diagnostics are gated by current mode."
+                : "Local LND wallet details are available in sovereign/provider mode."
+            );
             return;
           }
           setLightningWalletError(
@@ -416,7 +444,7 @@ export default function ConfigPage({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, token]);
+  }, [apiBase, token, modeInfo?.nodeMode, modeInfo?.selectedMode, modeInfo?.modeReadiness?.localLndReady]);
 
   useEffect(() => {
     if (!token) return;
@@ -587,8 +615,10 @@ export default function ConfigPage({
     ];
   }, [modeInfo?.modeReadiness?.localCommerceReady, modeInfo?.nodeMode, modeInfo?.selectedMode]);
   const lightningRuntime = (lightningReadiness?.runtime || lightningAdmin?.runtime || null) as Partial<LightningRuntimeSnapshot> | null;
-  const lightningConfigured = Boolean(lightningAdmin?.configured || lightningReadiness?.configured);
-  const localLndDetected = Boolean(lightningRuntime?.connected || lightningConfigured);
+  const lightningConfigured = Boolean(
+    lightningAdmin?.configured || lightningReadiness?.configured || modeInfo?.modeReadiness?.localLndReady
+  );
+  const localLndDetected = Boolean(modeInfo?.modeReadiness?.localLndReady || lightningRuntime?.connected || lightningConfigured);
   const formatSats = (raw: number | null | undefined) => {
     const n = Number(raw || 0);
     if (!Number.isFinite(n)) return "0 sats";
@@ -975,6 +1005,44 @@ export default function ConfigPage({
       setNamedTokenMsg(e?.message || "Failed to clear token.");
     } finally {
       setNamedTokenBusy(false);
+    }
+  };
+
+  const autoDetectTunnelSettings = () => {
+    const candidateOrigin = String(
+      publicStatus?.canonicalOrigin ||
+        publicStatus?.publicOrigin ||
+        publicOriginDetected ||
+        health?.publicOrigin ||
+        ""
+    ).trim();
+    const candidateHost = safeHost(candidateOrigin).split(":")[0] || "";
+    const shareableHost =
+      candidateHost && !isPrivateHost(candidateHost) && !candidateHost.endsWith(".trycloudflare.com")
+        ? candidateHost
+        : "";
+    const detectedDomain = shareableHost ? deriveBaseDomain(shareableHost) : "";
+    const detectedName = String(
+      discoveredTunnelName ||
+        configuredTunnelName ||
+        publicStatus?.tunnelName ||
+        tunnelName ||
+        ""
+    ).trim();
+
+    if (!String(tunnelProvider || "").trim()) setTunnelProvider("cloudflare");
+    if (detectedDomain) setTunnelDomain(detectedDomain);
+    if (detectedName) setTunnelName(detectedName);
+    if (candidateOrigin && !publicOrigin.trim()) setPublicOrigin(candidateOrigin);
+
+    const summaryParts = [
+      detectedName ? `name: ${detectedName}` : null,
+      detectedDomain ? `domain: ${detectedDomain}` : null
+    ].filter(Boolean);
+    if (summaryParts.length > 0) {
+      setTunnelActionMsg(`Auto-detected ${summaryParts.join(" • ")}.`);
+    } else {
+      setTunnelActionMsg("Auto-detect found no public host yet. Click Refresh routing and try again.");
     }
   };
 
@@ -1367,7 +1435,7 @@ export default function ConfigPage({
                   color: "#fbbf24"
                 }}
               >
-                Local controls read-only
+                Service-managed mode detected
               </span>
             ) : null}
           </div>
@@ -1416,7 +1484,7 @@ export default function ConfigPage({
             {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
             {localRoutingControlsDisabled ? (
               <div style={{ fontSize: 12, color: "#fbbf24" }}>
-                Service-managed tunnel authority is active. Local fields below are reference-only on this machine.
+                Service-managed tunnel authority is active. You can still edit and save local config for consistency/recovery.
               </div>
             ) : null}
             {publicStatus?.mode && publicStatus.mode !== "named" ? (
@@ -1454,7 +1522,7 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelProvider(e.target.value)}
                 placeholder="cloudflare"
                 className={inputClass}
-                disabled={!tunnelEnabled || !namedTunnelDetected || localRoutingControlsDisabled}
+                disabled={!tunnelEnabled}
                 autoComplete="off"
               />
               {!namedTunnelDetected ? (
@@ -1472,7 +1540,7 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelDomain(e.target.value)}
                 placeholder="contentbox.link"
                 className={inputClass}
-                disabled={!tunnelEnabled || localRoutingControlsDisabled}
+                disabled={!tunnelEnabled}
                 autoComplete="off"
               />
               <div style={{ opacity: 0.6, marginTop: 4, fontSize: 12 }}>
@@ -1493,11 +1561,11 @@ export default function ConfigPage({
                 onChange={(e) => setTunnelName(e.target.value)}
                 placeholder="contentbox"
                 className={inputClass}
-                disabled={!tunnelEnabled || localRoutingControlsDisabled}
+                disabled={!tunnelEnabled}
                 autoComplete="off"
               />
             </label>
-            {tunnelEnabled && tokenBootstrapRequired && !localRoutingControlsDisabled ? (
+            {tunnelEnabled && tokenBootstrapRequired ? (
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
                 <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
@@ -1550,8 +1618,15 @@ export default function ConfigPage({
             ) : null}
             <div style={{ display: "flex", gap: 8 }}>
               <button
+                onClick={autoDetectTunnelSettings}
+                disabled={tunnelLoading || !tunnelEnabled}
+                style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
+              >
+                Auto-detect
+              </button>
+              <button
                 onClick={saveTunnelConfig}
-                disabled={tunnelLoading || !tunnelEnabled || localRoutingControlsDisabled}
+                disabled={tunnelLoading || !tunnelEnabled}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
                 Save tunnel config
@@ -1749,7 +1824,6 @@ export default function ConfigPage({
                   onChange={(e) => setPublicOrigin(e.target.value)}
                   placeholder="https://creator.yourdomain.com"
                   className={inputClass}
-                  disabled={!namedTunnelOnline}
                   autoComplete="url"
                 />
               </label>
@@ -1762,7 +1836,6 @@ export default function ConfigPage({
                   onChange={(e) => setPublicBuyOrigin(e.target.value)}
                   placeholder="https://buy.yourdomain.com"
                   className={inputClass}
-                  disabled={!namedTunnelOnline}
                   autoComplete="url"
                 />
               </label>
@@ -1775,7 +1848,6 @@ export default function ConfigPage({
                   onChange={(e) => setPublicStudioOrigin(e.target.value)}
                   placeholder="https://studio.yourdomain.com"
                   className={inputClass}
-                  disabled={!namedTunnelOnline}
                   autoComplete="url"
                 />
               </label>
@@ -1832,7 +1904,7 @@ export default function ConfigPage({
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button
                 onClick={saveNetworking}
-                disabled={!namedTunnelOnline}
+                disabled={!token}
                 style={{ padding: "8px 10px", borderRadius: 10, cursor: "pointer" }}
               >
                 Save overrides
