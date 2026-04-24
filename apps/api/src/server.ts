@@ -10370,6 +10370,19 @@ async function ensurePreviewFile(content: any, files: any[]) {
   }
 }
 
+const previewGenerationInflight = new Map<string, Promise<string | null>>();
+async function ensurePreviewFileOnce(content: any, files: any[]): Promise<string | null> {
+  const contentId = asString(content?.id || "").trim();
+  if (!contentId) return null;
+  const inflight = previewGenerationInflight.get(contentId);
+  if (inflight) return inflight;
+  const task = ensurePreviewFile(content, files).finally(() => {
+    previewGenerationInflight.delete(contentId);
+  });
+  previewGenerationInflight.set(contentId, task);
+  return task;
+}
+
 async function ensureCoverImage(content: any, files: any[]) {
   try {
     if (!content?.repoPath) return null;
@@ -25645,10 +25658,56 @@ async function handlePublicPreviewFile(req: any, reply: any) {
       (typeof manifestJson?.primaryFile === "string" && manifestJson.primaryFile) ||
       (Array.isArray(manifestJson?.files) && (manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey)) ||
       null;
-    objectKey =
-      (typeof manifestJson?.preview === "string" && manifestJson.preview) ||
-      (typeof primaryFileId === "string" && primaryFileId) ||
-      "";
+    const previewFromManifest = (typeof manifestJson?.preview === "string" && manifestJson.preview) || "";
+    objectKey = previewFromManifest || "";
+    const contentType = asString(content?.type || "").trim().toLowerCase();
+    const isVideoLike = contentType === "video" || contentType === "movie" || contentType === "clip";
+    const isAudioLike = contentType === "audio" || contentType === "song";
+    const shouldAttemptPreviewGeneration =
+      (isVideoLike || isAudioLike) &&
+      (!objectKey || (typeof primaryFileId === "string" && objectKey === primaryFileId));
+    if (shouldAttemptPreviewGeneration) {
+      const files = await prisma.contentFile.findMany({
+        where: { contentId },
+        orderBy: { createdAt: "asc" }
+      });
+      const generatedPreview = await withSoftTimeout(ensurePreviewFileOnce(content, files), 3500, null);
+      if (generatedPreview) {
+        objectKey = generatedPreview;
+        if (generatedPreview !== previewFromManifest) {
+          try {
+            const nextManifestJson = { ...(manifestJson || {}), preview: generatedPreview };
+            const manifestHash = hashManifestJson(nextManifestJson);
+            const existingManifest = manifest || (await prisma.manifest.findUnique({ where: { contentId } }));
+            const manifestRecord = await prisma.manifest.upsert({
+              where: { contentId },
+              update: {
+                json: nextManifestJson as any,
+                sha256: manifestHash,
+                parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+                lineageRelation: existingManifest?.lineageRelation || null
+              },
+              create: {
+                contentId,
+                json: nextManifestJson as any,
+                sha256: manifestHash,
+                parentManifestSha256: existingManifest?.parentManifestSha256 || null,
+                lineageRelation: existingManifest?.lineageRelation || null
+              }
+            });
+            if (asString(content?.manifestId || "").trim() !== asString(manifestRecord?.id || "").trim()) {
+              await prisma.contentItem.update({
+                where: { id: contentId },
+                data: { manifestId: manifestRecord.id }
+              });
+            }
+          } catch {}
+        }
+      }
+    }
+    if (!objectKey) {
+      objectKey = (typeof primaryFileId === "string" && primaryFileId) || "";
+    }
     if (!objectKey) return notFound(reply, "preview not available");
   }
 
@@ -26375,7 +26434,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const featuredMediaUrl = featuredMediaKey
               ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(featuredMediaKey)}`)
               : "";
-            const videoPreviewUrl = previewObjectKey
+            const hasDistinctPreviewObject = Boolean(previewObjectKey && previewObjectKey !== primaryObjectKey);
+            const videoPreviewUrl = hasDistinctPreviewObject
               ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`)
               : buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file`);
             const coverUrl = buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/cover`);
