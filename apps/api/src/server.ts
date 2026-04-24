@@ -26466,8 +26466,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
-                    <img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image featured-video-poster" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
-                    <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(videoPreviewUrl)}" style="display:none;" onloadeddata="this.style.display='block'; if(this.previousElementSibling) this.previousElementSibling.style.display='none';" onerror="this.style.display='none'; if(this.previousElementSibling) this.previousElementSibling.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+                    <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(videoPreviewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
                     <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
                     <span class="featured-video-play" aria-hidden="true">▶</span>
                   </div>`
@@ -26731,8 +26730,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     );
     if (type === "video") {
       return `<div class="featured-video-thumb-wrap">
-        <img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image featured-video-poster" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
-        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" style="display:none;" onloadeddata="this.style.display='block'; if(this.previousElementSibling) this.previousElementSibling.style.display='none';" onerror="this.style.display='none'; if(this.previousElementSibling) this.previousElementSibling.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
+        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
         <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
         <span class="featured-video-play" aria-hidden="true">▶</span>
       </div>`;
@@ -28994,10 +28992,12 @@ async function handleBuyPage(req: any, reply: any) {
   }
 
   function renderBasicOffer(offer){
-    const mediaSrc = basicPrimaryUrl(offer) || previewFallbackUrl(offer);
     const mime = String(offer.primaryFileMime || "");
     const isVideo = offer.type === "video" || mime.startsWith("video/");
     const isAudio = !isVideo && (offer.type === "song" || mime.startsWith("audio/"));
+    const mediaSrc = (isVideo || isAudio)
+      ? (previewFallbackUrl(offer) || basicPrimaryUrl(offer))
+      : (basicPrimaryUrl(offer) || previewFallbackUrl(offer));
     const coverSrc = isAudio ? offerCoverUrl(offer) : null;
     const deliveryMode = resolveBasicDeliveryMode(offer);
     const allowDownload = deliveryMode === "download_only" || deliveryMode === "stream_and_download";
