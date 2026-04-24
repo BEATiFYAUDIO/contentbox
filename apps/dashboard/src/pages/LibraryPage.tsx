@@ -154,6 +154,20 @@ type SplitVersionSummary = {
   participantCount: number | null;
 };
 
+type PublicAttributionContributor = {
+  displayName: string;
+  handle: string | null;
+  role: string | null;
+  bps: number;
+  profilePath?: string | null;
+};
+
+type PublicAttributionPayload = {
+  split?: { state?: "active" | "draft" | "none" } | null;
+  primaryCreator?: { displayName?: string | null; handle?: string | null } | null;
+  contributors?: PublicAttributionContributor[] | null;
+};
+
 const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: string; cls: string }> = {
   owned: { label: "Owned", cls: "border-emerald-600/40 bg-emerald-500/10 text-emerald-300" },
   purchased: { label: "Purchased", cls: "border-sky-600/40 bg-sky-500/10 text-sky-300" },
@@ -269,6 +283,8 @@ export default function LibraryPage() {
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
   const [coverLoadErrorById, setCoverLoadErrorById] = React.useState<Record<string, boolean>>({});
   const [entitlementByContentId, setEntitlementByContentId] = React.useState<Record<string, EntitlementInventoryRow>>({});
+  const [attributionByContentId, setAttributionByContentId] = React.useState<Record<string, PublicAttributionPayload | null>>({});
+  const attributionLoadingRef = React.useRef<Set<string>>(new Set());
   const autoLoadedRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -664,6 +680,53 @@ export default function LibraryPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
+  React.useEffect(() => {
+    const targetEntries = items.slice(0, 30);
+    const missingEntries = targetEntries.filter((entry) => {
+      const contentId = String(entry.item.id || "").trim();
+      return (
+        contentId &&
+        attributionByContentId[contentId] === undefined &&
+        !attributionLoadingRef.current.has(contentId)
+      );
+    });
+    if (!missingEntries.length) return;
+
+    for (const entry of missingEntries) {
+      attributionLoadingRef.current.add(String(entry.item.id || "").trim());
+    }
+
+    (async () => {
+      const updates = await Promise.all(
+        missingEntries.map(async (entry) => {
+          const contentId = String(entry.item.id || "").trim();
+          const participation = entry.participation || participationByContentId[contentId] || null;
+          const baseOrigin =
+            participation?.kind === "remote" && participation.remoteOrigin
+              ? String(participation.remoteOrigin).replace(/\/+$/, "")
+              : apiBase.replace(/\/+$/, "");
+          const url = `${baseOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`;
+          try {
+            const res = await fetch(url, { method: "GET", credentials: "omit" });
+            if (!res.ok) return [contentId, null] as const;
+            const payload = (await res.json()) as PublicAttributionPayload;
+            return [contentId, payload || null] as const;
+          } catch {
+            return [contentId, null] as const;
+          }
+        })
+      );
+      setAttributionByContentId((prev) => {
+        const next = { ...prev };
+        for (const [contentId, payload] of updates) {
+          next[contentId] = payload;
+          attributionLoadingRef.current.delete(contentId);
+        }
+        return next;
+      });
+    })();
+  }, [apiBase, items, attributionByContentId, participationByContentId]);
+
   const groupedEntries = {
     owned: items.filter((e) => e.item.libraryAccess === "owned"),
     purchased: items.filter((e) => e.item.libraryAccess === "purchased"),
@@ -822,6 +885,11 @@ function splitSummaryLabel(summary: LibraryRightsSummary): string {
   if (summary.splitState === "draft_incomplete") return "Split draft incomplete";
   if (summary.splitState === "missing") return "Needs split setup";
   return "Split state unknown";
+}
+
+function toPercentLabel(bps: number | null | undefined): string {
+  const safe = Number.isFinite(Number(bps)) ? Math.max(0, Number(bps)) : 0;
+  return `${(safe / 100).toFixed(2)}%`;
 }
 
 function buildPublicPageUrl(contentId: string, remoteOrigin?: string | null): string {
@@ -990,6 +1058,10 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                           : null;
                     const derivativeApproval = derivativeApprovalByChildId[it.id] || null;
                     const splitSummary = ownedSplitSummaryByContentId[it.id] || null;
+                    const attribution = attributionByContentId[it.id] || null;
+                    const contributors = Array.isArray(attribution?.contributors)
+                      ? attribution.contributors.filter((row) => Number.isFinite(Number(row?.bps)) && Number(row?.bps) > 0)
+                      : [];
                     const splitState =
                       entry.relation === "owner"
                         ? deriveSplitStateFromLatestVersion({
@@ -1109,6 +1181,21 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                             Relationship: {LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType]}
                           </div>
                           <div className="mt-1 text-[11px] text-neutral-400">{splitSummaryLabel(rightsSummary)}</div>
+                          {contributors.length > 0 ? (
+                            <div className="mt-1 rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2">
+                              <div className="text-[11px] font-medium text-neutral-300">Attribution split</div>
+                              <ul className="mt-1 space-y-1 text-[11px] text-neutral-400">
+                                {contributors.map((row, idx) => (
+                                  <li key={`${it.id}:attribution:${idx}`}>
+                                    <span className="text-neutral-200">{row.displayName || "Contributor"}</span>
+                                    {row.handle ? <span className="text-neutral-500"> ({row.handle})</span> : null}
+                                    {row.role ? <span className="text-neutral-500"> • {row.role}</span> : null}
+                                    <span className="text-neutral-300"> • {toPercentLabel(row.bps)}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
                           {rightsSummary.myRole ? (
                             <div className="text-[11px] text-neutral-400">
                               My role: {rightsSummary.myRole}
