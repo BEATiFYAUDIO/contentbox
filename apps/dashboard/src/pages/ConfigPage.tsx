@@ -1419,7 +1419,7 @@ export default function ConfigPage({
 
         {!token && <div style={{ marginTop: 8, opacity: 0.7 }}>Sign in to manage tunnel settings.</div>}
 
-        {token && (
+        {token && tunnelEnabled && (
           <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
             {tunnelError && <div style={{ color: "#ff8080" }}>{tunnelError}</div>}
             {localRoutingControlsDisabled ? (
@@ -1505,7 +1505,7 @@ export default function ConfigPage({
                 autoComplete="off"
               />
             </label>
-            {tunnelEnabled && tokenBootstrapRequired && !localRoutingControlsDisabled ? (
+            {tunnelEnabled && tokenBootstrapRequired && !localRoutingControlsDisabled && !serviceManagedTokenMode ? (
               <div style={{ border: "1px solid rgba(255,255,255,0.08)", borderRadius: 10, padding: 10 }}>
                 <div style={{ fontWeight: 600, marginBottom: 6 }}>Connect named tunnel (one‑time)</div>
                 <div style={{ opacity: 0.65, fontSize: 12, marginBottom: 8 }}>
