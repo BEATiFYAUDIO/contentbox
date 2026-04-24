@@ -98,6 +98,8 @@ type RemoteRoyaltyParticipation = {
     childOrigin?: string | null;
     relation?: string | null;
     status?: string | null;
+    childStatus?: string | null;
+    childDeletedAt?: string | null;
   }>;
 };
 
@@ -410,8 +412,13 @@ export default function LibraryPage() {
             return inbox
               .filter((entry) => {
                 const status = String(entry?.status || "").toLowerCase();
+                const childStatus = String(entry?.childStatus || "").toLowerCase();
+                const childDeletedAt = String(entry?.childDeletedAt || "").trim();
                 // Library cards should only surface published/cleared derivative works.
-                return status === "approved" || status === "cleared";
+                if (!(status === "approved" || status === "cleared")) return false;
+                if (childDeletedAt) return false;
+                if (childStatus && childStatus !== "published") return false;
+                return true;
               })
               .map((entry) => {
                 const childContentId = String(entry?.childContentId || "").trim();
@@ -423,8 +430,8 @@ export default function LibraryPage() {
                   contentId: childContentId,
                   contentTitle: entry?.childTitle || "Untitled derivative",
                   contentType: childType,
-                  contentStatus: "published",
-                  contentDeletedAt: null,
+                  contentStatus: String(entry?.childStatus || "published").toLowerCase() || "published",
+                  contentDeletedAt: String(entry?.childDeletedAt || "").trim() || null,
                   splitParticipantId: null,
                   remoteInviteId: inviteId,
                   remoteOrigin: String(entry?.childOrigin || "").replace(/\/+$/, "") || defaultOrigin,
@@ -447,6 +454,8 @@ export default function LibraryPage() {
             if (!childContentId) return false;
             const status = String((row as any)?.status || "").toLowerCase();
             const approvedAt = String((row as any)?.approvedAt || "").trim();
+            const childDeletedAt = String((row as any)?.childDeletedAt || "").trim();
+            if (childDeletedAt) return false;
             return status === "approved" || Boolean(approvedAt);
           })
           .map((row) => {
@@ -461,7 +470,7 @@ export default function LibraryPage() {
               contentTitle: childTitle,
               contentType: "derivative",
               contentStatus: "published",
-              contentDeletedAt: null,
+              contentDeletedAt: String((row as any)?.childDeletedAt || "").trim() || null,
               splitParticipantId: null,
               remoteInviteId: remoteInviteMeta?.remoteInviteId || null,
               remoteOrigin: origin,
@@ -681,7 +690,7 @@ export default function LibraryPage() {
   }, [items]);
 
   React.useEffect(() => {
-    const targetEntries = items.slice(0, 30);
+    const targetEntries = items;
     const missingEntries = targetEntries.filter((entry) => {
       const contentId = String(entry.item.id || "").trim();
       return (
