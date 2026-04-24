@@ -20895,7 +20895,6 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         .filter((p) => p.content)
         .map((p) => ({ ...p.content, ...toVersionSummary(p.content), libraryAccess: "purchased" }))
     );
-    items.push(...publicPreview.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "preview" })));
 
     const combinedParticipantLinks = [...participantLinks, ...identityTargetedLinks];
 
@@ -20939,6 +20938,9 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         );
       }
     }
+
+    // Keep preview-only rows last so attributed participant rows win de-dupe.
+    items.push(...publicPreview.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "preview" })));
   }
 
   // de-dupe by content id (keep first)
