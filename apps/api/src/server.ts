@@ -20881,6 +20881,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           splitVersion: {
             status: "locked",
             content: {
+              ownerUserId: { not: userId },
               status: "published",
               deletedAt: null,
               ...contentTypeWhere
@@ -20919,6 +20920,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             splitVersion: {
               status: "locked",
               content: {
+                ownerUserId: { not: userId },
                 status: "published",
                 deletedAt: null,
                 ...contentTypeWhere

@@ -241,8 +241,8 @@ function mapContentType(type: string | null | undefined): LibraryTypeFilter {
 function normalizeRemoteParticipationContentStatus(value: string | null | undefined, inviteStatus?: string | null): string {
   const v = String(value || "").trim().toLowerCase();
   if (v === "published" || v === "draft") return v;
-  // Accepted invite alone is not enough to claim published content.
-  if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "draft";
+  // Accepted remote split participation should surface in Library even when upstream omits status.
+  if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "published";
   return "draft";
 }
 
@@ -670,6 +670,8 @@ export default function LibraryPage() {
               .map((value) => String(value || "").trim().toLowerCase())
               .filter(Boolean)
           );
+          const viewerOwnsItem = section === "owned" || appearsBecause.has("owned");
+          const viewerParticipatesInSplit = section === "participant" || appearsBecause.has("split_participant");
           const isDerivativeChild =
             derivativeByType ||
             derivativeChildContentIds.has(contentId) ||
@@ -679,7 +681,7 @@ export default function LibraryPage() {
             derivativeParentContentIds.has(contentId) ||
             appearsBecause.has("derivative_parent");
           const derivativeLinked = isDerivativeChild || isDerivativeParent;
-          const hasSharedSplitMembership = section === "participant" || appearsBecause.has("split_participant");
+          const hasSharedSplitMembership = viewerParticipatesInSplit && !viewerOwnsItem;
           const relationshipTagSet = new Set<LibraryRelationshipFilter>();
           if (section === "owned") relationshipTagSet.add("authored_work");
           if (hasSharedSplitMembership) relationshipTagSet.add("shared_splits");
