@@ -548,6 +548,21 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 4000
   }
 }
 
+async function withSoftTimeout<T>(work: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  const safeTimeoutMs = Math.max(50, Math.floor(Number(timeoutMs || 0)));
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      work.catch(() => fallback),
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(fallback), safeTimeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function lndHealthCheck() {
   const cfg = await getStoredLndConfig(prisma).catch(() => null);
   if (!cfg) {
@@ -24319,13 +24334,12 @@ let profileServiceModeCache:
   | {
       expiresAt: number;
       staleExpiresAt: number;
-      value: "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+      value: ProfileServiceMode;
     }
   | null = null;
 let creatorSignalNodeDetailsInflight: Promise<CreatorSignalNodeDetails> | null = null;
-let profileServiceModeInflight: Promise<
-  "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node"
-> | null = null;
+type ProfileServiceMode = "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
+let profileServiceModeInflight: Promise<ProfileServiceMode> | null = null;
 
 async function getCachedCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDetails> {
   const now = Date.now();
@@ -24365,36 +24379,52 @@ async function getCachedCreatorSignalNodeDetails(): Promise<CreatorSignalNodeDet
   return creatorSignalNodeDetailsInflight;
 }
 
-async function getCachedProfileServiceMode(): Promise<
-  "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node"
-> {
+function getFallbackProfileServiceMode(): ProfileServiceMode {
+  const profileCapabilityCtx = getCapabilityContextCached();
+  const profileProviderConnection = deriveProviderCommerceConnectionState();
+  return resolveProviderServiceProfile({
+    hasLocalInvoiceMinting: false,
+    localSovereignReady: false,
+    providerConnected: profileProviderConnection.providerConnected,
+    ctx: profileCapabilityCtx
+  }).participationMode as ProfileServiceMode;
+}
+
+function refreshProfileServiceModeInBackground(): void {
+  if (profileServiceModeInflight) return;
+  profileServiceModeInflight = (async () => {
+    const profileCapabilityCtx = getCapabilityContextCached();
+    const profileProviderConnection = deriveProviderCommerceConnectionState();
+    const profileSovereignReadiness = await getLocalSovereignReadinessCached();
+    const value = resolveProviderServiceProfile({
+      hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
+      localSovereignReady: profileSovereignReadiness.ready,
+      providerConnected: profileProviderConnection.providerConnected,
+      ctx: profileCapabilityCtx
+    }).participationMode as ProfileServiceMode;
+    profileServiceModeCache = {
+      expiresAt: Date.now() + PROFILE_RUNTIME_CACHE_TTL_MS,
+      staleExpiresAt: Date.now() + PROFILE_RUNTIME_STALE_TTL_MS,
+      value
+    };
+    return value;
+  })().finally(() => {
+    profileServiceModeInflight = null;
+  });
+}
+
+async function getCachedProfileServiceMode(opts?: { nonBlocking?: boolean }): Promise<ProfileServiceMode> {
   const now = Date.now();
   if (profileServiceModeCache && profileServiceModeCache.expiresAt > now) {
     return profileServiceModeCache.value;
   }
   if (profileServiceModeCache && profileServiceModeCache.staleExpiresAt > now) {
-    if (!profileServiceModeInflight) {
-      profileServiceModeInflight = (async () => {
-        const profileCapabilityCtx = getCapabilityContextCached();
-        const profileProviderConnection = deriveProviderCommerceConnectionState();
-        const profileSovereignReadiness = await getLocalSovereignReadinessCached();
-        const value = resolveProviderServiceProfile({
-          hasLocalInvoiceMinting: profileSovereignReadiness.localCommerceReady,
-          localSovereignReady: profileSovereignReadiness.ready,
-          providerConnected: profileProviderConnection.providerConnected,
-          ctx: profileCapabilityCtx
-        }).participationMode as "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node";
-        profileServiceModeCache = {
-          expiresAt: Date.now() + PROFILE_RUNTIME_CACHE_TTL_MS,
-          staleExpiresAt: Date.now() + PROFILE_RUNTIME_STALE_TTL_MS,
-          value
-        };
-        return value;
-      })().finally(() => {
-        profileServiceModeInflight = null;
-      });
-    }
+    refreshProfileServiceModeInBackground();
     return profileServiceModeCache.value;
+  }
+  if (opts?.nonBlocking) {
+    refreshProfileServiceModeInBackground();
+    return profileServiceModeCache?.value || getFallbackProfileServiceMode();
   }
   if (profileServiceModeInflight) return profileServiceModeInflight;
   const profileCapabilityCtx = getCapabilityContextCached();
@@ -24406,7 +24436,7 @@ async function getCachedProfileServiceMode(): Promise<
       localSovereignReady: profileSovereignReadiness.ready,
       providerConnected: profileProviderConnection.providerConnected,
       ctx: profileCapabilityCtx
-    }).participationMode as "basic_creator" | "sovereign_creator" | "sovereign_creator_with_provider" | "sovereign_node"
+    }).participationMode as ProfileServiceMode
   )
     .then((value) => {
       profileServiceModeCache = {
@@ -24913,6 +24943,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   if (!user) return notFound(reply, "Not found");
 
   const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
+  const creatorSignalNodeDetailsFallback: CreatorSignalNodeDetails = {
+    hasPublicTunnel: false,
+    hasLightningConfigured: false,
+    canReceivePayments: false,
+    channelCount: 0
+  };
   const [
     verifiedProofs,
     featuredContent,
@@ -24949,9 +24985,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       }
     }),
     buildWellKnownContentboxPayload(req),
-    getCachedCreatorSignalNodeDetails(),
-    getCachedProfileServiceMode(),
-    listLockedParticipationsForUser(user.id)
+    withSoftTimeout(getCachedCreatorSignalNodeDetails(), 1200, creatorSignalNodeDetailsFallback),
+    getCachedProfileServiceMode({ nonBlocking: true }),
+    withSoftTimeout(listLockedParticipationsForUser(user.id), 1200, [] as ParticipationProjection[])
   ]);
 
   const nodeUrl = wk.nodeUrl || "";
