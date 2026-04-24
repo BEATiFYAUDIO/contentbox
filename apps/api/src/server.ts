@@ -1378,11 +1378,17 @@ const tunnelManager = new TunnelManager({
   }
 });
 
-function resolveCloudflaredCmd(): string | null {
+function resolveCloudflaredCmdFast(): string | null {
   const envPath = String(process.env.CLOUDFLARED_PATH || "").trim();
   if (envPath && fsSync.existsSync(envPath)) return envPath;
   const localBin = path.join(CLOUDFLARED_BIN_DIR, process.platform === "win32" ? "cloudflared.exe" : "cloudflared");
   if (fsSync.existsSync(localBin)) return localBin;
+  return null;
+}
+
+function resolveCloudflaredCmd(): string | null {
+  const fast = resolveCloudflaredCmdFast();
+  if (fast) return fast;
   try {
     const res = spawnSync("cloudflared", ["--version"], { stdio: "ignore" });
     if (res.status === 0) return "cloudflared";
@@ -1402,15 +1408,68 @@ function readCloudflaredVersionSync(binPath: string): string | null {
   return null;
 }
 
+const CLOUDFLARED_STATUS_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.CLOUDFLARED_STATUS_CACHE_TTL_MS || "30000")
+);
+const CLOUDFLARED_STATUS_STALE_TTL_MS = Math.max(
+  CLOUDFLARED_STATUS_CACHE_TTL_MS,
+  Number(process.env.CLOUDFLARED_STATUS_STALE_TTL_MS || "120000")
+);
+let cloudflaredStatusCache:
+  | {
+      expiresAt: number;
+      staleExpiresAt: number;
+      value: { available: boolean; managedPath: string | null; version: string | null };
+    }
+  | null = null;
+let cloudflaredStatusRefreshScheduled = false;
+function refreshCloudflaredStatusInBackground() {
+  if (cloudflaredStatusRefreshScheduled) return;
+  cloudflaredStatusRefreshScheduled = true;
+  setTimeout(() => {
+    try {
+      const resolved = resolveCloudflaredCmd();
+      const next = !resolved
+        ? { available: false, managedPath: null, version: null }
+        : {
+            available: true,
+            managedPath: resolved === "cloudflared" ? null : resolved,
+            version: readCloudflaredVersionSync(resolved)
+          };
+      cloudflaredStatusCache = {
+        expiresAt: Date.now() + CLOUDFLARED_STATUS_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + CLOUDFLARED_STATUS_STALE_TTL_MS,
+        value: next
+      };
+    } catch {}
+    cloudflaredStatusRefreshScheduled = false;
+  }, 0);
+}
 function getCloudflaredStatus(): { available: boolean; managedPath: string | null; version: string | null } {
-  const resolved = resolveCloudflaredCmd();
-  if (!resolved) return { available: false, managedPath: null, version: null };
-  const managedPath = resolved === "cloudflared" ? null : resolved;
-  return {
-    available: true,
-    managedPath,
-    version: readCloudflaredVersionSync(resolved)
+  const now = Date.now();
+  if (cloudflaredStatusCache && cloudflaredStatusCache.expiresAt > now) {
+    return cloudflaredStatusCache.value;
+  }
+  if (cloudflaredStatusCache && cloudflaredStatusCache.staleExpiresAt > now) {
+    refreshCloudflaredStatusInBackground();
+    return cloudflaredStatusCache.value;
+  }
+  const resolved = resolveCloudflaredCmdFast();
+  const value = !resolved
+    ? { available: false, managedPath: null, version: null }
+    : {
+        available: true,
+        managedPath: resolved === "cloudflared" ? null : resolved,
+        version: null
+      };
+  cloudflaredStatusCache = {
+    expiresAt: now + CLOUDFLARED_STATUS_CACHE_TTL_MS,
+    staleExpiresAt: now + CLOUDFLARED_STATUS_STALE_TTL_MS,
+    value
   };
+  refreshCloudflaredStatusInBackground();
+  return value;
 }
 
 type LocalState = {
@@ -9227,8 +9286,79 @@ function detectTunnelControlMode() {
   };
 }
 
+const TUNNEL_CONTROL_MODE_CACHE_TTL_MS = Math.max(
+  1000,
+  Number(process.env.TUNNEL_CONTROL_MODE_CACHE_TTL_MS || "30000")
+);
+const TUNNEL_CONTROL_MODE_STALE_TTL_MS = Math.max(
+  TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
+  Number(process.env.TUNNEL_CONTROL_MODE_STALE_TTL_MS || "120000")
+);
+let tunnelControlModeCache:
+  | {
+      expiresAt: number;
+      staleExpiresAt: number;
+      value: ReturnType<typeof detectTunnelControlMode>;
+    }
+  | null = null;
+let tunnelControlModeRefreshScheduled = false;
+function getTunnelControlModeFallback(): ReturnType<typeof detectTunnelControlMode> {
+  const serviceScriptPath = "/etc/init.d/cloudflared";
+  const localConfigPath =
+    String(process.env.CLOUDFLARED_CONFIG_PATH || "").trim() ||
+    path.join(os.homedir(), ".cloudflared", "config.yml");
+  return {
+    mode: "unknown",
+    message: "Tunnel control mode could not be determined.",
+    serviceScriptPath: fsSync.existsSync(serviceScriptPath) ? serviceScriptPath : null,
+    serviceScriptHasToken: false,
+    localConfigPath: localConfigPath || null,
+    localConfigPresent: fsSync.existsSync(localConfigPath),
+    activeProcessToken: false,
+    activeProcessConfig: false,
+    activeServiceTokenProcess: false,
+    activeAppManagedTokenProcess: false
+  };
+}
+function refreshTunnelControlModeInBackground() {
+  if (tunnelControlModeRefreshScheduled) return;
+  tunnelControlModeRefreshScheduled = true;
+  setTimeout(() => {
+    try {
+      const value = detectTunnelControlMode();
+      tunnelControlModeCache = {
+        expiresAt: Date.now() + TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
+        staleExpiresAt: Date.now() + TUNNEL_CONTROL_MODE_STALE_TTL_MS,
+        value
+      };
+    } catch {}
+    tunnelControlModeRefreshScheduled = false;
+  }, 0);
+}
+function getTunnelControlModeCached(force = false): ReturnType<typeof detectTunnelControlMode> {
+  const now = Date.now();
+  if (!force && tunnelControlModeCache && tunnelControlModeCache.expiresAt > now) {
+    return tunnelControlModeCache.value;
+  }
+  if (!force && tunnelControlModeCache && tunnelControlModeCache.staleExpiresAt > now) {
+    refreshTunnelControlModeInBackground();
+    return tunnelControlModeCache.value;
+  }
+  if (!force) {
+    refreshTunnelControlModeInBackground();
+    return tunnelControlModeCache?.value || getTunnelControlModeFallback();
+  }
+  const value = detectTunnelControlMode();
+  tunnelControlModeCache = {
+    expiresAt: now + TUNNEL_CONTROL_MODE_CACHE_TTL_MS,
+    staleExpiresAt: now + TUNNEL_CONTROL_MODE_STALE_TTL_MS,
+    value
+  };
+  return value;
+}
+
 function shouldDeferNamedTunnelToServiceControl() {
-  const tc = detectTunnelControlMode();
+  const tc = getTunnelControlModeCached();
   if (process.platform !== "win32") {
     return { shouldDefer: false, tunnelControl: tc };
   }
