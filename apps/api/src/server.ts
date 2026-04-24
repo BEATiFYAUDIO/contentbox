@@ -17698,13 +17698,16 @@ app.post("/api/network/provider/acknowledge-client", async (req: any, reply: any
     },
     requestedAt
   };
+  const existingLink = getProviderCreatorLink(clientNodeId);
   upsertProviderCreatorLink({
     providerNodeId: identity.nodeId,
     creatorNodeId: clientNodeId,
     providerEndpoint: getPublicStatus().canonicalOrigin || getPublicStatus().publicOrigin || null,
     trustStatus: "verified",
     handshakeStatus: "accepted",
-    executionAllowed: false,
+    // Acknowledge should not downgrade an already-authorized execution relationship.
+    // Operation-intent approval remains the path that elevates false -> true.
+    executionAllowed: existingLink?.executionAllowed ? true : false,
     lastSeenAt: issuedAt
   });
   return reply.send(out);
