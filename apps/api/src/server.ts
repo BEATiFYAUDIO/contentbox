@@ -25895,13 +25895,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                     : `<div class="featured-image-fallback"><span class="featured-fallback">${safeType}</span></div>`;
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
-              <div class="featured-meta" style="min-width:0;">
+              <div class="featured-meta">
                 <div class="featured-topline">
                   <span class="featured-type-badge">${safeType}</span>
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ↗</a></div>
+                <div class="featured-support">${safeHandle} • Verified creator</div>
+                <div class="featured-cta-row"><a class="featured-cta" href="${escHtml(buyUrl)}">${escHtml(ctaLabel)} ↗</a></div>
               </div>
             </article>`;
           })
@@ -26104,16 +26105,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             });
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
-              <div class="featured-meta" style="min-width:0;">
+              <div class="featured-meta">
                 <div class="featured-topline">
                   <span class="featured-type-badge">${safeType || "Participation"}</span>
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="line muted">Role: ${safeRole} • Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole} • Share: ${safeShare}</div>
                 ${
                   linkHref && cta
-                    ? `<div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
                     : ""
                 }
               </div>
@@ -26150,23 +26151,23 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             });
             return `<article class="featured-item">
               <div class="featured-media">${mediaHtml}</div>
-              <div class="featured-meta" style="min-width:0;">
+              <div class="featured-meta">
                 <div class="featured-topline">
                   <span class="featured-type-badge">${safeType || "Participation"}</span>
                   <span class="featured-verified">Certifyd</span>
                 </div>
                 <div class="featured-title">${safeTitle}</div>
-                <div class="line muted">Role: ${safeRole} • Share: ${safeShare}</div>
+                <div class="featured-support">Role: ${safeRole} • Share: ${safeShare}</div>
                 ${
                   isDerivative
-                    ? `<div class="line muted">Derivative of ${
+                    ? `<div class="featured-support">Derivative of ${
                         originalWorkUrl ? `<a href="${escHtml(originalWorkUrl)}">${parentTitle}</a>` : parentTitle
                       }</div>`
                     : ""
                 }
                 ${
                   linkHref && cta
-                    ? `<div style="margin-top:10px;"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
+                    ? `<div class="featured-cta-row"><a class="featured-cta" href="${escHtml(linkHref)}">${escHtml(cta)} ↗</a></div>`
                     : ""
                 }
               </div>
@@ -26334,9 +26335,28 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .proof-badge--substack { background:#29160f; border-color:#9a3412; color:#fdba74; }
     .proof-badge--x { background:#0a0a0a; border-color:#374151; color:#f3f4f6; }
     .proof-badge--instagram { background:#2b1022; border-color:#831843; color:#fbcfe8; }
-    .featured-grid { display:grid; grid-template-columns:1fr; gap:10px; }
-    .featured-item { border:1px solid #252525; border-radius:12px; padding:10px; background:#111215; display:grid; grid-template-columns:1fr; gap:10px; }
-    .featured-media { border:1px solid #222; border-radius:10px; background:#161616; overflow:hidden; aspect-ratio:16 / 9; width:100%; min-height:0; display:flex; align-items:center; justify-content:center; }
+    .featured-grid { display:grid; grid-template-columns:1fr; gap:12px; }
+    .featured-item {
+      border:1px solid #252525;
+      border-radius:12px;
+      background:#111215;
+      overflow:hidden;
+      display:flex;
+      flex-direction:column;
+      min-width:0;
+    }
+    .featured-media {
+      border-bottom:1px solid #20242a;
+      background:#0f1115;
+      overflow:hidden;
+      aspect-ratio:16 / 9;
+      width:100%;
+      min-height:0;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+    }
+    .featured-meta { padding:8px 10px 10px; min-width:0; }
     .featured-image { width:100%; height:100%; object-fit:cover; display:block; }
     .featured-image-fallback { width:100%; min-height:120px; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg, #121419 0%, #0f1013 100%); }
     .featured-video-thumb-wrap { width:100%; height:100%; position:relative; background:#0d0f13; display:flex; align-items:center; justify-content:center; }
@@ -26350,16 +26370,41 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     .featured-song-cover-wrap .featured-fallback { display:none; }
     .featured-song-cover-missing .featured-fallback { display:block; }
     .featured-audio { width:100%; }
-    .featured-fallback { font-size:11px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
-    .featured-topline { display:flex; align-items:center; gap:8px; margin-bottom:6px; flex-wrap:wrap; }
-    .featured-type-badge { font-size:11px; letter-spacing:0.02em; color:#b9c2cf; background:#1a2028; border:1px solid #303948; border-radius:999px; padding:3px 8px; }
-    .featured-verified { font-size:11px; color:#7dd3fc; background:#10212e; border:1px solid #284557; border-radius:999px; padding:3px 8px; }
+    .featured-fallback { font-size:10px; letter-spacing:0.02em; color:#8a8f98; border:1px dashed #39414d; border-radius:999px; padding:4px 10px; }
+    .featured-topline { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
+    .featured-type-badge { font-size:10px; letter-spacing:0.02em; color:#b9c2cf; background:#1a2028; border:1px solid #303948; border-radius:999px; padding:2px 7px; }
+    .featured-verified { font-size:10px; color:#7dd3fc; background:#10212e; border:1px solid #284557; border-radius:999px; padding:2px 7px; }
     .posture-pill { font-size:11px; border-radius:999px; padding:3px 10px; border:1px solid transparent; letter-spacing:0.01em; }
     .posture-pill--basic { color:#fcd7b5; background:#2a1a0f; border-color:#6f4a2a; }
     .posture-pill--creator { color:#e5e7eb; background:#2a2f39; border-color:#7a818f; }
     .posture-pill--node { color:#fef3c7; background:#2c230d; border-color:#b18a2e; }
-    .featured-cta { display:inline-flex; align-items:center; font-weight:600; }
-    .featured-title { font-weight:700; font-size:19px; line-height:1.25; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+    .featured-title {
+      font-weight:650;
+      font-size:14px;
+      line-height:1.28;
+      display:-webkit-box;
+      -webkit-line-clamp:2;
+      -webkit-box-orient:vertical;
+      overflow:hidden;
+    }
+    .featured-support {
+      margin-top:4px;
+      font-size:11px;
+      color:#97a1af;
+      line-height:1.3;
+      display:-webkit-box;
+      -webkit-line-clamp:2;
+      -webkit-box-orient:vertical;
+      overflow:hidden;
+    }
+    .featured-cta-row { margin-top:7px; }
+    .featured-cta {
+      display:inline-flex;
+      align-items:center;
+      font-weight:600;
+      font-size:12px;
+      color:#8ecbff;
+    }
     .signal-meter { margin-top:8px; width:100%; height:10px; border-radius:999px; background:#1a1d22; border:1px solid #262b33; overflow:hidden; }
     .signal-meter-fill { height:100%; border-radius:999px; background:linear-gradient(90deg, #22c55e 0%, #22d3ee 50%, #60a5fa 100%); transition:width .2s ease; }
     body.iframe-embedded .profile-header-grid {
@@ -26423,12 +26468,14 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       body.iframe-embedded .hero-name { font-size:27px; }
       body.iframe-embedded .hero-handle { font-size:16px; }
     }
+    @media (min-width: 640px) {
+      .featured-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 980px) {
+      .featured-grid { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+    }
     @media (min-width: 720px) {
       .identity-rail { align-items:flex-start; }
-      .featured-grid { grid-template-columns:1fr 1fr; }
-      .featured-item { grid-template-columns:200px 1fr; align-items:start; gap:12px; }
-      .featured-media { width:200px; min-width:200px; }
-      .featured-meta { flex:1; }
       .meta-grid { grid-template-columns:1fr 1fr; }
     }
     @media (max-width: 1200px) {
@@ -26642,7 +26689,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       highlightedParticipationsHtml
         ? `<section class="section">
     <h3>Collaborations</h3>
-    <div class="line muted">Profile-highlighted participation credits and approved derivative collaborations. Action labels follow media type: Watch (video), Listen (song), Read (book), View (other).</div>
+    <div class="line muted">Profile-highlighted split participation credits and approved derivative collaborations.</div>
     <div class="line featured-grid">${highlightedParticipationsHtml}</div>
   </section>`
         : ""
