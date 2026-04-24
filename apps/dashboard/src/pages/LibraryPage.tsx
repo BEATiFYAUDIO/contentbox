@@ -1179,7 +1179,11 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
         <div className="text-sm text-neutral-400">No items yet.</div>
       ) : (
         <div className="space-y-6">
-          {(["owned", "purchased", "preview", "participant"] as const).map((key) => {
+          {(
+            libraryRelationshipFilter === "shared_splits"
+              ? (["participant", "owned", "purchased", "preview"] as const)
+              : (["owned", "purchased", "preview", "participant"] as const)
+          ).map((key) => {
             const list = groupedEntries[key];
             if (!list.length) return null;
             const label =
