@@ -89,6 +89,31 @@ type LightningBalancesSnapshot = {
   };
 };
 
+type NodeIdentitySnapshot = {
+  nodeId: string;
+  nodePubKey: string;
+  profileId?: string | null;
+  capabilityLevel?: string | null;
+};
+
+type NetworkProviderConfig = {
+  providerNodeId: string | null;
+  providerUrl: string | null;
+  providerPubKey: string | null;
+  enabled: boolean;
+};
+
+type ProviderVerificationSnapshot = {
+  observed?: {
+    nodeId?: string | null;
+    nodePubKey?: string | null;
+  } | null;
+  verification?: {
+    status?: string | null;
+    message?: string | null;
+  } | null;
+};
+
 const STORAGE_PUBLIC_ORIGIN = "contentbox.publicOrigin";
 const STORAGE_PUBLIC_BUY_ORIGIN = "contentbox.publicBuyOrigin";
 const STORAGE_PUBLIC_STUDIO_ORIGIN = "contentbox.publicStudioOrigin";
@@ -210,6 +235,11 @@ export default function ConfigPage({
   const [lightningReadiness, setLightningReadiness] = useState<LightningReadinessSnapshot | null>(null);
   const [lightningBalances, setLightningBalances] = useState<LightningBalancesSnapshot | null>(null);
   const [lightningWalletError, setLightningWalletError] = useState<string | null>(null);
+  const [nodeIdentity, setNodeIdentity] = useState<NodeIdentitySnapshot | null>(null);
+  const [providerConfig, setProviderConfig] = useState<NetworkProviderConfig | null>(null);
+  const [providerVerification, setProviderVerification] = useState<ProviderVerificationSnapshot | null>(null);
+  const [networkIdentityError, setNetworkIdentityError] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const apiHost = safeHost(apiBase);
   const uiHost = safeHost(uiOrigin);
   const overrideHost = safeHost(apiBaseOverride);
@@ -265,6 +295,59 @@ export default function ConfigPage({
       setPublicOriginFallback(fallback.publicOriginFallback);
       setPublicBuyOriginFallback(fallback.publicBuyOriginFallback);
       setPublicStudioOriginFallback(fallback.publicStudioOriginFallback);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, token]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!token) {
+        if (cancelled) return;
+        setNodeIdentity(null);
+        setProviderConfig(null);
+        setProviderVerification(null);
+        setNetworkIdentityError(null);
+        return;
+      }
+      try {
+        const headers = { Authorization: `Bearer ${token}` };
+        const [identityRes, providerRes, verificationRes] = await Promise.all([
+          fetch(`${apiBase}/api/network/node-identity`, { method: "GET", headers }),
+          fetch(`${apiBase}/api/network/provider`, { method: "GET", headers }),
+          fetch(`${apiBase}/api/network/provider/verification/status`, { method: "GET", headers })
+        ]);
+        const [identityJson, providerJson, verificationJson] = await Promise.all([
+          identityRes.json().catch(() => null),
+          providerRes.json().catch(() => null),
+          verificationRes.json().catch(() => null)
+        ]);
+        if (cancelled) return;
+        setNodeIdentity(identityRes.ok && identityJson ? (identityJson as NodeIdentitySnapshot) : null);
+        setProviderConfig(providerRes.ok && providerJson ? (providerJson as NetworkProviderConfig) : null);
+        setProviderVerification(verificationRes.ok && verificationJson ? (verificationJson as ProviderVerificationSnapshot) : null);
+        if (!identityRes.ok && !providerRes.ok && !verificationRes.ok) {
+          setNetworkIdentityError(
+            String(
+              (identityJson as any)?.error ||
+                (providerJson as any)?.error ||
+                (verificationJson as any)?.error ||
+                "Network identity details unavailable."
+            )
+          );
+        } else {
+          setNetworkIdentityError(null);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setNodeIdentity(null);
+          setProviderConfig(null);
+          setProviderVerification(null);
+          setNetworkIdentityError(e?.message || "Network identity details unavailable.");
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -607,6 +690,18 @@ export default function ConfigPage({
     const n = Number(raw || 0);
     if (!Number.isFinite(n)) return "0 sats";
     return `${Math.round(n).toLocaleString()} sats`;
+  };
+
+  const copyValue = async (key: string, value: string | null | undefined) => {
+    const text = String(value || "").trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      window.setTimeout(() => {
+        setCopiedKey((current) => (current === key ? null : current));
+      }, 1200);
+    } catch {}
   };
 
   const updateNodeMode = async (nextMode: "basic" | "advanced" | "lan") => {
@@ -1201,6 +1296,58 @@ export default function ConfigPage({
             );
           })}
         </div>
+      </div>
+
+      <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8 }}>Node identity & provider</div>
+        <div style={{ fontSize: 13, opacity: 0.85, marginBottom: 10 }}>
+          Use these values for network/provider setup and trust verification.
+        </div>
+        <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
+          {[
+            { key: "local-node-id", label: "Local Node ID", value: nodeIdentity?.nodeId || "—" },
+            { key: "local-pubkey", label: "Local Public Key", value: nodeIdentity?.nodePubKey || "—" },
+            { key: "profile-id", label: "Profile ID", value: nodeIdentity?.profileId || "—" },
+            { key: "provider-url", label: "Provider URL", value: providerConfig?.providerUrl || "—" },
+            { key: "provider-node-id", label: "Configured Provider Node ID", value: providerConfig?.providerNodeId || "—" },
+            { key: "provider-pubkey", label: "Configured Provider Public Key", value: providerConfig?.providerPubKey || "—" },
+            { key: "observed-provider-node-id", label: "Observed Provider Node ID", value: providerVerification?.observed?.nodeId || "—" },
+            { key: "observed-provider-pubkey", label: "Observed Provider Public Key", value: providerVerification?.observed?.nodePubKey || "—" }
+          ].map((row) => {
+            const copyable = row.value && row.value !== "—";
+            return (
+              <div
+                key={row.key}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "minmax(180px, 260px) minmax(0, 1fr) auto",
+                  gap: 8,
+                  alignItems: "center"
+                }}
+              >
+                <div style={{ opacity: 0.75 }}>{row.label}</div>
+                <div style={{ color: "#e5e7eb", wordBreak: "break-all" }}>{row.value}</div>
+                <button
+                  type="button"
+                  disabled={!copyable}
+                  onClick={() => copyValue(row.key, copyable ? row.value : null)}
+                  style={{ padding: "4px 8px", borderRadius: 8, cursor: copyable ? "pointer" : "not-allowed", opacity: copyable ? 1 : 0.55 }}
+                >
+                  {copiedKey === row.key ? "Copied" : "Copy"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {providerVerification?.verification?.status ? (
+          <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
+            Provider verification: <b>{providerVerification.verification.status}</b>
+            {providerVerification?.verification?.message ? ` — ${providerVerification.verification.message}` : ""}
+          </div>
+        ) : null}
+        {networkIdentityError ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#fca5a5" }}>{networkIdentityError}</div>
+        ) : null}
       </div>
 
       {showSystemDebugPanels ? (
