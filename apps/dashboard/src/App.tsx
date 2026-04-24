@@ -1120,7 +1120,7 @@ export default function App() {
             <>
               {page === "library" && <LibraryPage />}
 
-              {page === "store" && <StorePage onOpenReceipt={(t) => { setReceiptToken(t); setPage("receipt"); }} />}
+              {page === "store" && <StorePage />}
 
               {isCommerceLockedPage ? (
                 <div className="rounded-xl border border-amber-900/60 bg-amber-950/30 p-6 text-sm text-amber-200">

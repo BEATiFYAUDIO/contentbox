@@ -1,5 +1,5 @@
 import React from "react";
-import { api, getApiBase } from "../lib/api";
+import { api } from "../lib/api";
 import { fetchIdentityDetail } from "../lib/identity";
 
 type NetworkSummary = {
@@ -378,30 +378,6 @@ type ReceiptVerifyResult = {
   type: LifecycleReceipt["type"] | null;
 };
 
-function guessApiBase() {
-  return getApiBase();
-}
-
-function isLikelyUrl(s: string) {
-  return /^https?:\/\//i.test(s.trim());
-}
-
-function extractReceiptToken(input: string): string | null {
-  const v = input.trim();
-  if (!v) return null;
-  if (v.length >= 16 && !v.includes("/") && !v.includes(" ")) return v;
-  const m = v.match(/\/public\/receipts\/([^/?#]+)/i);
-  if (m) return m[1];
-  return null;
-}
-
-function extractBuyUrl(input: string): string | null {
-  const v = input.trim();
-  if (!isLikelyUrl(v)) return null;
-  if (v.includes("/buy/")) return v;
-  return null;
-}
-
 function safeHost(value: string): string {
   try {
     return new URL(value).host;
@@ -430,10 +406,7 @@ function isTemporaryPublicOrigin(origin: string): boolean {
   return isPrivateHost(bareHost);
 }
 
-export default function StorePage(props: { onOpenReceipt: (token: string) => void }) {
-  const [input, setInput] = React.useState("");
-  const [nodeHost, setNodeHost] = React.useState(() => guessApiBase());
-  const [msg, setMsg] = React.useState<string | null>(null);
+export default function StorePage() {
   const [diagnostics, setDiagnostics] = React.useState<any | null>(null);
   const [identity, setIdentity] = React.useState<{ nodeMode?: string | null } | null>(null);
   const [networkSummary, setNetworkSummary] = React.useState<NetworkSummary | null>(null);
@@ -1246,33 +1219,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
     } finally {
       setPublishProfileBusy(false);
     }
-  }
-
-  function onOpen() {
-    setMsg(null);
-    const buyUrl = extractBuyUrl(input);
-    if (buyUrl) {
-      window.location.assign(buyUrl);
-      return;
-    }
-
-    const token = extractReceiptToken(input);
-    if (token) {
-      props.onOpenReceipt(token);
-      return;
-    }
-
-    const contentId = input.trim();
-    if (!contentId) {
-      setMsg("Paste a link, receipt token, or content ID.");
-      return;
-    }
-    if (!nodeHost) {
-      setMsg("Enter a node endpoint to open this content.");
-      return;
-    }
-    const host = nodeHost.replace(/\/$/, "");
-    window.location.assign(`${host}/buy/${contentId}`);
   }
 
   const productTier = String(diagnostics?.productTier || "basic").toLowerCase();
@@ -2448,82 +2394,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
         </div>
         )}
 
-        <div className="mt-4 space-y-2">
-          <label className="text-sm" htmlFor="store-buy-link">
-            Open by link / receipt / content ID
-          </label>
-          <input
-            id="store-buy-link"
-            name="storeBuyLink"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Paste a Certifyd Creator link, receipt link/token, or content ID"
-            className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2"
-            autoComplete="off"
-          />
-          <div className="text-xs text-neutral-500">
-            Examples: https://node.site/buy/CONTENT_ID · https://node.site/public/receipts/TOKEN · TOKEN
-          </div>
-          <div className="mt-2 grid gap-2 sm:grid-cols-2">
-            <div>
-              <label className="text-xs text-neutral-500" htmlFor="store-seller-host">
-                Node endpoint (if you pasted only a content ID)
-              </label>
-              <input
-                id="store-seller-host"
-                name="storeSellerHost"
-                value={nodeHost}
-                onChange={(e) => setNodeHost(e.target.value)}
-                placeholder="https://node.site"
-                className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm"
-                autoComplete="url"
-              />
-            </div>
-            <div className="flex items-end">
-              <button
-                onClick={onOpen}
-                className="w-full text-sm rounded-lg border border-neutral-800 px-3 py-2 hover:bg-neutral-900"
-              >
-                Open route
-              </button>
-            </div>
-          </div>
-          {msg ? <div className="text-xs text-amber-300">{msg}</div> : null}
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-neutral-800 bg-neutral-900/20 p-6 opacity-80">
-        <div className="text-lg font-semibold">Network discovery (Coming soon)</div>
-        <div className="text-sm text-neutral-400 mt-1">
-          Discovery layers will build on verified identity, reachability, and capability signals. Direct links work today.
-        </div>
-        <div className="mt-4 grid gap-3">
-          <label className="sr-only" htmlFor="store-search">
-            Search
-          </label>
-          <input
-            id="store-search"
-            name="storeSearch"
-            disabled
-            placeholder="Search"
-            className="w-full rounded-lg border border-neutral-800 bg-neutral-950 px-3 py-2 opacity-50"
-            autoComplete="off"
-          />
-          <div className="grid grid-cols-2 gap-2">
-            <button disabled className="rounded-lg border border-neutral-800 px-3 py-2 text-xs opacity-50">
-              Music
-            </button>
-            <button disabled className="rounded-lg border border-neutral-800 px-3 py-2 text-xs opacity-50">
-              Video
-            </button>
-            <button disabled className="rounded-lg border border-neutral-800 px-3 py-2 text-xs opacity-50">
-              Books
-            </button>
-            <button disabled className="rounded-lg border border-neutral-800 px-3 py-2 text-xs opacity-50">
-              Files
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
