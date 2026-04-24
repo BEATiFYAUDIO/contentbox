@@ -25873,12 +25873,16 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const cachedRenderSnapshot =
     getFreshTimedCache(profilePublicRenderSnapshotCache, user.id) ||
     getPersistedProfilePublicRenderSnapshot(user.id);
-  const proofsStepTimeoutMs = maybeCachedProofs ? PROFILE_CORE_STEP_TIMEOUT_MS : PROFILE_CORE_STEP_COLD_TIMEOUT_MS;
-  const featuredStepTimeoutMs = maybeCachedFeatured ? PROFILE_CORE_STEP_TIMEOUT_MS : PROFILE_CORE_STEP_COLD_TIMEOUT_MS;
-  const wellKnownStepTimeoutMs = PROFILE_CORE_STEP_TIMEOUT_MS;
+  const proofsStepTimeoutMs = maybeCachedProofs
+    ? Math.min(PROFILE_CORE_STEP_TIMEOUT_MS, 220)
+    : Math.min(PROFILE_CORE_STEP_COLD_TIMEOUT_MS, 500);
+  const featuredStepTimeoutMs = maybeCachedFeatured
+    ? Math.min(PROFILE_CORE_STEP_TIMEOUT_MS, 220)
+    : Math.min(PROFILE_CORE_STEP_COLD_TIMEOUT_MS, 500);
+  const wellKnownStepTimeoutMs = Math.min(PROFILE_CORE_STEP_TIMEOUT_MS, 220);
   const lockedParticipationsStepTimeoutMs = maybeCachedLockedParticipations
-    ? PROFILE_CORE_STEP_TIMEOUT_MS
-    : PROFILE_CORE_STEP_COLD_TIMEOUT_MS;
+    ? Math.min(PROFILE_CORE_STEP_TIMEOUT_MS, 220)
+    : Math.min(PROFILE_CORE_STEP_COLD_TIMEOUT_MS, 500);
   const wfProto = asString(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim().toLowerCase();
   const wfProtocol = wfProto === "http" || wfProto === "https" ? wfProto : "https";
   const wfHost = getPublicHostnameFromReq(req);
