@@ -1139,7 +1139,7 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                           <div className="w-full aspect-video rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
                             {coverUrl ? (
                               <img
-                                className="w-full h-full object-cover"
+                                className="w-full h-full object-contain object-center bg-black"
                                 src={coverUrl}
                                 alt={`${it.title || "Content"} cover`}
                                 loading="lazy"
@@ -1153,10 +1153,14 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                 onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
                               />
                             ) : hasInlineImagePreview ? (
-                              <img className="w-full h-full object-cover" src={previewUrl as string} alt={it.title || "Preview"} />
+                              <img
+                                className="w-full h-full object-contain object-center bg-black"
+                                src={previewUrl as string}
+                                alt={it.title || "Preview"}
+                              />
                             ) : participantVideoPreviewFallback ? (
                               <video
-                                className="w-full h-full object-cover"
+                                className="w-full h-full object-contain object-center bg-black"
                                 autoPlay
                                 muted
                                 loop
@@ -1365,7 +1369,11 @@ function songCoverUrl(contentId: string, preview: any, itemCoverUrl?: string | n
                                     : null;
                                 const effectivePreviewUrl = previewUrl || participantPreviewFallback;
                                 if (effectivePreviewUrl && isVideo) {
-                                  return <video className="w-full rounded-md" controls src={effectivePreviewUrl} />;
+                                  return (
+                                    <div className="w-full aspect-video rounded-md border border-neutral-800 bg-black overflow-hidden">
+                                      <video className="w-full h-full object-contain object-center bg-black" controls src={effectivePreviewUrl} />
+                                    </div>
+                                  );
                                 }
                                 if (effectivePreviewUrl && isAudio) {
                                   return <audio className="w-full" controls src={effectivePreviewUrl} />;
