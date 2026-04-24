@@ -26345,11 +26345,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const highlightedRemoteParticipationIds = new Set(highlightedRemoteParticipationRecords.map((row) => row.remoteInviteId));
   const cachedRemoteParticipations = getFreshTimedCache(profilePublicRemoteParticipationsCache, user.id) || [];
   const shouldAttemptRemoteEnrichment = Date.now() - profileStartMs < PROFILE_REMOTE_ENRICHMENT_BUDGET_MS;
-  const highlightedRemoteParticipations = shouldAttemptRemoteEnrichment
-    ? await timedProfileStep(
-        "remote_participations",
-        withSoftTimeoutKeepRunning(
-          async () => {
+  const computeRemoteParticipations = async (): Promise<any[]> => {
     const highlightedRows = highlightedRemoteParticipationIds.size
       ? await prisma.remoteInvite.findMany({
           where: {
@@ -26368,9 +26364,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       take: 16
     });
     const byInviteId = new Map<string, any>();
-    for (const row of [...highlightedRows, ...autoRows]) {
-      byInviteId.set(String(row.id), row);
-    }
+    for (const row of [...highlightedRows, ...autoRows]) byInviteId.set(String(row.id), row);
     const rows = Array.from(byInviteId.values());
     const highlightedRecordsByInviteId = new Map<string, RemoteParticipationProfileHighlightRecord[]>();
     for (const row of highlightedRemoteParticipationRecords) {
@@ -26385,15 +26379,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         if (normalizeRemoteInviteStatusForList(row as any) !== "accepted") return [] as any[];
         const selectedRecords = highlightedRecordsByInviteId.get(String(row.id)) || [];
         const selectedContentIds = Array.from(
-          new Set(
-            selectedRecords
-              .map((entry) => asString(entry.contentId || "").trim())
-              .filter(Boolean)
-          )
+          new Set(selectedRecords.map((entry) => asString(entry.contentId || "").trim()).filter(Boolean))
         );
         const hasUnscopedHighlight = selectedRecords.some((entry) => !asString(entry.contentId || "").trim());
         const token = extractInviteTokenFromUrl(row.inviteUrl || null);
-        // Public profile should render fast; remote accounting enrichment is best-effort.
         const accounting = token
           ? await fetchRemoteInviteAccountingFastForProfile(
               row.remoteOrigin,
@@ -26402,7 +26391,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             )
           : null;
         const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
-
         if (selectedContentIds.length > 0) {
           const selectedRows = selectedContentIds
             .map((selectedContentId) => {
@@ -26427,8 +26415,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             .filter(Boolean);
           if (selectedRows.length > 0) return selectedRows as any[];
         }
-
-        // Auto-surface invite content plus approved remote derivatives when invite-level highlighting is enabled.
         if (!hasUnscopedHighlight) return [] as any[];
         const baseContentId = asString(row.contentId || "").trim();
         const baseStatus = asString(row.contentStatus || "").trim().toLowerCase();
@@ -26475,13 +26461,20 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       unique.set(key, item);
     }
     return Array.from(unique.values()).slice(0, 12) as any[];
-          },
-          PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS,
-          cachedRemoteParticipations,
-          (value) => setTimedCache(profilePublicRemoteParticipationsCache, user.id, value as any[])
-        )
+  };
+  const highlightedRemoteParticipations = cachedRemoteParticipations;
+  profileStepDurations.set("remote_participations", 0);
+  if (shouldAttemptRemoteEnrichment) {
+    void timedProfileStep(
+      "remote_participations_bg",
+      withSoftTimeoutKeepRunning(
+        computeRemoteParticipations,
+        PROFILE_REMOTE_PARTICIPATIONS_STEP_TIMEOUT_MS,
+        cachedRemoteParticipations,
+        (value) => setTimedCache(profilePublicRemoteParticipationsCache, user.id, value as any[])
       )
-    : cachedRemoteParticipations;
+    );
+  }
   const resolvedHighlightedRemoteParticipations =
     highlightedRemoteParticipations.length > 0
       ? highlightedRemoteParticipations
