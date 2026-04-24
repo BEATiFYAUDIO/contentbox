@@ -21069,42 +21069,57 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     for (const p of purchased.filter((p) => p.content)) appendLibraryItem(p.content, "purchased", "purchased");
 
     const combinedParticipantLinks = [...participantLinks, ...identityTargetedLinks];
+    const participantIds = Array.from(
+      new Set(combinedParticipantLinks.map((p: any) => p.splitVersion?.contentId).filter(Boolean) as string[])
+    );
+    const ownedIds = owned.map((row: any) => asString(row?.id || "").trim()).filter(Boolean);
 
-    if (combinedParticipantLinks.length > 0) {
-      const participantIds = Array.from(
-        new Set(combinedParticipantLinks.map((p: any) => p.splitVersion?.contentId).filter(Boolean) as string[])
-      );
-      if (participantIds.length > 0) {
-        const participantContent = await prisma.contentItem.findMany({
-          where: {
-            id: { in: participantIds },
-            status: "published",
-            deletedAt: null,
-            ...contentTypeWhere
-          },
-          orderBy: { createdAt: "desc" },
-          select: selectBase
-        });
-        for (const i of participantContent) appendLibraryItem(i, "participant", "split_participant");
+    if (participantIds.length > 0) {
+      const participantContent = await prisma.contentItem.findMany({
+        where: {
+          id: { in: participantIds },
+          status: "published",
+          deletedAt: null,
+          ...contentTypeWhere
+        },
+        orderBy: { createdAt: "desc" },
+        select: selectBase
+      });
+      for (const i of participantContent) appendLibraryItem(i, "participant", "split_participant");
+    }
 
-        const derivativeChildren = await prisma.contentLink.findMany({
-          where: {
-            parentContentId: { in: participantIds },
-            childContent: {
-              is: {
-                status: "published",
-                deletedAt: null,
-                ...contentTypeWhere
-              } as any
-            }
-          },
-          include: {
-            childContent: { select: selectBase }
-          }
-        });
-        for (const i of derivativeChildren.map((link) => link.childContent).filter(Boolean)) {
-          appendLibraryItem(i as any, "participant", "derivative_child");
+    // Derivative membership should surface for both:
+    // - split participants on parent works
+    // - owners of parent works
+    // and must include approved shadow children (deleted hard mirrors).
+    const derivativeParentIds = Array.from(new Set([...participantIds, ...ownedIds]));
+    if (derivativeParentIds.length > 0) {
+      const derivativeChildren = await prisma.contentLink.findMany({
+        where: {
+          parentContentId: { in: derivativeParentIds },
+          relation: { in: ["derivative", "remix", "mashup"] as any }
+        },
+        include: {
+          childContent: { select: selectBase }
         }
+      });
+      for (const link of derivativeChildren) {
+        const child = link.childContent as any;
+        if (!child) continue;
+        const childType = asString(child?.type || link?.relation || "file").trim().toLowerCase();
+        if (!matchesRequestedType(childType)) continue;
+        const childStatus = asString(child?.status || "").trim().toLowerCase();
+        const childDeleted = Boolean(child?.deletedAt);
+        const linkApproved = Boolean(link?.approvedAt);
+        const includeByState = (childStatus === "published" && !childDeleted) || linkApproved;
+        if (!includeByState) continue;
+        const surfaced = {
+          ...child,
+          status: "published",
+          deletedAt: null
+        };
+        appendLibraryItem(surfaced, "shared", "derivative_child");
+        appendLibraryItem(surfaced, "shared", "derivative_parent");
       }
     }
 
