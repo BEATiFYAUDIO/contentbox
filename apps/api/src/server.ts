@@ -823,6 +823,37 @@ function resolveBuyerFacingOrigin(
   return fallback.replace(/\/+$/, "");
 }
 
+function resolveCanonicalPublicOrigin(req?: any): string {
+  const configuredShareable = pickShareableOrigin(
+    normalizeOrigin(process.env.CONTENTBOX_PUBLIC_ORIGIN || ""),
+    normalizeOrigin(process.env.PUBLIC_ORIGIN || ""),
+    normalizeOrigin(process.env.APP_PUBLIC_ORIGIN || ""),
+    normalizeOrigin(process.env.PUBLIC_BASE_ORIGIN || ""),
+    normalizeOrigin(process.env.PUBLIC_INVITE_ORIGIN || "")
+  );
+  if (configuredShareable) return configuredShareable.replace(/\/+$/, "");
+
+  const status = getPublicStatusCached();
+  const statusShareable = pickShareableOrigin(
+    normalizeOrigin(asString(status?.canonicalOrigin || "").trim()),
+    normalizeOrigin(asString(status?.publicOrigin || "").trim()),
+    normalizeOrigin(getActivePublicOrigin() || "")
+  );
+  if (statusShareable) return statusShareable.replace(/\/+$/, "");
+
+  if (req) {
+    const requestShareable = pickShareableOrigin(normalizeOrigin(getPublicOrigin(req)));
+    if (requestShareable) return requestShareable.replace(/\/+$/, "");
+  }
+
+  // Local-only fallback when no shareable public origin is configured.
+  const requestOrigin = req ? normalizeOrigin(getPublicOrigin(req)) : null;
+  if (requestOrigin) return requestOrigin.replace(/\/+$/, "");
+  const appBase = normalizeOrigin(APP_BASE_URL) || asString(APP_BASE_URL || "").trim().replace(/\/+$/, "");
+  if (appBase) return appBase;
+  return `http://127.0.0.1:${NODE_HTTP_PORT}`;
+}
+
 function getDurableBuyerOriginFailure(): { code: string; message: string; details?: Record<string, unknown> } {
   const status = getPublicStatusCached();
   const hostInvariant = status.hostInvariant;
@@ -13861,6 +13892,7 @@ function buildParticipationProjection(input: {
     typeof input.splitParticipant?.percent === "number"
       ? Number(input.splitParticipant.percent)
       : participantBps / 100;
+  const localCanonicalOrigin = resolveCanonicalPublicOrigin();
   return {
     contentId: String(input.content?.id || ""),
     contentTitle: input.content?.title || null,
@@ -13881,8 +13913,12 @@ function buildParticipationProjection(input: {
     participantUserId: input.splitParticipant?.participantUserId || null,
     participantEmail: input.splitParticipant?.participantEmail || null,
     acceptedAt: input.splitParticipant?.acceptedAt ? new Date(input.splitParticipant.acceptedAt).toISOString() : null,
-    attributionUrl: input.content?.id ? `${APP_BASE_URL}/public/content/${encodeURIComponent(input.content.id)}/attribution` : null,
-    buyUrl: input.content?.id ? `${APP_BASE_URL}/buy/${encodeURIComponent(input.content.id)}` : null,
+    attributionUrl: input.content?.id
+      ? buildPublicUrlFromOrigin(localCanonicalOrigin, `/public/content/${encodeURIComponent(input.content.id)}/attribution`)
+      : null,
+    buyUrl: input.content?.id
+      ? buildPublicUrlFromOrigin(localCanonicalOrigin, `/buy/${encodeURIComponent(input.content.id)}`)
+      : null,
     derivativeContext: input.derivativeContext,
     payoutSummary: input.payoutSummary,
     highlightedOnProfile: Boolean(input.highlighted)
@@ -21321,7 +21357,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       asString(i?.remoteOrigin || "").trim() || null,
       getRemoteOriginFromDescription(description)
     );
-    const localOrigin = normalizeOrigin(APP_BASE_URL) || asString(APP_BASE_URL || "").trim().replace(/\/+$/, "") || null;
+    const localOrigin = resolveCanonicalPublicOrigin(req);
     const preferredPublicOrigin = explicitRemoteOrigin || localOrigin;
     const canonicalPublicOrigin = preferredPublicOrigin ? preferredPublicOrigin.replace(/\/+$/, "") : null;
     const contentId = asString(i?.id || "").trim();
@@ -21334,7 +21370,9 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           : i.priceSats != null
             ? i.priceSats.toString()
             : null,
-      coverUrl: `${APP_BASE_URL}/public/content/${encodeURIComponent(contentId)}/cover`,
+      coverUrl: canonicalPublicOrigin
+        ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`)
+        : null,
       attributionUrl: canonicalPublicOrigin
         ? `${canonicalPublicOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`
         : null,

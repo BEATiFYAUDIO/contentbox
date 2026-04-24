@@ -317,11 +317,9 @@ export default function LibraryPage() {
   const [previewLoading, setPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
-  const [coverLoadErrorById, setCoverLoadErrorById] = React.useState<Record<string, boolean>>({});
   const [entitlementByContentId, setEntitlementByContentId] = React.useState<Record<string, EntitlementInventoryRow>>({});
   const [attributionByContentId, setAttributionByContentId] = React.useState<Record<string, PublicAttributionPayload | null>>({});
   const attributionLoadingRef = React.useRef<Set<string>>(new Set());
-  const autoLoadedRef = React.useRef(false);
 
   React.useEffect(() => {
     (async () => {
@@ -822,19 +820,16 @@ export default function LibraryPage() {
   }, []);
 
   React.useEffect(() => {
-    if (!items.length || autoLoadedRef.current) return;
-    autoLoadedRef.current = true;
-    const limit = 6;
-    const toLoad = items.slice(0, limit);
+    if (!items.length) return;
+    const toLoad = items.filter((entry) => entry.relation !== "participant");
     toLoad.forEach((entry) => {
       const id = entry.item.id;
-      if (entry.relation === "participant") return;
       if (!previewById[id] && !previewLoading[id]) {
         loadPreview(id);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [items, previewById, previewLoading]);
 
   React.useEffect(() => {
     const targetEntries = items;
@@ -913,20 +908,6 @@ export default function LibraryPage() {
     } finally {
       setPreviewLoading((m) => ({ ...m, [contentId]: false }));
     }
-  }
-
-  function handlePrimaryPreviewAction(entry: NormalizedLibraryItem, participantPreviewUrl: string | null) {
-    if (entry.relation === "participant") {
-      if (!participantPreviewUrl) {
-        setPreviewError((m) => ({ ...m, [entry.item.id]: "Preview not available for this item." }));
-        return;
-      }
-      setPreviewError((m) => ({ ...m, [entry.item.id]: "" }));
-      setPreviewById((m) => ({ ...m, [entry.item.id]: { previewUrl: participantPreviewUrl } }));
-      setPreviewOpenById((m) => ({ ...m, [entry.item.id]: true }));
-      return;
-    }
-    void loadPreview(entry.item.id);
   }
 
   async function setFeatureOnProfile(entry: NormalizedLibraryItem, next: boolean) {
@@ -1086,10 +1067,10 @@ function toPercentLabel(bps: number | null | undefined): string {
   return `${(safe / 100).toFixed(2)}%`;
 }
 
-function buildPublicPageUrl(contentId: string, remoteOrigin?: string | null): string {
+function buildPublicPageUrl(contentId: string, remoteOrigin?: string | null): string | null {
   const origin = String(remoteOrigin || "").trim().replace(/\/+$/, "");
-  if (origin) return `${origin}/p/${encodeURIComponent(contentId)}`;
-  return `/p/${encodeURIComponent(contentId)}`;
+  if (origin) return `${origin}/buy/${encodeURIComponent(contentId)}`;
+  return null;
 }
 
 function buildPublicAssetUrl(
@@ -1117,6 +1098,31 @@ function songCoverUrl(
   const preferred = normalizeAssetUrl(apiBase, String(itemCoverUrl || "").trim(), preferredOrigin);
   if (preferred) return preferred;
   return null;
+}
+
+function manifestCoverUrl(
+  contentId: string,
+  preview: any,
+  preferredOrigin?: string | null
+): string | null {
+  const coverObjectKey = String(preview?.manifest?.cover || "").trim();
+  if (!coverObjectKey) return null;
+  const root = String(preferredOrigin || apiBase || "").trim().replace(/\/+$/, "");
+  return `${root}/public/content/${encodeURIComponent(contentId)}/preview-file?objectKey=${encodeURIComponent(coverObjectKey)}`;
+}
+
+function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
+  const source = String(raw || "").trim();
+  if (!source) return false;
+  try {
+    const u = new URL(source, window.location.origin);
+    const objectKey = String(u.searchParams.get("objectKey") || "").trim().toLowerCase();
+    const path = String(u.pathname || "").toLowerCase();
+    const candidate = objectKey || path;
+    return /\.(png|jpe?g|webp|gif|avif)$/.test(candidate);
+  } catch {
+    return /\.(png|jpe?g|webp|gif|avif)(\?|$)/i.test(source);
+  }
 }
 
   return (
@@ -1239,15 +1245,37 @@ function songCoverUrl(
                             remoteAssetOrigin
                           )
                         : null;
-                    const participantVideoPreviewFallback =
-                      entry.relation === "participant" && isVideo ? participantPreviewFallback : null;
+                    const manifestCoverFallback = manifestCoverUrl(it.id, preview, cardAssetOrigin);
+                    const candidateFiles = Array.isArray(preview?.files) ? preview.files : [];
+                    const preferredPublishedObjectKey = (() => {
+                      if (String(it.status || "").toLowerCase() !== "published") return null;
+                      if (!candidateFiles.length) return null;
+                      if (isVideo) {
+                        const hit = candidateFiles.find((f: any) => String(f?.mime || "").toLowerCase().startsWith("video/"));
+                        return String(hit?.objectKey || "").trim() || null;
+                      }
+                      if (isAudio) {
+                        const hit = candidateFiles.find((f: any) => String(f?.mime || "").toLowerCase().startsWith("audio/"));
+                        return String(hit?.objectKey || "").trim() || null;
+                      }
+                      return null;
+                    })();
+                    const preferredPublishedPlaybackUrl =
+                      preferredPublishedObjectKey
+                        ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin)}?objectKey=${encodeURIComponent(
+                            preferredPublishedObjectKey
+                          )}`
+                        : null;
+                    const effectivePlaybackUrl = preferredPublishedPlaybackUrl || previewUrl || participantPreviewFallback;
                     const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
                     const rawCoverUrl = isAudio
                       ? prioritizedParticipantCover ||
+                        manifestCoverFallback ||
                         songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin) ||
                         remoteCoverFallback ||
                         participantCoverFallback
                       : prioritizedParticipantCover ||
+                        manifestCoverFallback ||
                         normalizeAssetUrl(apiBase, it.coverUrl || null, cardAssetOrigin) ||
                         remoteCoverFallback ||
                         participantCoverFallback;
@@ -1255,10 +1283,10 @@ function songCoverUrl(
                       rawCoverUrl && version
                         ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
                         : rawCoverUrl;
-                    const coverRenderable = Boolean(coverUrl && !coverLoadErrorById[it.id]);
+                    const coverRenderable = Boolean(coverUrl);
                     const isOpen = previewOpenById[it.id] ?? true;
                     const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);
-                    const hasMediaCard = Boolean(coverRenderable || hasInlineImagePreview || participantVideoPreviewFallback);
+                    const hasMediaCard = true;
                     const access = ACCESS_BADGE[(it.libraryAccess || "preview") as NonNullable<LibraryItem["libraryAccess"]>] || ACCESS_BADGE.preview;
                     const entitlement = entitlementByContentId[it.id] || null;
                     const accessModeLabel =
@@ -1315,11 +1343,7 @@ function songCoverUrl(
                           }
                         : null
                     });
-                    const showManageSplit = rightsSummary.ownershipKind === "owned";
                     const hasPublicPage = entry.availabilityState === "active" && Boolean(entry.publicPageUrl);
-                    const canLoadPreview =
-                      entry.availabilityState === "active" &&
-                      (entry.relation === "participant" ? Boolean(participantPreviewFallback) : true);
                     const rightsBadgeLabel =
                       derivativeParentOnly
                         ? "Parent of derivative"
@@ -1341,35 +1365,30 @@ function songCoverUrl(
                     return (
                       <div key={it.id} className="rounded-xl border border-neutral-800 bg-neutral-900/10 p-3 flex flex-col gap-2.5">
                         {hasMediaCard ? (
-                          <div className="w-full aspect-video rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
+                          <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-neutral-950/60 overflow-hidden flex items-center justify-center">
                             {coverRenderable ? (
                               <img
-                                className="w-full h-full object-contain object-center bg-black"
+                                className="w-full h-full object-cover object-center bg-black"
                                 src={coverUrl || undefined}
                                 alt={`${it.title || "Content"} cover`}
                                 loading="lazy"
-                                onError={() => {
-                                  setCoverLoadErrorById((m) => ({ ...m, [it.id]: true }));
-                                }}
-                                onLoad={() => setCoverLoadErrorById((m) => ({ ...m, [it.id]: false }))}
                               />
                             ) : hasInlineImagePreview ? (
                               <img
-                                className="w-full h-full object-contain object-center bg-black"
+                                className="w-full h-full object-cover object-center bg-black"
                                 src={previewUrl as string}
                                 alt={it.title || "Preview"}
                               />
-                            ) : participantVideoPreviewFallback ? (
-                              <video
-                                className="w-full h-full object-contain object-center bg-black"
-                                autoPlay
-                                muted
-                                loop
-                                playsInline
-                                preload="metadata"
-                                src={participantVideoPreviewFallback}
-                              />
-                            ) : null}
+                            ) : (
+                              <div className="w-full h-full bg-gradient-to-br from-neutral-900 via-neutral-950 to-black flex items-end">
+                                <div className="w-full px-3 py-2 border-t border-neutral-800/80 bg-black/45">
+                                  <div className="text-[11px] uppercase tracking-wide text-neutral-400">
+                                    {String(it.type || "content")}
+                                  </div>
+                                  <div className="text-sm font-medium text-neutral-200 truncate">{it.title || "Untitled"}</div>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         ) : null}
                         <div>
@@ -1454,10 +1473,6 @@ function songCoverUrl(
                           ) : null}
                         </div>
 
-                        {isAudio && coverLoadErrorById[it.id] ? (
-                          <div className="text-[11px] text-amber-300">Cover missing on disk or not set in manifest.</div>
-                        ) : null}
-
                         <div className="rounded-md border border-neutral-800 bg-neutral-950/60 p-2">
                           <div className="flex items-center justify-between">
                             <div className="text-sm font-semibold text-neutral-100">
@@ -1472,30 +1487,10 @@ function songCoverUrl(
                             </button>
                           </div>
                           <div className="mt-2 flex items-center gap-2">
-                            <button
-                              type="button"
-                              disabled={!canLoadPreview}
-                              className={`text-xs rounded border px-2 py-1 ${
-                                canLoadPreview
-                                  ? "border-neutral-800 hover:bg-neutral-900"
-                                  : "border-neutral-900 text-neutral-600 cursor-not-allowed"
-                              }`}
-                              onClick={() => handlePrimaryPreviewAction(entry, participantPreviewFallback)}
-                            >
-                              {previewLoading[it.id] ? "Loading…" : "Load preview"}
-                            </button>
-                            {showManageSplit ? (
+                            {hasPublicPage ? (
                               <a
                                 className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                href={`/content/${encodeURIComponent(it.id)}/splits`}
-                              >
-                                Manage split
-                              </a>
-                            ) : null}
-                            {entry.relation === "participant" && hasPublicPage ? (
-                              <a
-                                className="text-xs rounded border border-neutral-800 px-2 py-1 hover:bg-neutral-900"
-                                href={entry.publicPageUrl || buildPublicPageUrl(it.id)}
+                                href={entry.publicPageUrl || undefined}
                                 target="_blank"
                                 rel="noreferrer"
                               >
@@ -1529,7 +1524,7 @@ function songCoverUrl(
                               {isForbiddenPreviewError(previewError[it.id]) && hasPublicPage ? (
                                 <a
                                   className="inline-flex rounded border border-neutral-800 px-2 py-1 text-xs text-emerald-300 hover:bg-neutral-900"
-                                  href={entry.publicPageUrl || buildPublicPageUrl(it.id)}
+                                  href={entry.publicPageUrl || undefined}
                                   target="_blank"
                                   rel="noreferrer"
                                 >
@@ -1541,27 +1536,26 @@ function songCoverUrl(
                           {isOpen ? (
                             <div className="mt-2">
                               {(() => {
-                                const effectivePreviewUrl = previewUrl || participantPreviewFallback;
-                                if (effectivePreviewUrl && isVideo) {
+                                if (effectivePlaybackUrl && isVideo) {
                                   return (
-                                    <div className="w-full aspect-video rounded-md border border-neutral-800 bg-black overflow-hidden">
-                                      <video className="w-full h-full object-contain object-center bg-black" controls src={effectivePreviewUrl} />
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
+                                      <video className="w-full h-full object-cover object-center bg-black" controls src={effectivePlaybackUrl} />
                                     </div>
                                   );
                                 }
-                                if (effectivePreviewUrl && isAudio) {
+                                if (effectivePlaybackUrl && isAudio) {
                                   return (
                                     <div className="w-full rounded-md border border-neutral-800 bg-black/60 p-2">
-                                      <audio className="w-full" controls src={effectivePreviewUrl} />
+                                      <audio className="w-full" controls src={effectivePlaybackUrl} />
                                     </div>
                                   );
                                 }
-                                if (effectivePreviewUrl && isImage) {
+                                if (effectivePlaybackUrl && (isImage || looksLikeImageAssetUrl(effectivePlaybackUrl))) {
                                   return (
-                                    <div className="w-full aspect-video rounded-md border border-neutral-800 bg-black overflow-hidden flex items-center justify-center">
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden flex items-center justify-center">
                                       <img
-                                        className="w-full h-full object-contain object-center bg-black"
-                                        src={effectivePreviewUrl}
+                                        className="w-full h-full object-cover object-center bg-black"
+                                        src={effectivePlaybackUrl}
                                         alt={it.title || "Preview"}
                                       />
                                     </div>
