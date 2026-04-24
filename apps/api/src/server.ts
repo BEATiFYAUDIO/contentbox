@@ -21141,7 +21141,6 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       await Promise.all(
         mirroredRemoteInvites
           .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
-          .slice(0, 24)
           .map(async (inv: any) => {
             const origin = pickShareableOrigin(inv?.remoteOrigin || null, inv?.inviteUrl || null);
             const inviteToken = extractInviteTokenFromUrl(inv?.inviteUrl || null);
@@ -25059,10 +25058,12 @@ async function handlePublicAttribution(req: any, reply: any) {
     const items = await Promise.all(
       parentLinks.slice(0, maxItems).map(async (l) => {
         const parentContentId = asString(l.parentContent?.id || "").trim() || null;
-        const parentSplit = parentContentId ? await getLockedSplitForContent(parentContentId) : null;
+        // Derivative upstream attribution must be tied to the authority snapshot captured
+        // on the derivative link, not "latest locked split by parent content".
+        const parentSplitVersionId = asString((l as any)?.parentSplitVersionId || "").trim() || null;
+        const parentSplit = parentSplitVersionId ? await getLockedSplitVersionById(parentSplitVersionId) : null;
         const parentSnapshots = parentSplit ? await getLockedParticipantSnapshotsForSplitVersion(parentSplit.id) : [];
         const shareholders = parentSnapshots
-          .filter((snapshot) => isTopologyNeutralLockedSnapshotEligible(snapshot))
           .map((snapshot) => {
             const displayName = resolveLockedSnapshotAttributionLabel(snapshot);
             const normalizedHandle = normalizePublicProfileHandle(snapshot.handleSnapshot || displayName || "");
