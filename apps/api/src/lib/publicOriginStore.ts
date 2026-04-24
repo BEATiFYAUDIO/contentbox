@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveContentboxRoot } from "./contentboxRoot.js";
 
 export type PublicOriginMode = "external" | "temporary";
 
@@ -13,11 +15,59 @@ export type PublicOriginRecord = {
 
 type StoreShape = Record<string, PublicOriginRecord>;
 
-const STORE_DIR = path.resolve(process.cwd(), "tmp");
+const CONTENTBOX_ROOT = resolveContentboxRoot();
+const STORE_DIR = path.join(CONTENTBOX_ROOT, "state");
 const STORE_PATH = path.join(STORE_DIR, "public-origins.json");
 const CONFIG_PATH = path.join(STORE_DIR, "public-origin-config.json");
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const LEGACY_STORE_PATHS = [
+  path.resolve(process.cwd(), "tmp", "public-origins.json"),
+  path.resolve(process.cwd(), "apps/api/tmp/public-origins.json"),
+  path.resolve(MODULE_DIR, "../../tmp/public-origins.json"),
+  path.resolve(MODULE_DIR, "../../../../tmp/public-origins.json")
+];
+const LEGACY_CONFIG_PATHS = [
+  path.resolve(process.cwd(), "tmp", "public-origin-config.json"),
+  path.resolve(process.cwd(), "apps/api/tmp/public-origin-config.json"),
+  path.resolve(MODULE_DIR, "../../tmp/public-origin-config.json"),
+  path.resolve(MODULE_DIR, "../../../../tmp/public-origin-config.json")
+];
+let storeMigrated = false;
+let configMigrated = false;
+
+function ensureDirectory() {
+  fs.mkdirSync(STORE_DIR, { recursive: true });
+}
+
+function migrateLegacyFileIfNeeded(targetPath: string, candidates: string[]) {
+  if (fs.existsSync(targetPath)) return;
+  for (const candidate of candidates) {
+    if (!candidate || candidate === targetPath) continue;
+    if (!fs.existsSync(candidate)) continue;
+    try {
+      ensureDirectory();
+      fs.copyFileSync(candidate, targetPath);
+      return;
+    } catch {
+      // keep trying other legacy candidates
+    }
+  }
+}
+
+function ensureStoreMigration() {
+  if (storeMigrated) return;
+  migrateLegacyFileIfNeeded(STORE_PATH, LEGACY_STORE_PATHS);
+  storeMigrated = true;
+}
+
+function ensureConfigMigration() {
+  if (configMigrated) return;
+  migrateLegacyFileIfNeeded(CONFIG_PATH, LEGACY_CONFIG_PATHS);
+  configMigrated = true;
+}
 
 function readStore(): StoreShape {
+  ensureStoreMigration();
   try {
     const raw = fs.readFileSync(STORE_PATH, "utf8");
     const json = JSON.parse(raw);
@@ -29,7 +79,8 @@ function readStore(): StoreShape {
 }
 
 function writeStore(store: StoreShape) {
-  fs.mkdirSync(STORE_DIR, { recursive: true });
+  ensureStoreMigration();
+  ensureDirectory();
   fs.writeFileSync(STORE_PATH, JSON.stringify(store, null, 2));
 }
 
@@ -66,6 +117,7 @@ export type PublicOriginConfig = {
 };
 
 function readConfig(): PublicOriginConfig {
+  ensureConfigMigration();
   try {
     const raw = fs.readFileSync(CONFIG_PATH, "utf8");
     const json = JSON.parse(raw);
@@ -77,7 +129,8 @@ function readConfig(): PublicOriginConfig {
 }
 
 function writeConfig(config: PublicOriginConfig) {
-  fs.mkdirSync(STORE_DIR, { recursive: true });
+  ensureConfigMigration();
+  ensureDirectory();
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
