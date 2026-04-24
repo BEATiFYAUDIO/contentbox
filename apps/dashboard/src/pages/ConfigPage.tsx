@@ -174,7 +174,12 @@ export default function ConfigPage({
   const [publicOriginFallback, setPublicOriginFallback] = useState<string>("");
   const [publicBuyOriginFallback, setPublicBuyOriginFallback] = useState<string>("");
   const [publicStudioOriginFallback, setPublicStudioOriginFallback] = useState<string>("");
-  const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(() => readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED) === "1");
+  const [tunnelEnabled, setTunnelEnabled] = useState<boolean>(() => {
+    const raw = readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+    return false;
+  });
   const [tunnelProvider, setTunnelProvider] = useState<string>("cloudflare");
   const [tunnelDomain, setTunnelDomain] = useState<string>("");
   const [tunnelName, setTunnelName] = useState<string>("");
@@ -327,7 +332,8 @@ export default function ConfigPage({
           setTunnelDomain(domain);
           setTunnelName(name);
           const hasSavedNamedConfig = Boolean(String(provider || "").trim() || String(domain || "").trim() || String(name || "").trim());
-          if (hasSavedNamedConfig && !tunnelEnabled) {
+          const storedTunnelFieldsPref = readStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED);
+          if (hasSavedNamedConfig && storedTunnelFieldsPref === "") {
             setTunnelEnabled(true);
             writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, "1");
           }
@@ -341,7 +347,7 @@ export default function ConfigPage({
     return () => {
       cancelled = true;
     };
-  }, [apiBase, token, tunnelEnabled]);
+  }, [apiBase, token]);
 
   useEffect(() => {
     if (!token) return;
@@ -1397,7 +1403,7 @@ export default function ConfigPage({
             onChange={async (e) => {
               const v = e.target.checked;
               setTunnelEnabled(v);
-              writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "");
+              writeStoredValue(STORAGE_TUNNEL_CONFIG_ENABLED, v ? "1" : "0");
               // UI preference only: do not clear persisted named-tunnel config when toggled off.
               if (!v && publicStatus?.mode === "named" && publicStatus?.status !== "offline") {
                 setPublicMsg("Named tunnel is still running. Click Stop sharing to shut it down.");
