@@ -476,8 +476,11 @@ export default function ConfigPage({
     return Boolean(expected) && (candidateName === expected || candidateId === expected);
   });
   const discoveredTunnelNameFromList = String(discoveredTunnel?.name || discoveredTunnel?.id || "").trim() || null;
-  const discoveredTunnelName = discoveredTunnelNameState || discoveredTunnelNameFromList;
-  const namedTunnelDetected = namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList);
+  const discoveredTunnelNameFromStatus = String(publicStatus?.tunnelName || "").trim() || null;
+  const discoveredTunnelName = discoveredTunnelNameState || discoveredTunnelNameFromList || discoveredTunnelNameFromStatus;
+  const namedTunnelDetectedFromStatus =
+    publicStatus?.mode === "named" || Boolean(publicStatus?.namedConfigured) || Boolean(discoveredTunnelNameFromStatus);
+  const namedTunnelDetected = namedTunnelDetectedState || Boolean(discoveredTunnelNameFromList) || namedTunnelDetectedFromStatus;
   const selectedTunnelMode: "existing_named" | "token_bootstrap" = namedTunnelDetected ? "existing_named" : selectedTunnelModeState;
   const tokenBootstrapRequired = tunnelEnabled && tokenBootstrapRequiredState;
   const cloudflaredAvailable = Boolean(publicStatus?.cloudflared?.available);
@@ -550,7 +553,11 @@ export default function ConfigPage({
           : "Temporary link";
   const stopActionLabel = publicStatus?.mode === "named" ? "Stop named tunnel" : "Stop temporary link";
   const refreshRoutingLabel = "Refresh routing";
-  const localRoutingControlsDisabled = serviceManagedTokenMode && !publicStatus?.namedDisabled;
+  const localRoutingControlsDisabled =
+    serviceManagedTokenMode &&
+    !publicStatus?.namedDisabled &&
+    publicStatus?.mode === "named" &&
+    publicStatus?.status === "online";
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
   const showSystemDebugPanels = Boolean(showAdvanced) && devMode;
   const creatorProgressionSteps = useMemo<ProgressStep[]>(() => {
