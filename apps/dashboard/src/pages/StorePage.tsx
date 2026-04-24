@@ -1810,6 +1810,52 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
           </div>
         </div>
 
+        <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+          <div className="text-[11px] uppercase tracking-wide text-neutral-500">Node identity & provider</div>
+          <div className="mt-1 text-xs text-neutral-300">
+            Use these values for network/provider setup and trust verification.
+          </div>
+          <div className="mt-2 grid gap-2 text-xs text-neutral-400">
+            {[
+              { key: "local-node-id", label: "Local Node ID", value: nodeIdentity?.nodeId || "—" },
+              { key: "local-pubkey", label: "Local Public Key", value: nodeIdentity?.nodePubKey || "—" },
+              { key: "profile-id", label: "Profile ID", value: nodeIdentity?.profileId || "—" },
+              { key: "provider-url", label: "Provider URL", value: providerConfig?.providerUrl || "—" },
+              { key: "provider-node-id", label: "Configured Provider Node ID", value: providerConfig?.providerNodeId || "—" },
+              { key: "provider-pubkey", label: "Configured Provider Public Key", value: providerConfig?.providerPubKey || "—" },
+              { key: "observed-provider-node-id", label: "Observed Provider Node ID", value: providerVerification?.observed?.nodeId || "—" },
+              { key: "observed-provider-pubkey", label: "Observed Provider Public Key", value: providerVerification?.observed?.nodePubKey || "—" }
+            ].map((row) => {
+              const copyable = Boolean(row.value && row.value !== "—");
+              return (
+                <div
+                  key={row.key}
+                  className="grid items-center gap-2"
+                  style={{ gridTemplateColumns: "minmax(180px, 260px) minmax(0, 1fr) auto" }}
+                >
+                  <div className="text-neutral-500">{row.label}</div>
+                  <div className="text-neutral-200 break-all">{row.value}</div>
+                  <button
+                    type="button"
+                    disabled={!copyable}
+                    onClick={() => copyIdentityValue(row.key, copyable ? row.value : null)}
+                    className="rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900 disabled:opacity-50"
+                  >
+                    {copiedIdentityKey === row.key ? "Copied" : "Copy"}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {providerVerification?.verification?.status ? (
+            <div className="mt-2 text-xs text-neutral-400">
+              Provider verification: <span className="text-neutral-200 font-medium">{providerVerification.verification.status}</span>
+              {providerVerification?.verification?.message ? ` — ${providerVerification.verification.message}` : ""}
+            </div>
+          ) : null}
+          {networkIdentityError ? <div className="mt-2 text-xs text-rose-300">{networkIdentityError}</div> : null}
+        </div>
+
         {isBasicParticipation ? (
           <div className="mt-4 rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Basic Mode Focus</div>
@@ -2190,51 +2236,6 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <div>Publish ID: <span className="text-neutral-300 break-all">{publishProfileResult?.publishId || "—"}</span></div>
               <div>Published at: <span className="text-neutral-300">{publishProfileResult?.publishedAt ? new Date(publishProfileResult.publishedAt).toLocaleString() : "—"}</span></div>
             </div>
-          </div>
-          <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
-            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Node identity & provider</div>
-            <div className="mt-1 text-xs text-neutral-300">
-              Use these values for network/provider setup and trust verification.
-            </div>
-            <div className="mt-2 grid gap-2 text-xs text-neutral-400">
-              {[
-                { key: "local-node-id", label: "Local Node ID", value: nodeIdentity?.nodeId || "—" },
-                { key: "local-pubkey", label: "Local Public Key", value: nodeIdentity?.nodePubKey || "—" },
-                { key: "profile-id", label: "Profile ID", value: nodeIdentity?.profileId || "—" },
-                { key: "provider-url", label: "Provider URL", value: providerConfig?.providerUrl || "—" },
-                { key: "provider-node-id", label: "Configured Provider Node ID", value: providerConfig?.providerNodeId || "—" },
-                { key: "provider-pubkey", label: "Configured Provider Public Key", value: providerConfig?.providerPubKey || "—" },
-                { key: "observed-provider-node-id", label: "Observed Provider Node ID", value: providerVerification?.observed?.nodeId || "—" },
-                { key: "observed-provider-pubkey", label: "Observed Provider Public Key", value: providerVerification?.observed?.nodePubKey || "—" }
-              ].map((row) => {
-                const copyable = Boolean(row.value && row.value !== "—");
-                return (
-                  <div
-                    key={row.key}
-                    className="grid items-center gap-2"
-                    style={{ gridTemplateColumns: "minmax(180px, 260px) minmax(0, 1fr) auto" }}
-                  >
-                    <div className="text-neutral-500">{row.label}</div>
-                    <div className="text-neutral-200 break-all">{row.value}</div>
-                    <button
-                      type="button"
-                      disabled={!copyable}
-                      onClick={() => copyIdentityValue(row.key, copyable ? row.value : null)}
-                      className="rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900 disabled:opacity-50"
-                    >
-                      {copiedIdentityKey === row.key ? "Copied" : "Copy"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-            {providerVerification?.verification?.status ? (
-              <div className="mt-2 text-xs text-neutral-400">
-                Provider verification: <span className="text-neutral-200 font-medium">{providerVerification.verification.status}</span>
-                {providerVerification?.verification?.message ? ` — ${providerVerification.verification.message}` : ""}
-              </div>
-            ) : null}
-            {networkIdentityError ? <div className="mt-2 text-xs text-rose-300">{networkIdentityError}</div> : null}
           </div>
           <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider verification</div>
