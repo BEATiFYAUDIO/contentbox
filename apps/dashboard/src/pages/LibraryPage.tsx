@@ -178,6 +178,31 @@ type PublicAttributionPayload = {
   contributors?: PublicAttributionContributor[] | null;
 };
 
+function remoteParticipationsCacheKey(apiBase: string): string {
+  return `cb.library.remoteParticipations:${String(apiBase || "").replace(/\/+$/, "")}`;
+}
+
+function readCachedRemoteParticipations(apiBase: string): RemoteRoyaltyParticipation[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(remoteParticipationsCacheKey(apiBase));
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as RemoteRoyaltyParticipation[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedRemoteParticipations(apiBase: string, rows: RemoteRoyaltyParticipation[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(remoteParticipationsCacheKey(apiBase), JSON.stringify(Array.isArray(rows) ? rows : []));
+  } catch {
+    // ignore storage write failures
+  }
+}
+
 const ACCESS_BADGE: Record<NonNullable<LibraryItem["libraryAccess"]>, { label: string; cls: string }> = {
   owned: { label: "Owned", cls: "border-emerald-600/40 bg-emerald-500/10 text-emerald-300" },
   purchased: { label: "Purchased", cls: "border-sky-600/40 bg-sky-500/10 text-sky-300" },
@@ -305,11 +330,24 @@ export default function LibraryPage() {
             ...i,
             libraryAccess: i.libraryAccess || (i.ownerUserId ? "owned" : "preview")
           }));
+        const remoteParticipationsPromise = api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET")
+          .then((rows) => {
+            const normalizedRows = Array.isArray(rows) ? rows : [];
+            if (normalizedRows.length > 0) {
+              writeCachedRemoteParticipations(apiBase, normalizedRows);
+              return normalizedRows;
+            }
+            // Keep last known remote participation snapshot when backend returns empty
+            // (for example transient/offline mirror gaps) so Library does not blank out.
+            const cached = readCachedRemoteParticipations(apiBase);
+            return cached.length > 0 ? cached : normalizedRows;
+          })
+          .catch(() => readCachedRemoteParticipations(apiBase));
         const [lib, mine, localParticipationsRes, remoteParticipationsRes, royaltiesRes, entitlementsRes, derivativeApprovalsRes] = await Promise.all([
           api<LibraryItem[]>(`/content?scope=library`, "GET").catch(() => []),
           api<LibraryItem[]>(`/content?scope=mine`, "GET").catch(() => []),
           api<{ items: LibraryParticipation[] }>("/my/participations", "GET").catch(() => ({ items: [] as LibraryParticipation[] })),
-          api<RemoteRoyaltyParticipation[]>("/my/royalties/remote", "GET").catch(() => [] as RemoteRoyaltyParticipation[]),
+          remoteParticipationsPromise,
           api<{ upstreamIncome?: Array<{ parentContentId?: string | null; childContentId?: string | null }> }>("/my/royalties", "GET").catch(() => null),
           api<EntitlementInventoryRow[]>("/me/entitlements", "GET").catch(() => [] as EntitlementInventoryRow[]),
           api<DerivativeApprovalRow[]>("/api/derivatives/approvals?scope=all", "GET").catch(() => [] as DerivativeApprovalRow[])

@@ -13953,7 +13953,6 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
   });
   const rows = await Promise.all(
     list.map(async (inv) => {
-      const inviteToken = extractInviteTokenFromUrl(inv.inviteUrl || null);
       let inviteStatus = normalizeRemoteInviteStatusForList(inv as any);
       let contentId = inv.contentId || null;
       let contentTitle = inv.contentTitle || null;
@@ -13966,54 +13965,68 @@ app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, re
       let participantEmail = inv.participantEmail || null;
       let acceptedAt = inv.acceptedAt ? inv.acceptedAt.toISOString() : null;
       let remoteUserId = inv.remoteUserId || null;
-
-      if (inviteToken && (inviteStatus === "pending" || inviteStatus === "accepted")) {
-        const snapshot = await fetchRemoteInviteSnapshot(inv.remoteOrigin, inviteToken);
-        const remoteInvitation = snapshot?.invitation || null;
-        const remoteContent = snapshot?.content || null;
-        const remoteSplitParticipant = snapshot?.splitParticipant || null;
-        const remoteSplitVersion = snapshot?.splitVersion || null;
-        const remoteAcceptedAt = asString(remoteInvitation?.acceptedAt || "").trim();
-        const remoteStatus = normalizeInviteStatus(remoteInvitation?.status || "");
-        const normalizedRemoteStatus =
-          remoteStatus === "pending" && remoteAcceptedAt ? "accepted" : remoteStatus;
-        if (snapshot) {
-          await upsertRemoteInviteMirrorFromPayload({
-            userId,
-            remoteOrigin: inv.remoteOrigin,
-            token: inviteToken,
-            payload: snapshot,
-            forceAccepted: normalizedRemoteStatus === "accepted"
-          });
-          inviteStatus = normalizedRemoteStatus || inviteStatus;
-          acceptedAt = remoteAcceptedAt || acceptedAt;
-          contentId = asString(remoteContent?.id || "").trim() || contentId;
-          contentTitle = asString(remoteContent?.title || "").trim() || contentTitle;
-          contentType = asString(remoteContent?.type || "").trim() || contentType;
-          contentStatus = asString(remoteContent?.status || "").trim() || contentStatus;
-          contentDeletedAt = asString(remoteContent?.deletedAt || "").trim() || contentDeletedAt;
-          splitVersionNum = Number.isFinite(Number(remoteSplitVersion?.versionNumber))
-            ? Number(remoteSplitVersion.versionNumber)
-            : splitVersionNum;
-          role = asString(remoteSplitParticipant?.role || "").trim() || role;
-          const remotePercent = round3(num(remoteSplitParticipant?.percent));
-          if (Number.isFinite(remotePercent) && remotePercent > 0) percent = remotePercent;
-          participantEmail = asString(remoteSplitParticipant?.participantEmail || "").trim() || participantEmail;
-          remoteUserId = asString(remoteInvitation?.acceptedByUserId || "").trim() || remoteUserId;
+      const inviteToken = extractInviteTokenFromUrl(inv.inviteUrl || null);
+      let accounting: Awaited<ReturnType<typeof fetchRemoteInviteAccounting>> = null;
+      let shouldFetchRemoteAccounting = false;
+      try {
+        if (inviteToken && (inviteStatus === "pending" || inviteStatus === "accepted")) {
+          const snapshot = await fetchRemoteInviteSnapshot(inv.remoteOrigin, inviteToken);
+          const remoteInvitation = snapshot?.invitation || null;
+          const remoteContent = snapshot?.content || null;
+          const remoteSplitParticipant = snapshot?.splitParticipant || null;
+          const remoteSplitVersion = snapshot?.splitVersion || null;
+          const remoteAcceptedAt = asString(remoteInvitation?.acceptedAt || "").trim();
+          const remoteStatus = normalizeInviteStatus(remoteInvitation?.status || "");
+          const normalizedRemoteStatus =
+            remoteStatus === "pending" && remoteAcceptedAt ? "accepted" : remoteStatus;
+          if (snapshot) {
+            await upsertRemoteInviteMirrorFromPayload({
+              userId,
+              remoteOrigin: inv.remoteOrigin,
+              token: inviteToken,
+              payload: snapshot,
+              forceAccepted: normalizedRemoteStatus === "accepted"
+            });
+            inviteStatus = normalizedRemoteStatus || inviteStatus;
+            acceptedAt = remoteAcceptedAt || acceptedAt;
+            contentId = asString(remoteContent?.id || "").trim() || contentId;
+            contentTitle = asString(remoteContent?.title || "").trim() || contentTitle;
+            contentType = asString(remoteContent?.type || "").trim() || contentType;
+            contentStatus = asString(remoteContent?.status || "").trim() || contentStatus;
+            contentDeletedAt = asString(remoteContent?.deletedAt || "").trim() || contentDeletedAt;
+            splitVersionNum = Number.isFinite(Number(remoteSplitVersion?.versionNumber))
+              ? Number(remoteSplitVersion.versionNumber)
+              : splitVersionNum;
+            role = asString(remoteSplitParticipant?.role || "").trim() || role;
+            const remotePercent = round3(num(remoteSplitParticipant?.percent));
+            if (Number.isFinite(remotePercent) && remotePercent > 0) percent = remotePercent;
+            participantEmail = asString(remoteSplitParticipant?.participantEmail || "").trim() || participantEmail;
+            remoteUserId = asString(remoteInvitation?.acceptedByUserId || "").trim() || remoteUserId;
+          }
         }
+        shouldFetchRemoteAccounting = Boolean(
+          inviteToken &&
+            (
+              inviteStatus === "accepted" ||
+              acceptedAt ||
+              remoteUserId ||
+              inv.remoteVerified
+            )
+        );
+        accounting = shouldFetchRemoteAccounting && inviteToken
+          ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken)
+          : null;
+      } catch (error: any) {
+        app.log.warn(
+          {
+            userId,
+            inviteId: inv.id,
+            remoteOrigin: inv.remoteOrigin,
+            error: String(error?.message || error || "remote_invite_hydration_failed")
+          },
+          "remoteInvite.row_hydration_failed"
+        );
       }
-      const shouldFetchRemoteAccounting = Boolean(
-        inviteToken &&
-          (
-            inviteStatus === "accepted" ||
-            acceptedAt ||
-            remoteUserId ||
-            inv.remoteVerified
-          )
-      );
-      const accounting = shouldFetchRemoteAccounting
-        ? await fetchRemoteInviteAccounting(inv.remoteOrigin, inviteToken!)
-        : null;
       const normalizedContentStatus = (() => {
         const v = asString(contentStatus || "").trim().toLowerCase();
         if (v === "published" || v === "draft") return v;
