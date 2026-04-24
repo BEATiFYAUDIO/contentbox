@@ -13632,6 +13632,81 @@ async function upsertRemoteInviteMirrorFromPayload(input: {
   });
 }
 
+async function recoverRemoteInviteMirrorsFromAudit(userId: string): Promise<void> {
+  const normalizedUserId = asString(userId || "").trim();
+  if (!normalizedUserId) return;
+
+  const auditRows = await prisma.auditEvent.findMany({
+    where: {
+      userId: normalizedUserId,
+      action: { in: ["invite.remote.accepted", "invite.remote.ingest"] as any }
+    },
+    orderBy: { createdAt: "desc" },
+    take: 500,
+    select: {
+      action: true,
+      createdAt: true,
+      payloadJson: true
+    }
+  });
+  if (!auditRows.length) return;
+
+  for (const row of auditRows) {
+    const payload = row?.payloadJson && typeof row.payloadJson === "object" ? (row.payloadJson as any) : null;
+    if (!payload || typeof payload !== "object") continue;
+
+    const inviteUrlRaw = asString(payload?.inviteUrl || "").trim();
+    const token = extractInviteTokenFromUrl(inviteUrlRaw);
+    if (!token) continue;
+
+    const remoteOrigin = normalizeRemoteOrigin(asString(payload?.remoteOrigin || "").trim()) || normalizeRemoteOrigin(inviteUrlRaw);
+    if (!remoteOrigin) continue;
+
+    const contentId = asString(payload?.contentId || "").trim() || null;
+    const contentDeletedAtRaw = asString(payload?.contentDeletedAt || "").trim();
+    const contentDeletedAt = contentDeletedAtRaw ? new Date(contentDeletedAtRaw) : null;
+    const acceptedAtRaw = asString(payload?.acceptedAt || "").trim();
+    const acceptedAt = acceptedAtRaw ? new Date(acceptedAtRaw) : row.createdAt;
+    const expiresAtRaw = asString(payload?.expiresAt || "").trim();
+    const expiresAt = expiresAtRaw ? new Date(expiresAtRaw) : null;
+    const percent = round3(num(payload?.percent));
+    const status = normalizeInviteStatus(
+      payload?.status || (asString(row.action || "").trim() === "invite.remote.accepted" ? "accepted" : "pending")
+    );
+    const tokenHash = hashInviteToken(token);
+    const existing = await prisma.remoteInvite.findUnique({
+      where: { remoteOrigin_tokenHash: { remoteOrigin, tokenHash } },
+      select: { id: true }
+    });
+    if (existing) continue;
+
+    await prisma.remoteInvite.create({
+      data: {
+        userId: normalizedUserId,
+        remoteOrigin,
+        tokenHash,
+        inviteUrl: inviteUrlRaw || `${remoteOrigin.replace(/\/+$/, "")}/invite/${encodeURIComponent(token)}`,
+        contentId,
+        contentTitle: asString(payload?.contentTitle || "").trim() || null,
+        contentType: asString(payload?.contentType || "").trim() || null,
+        contentStatus: asString(payload?.contentStatus || "").trim() || null,
+        contentDeletedAt: contentDeletedAt && !Number.isNaN(contentDeletedAt.getTime()) ? contentDeletedAt : null,
+        splitVersionNum: Number.isFinite(Number(payload?.splitVersionNum)) ? Number(payload.splitVersionNum) : null,
+        splitStatus: asString(payload?.splitStatus || "").trim() || null,
+        role: asString(payload?.role || "").trim() || null,
+        percent: Number.isFinite(percent) && percent > 0 ? percent : null,
+        participantEmail: asString(payload?.participantEmail || "").trim() || null,
+        status,
+        expiresAt: expiresAt && !Number.isNaN(expiresAt.getTime()) ? expiresAt : null,
+        acceptedAt: acceptedAt && !Number.isNaN(acceptedAt.getTime()) ? acceptedAt : null,
+        remoteUserId: asString(payload?.remoteUserId || "").trim() || null,
+        remoteNodeUrl: remoteOrigin,
+        remoteVerified: Boolean(acceptedAt && !Number.isNaN(acceptedAt.getTime()))
+      }
+    });
+  }
+}
+
 type ParticipationProjection = {
   contentId: string;
   contentTitle: string | null;
@@ -13946,6 +14021,7 @@ async function listLockedParticipationsForUser(userId: string): Promise<Particip
 // Remote royalties summary (for invited remote splits)
 app.get("/my/royalties/remote", { preHandler: requireAuth }, async (req: any, reply: any) => {
   const userId = (req.user as JwtUser).sub;
+  await recoverRemoteInviteMirrorsFromAudit(userId).catch(() => {});
   const remoteHighlights = listProfileHighlightedRemoteParticipationsForUser(userId);
   const list = await prisma.remoteInvite.findMany({
     where: { userId },
@@ -20860,6 +20936,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned", appearsBecause: ["owned"] })));
   } else {
     // library: owned + purchased (entitlements) + public preview
+    await recoverRemoteInviteMirrorsFromAudit(userId).catch(() => {});
     const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
     const meEmail = (me?.email || "").toLowerCase();
     const viewerIdentityHandles = Array.from(
@@ -21033,11 +21110,6 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 
     const mirroredSharedRows = mirroredRemoteInvites
       .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
-      .filter((inv: any) => {
-        const status = asString(inv?.contentStatus || "").trim().toLowerCase();
-        if (!status) return true;
-        return status === "published";
-      })
       .filter((inv: any) => matchesRequestedType(inv?.contentType))
       .map((inv: any) => {
         const contentId = asString(inv?.contentId || "").trim();
@@ -21065,10 +21137,71 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         };
       })
       .filter((row: any) => Boolean(asString(row?.id || "").trim()));
+    const mirroredRemoteOriginByParentId = new Map<string, string>();
     for (const row of mirroredSharedRows) {
+      const parentContentId = asString(row?.id || "").trim();
+      const parentRemoteOrigin = asString(row?.remoteOrigin || "").trim();
+      if (parentContentId && parentRemoteOrigin && !mirroredRemoteOriginByParentId.has(parentContentId)) {
+        mirroredRemoteOriginByParentId.set(parentContentId, parentRemoteOrigin);
+      }
       appendLibraryItem(row, "shared", "split_participant");
       appendLibraryItem(row, "shared", "shared_with_me");
       appendLibraryItem(row, "shared", "remote_mirror");
+    }
+
+    if (mirroredRemoteOriginByParentId.size > 0) {
+      const mirroredParentIds = Array.from(mirroredRemoteOriginByParentId.keys());
+      const mirroredDerivativeLinks = await prisma.contentLink.findMany({
+        where: {
+          parentContentId: { in: mirroredParentIds },
+          relation: { in: ["derivative", "remix", "mashup"] as any }
+        },
+        include: {
+          childContent: { select: selectBase }
+        }
+      });
+      for (const link of mirroredDerivativeLinks) {
+        const childContentId = asString(link?.childContentId || link?.childContent?.id || "").trim();
+        if (!childContentId) continue;
+        const child = link?.childContent as any;
+        const derivedType = asString(child?.type || link?.relation || "file")
+          .trim()
+          .toLowerCase();
+        if (!matchesRequestedType(derivedType || "file")) continue;
+        const parentRemoteOrigin = mirroredRemoteOriginByParentId.get(asString(link?.parentContentId || "").trim()) || null;
+        const childDescription = asString(child?.description || "").trim() || null;
+        const rowRemoteOrigin = pickShareableOrigin(
+          asString(child?.remoteOrigin || "").trim() || null,
+          getRemoteOriginFromDescription(childDescription),
+          parentRemoteOrigin
+        );
+        const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
+        const surfacedStatus = childIsPublished || Boolean(link?.approvedAt) ? "published" : "draft";
+        const derivativeRow = {
+          id: childContentId,
+          title: asString(child?.title || "").trim() || "Untitled derivative",
+          description: rowRemoteOrigin ? buildRemoteDescription(rowRemoteOrigin) : childDescription,
+          type: derivedType || "file",
+          status: surfacedStatus,
+          previousVersionContentId: null,
+          previousVersion: null,
+          featureOnProfile: false,
+          storefrontStatus: "UNLISTED",
+          deliveryMode: child?.deliveryMode || null,
+          priceSats: child?.priceSats ?? null,
+          createdAt: child?.createdAt || new Date().toISOString(),
+          repoPath: null,
+          deletedAt: null,
+          ownerUserId: null,
+          owner: null,
+          manifest: child?.manifest || null,
+          _count: child?._count || { files: 0, entitlements: 0 },
+          remoteOrigin: rowRemoteOrigin
+        };
+        appendLibraryItem(derivativeRow, "shared", "derivative_child");
+        appendLibraryItem(derivativeRow, "shared", "derivative_parent");
+        appendLibraryItem(derivativeRow, "shared", "remote_mirror");
+      }
     }
 
     // Keep preview-only rows last so attributed participant rows win de-dupe.
