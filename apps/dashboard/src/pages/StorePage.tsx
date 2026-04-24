@@ -80,6 +80,13 @@ type NetworkProviderConfig = {
   configured?: boolean;
 };
 
+type NodeIdentitySnapshot = {
+  nodeId: string;
+  nodePubKey: string;
+  profileId?: string | null;
+  capabilityLevel?: string | null;
+};
+
 type ProviderVerification = {
   configured: {
     providerUrl: string | null;
@@ -438,6 +445,9 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
   const [identity, setIdentity] = React.useState<{ nodeMode?: string | null } | null>(null);
   const [networkSummary, setNetworkSummary] = React.useState<NetworkSummary | null>(null);
   const [providerConfig, setProviderConfig] = React.useState<NetworkProviderConfig | null>(null);
+  const [nodeIdentity, setNodeIdentity] = React.useState<NodeIdentitySnapshot | null>(null);
+  const [networkIdentityError, setNetworkIdentityError] = React.useState<string | null>(null);
+  const [copiedIdentityKey, setCopiedIdentityKey] = React.useState<string | null>(null);
   const [providerLoading, setProviderLoading] = React.useState(false);
   const [providerSaving, setProviderSaving] = React.useState(false);
   const [providerMsg, setProviderMsg] = React.useState<string | null>(null);
@@ -516,6 +526,24 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
 
   React.useEffect(() => {
     let active = true;
+    api<NodeIdentitySnapshot>("/api/network/node-identity", "GET")
+      .then((d) => {
+        if (!active) return;
+        setNodeIdentity(d || null);
+        setNetworkIdentityError(null);
+      })
+      .catch((e: any) => {
+        if (!active) return;
+        setNodeIdentity(null);
+        setNetworkIdentityError(String(e?.message || "Network identity details unavailable."));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  React.useEffect(() => {
+    let active = true;
     setProviderVerificationLoading(true);
     api<ProviderVerification>("/api/network/provider/verification/status", "GET")
       .then((d) => {
@@ -534,6 +562,18 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
       active = false;
     };
   }, []);
+
+  const copyIdentityValue = async (key: string, value: string | null | undefined) => {
+    const text = String(value || "").trim();
+    if (!text || text === "—") return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedIdentityKey(key);
+      window.setTimeout(() => {
+        setCopiedIdentityKey((current) => (current === key ? null : current));
+      }, 1200);
+    } catch {}
+  };
 
   React.useEffect(() => {
     let active = true;
@@ -2150,6 +2190,51 @@ export default function StorePage(props: { onOpenReceipt: (token: string) => voi
               <div>Publish ID: <span className="text-neutral-300 break-all">{publishProfileResult?.publishId || "—"}</span></div>
               <div>Published at: <span className="text-neutral-300">{publishProfileResult?.publishedAt ? new Date(publishProfileResult.publishedAt).toLocaleString() : "—"}</span></div>
             </div>
+          </div>
+          <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-wide text-neutral-500">Node identity & provider</div>
+            <div className="mt-1 text-xs text-neutral-300">
+              Use these values for network/provider setup and trust verification.
+            </div>
+            <div className="mt-2 grid gap-2 text-xs text-neutral-400">
+              {[
+                { key: "local-node-id", label: "Local Node ID", value: nodeIdentity?.nodeId || "—" },
+                { key: "local-pubkey", label: "Local Public Key", value: nodeIdentity?.nodePubKey || "—" },
+                { key: "profile-id", label: "Profile ID", value: nodeIdentity?.profileId || "—" },
+                { key: "provider-url", label: "Provider URL", value: providerConfig?.providerUrl || "—" },
+                { key: "provider-node-id", label: "Configured Provider Node ID", value: providerConfig?.providerNodeId || "—" },
+                { key: "provider-pubkey", label: "Configured Provider Public Key", value: providerConfig?.providerPubKey || "—" },
+                { key: "observed-provider-node-id", label: "Observed Provider Node ID", value: providerVerification?.observed?.nodeId || "—" },
+                { key: "observed-provider-pubkey", label: "Observed Provider Public Key", value: providerVerification?.observed?.nodePubKey || "—" }
+              ].map((row) => {
+                const copyable = Boolean(row.value && row.value !== "—");
+                return (
+                  <div
+                    key={row.key}
+                    className="grid items-center gap-2"
+                    style={{ gridTemplateColumns: "minmax(180px, 260px) minmax(0, 1fr) auto" }}
+                  >
+                    <div className="text-neutral-500">{row.label}</div>
+                    <div className="text-neutral-200 break-all">{row.value}</div>
+                    <button
+                      type="button"
+                      disabled={!copyable}
+                      onClick={() => copyIdentityValue(row.key, copyable ? row.value : null)}
+                      className="rounded-lg border border-neutral-800 px-2 py-1 text-xs hover:bg-neutral-900 disabled:opacity-50"
+                    >
+                      {copiedIdentityKey === row.key ? "Copied" : "Copy"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+            {providerVerification?.verification?.status ? (
+              <div className="mt-2 text-xs text-neutral-400">
+                Provider verification: <span className="text-neutral-200 font-medium">{providerVerification.verification.status}</span>
+                {providerVerification?.verification?.message ? ` — ${providerVerification.verification.message}` : ""}
+              </div>
+            ) : null}
+            {networkIdentityError ? <div className="mt-2 text-xs text-rose-300">{networkIdentityError}</div> : null}
           </div>
           <div className="mt-3 rounded-lg border border-neutral-800/80 bg-neutral-950/70 px-3 py-2">
             <div className="text-[11px] uppercase tracking-wide text-neutral-500">Provider verification</div>
