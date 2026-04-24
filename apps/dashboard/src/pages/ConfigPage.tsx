@@ -552,6 +552,7 @@ export default function ConfigPage({
   const refreshRoutingLabel = "Refresh routing";
   const localRoutingControlsDisabled = serviceManagedTokenMode && !publicStatus?.namedDisabled;
   const showAdvancedInfraPanels = !isBasicMode || (Boolean(showAdvanced) && devMode);
+  const showSystemDebugPanels = Boolean(showAdvanced) && devMode;
   const creatorProgressionSteps = useMemo<ProgressStep[]>(() => {
     const selected = modeInfo?.selectedMode || modeInfo?.nodeMode;
     const localCommerceReady = Boolean(modeInfo?.modeReadiness?.localCommerceReady);
@@ -1189,7 +1190,7 @@ export default function ConfigPage({
         </div>
       </div>
 
-      {showAdvancedInfraPanels ? (
+      {showSystemDebugPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>System</div>
         <div><b>API base</b>: {apiBase}</div>
@@ -1206,7 +1207,7 @@ export default function ConfigPage({
       </div>
       ) : null}
 
-      {showAdvancedInfraPanels ? (
+      {showSystemDebugPanels ? (
       <div style={{ border: "1px solid rgba(255,255,255,0.12)", borderRadius: 12, padding: 14, marginBottom: 14 }}>
         <div style={{ fontWeight: 600, marginBottom: 8 }}>API connection</div>
         <div style={{ opacity: 0.7, marginBottom: 8 }}>
