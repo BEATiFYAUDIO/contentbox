@@ -21137,6 +21137,67 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         };
       })
       .filter((row: any) => Boolean(asString(row?.id || "").trim()));
+    const mirroredSharedDerivativeRows = (
+      await Promise.all(
+        mirroredRemoteInvites
+          .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
+          .slice(0, 24)
+          .map(async (inv: any) => {
+            const origin = pickShareableOrigin(inv?.remoteOrigin || null, inv?.inviteUrl || null);
+            const inviteToken = extractInviteTokenFromUrl(inv?.inviteUrl || null);
+            const parentContentId = asString(inv?.contentId || "").trim();
+            if (!origin || !inviteToken || !parentContentId) return [] as any[];
+            const accounting = await fetchRemoteInviteAccounting(origin, inviteToken).catch(() => null);
+            const inbox = Array.isArray(accounting?.clearanceInbox) ? accounting.clearanceInbox : [];
+            return inbox
+              .map((entry: any) => {
+                const status = asString(entry?.status || "").trim().toLowerCase();
+                const childContentId = asString(entry?.childContentId || "").trim();
+                const entryParentContentId = asString(entry?.parentContentId || "").trim();
+                const childStatus = asString(entry?.childStatus || "").trim().toLowerCase();
+                const childDeletedAt = asString(entry?.childDeletedAt || "").trim();
+                if (!childContentId || !entryParentContentId) return null;
+                if (entryParentContentId !== parentContentId) return null;
+                if (!["pending", "rejected", "approved", "cleared"].includes(status)) return null;
+                if (childDeletedAt) return null;
+                if (childStatus && childStatus !== "published") return null;
+                const relation = asString(entry?.relation || "").trim().toLowerCase();
+                const derivedTypeRaw = asString(entry?.childType || inv?.contentType || "").trim().toLowerCase();
+                const derivedType =
+                  derivedTypeRaw === "song" || derivedTypeRaw === "video" || derivedTypeRaw === "book" || derivedTypeRaw === "file"
+                    ? derivedTypeRaw
+                    : relation === "song" || relation === "video" || relation === "book" || relation === "file"
+                      ? relation
+                      : "file";
+                if (!matchesRequestedType(derivedType)) return null;
+                const childOrigin = pickShareableOrigin(entry?.childOrigin || null, origin);
+                const reviewPreviewUrl = asString(entry?.reviewPreviewUrl || "").trim() || null;
+                return {
+                  id: childContentId,
+                  title: asString(entry?.childTitle || "").trim() || "Untitled derivative",
+                  description: buildRemoteDescription(childOrigin || origin, reviewPreviewUrl),
+                  type: derivedType,
+                  status: "published",
+                  previousVersionContentId: null,
+                  previousVersion: null,
+                  featureOnProfile: false,
+                  storefrontStatus: "UNLISTED",
+                  deliveryMode: null,
+                  priceSats: null,
+                  createdAt: inv?.acceptedAt || inv?.createdAt || new Date().toISOString(),
+                  repoPath: null,
+                  deletedAt: null,
+                  ownerUserId: null,
+                  owner: null,
+                  manifest: null,
+                  _count: { files: 0, entitlements: 0 },
+                  remoteOrigin: childOrigin || origin
+                };
+              })
+              .filter(Boolean) as any[];
+          })
+      )
+    ).flat();
     const mirroredRemoteOriginByParentId = new Map<string, string>();
     for (const row of mirroredSharedRows) {
       const parentContentId = asString(row?.id || "").trim();
@@ -21146,6 +21207,11 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       }
       appendLibraryItem(row, "shared", "split_participant");
       appendLibraryItem(row, "shared", "shared_with_me");
+      appendLibraryItem(row, "shared", "remote_mirror");
+    }
+    for (const row of mirroredSharedDerivativeRows) {
+      appendLibraryItem(row, "shared", "derivative_child");
+      appendLibraryItem(row, "shared", "derivative_parent");
       appendLibraryItem(row, "shared", "remote_mirror");
     }
 
