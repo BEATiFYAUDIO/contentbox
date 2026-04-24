@@ -21110,8 +21110,9 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         if (!matchesRequestedType(childType)) continue;
         const childStatus = asString(child?.status || "").trim().toLowerCase();
         const childDeleted = Boolean(child?.deletedAt);
-        const linkApproved = Boolean(link?.approvedAt);
-        const includeByState = (childStatus === "published" && !childDeleted) || linkApproved;
+        // Active library should not surface stale/tombstoned/deleted derivative rows.
+        // Require the child row itself to be actively published.
+        const includeByState = childStatus === "published" && !childDeleted;
         if (!includeByState) continue;
         const surfaced = {
           ...child,
