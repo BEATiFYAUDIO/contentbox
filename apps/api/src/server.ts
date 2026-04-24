@@ -29364,6 +29364,29 @@ async function handlePublicPaymentsIntents(req: any, reply: any) {
         } catch (e: any) {
           const providerCode = String(e?.code || "").trim().toUpperCase();
           intentLog.delegatedLightning = providerCode || String(e?.message || "provider_unavailable");
+          // Fallback: when delegated publish exists but provider trust-link state is stale,
+          // allow local invoice rails if this node can mint invoices.
+          if (providerCode === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED") {
+            try {
+              const fallbackInvoice = await createLightningInvoiceWithRetry(
+                amountSats,
+                `Contentbox ${contentId.slice(0, 8)} ${manifestSha256.slice(0, 8)}`,
+                {
+                  route: "/buy/payments/intents",
+                  paymentIntentId: intent.id,
+                  contentId
+                }
+              );
+              if (fallbackInvoice?.bolt11) {
+                lightning = fallbackInvoice;
+                lightningReason = null;
+                intentLog.delegatedLightning = "provider_relationship_fallback_local_invoice";
+              }
+            } catch {}
+          }
+          if (lightning?.bolt11) {
+            // Local fallback succeeded, so do not return a provider readiness block.
+          } else
           if (providerCode === "DELEGATED_PUBLISH_REQUIRED") {
             lightningReason = "PROVIDER_DELEGATED_PUBLISH_REQUIRED";
           } else if (providerCode === "PROVIDER_CREATOR_RELATIONSHIP_REQUIRED") {
