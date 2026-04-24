@@ -217,7 +217,8 @@ function mapContentType(type: string | null | undefined): LibraryTypeFilter {
 function normalizeRemoteParticipationContentStatus(value: string | null | undefined, inviteStatus?: string | null): string {
   const v = String(value || "").trim().toLowerCase();
   if (v === "published" || v === "draft") return v;
-  if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "published";
+  // Accepted invite alone is not enough to claim published content.
+  if (String(inviteStatus || "").trim().toLowerCase() === "accepted") return "draft";
   return "draft";
 }
 
@@ -393,8 +394,8 @@ export default function LibraryPage() {
             return inbox
               .filter((entry) => {
                 const status = String(entry?.status || "").toLowerCase();
-                // Status labels can vary across mirrored nodes; only exclude terminal-denied states.
-                return status !== "rejected" && status !== "revoked";
+                // Library cards should only surface published/cleared derivative works.
+                return status === "approved" || status === "cleared";
               })
               .map((entry) => {
                 const childContentId = String(entry?.childContentId || "").trim();

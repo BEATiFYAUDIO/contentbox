@@ -20805,8 +20805,16 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned" })));
   } else {
     // library: owned + purchased (entitlements) + public preview
-    const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true } });
+    const me = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, displayName: true } });
     const meEmail = (me?.email || "").toLowerCase();
+    const viewerIdentityHandles = Array.from(
+      new Set(
+        [
+          normalizePublicProfileHandle(asString(me?.displayName || "").trim()),
+          normalizedEmailLocalPart(meEmail)
+        ].filter((value): value is string => Boolean(value))
+      )
+    );
     const [owned, purchased, publicPreview, participantLinks] = await prisma.$transaction([
       prisma.contentItem.findMany({
         where: {
@@ -20850,6 +20858,34 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       })
     ]);
 
+    const identityRefParticipantLinks = viewerIdentityHandles.length
+      ? await prisma.splitParticipant.findMany({
+          where: {
+            splitVersion: {
+              status: "locked",
+              content: {
+                status: "published",
+                deletedAt: null,
+                ...contentTypeWhere
+              } as any
+            },
+            targetType: { in: ["identity_ref", "local_user"] as any },
+            targetValue: { not: null }
+          },
+          select: {
+            targetValue: true,
+            splitVersion: { select: { contentId: true } }
+          }
+        })
+      : [];
+
+    const identityTargetedLinks = viewerIdentityHandles.length
+      ? identityRefParticipantLinks.filter((row: any) => {
+          const handle = extractIdentityHandleFromTarget(asString(row?.targetValue || "").trim());
+          return Boolean(handle && viewerIdentityHandles.includes(handle));
+        })
+      : [];
+
     items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned" })));
     items.push(
       ...purchased
@@ -20857,9 +20893,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         .map((p) => ({ ...p.content, ...toVersionSummary(p.content), libraryAccess: "purchased" }))
     );
     items.push(...publicPreview.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "preview" })));
-    if (participantLinks.length > 0) {
+
+    const combinedParticipantLinks = [...participantLinks, ...identityTargetedLinks];
+
+    if (combinedParticipantLinks.length > 0) {
       const participantIds = Array.from(
-        new Set(participantLinks.map((p) => p.splitVersion?.contentId).filter(Boolean) as string[])
+        new Set(combinedParticipantLinks.map((p: any) => p.splitVersion?.contentId).filter(Boolean) as string[])
       );
       if (participantIds.length > 0) {
         const participantContent = await prisma.contentItem.findMany({
