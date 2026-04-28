@@ -27081,40 +27081,62 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
               (Array.isArray(manifestJson?.files)
                 ? asString(manifestJson.files[0]?.path || manifestJson.files[0]?.objectKey || "").trim()
                 : "");
+            const itemRemoteOrigin = pickShareableOrigin(
+              getRemoteOriginFromDescription(asString((item as any)?.description || "").trim() || null)
+            );
+            const mediaOrigin = itemRemoteOrigin || currentPublicOrigin;
+            const contentPathBase = `/public/content/${encodeURIComponent(item.id)}/preview-file`;
+            const toPreviewUrl = (objectKey: string | null | undefined): string => {
+              const key = asString(objectKey || "").trim();
+              if (!key) return buildPublicUrlFromOrigin(mediaOrigin, contentPathBase);
+              return buildPublicUrlFromOrigin(mediaOrigin, `${contentPathBase}?objectKey=${encodeURIComponent(key)}`);
+            };
             const isUngatedPublic =
               Number(item.priceSats || 0) <= 0 &&
               asString((item as any).deliveryMode || "").trim().toLowerCase() !== "download_only";
             const featuredMediaKey = isUngatedPublic
               ? (primaryObjectKey || previewObjectKey)
               : previewObjectKey;
-            const featuredMediaUrl = featuredMediaKey
-              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(featuredMediaKey)}`)
-              : "";
+            const manifestPrimaryFileUrl = primaryObjectKey ? toPreviewUrl(primaryObjectKey) : "";
+            const featuredMediaUrl = featuredMediaKey ? toPreviewUrl(featuredMediaKey) : "";
             const hasDistinctPreviewObject = Boolean(previewObjectKey && previewObjectKey !== primaryObjectKey);
             const videoPreviewUrl = hasDistinctPreviewObject
-              ? buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file?objectKey=${encodeURIComponent(previewObjectKey)}`)
-              : buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/preview-file`);
-            const coverUrl = buildPublicUrlFromOrigin(currentPublicOrigin, `/public/content/${encodeURIComponent(item.id)}/cover`);
+              ? toPreviewUrl(previewObjectKey)
+              : buildPublicUrlFromOrigin(mediaOrigin, contentPathBase);
+            const coverUrl = buildPublicUrlFromOrigin(mediaOrigin, `/public/content/${encodeURIComponent(item.id)}/cover`);
             const manifestThumbnailRaw =
               asString(manifestJson?.thumbnailUrl || "").trim() ||
               asString(manifestJson?.thumbnail || "").trim();
             const externalThumbUrl = deriveExternalVideoThumbnail(
               manifestJson?.sourceUrl || manifestJson?.externalUrl || manifestJson?.url || primaryObjectKey || ""
             );
-            const itemRemoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(asString((item as any)?.description || "").trim() || null));
+            const libraryPreviewCandidates = Array.from(
+              new Set(
+                [featuredMediaUrl, manifestPrimaryFileUrl, videoPreviewUrl, buildPublicUrlFromOrigin(mediaOrigin, contentPathBase)]
+                  .map((value) => asString(value || "").trim())
+                  .filter(Boolean)
+              )
+            );
+            const preferredPreviewUrl = libraryPreviewCandidates[0] || "";
             const buyUrl = itemRemoteOrigin
               ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
               : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
               type === "video"
-                ? `<div class="featured-video-thumb-wrap">
-                    <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(videoPreviewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
-                    <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
-                    <span class="featured-video-play" aria-hidden="true">▶</span>
+                ? `<div class="featured-video-thumb-wrap featured-preview-shell" data-preview-kind="video" data-preview-src="${escHtml(preferredPreviewUrl)}" data-preview-poster="${escHtml(coverUrl)}">
+                    <div class="featured-preview-host">
+                      ${
+                        coverUrl
+                          ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+                             <div class="featured-image-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>`
+                          : `<div class="featured-image-fallback"><span class="featured-fallback">Video preview</span></div>`
+                      }
+                    </div>
+                    <button type="button" class="featured-video-play featured-preview-trigger" data-preview-trigger aria-label="Play preview">▶</button>
                   </div>`
                 : type === "song" && featuredMediaUrl
-                  ? `<div class="featured-song-media">
-                      <div class="featured-song-cover-wrap">
+                  ? `<div class="featured-song-media featured-preview-shell" data-preview-kind="audio" data-preview-src="${escHtml(featuredMediaUrl)}" data-preview-poster="${escHtml(coverUrl)}">
+                      <div class="featured-song-cover-wrap featured-preview-host">
                         ${
                           coverUrl
                             ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-song-cover" onerror="this.style.display='none'; this.parentElement.classList.add('featured-song-cover-missing');" />`
@@ -27122,9 +27144,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                         }
                         <span class="featured-fallback">${safeType}</span>
                       </div>
-                      <audio class="featured-audio" controls preload="none">
-                        <source src="${escHtml(featuredMediaUrl)}" />
-                      </audio>
+                      <button type="button" class="featured-preview-audio-btn featured-preview-trigger" data-preview-trigger aria-label="Load audio preview">Listen preview</button>
                     </div>`
                   : coverUrl
                     ? `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
@@ -27371,10 +27391,12 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       `/public/content/${encodeURIComponent(params.contentId)}/cover`
     );
     if (type === "video") {
-      return `<div class="featured-video-thumb-wrap">
-        <video class="featured-video-preview js-lazy-video" preload="none" muted autoplay loop playsinline poster="${escHtml(coverUrl)}" data-preview-src="${escHtml(previewUrl)}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';"></video>
-        <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
-        <span class="featured-video-play" aria-hidden="true">▶</span>
+      return `<div class="featured-video-thumb-wrap featured-preview-shell" data-preview-kind="video" data-preview-src="${escHtml(previewUrl)}" data-preview-poster="${escHtml(coverUrl)}">
+        <div class="featured-preview-host">
+          <img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+          <div class="featured-image-fallback featured-video-fallback" style="display:none;"><span class="featured-fallback">Video preview</span></div>
+        </div>
+        <button type="button" class="featured-video-play featured-preview-trigger" data-preview-trigger aria-label="Play ${safeTitle} preview">Play</button>
       </div>`;
     }
     return `<img src="${escHtml(coverUrl)}" alt="${safeTitle} cover" class="featured-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
@@ -27927,44 +27949,52 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       }
     })();
     (function () {
-      function armVideo(el) {
-        if (!el) return;
-        if (el.dataset.previewArmed === "1") return;
-        const src = (el.getAttribute("data-preview-src") || "").trim();
+      function activatePreviewShell(shell) {
+        if (!shell || shell.getAttribute("data-preview-armed") === "1") return;
+        var src = (shell.getAttribute("data-preview-src") || "").trim();
         if (!src) return;
-        el.dataset.previewArmed = "1";
-        el.setAttribute("src", src);
-        try { el.load(); } catch (_) {}
-        const playNow = function () {
-          const p = el.play && el.play();
-          if (p && typeof p.catch === "function") p.catch(function () {});
-        };
-        if ("requestIdleCallback" in window) {
-          window.requestIdleCallback(playNow, { timeout: 250 });
+        var kind = (shell.getAttribute("data-preview-kind") || "video").trim().toLowerCase();
+        var poster = (shell.getAttribute("data-preview-poster") || "").trim();
+        shell.setAttribute("data-preview-armed", "1");
+        shell.classList.add("preview-armed");
+        var mediaEl = null;
+        if (kind === "audio") {
+          mediaEl = document.createElement("audio");
+          mediaEl.className = "featured-audio";
+          mediaEl.controls = true;
+          mediaEl.preload = "metadata";
+          mediaEl.src = src;
         } else {
-          setTimeout(playNow, 0);
+          mediaEl = document.createElement("video");
+          mediaEl.className = "featured-video-preview";
+          mediaEl.controls = true;
+          mediaEl.preload = "metadata";
+          mediaEl.playsInline = true;
+          if (poster) mediaEl.setAttribute("poster", poster);
+          mediaEl.src = src;
         }
+        var host = shell.querySelector(".featured-preview-host");
+        if (!host) host = shell;
+        host.innerHTML = "";
+        host.appendChild(mediaEl);
+        var p = mediaEl.play && mediaEl.play();
+        if (p && typeof p.catch === "function") p.catch(function () {});
       }
-      function setupLazyVideos() {
-        var nodes = Array.prototype.slice.call(document.querySelectorAll("video.js-lazy-video[data-preview-src]"));
-        if (!nodes.length) return;
-        if (!("IntersectionObserver" in window)) {
-          nodes.forEach(armVideo);
-          return;
-        }
-        var io = new IntersectionObserver(function (entries) {
-          entries.forEach(function (entry) {
-            if (!entry.isIntersecting) return;
-            armVideo(entry.target);
-            io.unobserve(entry.target);
+      function setupPreviewOnDemand() {
+        var triggers = Array.prototype.slice.call(document.querySelectorAll("[data-preview-trigger]"));
+        triggers.forEach(function (btn) {
+          btn.addEventListener("click", function (ev) {
+            ev.preventDefault();
+            var shell = btn.closest("[data-preview-src]");
+            if (!shell) return;
+            activatePreviewShell(shell);
           });
-        }, { rootMargin: "180px 0px", threshold: 0.15 });
-        nodes.forEach(function (node) { io.observe(node); });
+        });
       }
       if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", setupLazyVideos, { once: true });
+        document.addEventListener("DOMContentLoaded", setupPreviewOnDemand, { once: true });
       } else {
-        setupLazyVideos();
+        setupPreviewOnDemand();
       }
     })();
   </script>
