@@ -21122,6 +21122,50 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
   const inactiveStatuses = new Set(["deleted", "archived", "inactive", "tombstoned"]);
   const hasDerivativeReason = (reasons: Set<string>) =>
     reasons.has("derivative_child") || reasons.has("derivative_parent");
+  const normalizeLibraryScopes = (value: unknown): string[] => {
+    const allowed = new Set(["all", "authored", "shared_splits", "derivatives"]);
+    const input = Array.isArray(value) ? value : [];
+    return Array.from(
+      new Set(
+        input
+          .map((scope: unknown) => asString(scope || "").trim().toLowerCase())
+          .filter((scope) => allowed.has(scope))
+      )
+    );
+  };
+  const deriveLibraryScopesFromInclusion = (
+    item: any,
+    libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant" | "shared",
+    reason: string,
+    sourcePath: string
+  ): string[] => {
+    const scopes = new Set<string>(normalizeLibraryScopes(item?.libraryScopes));
+    scopes.add("all");
+    const normalizedReason = asString(reason || "").trim().toLowerCase();
+    const normalizedPath = asString(sourcePath || "").trim().toLowerCase();
+    const remoteOrigin = pickShareableOrigin(
+      asString(item?.remoteOrigin || "").trim() || null,
+      getRemoteOriginFromDescription(asString(item?.description || "").trim() || null)
+    );
+    if (
+      libraryAccess === "owned" &&
+      asString(item?.ownerUserId || "").trim() === userId &&
+      !remoteOrigin &&
+      (normalizedReason === "owned" || normalizedPath === "owned")
+    ) {
+      scopes.add("authored");
+    }
+    if (normalizedReason === "split_participant" || normalizedReason === "shared_with_me") {
+      scopes.add("shared_splits");
+    }
+    if (normalizedPath === "participant_content" || normalizedPath === "mirrored_shared_rows") {
+      scopes.add("shared_splits");
+    }
+    if (normalizedReason === "derivative_parent" || normalizedPath === "derivative_children_local" || normalizedPath === "mirrored_derivative_links") {
+      scopes.add("derivatives");
+    }
+    return Array.from(scopes);
+  };
   const isLibraryRowEligible = (
     item: any,
     reason: string,
@@ -21244,6 +21288,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       ...toVersionSummary(item),
       libraryAccess,
       appearsBecause: [reason],
+      libraryScopes: deriveLibraryScopesFromInclusion(item, libraryAccess, reason, sourcePath),
       _libraryPath: sourcePath,
       isActionableShadow: eligibility.actionableShadow || Boolean(item?.isActionableShadow)
     });
@@ -21265,7 +21310,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         ...i,
         ...toVersionSummary(i),
         libraryAccess: i.ownerUserId === userId ? "owned" : "local",
-        appearsBecause: [i.ownerUserId === userId ? "owned" : "local"]
+        appearsBecause: [i.ownerUserId === userId ? "owned" : "local"],
+        libraryScopes: i.ownerUserId === userId ? ["all", "authored"] : ["all"]
       }))
     );
   } else if (scope === "mine") {
@@ -21274,7 +21320,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       orderBy: { createdAt: "desc" },
       select: selectBase
     });
-    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned", appearsBecause: ["owned"] })));
+    items.push(...owned.map((i) => ({ ...i, ...toVersionSummary(i), libraryAccess: "owned", appearsBecause: ["owned"], libraryScopes: ["all", "authored"] })));
   } else {
     // library: owned + purchased (entitlements) + public preview
     await recoverRemoteInviteMirrorsFromAudit(userId).catch(() => {});
@@ -21777,6 +21823,38 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             .filter(Boolean)
         )
       ),
+      previewUrl:
+        asString(preferred?.previewUrl || "").trim() ||
+        asString(fallback?.previewUrl || "").trim() ||
+        null,
+      previewFileUrl:
+        asString(preferred?.previewFileUrl || "").trim() ||
+        asString(fallback?.previewFileUrl || "").trim() ||
+        null,
+      previewVideoUrl:
+        asString(preferred?.previewVideoUrl || "").trim() ||
+        asString(fallback?.previewVideoUrl || "").trim() ||
+        null,
+      videoUrl:
+        asString(preferred?.videoUrl || "").trim() ||
+        asString(fallback?.videoUrl || "").trim() ||
+        null,
+      fileUrl:
+        asString(preferred?.fileUrl || "").trim() ||
+        asString(fallback?.fileUrl || "").trim() ||
+        null,
+      mediaUrl:
+        asString(preferred?.mediaUrl || "").trim() ||
+        asString(fallback?.mediaUrl || "").trim() ||
+        null,
+      playbackUrl:
+        asString(preferred?.playbackUrl || "").trim() ||
+        asString(fallback?.playbackUrl || "").trim() ||
+        null,
+      posterUrl:
+        asString(preferred?.posterUrl || "").trim() ||
+        asString(fallback?.posterUrl || "").trim() ||
+        null,
       buyUrl:
         asString(preferred?.buyUrl || "").trim() ||
         asString(fallback?.buyUrl || "").trim() ||
@@ -21785,6 +21863,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         asString(preferred?.attributionUrl || "").trim() ||
         asString(fallback?.attributionUrl || "").trim() ||
         null,
+      libraryScopes: Array.from(
+        new Set([
+          ...normalizeLibraryScopes(preferred?.libraryScopes),
+          ...normalizeLibraryScopes(fallback?.libraryScopes)
+        ])
+      ),
       isLocalAuthored:
         Boolean(preferred?.isLocalAuthored) ||
         Boolean(fallback?.isLocalAuthored) ||
@@ -21992,6 +22076,15 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       reasons.has("derivative_child") ||
       reasons.has("derivative_parent");
     const emittedActionableShadow = Boolean(i?.isActionableShadow);
+    const emittedLibraryScopes = (() => {
+      const existing = normalizeLibraryScopes(i?.libraryScopes);
+      if (existing.length > 0) return existing;
+      const fallback = new Set<string>(["all"]);
+      if (emittedLocalAuthored) fallback.add("authored");
+      if (emittedDirectSharedSplit) fallback.add("shared_splits");
+      if (emittedUpstreamRoyaltyWork) fallback.add("derivatives");
+      return Array.from(fallback);
+    })();
     const { description: _description, ...rest } = i;
     return {
       ...rest,
@@ -22029,6 +22122,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       isUpstreamRoyaltyWork: emittedUpstreamRoyaltyWork,
       isDerivativeWork: emittedDerivativeWork,
       isActionableShadow: emittedActionableShadow,
+      libraryScopes: emittedLibraryScopes,
       isParentOfDerivative: parentOfDerivativeIds.has(contentId)
     };
   });

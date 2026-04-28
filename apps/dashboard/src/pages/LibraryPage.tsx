@@ -37,6 +37,7 @@ type LibraryItem = {
   owner?: { displayName?: string | null; email?: string | null } | null;
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant" | "shared";
   appearsBecause?: string[] | null;
+  libraryScopes?: Array<"all" | "authored" | "shared_splits" | "derivatives"> | null;
   coverUrl?: string | null;
   coverImageUrl?: string | null;
   artworkUrl?: string | null;
@@ -155,6 +156,7 @@ type LibraryRelationshipType = "authored_work" | "shared_splits" | "derivatives"
 
 type NormalizedLibraryItem = {
   item: LibraryItem;
+  libraryScopes: Set<"all" | "authored" | "shared_splits" | "derivatives">;
   contentType: LibraryTypeFilter;
   relationshipType: LibraryRelationshipType;
   relationshipTags: LibraryRelationshipFilter[];
@@ -367,8 +369,10 @@ function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): Normal
         isUpstreamRoyaltyWork: Boolean(winner.item.isUpstreamRoyaltyWork || loser.item.isUpstreamRoyaltyWork),
         isDerivativeWork: Boolean(winner.item.isDerivativeWork || loser.item.isDerivativeWork),
         isActionableShadow: Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow),
-        isParentOfDerivative: Boolean(winner.item.isParentOfDerivative || loser.item.isParentOfDerivative)
+        isParentOfDerivative: Boolean(winner.item.isParentOfDerivative || loser.item.isParentOfDerivative),
+        libraryScopes: Array.from(new Set([...(winner.item.libraryScopes || []), ...(loser.item.libraryScopes || [])]))
       },
+      libraryScopes: new Set([...(winner.libraryScopes || new Set()), ...(loser.libraryScopes || new Set())]),
       relationshipTags: mergedRelationshipTags,
       relationshipType: mergedRelationshipTags.includes("derivatives")
         ? "derivatives"
@@ -532,10 +536,11 @@ function applyLibraryFilters(
     if (!shouldRenderActiveLibraryRow(entry)) return false;
     const typeMatch = typeFilter === "all" || entry.contentType === typeFilter;
     const relationMatch = (() => {
+      const hasScope = (scope: "all" | "authored" | "shared_splits" | "derivatives") => entry.libraryScopes.has(scope);
       if (relationshipFilter === "all") return true;
-      if (relationshipFilter === "authored_work") return entry.isLocalAuthored;
-      if (relationshipFilter === "shared_splits") return entry.isDirectSharedSplit;
-      if (relationshipFilter === "derivatives") return entry.isUpstreamRoyaltyWork;
+      if (relationshipFilter === "authored_work") return hasScope("authored");
+      if (relationshipFilter === "shared_splits") return hasScope("shared_splits");
+      if (relationshipFilter === "derivatives") return hasScope("derivatives");
       return entry.relationshipTags.includes(relationshipFilter);
     })();
     const include = typeMatch && relationMatch;
@@ -920,6 +925,17 @@ export default function LibraryPage() {
               .map((value) => String(value || "").trim().toLowerCase())
               .filter(Boolean)
           );
+          const normalizeScopes = (raw: unknown): Array<"all" | "authored" | "shared_splits" | "derivatives"> => {
+            const allowed = new Set(["all", "authored", "shared_splits", "derivatives"]);
+            const values = Array.isArray(raw) ? raw : [];
+            return Array.from(
+              new Set(
+                values
+                  .map((value) => String(value || "").trim().toLowerCase())
+                  .filter((value) => allowed.has(value))
+              )
+            ) as Array<"all" | "authored" | "shared_splits" | "derivatives">;
+          };
           const hasParticipantReason =
             appearsBecause.has("split_participant") ||
             appearsBecause.has("shared_with_me") ||
@@ -929,9 +945,19 @@ export default function LibraryPage() {
             hasParticipantReason && !explicitOwnedReason
               ? "participant"
               : (item.libraryAccess as LibraryItem["libraryAccess"]);
+          const scopes = new Set<"all" | "authored" | "shared_splits" | "derivatives">(
+            normalizeScopes(item.libraryScopes)
+          );
+          if (scopes.size === 0) {
+            if (normalizedAccess === "owned" && !hasLocalOriginMismatch(apiBase, item)) scopes.add("authored");
+            if (appearsBecause.has("split_participant") || appearsBecause.has("shared_with_me")) scopes.add("shared_splits");
+            if (appearsBecause.has("derivative_parent")) scopes.add("derivatives");
+          }
+          if (!scopes.has("all")) scopes.add("all");
           const normalizedItemForEligibility: LibraryItem = {
             ...item,
-            libraryAccess: normalizedAccess
+            libraryAccess: normalizedAccess,
+            libraryScopes: Array.from(scopes)
           };
           const relation: LibraryRelation =
             normalizedAccess === "owned"
@@ -1004,14 +1030,17 @@ export default function LibraryPage() {
             ownedByViewer &&
             !hasLocalOriginMismatch(apiBase, normalizedItemForEligibility);
           const localAuthored =
+            scopes.has("authored") ||
             Boolean(normalizedItemForEligibility?.isLocalAuthored) ||
             localAuthoredFallback;
           const directSharedSplit =
+            scopes.has("shared_splits") ||
             Boolean(normalizedItemForEligibility?.isDirectSharedSplit) ||
             appearsBecause.has("split_participant") ||
             appearsBecause.has("shared_with_me") ||
             (section === "participant" && !appearsBecause.has("derivative_parent"));
           const upstreamRoyaltyWork =
+            scopes.has("derivatives") ||
             Boolean(normalizedItemForEligibility?.isUpstreamRoyaltyWork) ||
             (appearsBecause.has("derivative_parent") &&
               (isDerivativeChild || appearsBecause.has("derivative_child")));
@@ -1019,9 +1048,9 @@ export default function LibraryPage() {
           const hasSharedSplitMembership =
             explicitSharedMembership || (viewerParticipatesInSplit && !viewerOwnsItem);
           const relationshipTagSet = new Set<LibraryRelationshipFilter>();
-          if (section === "owned") relationshipTagSet.add("authored_work");
-          if (hasSharedSplitMembership) relationshipTagSet.add("shared_splits");
-          if (derivativeLinked) relationshipTagSet.add("derivatives");
+          if (scopes.has("authored")) relationshipTagSet.add("authored_work");
+          if (scopes.has("shared_splits") || hasSharedSplitMembership) relationshipTagSet.add("shared_splits");
+          if (scopes.has("derivatives") || derivativeLinked) relationshipTagSet.add("derivatives");
           const relationshipTags = Array.from(relationshipTagSet);
           const relationshipType: LibraryRelationshipType = relationshipTags.includes("derivatives")
             ? "derivatives"
@@ -1032,6 +1061,7 @@ export default function LibraryPage() {
                 : "other";
           normalized.push({
             item: normalizedItem,
+            libraryScopes: scopes,
             contentType,
             relationshipType,
             relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
