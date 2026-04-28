@@ -21109,16 +21109,99 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     if (normalized === "local") return 1;
     return 0;
   };
+  const staleDeletedReasons = new Set([
+    "tombstone",
+    "stale",
+    "remote_deleted",
+    "local_deleted",
+    "deleted",
+    "hard_deleted",
+    "reformulation_cleanup",
+    "superseded"
+  ]);
+  const inactiveStatuses = new Set(["deleted", "archived", "inactive", "tombstoned"]);
+  const hasDerivativeReason = (reasons: Set<string>) =>
+    reasons.has("derivative_child") || reasons.has("derivative_parent");
+  const isLibraryRowEligible = (
+    item: any,
+    reason: string,
+    options?: { allowActionableShadow?: boolean }
+  ): { eligible: boolean; actionableShadow: boolean; exclusionReason?: string } => {
+    const contentId = asString(item?.id || "").trim();
+    if (!contentId) return { eligible: false, actionableShadow: false, exclusionReason: "missing_id" };
+    const status = asString(item?.status || "").trim().toLowerCase();
+    const deletedReason = asString(item?.deletedReason || "").trim().toLowerCase();
+    const isDeleted = Boolean(item?.deletedAt);
+    const isTombstoned = Boolean(item?.tombstoned) || Boolean(item?.tombstonedAt);
+    const reasons = new Set(
+      [
+        ...(Array.isArray(item?.appearsBecause) ? item.appearsBecause : []),
+        reason
+      ].map((value: unknown) => asString(value || "").trim().toLowerCase())
+    );
+    const remoteOrigin = pickShareableOrigin(
+      asString(item?.remoteOrigin || "").trim() || null,
+      getRemoteOriginFromDescription(asString(item?.description || "").trim() || null)
+    );
+    const isActionableShadowCandidate =
+      Boolean(options?.allowActionableShadow) &&
+      hasDerivativeReason(reasons) &&
+      isDeleted &&
+      deletedReason === "hard" &&
+      Boolean(remoteOrigin) &&
+      Boolean(item?._libraryHasActiveClearanceContext) &&
+      isActionableDerivativeChildForClearanceInbox(item);
+
+    if (isTombstoned) return { eligible: false, actionableShadow: false, exclusionReason: "tombstoned" };
+    if (staleDeletedReasons.has(deletedReason)) {
+      return {
+        eligible: isActionableShadowCandidate,
+        actionableShadow: isActionableShadowCandidate,
+        exclusionReason: isActionableShadowCandidate ? undefined : `deletedReason:${deletedReason}`
+      };
+    }
+    if (inactiveStatuses.has(status) && !isActionableShadowCandidate) {
+      return { eligible: false, actionableShadow: false, exclusionReason: `status:${status || "unknown"}` };
+    }
+    if (isDeleted && !isActionableShadowCandidate) {
+      return { eligible: false, actionableShadow: false, exclusionReason: "deletedAt" };
+    }
+    if ((deletedReason === "hard" || deletedReason === "hard_deleted") && !isActionableShadowCandidate) {
+      return { eligible: false, actionableShadow: false, exclusionReason: `deletedReason:${deletedReason}` };
+    }
+    return { eligible: true, actionableShadow: isActionableShadowCandidate };
+  };
   const appendLibraryItem = (
     item: any,
     libraryAccess: "owned" | "purchased" | "preview" | "local" | "participant" | "shared",
     reason: string
   ) => {
+    const eligibility = isLibraryRowEligible(item, reason, { allowActionableShadow: true });
+    if (!eligibility.eligible) {
+      if (process.env.NODE_ENV !== "production" && req?.log) {
+        req.log.debug(
+          {
+            route: "/content",
+            scope,
+            contentId: asString(item?.id || "").trim() || null,
+            reason,
+            exclusionReason: eligibility.exclusionReason || null,
+            deletedAt: item?.deletedAt || null,
+            deletedReason: item?.deletedReason || null,
+            tombstoned: Boolean(item?.tombstoned) || Boolean(item?.tombstonedAt),
+            status: asString(item?.status || "").trim() || null
+          },
+          "library.row.excluded"
+        );
+      }
+      return;
+    }
     items.push({
       ...item,
       ...toVersionSummary(item),
       libraryAccess,
-      appearsBecause: [reason]
+      appearsBecause: [reason],
+      isActionableShadow: eligibility.actionableShadow || Boolean(item?.isActionableShadow)
     });
   };
 
@@ -21313,6 +21396,18 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           childContent: { select: selectBase }
         }
       });
+      const derivativeAuthRows = derivativeChildren.length
+        ? await prisma.derivativeAuthorization.findMany({
+            where: {
+              derivativeLinkId: { in: derivativeChildren.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) },
+              status: { in: ["PENDING", "REJECTED"] as any }
+            },
+            select: { derivativeLinkId: true }
+          })
+        : [];
+      const actionableDerivativeLinkIds = new Set(
+        derivativeAuthRows.map((row: any) => asString(row?.derivativeLinkId || "").trim()).filter(Boolean)
+      );
       for (const link of derivativeChildren) {
         const child = link.childContent as any;
         if (!child) continue;
@@ -21320,20 +21415,23 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         if (!matchesRequestedType(childType)) continue;
         const childStatus = asString(child?.status || "").trim().toLowerCase();
         const childPublished = childStatus === "published" && !child?.deletedAt;
-        // Reuse shared-split style durable local mirror behavior: allow active
-        // remote-shadow child rows (hard-delete + remote-origin marker) while
-        // still excluding stale deleted/tombstoned rows.
-        const childActionableShadow = Boolean(child?.deletedAt) && isActionableDerivativeChildForClearanceInbox(child);
+        const childActionableShadow =
+          Boolean(child?.deletedAt) &&
+          !link?.approvedAt &&
+          actionableDerivativeLinkIds.has(asString(link?.id || "").trim()) &&
+          isActionableDerivativeChildForClearanceInbox(child);
         const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
         const surfaced = {
           ...child,
-          status: "published",
-          deletedAt: null,
+          status: child?.status || "published",
+          deletedAt: child?.deletedAt || null,
+          deletedReason: child?.deletedReason || null,
           remoteOrigin: pickShareableOrigin(
             asString(child?.remoteOrigin || "").trim() || null,
             getRemoteOriginFromDescription(asString(child?.description || "").trim() || null)
-          )
+          ),
+          _libraryHasActiveClearanceContext: childActionableShadow
         };
         appendLibraryItem(surfaced, "shared", "derivative_child");
         appendLibraryItem(surfaced, "shared", "derivative_parent");
@@ -21406,6 +21504,18 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           childContent: { select: selectBase }
         }
       });
+      const mirroredDerivativeAuthRows = mirroredDerivativeLinks.length
+        ? await prisma.derivativeAuthorization.findMany({
+            where: {
+              derivativeLinkId: { in: mirroredDerivativeLinks.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) },
+              status: { in: ["PENDING", "REJECTED"] as any }
+            },
+            select: { derivativeLinkId: true }
+          })
+        : [];
+      const actionableMirroredDerivativeLinkIds = new Set(
+        mirroredDerivativeAuthRows.map((row: any) => asString(row?.derivativeLinkId || "").trim()).filter(Boolean)
+      );
       for (const link of mirroredDerivativeLinks) {
         const childContentId = asString(link?.childContentId || link?.childContent?.id || "").trim();
         if (!childContentId) continue;
@@ -21422,14 +21532,18 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           parentRemoteOrigin
         );
         const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
-        const childActionableShadow = Boolean(child?.deletedAt) && isActionableDerivativeChildForClearanceInbox(child);
+        const childActionableShadow =
+          Boolean(child?.deletedAt) &&
+          !link?.approvedAt &&
+          actionableMirroredDerivativeLinkIds.has(asString(link?.id || "").trim()) &&
+          isActionableDerivativeChildForClearanceInbox(child);
         if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {
           id: childContentId,
           title: asString(child?.title || "").trim() || "Untitled derivative",
           description: rowRemoteOrigin ? buildRemoteDescription(rowRemoteOrigin) : childDescription,
           type: derivedType || "file",
-          status: "published",
+          status: child?.status || "published",
           previousVersionContentId: null,
           previousVersion: null,
           featureOnProfile: false,
@@ -21438,12 +21552,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           priceSats: child?.priceSats ?? null,
           createdAt: child?.createdAt || new Date().toISOString(),
           repoPath: null,
-          deletedAt: null,
+          deletedAt: child?.deletedAt || null,
+          deletedReason: child?.deletedReason || null,
           ownerUserId: null,
           owner: null,
           manifest: child?.manifest || null,
           _count: child?._count || { files: 0, entitlements: 0 },
-          remoteOrigin: rowRemoteOrigin
+          remoteOrigin: rowRemoteOrigin,
+          _libraryHasActiveClearanceContext: childActionableShadow
         };
         appendLibraryItem(derivativeRow, "shared", "derivative_child");
         appendLibraryItem(derivativeRow, "shared", "derivative_parent");
@@ -21573,7 +21689,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         Boolean(fallback?.isParentOfDerivative)
     });
   }
-  const unique = Array.from(deduped.values());
+  const unique = Array.from(deduped.values()).filter((row: any) =>
+    isLibraryRowEligible(
+      row,
+      asString((Array.isArray(row?.appearsBecause) ? row.appearsBecause[0] : "") || "").trim() || "unknown",
+      { allowActionableShadow: true }
+    ).eligible
+  );
   const uniqueRowIds = Array.from(new Set(unique.map((row: any) => asString(row?.id || "").trim()).filter(Boolean)));
   const parentOfDerivativeIds = new Set<string>();
   if (uniqueRowIds.length > 0) {

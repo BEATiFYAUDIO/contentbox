@@ -254,12 +254,7 @@ function hasLocalOriginMismatch(apiBase: string, item: LibraryItem): boolean {
 }
 
 function isActionableShadowRow(item: LibraryItem, appearsBecause: Set<string>): boolean {
-  const deletedAt = String(item.deletedAt || "").trim();
-  const deletedReason = String(item.deletedReason || "").trim().toLowerCase();
-  const hasRemoteOrigin = Boolean(String(item.remoteOrigin || "").trim());
-  if (!deletedAt) return false;
-  if (!hasRemoteOrigin) return false;
-  if (deletedReason !== "hard") return false;
+  if (!Boolean(item.isActionableShadow)) return false;
   return appearsBecause.has("derivative_parent") || appearsBecause.has("derivative_child");
 }
 
@@ -268,9 +263,19 @@ function shouldRenderActiveLibraryRow(entry: NormalizedLibraryItem): boolean {
   const deletedReason = String(item.deletedReason || "").trim().toLowerCase();
   const isDeleted = Boolean(String(item.deletedAt || "").trim());
   const isTombstoned = Boolean(item.tombstoned) || Boolean(String(item.tombstonedAt || "").trim());
-  const isStaleDeletedReason = ["tombstone", "stale", "remote_deleted", "deleted", "hard_deleted"].includes(deletedReason);
+  const isStaleDeletedReason = [
+    "tombstone",
+    "stale",
+    "remote_deleted",
+    "local_deleted",
+    "deleted",
+    "hard_deleted",
+    "reformulation_cleanup",
+    "superseded"
+  ].includes(deletedReason);
   if ((isDeleted || isTombstoned || isStaleDeletedReason) && !entry.isActionableShadow) return false;
   const status = String(item.status || "").trim().toLowerCase();
+  if (["deleted", "archived", "inactive", "tombstoned"].includes(status) && !entry.isActionableShadow) return false;
   if (status !== "published" && !entry.isActionableShadow) return false;
   return true;
 }
