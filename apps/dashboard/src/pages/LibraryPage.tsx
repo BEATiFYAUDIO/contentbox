@@ -26,7 +26,9 @@ type LibraryItem = {
   archivedAt?: string | null;
   trashedAt?: string | null;
   deletedAt?: string | null;
+  deletedReason?: string | null;
   tombstonedAt?: string | null;
+  tombstoned?: boolean;
   storefrontStatus?: string | null;
   priceSats?: string | null;
   createdAt: string;
@@ -36,9 +38,18 @@ type LibraryItem = {
   libraryAccess?: "owned" | "purchased" | "preview" | "local" | "participant" | "shared";
   appearsBecause?: string[] | null;
   coverUrl?: string | null;
+  coverImageUrl?: string | null;
+  artworkUrl?: string | null;
+  thumbnailUrl?: string | null;
+  posterUrl?: string | null;
   attributionUrl?: string | null;
   buyUrl?: string | null;
   remoteOrigin?: string | null;
+  isLocalAuthored?: boolean;
+  isDirectSharedSplit?: boolean;
+  isUpstreamRoyaltyWork?: boolean;
+  isDerivativeWork?: boolean;
+  isActionableShadow?: boolean;
   manifest?: { sha256?: string | null } | null;
   featureOnProfile?: boolean;
   _count?: { files: number };
@@ -135,6 +146,11 @@ type NormalizedLibraryItem = {
   contentType: LibraryTypeFilter;
   relationshipType: LibraryRelationshipType;
   relationshipTags: LibraryRelationshipFilter[];
+  isLocalAuthored: boolean;
+  isDirectSharedSplit: boolean;
+  isUpstreamRoyaltyWork: boolean;
+  isDerivativeWork: boolean;
+  isActionableShadow: boolean;
   isDerivativeChild: boolean;
   isDerivativeParent: boolean;
   availabilityState: ReturnType<typeof getAvailabilityState>;
@@ -168,6 +184,14 @@ function canonicalEntryOrigin(entry: NormalizedLibraryItem): string | null {
   );
 }
 
+function firstNonEmptyString(...values: Array<unknown>): string | null {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function derivativeClassifier(input: {
   type?: string | null;
   appearsBecause?: Set<string>;
@@ -197,6 +221,48 @@ function derivativeClassifier(input: {
     isDerivativeParent,
     isDerivative: isDerivativeChild || isDerivativeParent
   };
+}
+
+function toOrigin(raw: string | null | undefined): string | null {
+  const value = String(raw || "").trim();
+  if (!value) return null;
+  try {
+    return new URL(value).origin.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function hasLocalOriginMismatch(apiBase: string, item: LibraryItem): boolean {
+  const localOrigin = toOrigin(apiBase);
+  const rowRemoteOrigin = toOrigin(String(item.remoteOrigin || "").trim());
+  const rowBuyOrigin = toOrigin(String(item.buyUrl || "").trim());
+  const rowAttributionOrigin = toOrigin(String(item.attributionUrl || "").trim());
+  const foreignOrigin = rowRemoteOrigin || rowBuyOrigin || rowAttributionOrigin;
+  if (!localOrigin || !foreignOrigin) return false;
+  return localOrigin !== foreignOrigin;
+}
+
+function isActionableShadowRow(item: LibraryItem, appearsBecause: Set<string>): boolean {
+  const deletedAt = String(item.deletedAt || "").trim();
+  const deletedReason = String(item.deletedReason || "").trim().toLowerCase();
+  const hasRemoteOrigin = Boolean(String(item.remoteOrigin || "").trim());
+  if (!deletedAt) return false;
+  if (!hasRemoteOrigin) return false;
+  if (deletedReason !== "hard") return false;
+  return appearsBecause.has("derivative_parent") || appearsBecause.has("derivative_child");
+}
+
+function shouldRenderActiveLibraryRow(entry: NormalizedLibraryItem): boolean {
+  const item = entry.item;
+  const deletedReason = String(item.deletedReason || "").trim().toLowerCase();
+  const isDeleted = Boolean(String(item.deletedAt || "").trim());
+  const isTombstoned = Boolean(item.tombstoned) || Boolean(String(item.tombstonedAt || "").trim());
+  const isStaleDeletedReason = ["tombstone", "stale", "remote_deleted", "deleted", "hard_deleted"].includes(deletedReason);
+  if ((isDeleted || isTombstoned || isStaleDeletedReason) && !entry.isActionableShadow) return false;
+  const status = String(item.status || "").trim().toLowerCase();
+  if (status !== "published" && !entry.isActionableShadow) return false;
+  return true;
 }
 
 function libraryAccessRank(value: LibraryItem["libraryAccess"] | null | undefined): number {
@@ -246,9 +312,25 @@ function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): Normal
       item: {
         ...winner.item,
         appearsBecause: mergedAppearsBecause,
-        remoteOrigin: winner.item.remoteOrigin || loser.item.remoteOrigin || (origin === "local" ? null : origin),
-        buyUrl: winner.item.buyUrl || loser.item.buyUrl || winner.publicPageUrl || loser.publicPageUrl || null,
-        attributionUrl: winner.item.attributionUrl || loser.item.attributionUrl || null
+        remoteOrigin: firstNonEmptyString(
+          winner.item.remoteOrigin,
+          loser.item.remoteOrigin,
+          origin === "local" ? null : origin
+        ),
+        coverUrl: firstNonEmptyString(winner.item.coverUrl, loser.item.coverUrl),
+        coverImageUrl: firstNonEmptyString(winner.item.coverImageUrl, loser.item.coverImageUrl),
+        artworkUrl: firstNonEmptyString(winner.item.artworkUrl, loser.item.artworkUrl),
+        thumbnailUrl: firstNonEmptyString(winner.item.thumbnailUrl, loser.item.thumbnailUrl),
+        posterUrl: firstNonEmptyString(winner.item.posterUrl, loser.item.posterUrl),
+        deletedReason: winner.item.deletedReason || loser.item.deletedReason || null,
+        tombstoned: Boolean(winner.item.tombstoned || loser.item.tombstoned),
+        buyUrl: firstNonEmptyString(winner.item.buyUrl, loser.item.buyUrl, winner.publicPageUrl, loser.publicPageUrl),
+        attributionUrl: firstNonEmptyString(winner.item.attributionUrl, loser.item.attributionUrl),
+        isLocalAuthored: Boolean(winner.item.isLocalAuthored || loser.item.isLocalAuthored),
+        isDirectSharedSplit: Boolean(winner.item.isDirectSharedSplit || loser.item.isDirectSharedSplit),
+        isUpstreamRoyaltyWork: Boolean(winner.item.isUpstreamRoyaltyWork || loser.item.isUpstreamRoyaltyWork),
+        isDerivativeWork: Boolean(winner.item.isDerivativeWork || loser.item.isDerivativeWork),
+        isActionableShadow: Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow)
       },
       relationshipTags: mergedRelationshipTags,
       relationshipType: mergedRelationshipTags.includes("derivatives")
@@ -260,6 +342,14 @@ function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): Normal
             : "other",
       isDerivativeChild: winner.isDerivativeChild || loser.isDerivativeChild,
       isDerivativeParent: winner.isDerivativeParent || loser.isDerivativeParent,
+      isLocalAuthored: winner.isLocalAuthored || loser.isLocalAuthored || Boolean(winner.item.isLocalAuthored || loser.item.isLocalAuthored),
+      isDirectSharedSplit:
+        winner.isDirectSharedSplit || loser.isDirectSharedSplit || Boolean(winner.item.isDirectSharedSplit || loser.item.isDirectSharedSplit),
+      isUpstreamRoyaltyWork:
+        winner.isUpstreamRoyaltyWork || loser.isUpstreamRoyaltyWork || Boolean(winner.item.isUpstreamRoyaltyWork || loser.item.isUpstreamRoyaltyWork),
+      isDerivativeWork: winner.isDerivativeWork || loser.isDerivativeWork || Boolean(winner.item.isDerivativeWork || loser.item.isDerivativeWork),
+      isActionableShadow:
+        winner.isActionableShadow || loser.isActionableShadow || Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow),
       publicPageUrl: winner.publicPageUrl || loser.publicPageUrl || null,
       participation: winner.participation || loser.participation
     });
@@ -402,12 +492,15 @@ function applyLibraryFilters(
   relationshipFilter: LibraryRelationshipFilter
 ): NormalizedLibraryItem[] {
   return items.filter((entry) => {
+    if (!shouldRenderActiveLibraryRow(entry)) return false;
     const typeMatch = typeFilter === "all" || entry.contentType === typeFilter;
-    const relationMatch =
-      relationshipFilter === "all" ||
-      (relationshipFilter === "derivatives"
-        ? entry.isDerivativeChild || entry.isDerivativeParent || entry.relationshipTags.includes("derivatives")
-        : entry.relationshipTags.includes(relationshipFilter));
+    const relationMatch = (() => {
+      if (relationshipFilter === "all") return true;
+      if (relationshipFilter === "authored_work") return entry.isLocalAuthored;
+      if (relationshipFilter === "shared_splits") return entry.isDirectSharedSplit;
+      if (relationshipFilter === "derivatives") return entry.isUpstreamRoyaltyWork;
+      return entry.relationshipTags.includes(relationshipFilter);
+    })();
     const include = typeMatch && relationMatch;
     if (import.meta.env.DEV) {
       // eslint-disable-next-line no-console
@@ -864,6 +957,23 @@ export default function LibraryPage() {
           const isDerivativeChild = derivativeFlags.isDerivativeChild;
           const isDerivativeParent = derivativeFlags.isDerivativeParent;
           const derivativeLinked = derivativeFlags.isDerivative;
+          const ownedByViewer = section === "owned" || appearsBecause.has("owned");
+          const localAuthoredFallback =
+            ownedByViewer &&
+            !hasLocalOriginMismatch(apiBase, normalizedItemForEligibility);
+          const localAuthored =
+            Boolean(normalizedItemForEligibility?.isLocalAuthored) ||
+            localAuthoredFallback;
+          const directSharedSplit =
+            Boolean(normalizedItemForEligibility?.isDirectSharedSplit) ||
+            appearsBecause.has("split_participant") ||
+            appearsBecause.has("shared_with_me") ||
+            (section === "participant" && !appearsBecause.has("derivative_parent"));
+          const upstreamRoyaltyWork =
+            Boolean(normalizedItemForEligibility?.isUpstreamRoyaltyWork) ||
+            (appearsBecause.has("derivative_parent") &&
+              (isDerivativeChild || appearsBecause.has("derivative_child")));
+          const actionableShadow = isActionableShadowRow(normalizedItemForEligibility, appearsBecause);
           const hasSharedSplitMembership =
             explicitSharedMembership || (viewerParticipatesInSplit && !viewerOwnsItem);
           const relationshipTagSet = new Set<LibraryRelationshipFilter>();
@@ -883,6 +993,11 @@ export default function LibraryPage() {
             contentType,
             relationshipType,
             relationshipTags: relationshipTags.length ? relationshipTags : ["all"],
+            isLocalAuthored: localAuthored,
+            isDirectSharedSplit: directSharedSplit,
+            isUpstreamRoyaltyWork: upstreamRoyaltyWork,
+            isDerivativeWork: derivativeLinked,
+            isActionableShadow: actionableShadow,
             isDerivativeChild,
             isDerivativeParent,
             availabilityState: getAvailabilityState(normalizedItem),
@@ -1170,6 +1285,83 @@ function normalizeAssetUrl(
   }
 }
 
+function isLocalDevAssetOrigin(origin: string | null | undefined): boolean {
+  const value = String(origin || "").trim().toLowerCase();
+  if (!value) return false;
+  return value.includes("localhost") || value.includes("127.0.0.1") || value.includes(":5173");
+}
+
+function isUsableLibraryAssetUrl(url: string | null | undefined): boolean {
+  const value = String(url || "").trim();
+  if (!value) return false;
+  if (value.startsWith("/public/content/")) return true;
+  if (!/^https?:\/\//i.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return Boolean(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function scoreLibraryAssetUrl(
+  apiBase: string,
+  url: string | null | undefined,
+  preferredOrigin?: string | null
+): number {
+  const normalized = String(url || "").trim();
+  if (!isUsableLibraryAssetUrl(normalized)) return -1;
+  const preferred = toOrigin(preferredOrigin || null);
+  const localOrigin = toOrigin(apiBase);
+  let score = 0;
+  if (/^https?:\/\//i.test(normalized)) score += 50;
+  if (normalized.startsWith("/public/content/")) score += 25;
+  if (normalized.includes("/public/content/")) score += 10;
+  if (normalized.includes("objectKey=")) score += 5;
+  const origin = toOrigin(normalized);
+  if (origin && preferred && origin === preferred) score += 40;
+  if (origin && localOrigin && origin === localOrigin) score += 20;
+  if (origin && preferred && origin !== preferred) score -= 10;
+  if (origin && preferred && isLocalDevAssetOrigin(origin)) score -= 20;
+  return score;
+}
+
+function pickBestLibraryCover(
+  apiBase: string,
+  preferredOrigin: string | null,
+  candidates: Array<string | null | undefined>
+): string | null {
+  let best: string | null = null;
+  let bestScore = -1;
+  for (const candidate of candidates) {
+    const resolved = normalizeAssetUrl(apiBase, candidate || null, preferredOrigin);
+    const score = scoreLibraryAssetUrl(apiBase, resolved, preferredOrigin);
+    if (score > bestScore) {
+      best = resolved;
+      bestScore = score;
+    }
+  }
+  return bestScore >= 0 ? best : null;
+}
+
+function pickBestLibraryMediaUrl(
+  apiBase: string,
+  preferredOrigin: string | null,
+  candidates: Array<string | null | undefined>
+): string | null {
+  let best: string | null = null;
+  let bestScore = -1;
+  for (const candidate of candidates) {
+    const resolved = normalizeAssetUrl(apiBase, candidate || null, preferredOrigin);
+    const score = scoreLibraryAssetUrl(apiBase, resolved, preferredOrigin);
+    if (score > bestScore) {
+      best = resolved;
+      bestScore = score;
+    }
+  }
+  return bestScore >= 0 ? best : null;
+}
+
 function isForbiddenPreviewError(message?: string | null): boolean {
   const text = String(message || "").toLowerCase();
   return text.includes("403") || text.includes("forbidden");
@@ -1377,13 +1569,13 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       (participationInfo?.kind === "remote"
                         ? participationInfo.remoteOrigin
                         : null) || asNonEmptyString(it.remoteOrigin) || null;
-                    const participantCoverFallback =
-                      entry.relation === "participant" && remoteAssetOrigin
-                        ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin)
-                        : null;
+                    const participantCoverFallback = entry.relation === "participant"
+                      ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin || apiBase)
+                      : null;
                     const remoteCoverFallback = remoteAssetOrigin
                       ? buildPublicAssetUrl(it.id, "cover", remoteAssetOrigin)
                       : null;
+                    const localCoverFallback = buildPublicAssetUrl(it.id, "cover", apiBase);
                     const cardAssetOrigin = remoteAssetOrigin;
                     const participantPreviewFallback =
                       entry.relation === "participant"
@@ -1414,23 +1606,37 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                             preferredPublishedObjectKey
                           )}`
                         : null;
-                    const effectivePlaybackUrl = preferredPublishedPlaybackUrl || previewUrl || participantPreviewFallback;
+                    const effectivePlaybackUrl = pickBestLibraryMediaUrl(
+                      apiBase,
+                      cardAssetOrigin || apiBase,
+                      [preferredPublishedPlaybackUrl, previewUrl, participantPreviewFallback]
+                    );
                     const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
-                    const rawCoverUrl = isAudio
-                      ? prioritizedParticipantCover ||
-                        manifestCoverFallback ||
-                        songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin) ||
-                        remoteCoverFallback ||
-                        participantCoverFallback
-                      : prioritizedParticipantCover ||
-                        manifestCoverFallback ||
-                        normalizeAssetUrl(apiBase, it.coverUrl || null, cardAssetOrigin) ||
-                        remoteCoverFallback ||
-                        participantCoverFallback;
-                    const coverUrl =
-                      rawCoverUrl && version
-                        ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
-                        : rawCoverUrl;
+                    const manifestArtworkObjectKey = String(preview?.manifest?.artwork || "").trim();
+                    const manifestArtworkFallback = manifestArtworkObjectKey
+                      ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase)}?objectKey=${encodeURIComponent(
+                          manifestArtworkObjectKey
+                        )}`
+                      : null;
+                    const songCoverFallback = songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin || apiBase);
+                    const mediaCoverCandidates = [
+                      it.coverUrl,
+                      it.coverImageUrl,
+                      it.artworkUrl,
+                      it.thumbnailUrl,
+                      it.posterUrl,
+                      manifestCoverFallback,
+                      manifestArtworkFallback,
+                      songCoverFallback,
+                      remoteCoverFallback,
+                      localCoverFallback,
+                      prioritizedParticipantCover,
+                      participantCoverFallback
+                    ];
+                    const rawCoverUrl = pickBestLibraryCover(apiBase, cardAssetOrigin || apiBase, mediaCoverCandidates);
+                    const coverUrl = rawCoverUrl
+                      ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
+                      : null;
                     const coverRenderable = Boolean(coverUrl);
                     const isOpen = previewOpenById[it.id] ?? true;
                     const hasInlineImagePreview = Boolean(preview && isOpen && previewUrl && isImage);

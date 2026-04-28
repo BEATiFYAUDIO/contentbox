@@ -21297,15 +21297,17 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         if (!matchesRequestedType(childType)) continue;
         const childStatus = asString(child?.status || "").trim().toLowerCase();
         const childPublished = childStatus === "published" && !child?.deletedAt;
-        const childActionableShadow = isActionableDerivativeChildForClearanceInbox(child);
-        const includeByState = childPublished || childActionableShadow;
+        // Library should surface active derivative cards, not deleted remote-shadow placeholders.
+        const includeByState = childPublished;
         if (!includeByState) continue;
-        const shadowOrigin = childActionableShadow ? getRemoteOriginFromDescription(asString(child?.description || "").trim() || null) : null;
         const surfaced = {
           ...child,
           status: "published",
           deletedAt: null,
-          remoteOrigin: shadowOrigin
+          remoteOrigin: pickShareableOrigin(
+            asString(child?.remoteOrigin || "").trim() || null,
+            getRemoteOriginFromDescription(asString(child?.description || "").trim() || null)
+          )
         };
         appendLibraryItem(surfaced, "shared", "derivative_child");
         appendLibraryItem(surfaced, "shared", "derivative_parent");
@@ -21314,6 +21316,11 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
 
     const mirroredSharedRows = mirroredRemoteInvites
       .filter((inv: any) => normalizeRemoteInviteStatusForList(inv) === "accepted")
+      .filter((inv: any) => {
+        const contentStatus = asString(inv?.contentStatus || "").trim().toLowerCase();
+        if (!contentStatus) return true;
+        return !["deleted", "archived", "tombstoned"].includes(contentStatus);
+      })
       .filter((inv: any) => matchesRequestedType(inv?.contentType))
       .map((inv: any) => {
         const contentId = asString(inv?.contentId || "").trim();
@@ -21389,8 +21396,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           parentRemoteOrigin
         );
         const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
-        const childActionableShadow = isActionableDerivativeChildForClearanceInbox(child);
-        if (!childIsPublished && !childActionableShadow) continue;
+        if (!childIsPublished) continue;
         const derivativeRow = {
           id: childContentId,
           title: asString(child?.title || "").trim() || "Untitled derivative",
@@ -21449,9 +21455,72 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const existingPriority = accessPriority(existing.libraryAccess);
     const incomingPriority = accessPriority(row.libraryAccess);
     const preferred = incomingPriority > existingPriority ? row : existing;
+    const fallback = preferred === row ? existing : row;
+    const preferredReasons = new Set(
+      (Array.isArray(preferred?.appearsBecause) ? preferred.appearsBecause : []).map((reason: unknown) =>
+        asString(reason || "").trim().toLowerCase()
+      )
+    );
+    const fallbackReasons = new Set(
+      (Array.isArray(fallback?.appearsBecause) ? fallback.appearsBecause : []).map((reason: unknown) =>
+        asString(reason || "").trim().toLowerCase()
+      )
+    );
+    const preferredType = asString(preferred?.type || "").trim().toLowerCase();
+    const fallbackType = asString(fallback?.type || "").trim().toLowerCase();
+    const preferredIsDerivativeType = ["derivative", "remix", "mashup"].includes(preferredType);
+    const fallbackIsDerivativeType = ["derivative", "remix", "mashup"].includes(fallbackType);
     deduped.set(dedupeKey, {
       ...preferred,
-      appearsBecause: mergedReasons
+      appearsBecause: mergedReasons,
+      remoteOrigin:
+        asString(preferred?.remoteOrigin || "").trim() ||
+        asString(fallback?.remoteOrigin || "").trim() ||
+        rowOrigin ||
+        null,
+      coverUrl:
+        asString(preferred?.coverUrl || "").trim() ||
+        asString(fallback?.coverUrl || "").trim() ||
+        null,
+      buyUrl:
+        asString(preferred?.buyUrl || "").trim() ||
+        asString(fallback?.buyUrl || "").trim() ||
+        null,
+      attributionUrl:
+        asString(preferred?.attributionUrl || "").trim() ||
+        asString(fallback?.attributionUrl || "").trim() ||
+        null,
+      isLocalAuthored:
+        Boolean(preferred?.isLocalAuthored) ||
+        Boolean(fallback?.isLocalAuthored) ||
+        (asString(preferred?.ownerUserId || "").trim() === userId &&
+          asString(preferred?.libraryAccess || "").trim().toLowerCase() === "owned") ||
+        (asString(fallback?.ownerUserId || "").trim() === userId &&
+          asString(fallback?.libraryAccess || "").trim().toLowerCase() === "owned"),
+      isDirectSharedSplit:
+        Boolean(preferred?.isDirectSharedSplit) ||
+        Boolean(fallback?.isDirectSharedSplit) ||
+        preferredReasons.has("split_participant") ||
+        preferredReasons.has("shared_with_me") ||
+        fallbackReasons.has("split_participant") ||
+        fallbackReasons.has("shared_with_me"),
+      isUpstreamRoyaltyWork:
+        Boolean(preferred?.isUpstreamRoyaltyWork) ||
+        Boolean(fallback?.isUpstreamRoyaltyWork) ||
+        preferredReasons.has("derivative_parent") ||
+        fallbackReasons.has("derivative_parent"),
+      isDerivativeWork:
+        Boolean(preferred?.isDerivativeWork) ||
+        Boolean(fallback?.isDerivativeWork) ||
+        preferredIsDerivativeType ||
+        fallbackIsDerivativeType ||
+        preferredReasons.has("derivative_child") ||
+        preferredReasons.has("derivative_parent") ||
+        fallbackReasons.has("derivative_child") ||
+        fallbackReasons.has("derivative_parent"),
+      isActionableShadow:
+        Boolean(preferred?.isActionableShadow) ||
+        Boolean(fallback?.isActionableShadow)
     });
   }
   const unique = Array.from(deduped.values());
@@ -21466,6 +21535,30 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const preferredPublicOrigin = explicitRemoteOrigin || localOrigin;
     const canonicalPublicOrigin = preferredPublicOrigin ? preferredPublicOrigin.replace(/\/+$/, "") : null;
     const contentId = asString(i?.id || "").trim();
+    const reasons = new Set(
+      (Array.isArray(i?.appearsBecause) ? i.appearsBecause : []).map((reason: unknown) =>
+        asString(reason || "").trim().toLowerCase()
+      )
+    );
+    const normalizedType = asString(i?.type || "").trim().toLowerCase();
+    const isDerivativeType = ["derivative", "remix", "mashup"].includes(normalizedType);
+    const emittedLocalAuthored =
+      Boolean(i?.isLocalAuthored) ||
+      (asString(i?.ownerUserId || "").trim() === userId &&
+        asString(i?.libraryAccess || "").trim().toLowerCase() === "owned");
+    const emittedDirectSharedSplit =
+      Boolean(i?.isDirectSharedSplit) ||
+      reasons.has("split_participant") ||
+      reasons.has("shared_with_me");
+    const emittedUpstreamRoyaltyWork =
+      Boolean(i?.isUpstreamRoyaltyWork) ||
+      (reasons.has("derivative_parent") && (reasons.has("derivative_child") || isDerivativeType));
+    const emittedDerivativeWork =
+      Boolean(i?.isDerivativeWork) ||
+      isDerivativeType ||
+      reasons.has("derivative_child") ||
+      reasons.has("derivative_parent");
+    const emittedActionableShadow = Boolean(i?.isActionableShadow);
     const { description: _description, ...rest } = i;
     return {
       ...rest,
@@ -21477,14 +21570,19 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
             : null,
       coverUrl: canonicalPublicOrigin
         ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`)
-        : null,
+        : `/public/content/${encodeURIComponent(contentId)}/cover`,
       attributionUrl: canonicalPublicOrigin
         ? `${canonicalPublicOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`
         : null,
       buyUrl: canonicalPublicOrigin ? `${canonicalPublicOrigin}/buy/${encodeURIComponent(contentId)}` : null,
       remoteOrigin: explicitRemoteOrigin,
       featureOnProfile: Boolean(i.featureOnProfile),
-      tombstoned: isArchivedPublished(i)
+      tombstoned: isArchivedPublished(i),
+      isLocalAuthored: emittedLocalAuthored,
+      isDirectSharedSplit: emittedDirectSharedSplit,
+      isUpstreamRoyaltyWork: emittedUpstreamRoyaltyWork,
+      isDerivativeWork: emittedDerivativeWork,
+      isActionableShadow: emittedActionableShadow
     };
   });
 });
