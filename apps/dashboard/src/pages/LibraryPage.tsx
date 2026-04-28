@@ -96,6 +96,7 @@ type LibraryParticipation = {
     parentSplitVersionId?: string | null;
     upstreamBps?: number | null;
   } | null;
+  libraryScopes?: Array<"all" | "authored" | "shared_splits" | "derivatives">;
 };
 
 type EntitlementInventoryRow = {
@@ -684,7 +685,8 @@ export default function LibraryPage() {
             participantRole: row?.participantRole || null,
             participantBps: Number.isFinite(Number(row?.participantBps)) ? Number(row?.participantBps) : null,
             participantPercent: Number.isFinite(Number(row?.participantPercent)) ? Number(row?.participantPercent) : null,
-            derivativeContext: row?.derivativeContext || null
+            derivativeContext: row?.derivativeContext || null,
+            libraryScopes: ["all", "shared_splits"]
         }));
         const remoteParticipationsRaw = Array.isArray(remoteParticipationsRes) ? remoteParticipationsRes : [];
         const remoteOriginByParentContentId = new Map<string, string>();
@@ -728,7 +730,8 @@ export default function LibraryPage() {
               buyUrl: remoteOrigin ? `${remoteOrigin}/buy/${encodeURIComponent(contentId)}` : null,
               creatorUserId: null,
               creatorDisplayName: null,
-              creatorEmail: null
+              creatorEmail: null,
+              libraryScopes: ["all", "shared_splits"]
             };
           });
         const remoteDerivativeParticipations: LibraryParticipation[] = remoteParticipationsRaw
@@ -787,7 +790,8 @@ export default function LibraryPage() {
                     : null,
                   creatorUserId: null,
                   creatorDisplayName: null,
-                  creatorEmail: null
+                  creatorEmail: null,
+                  libraryScopes: ["all", "derivatives"]
                 } as LibraryParticipation;
               })
               .filter(Boolean) as LibraryParticipation[];
@@ -830,7 +834,8 @@ export default function LibraryPage() {
               buyUrl: origin ? `${origin}/buy/${encodeURIComponent(childContentId)}` : null,
               creatorUserId: null,
               creatorDisplayName: null,
-              creatorEmail: null
+              creatorEmail: null,
+              libraryScopes: ["all", "derivatives"]
             } satisfies LibraryParticipation;
           });
 
@@ -911,6 +916,7 @@ export default function LibraryPage() {
               email: p.creatorEmail || null
             },
             libraryAccess: "participant",
+            libraryScopes: Array.isArray(p.libraryScopes) ? p.libraryScopes : ["all"],
             attributionUrl: p.attributionUrl || null,
             buyUrl: p.buyUrl || null,
             remoteOrigin: p.remoteOrigin || null
