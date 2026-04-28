@@ -42,6 +42,9 @@ type LibraryItem = {
   artworkUrl?: string | null;
   thumbnailUrl?: string | null;
   posterUrl?: string | null;
+  manifestCoverPath?: string | null;
+  manifestCoverUrl?: string | null;
+  libraryCoverCandidates?: string[] | null;
   attributionUrl?: string | null;
   buyUrl?: string | null;
   remoteOrigin?: string | null;
@@ -536,6 +539,8 @@ export default function LibraryPage() {
   const [previewLoading, setPreviewLoading] = React.useState<Record<string, boolean>>({});
   const [previewError, setPreviewError] = React.useState<Record<string, string>>({});
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
+  const [coverCandidateIndexById, setCoverCandidateIndexById] = React.useState<Record<string, number>>({});
+  const [lockedCoverUrlById, setLockedCoverUrlById] = React.useState<Record<string, string | null>>({});
   const [entitlementByContentId, setEntitlementByContentId] = React.useState<Record<string, EntitlementInventoryRow>>({});
   const [attributionByContentId, setAttributionByContentId] = React.useState<Record<string, PublicAttributionPayload | null>>({});
   const attributionLoadingRef = React.useRef<Set<string>>(new Set());
@@ -1326,22 +1331,25 @@ function scoreLibraryAssetUrl(
   return score;
 }
 
-function pickBestLibraryCover(
+function rankLibraryCoverCandidates(
   apiBase: string,
   preferredOrigin: string | null,
   candidates: Array<string | null | undefined>
-): string | null {
-  let best: string | null = null;
-  let bestScore = -1;
-  for (const candidate of candidates) {
-    const resolved = normalizeAssetUrl(apiBase, candidate || null, preferredOrigin);
-    const score = scoreLibraryAssetUrl(apiBase, resolved, preferredOrigin);
-    if (score > bestScore) {
-      best = resolved;
-      bestScore = score;
-    }
+): string[] {
+  const scored = candidates
+    .map((candidate) => normalizeAssetUrl(apiBase, candidate || null, preferredOrigin))
+    .filter((value): value is string => Boolean(value))
+    .map((url) => ({ url, score: scoreLibraryAssetUrl(apiBase, url, preferredOrigin) }))
+    .filter((row) => row.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const row of scored) {
+    if (seen.has(row.url)) continue;
+    seen.add(row.url);
+    unique.push(row.url);
   }
-  return bestScore >= 0 ? best : null;
+  return unique;
 }
 
 function pickBestLibraryMediaUrl(
@@ -1619,7 +1627,10 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                         )}`
                       : null;
                     const songCoverFallback = songCoverUrl(it.id, preview, it.coverUrl || null, cardAssetOrigin || apiBase);
+                    const apiCoverCandidates = Array.isArray(it.libraryCoverCandidates) ? it.libraryCoverCandidates : [];
                     const mediaCoverCandidates = [
+                      ...apiCoverCandidates,
+                      it.manifestCoverUrl,
                       it.coverUrl,
                       it.coverImageUrl,
                       it.artworkUrl,
@@ -1633,9 +1644,13 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       prioritizedParticipantCover,
                       participantCoverFallback
                     ];
-                    const rawCoverUrl = pickBestLibraryCover(apiBase, cardAssetOrigin || apiBase, mediaCoverCandidates);
-                    const coverUrl = rawCoverUrl
-                      ? `${rawCoverUrl}${rawCoverUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
+                    const rankedCoverCandidates = rankLibraryCoverCandidates(apiBase, cardAssetOrigin || apiBase, mediaCoverCandidates);
+                    const selectedCoverIndex = Math.max(0, Number(coverCandidateIndexById[it.id] || 0));
+                    const fallbackCoverUrl = rankedCoverCandidates[selectedCoverIndex] || rankedCoverCandidates[0] || null;
+                    const lockedCoverUrl = lockedCoverUrlById[it.id];
+                    const chosenCoverBaseUrl = isUsableLibraryAssetUrl(lockedCoverUrl) ? lockedCoverUrl : fallbackCoverUrl;
+                    const coverUrl = chosenCoverBaseUrl
+                      ? `${chosenCoverBaseUrl}${chosenCoverBaseUrl.includes("?") ? "&" : "?"}v=${encodeURIComponent(version)}`
                       : null;
                     const coverRenderable = Boolean(coverUrl);
                     const isOpen = previewOpenById[it.id] ?? true;
@@ -1726,6 +1741,34 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                 src={coverUrl || undefined}
                                 alt={`${it.title || "Content"} cover`}
                                 loading="lazy"
+                                onLoad={() => {
+                                  if (!chosenCoverBaseUrl) return;
+                                  setLockedCoverUrlById((prev) => {
+                                    const existing = String(prev[it.id] || "").trim();
+                                    if (!existing) return { ...prev, [it.id]: chosenCoverBaseUrl };
+                                    const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                    const incomingScore = scoreLibraryAssetUrl(
+                                      apiBase,
+                                      chosenCoverBaseUrl,
+                                      cardAssetOrigin || apiBase
+                                    );
+                                    if (incomingScore >= existingScore) return { ...prev, [it.id]: chosenCoverBaseUrl };
+                                    return prev;
+                                  });
+                                }}
+                                onError={() => {
+                                  setLockedCoverUrlById((prev) => {
+                                    const existing = String(prev[it.id] || "").trim();
+                                    if (!existing) return prev;
+                                    return { ...prev, [it.id]: null };
+                                  });
+                                  setCoverCandidateIndexById((prev) => {
+                                    const current = Math.max(0, Number(prev[it.id] || 0));
+                                    const next = Math.min(current + 1, Math.max(0, rankedCoverCandidates.length - 1));
+                                    if (next === current && rankedCoverCandidates.length <= 1) return prev;
+                                    return { ...prev, [it.id]: next };
+                                  });
+                                }}
                               />
                             ) : hasInlineImagePreview ? (
                               <img

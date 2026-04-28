@@ -10209,6 +10209,29 @@ function getManifestAssetPath(
   return null;
 }
 
+function getFirstImageAssetFromManifest(
+  manifest: any
+): { path: string; sha256: string | null; mime: string | null } | null {
+  const json = (manifest || {}) as any;
+  const files = Array.isArray(json?.files) ? json.files : [];
+  for (const file of files) {
+    const mime = asString(file?.mime || "").trim().toLowerCase();
+    if (!mime.startsWith("image/")) continue;
+    const objectKey =
+      asString(file?.path || "").trim() ||
+      asString(file?.objectKey || "").trim() ||
+      asString(file?.filename || "").trim();
+    if (!objectKey) continue;
+    if (/^https?:\/\//i.test(objectKey)) continue;
+    return {
+      path: objectKey,
+      sha256: asString(file?.sha256 || "").trim() || null,
+      mime: asString(file?.mime || "").trim() || null
+    };
+  }
+  return null;
+}
+
 function proofRelPath(versionNumber: number) {
   return path.posix.join("proofs", `v${versionNumber}`, "proof.json");
 }
@@ -21524,6 +21547,19 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     });
   }
   const unique = Array.from(deduped.values());
+  const uniqueContentIds = Array.from(new Set(unique.map((row: any) => asString(row?.id || "").trim()).filter(Boolean)));
+  const manifestRows = uniqueContentIds.length
+    ? await prisma.manifest.findMany({
+        where: { contentId: { in: uniqueContentIds } },
+        select: { contentId: true, json: true }
+      })
+    : [];
+  const manifestByContentId = new Map<string, any>();
+  for (const row of manifestRows) {
+    const contentId = asString((row as any)?.contentId || "").trim();
+    if (!contentId) continue;
+    manifestByContentId.set(contentId, (row as any)?.json || null);
+  }
 
   return unique.map((i: any) => {
     const description = asString(i?.description || "").trim() || null;
@@ -21535,6 +21571,46 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const preferredPublicOrigin = explicitRemoteOrigin || localOrigin;
     const canonicalPublicOrigin = preferredPublicOrigin ? preferredPublicOrigin.replace(/\/+$/, "") : null;
     const contentId = asString(i?.id || "").trim();
+    const manifestJson = manifestByContentId.get(contentId) || null;
+    const manifestCoverAsset = getCoverAssetFromManifest(manifestJson);
+    const manifestArtworkAsset = getManifestAssetPath(manifestJson, ["artwork", "poster", "thumbnail", "thumb"]);
+    const manifestImageAsset = getFirstImageAssetFromManifest(manifestJson);
+    const toPreviewObjectUrl = (objectKey: string | null): string | null => {
+      const key = asString(objectKey || "").trim();
+      if (!key) return null;
+      const base = canonicalPublicOrigin || "";
+      const prefix = `${base}/public/content/${encodeURIComponent(contentId)}/preview-file`;
+      return `${prefix}?objectKey=${encodeURIComponent(key)}`;
+    };
+    const manifestCoverPath = asString(manifestCoverAsset?.path || "").trim() || null;
+    const manifestArtworkPath = asString(manifestArtworkAsset?.path || "").trim() || null;
+    const manifestImagePath = asString(manifestImageAsset?.path || "").trim() || null;
+    const manifestCoverUrl = toPreviewObjectUrl(manifestCoverPath);
+    const manifestArtworkUrl = toPreviewObjectUrl(manifestArtworkPath);
+    const manifestImageUrl = toPreviewObjectUrl(manifestImagePath);
+    const apiCoverUrl = canonicalPublicOrigin
+      ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`)
+      : `/public/content/${encodeURIComponent(contentId)}/cover`;
+    const explicitCoverUrl = asString(i?.coverUrl || "").trim() || null;
+    const explicitCoverImageUrl = asString(i?.coverImageUrl || "").trim() || null;
+    const explicitArtworkUrl = asString(i?.artworkUrl || "").trim() || null;
+    const explicitThumbUrl = asString(i?.thumbnailUrl || "").trim() || null;
+    const explicitPosterUrl = asString(i?.posterUrl || "").trim() || null;
+    const libraryCoverCandidates = Array.from(
+      new Set(
+        [
+          manifestCoverUrl,
+          manifestImageUrl,
+          manifestArtworkUrl,
+          explicitCoverUrl,
+          explicitCoverImageUrl,
+          explicitArtworkUrl,
+          explicitThumbUrl,
+          explicitPosterUrl,
+          apiCoverUrl
+        ].filter((value): value is string => Boolean(asString(value || "").trim()))
+      )
+    );
     const reasons = new Set(
       (Array.isArray(i?.appearsBecause) ? i.appearsBecause : []).map((reason: unknown) =>
         asString(reason || "").trim().toLowerCase()
@@ -21568,9 +21644,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           : i.priceSats != null
             ? i.priceSats.toString()
             : null,
-      coverUrl: canonicalPublicOrigin
-        ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`)
-        : `/public/content/${encodeURIComponent(contentId)}/cover`,
+      coverUrl: manifestCoverUrl || manifestImageUrl || manifestArtworkUrl || explicitCoverUrl || apiCoverUrl,
+      coverImageUrl: explicitCoverImageUrl || manifestImageUrl,
+      artworkUrl: explicitArtworkUrl || manifestArtworkUrl,
+      thumbnailUrl: explicitThumbUrl || null,
+      posterUrl: explicitPosterUrl || null,
+      manifestCoverPath,
+      manifestCoverUrl,
+      libraryCoverCandidates,
       attributionUrl: canonicalPublicOrigin
         ? `${canonicalPublicOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`
         : null,
