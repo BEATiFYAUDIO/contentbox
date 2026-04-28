@@ -21166,13 +21166,12 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     }
     return Array.from(scopes);
   };
-  const isLibraryRowEligible = (
+  type LibraryContentLifecycle = "active" | "shadow" | "tombstone";
+  const classifyLibraryLifecycle = (
     item: any,
     reason: string,
     options?: { allowActionableShadow?: boolean }
-  ): { eligible: boolean; actionableShadow: boolean; exclusionReason?: string } => {
-    const contentId = asString(item?.id || "").trim();
-    if (!contentId) return { eligible: false, actionableShadow: false, exclusionReason: "missing_id" };
+  ): { lifecycle: LibraryContentLifecycle; actionableShadow: boolean } => {
     const status = asString(item?.status || "").trim().toLowerCase();
     const deletedReason = asString(item?.deletedReason || "").trim().toLowerCase();
     const isDeleted = Boolean(item?.deletedAt);
@@ -21187,7 +21186,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       asString(item?.remoteOrigin || "").trim() || null,
       getRemoteOriginFromDescription(asString(item?.description || "").trim() || null)
     );
-    const isActionableShadowCandidate =
+    const actionableShadow =
       Boolean(options?.allowActionableShadow) &&
       hasDerivativeReason(reasons) &&
       isDeleted &&
@@ -21196,24 +21195,30 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       Boolean(item?._libraryHasActiveClearanceContext) &&
       isActionableDerivativeChildForClearanceInbox(item);
 
-    if (isTombstoned) return { eligible: false, actionableShadow: false, exclusionReason: "tombstoned" };
+    if (isTombstoned) return { lifecycle: "tombstone", actionableShadow: false };
     if (staleDeletedReasons.has(deletedReason)) {
-      return {
-        eligible: isActionableShadowCandidate,
-        actionableShadow: isActionableShadowCandidate,
-        exclusionReason: isActionableShadowCandidate ? undefined : `deletedReason:${deletedReason}`
-      };
+      return { lifecycle: actionableShadow ? "shadow" : "tombstone", actionableShadow };
     }
-    if (inactiveStatuses.has(status) && !isActionableShadowCandidate) {
-      return { eligible: false, actionableShadow: false, exclusionReason: `status:${status || "unknown"}` };
+    if ((deletedReason === "hard" || deletedReason === "hard_deleted") && !actionableShadow) {
+      return { lifecycle: "tombstone", actionableShadow: false };
     }
-    if (isDeleted && !isActionableShadowCandidate) {
-      return { eligible: false, actionableShadow: false, exclusionReason: "deletedAt" };
+    if (inactiveStatuses.has(status) && !actionableShadow) return { lifecycle: "tombstone", actionableShadow: false };
+    if (isDeleted && !actionableShadow) return { lifecycle: "tombstone", actionableShadow: false };
+    if (actionableShadow) return { lifecycle: "shadow", actionableShadow: true };
+    return { lifecycle: "active", actionableShadow: false };
+  };
+  const isLibraryRowEligible = (
+    item: any,
+    reason: string,
+    options?: { allowActionableShadow?: boolean }
+  ): { eligible: boolean; actionableShadow: boolean; exclusionReason?: string } => {
+    const contentId = asString(item?.id || "").trim();
+    if (!contentId) return { eligible: false, actionableShadow: false, exclusionReason: "missing_id" };
+    const lifecycle = classifyLibraryLifecycle(item, reason, options);
+    if (lifecycle.lifecycle === "active" || lifecycle.lifecycle === "shadow") {
+      return { eligible: true, actionableShadow: lifecycle.actionableShadow };
     }
-    if ((deletedReason === "hard" || deletedReason === "hard_deleted") && !isActionableShadowCandidate) {
-      return { eligible: false, actionableShadow: false, exclusionReason: `deletedReason:${deletedReason}` };
-    }
-    return { eligible: true, actionableShadow: isActionableShadowCandidate };
+    return { eligible: false, actionableShadow: false, exclusionReason: "lifecycle:tombstone" };
   };
   const shouldTraceLibraryRow = (item: any): boolean => {
     if (process.env.NODE_ENV === "production") return false;
@@ -22076,6 +22081,15 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       reasons.has("derivative_child") ||
       reasons.has("derivative_parent");
     const emittedActionableShadow = Boolean(i?.isActionableShadow);
+    const lifecycleMeta = classifyLibraryLifecycle(
+      {
+        ...i,
+        isActionableShadow: emittedActionableShadow,
+        appearsBecause: Array.from(reasons)
+      },
+      asString((Array.isArray(i?.appearsBecause) ? i.appearsBecause[0] : "") || "").trim() || "unknown",
+      { allowActionableShadow: true }
+    );
     const emittedLibraryScopes = (() => {
       const existing = normalizeLibraryScopes(i?.libraryScopes);
       if (existing.length > 0) return existing;
@@ -22117,6 +22131,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       remoteOrigin: explicitRemoteOrigin,
       featureOnProfile: Boolean(i.featureOnProfile),
       tombstoned: isArchivedPublished(i),
+      isShadow: lifecycleMeta.lifecycle === "shadow",
+      lifecycle: lifecycleMeta.lifecycle,
       isLocalAuthored: emittedLocalAuthored,
       isDirectSharedSplit: emittedDirectSharedSplit,
       isUpstreamRoyaltyWork: emittedUpstreamRoyaltyWork,

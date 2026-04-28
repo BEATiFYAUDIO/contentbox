@@ -18,6 +18,8 @@ type ContentLike = {
   status?: string | null;
   storefrontStatus?: string | null;
   libraryAccess?: string | null;
+  lifecycle?: "active" | "shadow" | "tombstone" | null;
+  isShadow?: boolean | null;
   ownerUserId?: string | null;
   archivedAt?: string | null;
   trashedAt?: string | null;
@@ -60,6 +62,12 @@ function isArchivedStorefront(value: unknown): boolean {
   return normalizeStatus(value) === "archived";
 }
 
+function normalizeLifecycle(value: unknown): "active" | "shadow" | "tombstone" | null {
+  const v = normalizeStatus(value);
+  if (v === "active" || v === "shadow" || v === "tombstone") return v;
+  return null;
+}
+
 function isAcceptedParticipation(participation: ParticipationLike | null | undefined): boolean {
   if (!participation) return false;
   if (hasValue(participation.revokedAt) || hasValue(participation.tombstonedAt)) return false;
@@ -70,6 +78,9 @@ function isAcceptedParticipation(participation: ParticipationLike | null | undef
 
 export function getContentExclusionReason(content: ContentLike | null | undefined): LibraryExclusionReason | null {
   if (!content) return "orphaned";
+  const lifecycle = normalizeLifecycle(content.lifecycle);
+  if (lifecycle === "shadow") return null;
+  if (lifecycle === "tombstone") return "deleted";
   if (isArchivedStorefront(content.storefrontStatus)) return "archived";
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
@@ -80,6 +91,9 @@ export function getContentExclusionReason(content: ContentLike | null | undefine
 
 export function getAvailabilityState(content: ContentLike | null | undefined): AvailabilityState {
   if (!content) return "orphaned";
+  const lifecycle = normalizeLifecycle(content.lifecycle);
+  if (lifecycle === "shadow" || lifecycle === "active") return "active";
+  if (lifecycle === "tombstone") return "deleted";
   if (isArchivedStorefront(content.storefrontStatus)) return "archived";
   if (hasValue(content.archivedAt)) return "archived";
   if (hasValue(content.trashedAt)) return "trashed";
