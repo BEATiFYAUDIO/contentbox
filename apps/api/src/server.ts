@@ -24973,6 +24973,7 @@ type PublicWellKnownPayload = {
 };
 type TimedCacheEntry<T> = { expiresAt: number; value: T };
 type ProfileRenderSnapshot = {
+  verifiedProofs: any[];
   featuredContent: any[];
   highlightedParticipations: ParticipationProjection[];
   highlightedRemoteParticipations: any[];
@@ -24991,6 +24992,7 @@ type PublicProfileHandleMapRow = {
 };
 type PublicProfileRenderSnapshotRow = {
   userId: string;
+  verifiedProofs: any[];
   featuredContent: any[];
   highlightedParticipations: ParticipationProjection[];
   highlightedRemoteParticipations: any[];
@@ -25063,6 +25065,7 @@ function loadProfilePublicRenderSnapshotsFromDisk(): void {
     const userId = asString(row?.userId || "").trim();
     if (!userId) continue;
     profilePublicRenderSnapshotFileCache.set(userId, {
+      verifiedProofs: Array.isArray((row as any)?.verifiedProofs) ? (row as any).verifiedProofs : [],
       featuredContent: Array.isArray(row?.featuredContent) ? row.featuredContent : [],
       highlightedParticipations: Array.isArray(row?.highlightedParticipations) ? row.highlightedParticipations : [],
       highlightedRemoteParticipations: Array.isArray(row?.highlightedRemoteParticipations)
@@ -25076,6 +25079,7 @@ function flushProfilePublicRenderSnapshotsToDisk(): void {
   const rows: PublicProfileRenderSnapshotRow[] = Array.from(profilePublicRenderSnapshotFileCache.entries()).map(
     ([userId, snapshot]) => ({
       userId,
+      verifiedProofs: Array.isArray((snapshot as any)?.verifiedProofs) ? (snapshot as any).verifiedProofs : [],
       featuredContent: Array.isArray(snapshot?.featuredContent) ? snapshot.featuredContent : [],
       highlightedParticipations: Array.isArray(snapshot?.highlightedParticipations)
         ? snapshot.highlightedParticipations
@@ -25099,6 +25103,7 @@ function getPersistedProfilePublicRenderSnapshot(userIdRaw: unknown): ProfileRen
   const snapshot = profilePublicRenderSnapshotFileCache.get(userId);
   if (!snapshot) return null;
   return {
+    verifiedProofs: Array.isArray((snapshot as any).verifiedProofs) ? (snapshot as any).verifiedProofs : [],
     featuredContent: Array.isArray(snapshot.featuredContent) ? snapshot.featuredContent : [],
     highlightedParticipations: Array.isArray(snapshot.highlightedParticipations) ? snapshot.highlightedParticipations : [],
     highlightedRemoteParticipations: Array.isArray(snapshot.highlightedRemoteParticipations)
@@ -25111,6 +25116,7 @@ function setPersistedProfilePublicRenderSnapshot(userIdRaw: unknown, snapshot: P
   const userId = asString(userIdRaw || "").trim();
   if (!userId) return;
   profilePublicRenderSnapshotFileCache.set(userId, {
+    verifiedProofs: Array.isArray((snapshot as any)?.verifiedProofs) ? (snapshot as any).verifiedProofs : [],
     featuredContent: Array.isArray(snapshot?.featuredContent) ? snapshot.featuredContent : [],
     highlightedParticipations: Array.isArray(snapshot?.highlightedParticipations) ? snapshot.highlightedParticipations : [],
     highlightedRemoteParticipations: Array.isArray(snapshot?.highlightedRemoteParticipations)
@@ -25899,17 +25905,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
 
   const highlightedRemoteParticipationRecords = listProfileHighlightedRemoteParticipationsForUser(user.id);
   const maybeCachedProofs = getFreshTimedCache(profilePublicProofsCache, user.id);
-  const cachedProofs = maybeCachedProofs || [];
+  const cachedRenderSnapshot =
+    getFreshTimedCache(profilePublicRenderSnapshotCache, user.id) ||
+    getPersistedProfilePublicRenderSnapshot(user.id);
+  const cachedProofsFromSnapshot =
+    cachedRenderSnapshot && Array.isArray((cachedRenderSnapshot as any).verifiedProofs)
+      ? (cachedRenderSnapshot as any).verifiedProofs
+      : null;
+  const cachedProofs = maybeCachedProofs || cachedProofsFromSnapshot || [];
   const maybeCachedFeatured = getFreshTimedCache(profilePublicFeaturedCache, user.id);
   const cachedFeatured = maybeCachedFeatured || [];
   const maybeCachedLockedParticipations = getFreshTimedCache(profilePublicLockedParticipationsCache, user.id);
   const cachedLockedParticipations = maybeCachedLockedParticipations || [];
-  const cachedRenderSnapshot =
-    getFreshTimedCache(profilePublicRenderSnapshotCache, user.id) ||
-    getPersistedProfilePublicRenderSnapshot(user.id);
-  const proofsStepTimeoutMs = maybeCachedProofs
+  const hasProofsFallback = Boolean(maybeCachedProofs || (cachedProofsFromSnapshot && cachedProofsFromSnapshot.length > 0));
+  const proofsStepTimeoutMs = hasProofsFallback
     ? Math.min(PROFILE_CORE_STEP_TIMEOUT_MS, 220)
-    : Math.min(PROFILE_CORE_STEP_COLD_TIMEOUT_MS, 500);
+    : PROFILE_CORE_STEP_COLD_TIMEOUT_MS;
   const featuredStepTimeoutMs = maybeCachedFeatured
     ? Math.min(PROFILE_CORE_STEP_TIMEOUT_MS, 220)
     : Math.min(PROFILE_CORE_STEP_COLD_TIMEOUT_MS, 500);
@@ -26157,22 +26168,22 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     ? escHtml("/logo.png?v=20260413b")
     : "";
   const creatorIdentityActive = Boolean(user.witnessIdentity && !user.witnessIdentity.revokedAt);
-  const verifiedDomainProofs = verifiedProofs.filter((p) => {
+  const verifiedDomainProofs = verifiedProofs.filter((p: any) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
     return proofType === "domain";
   });
-  const verifiedSocialProofs = verifiedProofs.filter((p) => {
+  const verifiedSocialProofs = verifiedProofs.filter((p: any) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
     return proofType === "social";
   });
-  const verifiedNostrProofs = verifiedProofs.filter((p) => {
+  const verifiedNostrProofs = verifiedProofs.filter((p: any) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
     const subjectRaw = asString((p as any).subject || "").trim().toLowerCase();
     const claim = ((p as any).claimJson || {}) as any;
     const claimPubkey = asString(claim?.pubkey || "").trim().toLowerCase();
     return proofType === "nostr" || subjectRaw.startsWith("nostr:") || /^[0-9a-f]{64}$/.test(claimPubkey);
   });
-  const verifiedOtherProofs = verifiedProofs.filter((p) => {
+  const verifiedOtherProofs = verifiedProofs.filter((p: any) => {
     const proofType = asString((p as any).proofType || "").trim().toLowerCase();
     const subjectRaw = asString((p as any).subject || "").trim().toLowerCase();
     if (proofType === "domain" || proofType === "social" || proofType === "nostr") return false;
@@ -26286,7 +26297,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const domainProofsHtml =
     verifiedDomainProofs.length > 0
       ? verifiedDomainProofs
-          .map((p) => {
+          .map((p: any) => {
             const domain = asString((p as any).subject || "").trim().toLowerCase();
             const safeDomain = escHtml(domain);
             const href = `https://${encodeURI(domain)}`;
@@ -26297,7 +26308,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const socialProofsHtml =
     verifiedSocialProofs.length > 0
       ? verifiedSocialProofs
-          .map((p) => {
+          .map((p: any) => {
             const claim = ((p as any).claimJson || {}) as any;
             const providerRaw = asString(claim?.provider || "").trim().toLowerCase();
             const subjectRaw = asString((p as any).subject || "").trim();
@@ -26360,7 +26371,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const nostrProofsHtml =
     verifiedNostrProofs.length > 0
       ? verifiedNostrProofs
-          .map((p) => {
+          .map((p: any) => {
             const claim = ((p as any).claimJson || {}) as any;
             const subjectRaw = asString((p as any).subject || "").trim();
             let pubkey = asString(claim?.pubkey || "").trim().toLowerCase();
@@ -26394,7 +26405,7 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
   const otherProofsHtml =
     verifiedOtherProofs.length > 0
       ? verifiedOtherProofs
-          .map((p) => {
+          .map((p: any) => {
             const proofType = asString((p as any).proofType || "").trim().toLowerCase() || "proof";
             const subject = asString((p as any).subject || "").trim() || "unknown";
             return `<div class="line muted">✓ ${escHtml(proofType)}: <span class="mono">${escHtml(subject)}</span></div>`;
@@ -26840,6 +26851,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
     featuredContent.length > 0
       ? featuredContent
       : (cachedRenderSnapshot?.featuredContent || []);
+  const snapshotVerifiedProofs =
+    verifiedProofs.length > 0
+      ? verifiedProofs
+      : ((cachedRenderSnapshot as any)?.verifiedProofs || []);
   const snapshotHighlightedParticipations =
     highlightedParticipations.length > 0
       ? highlightedParticipations
@@ -26849,11 +26864,13 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       ? resolvedHighlightedRemoteParticipations
       : (cachedRenderSnapshot?.highlightedRemoteParticipations || []);
   if (
+    snapshotVerifiedProofs.length > 0 ||
     snapshotFeaturedContent.length > 0 ||
     snapshotHighlightedParticipations.length > 0 ||
     snapshotHighlightedRemoteParticipations.length > 0
   ) {
     const nextSnapshot: ProfileRenderSnapshot = {
+      verifiedProofs: snapshotVerifiedProofs,
       featuredContent: snapshotFeaturedContent,
       highlightedParticipations: snapshotHighlightedParticipations,
       highlightedRemoteParticipations: snapshotHighlightedRemoteParticipations
