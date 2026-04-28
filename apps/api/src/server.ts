@@ -21505,6 +21505,24 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         asString(preferred?.coverUrl || "").trim() ||
         asString(fallback?.coverUrl || "").trim() ||
         null,
+      manifestPrimaryFilePath:
+        asString(preferred?.manifestPrimaryFilePath || "").trim() ||
+        asString(fallback?.manifestPrimaryFilePath || "").trim() ||
+        null,
+      manifestPrimaryFileUrl:
+        asString(preferred?.manifestPrimaryFileUrl || "").trim() ||
+        asString(fallback?.manifestPrimaryFileUrl || "").trim() ||
+        null,
+      libraryPreviewCandidates: Array.from(
+        new Set(
+          [
+            ...(Array.isArray(preferred?.libraryPreviewCandidates) ? preferred.libraryPreviewCandidates : []),
+            ...(Array.isArray(fallback?.libraryPreviewCandidates) ? fallback.libraryPreviewCandidates : [])
+          ]
+            .map((value: unknown) => asString(value || "").trim())
+            .filter(Boolean)
+        )
+      ),
       buyUrl:
         asString(preferred?.buyUrl || "").trim() ||
         asString(fallback?.buyUrl || "").trim() ||
@@ -21585,17 +21603,47 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
     const manifestCoverPath = asString(manifestCoverAsset?.path || "").trim() || null;
     const manifestArtworkPath = asString(manifestArtworkAsset?.path || "").trim() || null;
     const manifestImagePath = asString(manifestImageAsset?.path || "").trim() || null;
+    const manifestPrimaryFilePath =
+      asString((manifestJson as any)?.primaryFile || "").trim() ||
+      asString((Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files?.[0]?.path : "") || "").trim() ||
+      asString((Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files?.[0]?.objectKey : "") || "").trim() ||
+      null;
+    const manifestAvFilePath = (() => {
+      const files = Array.isArray((manifestJson as any)?.files) ? (manifestJson as any).files : [];
+      for (const file of files) {
+        const mime = asString(file?.mime || "").trim().toLowerCase();
+        if (!mime.startsWith("video/") && !mime.startsWith("audio/")) continue;
+        const key =
+          asString(file?.path || "").trim() ||
+          asString(file?.objectKey || "").trim() ||
+          asString(file?.filename || "").trim();
+        if (key) return key;
+      }
+      return null;
+    })();
     const manifestCoverUrl = toPreviewObjectUrl(manifestCoverPath);
     const manifestArtworkUrl = toPreviewObjectUrl(manifestArtworkPath);
     const manifestImageUrl = toPreviewObjectUrl(manifestImagePath);
+    const manifestPrimaryFileUrl = toPreviewObjectUrl(manifestPrimaryFilePath);
+    const manifestAvFileUrl = toPreviewObjectUrl(manifestAvFilePath);
     const apiCoverUrl = canonicalPublicOrigin
       ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/cover`)
       : `/public/content/${encodeURIComponent(contentId)}/cover`;
+    const genericPreviewUrl = canonicalPublicOrigin
+      ? buildPublicUrlFromOrigin(canonicalPublicOrigin, `/public/content/${encodeURIComponent(contentId)}/preview-file`)
+      : `/public/content/${encodeURIComponent(contentId)}/preview-file`;
     const explicitCoverUrl = asString(i?.coverUrl || "").trim() || null;
     const explicitCoverImageUrl = asString(i?.coverImageUrl || "").trim() || null;
     const explicitArtworkUrl = asString(i?.artworkUrl || "").trim() || null;
     const explicitThumbUrl = asString(i?.thumbnailUrl || "").trim() || null;
     const explicitPosterUrl = asString(i?.posterUrl || "").trim() || null;
+    const explicitPreviewUrl =
+      asString(i?.previewUrl || "").trim() ||
+      asString(i?.previewFileUrl || "").trim() ||
+      asString(i?.mediaUrl || "").trim() ||
+      asString(i?.fileUrl || "").trim() ||
+      null;
+    const explicitPrimaryFilePath = asString(i?.primaryFile || "").trim() || null;
     const libraryCoverCandidates = Array.from(
       new Set(
         [
@@ -21608,6 +21656,16 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           explicitThumbUrl,
           explicitPosterUrl,
           apiCoverUrl
+        ].filter((value): value is string => Boolean(asString(value || "").trim()))
+      )
+    );
+    const libraryPreviewCandidates = Array.from(
+      new Set(
+        [
+          manifestPrimaryFileUrl,
+          manifestAvFileUrl,
+          explicitPreviewUrl,
+          genericPreviewUrl
         ].filter((value): value is string => Boolean(asString(value || "").trim()))
       )
     );
@@ -21652,6 +21710,14 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       manifestCoverPath,
       manifestCoverUrl,
       libraryCoverCandidates,
+      primaryFile: explicitPrimaryFilePath || manifestPrimaryFilePath,
+      fileUrl: asString(i?.fileUrl || "").trim() || null,
+      previewFileUrl: asString(i?.previewFileUrl || "").trim() || null,
+      previewUrl: asString(i?.previewUrl || "").trim() || null,
+      mediaUrl: asString(i?.mediaUrl || "").trim() || null,
+      manifestPrimaryFilePath,
+      manifestPrimaryFileUrl,
+      libraryPreviewCandidates,
       attributionUrl: canonicalPublicOrigin
         ? `${canonicalPublicOrigin}/public/content/${encodeURIComponent(contentId)}/attribution`
         : null,
@@ -32644,7 +32710,13 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
         const previewUrl = manifestJson?.preview || null;
         const payload = {
           content: { id: content.id, title: content.title, type: content.type, status: content.status },
-          manifest: { sha256: publicMeta.sha256, preview: manifestJson?.preview || null, cover: manifestJson?.cover || null },
+          manifest: {
+            sha256: publicMeta.sha256,
+            preview: manifestJson?.preview || null,
+            cover: manifestJson?.cover || null,
+            primaryFile: manifestJson?.primaryFile || null,
+            files: Array.isArray(manifestJson?.files) ? manifestJson.files : []
+          },
           previewUrl,
           files: []
         };
@@ -32681,7 +32753,15 @@ app.get("/content/:id/preview", { preHandler: requireAuth }, async (req: any, re
 
   const payload = {
     content: { id: content.id, title: content.title, type: content.type, status: content.status },
-    manifest: manifest ? { sha256: manifest.sha256, preview: manifestJson?.preview || null, cover: manifestJson?.cover || null } : null,
+    manifest: manifest
+      ? {
+          sha256: manifest.sha256,
+          preview: manifestJson?.preview || null,
+          cover: manifestJson?.cover || null,
+          primaryFile: manifestJson?.primaryFile || null,
+          files: Array.isArray(manifestJson?.files) ? manifestJson.files : []
+        }
+      : null,
     previewUrl: previewUrl || null,
     files: files.map((f) => ({
       id: f.id,

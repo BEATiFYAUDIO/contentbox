@@ -45,6 +45,14 @@ type LibraryItem = {
   manifestCoverPath?: string | null;
   manifestCoverUrl?: string | null;
   libraryCoverCandidates?: string[] | null;
+  manifestPrimaryFilePath?: string | null;
+  manifestPrimaryFileUrl?: string | null;
+  libraryPreviewCandidates?: string[] | null;
+  primaryFile?: string | null;
+  fileUrl?: string | null;
+  previewFileUrl?: string | null;
+  previewUrl?: string | null;
+  mediaUrl?: string | null;
   attributionUrl?: string | null;
   buyUrl?: string | null;
   remoteOrigin?: string | null;
@@ -325,6 +333,27 @@ function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): Normal
         artworkUrl: firstNonEmptyString(winner.item.artworkUrl, loser.item.artworkUrl),
         thumbnailUrl: firstNonEmptyString(winner.item.thumbnailUrl, loser.item.thumbnailUrl),
         posterUrl: firstNonEmptyString(winner.item.posterUrl, loser.item.posterUrl),
+        manifestCoverPath: firstNonEmptyString(winner.item.manifestCoverPath, loser.item.manifestCoverPath),
+        manifestCoverUrl: firstNonEmptyString(winner.item.manifestCoverUrl, loser.item.manifestCoverUrl),
+        manifestPrimaryFilePath: firstNonEmptyString(winner.item.manifestPrimaryFilePath, loser.item.manifestPrimaryFilePath),
+        manifestPrimaryFileUrl: firstNonEmptyString(winner.item.manifestPrimaryFileUrl, loser.item.manifestPrimaryFileUrl),
+        primaryFile: firstNonEmptyString(winner.item.primaryFile, loser.item.primaryFile),
+        fileUrl: firstNonEmptyString(winner.item.fileUrl, loser.item.fileUrl),
+        previewFileUrl: firstNonEmptyString(winner.item.previewFileUrl, loser.item.previewFileUrl),
+        previewUrl: firstNonEmptyString(winner.item.previewUrl, loser.item.previewUrl),
+        mediaUrl: firstNonEmptyString(winner.item.mediaUrl, loser.item.mediaUrl),
+        libraryCoverCandidates: Array.from(
+          new Set([
+            ...(Array.isArray(winner.item.libraryCoverCandidates) ? winner.item.libraryCoverCandidates : []),
+            ...(Array.isArray(loser.item.libraryCoverCandidates) ? loser.item.libraryCoverCandidates : [])
+          ])
+        ),
+        libraryPreviewCandidates: Array.from(
+          new Set([
+            ...(Array.isArray(winner.item.libraryPreviewCandidates) ? winner.item.libraryPreviewCandidates : []),
+            ...(Array.isArray(loser.item.libraryPreviewCandidates) ? loser.item.libraryPreviewCandidates : [])
+          ])
+        ),
         deletedReason: winner.item.deletedReason || loser.item.deletedReason || null,
         tombstoned: Boolean(winner.item.tombstoned || loser.item.tombstoned),
         buyUrl: firstNonEmptyString(winner.item.buyUrl, loser.item.buyUrl, winner.publicPageUrl, loser.publicPageUrl),
@@ -541,6 +570,8 @@ export default function LibraryPage() {
   const [previewOpenById, setPreviewOpenById] = React.useState<Record<string, boolean>>({});
   const [coverCandidateIndexById, setCoverCandidateIndexById] = React.useState<Record<string, number>>({});
   const [lockedCoverUrlById, setLockedCoverUrlById] = React.useState<Record<string, string | null>>({});
+  const [previewCandidateIndexById, setPreviewCandidateIndexById] = React.useState<Record<string, number>>({});
+  const [lockedPlaybackUrlById, setLockedPlaybackUrlById] = React.useState<Record<string, string | null>>({});
   const [entitlementByContentId, setEntitlementByContentId] = React.useState<Record<string, EntitlementInventoryRow>>({});
   const [attributionByContentId, setAttributionByContentId] = React.useState<Record<string, PublicAttributionPayload | null>>({});
   const attributionLoadingRef = React.useRef<Set<string>>(new Set());
@@ -1352,22 +1383,25 @@ function rankLibraryCoverCandidates(
   return unique;
 }
 
-function pickBestLibraryMediaUrl(
+function rankLibraryMediaCandidates(
   apiBase: string,
   preferredOrigin: string | null,
   candidates: Array<string | null | undefined>
-): string | null {
-  let best: string | null = null;
-  let bestScore = -1;
-  for (const candidate of candidates) {
-    const resolved = normalizeAssetUrl(apiBase, candidate || null, preferredOrigin);
-    const score = scoreLibraryAssetUrl(apiBase, resolved, preferredOrigin);
-    if (score > bestScore) {
-      best = resolved;
-      bestScore = score;
-    }
+): string[] {
+  const scored = candidates
+    .map((candidate) => normalizeAssetUrl(apiBase, candidate || null, preferredOrigin))
+    .filter((value): value is string => Boolean(value))
+    .map((url) => ({ url, score: scoreLibraryAssetUrl(apiBase, url, preferredOrigin) }))
+    .filter((row) => row.score >= 0)
+    .sort((a, b) => b.score - a.score);
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  for (const row of scored) {
+    if (seen.has(row.url)) continue;
+    seen.add(row.url);
+    unique.push(row.url);
   }
-  return bestScore >= 0 ? best : null;
+  return unique;
 }
 
 function isForbiddenPreviewError(message?: string | null): boolean {
@@ -1614,11 +1648,50 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                             preferredPublishedObjectKey
                           )}`
                         : null;
-                    const effectivePlaybackUrl = pickBestLibraryMediaUrl(
-                      apiBase,
-                      cardAssetOrigin || apiBase,
-                      [preferredPublishedPlaybackUrl, previewUrl, participantPreviewFallback]
-                    );
+                    const apiPreviewCandidates = Array.isArray(it.libraryPreviewCandidates) ? it.libraryPreviewCandidates : [];
+                    const previewPrimaryObjectKey = String(preview?.manifest?.primaryFile || "").trim();
+                    const previewPrimaryObjectUrl = previewPrimaryObjectKey
+                      ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase)}?objectKey=${encodeURIComponent(
+                          previewPrimaryObjectKey
+                        )}`
+                      : null;
+                    const previewAvObjectKey = (() => {
+                      const files = Array.isArray(preview?.files) ? preview.files : [];
+                      for (const file of files) {
+                        const mime = String(file?.mime || "").toLowerCase();
+                        if (!mime.startsWith("video/") && !mime.startsWith("audio/")) continue;
+                        const key = String(file?.objectKey || "").trim();
+                        if (key) return key;
+                      }
+                      return null;
+                    })();
+                    const previewAvObjectUrl = previewAvObjectKey
+                      ? `${buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase)}?objectKey=${encodeURIComponent(
+                          previewAvObjectKey
+                        )}`
+                      : null;
+                    const genericPreviewFallback = buildPublicAssetUrl(it.id, "preview-file", cardAssetOrigin || apiBase);
+                    const rankedPlaybackCandidates = rankLibraryMediaCandidates(apiBase, cardAssetOrigin || apiBase, [
+                      ...apiPreviewCandidates,
+                      it.manifestPrimaryFileUrl,
+                      it.previewFileUrl,
+                      it.previewUrl,
+                      it.mediaUrl,
+                      it.fileUrl,
+                      previewPrimaryObjectUrl,
+                      previewAvObjectUrl,
+                      preferredPublishedPlaybackUrl,
+                      previewUrl,
+                      participantPreviewFallback,
+                      genericPreviewFallback
+                    ]);
+                    const selectedPlaybackIndex = Math.max(0, Number(previewCandidateIndexById[it.id] || 0));
+                    const fallbackPlaybackUrl =
+                      rankedPlaybackCandidates[selectedPlaybackIndex] || rankedPlaybackCandidates[0] || null;
+                    const lockedPlaybackUrl = lockedPlaybackUrlById[it.id];
+                    const effectivePlaybackUrl = isUsableLibraryAssetUrl(lockedPlaybackUrl)
+                      ? lockedPlaybackUrl
+                      : fallbackPlaybackUrl;
                     const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
                     const manifestArtworkObjectKey = String(preview?.manifest?.artwork || "").trim();
                     const manifestArtworkFallback = manifestArtworkObjectKey
@@ -1936,14 +2009,82 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                 if (effectivePlaybackUrl && isVideo) {
                                   return (
                                     <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
-                                      <video className="w-full h-full object-cover object-center bg-black" controls src={effectivePlaybackUrl} />
+                                      <video
+                                        className="w-full h-full object-cover object-center bg-black"
+                                        controls
+                                        src={effectivePlaybackUrl}
+                                        onLoadedData={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                            const incomingScore = scoreLibraryAssetUrl(
+                                              apiBase,
+                                              effectivePlaybackUrl,
+                                              cardAssetOrigin || apiBase
+                                            );
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            return prev;
+                                          });
+                                        }}
+                                        onError={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return prev;
+                                            return { ...prev, [it.id]: null };
+                                          });
+                                          setPreviewCandidateIndexById((prev) => {
+                                            const current = Math.max(0, Number(prev[it.id] || 0));
+                                            const next = Math.min(
+                                              current + 1,
+                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                            );
+                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            return { ...prev, [it.id]: next };
+                                          });
+                                        }}
+                                      />
                                     </div>
                                   );
                                 }
                                 if (effectivePlaybackUrl && isAudio) {
                                   return (
                                     <div className="w-full rounded-md border border-neutral-800 bg-black/60 p-2">
-                                      <audio className="w-full" controls src={effectivePlaybackUrl} />
+                                      <audio
+                                        className="w-full"
+                                        controls
+                                        src={effectivePlaybackUrl}
+                                        onCanPlay={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                            const incomingScore = scoreLibraryAssetUrl(
+                                              apiBase,
+                                              effectivePlaybackUrl,
+                                              cardAssetOrigin || apiBase
+                                            );
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            return prev;
+                                          });
+                                        }}
+                                        onError={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return prev;
+                                            return { ...prev, [it.id]: null };
+                                          });
+                                          setPreviewCandidateIndexById((prev) => {
+                                            const current = Math.max(0, Number(prev[it.id] || 0));
+                                            const next = Math.min(
+                                              current + 1,
+                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                            );
+                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            return { ...prev, [it.id]: next };
+                                          });
+                                        }}
+                                      />
                                     </div>
                                   );
                                 }
@@ -1954,6 +2095,36 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                         className="w-full h-full object-cover object-center bg-black"
                                         src={effectivePlaybackUrl}
                                         alt={it.title || "Preview"}
+                                        onLoad={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            const existingScore = scoreLibraryAssetUrl(apiBase, existing, cardAssetOrigin || apiBase);
+                                            const incomingScore = scoreLibraryAssetUrl(
+                                              apiBase,
+                                              effectivePlaybackUrl,
+                                              cardAssetOrigin || apiBase
+                                            );
+                                            if (incomingScore >= existingScore) return { ...prev, [it.id]: effectivePlaybackUrl };
+                                            return prev;
+                                          });
+                                        }}
+                                        onError={() => {
+                                          setLockedPlaybackUrlById((prev) => {
+                                            const existing = String(prev[it.id] || "").trim();
+                                            if (!existing) return prev;
+                                            return { ...prev, [it.id]: null };
+                                          });
+                                          setPreviewCandidateIndexById((prev) => {
+                                            const current = Math.max(0, Number(prev[it.id] || 0));
+                                            const next = Math.min(
+                                              current + 1,
+                                              Math.max(0, rankedPlaybackCandidates.length - 1)
+                                            );
+                                            if (next === current && rankedPlaybackCandidates.length <= 1) return prev;
+                                            return { ...prev, [it.id]: next };
+                                          });
+                                        }}
                                       />
                                     </div>
                                   );
