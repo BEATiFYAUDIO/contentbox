@@ -26579,7 +26579,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           where: {
             ownerUserId: user.id,
             status: "published",
-            deletedAt: null,
             featureOnProfile: true
           },
           orderBy: { createdAt: "desc" },
@@ -26590,6 +26589,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             type: true,
             priceSats: true,
             deliveryMode: true,
+            deletedAt: true,
+            deletedReason: true,
+            description: true,
             manifest: { select: { json: true } }
           }
         }),
@@ -26658,7 +26660,6 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                 where: {
                   ownerUserId: user.id,
                   status: "published",
-                  deletedAt: null,
                   featureOnProfile: true
                 },
                 orderBy: { createdAt: "desc" },
@@ -26669,6 +26670,9 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
                   type: true,
                   priceSats: true,
                   deliveryMode: true,
+                  deletedAt: true,
+                  deletedReason: true,
+                  description: true,
                   manifest: { select: { json: true } }
                 }
               }),
@@ -26705,6 +26709,19 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
           )
     )
   ]);
+
+  const filteredFeaturedContent = (
+    await Promise.all(
+      (Array.isArray(featuredContent) ? featuredContent : []).map(async (item: any) => {
+        if (!item?.deletedAt) return item;
+        const check = await isCurrentApprovedFeatureableDerivativeShadow({
+          contentId: asString(item.id || "").trim(),
+          ownerUserId: user.id
+        });
+        return check.eligible ? item : null;
+      })
+    )
+  ).filter(Boolean);
 
   const nodeUrl = wk.nodeUrl || "";
   if (!nodeUrl) return notFound(reply, "Not found");
@@ -27036,8 +27053,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
       </div>`;
   const profilePostureBadgeHtml = `<div class="line"><span class="${escHtml(profilePostureBadgeClass)}">${escHtml(profilePostureBadgeLabel)}</span></div>`;
   const featuredContentForRender =
-    featuredContent.length > 0
-      ? featuredContent
+    filteredFeaturedContent.length > 0
+      ? filteredFeaturedContent
       : (cachedRenderSnapshot?.featuredContent || []);
   const featuredContentHtml =
     featuredContentForRender.length > 0
@@ -27084,7 +27101,10 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
             const externalThumbUrl = deriveExternalVideoThumbnail(
               manifestJson?.sourceUrl || manifestJson?.externalUrl || manifestJson?.url || primaryObjectKey || ""
             );
-            const buyUrl = buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
+            const itemRemoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(asString((item as any)?.description || "").trim() || null));
+            const buyUrl = itemRemoteOrigin
+              ? buildPublicUrlFromOrigin(itemRemoteOrigin, `/buy/${encodeURIComponent(item.id)}`)
+              : buildPublicUrlFromOrigin(canonicalCommerceOrigin, `/buy/${encodeURIComponent(item.id)}`);
             const mediaHtml =
               type === "video"
                 ? `<div class="featured-video-thumb-wrap">
@@ -27459,8 +27479,8 @@ async function handlePublicNodeProfilePage(req: any, reply: any) {
         ].join("")
       : "";
   const snapshotFeaturedContent =
-    featuredContent.length > 0
-      ? featuredContent
+    filteredFeaturedContent.length > 0
+      ? filteredFeaturedContent
       : (cachedRenderSnapshot?.featuredContent || []);
   const snapshotVerifiedProofs =
     verifiedProofs.length > 0
@@ -33659,11 +33679,32 @@ app.patch("/content/:id/feature-on-profile", { preHandler: requireAuth }, async 
 
   const content = await prisma.contentItem.findUnique({
     where: { id: contentId },
-    select: { ownerUserId: true, status: true, deletedAt: true, featureOnProfile: true }
+    select: { ownerUserId: true, status: true, deletedAt: true, deletedReason: true, description: true, featureOnProfile: true }
   });
   if (!content) return notFound(reply, "Content not found");
   if (content.ownerUserId !== userId) return forbidden(reply);
-  if (next && (content.status !== "published" || content.deletedAt)) {
+  const isActiveLocalPublished = content.status === "published" && !content.deletedAt;
+  let shadowExceptionEligible = false;
+  let shadowExceptionReason: string | null = null;
+  if (next && !isActiveLocalPublished) {
+    const shadowCheck = await isCurrentApprovedFeatureableDerivativeShadow({ contentId, ownerUserId: userId });
+    shadowExceptionEligible = shadowCheck.eligible;
+    shadowExceptionReason = shadowCheck.reason || null;
+  }
+  if (next && !isActiveLocalPublished && !shadowExceptionEligible) {
+    if (process.env.NODE_ENV !== "production") {
+      req.log.info(
+        {
+          contentId,
+          userId,
+          status: content.status,
+          deletedAt: content.deletedAt ? new Date(content.deletedAt).toISOString() : null,
+          deletedReason: content.deletedReason || null,
+          shadowExceptionReason
+        },
+        "feature_on_profile.rejected"
+      );
+    }
     return reply.code(409).send({
       error: "NOT_ELIGIBLE",
       message: "Only active published content can be featured on profile."
@@ -35352,6 +35393,134 @@ function isActionableDerivativeChildForClearanceInbox(
   // Treat hard-deleted rows with a remote-origin marker as actionable remote-shadow records,
   // even if a repoPath exists due local mirror/sync artifacts.
   return deletedReason === "hard" && Boolean(remoteOrigin);
+}
+
+async function isCurrentApprovedFeatureableDerivativeShadow(input: {
+  contentId: string;
+  ownerUserId: string;
+}): Promise<{ eligible: boolean; remoteOrigin: string | null; reason?: string }> {
+  const content = await prisma.contentItem.findUnique({
+    where: { id: input.contentId },
+    select: {
+      id: true,
+      ownerUserId: true,
+      status: true,
+      deletedAt: true,
+      deletedReason: true,
+      description: true
+    }
+  });
+  if (!content) return { eligible: false, remoteOrigin: null, reason: "not_found" };
+  if (content.ownerUserId !== input.ownerUserId) return { eligible: false, remoteOrigin: null, reason: "not_owner" };
+  if (asString(content.status || "").trim().toLowerCase() !== "published") return { eligible: false, remoteOrigin: null, reason: "not_published" };
+  if (!content.deletedAt) return { eligible: false, remoteOrigin: null, reason: "not_shadow" };
+  if (asString(content.deletedReason || "").trim().toLowerCase() !== "hard") {
+    return { eligible: false, remoteOrigin: null, reason: "not_hard_shadow" };
+  }
+  const remoteOrigin = pickShareableOrigin(getRemoteOriginFromDescription(content.description || null));
+  if (!remoteOrigin) return { eligible: false, remoteOrigin: null, reason: "missing_remote_origin" };
+  if (!isActionableDerivativeChildForClearanceInbox(content)) {
+    return { eligible: false, remoteOrigin, reason: "not_actionable_shadow" };
+  }
+
+  const directLinks = await prisma.contentLink.findMany({
+    where: {
+      childContentId: input.contentId,
+      relation: { in: ["derivative", "remix", "mashup"] as any }
+    },
+    select: { id: true, parentContentId: true, relation: true, upstreamBps: true, approvedAt: true }
+  });
+  if (!directLinks.length) return { eligible: false, remoteOrigin, reason: "missing_derivative_link" };
+  const directAuth = await prisma.derivativeAuthorization.findMany({
+    where: { derivativeLinkId: { in: directLinks.map((l) => l.id) } },
+    select: { derivativeLinkId: true, status: true, updatedAt: true, createdAt: true }
+  });
+  const authByLinkId = new Map<string, { status: string; updatedAtMs: number; createdAtMs: number }>();
+  for (const row of directAuth) {
+    authByLinkId.set(asString(row.derivativeLinkId || "").trim(), {
+      status: asString(row.status || "").trim().toUpperCase(),
+      updatedAtMs: row.updatedAt instanceof Date ? row.updatedAt.getTime() : 0,
+      createdAtMs: row.createdAt instanceof Date ? row.createdAt.getTime() : 0
+    });
+  }
+  const approvedDirectLinks = directLinks.filter((link) => {
+    const auth = authByLinkId.get(link.id);
+    return Boolean(link.approvedAt) || auth?.status === "APPROVED";
+  });
+  if (!approvedDirectLinks.length) return { eligible: false, remoteOrigin, reason: "not_approved" };
+
+  let candidate = approvedDirectLinks[0];
+  let candidateUpdatedAt = 0;
+  for (const link of approvedDirectLinks) {
+    const auth = authByLinkId.get(link.id);
+    const stamp = Math.max(
+      auth?.updatedAtMs || 0,
+      auth?.createdAtMs || 0,
+      link.approvedAt instanceof Date ? link.approvedAt.getTime() : 0
+    );
+    if (stamp >= candidateUpdatedAt) {
+      candidate = link;
+      candidateUpdatedAt = stamp;
+    }
+  }
+
+  const workflowLinks = await prisma.contentLink.findMany({
+    where: {
+      parentContentId: candidate.parentContentId,
+      relation: candidate.relation as any,
+      upstreamBps: candidate.upstreamBps,
+      childContent: { ownerUserId: input.ownerUserId } as any
+    },
+    select: {
+      id: true,
+      approvedAt: true,
+      childContent: { select: { id: true, status: true, deletedAt: true, deletedReason: true, description: true } }
+    }
+  });
+  const workflowAuth = await prisma.derivativeAuthorization.findMany({
+    where: { derivativeLinkId: { in: workflowLinks.map((l) => l.id) } },
+    select: { derivativeLinkId: true, status: true, updatedAt: true, createdAt: true }
+  });
+  const workflowAuthByLinkId = new Map<string, { status: string; updatedAtMs: number; createdAtMs: number }>();
+  for (const row of workflowAuth) {
+    workflowAuthByLinkId.set(asString(row.derivativeLinkId || "").trim(), {
+      status: asString(row.status || "").trim().toUpperCase(),
+      updatedAtMs: row.updatedAt instanceof Date ? row.updatedAt.getTime() : 0,
+      createdAtMs: row.createdAt instanceof Date ? row.createdAt.getTime() : 0
+    });
+  }
+
+  const hasPublishedLocalWorkflow = workflowLinks.some((link: any) => {
+    const child = link?.childContent;
+    const status = asString(child?.status || "").trim().toLowerCase();
+    return status === "published" && !child?.deletedAt;
+  });
+  if (hasPublishedLocalWorkflow) return { eligible: false, remoteOrigin, reason: "published_workflow_exists" };
+
+  let latestApprovedShadowLinkId = "";
+  let latestApprovedShadowStamp = 0;
+  for (const link of workflowLinks as any[]) {
+    const child = link?.childContent;
+    if (!child?.deletedAt) continue;
+    if (!isActionableDerivativeChildForClearanceInbox(child)) continue;
+    const auth = workflowAuthByLinkId.get(asString(link.id || "").trim());
+    const approved = Boolean(link?.approvedAt) || auth?.status === "APPROVED";
+    if (!approved) continue;
+    const stamp = Math.max(
+      auth?.updatedAtMs || 0,
+      auth?.createdAtMs || 0,
+      link.approvedAt instanceof Date ? link.approvedAt.getTime() : 0
+    );
+    if (stamp >= latestApprovedShadowStamp) {
+      latestApprovedShadowStamp = stamp;
+      latestApprovedShadowLinkId = asString(link.id || "").trim();
+    }
+  }
+  if (!latestApprovedShadowLinkId) return { eligible: false, remoteOrigin, reason: "no_current_shadow" };
+  if (latestApprovedShadowLinkId !== asString(candidate.id || "").trim()) {
+    return { eligible: false, remoteOrigin, reason: "superseded_shadow" };
+  }
+  return { eligible: true, remoteOrigin };
 }
 
 type CanonicalDerivativeWorkflowRow = {
