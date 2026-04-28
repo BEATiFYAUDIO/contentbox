@@ -23,6 +23,8 @@ type LibraryItem = {
   title: string;
   type: string;
   status: string;
+  lifecycle?: "active" | "shadow" | "tombstone" | null;
+  isShadow?: boolean;
   archivedAt?: string | null;
   trashedAt?: string | null;
   deletedAt?: string | null;
@@ -1257,6 +1259,13 @@ export default function LibraryPage() {
     try {
       const participation = entry.participation || participationByContentId[contentId] || null;
       const shouldUseParticipationHighlight = shouldUseParticipationFeatureHighlight(entry, participation);
+      const stakeholderScopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+      const isShadowLifecycle = entry.item.lifecycle === "shadow" || Boolean(entry.item.isShadow);
+      const isVisibleActionableState = entry.availabilityState === "active" || isShadowLifecycle;
+      const hasPublicTarget = Boolean(entry.publicPageUrl) || Boolean(String(contentId || "").trim());
+      const isStakeholderScope =
+        stakeholderScopes.has("derivatives") || stakeholderScopes.has("shared_splits") || stakeholderScopes.has("all");
+      const shadowStakeholderFeatureEligible = isVisibleActionableState && hasPublicTarget && isStakeholderScope;
 
       if (shouldUseParticipationHighlight) {
         if (!participation) throw new Error("Participation info not found.");
@@ -1295,7 +1304,7 @@ export default function LibraryPage() {
         return;
       }
 
-      if (entry.relation === "owner") {
+      if (entry.relation === "owner" || shadowStakeholderFeatureEligible) {
         const res = await api<{ featureOnProfile: boolean }>(
           `/content/${encodeURIComponent(contentId)}/feature-on-profile`,
           "PATCH",
@@ -1498,6 +1507,35 @@ function splitSummaryLabel(summary: LibraryRightsSummary): string {
   return "Split state unknown";
 }
 
+function relationshipDisplayLabel(
+  entry: NormalizedLibraryItem,
+  relationshipFilter: LibraryRelationshipFilter
+): string {
+  const scopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+  const appearsBecause = new Set(
+    (Array.isArray(entry.item?.appearsBecause) ? entry.item.appearsBecause : [])
+      .map((v) => String(v || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const isShadowDerivativeChild =
+    (entry.item.lifecycle === "shadow" || Boolean(entry.item.isShadow)) &&
+    scopes.has("derivatives") &&
+    appearsBecause.has("derivative_child");
+  if (relationshipFilter === "derivatives" && (isShadowDerivativeChild || scopes.has("derivatives"))) {
+    return "Derivative";
+  }
+  if (
+    (isShadowDerivativeChild || scopes.has("derivatives")) &&
+    !(relationshipFilter === "shared_splits" || (scopes.has("shared_splits") && !scopes.has("derivatives")))
+  ) {
+    return "Upstream royalty";
+  }
+  if (relationshipFilter === "shared_splits" || (scopes.has("shared_splits") && !scopes.has("derivatives"))) {
+    return "Shared splits";
+  }
+  return LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType];
+}
+
 function toPercentLabel(bps: number | null | undefined): string {
   const safe = Number.isFinite(Number(bps)) ? Math.max(0, Number(bps)) : 0;
   return `${(safe / 100).toFixed(2)}%`;
@@ -1637,6 +1675,13 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                       entry,
                       participationInfo
                     );
+                    const stakeholderScopes = entry.libraryScopes || new Set<"all" | "authored" | "shared_splits" | "derivatives">();
+                    const isShadowLifecycle = it.lifecycle === "shadow" || Boolean(it.isShadow);
+                    const isVisibleActionableState = entry.availabilityState === "active" || isShadowLifecycle;
+                    const hasPublicTarget = Boolean(entry.publicPageUrl) || Boolean(String(it.id || "").trim());
+                    const isStakeholderScope =
+                      stakeholderScopes.has("derivatives") || stakeholderScopes.has("shared_splits") || stakeholderScopes.has("all");
+                    const shadowStakeholderFeatureEligible = isVisibleActionableState && hasPublicTarget && isStakeholderScope;
                     const featureAllowed = canFeatureOnProfile({
                       item: {
                         ...it,
@@ -1649,7 +1694,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                               : it.libraryAccess
                       },
                       participation: participationInfo
-                    }).allowed;
+                    }).allowed || shadowStakeholderFeatureEligible;
                     const currentlyFeatured = shouldUseParticipationHighlight ? participationFeatured : ownerFeatured;
                     const preview = previewById[it.id];
                     const previewUrl = preview?.previewUrl || null;
@@ -1762,6 +1807,7 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                     const effectivePlaybackUrl = isUsableLibraryAssetUrl(lockedPlaybackUrl)
                       ? lockedPlaybackUrl
                       : fallbackPlaybackUrl;
+                    const hasPlaybackCandidate = Boolean(effectivePlaybackUrl && isUsableLibraryAssetUrl(effectivePlaybackUrl));
                     const prioritizedParticipantCover = entry.relation === "participant" ? participantCoverFallback : null;
                     const manifestArtworkObjectKey = String(preview?.manifest?.artwork || "").trim();
                     const manifestArtworkFallback = manifestArtworkObjectKey
@@ -1951,9 +1997,11 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                             </div>
                           ) : null}
                           <div className="mt-1 text-[11px] text-neutral-500">
-                            Relationship: {LIBRARY_RELATIONSHIP_LABEL[entry.relationshipType === "other" ? "all" : entry.relationshipType]}
+                            Relationship: {relationshipDisplayLabel(entry, libraryRelationshipFilter)}
                           </div>
-                          <div className="mt-1 text-[11px] text-neutral-400">{splitSummaryLabel(rightsSummary)}</div>
+                          <div className="mt-1 text-[11px] text-neutral-400">
+                            {entry.isDerivativeChild ? "Upstream royalty" : splitSummaryLabel(rightsSummary)}
+                          </div>
                           {contributors.length > 0 ? (
                             <div className="mt-1 rounded-md border border-neutral-800/80 bg-neutral-950/40 p-2">
                               <div className="text-[11px] font-medium text-neutral-300">Attribution split</div>
@@ -2113,6 +2161,18 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                                             return { ...prev, [it.id]: next };
                                           });
                                         }}
+                                      />
+                                    </div>
+                                  );
+                                }
+                                if (effectivePlaybackUrl && !isAudio && !isImage && hasPlaybackCandidate) {
+                                  // For remote shadow rows, mime/type hints can be absent; try video playback first.
+                                  return (
+                                    <div className="w-full aspect-[4/3] rounded-md border border-neutral-800 bg-black overflow-hidden">
+                                      <video
+                                        className="w-full h-full object-cover object-center bg-black"
+                                        controls
+                                        src={effectivePlaybackUrl}
                                       />
                                     </div>
                                   );
