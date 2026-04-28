@@ -61,6 +61,7 @@ type LibraryItem = {
   isUpstreamRoyaltyWork?: boolean;
   isDerivativeWork?: boolean;
   isActionableShadow?: boolean;
+  isParentOfDerivative?: boolean;
   manifest?: { sha256?: string | null } | null;
   featureOnProfile?: boolean;
   _count?: { files: number };
@@ -212,10 +213,10 @@ function derivativeClassifier(input: {
   upstreamDerivativeChildContentIds: Set<string>;
   participation?: LibraryParticipation | null;
   relation?: LibraryRelation;
+  itemIsParentOfDerivative?: boolean;
 }): { isDerivativeChild: boolean; isDerivativeParent: boolean; isDerivative: boolean } {
   const typeNormalized = String(input.type || "").trim().toLowerCase();
   const appearsBecause = input.appearsBecause || new Set<string>();
-  const relation = String(input.relation || "").trim().toLowerCase();
   const isDerivativeByType = ["derivative", "remix", "mashup"].includes(typeNormalized);
   const isDerivativeChild =
     isDerivativeByType ||
@@ -223,10 +224,8 @@ function derivativeClassifier(input: {
     input.upstreamDerivativeChildContentIds.has(input.contentId) ||
     appearsBecause.has("derivative_child");
   const isDerivativeParent =
-    input.derivativeParentContentIds.has(input.contentId) ||
-    appearsBecause.has("derivative_parent") ||
-    Boolean(input.participation?.derivativeContext?.parentContentId) ||
-    relation === "participant" && appearsBecause.has("remote_mirror") && appearsBecause.has("split_participant");
+    Boolean(input.itemIsParentOfDerivative) ||
+    input.derivativeParentContentIds.has(input.contentId);
   return {
     isDerivativeChild,
     isDerivativeParent,
@@ -362,7 +361,8 @@ function dedupeCanonicalLibraryEntries(entries: NormalizedLibraryItem[]): Normal
         isDirectSharedSplit: Boolean(winner.item.isDirectSharedSplit || loser.item.isDirectSharedSplit),
         isUpstreamRoyaltyWork: Boolean(winner.item.isUpstreamRoyaltyWork || loser.item.isUpstreamRoyaltyWork),
         isDerivativeWork: Boolean(winner.item.isDerivativeWork || loser.item.isDerivativeWork),
-        isActionableShadow: Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow)
+        isActionableShadow: Boolean(winner.item.isActionableShadow || loser.item.isActionableShadow),
+        isParentOfDerivative: Boolean(winner.item.isParentOfDerivative || loser.item.isParentOfDerivative)
       },
       relationshipTags: mergedRelationshipTags,
       relationshipType: mergedRelationshipTags.includes("derivatives")
@@ -988,7 +988,8 @@ export default function LibraryPage() {
             derivativeParentContentIds,
             upstreamDerivativeChildContentIds,
             participation,
-            relation
+            relation,
+            itemIsParentOfDerivative: Boolean(normalizedItemForEligibility?.isParentOfDerivative)
           });
           const isDerivativeChild = derivativeFlags.isDerivativeChild;
           const isDerivativeParent = derivativeFlags.isDerivativeParent;

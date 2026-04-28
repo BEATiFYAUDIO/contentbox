@@ -21563,10 +21563,47 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         fallbackReasons.has("derivative_parent"),
       isActionableShadow:
         Boolean(preferred?.isActionableShadow) ||
-        Boolean(fallback?.isActionableShadow)
+        Boolean(fallback?.isActionableShadow),
+      isParentOfDerivative:
+        Boolean(preferred?.isParentOfDerivative) ||
+        Boolean(fallback?.isParentOfDerivative)
     });
   }
   const unique = Array.from(deduped.values());
+  const uniqueRowIds = Array.from(new Set(unique.map((row: any) => asString(row?.id || "").trim()).filter(Boolean)));
+  const parentOfDerivativeIds = new Set<string>();
+  if (uniqueRowIds.length > 0) {
+    const parentLinks = await prisma.contentLink.findMany({
+      where: {
+        parentContentId: { in: uniqueRowIds },
+        relation: { in: ["derivative", "remix", "mashup"] as any }
+      },
+      select: {
+        parentContentId: true,
+        childContent: {
+          select: {
+            id: true,
+            status: true,
+            deletedAt: true,
+            deletedReason: true,
+            description: true,
+            repoPath: true
+          }
+        }
+      }
+    });
+    for (const link of parentLinks) {
+      const parentId = asString(link?.parentContentId || "").trim();
+      const child = (link as any)?.childContent;
+      if (!parentId || !child) continue;
+      const childStatus = asString(child?.status || "").trim().toLowerCase();
+      const childPublished = childStatus === "published" && !child?.deletedAt;
+      const childActionableShadow = isActionableDerivativeChildForClearanceInbox(child);
+      if (childPublished || childActionableShadow) {
+        parentOfDerivativeIds.add(parentId);
+      }
+    }
+  }
   const uniqueContentIds = Array.from(new Set(unique.map((row: any) => asString(row?.id || "").trim()).filter(Boolean)));
   const manifestRows = uniqueContentIds.length
     ? await prisma.manifest.findMany({
@@ -21731,7 +21768,8 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       isDirectSharedSplit: emittedDirectSharedSplit,
       isUpstreamRoyaltyWork: emittedUpstreamRoyaltyWork,
       isDerivativeWork: emittedDerivativeWork,
-      isActionableShadow: emittedActionableShadow
+      isActionableShadow: emittedActionableShadow,
+      isParentOfDerivative: parentOfDerivativeIds.has(contentId)
     };
   });
 });
