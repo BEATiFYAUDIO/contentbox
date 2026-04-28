@@ -21448,17 +21448,19 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       const derivativeAuthRows = derivativeChildren.length
         ? await prisma.derivativeAuthorization.findMany({
             where: {
-              derivativeLinkId: { in: derivativeChildren.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) },
-              status: { in: ["PENDING", "REJECTED"] as any }
+              derivativeLinkId: { in: derivativeChildren.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) }
             },
-            select: { derivativeLinkId: true, updatedAt: true }
+            select: { derivativeLinkId: true, status: true, updatedAt: true }
           })
         : [];
-      const derivativeAuthByLinkId = new Map<string, { updatedAt: Date | null }>();
+      const derivativeAuthByLinkId = new Map<string, { updatedAt: Date | null; status: string }>();
       for (const row of derivativeAuthRows) {
         const linkId = asString((row as any)?.derivativeLinkId || "").trim();
         if (!linkId) continue;
-        derivativeAuthByLinkId.set(linkId, { updatedAt: (row as any)?.updatedAt || null });
+        derivativeAuthByLinkId.set(linkId, {
+          updatedAt: (row as any)?.updatedAt || null,
+          status: asString((row as any)?.status || "").trim().toUpperCase()
+        });
       }
       const derivativeWorkflowKey = (link: any, child: any) =>
         [
@@ -21468,7 +21470,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           asString(child?.ownerUserId || "").trim() || "unknown_owner"
         ].join("::");
       const localPublishedWorkflows = new Set<string>();
-      const latestLocalShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number }>();
+      const latestLocalShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number; rank: number }>();
       for (const link of derivativeChildren) {
         const child = (link as any)?.childContent;
         if (!child) continue;
@@ -21484,9 +21486,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const auth = derivativeAuthByLinkId.get(linkId);
         if (!linkId || !auth) continue;
         const updatedAtMs = auth.updatedAt instanceof Date ? auth.updatedAt.getTime() : 0;
+        const rank = auth.status === "APPROVED" || Boolean(link?.approvedAt) ? 2 : auth.status === "PENDING" || auth.status === "REJECTED" ? 1 : 0;
         const current = latestLocalShadowByWorkflow.get(workflowKey);
-        if (!current || updatedAtMs > current.updatedAtMs) {
-          latestLocalShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs });
+        if (!current || rank > current.rank || (rank === current.rank && updatedAtMs > current.updatedAtMs)) {
+          latestLocalShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs, rank });
         }
       }
       for (const link of derivativeChildren) {
@@ -21498,12 +21501,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const childStatus = asString(child?.status || "").trim().toLowerCase();
         const childPublished = childStatus === "published" && !child?.deletedAt;
         const latestShadowForWorkflow = latestLocalShadowByWorkflow.get(workflowKey);
+        const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
+        const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
-          !link?.approvedAt &&
           Boolean(latestShadowForWorkflow) &&
           latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
-          !localPublishedWorkflows.has(workflowKey) &&
+          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !localPublishedWorkflows.has(workflowKey))) &&
           isActionableDerivativeChildForClearanceInbox(child);
         const includeByState = childPublished || childActionableShadow;
         if (!includeByState) continue;
@@ -21592,17 +21596,19 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       const mirroredDerivativeAuthRows = mirroredDerivativeLinks.length
         ? await prisma.derivativeAuthorization.findMany({
             where: {
-              derivativeLinkId: { in: mirroredDerivativeLinks.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) },
-              status: { in: ["PENDING", "REJECTED"] as any }
+              derivativeLinkId: { in: mirroredDerivativeLinks.map((link: any) => asString(link?.id || "").trim()).filter(Boolean) }
             },
-            select: { derivativeLinkId: true, updatedAt: true }
+            select: { derivativeLinkId: true, status: true, updatedAt: true }
           })
         : [];
-      const mirroredDerivativeAuthByLinkId = new Map<string, { updatedAt: Date | null }>();
+      const mirroredDerivativeAuthByLinkId = new Map<string, { updatedAt: Date | null; status: string }>();
       for (const row of mirroredDerivativeAuthRows) {
         const linkId = asString((row as any)?.derivativeLinkId || "").trim();
         if (!linkId) continue;
-        mirroredDerivativeAuthByLinkId.set(linkId, { updatedAt: (row as any)?.updatedAt || null });
+        mirroredDerivativeAuthByLinkId.set(linkId, {
+          updatedAt: (row as any)?.updatedAt || null,
+          status: asString((row as any)?.status || "").trim().toUpperCase()
+        });
       }
       const mirroredWorkflowKey = (link: any, child: any) =>
         [
@@ -21612,7 +21618,7 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
           asString(child?.ownerUserId || "").trim() || "unknown_owner"
         ].join("::");
       const mirroredPublishedWorkflows = new Set<string>();
-      const latestMirroredShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number }>();
+      const latestMirroredShadowByWorkflow = new Map<string, { linkId: string; updatedAtMs: number; rank: number }>();
       for (const link of mirroredDerivativeLinks) {
         const child = (link as any)?.childContent;
         if (!child) continue;
@@ -21628,9 +21634,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         const auth = mirroredDerivativeAuthByLinkId.get(linkId);
         if (!linkId || !auth) continue;
         const updatedAtMs = auth.updatedAt instanceof Date ? auth.updatedAt.getTime() : 0;
+        const rank = auth.status === "APPROVED" || Boolean(link?.approvedAt) ? 2 : auth.status === "PENDING" || auth.status === "REJECTED" ? 1 : 0;
         const current = latestMirroredShadowByWorkflow.get(workflowKey);
-        if (!current || updatedAtMs > current.updatedAtMs) {
-          latestMirroredShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs });
+        if (!current || rank > current.rank || (rank === current.rank && updatedAtMs > current.updatedAtMs)) {
+          latestMirroredShadowByWorkflow.set(workflowKey, { linkId, updatedAtMs, rank });
         }
       }
       for (const link of mirroredDerivativeLinks) {
@@ -21651,12 +21658,13 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
         );
         const childIsPublished = asString(child?.status || "").trim().toLowerCase() === "published" && !child?.deletedAt;
         const latestShadowForWorkflow = latestMirroredShadowByWorkflow.get(workflowKey);
+        const shadowIsApprovedWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank >= 2);
+        const shadowIsCurrentPendingWorkflow = Boolean(latestShadowForWorkflow && latestShadowForWorkflow.rank === 1);
         const childActionableShadow =
           Boolean(child?.deletedAt) &&
-          !link?.approvedAt &&
           Boolean(latestShadowForWorkflow) &&
           latestShadowForWorkflow?.linkId === asString(link?.id || "").trim() &&
-          !mirroredPublishedWorkflows.has(workflowKey) &&
+          (shadowIsApprovedWorkflow || (shadowIsCurrentPendingWorkflow && !mirroredPublishedWorkflows.has(workflowKey))) &&
           isActionableDerivativeChildForClearanceInbox(child);
         if (!childIsPublished && !childActionableShadow) continue;
         const derivativeRow = {

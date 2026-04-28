@@ -1603,11 +1603,22 @@ function looksLikeImageAssetUrl(raw: string | null | undefined): boolean {
                     const pf = previewFileFor(previewUrl, preview?.files || []);
                     const mime = String(pf?.mime || "").toLowerCase();
                     const type = String(it.type || "").toLowerCase();
+                    const mediaPathHint = String(
+                      it.manifestPrimaryFilePath ||
+                        it.primaryFile ||
+                        preview?.manifest?.primaryFile ||
+                        ""
+                    )
+                      .trim()
+                      .toLowerCase();
+                    const isVideoByPath = /\.(mp4|mov|m4v|webm|mkv|avi|wmv|ogv)$/.test(mediaPathHint);
+                    const isAudioByPath = /\.(mp3|m4a|aac|wav|flac|ogg|oga|opus)$/.test(mediaPathHint);
+                    const isImageByPath = /\.(png|jpe?g|webp|gif|bmp|svg)$/.test(mediaPathHint);
                     const derivativeLinked = entry.isDerivativeChild || entry.isDerivativeParent;
                     const derivativeParentOnly = entry.isDerivativeParent && !entry.isDerivativeChild;
-                    const isVideo = mime.startsWith("video/") || type === "video";
-                    const isAudio = mime.startsWith("audio/") || type === "song";
-                    const isImage = mime.startsWith("image/");
+                    const isVideo = mime.startsWith("video/") || type === "video" || type === "remix" || isVideoByPath;
+                    const isAudio = mime.startsWith("audio/") || type === "song" || isAudioByPath;
+                    const isImage = mime.startsWith("image/") || isImageByPath;
                     const version =
                       String(it.manifest?.sha256 || "").trim() ||
                       String(preview?.manifest?.sha256 || "").trim() ||
