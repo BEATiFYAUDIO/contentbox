@@ -21548,8 +21548,10 @@ app.get("/content", { preHandler: requireAuth }, async (req: any, reply: any) =>
       isUpstreamRoyaltyWork:
         Boolean(preferred?.isUpstreamRoyaltyWork) ||
         Boolean(fallback?.isUpstreamRoyaltyWork) ||
-        preferredReasons.has("derivative_parent") ||
-        fallbackReasons.has("derivative_parent"),
+        (preferredReasons.has("derivative_parent") &&
+          (preferredReasons.has("derivative_child") || preferredIsDerivativeType)) ||
+        (fallbackReasons.has("derivative_parent") &&
+          (fallbackReasons.has("derivative_child") || fallbackIsDerivativeType)),
       isDerivativeWork:
         Boolean(preferred?.isDerivativeWork) ||
         Boolean(fallback?.isDerivativeWork) ||
